@@ -529,6 +529,123 @@
         "finishes? is the inverse — fires on the swapped pair")))
 
 ;; ============================================================================
+;; Half-open boundary semantics on valid-at (note 179 §4 Gap 2)
+;;
+;; The substrate's valid-at semantics is **half-open `[vf, vt)`** —
+;; documented at `doc/valid_time.md:75`, encoded in two places:
+;;   * the supersession predicate in `api/impl.cljc:179-198`
+;;     (`tx-covers-at?`): `(not (.after vf at)) AND (vt.after at)`
+;;     — i.e. `vf <= at < vt`.
+;;   * the auto-injected `valid-at` rule at `query.cljc:640-641`:
+;;     `[(<= ?vf ?at)] [(> ?vt ?at)]`.
+;;
+;; A query at `t == vf` MUST match; a query at `t == vt` MUST NOT.
+;; Without these boundary tests, a future refactor that flips the `<=`
+;; to `<` (or the `>` to `>=`) — say while porting to a different time
+;; type — would silently regress: every existing test queries strictly
+;; inside or strictly outside the window.
+;; ============================================================================
+
+(defn- vt-bounded-conn
+  "Tx a single tx with vt window [from, to). Returns the conn."
+  [from to]
+  (let [conn (fresh-conn)]
+    (d/transact conn [{:db/ident :emp/name :db/valueType :db.type/string
+                       :db/cardinality :db.cardinality/one}
+                      {:db/ident :emp/salary :db/valueType :db.type/long
+                       :db/cardinality :db.cardinality/one}])
+    (d/transact conn {:tx-data [{:emp/name "Bob" :emp/salary 100000}]
+                      :tx-meta {:db.valid/from from :db.valid/to to}})
+    conn))
+
+(defn- vt-open-ended-conn
+  "Tx a single tx with vt window [from, +∞). Returns the conn."
+  [from]
+  (let [conn (fresh-conn)]
+    (d/transact conn [{:db/ident :emp/name :db/valueType :db.type/string
+                       :db/cardinality :db.cardinality/one}
+                      {:db/ident :emp/salary :db/valueType :db.type/long
+                       :db/cardinality :db.cardinality/one}])
+    (d/transact conn {:tx-data [{:emp/name "Bob" :emp/salary 100000}]
+                      :tx-meta {:db.valid/from from}})
+    conn))
+
+(defn- salaries-at [db at]
+  (d/q '[:find ?s :where [_ :emp/salary ?s]] (d/valid-at db at)))
+
+(deftest valid-at-boundary-lower-vf-inclusive
+  ;; Half-open `[vf, vt)` — `t == vf` is INSIDE the window.
+  ;; Setup: window = [2024-01-01, 2024-07-01).
+  (let [conn (vt-bounded-conn #inst "2024-01-01" #inst "2024-07-01")
+        db (d/db conn)]
+    (testing "at exactly vf (2024-01-01) the fact IS visible (inclusive lower)"
+      (is (= #{[100000]} (salaries-at db #inst "2024-01-01"))
+          "vf <= at must admit at == vf — the half-open [vf, vt) contract"))))
+
+(deftest valid-at-boundary-just-before-vt-inclusive
+  ;; t = vt - 1ms must STILL be inside — the upper bound is exclusive
+  ;; but everything below it is in.
+  (let [conn (vt-bounded-conn #inst "2024-01-01" #inst "2024-07-01")
+        db (d/db conn)]
+    (testing "at 2024-06-30T23:59:59.999 (vt minus 1 ms) the fact IS visible"
+      (is (= #{[100000]} (salaries-at db #inst "2024-06-30T23:59:59.999"))
+          "any instant strictly < vt must admit the fact"))))
+
+(deftest valid-at-boundary-upper-vt-exclusive
+  ;; The defining test: `t == vt` MUST NOT be inside. This is what
+  ;; distinguishes half-open `[vf, vt)` from closed `[vf, vt]`.
+  (let [conn (vt-bounded-conn #inst "2024-01-01" #inst "2024-07-01")
+        db (d/db conn)]
+    (testing "at exactly vt (2024-07-01) the fact is NOT visible (exclusive upper)"
+      (is (= #{} (salaries-at db #inst "2024-07-01"))
+          "vt > at must reject at == vt — the half-open contract"))))
+
+(deftest valid-at-boundary-just-after-vt-exclusive
+  ;; And of course `t > vt` is also out.
+  (let [conn (vt-bounded-conn #inst "2024-01-01" #inst "2024-07-01")
+        db (d/db conn)]
+    (testing "at 2024-07-01T00:00:00.001 (vt plus 1 ms) the fact is NOT visible"
+      (is (= #{} (salaries-at db #inst "2024-07-01T00:00:00.001"))
+          "any instant > vt is strictly outside the window"))))
+
+(deftest valid-at-boundary-just-before-vf-exclusive
+  ;; Strictly-before-vf: the fact is NOT visible. Pairs with the
+  ;; lower-inclusive test above — together they nail down the lower
+  ;; boundary.
+  (let [conn (vt-bounded-conn #inst "2024-01-01" #inst "2024-07-01")
+        db (d/db conn)]
+    (testing "at 2023-12-31T23:59:59.999 (vf minus 1 ms) the fact is NOT visible"
+      (is (= #{} (salaries-at db #inst "2023-12-31T23:59:59.999"))
+          "any instant strictly < vf is before the window"))))
+
+(deftest valid-at-open-ended-far-future-visible
+  ;; Open-ended `[vf, ∞)` — the substrate substitutes `+∞` for missing
+  ;; `:db.valid/to`. A query at any instant after vf must match.
+  ;; `query.cljc:639` uses `#inst "9999-12-31T23:59:59.999"` as the
+  ;; sentinel; the impl.cljc predicate treats nil vt as no upper bound.
+  (let [conn (vt-open-ended-conn #inst "2024-01-01")
+        db (d/db conn)]
+    (testing "at far future (2999-12-31) the fact IS visible for an open vt"
+      (is (= #{[100000]} (salaries-at db #inst "2999-12-31"))
+          "open-ended vt treats every future instant as inside"))))
+
+(deftest valid-at-open-ended-before-vf-not-visible
+  ;; Open-ended on the upper end doesn't help below the lower bound.
+  (let [conn (vt-open-ended-conn #inst "2024-01-01")
+        db (d/db conn)]
+    (testing "at 2020-01-01 (before vf) the fact is NOT visible"
+      (is (= #{} (salaries-at db #inst "2020-01-01"))
+          "lower bound stays in effect even for open-ended windows"))))
+
+(deftest valid-at-open-ended-at-vf-visible
+  ;; Lower-bound inclusivity holds for open-ended windows too.
+  (let [conn (vt-open-ended-conn #inst "2024-01-01")
+        db (d/db conn)]
+    (testing "at exactly vf (2024-01-01) the fact IS visible for an open vt"
+      (is (= #{[100000]} (salaries-at db #inst "2024-01-01"))
+          "vf inclusive boundary applies regardless of vt being open"))))
+
+;; ============================================================================
 ;; Clock pinning for repeatable tests (DH-4)
 ;;
 ;; Per-call dynamic bindings (`(binding [tools/get-date ...] ...)`)
