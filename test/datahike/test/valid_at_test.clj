@@ -31,16 +31,13 @@
                     {:db/ident :emp/salary
                      :db/valueType :db.type/long
                      :db/cardinality :db.cardinality/one}])
-  (d/transact conn [{:db/id "datomic.tx"
-                     :db.valid/from #inst "2024-01-01"
-                     :db.valid/to   #inst "2024-07-01"}
-                    {:emp/name "Bob" :emp/salary 100000}])
-  (d/transact conn [{:db/id "datomic.tx"
-                     :db.valid/from #inst "2024-07-01"}
-                    {:emp/name "Bob" :emp/salary 110000}])
-  (d/transact conn [{:db/id "datomic.tx"
-                     :db.valid/from #inst "2024-01-01"}
-                    {:emp/name "Alice" :emp/salary 80000}]))
+  (d/transact conn {:tx-data [{:emp/name "Bob" :emp/salary 100000}]
+                    :tx-meta {:db.valid/from #inst "2024-01-01"
+                              :db.valid/to   #inst "2024-07-01"}})
+  (d/transact conn {:tx-data [{:emp/name "Bob" :emp/salary 110000}]
+                    :tx-meta {:db.valid/from #inst "2024-07-01"}})
+  (d/transact conn {:tx-data [{:emp/name "Alice" :emp/salary 80000}]
+                    :tx-meta {:db.valid/from #inst "2024-01-01"}}))
 
 (deftest valid-at-filters-pure-datalog-query
   ;; History queries combined with valid-at use the 5-tuple
