@@ -180,6 +180,75 @@
         (is (= 42 (d/q '[:find ?x . :where [_ :pos/x ?x]] (d/db conn))))))))
 
 ;; ============================================================================
+;; Tuple form — [:db/add tx-tempid :db.valid/from ...] — the doc snippet
+;;
+;; `doc/valid_time.md` L80-87 claims this low-level tuple form is
+;; equivalent to the inline-map form + the `:tx-meta` map-arg form. The
+;; tuple-form path runs through `db/transaction.cljc:1141` (`tx-id?` →
+;; allocate-eid + rewrite e to `(current-tx report)`), then
+;; `transact-add` lands the datom on the tx-entity exactly like any
+;; other `[:db/add tx-eid :attr value]`. This pins all three tempid
+;; spellings — `:db/current-tx`, `"datomic.tx"`, `"datahike.tx"` —
+;; mirroring `transact_test.cljc:377-398` (test-resolve-current-tx).
+;; ============================================================================
+
+(deftest tuple-form-vt-meta-attr-lands-on-tx
+  (doseq [tx-tempid [:db/current-tx "datomic.tx" "datahike.tx"]]
+    (testing (str "tx-tempid = " tx-tempid)
+      (let [conn (fresh-conn)]
+        (d/transact conn [{:db/ident :emp/name
+                           :db/valueType :db.type/string
+                           :db/unique :db.unique/identity
+                           :db/cardinality :db.cardinality/one}
+                          {:db/ident :emp/salary
+                           :db/valueType :db.type/long
+                           :db/cardinality :db.cardinality/one}])
+        ;; The exact doc snippet shape — mixed entity-map + tuple in
+        ;; one tx-data vector — with both vt-bounds via tuple.
+        (let [report (d/transact conn
+                                 [{:emp/name "Bob" :emp/salary 100000}
+                                  [:db/add tx-tempid :db.valid/from #inst "2026-01-01"]
+                                  [:db/add tx-tempid :db.valid/to   #inst "2026-12-31"]])
+              tx     (get-in report [:tempids :db/current-tx])
+              pulled (d/pull (d/db conn) '[*] tx)]
+          (testing "tuple-form vt-meta lands on the writing tx-entity"
+            (is (= #inst "2026-01-01" (:db.valid/from pulled))
+                "tuple-form :db.valid/from must land on tx")
+            (is (= #inst "2026-12-31" (:db.valid/to   pulled))
+                "tuple-form :db.valid/to must land on tx"))
+          (testing "the user data lands on a non-tx entity"
+            (is (= 100000 (d/q '[:find ?s . :where
+                                 [?e :emp/name "Bob"]
+                                 [?e :emp/salary ?s]]
+                               (d/db conn)))
+                "Bob's salary is asserted on a normal entity")))
+        ;; valid-at semantics — the vt-from inclusive lower bound +
+        ;; vt-to exclusive upper bound apply to a query against the
+        ;; current db (not history): the user datom is visible only
+        ;; when ?at falls in [vf, vt).
+        (testing "valid-at finds user data INSIDE the window"
+          (let [r (d/q '[:find ?s . :where
+                         [?e :emp/name "Bob"]
+                         [?e :emp/salary ?s]]
+                       (d/valid-at (d/db conn) #inst "2026-06-01"))]
+            (is (= 100000 r)
+                "mid-2026 falls in the [2026-01-01, 2026-12-31) window")))
+        (testing "valid-at does NOT find user data BEFORE the window"
+          (let [r (d/q '[:find ?s . :where
+                         [?e :emp/name "Bob"]
+                         [?e :emp/salary ?s]]
+                       (d/valid-at (d/db conn) #inst "2025-01-01"))]
+            (is (nil? r)
+                "2025-01-01 is before vt-from — must not match")))
+        (testing "valid-at does NOT find user data AT/AFTER the upper bound"
+          (let [r (d/q '[:find ?s . :where
+                         [?e :emp/name "Bob"]
+                         [?e :emp/salary ?s]]
+                       (d/valid-at (d/db conn) #inst "2027-01-01"))]
+            (is (nil? r)
+                "2027-01-01 is past vt-to (half-open window) — must not match")))))))
+
+;; ============================================================================
 ;; Schema enforcement — :db.valid/from rejects non-instant values
 ;; ============================================================================
 
