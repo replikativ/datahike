@@ -15,9 +15,11 @@
   (str/trim (b/git-process {:git-args "rev-parse HEAD"})))
 
 (defn sha []
-  (-> (b/git-process {:git-args "log -1"})
-      (str/split #"\s+")
-      second))
+  ;; Ask git for only the HEAD sha. Using "log -1" returns the full
+  ;; commit (subject + body); a large body (>64KB) overflows the pipe
+  ;; buffer and deadlocks b/git-process, which buffers all output
+  ;; before reading. "--format=%H" keeps the output to a single line.
+  (str/trim (b/git-process {:git-args "log -1 --format=%H"})))
 
 (defn string [config]
   (let [{:keys [major minor]} (:version config)]
