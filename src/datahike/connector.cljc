@@ -162,6 +162,29 @@
                   :stored-config stored-config
                   :diff          (diff config stored-config)}))))
 
+;; Settings fixed at database creation — they describe the on-disk format/semantics and
+;; cannot be changed by reconnecting (changing them would be meaningless or corrupting).
+;; Listed explicitly so any future addition is a deliberate decision.
+(def create-time-fixed-keys
+  #{:keep-history? :attribute-refs? :schema-flexibility :index :crypto-hash? :fuse-index-roots?
+    ;; :index-config sub-keys (PSS): :branching-factor :diff-buf-size
+    :index-config})
+
+;; Of the fixed keys, the ones whose datahike default has changed (:fuse-index-roots?) or
+;; that were newly added (:index-config {:branching-factor :diff-buf-size}) are sourced from
+;; the STORED config on connect — adopt the stored value, or drop the key when the store
+;; predates it. This lets existing stores connect unchanged and new stores reconnect
+;; without re-specifying, while the strict consistency check still guards every other key.
+;; (:index is already reconciled with a warning in -connect-impl*.)
+(defn adopt-stored-fixed [config stored-config]
+  (let [adopt   (fn [c k] (if (contains? stored-config k) (assoc c k (get stored-config k)) (dissoc c k)))
+        s-ic    (or (:index-config stored-config) {})
+        adopt-ic (fn [ic k] (if (contains? s-ic k) (assoc ic k (get s-ic k)) (dissoc ic k)))
+        config  (adopt config :fuse-index-roots?)
+        config  (update config :index-config
+                        (fn [ic] (reduce adopt-ic (or ic {}) [:branching-factor :diff-buf-size])))]
+    (if (empty? (:index-config config)) (dissoc config :index-config) config)))
+
 (defn- normalize-config [cfg]
   (-> cfg
       (dissoc :writer :store :store-cache-size :search-cache-size)))
@@ -209,6 +232,10 @@
                                  [config store stored-db]))
                              [config store stored-db]))
                          _ (version-check stored-db)
+                         ;; Source create-time-fixed settings (fuse / bf / diff-buf-size) from the
+                         ;; store so existing stores connect unchanged and new ones reconnect
+                         ;; without re-specifying; flows into both the check and the running db.
+                         config (adopt-stored-fixed config (:config stored-db))
                          _ (when-not (:allow-unsafe-config config)
                              (ensure-stored-config-consistency config (:config stored-db)))
                          conn      (conn-from-db (dsi/stored->db (assoc stored-db :config config) store))]
