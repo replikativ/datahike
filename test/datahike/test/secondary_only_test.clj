@@ -63,6 +63,27 @@
         (is (nil? (d/q '[:find ?v . :in $ ?e :where [?e :doc/body ?v]] @conn eid))
             "retraction by value removed the datom")))))
 
+(deftest secondary-family-has-stable-ids-in-attribute-refs
+  (testing "the :db.secondary/* family is in the system schema, so attribute-refs DBs assign it fixed entity IDs and a secondary-only attr works in that mode"
+    (let [cfg {:store {:backend :memory :id (random-uuid)}
+               :schema-flexibility :write :attribute-refs? true}]
+      (d/create-database cfg)
+      (let [conn (d/connect cfg)
+            irm  (:ident-ref-map @conn)]
+        ;; fixed ids from datahike.constants/system-schema (41..46)
+        (is (= 41 (get irm :db.secondary/type)))
+        (is (= 46 (get irm :db.secondary/only)))
+        ;; end-to-end: secondary-only write + search in attribute-refs mode
+        (d/transact conn [{:db/ident :ar/body :db/valueType :db.type/string
+                           :db/cardinality :db.cardinality/one :db.secondary/only true}])
+        (with-secondary conn [:ar/body])
+        (d/transact conn [{:db/id -1 :ar/body "attribute refs and datalog"}])
+        (Thread/sleep 400)
+        (is (= 36 (count (d/q '[:find ?v . :where [?e :ar/body ?v]] @conn)))
+            "primary holds the hash in attribute-refs mode too")
+        (let [ft (get-in @conn [:secondary-indices :idx/ft])]
+          (is (seq (es/entity-bitset-seq (sec/-search ft {:query "datalog" :field :value} nil)))))))))
+
 (deftest secondary-only-requires-a-covering-secondary
   (testing "writing a :db.secondary/only value with no covering secondary raises (value would be lost)"
     (let [conn (fresh-conn)]
