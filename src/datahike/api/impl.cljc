@@ -279,6 +279,7 @@
        (and (keyword? k)
             (not (or (ds/entity-spec-attr? k)
                      (ds/schema-attr? k)
+                     (ds/secondary-index-attr? k)
                      (ds/sys-ident? k)))) (update m k #(merge % v))
        (number? k)                        (update m v #(merge % {:db/id k}))
        :else                              m))
@@ -291,6 +292,7 @@
      (let [attrs (->> v
                       (remove #(or (ds/entity-spec-attr? %)
                                    (ds/sys-ident? %)
+                                   (ds/secondary-index-attr? %)
                                    (ds/schema-attr? %)))
                       (into #{}))]
        (if (empty? attrs)

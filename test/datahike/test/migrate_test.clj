@@ -93,7 +93,17 @@
                536870912 true]
               [:db/doc
                "A transaction's valid-time upper bound (exclusive).\n             When absent the interval is open-ended (treated as +∞).\n             May be written retroactively on a prior tx-entity to\n             close that tx's window; the write is a normal commit,\n             the prior tx's hash is unchanged, and the transactor\n             enforces a cross-tx `vf < vt` check on the combined\n             state. See `doc/valid_time.md` for usage."
-               536870912 true]])
+               536870912 true]
+              ;; Secondary-index schema attrs — the :db.secondary/* family
+              ;; graduated into system-schema with fixed IDs. Added as bare
+              ;; idents (value-types stay in schema/implicit-schema-spec), so
+              ;; each contributes exactly one :db/ident datom here.
+              [:db/ident :db.secondary/type 536870912 true]
+              [:db/ident :db.secondary/attrs 536870912 true]
+              [:db/ident :db.secondary/config 536870912 true]
+              [:db/ident :db.secondary/status 536870912 true]
+              [:db/ident :db.secondary/building-since-tx 536870912 true]
+              [:db/ident :db.secondary/only 536870912 true]])
 
 (deftest export-import-test
   (let [os-prefix (case (System/getProperty "os.name")
