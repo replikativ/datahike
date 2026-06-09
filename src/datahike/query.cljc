@@ -2742,29 +2742,31 @@
         plan (lower-plan logical db rules)]
     plan))
 
-(defn- key-has-bigdec?
-  "Read-only scan: does `x` (a cache-key fragment) contain a BigDecimal?
+#?(:clj
+   (defn- key-has-bigdec?
+     "Read-only scan: does `x` (a cache-key fragment) contain a BigDecimal?
    Recurses only plain Clojure collections; records and opaque values
    (Datom, DB, fns, …) are treated as leaves so we never call unsupported
    ops on them. Lets `scale-sensitive-key` skip the (allocating) rebuild for
-   the overwhelmingly common BigDecimal-free key."
-  [x]
-  (cond
-    (instance? java.math.BigDecimal x) true
-    (record? x)                        false
-    (map? x)  (reduce-kv (fn [_ k v] (if (or (key-has-bigdec? k) (key-has-bigdec? v))
-                                       (reduced true) false))
-                         false x)
-    ;; indexed loop for vectors (cache keys are vectors of vectors) and a
-    ;; reducing scan for sets/seqs — both avoid allocating a lazy seq per node.
-    (vector? x) (let [n (count x)]
-                  (loop [i 0]
-                    (cond (= i n) false
-                          (key-has-bigdec? (nth x i)) true
-                          :else (recur (unchecked-inc i)))))
-    (or (set? x) (seq? x)) (reduce (fn [_ e] (if (key-has-bigdec? e) (reduced true) false))
-                                   false x)
-    :else                              false))
+   the overwhelmingly common BigDecimal-free key. CLJ only — ClojureScript
+   has no BigDecimal."
+     [x]
+     (cond
+       (instance? java.math.BigDecimal x) true
+       (record? x)                        false
+       (map? x)  (reduce-kv (fn [_ k v] (if (or (key-has-bigdec? k) (key-has-bigdec? v))
+                                          (reduced true) false))
+                            false x)
+       ;; indexed loop for vectors (cache keys are vectors of vectors) and a
+       ;; reducing scan for sets/seqs — both avoid allocating a lazy seq per node.
+       (vector? x) (let [n (count x)]
+                     (loop [i 0]
+                       (cond (= i n) false
+                             (key-has-bigdec? (nth x i)) true
+                             :else (recur (unchecked-inc i)))))
+       (or (set? x) (seq? x)) (reduce (fn [_ e] (if (key-has-bigdec? e) (reduced true) false))
+                                      false x)
+       :else                              false)))
 
 (defn scale-sensitive-key
   "Canonicalize a value for use as (part of) a cache key.
@@ -2782,21 +2784,26 @@
    `[::bigdec <unscaled BigInteger> <scale int>]`, recursing only plain Clojure
    collections (records and opaque values like Datom/DB are left as-is).
    Returns `x` itself when it contains no BigDecimal — no allocation on the
-   common path."
+   common path.
+
+   No-op in ClojureScript: JS has no BigDecimal (only doubles), so the
+   scale-insensitivity collision cannot arise there."
   [x]
-  (if-not (key-has-bigdec? x)
-    x
-    (letfn [(walk [v]
-              (cond
-                (instance? java.math.BigDecimal v)
-                [::bigdec (.unscaledValue ^java.math.BigDecimal v) (.scale ^java.math.BigDecimal v)]
-                (record? v) v
-                (map? v)    (into (empty v) (map (fn [e] [(walk (key e)) (walk (val e))])) v)
-                (vector? v) (mapv walk v)
-                (set? v)    (into (empty v) (map walk) v)
-                (seq? v)    (doall (map walk v))
-                :else       v))]
-      (walk x))))
+  #?(:cljs x
+     :clj
+     (if-not (key-has-bigdec? x)
+       x
+       (letfn [(walk [v]
+                 (cond
+                   (instance? java.math.BigDecimal v)
+                   [::bigdec (.unscaledValue ^java.math.BigDecimal v) (.scale ^java.math.BigDecimal v)]
+                   (record? v) v
+                   (map? v)    (into (empty v) (map (fn [e] [(walk (key e)) (walk (val e))])) v)
+                   (vector? v) (mapv walk v)
+                   (set? v)    (into (empty v) (map walk) v)
+                   (seq? v)    (doall (map walk v))
+                   :else       v))]
+         (walk x)))))
 
 (defn- get-or-create-plan
   "Get a cached query plan or create a new one. Plans are cached by

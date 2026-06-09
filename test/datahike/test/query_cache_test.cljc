@@ -3,7 +3,7 @@
    #?(:cljs [cljs.test :as t :refer-macros [is deftest testing]]
       :clj  [clojure.test :as t :refer [is deftest testing]])
    [datahike.api :as d]
-   [datahike.query :as dq]))
+   #?(:clj [datahike.query :as dq])))
 
 (defn- with-temp-db
   "Create a temp in-memory db with schema, run f with the connection, then clean up."
@@ -130,27 +130,31 @@
                                  :where [?c :c/id]]
                                (:db-after tx))))))))))
 
-(deftest test-bigdecimal-scale-not-collapsed-by-cache
-  (testing "BigDecimals of equal value but different scale must not share a
+;; CLJ only: ClojureScript has no BigDecimal (`bigdec`), and the
+;; scale-insensitivity collision the fix guards against cannot arise on JS
+;; numbers — so there is nothing to test under CLJS.
+#?(:clj
+   (deftest test-bigdecimal-scale-not-collapsed-by-cache
+     (testing "BigDecimals of equal value but different scale must not share a
             plan/result cache entry (Clojure = / hash are scale-insensitive:
             (= 1.50M 1.500M) => true with equal hash). Querying one scale must
             not make a later numerically-equal query return the first scale."
-    (with-temp-db
-      [{:db/ident :x/n :db/valueType :db.type/long :db/cardinality :db.cardinality/one}]
-      (fn [conn]
-        (let [db @conn
-              ;; const-only fn binding: value flows through verbatim, so the
-              ;; result's scale is exactly the input's scale.
-              run (fn [legacy? s]
-                    (binding [dq/*force-legacy* legacy?]
-                      (str (ffirst (d/q '{:find [?v] :in [$ ?p ?f] :where [[(?f ?p) ?v]]}
-                                        db (bigdec s) identity)))))]
-          (doseq [legacy? [true false]]
-            (let [tag (str "force-legacy=" legacy?)]
-              ;; seed cache with one scale, then query equal-value other scales
-              (is (= "0.001" (run legacy? "0.001")) tag)
-              (is (= "0.001000" (run legacy? "0.001000"))
-                  (str tag " — second query must keep its own scale, not the cached one"))
-              (is (= "1.5" (run legacy? "1.5")) tag)
-              (is (= "1.50" (run legacy? "1.50")) tag)
-              (is (= "1.500" (run legacy? "1.500")) tag))))))))
+       (with-temp-db
+         [{:db/ident :x/n :db/valueType :db.type/long :db/cardinality :db.cardinality/one}]
+         (fn [conn]
+           (let [db @conn
+                 ;; const-only fn binding: value flows through verbatim, so the
+                 ;; result's scale is exactly the input's scale.
+                 run (fn [legacy? s]
+                       (binding [dq/*force-legacy* legacy?]
+                         (str (ffirst (d/q '{:find [?v] :in [$ ?p ?f] :where [[(?f ?p) ?v]]}
+                                           db (bigdec s) identity)))))]
+             (doseq [legacy? [true false]]
+               (let [tag (str "force-legacy=" legacy?)]
+                 ;; seed cache with one scale, then query equal-value other scales
+                 (is (= "0.001" (run legacy? "0.001")) tag)
+                 (is (= "0.001000" (run legacy? "0.001000"))
+                     (str tag " — second query must keep its own scale, not the cached one"))
+                 (is (= "1.5" (run legacy? "1.5")) tag)
+                 (is (= "1.50" (run legacy? "1.50")) tag)
+                 (is (= "1.500" (run legacy? "1.500")) tag)))))))))
