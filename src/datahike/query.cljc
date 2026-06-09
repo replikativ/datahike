@@ -2742,14 +2742,81 @@
         plan (lower-plan logical db rules)]
     plan))
 
+#?(:clj
+   (defn- key-has-bigdec?
+     "Read-only scan: does `x` (a cache-key fragment) contain a BigDecimal?
+   Recurses only plain Clojure collections; records and opaque values
+   (Datom, DB, fns, …) are treated as leaves so we never call unsupported
+   ops on them. Lets `scale-sensitive-key` skip the (allocating) rebuild for
+   the overwhelmingly common BigDecimal-free key. CLJ only — ClojureScript
+   has no BigDecimal."
+     [x]
+     (cond
+       (instance? java.math.BigDecimal x) true
+       (record? x)                        false
+       (map? x)  (reduce-kv (fn [_ k v] (if (or (key-has-bigdec? k) (key-has-bigdec? v))
+                                          (reduced true) false))
+                            false x)
+       ;; indexed loop for vectors (cache keys are vectors of vectors) and a
+       ;; reducing scan for sets/seqs — both avoid allocating a lazy seq per node.
+       (vector? x) (let [n (count x)]
+                     (loop [i 0]
+                       (cond (= i n) false
+                             (key-has-bigdec? (nth x i)) true
+                             :else (recur (unchecked-inc i)))))
+       (or (set? x) (seq? x)) (reduce (fn [_ e] (if (key-has-bigdec? e) (reduced true) false))
+                                      false x)
+       :else                              false)))
+
+(defn scale-sensitive-key
+  "Canonicalize a value for use as (part of) a cache key.
+
+   Clojure's `=` and `hash` for BigDecimal are scale-INSENSITIVE
+   (compareTo-based): `(= 1.50M 1.500M)` => true and their hashes are equal,
+   so they collide as map/vector keys (e.g. `(get {1.50M :a} 1.500M)` => :a).
+   But query plans embed the substituted constant and query results carry the
+   value's scale (`1.50M` and `1.500M` print differently), so two
+   numerically-equal but differently-scaled values MUST map to DIFFERENT cache
+   keys — otherwise whichever scale is cached first wins and later queries get
+   the wrong scale. See clojure.org/guides/equality.
+
+   Replaces every BigDecimal with a scale-sensitive surrogate
+   `[::bigdec <unscaled BigInteger> <scale int>]`, recursing only plain Clojure
+   collections (records and opaque values like Datom/DB are left as-is).
+   Returns `x` itself when it contains no BigDecimal — no allocation on the
+   common path.
+
+   No-op in ClojureScript: JS has no BigDecimal (only doubles), so the
+   scale-insensitivity collision cannot arise there."
+  [x]
+  #?(:cljs x
+     :clj
+     (if-not (key-has-bigdec? x)
+       x
+       (letfn [(walk [v]
+                 (cond
+                   (instance? java.math.BigDecimal v)
+                   [::bigdec (.unscaledValue ^java.math.BigDecimal v) (.scale ^java.math.BigDecimal v)]
+                   (record? v) v
+                   (map? v)    (into (empty v) (map (fn [e] [(walk (key e)) (walk (val e))])) v)
+                   (vector? v) (mapv walk v)
+                   (set? v)    (into (empty v) (map walk) v)
+                   (seq? v)    (doall (map walk v))
+                   :else       v))]
+         (walk x)))))
+
 (defn- get-or-create-plan
   "Get a cached query plan or create a new one. Plans are cached by
    [clauses bound-vars rules-keys schema-hash] since the plan structure
    (index selection, merge ordering) depends on query shape and schema,
-   not on the actual data."
+   not on the actual data.
+
+   `clauses` may embed substituted constants (substitute-consts-with-lookup-refs),
+   so the key is run through `scale-sensitive-key` to keep BigDecimals of
+   different scale distinct (Clojure `=`/`hash` would otherwise collapse them)."
   [db clauses bound-vars rules]
   (let [schema-hash (hash (dbi/-schema db))
-        cache-key [clauses bound-vars (when rules rules) schema-hash]]
+        cache-key (scale-sensitive-key [clauses bound-vars (when rules rules) schema-hash])]
     (if-some [cached (get @plan-cache cache-key nil)]
       cached
       (let [plan (create-plan-via-ir db clauses bound-vars rules)]
@@ -3762,7 +3829,12 @@
         (if-not cacheable?
           (uncached)
           (let [non-db-args (vec (rest args))
-                cache-key [query non-db-args offset limit order-by *force-legacy*]
+                ;; scale-sensitive-key: BigDecimal args/consts of equal value but
+                ;; different scale (1.50M vs 1.500M) are `=` with equal hash in
+                ;; Clojure, so they'd share a result-cache entry and return the
+                ;; first-cached scale. Keep them distinct.
+                cache-key (scale-sensitive-key
+                           [query non-db-args offset limit order-by *force-legacy*])
                 entry (result-cache-get db cache-key)]
             (if entry
               (:result entry)
