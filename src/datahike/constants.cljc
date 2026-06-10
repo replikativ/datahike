@@ -138,7 +138,24 @@
              the prior tx's hash is unchanged, and the transactor
              enforces a cross-tx `vf < vt` check on the combined
              state. See `doc/valid_time.md` for usage."
-    :db/index true}])
+    :db/index true}
+   ;; Secondary-index schema attrs — graduated into the system schema so the
+   ;; whole `:db.secondary/*` family has stable entity IDs that align across
+   ;; attribute-refs databases (mirrors how `:db.valid/*` was added). Their
+   ;; value-types live in `schema/implicit-schema-spec`, like the other
+   ;; schema-meta flag attrs (`:db/index`, `:db/isComponent`, …).
+   {:db/id 41
+    :db/ident :db.secondary/type}
+   {:db/id 42
+    :db/ident :db.secondary/attrs}
+   {:db/id 43
+    :db/ident :db.secondary/config}
+   {:db/id 44
+    :db/ident :db.secondary/status}
+   {:db/id 45
+    :db/ident :db.secondary/building-since-tx}
+   {:db/id 46
+    :db/ident :db.secondary/only}])
 
 (def ^:const system-entities
   "Holds the entity IDs of system attributes"

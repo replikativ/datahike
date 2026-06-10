@@ -41,6 +41,10 @@
           :cljs [^boolean indexing?]) [db attr]
   (is-attr? db attr :db/index))
 
+(defn #?@(:clj [^Boolean secondary-only?]
+          :cljs [^boolean secondary-only?]) [db attr]
+  (is-attr? db attr :db.secondary/only))
+
 (defn #?@(:clj [^Boolean no-history?]
           :cljs [^boolean no-history?]) [db attr]
   (is-attr? db attr :db/noHistory))
@@ -293,6 +297,7 @@
           :db/isComponent [:db/isComponent]
           :db/index [:db/index]
           :db/noHistory [:db/noHistory]
+          :db.secondary/only [:db.secondary/only]
           [])))))
 
 (defn reduce-indexed

@@ -14,6 +14,7 @@
    [replikativ.logging :as log]
    [datahike.schema :as ds]
    [datahike.index.secondary :as sec]
+   [hasch.core :as hasch]
    [org.replikativ.persistent-sorted-set.arrays :as arrays])
   #?(:cljs (:require-macros [datahike.datom :refer [datom]]))
   #?(:clj (:import [clojure.lang ExceptionInfo]
@@ -350,6 +351,24 @@
                 db sec-idx-map))
       db)))
 
+(defn secondary-only-hash
+  "Content hash (string) of `v`, via hasch — the value the primary indexes hold
+   for a `:db.secondary/only` attribute. Deterministic, so retraction re-hashes
+   to find the stored datom and identical values dedup."
+  [v]
+  (str (hasch/uuid v)))
+
+(defn- project-primary
+  "For an *added* `:db.secondary/only` datom, a copy with its value replaced by
+   the content hash (what the primary EAVT/AEVT/AVET store). Preserves e/a/tx.
+   The full-value `datom` still flows to the secondary index. Retraction datoms
+   already carry the stored hash (the retract handler searches by hash), so they
+   pass through unchanged — no double-hashing."
+  [secondary-only? ^Datom datom]
+  (if (and secondary-only? (datom-added datom))
+    (dd/datom (.-e datom) (.-a datom) (secondary-only-hash (.-v datom)) (.-tx datom) (datom-added datom))
+    datom))
+
 (defn- with-datom [db ^Datom datom]
   (validate-datom db datom)
   (let [{a-ident :ident} (dbu/attr-info db (.-a datom) :error-on-missing)
@@ -358,34 +377,41 @@
                     (ds/secondary-index-attr? a-ident))
         keep-history? (and (dbi/-keep-history? db) (not (dbu/no-history? db a-ident)))
         op-count (:op-count db)
-        has-secondary? (seq (get-in db [:rschema :db.secondary/index a-ident]))]
+        has-secondary? (seq (get-in db [:rschema :db.secondary/index a-ident]))
+        secondary-only? (dbu/secondary-only? db a-ident)
+        ;; primary indexes hold the content hash for :db.secondary/only attrs;
+        ;; the full value goes only to the secondary index (`datom` below).
+        prim ^Datom (project-primary secondary-only? datom)]
+    (when (and secondary-only? (datom-added datom) (not has-secondary?))
+      (log/raise "Attribute " a-ident " is :db.secondary/only but no secondary index covers it — its value would be lost"
+                 {:error :transact/secondary-only-uncovered :attribute a-ident :datom datom}))
     (if (datom-added datom)
       (cond-> db
-        true (update-in [:eavt] #(di/-insert % datom :eavt op-count))
-        true (update-in [:aevt] #(di/-insert % datom :aevt op-count))
-        indexing? (update-in [:avet] #(di/-insert % datom :avet op-count))
+        true (update-in [:eavt] #(di/-insert % prim :eavt op-count))
+        true (update-in [:aevt] #(di/-insert % prim :aevt op-count))
+        indexing? (update-in [:avet] #(di/-insert % prim :avet op-count))
         has-secondary? (update-secondary-indices a-ident datom true)
         true (advance-max-eid (.-e datom))
-        true (update :hash + (hash datom))
+        true (update :hash + (hash prim))
         schema? (-> (update-schema datom)
                     update-rschema)
         true (update :op-count inc))
 
-      (if-some [removing ^Datom (first (dbi/search db [(.-e datom) (.-a datom) (.-v datom)]))]
+      (if-some [removing ^Datom (first (dbi/search db [(.-e prim) (.-a prim) (.-v prim)]))]
         (cond-> db
           true (update-in [:eavt] #(di/-remove % removing :eavt op-count))
           true (update-in [:aevt] #(di/-remove % removing :aevt op-count))
           indexing? (update-in [:avet] #(di/-remove % removing :avet op-count))
-          has-secondary? (update-secondary-indices a-ident removing false)
+          has-secondary? (update-secondary-indices a-ident datom false)
           true (update :hash - (hash removing))
           schema? (-> (remove-schema datom) update-rschema)
           keep-history? (update-in [:temporal-eavt] #(di/-temporal-insert % removing :eavt op-count))
-          keep-history? (update-in [:temporal-eavt] #(di/-temporal-insert % datom :eavt (inc op-count)))
+          keep-history? (update-in [:temporal-eavt] #(di/-temporal-insert % prim :eavt (inc op-count)))
           keep-history? (update-in [:temporal-aevt] #(di/-temporal-insert % removing :aevt op-count))
-          keep-history? (update-in [:temporal-aevt] #(di/-temporal-insert % datom :aevt (inc op-count)))
-          keep-history? (update :hash + (hash datom))
+          keep-history? (update-in [:temporal-aevt] #(di/-temporal-insert % prim :aevt (inc op-count)))
+          keep-history? (update :hash + (hash prim))
           (and keep-history? indexing?) (update-in [:temporal-avet] #(di/-temporal-insert % removing :avet op-count))
-          (and keep-history? indexing?) (update-in [:temporal-avet] #(di/-temporal-insert % datom :avet (inc op-count)))
+          (and keep-history? indexing?) (update-in [:temporal-avet] #(di/-temporal-insert % prim :avet (inc op-count)))
           true (update :op-count + (if (or keep-history? indexing?) 2 1)))
         db))))
 
@@ -453,7 +479,14 @@
                                     (dd/datom (.-e datom) (.-a datom) nil (.-tx datom))
                                     (dd/datom (.-e datom) (.-a datom) nil (.-tx datom))
                                     :eavt))
-        has-secondary? (seq (get-in db [:rschema :db.secondary/index a-ident]))]
+        has-secondary? (seq (get-in db [:rschema :db.secondary/index a-ident]))
+        secondary-only? (dbu/secondary-only? db a-ident)
+        ;; primary indexes hold the content hash for :db.secondary/only attrs;
+        ;; the full value goes only to the secondary index (`datom` below).
+        prim ^Datom (project-primary secondary-only? datom)]
+    (when (and secondary-only? (not has-secondary?))
+      (log/raise "Attribute " a-ident " is :db.secondary/only but no secondary index covers it — its value would be lost"
+                 {:error :transact/secondary-only-uncovered :attribute a-ident :datom datom}))
     (cond-> db
             ;; Optimistic removal of the schema entry (because we don't know whether it is already present or not)
       schema? (try
@@ -461,22 +494,22 @@
                 (catch ExceptionInfo _e
                   db))
 
-      keep-history? (update-in [:temporal-eavt] #(di/-temporal-upsert % datom :eavt op-count old-datom))
-      true          (update-in [:eavt] #(di/-upsert % datom :eavt op-count old-datom))
+      keep-history? (update-in [:temporal-eavt] #(di/-temporal-upsert % prim :eavt op-count old-datom))
+      true          (update-in [:eavt] #(di/-upsert % prim :eavt op-count old-datom))
 
-      keep-history? (update-in [:temporal-aevt] #(di/-temporal-upsert % datom :aevt op-count old-datom))
-      true          (update-in [:aevt] #(di/-upsert % datom :aevt op-count old-datom))
+      keep-history? (update-in [:temporal-aevt] #(di/-temporal-upsert % prim :aevt op-count old-datom))
+      true          (update-in [:aevt] #(di/-upsert % prim :aevt op-count old-datom))
 
-      (and keep-history? indexing?) (update-in [:temporal-avet] #(di/-temporal-upsert % datom :avet op-count old-datom))
-      indexing?                     (update-in [:avet] #(di/-upsert % datom :avet op-count old-datom))
+      (and keep-history? indexing?) (update-in [:temporal-avet] #(di/-temporal-upsert % prim :avet op-count old-datom))
+      indexing?                     (update-in [:avet] #(di/-upsert % prim :avet op-count old-datom))
 
-      ;; Secondary indices: retract old, assert new
+      ;; Secondary indices: retract old, assert new (full value)
       (and has-secondary? old-datom) (update-secondary-indices a-ident old-datom false)
       has-secondary? (update-secondary-indices a-ident datom true)
 
       true    (update :op-count inc)
       true    (advance-max-eid (.-e datom))
-      true    (update :hash + (hash datom))
+      true    (update :hash + (hash prim))
       schema? (-> (update-schema datom)
                   update-rschema))))
 
@@ -929,7 +962,9 @@
                                     [e a]
                                     (let [v (if (dbu/ref? db a) (dbu/entid-strict db v) v)]
                                       (validate-val v op-vec db)
-                                      [e a v]))
+                                      ;; :db.secondary/only stores the content hash in the
+                                      ;; primary indexes, so search by hash to find the datom.
+                                      [e a (if (dbu/secondary-only? db a) (secondary-only-hash v) v)]))
                           datoms (vec (dbi/search db pattern))]
                       [(reduce transact-retract-datom report datoms) []])
                     [report []])

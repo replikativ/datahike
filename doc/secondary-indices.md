@@ -178,6 +178,44 @@ Standard Datalog aggregate queries are automatically routed to Stratum when the 
 
 Supported aggregate functions: `avg`, `sum`, `count`, `min`, `max`, `variance`, `stddev`, `count-distinct`, `median`.
 
+## Storing values only in the secondary (`:db.secondary/only`)
+
+Large or unbounded string values — transcripts, web pages, document bodies — bloat
+the primary EAVT/AEVT/AVET indices when stored inline. Flag such an attribute
+`:db.secondary/only true` and the value is routed **only to the covering secondary
+index**; the primary indices hold a small `hasch` content hash in its place:
+
+```clojure
+(d/transact conn [{:db/ident :doc/body
+                   :db/valueType :db.type/string :db/cardinality :db.cardinality/one
+                   :db.secondary/only true}
+                  ;; a covering secondary is REQUIRED — the value lives there
+                  {:db/ident :idx/ft :db.secondary/type :scriptum
+                   :db.secondary/attrs [:doc/body]
+                   :db.secondary/config {:path "/tmp/idx"}}])
+
+(d/transact conn [{:db/id -1 :doc/body "…a very large document…"}])
+
+(d/q '[:find ?v . :where [?e :doc/body ?v]] @conn)
+;; => "5c0f…-…"   ; the content hash, NOT the document
+```
+
+Because the hash is a deterministic, normal value, uniqueness/cardinality and
+retraction all work (`[:db/retract e a v]` re-hashes `v` to find the datom), and
+identical content de-duplicates. There is no separate value store and no extra GC:
+the value lives in the secondary, which already manages its own storage, GC
+(`d/gc-storage`) and branch-on-fork.
+
+**Semantics — search-only, not recoverable.** A `:db.secondary/only` value is
+**findable but not reproducible**: a full-text/vector index stores a *lossy
+projection* (tokens, embeddings), so there is no path to read the exact original
+back from the primary. Declare it only where the canonical value lives elsewhere
+(its source URL, a bounded summary attribute you store normally, your own blob).
+Writing such a value with no covering secondary raises — the value would be lost.
+
+> Verbatim recovery (`secondary-value` via a *reproducing* index such as Scriptum
+> with stored fields) is a planned follow-up; today the flag is search-only.
+
 ## Index Lifecycle
 
 Secondary indices are managed through schema transactions:

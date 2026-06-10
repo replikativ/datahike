@@ -776,8 +776,8 @@
         schema-count 11                                     ;; amount of user schema datoms in temporal eavt index
         temporal-count 10                                   ;; amount of user data datoms in temporal eavt index when using schema-on-write
         temporal-avet-count 9                               ;; amount of user data datoms in temporal avet index when using schema-on write
-        sys-attr-count 79                                   ;; amount of system schema datoms in temporal eavt index when using attribute refs (was 69; +10 for :db.valid/from + :db.valid/to)
-        sys-attr-avet-count 50                              ;; amount of system schema datoms in temporal avet index when using attribute refs (was 48; +2 for the :db/ident datoms of the new vt attrs)
+        sys-attr-count 85                                   ;; amount of system schema datoms in temporal eavt index when using attribute refs (was 79; +6 for the :db.secondary/* family idents)
+        sys-attr-avet-count 56                              ;; amount of system schema datoms in temporal avet index when using attribute refs (was 50; +6 for the :db/ident datoms of the new :db.secondary/* attrs)
         update-for-schema-on-write
         (fn [metrics]
           (-> (update metrics :count #(+ % 11))
