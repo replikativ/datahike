@@ -25,6 +25,8 @@
             [kabel.http-kit :refer [create-http-kit-handler!]]
             [kabel.middleware.fressian :refer [fressian]]
             ;; konserve-sync for store replication
+            [konserve.core :as k]
+            [datahike.versioning :refer [branch! branch-as-db]]
             [konserve-sync.core :as sync]
             [konserve-sync.walkers.datahike :as dh-walker]
             [is.simm.distributed-scope :as ds]
@@ -627,3 +629,96 @@
       ;; Cleanup
       (<?? S (peer/stop server-peer))
       (delete-dir-recursive server-path))))
+
+;; =============================================================================
+;; Fork reflection over the wire (the coordinated-fork keystone)
+;; =============================================================================
+
+(defn- await-key
+  "Poll a konserve store for key `k` to appear (synced), up to timeout-ms."
+  [store key timeout-ms]
+  (let [deadline (+ (System/currentTimeMillis) timeout-ms)]
+    (loop []
+      (cond
+        (some? (<!! (k/get store key))) true
+        (> (System/currentTimeMillis) deadline) false
+        :else (do (Thread/sleep 100) (recur))))))
+
+(deftest test-fork-branch-reflects-to-subscriber
+  (testing "a server-side FORK branch syncs to a subscribed client and materializes
+            (handshake/walker path AND incremental/key-sort-fn path)"
+    (let [port (get-free-port)
+          url (str "ws://localhost:" port)
+          store-id #uuid "7e570000-0000-0000-0000-000000000003"
+          store-topic (keyword (str store-id))
+          server-path (create-temp-dir "fork-server")
+          client-path (create-temp-dir "fork-client")
+          base {:schema-flexibility :write :keep-history? true :branch-history? true}
+          server-config (assoc base :store {:backend :file :path server-path :id store-id})
+          _ (d/create-database server-config)
+          server-conn (d/connect server-config)
+          _ (d/transact server-conn test-schema)
+          _ (d/transact server-conn [{:person/name "Trunk" :person/age 1}])
+
+          ;; FORK BEFORE the client connects → exercises the handshake walker
+          _ (branch! server-conn :db :pre-fork)
+          pre-conn (d/connect (assoc server-config :branch :pre-fork))
+          _ (d/transact pre-conn [{:person/name "PreFork" :person/age 10}])
+
+          handler (create-http-kit-handler! S url server-id)
+          server-peer (peer/server-peer S handler server-id
+                                        (comp (sync/server-middleware) ds/remote-middleware)
+                                        datahike-fressian-middleware)
+          _ (<?? S (peer/start server-peer))
+          _ (ds/invoke-on-peer server-peer)
+          _ (handlers/register-global-handlers! server-peer)
+          _ (handlers/register-store-for-remote-access! store-id server-conn server-peer)
+
+          client-peer (peer/client-peer S client-id
+                                        (comp (sync/client-middleware) ds/remote-middleware)
+                                        datahike-fressian-middleware)
+          _ (ds/invoke-on-peer client-peer)
+          _ (<?? S (peer/connect S client-peer url))
+          client-config (assoc base
+                               :store {:backend :file :path client-path :id store-id}
+                               :index :datahike.index/persistent-set
+                               :writer {:backend :kabel :peer-id server-id :local-peer client-peer})
+          client-conn (<!! (d/connect client-config {:sync? false}))
+          client-store (:store @(:wrapped-atom client-conn))]
+
+      (is (some? client-conn) "client connected")
+
+      (testing "HANDSHAKE: a fork created before connect materializes on the client"
+        (is (await-key client-store :pre-fork 5000) ":pre-fork head synced to client")
+        ;; materialize the way a client app would: connect (locally) to the branch,
+        ;; which reconstructs the deferred indexes from the synced blocks.
+        (let [pre (<!! (d/connect (-> client-config (dissoc :writer) (assoc :branch :pre-fork))
+                                  {:sync? false}))]
+          (is (= 10 (d/q '[:find ?a . :where [?e :person/name "PreFork"] [?e :person/age ?a]]
+                         @pre))
+              "client reconstructs the pre-fork branch from synced blocks")
+          (release pre)))
+
+      (testing "INCREMENTAL: a fork created AFTER connect propagates (key-sort root-last gate)"
+        (branch! server-conn :db :post-fork)
+        (let [post-conn (d/connect (assoc server-config :branch :post-fork))]
+          (d/transact post-conn [{:person/name "PostFork" :person/age 20}]))
+        (is (await-key client-store :post-fork 8000) ":post-fork head synced incrementally")
+        ;; the gate property: when the head key is present, its blocks already are →
+        ;; connecting to (materializing) the branch must succeed.
+        (let [post (<!! (d/connect (-> client-config (dissoc :writer) (assoc :branch :post-fork))
+                                   {:sync? false}))]
+          (is (= 20 (d/q '[:find ?a . :where [?e :person/name "PostFork"] [?e :person/age ?a]]
+                         @post))
+              "client materializes the incrementally-synced fork")
+          (release post)))
+
+      ;; cleanup
+      (release client-conn)
+      (sync/unsubscribe-store! client-peer store-topic)
+      (handlers/unregister-store-for-remote-access! store-id server-peer)
+      (<?? S (peer/stop server-peer))
+      (release server-conn)
+      (d/delete-database server-config)
+      (delete-dir-recursive server-path)
+      (delete-dir-recursive client-path))))
