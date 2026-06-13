@@ -175,7 +175,7 @@
                   store (:store @(:wrapped-atom conn))
                   _ (sync/register-store! peer store-id store
                                           {:walk-fn dh-walker/datahike-walk-fn
-                                           :key-sort-fn (fn [k] (if (= k :db) 1 0))})
+                                           :key-sort-fn (fn [k] (if (keyword? k) 1 0))})
                   _ (log/trace "Registered for sync" {:store-id store-id})
 
             ;; Register tx-report topic for pubsub (use UUID directly)
@@ -322,7 +322,7 @@
   (let [store (:store @(:wrapped-atom conn))]
     (sync/register-store! peer store-id store
                           {:walk-fn dh-walker/datahike-walk-fn
-                           :key-sort-fn (fn [k] (if (= k :db) 1 0))}))
+                           :key-sort-fn (fn [k] (if (keyword? k) 1 0))}))
 
   ;; Register tx-report topic for pubsub
   (tx-broadcast/register-tx-report-topic! peer store-id))

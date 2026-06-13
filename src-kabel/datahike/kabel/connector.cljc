@@ -36,9 +36,10 @@
    node addresses from its indices."
   [branch]
   (fn [backend-store _root-values opts]
-    ;; The datahike-walk-fn hardcodes :db, but we want to walk from `branch`.
-    ;; For now, datahike-walk-fn works because branch defaults to :db.
-    ;; TODO: Parameterize datahike-walk-fn to accept branch key
+    ;; datahike-walk-fn now walks EVERY branch in the store (reads `:branches`),
+    ;; so `branch`'s head + reachable blocks are always included. Walking all
+    ;; branches is a (small) superset for a single-branch client; a future
+    ;; optimization could restrict the walk to just `branch`.
     (dh-walker/datahike-walk-fn backend-store opts)))
 
 (defn- populate-tiered-from-cache!
