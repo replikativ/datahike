@@ -46,7 +46,7 @@
             response       (handler request)
             should-encode? (and encoder
                                 (not (instance? java.io.ByteArrayInputStream (:body response))))
-            ret     (if should-encode? (update response :body #(encoder %)) response)]
+            ret            (if should-encode? (update response :body #(encoder %)) response)]
         ret))))
 
 (defn patch-swagger-json [handler]
