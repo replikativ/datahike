@@ -9,6 +9,7 @@
             [datahike.writer :as w]
             [konserve.core :as k]
             [konserve.store :as ks]
+            [org.replikativ.persistent-sorted-set.fressian :as pss-fress]
             [replikativ.logging :as log]
             [clojure.spec.alpha :as s]
             [clojure.data :refer [diff]]
@@ -288,5 +289,7 @@
                            (log/warn :datahike/secondary-index-close-failed {:error (.getMessage e)}))))))
              (w/shutdown (:writer db))
              ;; Release the underlying store to clean up resources (memory registry, etc.)
+             ;; and drop its PSS storage from the canonical storage-registry.
+             (pss-fress/unregister-storage! (get-in db [:config :store :id]))
              (ks/release-store (get-in db [:config :store]) (:store db))
              nil)))))))
