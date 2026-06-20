@@ -432,20 +432,23 @@
   (let [store-id (or (get-in config [:store :id]) (:id config))  ; the konserve store's UUID
         bf       (get-in config [:index-config :branching-factor] DEFAULT_BRANCHING_FACTOR)]
     (if-let [storage-atom (:storage-atom store)]
-      ;; Pre-configured (e.g. LMDB) store — handlers already attached; create + register storage.
+      ;; Pre-configured (e.g. LMDB) store — handlers already attached; just create the storage.
       (let [storage (or (:storage store) (create-storage store config))]
         (reset! storage-atom storage)
-        (pss-fress/register-storage! store-id storage)
         (assoc store :storage storage :datahike/store-id store-id :datahike/branching-factor bf))
 
-      ;; Standard fressian store — attach the CANONICAL PSS serializer. The circular storage↔store
-      ;; reference is broken by the registry: the root read resolves storage by this store's id from
-      ;; pss-fress/storage-registry, which is populated just below (after the store is built).
-      ;; LEXICAL in-store resolvers: storage = this store (by its own id); comparator = per-index via
-      ;; :index-type in meta; no measure. bf self-describes per node from the blob.
-      (let [node-rh (pss-fress/read-handlers {:default-bf bf})
+      ;; Standard fressian store — attach the CANONICAL PSS serializer with LEXICAL in-store
+      ;; resolvers. The circular storage↔store reference is broken by a write-once cell LOCAL to THIS
+      ;; connection's serializer (set just below, after the store is built) — NOT the global registry:
+      ;; each connection (e.g. a branch) has its OWN CachedStorage over its own konserve connection,
+      ;; so a per-connection cell is the correct, lifecycle-free resolver (a global store-id→storage
+      ;; map would conflate sibling connections + go stale on one's release). An atom is the cljc
+      ;; write-once cell (cljs has no promise). comparator = per-index via :index-type; no measure; bf
+      ;; self-describes from the blob. (The global pss-fress/storage-registry is for the WIRE peer.)
+      (let [storage-cell (atom nil)
+            node-rh (pss-fress/read-handlers {:default-bf bf})
             root-rh (pss-fress/root-read-handler
-                     {:resolve-storage (fn [_] (pss-fress/registered-storage store-id))
+                     {:resolve-storage (fn [_] @storage-cell)
                       :resolve-cmp     (fn [m] (index-type->cmp-quick (:index-type m) false))
                       :default-bf      bf})
             read-handlers*  (merge node-rh
@@ -461,11 +464,14 @@
             write-handlers* (merge pss-fress/write-handlers pss-fress/root-write-handlers datom-write-handler)
             store   (k/assoc-serializers store {:FressianSerializer (fressian-serializer read-handlers* write-handlers*)})
             storage (or (:storage store) (create-storage store config))]
-        (pss-fress/register-storage! store-id storage)
+        (reset! storage-cell storage)
         (assoc store :storage storage :datahike/store-id store-id :datahike/branching-factor bf)))))
 
 (defmethod di/konserve-backend :datahike.index/persistent-set [_index-name store]
   store)
 
 (defmethod di/default-index-config :datahike.index/persistent-set [_index-name]
-  {:branching-factor DEFAULT_BRANCHING_FACTOR})
+  ;; branching-factor is NOT defaulted into the stored config — it's read with a DEFAULT_BRANCHING_FACTOR
+  ;; fallback in add-konserve-handlers/empty-index, so an unset config stays {} (and a user may still
+  ;; override via :index-config {:branching-factor n}).
+  {})

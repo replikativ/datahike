@@ -9,7 +9,6 @@
             [datahike.writer :as w]
             [konserve.core :as k]
             [konserve.store :as ks]
-            [org.replikativ.persistent-sorted-set.fressian :as pss-fress]
             [replikativ.logging :as log]
             [clojure.spec.alpha :as s]
             [clojure.data :refer [diff]]
@@ -288,8 +287,11 @@
                          (catch Exception e
                            (log/warn :datahike/secondary-index-close-failed {:error (.getMessage e)}))))))
              (w/shutdown (:writer db))
-             ;; Release the underlying store to clean up resources (memory registry, etc.)
-             ;; and drop its PSS storage from the canonical storage-registry.
-             (pss-fress/unregister-storage! (get-in db [:config :store :id]))
+             ;; Release the underlying store to clean up resources (memory registry, etc.).
+             ;; NB: we do NOT unregister the PSS storage here — multiple connections (branches)
+             ;; share ONE store-id, so releasing one must not drop the storage a sibling still
+             ;; uses for root reads. A reconnect overwrites the entry; a never-reconnected store
+             ;; leaves one bounded entry (keyed by the stable store UUID). TODO: ref-counted
+             ;; unregister on the last release.
              (ks/release-store (get-in db [:config :store]) (:store db))
              nil)))))))
