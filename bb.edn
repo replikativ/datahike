@@ -148,7 +148,7 @@
                             :task (build/clean (-> config :build :http-server-clj))}
 
          http-server-jcompile {:doc     "Compile java classes"
-                               :depends [http-server-clean]
+                               :depends [http-server-clean jcompile]
                                :task    (build/compile-java (-> config :build :http-server-clj))}
 
          http-server-ccompile {:doc  "Compile clojure namespaces for http-server"
