@@ -131,7 +131,21 @@
                    :temporal-aevt-key (safe-root temporal-aevt')
                    :temporal-avet-key (safe-root temporal-avet'))
             sec-roots
-            (assoc :secondary sec-roots))]
+            (assoc :secondary sec-roots))
+          ;; Root fusion: inline each flushed index's root node into the
+          ;; db-record. `commit!` then skips writing those root nodes as
+          ;; separate objects (see fused-root-addresses). Works under crypto-hash?:
+          ;; the root's address is still its content hash, and the audit walk
+          ;; verifies the inlined root (walk-pss-node!) + recurses children.
+          fuse? (and flush! (:fuse-index-roots? config))
+          fused-roots (when fuse?
+                        (cond-> {:eavt-root (di/-root-node eavt')
+                                 :aevt-root (di/-root-node aevt')
+                                 :avet-root (di/-root-node avet')}
+                          (:keep-history? config)
+                          (assoc :temporal-eavt-root (di/-root-node temporal-eavt')
+                                 :temporal-aevt-root (di/-root-node temporal-aevt')
+                                 :temporal-avet-root (di/-root-node temporal-avet'))))]
       [schema-meta-kv-to-write
        (merge
         {:schema-meta-key  schema-meta-key
@@ -150,7 +164,8 @@
            :temporal-aevt-key temporal-aevt'
            :temporal-avet-key temporal-avet'})
         (when secondary-index-keys
-          {:secondary-index-keys secondary-index-keys}))])))
+          {:secondary-index-keys secondary-index-keys})
+        fused-roots)])))
 
 (defn- restore-secondary-indices
   "Restore secondary index instances from stored key-maps.
@@ -201,10 +216,22 @@
   [stored-db store]
   (let [{:keys [eavt-key aevt-key avet-key
                 temporal-eavt-key temporal-aevt-key temporal-avet-key
+                eavt-root aevt-root avet-root
+                temporal-eavt-root temporal-aevt-root temporal-avet-root
                 secondary-index-keys
                 schema rschema system-entities ref-ident-map ident-ref-map
                 config max-tx max-eid op-count hash meta schema-meta-key]
          :or   {op-count 0}} stored-db
+        ;; Root fusion: if the record inlined index roots, seed them into the
+        ;; restored indexes so root() returns them with no storage round-trip
+        ;; (deeper children stay lazy). Presence-based, so fused and legacy
+        ;; records both restore — no reader config needed.
+        _ (do (when eavt-root (di/-seed-root! eavt-key eavt-root))
+              (when aevt-root (di/-seed-root! aevt-key aevt-root))
+              (when avet-root (di/-seed-root! avet-key avet-root))
+              (when temporal-eavt-root (di/-seed-root! temporal-eavt-key temporal-eavt-root))
+              (when temporal-aevt-root (di/-seed-root! temporal-aevt-key temporal-aevt-root))
+              (when temporal-avet-root (di/-seed-root! temporal-avet-key temporal-avet-root)))
         schema-meta (or (sc/cache-lookup schema-meta-key)
                         ;; not in store in case we load an old db where the schema meta data was inline
                         (when-let [schema-meta (k/get store schema-meta-key nil {:sync? true})]
@@ -288,6 +315,21 @@
        content-uuid
        (squuid content-uuid)))))
 
+(defn- fused-root-addresses
+  "When root fusion is enabled, the addresses of the index root nodes that
+  `db->stored` inlined into the record. These must be excluded from the
+  pending-writes drain so they are not also written as separate objects.
+  Under root fusion (non-crypto-hash) `:merkle-roots` holds each index's
+  root `_address`, which is exactly its pending-writes key."
+  [config db-to-store]
+  (when (:fuse-index-roots? config)
+    (->> (select-keys (:merkle-roots db-to-store)
+                      [:eavt-key :aevt-key :avet-key
+                       :temporal-eavt-key :temporal-aevt-key :temporal-avet-key])
+         vals
+         (remove nil?)
+         set)))
+
 (defn write-pending-kvs!
   "Writes a collection of key-value pairs to the store.
   Handles synchronous and asynchronous writes.
@@ -319,7 +361,12 @@
                       db            (assoc-in db [:meta :datahike/commit-id] cid)
                       db-to-store   (assoc-in db-to-store-pre
                                               [:meta :datahike/commit-id] cid)
-                      pending-kvs   (get-and-clear-pending-kvs! store)]
+                      ;; Root fusion: roots are inlined in db-to-store, so drop
+                      ;; them from the separate-object writes.
+                      fused-addrs   (fused-root-addresses config db-to-store)
+                      pending-kvs   (cond->> (get-and-clear-pending-kvs! store)
+                                      (seq fused-addrs)
+                                      (remove (fn [[k _]] (contains? fused-addrs k))))]
 
                   (if (multi-key-capable? store)
                     (let [[meta-key meta-val] schema-meta-kv-to-write

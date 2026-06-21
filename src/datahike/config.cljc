@@ -23,6 +23,17 @@
 (def ^:dynamic *default-search-cache-size* 10000)
 (def ^:dynamic *default-store-cache-size* 1000)
 (def ^:dynamic *default-crypto-hash?* false)
+;; When true, each index's root node is inlined into the db-record instead of
+;; stored as a separate konserve object — one fewer PUT and one fewer cold GET
+;; per index per commit. Experimental; see doc/index-root-fusion.md.
+;; Index-root fusion (one fewer PUT + cold GET per index per commit). Now SAFE to enable —
+;; the merkle-audit walk and online GC are fusion-aware (verify/seed the inlined root from
+;; the db-record instead of fetching it as a separate object). Kept OFF as the global
+;; default for now only because flipping it churns count-based tests across the suite;
+;; opt in per store (the SaaS template does) — connect adopts the stored value
+;; (datahike.connector/adopt-stored-fixed) so fused and non-fused stores both reconnect.
+;; TODO: flip to true once the suite's object-count assertions are updated for fusion.
+(def ^:dynamic *default-fuse-index-roots?* false)
 (def ^:dynamic *default-store* :memory)                           ;; store-less = in-memory?
 (def ^:dynamic *default-db-name* nil)                         ;; when nil creates random name
 (def ^:dynamic *default-db-branch* :db)                         ;; when nil creates random name
@@ -34,6 +45,7 @@
 (s/def ::search-cache-size nat-int?)
 (s/def ::store-cache-size pos-int?)
 (s/def ::crypto-hash? boolean?)
+(s/def ::fuse-index-roots? boolean?)
 (s/def ::writer map?)
 (s/def ::branch keyword?)
 (s/def ::entity (s/or :map associative? :vec vector?))
@@ -54,6 +66,7 @@
                                          ::search-cache-size
                                          ::store-cache-size
                                          ::crypto-hash?
+                                         ::fuse-index-roots?
                                          ::initial-tx
                                          ::name
                                          ::branch
@@ -65,6 +78,21 @@
                                   :opt-un [:deprecated/temporal-index :deprecated/schema-on-read]))
 
 (def self-writer {:backend :self})
+
+(defn default-index-config-for-backend
+  "The default index-config for `index`, adjusted for the store `backend`.
+
+   diff-buf write-buffering (PSS `:diff-buf-size`) trades in-memory insert throughput
+   for fewer durable object PUTs — it only pays off on a request-priced object store.
+   An in-memory store has no PUTs to fold, so buffering there is pure overhead; default
+   `:diff-buf-size` to 0 for the in-memory backend. Index-agnostic: only touches the key
+   when the index's default actually carries it (PSS), and an explicit user `:index-config`
+   still wins (it is deep-merged over this default in load-config)."
+  [index backend]
+  (let [d (di/default-index-config index)]
+    (cond-> d
+      (and (contains? #{:memory :mem} backend) (contains? d :diff-buf-size))
+      (assoc :diff-buf-size 0))))
 
 (defn from-deprecated
   [{:keys [backend username password path host port id] :as _backend-cfg}
@@ -96,7 +124,7 @@
                                     #?(:clj (java.util.UUID/nameUUIDFromBytes (.getBytes path "UTF-8"))
                                        :cljs (uuid path))))}))
    :index index
-   :index-config (di/default-index-config index)
+   :index-config (default-index-config-for-backend index backend)
    :keep-history? temporal-index
    :attribute-refs? *default-attribute-refs?*
    :initial-tx initial-tx
@@ -148,7 +176,8 @@
    :crypto-hash? *default-crypto-hash?*
    :branch *default-db-branch*
    :writer self-writer
-   :index-config (di/default-index-config *default-index*)})
+   ;; storeless ⇒ inherently in-memory ⇒ diff-buf off (no PUTs to fold)
+   :index-config (default-index-config-for-backend *default-index* :memory)})
 
 (defn remove-nils
   "Thanks to https://stackoverflow.com/a/34221816"
@@ -211,12 +240,13 @@
                  :index index
                  :branch *default-db-branch*
                  :crypto-hash? *default-crypto-hash?*
+                 :fuse-index-roots? *default-fuse-index-roots?*
                  :writer self-writer
                  :search-cache-size (int-from-env :datahike-search-cache-size *default-search-cache-size*)
                  :store-cache-size (int-from-env :datahike-store-cache-size *default-store-cache-size*)
                  :index-config (if-let [index-config (map-from-env :datahike-index-config nil)]
                                  index-config
-                                 (di/default-index-config index))}
+                                 (default-index-config-for-backend index (:backend store-config)))}
          merged-config ((comp remove-nils dt/deep-merge) config config-as-arg)
          {:keys [schema-flexibility initial-tx store attribute-refs?]} merged-config]
      ;; konserve now handles store config validation at runtime
