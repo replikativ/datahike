@@ -386,9 +386,9 @@
 
 (def ^:const DEFAULT_BRANCHING_FACTOR 512)
 
-;; The root meta carries `:index-type` (for the comparator) and `:storage-id` (so a wire reader
+;; The root meta carries `:index-type` (for the comparator) and `:pss/storage-id` (so a wire reader
 ;; resolves this store's storage from pss-fress/storage-registry). In-store reads ignore
-;; `:storage-id` (lexical resolver); it's there to make new roots wire-ready.
+;; `:pss/storage-id` (lexical resolver); it's there to make new roots wire-ready.
 (defn- root-meta [store index-type]
   (cond-> {:index-type index-type}
     (:datahike/store-id store) (assoc pss-fress/storage-id-key (:datahike/store-id store))))

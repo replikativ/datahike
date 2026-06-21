@@ -5,7 +5,7 @@
 
    PSS nodes (pss/leaf, pss/branch) and the root (pss/set) are the canonical shared handlers;
    datahike adds its element/record handlers (Datom, DB, TxReport). A root is reconstructed
-   EAGERLY (no deferred-map indirection): its storage is resolved by the `:storage-id` it carries
+   EAGERLY (no deferred-map indirection): its storage is resolved by the `:pss/storage-id` it carries
    in meta from `pss-fress/storage-registry` — the receiving peer registers its store there before
    receiving DBs (konserve-sync shares the store `:id` across peers, so a synced root resolves to
    the receiver's local store). Legacy `datahike.index.*` tags are dual-registered against the
@@ -26,7 +26,7 @@
 ;; ============================================================================
 ;; Store registry — delegates to the canonical pss-fress/storage-registry. A peer registers its
 ;; FULL datahike store (it's what stored->db needs); the root resolver derives the IStorage via
-;; (:storage store). Keyed by the store-config :id (= the :storage-id a root stamps in its meta).
+;; (:storage store). Keyed by the store-config :id (= the :pss/storage-id a root stamps in its meta).
 ;; ============================================================================
 
 (defn register-store!   [store-config store] (pss-fress/register-storage! (:id store-config) store))
@@ -36,7 +36,7 @@
 
 (defn- reconstruct-db
   "A stored-db's index roots are already EAGER (live sets — each resolved its storage by
-   :storage-id while being read). Fetch the full store for stored->db from the registry by the
+   :pss/storage-id while being read). Fetch the full store for stored->db from the registry by the
    stored config's store id; fall back to the raw stored map if the store isn't registered."
   [stored]
   (if-let [store (pss-fress/registered-storage (get-in stored [:config :store :id]))]
@@ -49,7 +49,7 @@
 
 (def read-handlers
   (let [node-rh (pss-fress/read-handlers {:default-bf DEFAULT_BRANCHING_FACTOR})
-        ;; storage resolved by :storage-id from the registered store's :storage; comparator per-index.
+        ;; storage resolved by :pss/storage-id from the registered store's :storage; comparator per-index.
         root-rh (pss-fress/root-read-handler
                  {:resolve-storage (fn [m] (some-> (pss-fress/registered-storage (get m pss-fress/storage-id-key)) :storage))
                   :resolve-cmp     (fn [m] (index-type->cmp-quick (:index-type m) false))

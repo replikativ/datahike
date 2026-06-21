@@ -225,7 +225,7 @@
          _ (log/trace "Stored-db received" {:key-count (count (keys stored-db))
                                             :has-eavt? (some? (:eavt-key stored-db))})
          ;; Index roots arrive EAGER (the canonical wire read handler reconstructs them, resolving
-         ;; storage by :storage-id from the registry — the store was registered above), so there are
+         ;; storage by :pss/storage-id from the registry — the store was registered above), so there are
          ;; no deferred maps to convert.
          processed stored-db
          _ (log/trace "Indexes reconstructed" {:has-eavt? (some? (:eavt-key processed))})
