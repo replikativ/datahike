@@ -1,5 +1,7 @@
 (ns datahike.test.http.server-test
   (:require
+   [babashka.http-client :as http]
+   [clojure.string :as str]
    [clojure.test :as t :refer [is deftest testing]]
    [datahike.http.server :refer [start-server stop-server]]
    [datahike.http.client :as api]))
@@ -82,7 +84,15 @@
 
             test-db @conn
             _ (is (= (api/q query test-db)
-                     #{["Peter" 42]}))]
+                     #{["Peter" 42]}))
+
+            swagger-response (http/request {:method :get
+                                            :uri    (str (:url client-config) "/swagger.json")
+                                            :as     :stream})
+            swagger-body     (slurp (:body swagger-response))
+            _                (is (= 200 (:status swagger-response)))
+            _                (is (str/includes? swagger-body "\"swagger\":\"2.0\""))
+            _                (is (str/includes? swagger-body "\"paths\""))]
 
         (is (nil? (api/release conn)))
         (is (nil? (api/delete-database new-config)))
