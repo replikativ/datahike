@@ -293,10 +293,12 @@
   Handles synchronous and asynchronous writes.
   Assumes it's called within a go-try- block if sync? is false."
   [store kvs sync?]
+  ;; pending-kvs are content-addressed index nodes (write-once) → mark immutable so a sync
+  ;; peer can skip re-storing/re-publishing a node it already holds (anti-entropy/echo).
   (if sync?
     (doseq [[k v] kvs]
-      (k/assoc store k v {:sync? true}))
-    (let [pending-ops (mapv (fn [[k v]] (k/assoc store k v {:sync? false})) kvs)]
+      (k/assoc store k v {:immutable? true} {:sync? true}))
+    (let [pending-ops (mapv (fn [[k v]] (k/assoc store k v {:immutable? true} {:sync? false})) kvs)]
       (go-try- (doseq [op pending-ops] (<?- op))))))
 
 (defn commit!
@@ -327,17 +329,27 @@
                                        schema-meta-kv-to-write (assoc meta-key meta-val)
                                        true                    (assoc cid db-to-store)
                                        true                    (assoc (:branch config) db-to-store))]
-                      (<?- (k/multi-assoc store writes-map {:sync? sync?})))
+                      ;; nodes + schema-meta (uuid) + commit (cid) are content-addressed →
+                      ;; immutable; the branch-head pointer (:branch config) stays mutable.
+                      ;; per-key meta map: every key but the branch head marked immutable.
+                      (<?- (k/multi-assoc store writes-map
+                                          (reduce-kv (fn [m k _] (cond-> m
+                                                                   (not= k (:branch config))
+                                                                   (assoc k {:immutable? true})))
+                                                     {} writes-map)
+                                          {:sync? sync?})))
                     ;; Then write schema-meta, commit-log, branch
                     (let [[meta-key meta-val] schema-meta-kv-to-write
                           schema-meta-written (when schema-meta-kv-to-write
-                                                (k/assoc store meta-key meta-val {:sync? sync?}))
+                                                ;; schema-meta-key = (uuid schema-meta) → content-addressed → immutable
+                                                (k/assoc store meta-key meta-val {:immutable? true} {:sync? sync?}))
 
                           ;; Make sure all pointed to values are written before the commit log and branch
                           _ (when schema-meta-kv-to-write (<?- schema-meta-written))
                           _ (<?- (write-pending-kvs! store pending-kvs sync?))
 
-                          commit-log-written (k/assoc store cid db-to-store {:sync? sync?})
+                          ;; the commit is content-addressed by cid → immutable; the branch head is mutable
+                          commit-log-written (k/assoc store cid db-to-store {:immutable? true} {:sync? sync?})
                           branch-written     (k/assoc store (:branch config) db-to-store {:sync? sync?})]
                       (when-not sync?
                         (<?- commit-log-written)
@@ -453,7 +465,8 @@
          meta (assoc meta :datahike/commit-id cid)
          db-to-store (assoc pre-cid-stored :meta meta)]
      ;;we just created the first data base in this store, so the write cache is empty
-     (<?- (k/assoc store schema-meta-key schema-meta opts))
+     ;; schema-meta-key = (uuid schema-meta) → content-addressed, immutable
+     (<?- (k/assoc store schema-meta-key schema-meta {:immutable? true} opts))
      (sc/add-to-write-cache (:store config) schema-meta-key)
      (when-not (sc/cache-has? schema-meta-key)
        (sc/cache-miss schema-meta-key schema-meta))
@@ -462,9 +475,9 @@
      (let [pending-kvs (get-and-clear-pending-kvs! store)]
        (<?- (write-pending-kvs! store pending-kvs false)))
 
-     (<?- (k/assoc store :branches #{:db} opts))
-     (<?- (k/assoc store cid db-to-store opts))
-     (<?- (k/assoc store :db db-to-store opts))
+     (<?- (k/assoc store :branches #{:db} opts))           ; mutable: branch set
+     (<?- (k/assoc store cid db-to-store {:immutable? true} opts)) ; content-addressed commit
+     (<?- (k/assoc store :db db-to-store opts))             ; mutable: branch head
      (ks/release-store store-config store)
      config)))
 

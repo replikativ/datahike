@@ -1,7 +1,9 @@
 {:deps {org.clojure/clojure                         {:mvn/version "1.12.4"}
         org.replikativ/hasch                        {:mvn/version "0.4.98"
                                                      :exclusions [org.clojure/clojurescript]}
-        org.replikativ/konserve                     {:mvn/version "0.9.346"
+        ;; TEMPORARY: local konserve for the per-write metadata channel (5-arity +
+        ;; per-key multi-assoc meta — immutable marking). Revert to mvn after release.
+        org.replikativ/konserve                     {:local/root "../konserve"
                                                      :exclusions [org.clojure/clojurescript
                                                                   org.clojars.mmb90/cljs-cache]}
                                                      
