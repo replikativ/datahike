@@ -43,10 +43,8 @@
     (if (instance? datahike.db.DB stored-db)
       ;; Already a live DB - Fressian read handler found the store and reconstructed it
       stored-db
-      ;; Stored map - reconstruct it now
-      (let [storage (:storage store)
-            processed (fh/reconstruct-deferred-indexes stored-db storage)]
-        (dw/stored->db processed store)))))
+      ;; Stored map - reconstruct it now (roots already EAGER from the canonical read handler)
+      (dw/stored->db stored-db store))))
 
 (defn- reconstruct-tx-report
   "Reconstruct a tx-report from stored format to live DBs.
@@ -208,11 +206,8 @@
           writer (:writer current-state)
           ;; Get the prepared store and storage from the connection
           conn-store (:store current-state)
-          storage (:storage conn-store)
-          ;; Reconstruct deferred indexes before stored->db
-          processed (fh/reconstruct-deferred-indexes stored-db storage)
-          ;; Convert stored format to live DB
-          live-db (dw/stored->db processed conn-store)
+          ;; Convert stored format to live DB (roots already EAGER from the canonical read handler)
+          live-db (dw/stored->db stored-db conn-store)
           ;; Propagate query cache from old DB to new DB
           ;; Get modified attrs from pending tx-report if available
           max-tx (:max-tx live-db)

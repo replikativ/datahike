@@ -36,9 +36,10 @@
    node addresses from its indices."
   [branch]
   (fn [backend-store _root-values opts]
-    ;; The datahike-walk-fn hardcodes :db, but we want to walk from `branch`.
-    ;; For now, datahike-walk-fn works because branch defaults to :db.
-    ;; TODO: Parameterize datahike-walk-fn to accept branch key
+    ;; datahike-walk-fn now walks EVERY branch in the store (reads `:branches`),
+    ;; so `branch`'s head + reachable blocks are always included. Walking all
+    ;; branches is a (small) superset for a single-branch client; a future
+    ;; optimization could restrict the walk to just `branch`.
     (dh-walker/datahike-walk-fn backend-store opts)))
 
 (defn- populate-tiered-from-cache!
@@ -223,9 +224,10 @@
           ;; 4. Reconstruct deferred indexes and create connection
          _ (log/trace "Stored-db received" {:key-count (count (keys stored-db))
                                             :has-eavt? (some? (:eavt-key stored-db))})
-         storage (:storage store)
-         _ (log/trace "Storage ready" {:has-storage? (some? storage)})
-         processed (fh/reconstruct-deferred-indexes stored-db storage)
+         ;; Index roots arrive EAGER (the canonical wire read handler reconstructs them, resolving
+         ;; storage by :pss/storage-id from the registry — the store was registered above), so there are
+         ;; no deferred maps to convert.
+         processed stored-db
          _ (log/trace "Indexes reconstructed" {:has-eavt? (some? (:eavt-key processed))})
 
           ;; Handle index from synced db

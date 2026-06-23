@@ -287,6 +287,11 @@
                          (catch Exception e
                            (log/warn :datahike/secondary-index-close-failed {:error (.getMessage e)}))))))
              (w/shutdown (:writer db))
-             ;; Release the underlying store to clean up resources (memory registry, etc.)
+             ;; Release the underlying store to clean up resources (memory registry, etc.).
+             ;; NB: we do NOT unregister the PSS storage here — multiple connections (branches)
+             ;; share ONE store-id, so releasing one must not drop the storage a sibling still
+             ;; uses for root reads. A reconnect overwrites the entry; a never-reconnected store
+             ;; leaves one bounded entry (keyed by the stable store UUID). TODO: ref-counted
+             ;; unregister on the last release.
              (ks/release-store (get-in db [:config :store]) (:store db))
              nil)))))))
