@@ -1,17 +1,15 @@
 {:deps {org.clojure/clojure                         {:mvn/version "1.12.4"}
         org.replikativ/hasch                        {:mvn/version "0.4.98"
                                                      :exclusions [org.clojure/clojurescript]}
-        org.replikativ/konserve                     {:mvn/version "0.9.346"
+        org.replikativ/konserve                     {:mvn/version "0.9.350"
                                                      :exclusions [org.clojure/clojurescript
                                                                   org.clojars.mmb90/cljs-cache]}
                                                      
         org.replikativ/superv.async                 {:mvn/version "0.3.50"
                                                      :exclusions [org.clojure/clojurescript]}
         org.replikativ/datalog-parser               {:mvn/version "0.2.37"}
-        ;; LOCAL while the canonical fressian node+root handlers
-        ;; (org.replikativ.persistent-sorted-set.fressian, feat/canonical-serialization-handlers)
-        ;; are unreleased — re-pin to the released version once it ships.
-        org.replikativ/persistent-sorted-set        {:local/root "../persistent-sorted-set"}
+        ;; canonical fressian node+root handlers + MST boundary, shipped in 0.4.126
+        org.replikativ/persistent-sorted-set        {:mvn/version "0.4.126"}
         environ/environ                             {:mvn/version "1.2.0"}
         nrepl/bencode                               {:mvn/version "1.2.0"}
         org.replikativ/logging                      {:mvn/version "0.1.3"}
@@ -81,11 +79,7 @@
                                ;; kabel integration for distributed datahike
                                org.replikativ/kabel          {:mvn/version "0.3.95"}
                                is.simm/distributed-scope     {:mvn/version "0.1.2"}
-                               ;; LOCAL: the released 0.1.15 walk-fn walks only the :db trunk, so
-                               ;; non-trunk branch HEADs never sync (the fork-handshake test fails);
-                               ;; the local repo walks ALL branches + is canonical-PSS-node compatible.
-                               ;; Re-pin to a released version once it ships.
-                               org.replikativ/konserve-sync  {:local/root "../konserve-sync"}
+                               org.replikativ/konserve-sync  {:mvn/version "0.1.30"}
                                http-kit/http-kit             {:mvn/version "2.8.1"}}}
 
            :datomic {:extra-deps {com.datomic/datomic-free {:mvn/version "0.9.5703"}}}

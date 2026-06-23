@@ -311,21 +311,34 @@
    Parameters:
    - store-id: UUID identifying the store (from store :id)
    - conn: The datahike connection
-   - peer: The kabel peer atom"
-  [store-id conn peer]
-  (log/info "Registering store for remote access" {:store-id store-id})
+   - peer: The kabel peer atom
+   - opts (optional): {:branches <scope>} forwarded to the walker. `:all`
+     (default) syncs every branch's nodes so a subscriber can `branch-as-db`
+     any branch locally; `:trunk` / a branch keyword / a coll scopes the
+     initial node sync to those branches (lean replica of the active branch —
+     out-of-scope branches must be fetched on demand). See
+     `konserve-sync.walkers.datahike/datahike-walk-fn`."
+  ([store-id conn peer]
+   (register-store-for-remote-access! store-id conn peer nil))
+  ([store-id conn peer {:keys [branches]}]
+   (log/info "Registering store for remote access" {:store-id store-id :branches branches})
 
   ;; Register connection lookup
-  (register-connection-for-store! store-id conn peer)
+   (register-connection-for-store! store-id conn peer)
 
   ;; Register for konserve-sync (use UUID directly as topic)
-  (let [store (:store @(:wrapped-atom conn))]
-    (sync/register-store! peer store-id store
-                          {:walk-fn dh-walker/datahike-walk-fn
-                           :key-sort-fn (fn [k] (if (keyword? k) 1 0))}))
+   (let [store   (:store @(:wrapped-atom conn))
+         walk-fn (if branches
+                   (fn [s opts] (dh-walker/datahike-walk-fn s (assoc opts :branches branches)))
+                   dh-walker/datahike-walk-fn)]
+     (sync/register-store! peer store-id store
+                           {:walk-fn walk-fn
+                            ;; sort ALL branch pointers (keywords) last, not just :db,
+                            ;; so non-trunk branch HEADs fetch-gate correctly on sync
+                            :key-sort-fn (fn [k] (if (keyword? k) 1 0))}))
 
   ;; Register tx-report topic for pubsub
-  (tx-broadcast/register-tx-report-topic! peer store-id))
+   (tx-broadcast/register-tx-report-topic! peer store-id)))
 
 (defn unregister-store-for-remote-access!
   "Unregister a datahike store from remote access.

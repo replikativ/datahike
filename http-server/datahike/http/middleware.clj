@@ -41,12 +41,12 @@
 (defn encode-plain-value [muuntaja-with-opts]
   (fn [handler]
     (fn [request]
-      (let [format   (:content-type request)
-            encoder  (m/encoder muuntaja-with-opts format)
-            response (handler request)
-            ret      (if (not (instance? java.io.ByteArrayInputStream (:body response)))
-                       (update response :body #(encoder %))
-                       response)]
+      (let [format         (:content-type request)
+            encoder        (when format (m/encoder muuntaja-with-opts format))
+            response       (handler request)
+            should-encode? (and encoder
+                                (not (instance? java.io.ByteArrayInputStream (:body response))))
+            ret            (if should-encode? (update response :body #(encoder %)) response)]
         ret))))
 
 (defn patch-swagger-json [handler]
