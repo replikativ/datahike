@@ -469,10 +469,14 @@
          (let [k     (.size ^java.util.HashSet (:values probe))
                field (int (:field probe))
                seek-index (if (== field 2) (:avet db) (:eavt db))]
-           ;; Seeks use a PersistentSortedSet ForwardCursor; only available on
-           ;; the PSS index. For other index types (hitchhiker-tree) the filter
-           ;; regime below is index-agnostic (di/-slice + a hashset membership).
+           ;; Seeks build (entity attr nil)/(e0 attr value) probe datoms and use
+           ;; a PersistentSortedSet ForwardCursor, so they need (a) a PSS index
+           ;; and (b) a RESOLVED, non-nil attribute — a variable-attribute
+           ;; pattern [?e ?a ?v] has resolved-a=nil, which would feed nil into
+           ;; the no-nil-check attr comparator (cmp-attr-quick → NPE). In both
+           ;; cases the index-agnostic filter regime below is correct instead.
            (if (and (:seekable? probe)
+                    (some? resolved-a)
                     (pss-instance? seek-index)
                     (< (* (long k) (long probe-driven-threshold)) scan-n))
              (probe-driven-iterable seek-index resolved-a (:values probe) field)
