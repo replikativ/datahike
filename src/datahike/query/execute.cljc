@@ -467,11 +467,15 @@
     #?(:clj
        (if-let [probe (pattern-probe-set db clause resolved-a rels scan-n)]
          (let [k     (.size ^java.util.HashSet (:values probe))
-               field (int (:field probe))]
+               field (int (:field probe))
+               seek-index (if (== field 2) (:avet db) (:eavt db))]
+           ;; Seeks use a PersistentSortedSet ForwardCursor; only available on
+           ;; the PSS index. For other index types (hitchhiker-tree) the filter
+           ;; regime below is index-agnostic (di/-slice + a hashset membership).
            (if (and (:seekable? probe)
+                    (pss-instance? seek-index)
                     (< (* (long k) (long probe-driven-threshold)) scan-n))
-             (probe-driven-iterable (if (== field 2) (:avet db) (:eavt db))
-                                    resolved-a (:values probe) field)
+             (probe-driven-iterable seek-index resolved-a (:values probe) field)
              (let [^java.util.HashSet hs (:values probe)]
                (filter (fn [^Datom d]
                          (.contains hs (if (== field 0) (.-e d) (.-v d))))
