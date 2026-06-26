@@ -770,3 +770,84 @@
           (str "both-bound should be ≤ min(3,1,base)≤3, got " with-both)))
     (testing "empty bindings = base"
       (is (= base (estimate-with-bindings db pi-free si {}))))))
+
+;; ---------------------------------------------------------------------------
+;; Regression: rule+OR driven by a collection (:in [?x ...]) binding.
+;;
+;; The `edge`-style rule below is a pure producer (every OR branch binds all
+;; head vars), so before the join-ordering fix the planner scheduled the OR
+;; FIRST — generating every edge and hash-joining the bound ids afterward —
+;; which on a large store (jobtech-taxonomy: 150k relations) turned a
+;; millisecond lookup into a multi-second hang. The fix makes the planner
+;; order the selective `:node/id` binder (bound via the `[?ida ...]` input)
+;; AHEAD of the producer OR, and routes :in-binding queries through the
+;; SIP-capable execution path so the bound values drive the scan.
+;;
+;; Guards two invariants that are cheap and deterministic to assert:
+;;   (a) both engines agree (correctness), and
+;;   (b) the bound-var binder scan is ordered BEFORE the OR in the plan.
+
+(def ^:private or-rule-db
+  (delay
+    (let [base (db/empty-db {:node/id   {:db/unique :db.unique/identity
+                                         :db/index true}
+                             :edge/from {:db/valueType :db.type/ref}
+                             :edge/to   {:db/valueType :db.type/ref}})
+          n 1000
+          nodes (mapv (fn [i] {:db/id (inc i) :node/id i}) (range n))
+          edges (mapv (fn [i] {:edge/from (inc i)
+                               :edge/to   (inc (mod (inc i) n))})
+                      (range n))]
+      (d/db-with base (into nodes edges)))))
+
+(def ^:private edge-or-rules
+  '[[(linked ?a ?b ?r)
+     (or (and [?r :edge/from ?a] [?r :edge/to ?b])
+         (and [?r :edge/to ?a]   [?r :edge/from ?b]))]])
+
+(def ^:private edge-or-query
+  '{:find  [?ida ?idb]
+    :in    [$ % [?ida ...]]
+    :where [[?a :node/id ?ida]
+            (linked ?a ?b ?r)
+            [?b :node/id ?idb]]})
+
+(defn- plan-line-index
+  "Index of the first plan line matching `re`, or nil."
+  [plan-str re]
+  (first (keep-indexed (fn [i l] (when (re-find re l) i))
+                       (clojure.string/split-lines plan-str))))
+
+(deftest test-rule-or-collection-binding-ordering
+  (let [db   @or-rule-db
+        ids  (vec (range 50))]
+    (testing "engines agree on a rule+OR driven by a collection binding"
+      (let [legacy   (binding [q/*disable-planner* true]  (d/q edge-or-query db edge-or-rules ids))
+            compiled (binding [q/*disable-planner* false] (d/q edge-or-query db edge-or-rules ids))]
+        (is (= (set legacy) (set compiled)))
+        (is (seq compiled) "query should return rows")))
+    (testing "the selective :node/id binder is ordered before the producer OR"
+      (let [plan     (binding [q/*disable-planner* false]
+                       (d/explain {:query edge-or-query :args [db edge-or-rules ids]}))
+            scan-idx (plan-line-index plan #"SCAN.*node/id|node/id.*\?ida")
+            or-idx   (plan-line-index plan #"(?i)^\s*OR\b")]
+        (is (some? scan-idx) (str "expected a :node/id binder scan in plan:\n" plan))
+        (is (some? or-idx)   (str "expected an OR in plan:\n" plan))
+        (when (and scan-idx or-idx)
+          (is (< scan-idx or-idx)
+              (str "binder scan must precede the producer OR; got scan@" scan-idx
+                   " or@" or-idx "\n" plan)))))))
+
+(deftest test-collection-binding-join-agreement
+  ;; SIP path: an :in collection binding feeding a 2-pattern join (no rule).
+  ;; Guards that routing :in-binding queries through the SIP-capable engine
+  ;; preserves results across a range of batch sizes.
+  (let [db @or-rule-db]
+    (doseq [n [1 10 100 1000]]
+      (let [ids   (vec (range n))
+            qy    '{:find [?ida ?to] :in [$ [?ida ...]]
+                    :where [[?a :node/id ?ida]
+                            [?r :edge/from ?a]
+                            [?r :edge/to ?b]
+                            [?b :node/id ?to]]}]
+        (assert-engines-agree db qy [ids])))))

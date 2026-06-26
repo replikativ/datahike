@@ -3550,10 +3550,21 @@
    stats? qreturnmaps]
   (let [exec-direct-rel #?(:clj (requiring-resolve 'datahike.query.execute/execute-plan-direct-rel)
                            :cljs execute/execute-plan-direct-rel)
-        fused-rel (try (exec-direct-rel plan db (:cancel context-in))
-                       (catch #?(:clj Exception :cljs :default) e
-                         (log/debug "fused-scan-rel not applicable:" #?(:clj (.getMessage ^Exception e) :cljs (str e)))
-                         nil))
+        ;; Only take the direct-rel fast path when there are NO input relations.
+        ;; That path executes the plan from scratch and `collapse-rels`-joins the
+        ;; result with the :in rels AFTERWARD, which defeats sideways-information-
+        ;; passing: a pattern whose value/entity var is bound by an :in binding
+        ;; would scan its whole attribute instead of probing the bound values.
+        ;; execute-plan threads context-in into execute-fused-scan-rel, whose SIP
+        ;; extracts a probe-set from the input rels and uses AVET/EAVT seeks
+        ;; (jobtech batched lookups: 43ms -> 0.26ms at small batch sizes). This
+        ;; mirrors the `(empty? (:rels context-in))` gate already in
+        ;; execute-planned-direct.
+        fused-rel (when (empty? (:rels context-in))
+                    (try (exec-direct-rel plan db (:cancel context-in))
+                         (catch #?(:clj Exception :cljs :default) e
+                           (log/debug "fused-scan-rel not applicable:" #?(:clj (.getMessage ^Exception e) :cljs (str e)))
+                           nil)))
         context-out (if fused-rel
                       (update context-in :rels collapse-rels fused-rel)
                       (#?(:clj (requiring-resolve 'datahike.query.execute/execute-plan)
