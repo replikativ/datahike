@@ -26,9 +26,9 @@
 (defn- query-both
   "Run a query through both planner and legacy paths, return [planner legacy]."
   [query db]
-  [(binding [q/*force-legacy* false q/*query-result-cache?* false]
+  [(binding [q/*disable-planner* false q/*query-result-cache?* false]
      (d/q query db))
-   (binding [q/*force-legacy* true q/*query-result-cache?* false]
+   (binding [q/*disable-planner* true q/*query-result-cache?* false]
      (d/q query db))])
 
 (defmacro assert-ir-match
@@ -283,12 +283,12 @@
                         (for [i (range 100)]
                           {:salary (+ 40000 (* i 200))
                            :age (+ 18 (mod i 30))}))
-          planner-result (binding [q/*force-legacy* false q/*query-result-cache?* false]
+          planner-result (binding [q/*disable-planner* false q/*query-result-cache?* false]
                            (d/q '[:find ?e ?s ?a
                                   :where [?e :salary ?s] [?e :age ?a]
                                   [(> ?s 50000)] [(< ?a 24)]]
                                 db))
-          legacy-result (binding [q/*force-legacy* true q/*query-result-cache?* false]
+          legacy-result (binding [q/*disable-planner* true q/*query-result-cache?* false]
                           (d/q '[:find ?e ?s ?a
                                  :where [?e :salary ?s] [?e :age ?a]
                                  [(> ?s 50000)] [(< ?a 24)]]

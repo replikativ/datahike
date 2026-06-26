@@ -14,9 +14,10 @@
    (enable-console-print!))
 
 (def compiled-engine?
-  "True when the query planner is active (DATAHIKE_QUERY_PLANNER=true)."
-  #?(:clj (= "true" (System/getenv "DATAHIKE_QUERY_PLANNER"))
-     :cljs false))
+  "True when the query planner is the active default — it is, unless
+   DATAHIKE_QUERY_PLANNER=false. (Mirrors `datahike.query/*disable-planner*`.)"
+  #?(:clj  (not= "false" (System/getenv "DATAHIKE_QUERY_PLANNER"))
+     :cljs true))
 
 ;; Added special case for printing ex-data of ExceptionInfo
 #?(:cljs

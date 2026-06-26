@@ -20,7 +20,7 @@
    - Free var in v position (works because the variable connects
      the groups syntactically).
 
-   Each test runs under both `*force-legacy* true` and `false` to lock
+   Each test runs under both `*disable-planner* true` and `false` to lock
    the planner against regression."
   (:require [clojure.test :refer [deftest is testing]]
             [datahike.api :as d]
@@ -35,10 +35,10 @@
     (d/connect cfg)))
 
 (defn- legacy [q & dbs]
-  (binding [dq/*force-legacy* true]  (apply d/q q dbs)))
+  (binding [dq/*disable-planner* true]  (apply d/q q dbs)))
 
 (defn- planner [q & dbs]
-  (binding [dq/*force-legacy* false] (apply d/q q dbs)))
+  (binding [dq/*disable-planner* false] (apply d/q q dbs)))
 
 ;; ============================================================================
 ;; Disjoint groups — same-constant patterns

@@ -1,15 +1,15 @@
 # Compiled Query Engine
 
-Datahike includes an opt-in query planner that plans and executes Datalog queries using a fused scan+merge strategy over B-tree indices. For multi-clause entity joins, it can be significantly faster than the legacy engine.
+Datahike's query planner plans and executes Datalog queries using a fused scan+merge strategy over B-tree indices. For multi-clause entity joins it can be significantly faster than the relational (base) engine. **It is enabled by default.**
 
-**Status: Experimental** — The query planner produces identical results to the legacy engine for all supported query shapes. It is opt-in and the legacy engine remains the default.
+The planner runs for *eligible* queries (a single primary DB or temporal wrapper, non-stats); everything else — multi-source disjoint joins, nested temporal wrappers, stats — falls back to the relational engine. That engine is therefore a permanent fallback, not "legacy". The planner produces identical results to it for all supported query shapes.
 
-## Enabling the Compiled Engine
+## Disabling the planner
 
-Set the environment variable before starting your JVM:
+The planner is on by default. To run every query through the relational engine, set the environment variable before starting your JVM:
 
 ```bash
-DATAHIKE_QUERY_PLANNER=true clj -M:dev
+DATAHIKE_QUERY_PLANNER=false clj -M:dev
 ```
 
 Or bind the dynamic var at runtime:
@@ -17,12 +17,12 @@ Or bind the dynamic var at runtime:
 ```clojure
 (require '[datahike.query :as dq])
 
-;; Enable for a specific query
-(binding [dq/*force-legacy* false]
+;; Disable for a specific query
+(binding [dq/*disable-planner* true]
   (d/q '[:find ?n ?a :where [?e :name ?n] [?e :age ?a]] @conn))
 
-;; Enable globally (for the current thread)
-(alter-var-root #'dq/*force-legacy* (constantly false))
+;; Disable globally (for the current thread)
+(alter-var-root #'dq/*disable-planner* (constantly true))
 ```
 
 ## Architecture

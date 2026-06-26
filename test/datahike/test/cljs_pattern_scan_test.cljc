@@ -18,7 +18,7 @@
      2) tuple access sites use `get` (works uniformly on JS arrays,
         Object[], and PersistentVectors) instead of `da/aget`.
 
-   On CLJ this code path was masked by `*force-legacy* = true` (the
+   On CLJ this code path was masked by `*disable-planner* = true` (the
    new planner is opt-in via DATAHIKE_QUERY_PLANNER); on CLJS the new
    planner is the default."
   (:require

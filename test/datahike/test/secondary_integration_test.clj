@@ -314,7 +314,7 @@
 
       ;; :person/name is NOT in stratum, but :person/salary IS.
       ;; Query: avg salary of Ivans — partial coverage
-      (let [result (binding [datahike.query/*force-legacy* false]
+      (let [result (binding [datahike.query/*disable-planner* false]
                      (d/q '[:find (avg ?s) .
                             :where [?e :person/name "Ivan"] [?e :person/salary ?s]]
                           db))]
@@ -323,7 +323,7 @@
         (is (< (abs (- result 66666.67)) 1.0)))
 
       ;; Verify legacy gives same result
-      (let [result-legacy (binding [datahike.query/*force-legacy* true]
+      (let [result-legacy (binding [datahike.query/*disable-planner* true]
                             (d/q '[:find (avg ?s) .
                                    :where [?e :person/name "Ivan"] [?e :person/salary ?s]]
                                  db))]
@@ -347,7 +347,7 @@
                             {:db/id 5 :person/salary 90000 :person/dept "sales"}])]
 
       ;; Predicate filter: salary > 65000
-      (let [result (binding [datahike.query/*force-legacy* false]
+      (let [result (binding [datahike.query/*disable-planner* false]
                      (d/q '[:find (avg ?s) .
                             :where [?e :person/salary ?s] [(> ?s 65000)]]
                           db))]
@@ -356,7 +356,7 @@
         (is (== 80000.0 result)))
 
       ;; Verify legacy gives same result
-      (let [result-legacy (binding [datahike.query/*force-legacy* true]
+      (let [result-legacy (binding [datahike.query/*disable-planner* true]
                             (d/q '[:find (avg ?s) .
                                    :where [?e :person/salary ?s] [(> ?s 65000)]]
                                  db))]

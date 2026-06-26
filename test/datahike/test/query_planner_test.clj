@@ -15,9 +15,9 @@
   ([db query]
    (assert-engines-agree db query []))
   ([db query extra-args]
-   (let [legacy  (binding [q/*force-legacy* true]
+   (let [legacy  (binding [q/*disable-planner* true]
                    (apply d/q query db extra-args))
-         compiled (binding [q/*force-legacy* false]
+         compiled (binding [q/*disable-planner* false]
                     (apply d/q query db extra-args))]
      (is (= (set (seq legacy)) (set (seq compiled)))
          (str "Engines disagree on: " (pr-str query))))))
@@ -26,9 +26,9 @@
   "Run query with rules through both engines.
    Query must contain :in $ % for rules to be passed."
   [db query rules]
-  (let [legacy  (binding [q/*force-legacy* true]
+  (let [legacy  (binding [q/*disable-planner* true]
                   (d/q query db rules))
-        compiled (binding [q/*force-legacy* false]
+        compiled (binding [q/*disable-planner* false]
                    (d/q query db rules))]
     (is (= (set (seq legacy)) (set (seq compiled)))
         (str "Engines disagree on: " (pr-str query)))))
@@ -246,9 +246,9 @@
 (defn assert-engines-agree-ordered
   "Run query with :order-by through both engines, assert identical ordered results."
   [db query-map]
-  (let [legacy  (binding [q/*force-legacy* true]
+  (let [legacy  (binding [q/*disable-planner* true]
                   (d/q query-map))
-        compiled (binding [q/*force-legacy* false]
+        compiled (binding [q/*disable-planner* false]
                    (d/q query-map))]
     (is (= legacy compiled)
         (str "Engines disagree on ordered: " (pr-str (:query query-map))))))
@@ -334,8 +334,8 @@
 
   (testing "engines agree on aggregates"
     (let [query '[:find ?n (count ?e) :where [?e :name ?n]]
-          legacy   (binding [q/*force-legacy* true]  (d/q query @test-db))
-          compiled (binding [q/*force-legacy* false] (d/q query @test-db))]
+          legacy   (binding [q/*disable-planner* true]  (d/q query @test-db))
+          compiled (binding [q/*disable-planner* false] (d/q query @test-db))]
       (is (= (set legacy) (set compiled))))))
 
 ;; ---------------------------------------------------------------------------
@@ -378,18 +378,18 @@
 
 (deftest test-find-specs
   (testing "FindScalar"
-    (let [legacy   (binding [q/*force-legacy* true]  (d/q '[:find ?a . :where [7 :age ?a]] @test-db))
-          compiled (binding [q/*force-legacy* false] (d/q '[:find ?a . :where [7 :age ?a]] @test-db))]
+    (let [legacy   (binding [q/*disable-planner* true]  (d/q '[:find ?a . :where [7 :age ?a]] @test-db))
+          compiled (binding [q/*disable-planner* false] (d/q '[:find ?a . :where [7 :age ?a]] @test-db))]
       (is (= legacy compiled))))
 
   (testing "FindColl"
-    (let [legacy   (binding [q/*force-legacy* true]  (d/q '[:find [?e ...] :where [?e :name "Ivan"]] @test-db))
-          compiled (binding [q/*force-legacy* false] (d/q '[:find [?e ...] :where [?e :name "Ivan"]] @test-db))]
+    (let [legacy   (binding [q/*disable-planner* true]  (d/q '[:find [?e ...] :where [?e :name "Ivan"]] @test-db))
+          compiled (binding [q/*disable-planner* false] (d/q '[:find [?e ...] :where [?e :name "Ivan"]] @test-db))]
       (is (= (set legacy) (set compiled)))))
 
   (testing "FindTuple"
-    (let [legacy   (binding [q/*force-legacy* true]  (d/q '[:find [?e ?a] :where [?e :name "Dmitry"] [?e :age ?a]] @test-db))
-          compiled (binding [q/*force-legacy* false] (d/q '[:find [?e ?a] :where [?e :name "Dmitry"] [?e :age ?a]] @test-db))]
+    (let [legacy   (binding [q/*disable-planner* true]  (d/q '[:find [?e ?a] :where [?e :name "Dmitry"] [?e :age ?a]] @test-db))
+          compiled (binding [q/*disable-planner* false] (d/q '[:find [?e ?a] :where [?e :name "Dmitry"] [?e :age ?a]] @test-db))]
       (is (= legacy compiled))))
 
   (testing "FindRel (default)"
@@ -561,9 +561,9 @@
                         {:db/id 2 :name "Oleg" :id 2}])
         assert-multi
         (fn [query & extra-args]
-          (let [legacy  (binding [q/*force-legacy* true]
+          (let [legacy  (binding [q/*disable-planner* true]
                           (apply d/q query extra-args))
-                planner (binding [q/*force-legacy* false]
+                planner (binding [q/*disable-planner* false]
                           (apply d/q query extra-args))]
             (is (= (set (seq legacy)) (set (seq planner)))
                 (str "Engines disagree on: " (pr-str query)))))]
@@ -619,7 +619,7 @@
       ;; The planner correctly resolves lookup refs in NOT sub-queries.
       ;; Legacy has a known bug here (doesn't resolve lookup refs in NOT context),
       ;; so we assert the correct result directly.
-      (let [result (binding [q/*force-legacy* false]
+      (let [result (binding [q/*disable-planner* false]
                      (d/q '[:find ?e ?a
                             :in $1 [?e ...]
                             :where [$1 ?e :id ?a]
@@ -644,7 +644,7 @@
           query '[:find ?e :where [?e :val-a ?x] [?e :val-b ?x] (not [?e :flag :no])]]
       (assert-engines-agree db query)
       (is (= #{[4]}
-             (binding [q/*force-legacy* false] (d/q query db)))
+             (binding [q/*disable-planner* false] (d/q query db)))
           "Only entity 4 should match: val-a == val-b AND flag != :no")))
 
   (testing "shared value variable without NOT still correct (sorted-merge path)"
@@ -657,7 +657,7 @@
           query '[:find ?e :where [?e :val-a ?x] [?e :val-b ?x]]]
       (assert-engines-agree db query)
       (is (= #{[4] [6]}
-             (binding [q/*force-legacy* false] (d/q query db)))
+             (binding [q/*disable-planner* false] (d/q query db)))
           "Entities 4 and 6 match: both have val-a == val-b"))))
 
 ;; ---------------------------------------------------------------------------
@@ -717,7 +717,7 @@
                 [(get-else $ ?c :concept/legacy-id "missing") ?legacy]]]
     (assert-engines-agree db query [["T"]])
     (is (= #{["A" "1384"] ["B" "missing"]}
-           (binding [q/*force-legacy* false] (d/q query db ["T"])))
+           (binding [q/*disable-planner* false] (d/q query db ["T"])))
         "Both concepts returned: A with its legacy-id, B with the default.")
     (d/release conn)))
 
