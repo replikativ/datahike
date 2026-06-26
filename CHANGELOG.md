@@ -6,6 +6,10 @@ When something is added, it's typically marked *Experimental*. When the API cont
 
 ## 0.8
 
+### Status changes
+
+- **Query planner promoted to the default engine** — the compiled query planner ([#795]) now runs by default; the relational (base) engine remains a permanent fallback for the query shapes the planner declines (multi-source disjoint joins, nested temporal wrappers, stats). The selector dynamic var was renamed `datahike.query/*force-legacy*` → **`*disable-planner*`** (same polarity), and the opt-*in* env `DATAHIKE_QUERY_PLANNER=true` became an opt-*out* `DATAHIKE_QUERY_PLANNER=false`. CI now runs the full suite under both engines on every build. **Beta — newly the default**, so if a query returns wrong or surprising results please [open an issue](https://github.com/replikativ/datahike/issues); you can fall back any time with `DATAHIKE_QUERY_PLANNER=false` (or `(binding [datahike.query/*disable-planner* true] …)`). ([#844])
+
 ### Features
 
 - **`:db.secondary/only` — out-of-line values** — flag a string attribute `:db.secondary/only true` to store its value *only* in the covering secondary index (Scriptum/Lucene); the primary EAVT/AEVT/AVET hold a `hasch` content hash in its place, keeping the primary indices small for large/unbounded payloads (transcripts, web pages, agent context) while the value stays fully searchable. Retraction/uniqueness/dedup work on the hash. The whole `:db.secondary/*` schema family was graduated into the system schema (stable entity IDs, mirroring `:db.valid/*`) so secondary indices align across attribute-refs databases. **Search-only** — the value is not reproducible from the primary; declare it only where the canonical value lives elsewhere. *Experimental.* ([#840])
@@ -13,7 +17,7 @@ When something is added, it's typically marked *Experimental*. When the API cont
 - **Versioning API promoted** — `datahike.experimental.versioning` (introduced in late 2022) is renamed to `datahike.versioning` as part of the planner / secondary-index / versioning PR; subsequently exposed in libdatahike + pydatahike. (0.8.1664, [#795], [#831])
 - **Versioning bindings in libdatahike + pydatahike** — `branches`, `branch!`, `delete-branch!`, `merge-db`, `commit-id`, `parent-commit-ids` are now exposed in the native C and Python bindings, plus new `branch:NAME` / `commit:UUID` input formats for loading a DB at a specific branch or commit. (0.8.1689, [#831])
 - **Tamper-evident audit chain** — under `:crypto-hash? true`, `create-commit-id` now hashes post-flush merkle leaves of the DB so the commit-id becomes a true merkle root; new `datahike.audit/verify-chain` walks parents and reports `:status :commits :mismatches :missing`, with an optional `:deep?` PSS walk that reads each node directly from konserve and detects bytes-level tampering. *Experimental.* (0.8.1682, [#823])
-- **Query planner, secondary indices, and versioning API** — opt-in via `DATAHIKE_QUERY_PLANNER=true`: plan-based execution with fused EAVT/AEVT scan+merge, predicate pushdown, ORDER BY / offset / limit, recursive rules with semi-naive fixpoint, magic-set, and an attribute-dep-aware query result cache. Introduces `ISecondaryIndex` / `IColumnarAggregate` protocols with Proximum (vector), Scriptum (full-text), and Stratum (columnar) bridges, plus a `d/explain` plan view. *Experimental.* (0.8.1664, [#795])
+- **Query planner, secondary indices, and versioning API** — plan-based execution with fused EAVT/AEVT scan+merge, predicate pushdown, ORDER BY / offset / limit, recursive rules with semi-naive fixpoint, magic-set, and an attribute-dep-aware query result cache. Introduces `ISecondaryIndex` / `IColumnarAggregate` protocols with Proximum (vector), Scriptum (full-text), and Stratum (columnar) bridges, plus a `d/explain` plan view. Originally opt-in via `DATAHIKE_QUERY_PLANNER=true`; **now the default engine** (see Status changes). (0.8.1664, [#795])
 - **Pull-pattern attrs tracked in query cache** — the query result cache now invalidates entries whose dependencies overlap with attributes referenced only inside `(pull ...)` expressions in `:find` (wildcard / variable pulls conservatively produce `:all` deps). (0.8.1671, [#810])
 - **CLI `--tx-file` wired through** — `dthk transact --tx-file <path>` now reads file contents and injects them as the tx-data argument; the async `transact!` variant is no longer surfaced on the CLI. (0.8.1666, [#803])
 
@@ -372,3 +376,4 @@ Thanks to all the contributors and the community for helping on this release. Sp
 [#829]: https://github.com/replikativ/datahike/pull/829
 [#830]: https://github.com/replikativ/datahike/pull/830
 [#831]: https://github.com/replikativ/datahike/pull/831
+[#844]: https://github.com/replikativ/datahike/pull/844

@@ -253,9 +253,9 @@ Use `d/explain` to see the query plan for any query:
 | ORDER BY | Yes | Independent of engine choice |
 | FindScalar / FindColl / FindTuple | Yes | |
 | Temporal DBs (`as-of`, `since`, `history`) | Yes | Numeric and Date time-points |
-| Nested temporal wrappers (`(history (as-of ...))`) | Fallback to legacy | |
+| Nested temporal wrappers (`(history (as-of ...))`) | Fallback to base engine | |
 
-When the query planner encounters an unsupported query shape, it automatically falls back to the legacy engine — no error, no configuration needed.
+When the query planner encounters an unsupported query shape, it automatically falls back to the relational (base) engine — no error, no configuration needed.
 
 ## ORDER BY
 
