@@ -400,15 +400,89 @@
 ;; ---------------------------------------------------------------------------
 ;; Pattern scan → Relation (for legacy-compatible path)
 
-(defn- execute-pattern-scan [db op cancel]
-  (let [{:keys [clause index pushdown-preds]} op
-        [e a v tx] clause
+#?(:clj
+   (defn- pattern-probe-set
+     "Build a probe HashSet from `rels` for a scan clause's bound entity- or
+      value-var, when restricting the scan by it would help (the bound set is
+      smaller than the scan slice `scan-n`). Returns
+      {:field 0|2 :values HashSet :seekable? bool} or nil — :field 0 = entity
+      (EAVT-seekable), 2 = value (AVET-seekable only if the attr is indexed)."
+     [db clause resolved-a rels scan-n]
+     (when (seq rels)
+       (let [scan-n (long scan-n)
+             [e _ v] clause
+             extract (fn [rel col-idx]
+                       (let [tuples (:tuples rel)
+                             n (if (instance? java.util.Collection tuples)
+                                 (.size ^java.util.Collection tuples)
+                                 (count tuples))]
+                         (when (and (pos? n) (< (long n) scan-n))
+                           (let [hs (java.util.HashSet.)]
+                             (doseq [t tuples]
+                               (let [val (cond
+                                           (instance? clojure.lang.Indexed t) (.nth ^clojure.lang.Indexed t col-idx)
+                                           (sequential? t) (nth t col-idx)
+                                           :else (get t col-idx))]
+                                 (when (some? val) (.add hs val))))
+                             (when (pos? (.size hs)) hs)))))
+             e-probe (when (and (symbol? e) (analyze/free-var? e))
+                       (some (fn [rel]
+                               (when-let [ci (get (:attrs rel) e)]
+                                 (when-let [hs (extract rel ci)]
+                                   {:field 0 :values hs :seekable? true})))
+                             rels))
+             v-probe (when (and (not e-probe) resolved-a
+                                (symbol? v) (analyze/free-var? v))
+                       (some (fn [rel]
+                               (when-let [ci (get (:attrs rel) v)]
+                                 (when-let [hs (extract rel ci)]
+                                   {:field 2 :values hs
+                                    :seekable? (boolean (and (:avet db) (dbu/indexing? db resolved-a)))})))
+                             rels))]
+         (or e-probe v-probe)))))
+
+(defn- scan-datoms
+  "Datoms for a scan clause, driven by the currently-bound `rels` (sideways
+   information passing) when beneficial — the single retrieval seam shared by
+   every scan site. Three regimes, chosen from K=#bound-values vs N=scan slice
+   size (`scan-n`, the pattern's estimated attribute cardinality):
+
+     seek   index point-seeks per bound value   (K*threshold < N, and seekable)
+     filter full slice, drop non-matching datoms (K < N)            [semi-join]
+     scan   full index slice                     (no useful probe)
+
+   Result-preserving: seek/filter only restrict the scan to the bound
+   entity/value set, which the downstream join enforces anyway — so this never
+   changes results, only how many datoms (and downstream merge lookups) are
+   touched."
+  [db clause index pushdown-preds rels scan-n]
+  (let [[e a v] clause
         resolved-a (when (and (some? a) (not (symbol? a))) (resolve-attr db a))
         resolved-e (when (and (some? e) (not (symbol? e)) (number? e)) #?(:clj (long e) :cljs e))
         pushdown-bounds (when (seq pushdown-preds) (plan/pushdown-to-bounds pushdown-preds))
-        [from-datom to-datom] (compute-slice-bounds clause index pushdown-bounds resolved-a resolved-e)
+        [from to] (compute-slice-bounds clause index pushdown-bounds resolved-a resolved-e)
         db-index (get db index)
-        datoms (di/-slice db-index from-datom to-datom index)
+        scan-n (long (or scan-n (di/-count db-index)))
+        full (fn [] (di/-slice db-index from to index))]
+    #?(:clj
+       (if-let [probe (pattern-probe-set db clause resolved-a rels scan-n)]
+         (let [k     (.size ^java.util.HashSet (:values probe))
+               field (int (:field probe))]
+           (if (and (:seekable? probe)
+                    (< (* (long k) (long probe-driven-threshold)) scan-n))
+             (probe-driven-iterable (if (== field 2) (:avet db) (:eavt db))
+                                    resolved-a (:values probe) field)
+             (let [^java.util.HashSet hs (:values probe)]
+               (filter (fn [^Datom d]
+                         (.contains hs (if (== field 0) (.-e d) (.-v d))))
+                       (full)))))
+         (full))
+       :cljs (full))))
+
+(defn- execute-pattern-scan [db op cancel rels]
+  (let [{:keys [clause index pushdown-preds]} op
+        pushdown-bounds (when (seq pushdown-preds) (plan/pushdown-to-bounds pushdown-preds))
+        datoms (scan-datoms db clause index pushdown-preds rels (:estimated-card op))
         var-map (rel/var-mapping clause (range))
         ground-filter (build-ground-filter clause index)
         scan-var-map (rel/var-mapping clause (range))
@@ -2597,54 +2671,13 @@
             merged (rel/collapse-rels (:rels context) out-rel)]
         [(-> context (assoc :rels merged) (assoc :unique-results? true))
          (inc (count merge-ops))])
-      (let [;; SIP: extract probe values from context relations for selective seeks.
-            ;; Check both entity-var and value-var of the scan clause.
-            sip-probe
-            #?(:clj
-               (when (and resolved-a (seq (:rels context)))
-                 (let [v-var (get clause 2)
-                       extract-probe-values
-                       (fn [rel col-idx]
-                         (let [tuples (:tuples rel)
-                               n (if (instance? java.util.Collection tuples)
-                                   (.size ^java.util.Collection tuples)
-                                   (count tuples))]
-                           (when (and (pos? n)
-                                      (< (* (long n) (long probe-driven-threshold))
-                                         (long (di/-count db-index))))
-                             (let [hs (java.util.HashSet.)]
-                               (doseq [t tuples]
-                                 (let [v (cond
-                                           (instance? clojure.lang.Indexed t) (.nth ^clojure.lang.Indexed t col-idx)
-                                           (sequential? t) (nth t col-idx)
-                                           :else (get t col-idx))]
-                                   (when (some? v) (.add hs v))))
-                               (when (pos? (.size hs)) hs)))))
-                       ;; Check entity variable
-                       e-probe (when (and (symbol? e) (analyze/free-var? e))
-                                 (some (fn [rel]
-                                         (when-let [col-idx (get (:attrs rel) e)]
-                                           (when-let [vs (extract-probe-values rel col-idx)]
-                                             {:field 0 :values vs})))
-                                       (:rels context)))
-                       ;; Check value variable (needs AVET + attribute must be indexed)
-                       v-probe (when (and (not e-probe)
-                                          (symbol? v-var) (analyze/free-var? v-var)
-                                          (some? (:avet db))
-                                          resolved-a
-                                          (dbu/indexing? db resolved-a))
-                                 (some (fn [rel]
-                                         (when-let [col-idx (get (:attrs rel) v-var)]
-                                           (when-let [vs (extract-probe-values rel col-idx)]
-                                             {:field 2 :values vs})))
-                                       (:rels context)))]
-                   (or e-probe v-probe)))
-               :cljs nil)
-            filtered-datoms (cond->> (if sip-probe
-                                       (probe-driven-iterable
-                                        (if (== (:field sip-probe) 2) (:avet db) (:eavt db))
-                                        resolved-a (:values sip-probe) (:field sip-probe))
-                                       (di/-slice db-index from-datom to-datom index))
+      (let [;; SIP retrieval: drive the scan from the currently-bound context
+            ;; relations (index seek / semi-join filter / full scan) via the
+            ;; shared `scan-datoms` seam. The merge below runs once per emitted
+            ;; scan datom, so restricting the scan to the bound entities/values
+            ;; is what keeps an :in-bound join O(bound) rather than O(attribute).
+            filtered-datoms (cond->> (scan-datoms db clause index pushdown-preds
+                                                  (:rels context) (:estimated-card scan-op))
                               ground-filter (filter ground-filter)
                               strict-filter (filter strict-filter))
 
@@ -3620,7 +3653,7 @@
                                     (replan-fn plan (+ idx (dec consumed)) actual-card op-db)
                                     plan)]
                         (recur ctx' plan' (long (+ idx consumed))))
-                      (let [new-rel (execute-pattern-scan op-db op (:cancel ctx))
+                      (let [new-rel (execute-pattern-scan op-db op (:cancel ctx) (:rels ctx))
                             ctx' (binding [rel/*implicit-source* op-db
                                            rel/*lookup-attrs* (lookup-attrs-for-clauses op-db (:clause op) nil)]
                                    (update ctx :rels rel/collapse-rels new-rel))
