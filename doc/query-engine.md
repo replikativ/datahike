@@ -34,7 +34,7 @@ dataset, all times **wall-clock milliseconds, lower is better**, Datahike runnin
 compiled planner (the default).
 
 > **Methodology / caveats.** Single machine, single run, query-result cache disabled,
-> JIT pre-warmed; Datalevin 0.10.7, Datomic Peer 1.0.7277. Results are bit-for-bit
+> JIT pre-warmed; Datalevin 0.10.18, Datomic Peer 1.0.7387. Results are bit-for-bit
 > identical across engines (verified by row count on every shape). These are
 > *directional, reproducible* numbers from the bundled suite, not a controlled
 > multi-run study — reproduce them yourself with the commands at the end of this
@@ -42,21 +42,21 @@ compiled planner (the default).
 
 ### Queries (vs Datalevin and Datomic)
 
-Datahike wins 9 of 15 shapes; Datalevin edges it only on trivial sub-millisecond
-point selections where every engine is already under 1 ms.
+Datahike wins 9 of 15 shapes; Datalevin edges it on simple multi-clause selections
+and the non-recursive rule — cases where both are already fast (well under a few ms).
 
 | Query | Datahike | Datalevin | Datomic |
 |---|---:|---:|---:|
-| simple lookup `[?e :name "Ivan"]` | **0.13** | 0.68 | 5.3 |
-| two-clause join (name + age) | **0.64** | 0.71 | 9.7 |
-| three clauses (reversed order) | 0.66 | **0.34** | 13.9 |
-| value join (shared `?age`) | **8.1** | 224 | 235 |
-| predicate `salary > ?min` | **1.5** | 2.5 | 20.4 |
-| NOT negation | **3.9** | 121 | 51.5 |
-| OR-join (name or name + age) | **5.8** | 170 | 76.2 |
-| NOT-join | **4.0** | 118 | 52.0 |
-| 5-clause entity merge | **2.3** | 3.2 | 147.5 |
-| non-recursive rule | 3.7 | **2.6** | 8.9 |
+| simple lookup `[?e :name "Ivan"]` | **0.13** | 0.69 | 5.2 |
+| two-clause join (name + age) | 0.62 | **0.56** | 8.8 |
+| three clauses (reversed order) | 0.63 | **0.31** | 12.7 |
+| value join (shared `?age`) | **7.9** | 231 | 217 |
+| predicate `salary > ?min` | **1.5** | 2.5 | 19.6 |
+| NOT negation | **3.8** | 148 | 49.6 |
+| OR-join (name or name + age) | **5.5** | 228 | 70.7 |
+| NOT-join | **6.0** | 146 | 47.8 |
+| 5-clause entity merge | **2.4** | 2.9 | 138 |
+| non-recursive rule | 3.6 | **2.5** | 8.3 |
 
 ### Cross-entity joins (vs Datalevin and Datomic)
 
@@ -64,11 +64,11 @@ Datahike wins every join shape, often decisively.
 
 | Join | Datahike | Datalevin | Datomic |
 |---|---:|---:|---:|
-| ref join, 1 dept → people | **0.18** | 3.0 | 2.4 |
-| ref join, 10 depts → people | **1.2** | 8.1 | 5.2 |
-| ref join + predicate | **1.9** | 14.3 | 8.6 |
-| 3-hop chain (person → dept → division) | **31.7** | 71.6 | 95.6 |
-| selective (salary > 90k → dept) | **4.5** | 20.2 | 20.0 |
+| ref join, 1 dept → people | **0.18** | 4.4 | 3.3 |
+| ref join, 10 depts → people | **1.2** | 8.9 | 6.0 |
+| ref join + predicate | **1.8** | 15.8 | 9.5 |
+| 3-hop chain (person → dept → division) | **30.5** | 73.2 | 94.5 |
+| selective (salary > 90k → dept) | **4.3** | 20.5 | 22.0 |
 
 ### Recursive rules (vs Datalevin and Datomic)
 
@@ -76,10 +76,10 @@ Datahike wins long chains; Datalevin wins the very-wide fan-out trees.
 
 | Rule | Datahike | Datalevin | Datomic |
 |---|---:|---:|---:|
-| wide tree 3×3 | **0.22** | 1.1 | 3.6 |
-| wide tree 7×3 | 24.1 | **13.5** | 161.9 |
-| chain 10×3 | **0.34** | 1.3 | 6.5 |
-| chain 30×5 | **3.3** | 4.3 | 62.4 |
+| wide tree 3×3 | **0.23** | 1.2 | 5.3 |
+| wide tree 7×3 | 23.4 | **13.1** | 163.7 |
+| chain 10×3 | **0.34** | 1.5 | 5.7 |
+| chain 30×5 | **3.3** | 5.7 | 64.2 |
 
 ### Temporal: as-of / history (vs Datomic)
 
@@ -89,14 +89,14 @@ pass instead of one index seek per entity).
 
 | Temporal query | Datahike | Datomic |
 |---|---:|---:|
-| current: name = Ivan | **0.12** | 4.6 |
-| current: name + age | **0.56** | 8.1 |
-| as-of: name + age | **5.3** | 8.7 |
-| as-of: name + age + sex | **7.0** | 11.9 |
-| history: all names | **4.8** | 6.7 |
-| history: age + tx | **7.3** | 12.9 |
-| history: name + age join | **8.0** | 36.0 |
-| history: retracted ages | **1.5** | 4.8 |
+| current: name = Ivan | **0.13** | 5.0 |
+| current: name + age | **0.54** | 8.8 |
+| as-of: name + age | **4.9** | 9.8 |
+| as-of: name + age + sex | **6.4** | 13.5 |
+| history: all names | **4.8** | 6.6 |
+| history: age + tx | **7.3** | 13.4 |
+| history: name + age join | **16.2** | 40.2 |
+| history: retracted ages | **1.5** | 5.0 |
 
 ### Aggregates
 
@@ -104,22 +104,23 @@ PSS-based aggregates (the default) are mid-pack; with the **stratum** columnar
 secondary index they are the fastest measured (10–50× the alternatives) because the
 planner pushes the aggregate to native columnar storage.
 
-| Aggregate | Datahike (PSS) | Datahike + stratum | Datalevin |
-|---|---:|---:|---:|
-| avg salary | 1.8 | **0.19** | 10.4 |
-| avg + count by sex | 31.3 | **0.58** | 17.2 |
-| avg / min / max (filtered) | 3.0 | **1.0** | 5.5 |
-| avg salary > 50k by sex | 28.4 | **0.45** | 7.9 |
-| avg salary by sex × name | 34.6 | **0.47** | 24.0 |
-| variance + stddev + median | 7.3 | **5.0** | 11.0 |
+| Aggregate | Datahike (PSS) | Datahike + stratum | Datalevin | Datomic |
+|---|---:|---:|---:|---:|
+| avg salary | 2.0 | **0.27** | 11.7 | 22.8 |
+| avg + count by sex | 32.8 | **0.54** | 9.5 | 57.6 |
+| avg / min / max (filtered) | 3.2 | **0.98** | 5.6 | 48.2 |
+| avg salary > 50k by sex | 29.7 | **0.43** | 4.4 | 35.2 |
+| avg salary by sex × name | 36.7 | **0.45** | 15.2 | 101.5 |
+| variance + stddev + median | 8.1 | **4.9** | 12.0 | 55.7 |
 
 (See [secondary-indices.md](secondary-indices.md) for the stratum index.)
 
 ### Writes
 
-On bulk insert (20k entities) Datahike is on par with Datalevin (~1.45 s vs ~1.44 s)
-and behind Datomic's in-memory peer (~0.54 s). The planner is a read-path optimization
-and does not change write throughput.
+The planner is a read-path optimization and does not change write throughput. On bulk
+insert (20k entities) Datahike is roughly on par with Datalevin and behind Datomic's
+in-memory peer — the write path is not the focus of this suite, so those numbers are
+not tracked here.
 
 ### Reproducing these numbers
 

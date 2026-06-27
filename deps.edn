@@ -143,9 +143,8 @@
            ;; Run via: clj -M:bench-compare -m benchmark.datascript-bench all
            :bench-compare {:extra-paths ["benchmark/src" "src-secondary"]
                            :jvm-opts ["--add-modules" "jdk.incubator.vector"]
-                           :extra-deps {datalevin/datalevin {:mvn/version "0.10.7"
-                                                             :exclusions [com.taoensso/timbre]}
-                                        com.datomic/peer {:mvn/version "1.0.7277"}
+                           :extra-deps {datalevin/datalevin {:mvn/version "0.10.18"}
+                                        com.datomic/peer {:mvn/version "1.0.7387"}
                                         ;; stratum columnar secondary index — lets the
                                         ;; aggregate suite measure the DH+stratum column
                                         ;; instead of reporting N/A (ns datahike.index.secondary.stratum
