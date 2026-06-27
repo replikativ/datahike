@@ -432,17 +432,45 @@
                 ;; `and magic-demand base-scan-attr …` check in
                 ;; `execute-recursive-rule`). The guard was redundant and
                 ;; introduced a real regression for scanless-base recursion.
-                ;; Extract base scan attribute for magic set optimization
+                ;; Extract base scan attribute for magic set optimization.
+                ;;
+                ;; magic-base-scan REPLACES the whole base case with single-attr
+                ;; EAVT point lookups from the demand entities, mapping each
+                ;; scanned datom's [entity value] onto the rule's two head vars.
+                ;; That is correct ONLY for a *linear single ref-edge* base —
+                ;; exactly one base branch, that branch a single scan op
+                ;; [?h0 attr ?h1] over the two head vars, with `attr` a ref so the
+                ;; propagated value is itself an entity (re-scanned next iteration).
+                ;;
+                ;; Anything else must leave base-scan-attr nil and fall back to the
+                ;; general fixpoint (execute-branch-plans runs every base branch):
+                ;;   - multiple base branches (only one attr would be scanned);
+                ;;   - a value-join base like [?a :id ?x][?c :id ?x] (?c is a
+                ;;     different entity sharing a value, not attr's value — the old
+                ;;     code grabbed :id off the first pattern and fed the string
+                ;;     value into the entity slot → ClassCastException);
+                ;;   - a non-ref attr (the head value is a scalar, not an entity).
                 base-scan-attr
                 (when scc-rule-plans
-                  (let [bp (first (:base-plans (get scc-rule-plans rule-name)))]
-                    (when bp
-                      (some (fn [op]
-                              (case (:op op)
-                                :entity-group (get (:clause (:scan-op op)) 1)
-                                :pattern-scan (get (:clause op) 1)
-                                nil))
-                            (:ops bp)))))]
+                  (let [rule-plan  (get scc-rule-plans rule-name)
+                        base-plans (:base-plans rule-plan)
+                        head-vars  (:head-vars rule-plan)]
+                    (when (and (= 1 (count base-plans)) (= 2 (count head-vars)))
+                      (let [ops (:ops (first base-plans))]
+                        (when (= 1 (count ops))
+                          (let [op (first ops)
+                                [clause sinfo]
+                                (case (:op op)
+                                  :pattern-scan [(:clause op) (:schema-info op)]
+                                  :entity-group (when (empty? (:merge-ops op))
+                                                  [(:clause (:scan-op op))
+                                                   (:schema-info (:scan-op op))])
+                                  nil)
+                                [e a v] clause]
+                            (when (and clause
+                                       (:ref? sinfo)
+                                       (= (set head-vars) #{e v}))
+                              a)))))))]
             {:op :recursive-rule
              :clause (:clause clause-info)
              :rule-name rule-name

@@ -3028,7 +3028,12 @@
   [db head-vars attr delta-rel join-pos output-pos]
   #?(:clj
      (when (and attr (seq (:tuples delta-rel)))
-       (let [avet-pss (:avet db)
+       ;; Resolve AVET through any temporal wrapper (see magic-base-scan): on a
+       ;; temporal DB the :avet lives on the origin-db and the slice needs the
+       ;; current+temporal merge + time-point post-process via build-scan-slice.
+       (let [ti (temporal-info db)
+             index-db (if ti (:origin-db ti) db)
+             avet-pss (:avet index-db)
              result (java.util.ArrayList.)
              tuples (:tuples delta-rel)]
          (doseq [tuple tuples]
@@ -3041,7 +3046,7 @@
                  ;; Reverse lookup: find all entities where :attr = t-val
                  from-datom (datom e0 attr t-val tx0)
                  to-datom (datom emax attr t-val txmax)
-                 slice (di/-slice avet-pss from-datom to-datom :avet)]
+                 slice (build-scan-slice db avet-pss from-datom to-datom :avet ti index-db attr)]
              (doseq [^Datom sd slice]
                (when (and (= (.-a sd) attr) (= (.-v sd) t-val))
                  (let [arr (object-array 2)
@@ -3061,7 +3066,14 @@
   [db head-vars attr demand-set scanned-set]
   #?(:clj
      (when attr
-       (let [eavt-pss (:eavt db)
+       ;; Resolve the EAVT index through any temporal wrapper: AsOfDB/SinceDB/
+       ;; HistoricalDB carry no :eavt of their own (it lives on the origin-db),
+       ;; and the slice must merge current+temporal history and post-process by
+       ;; the time-point. build-scan-slice is the one seam that does this; it is a
+       ;; plain passthrough slice for a regular DB (ti = nil).
+       (let [ti (temporal-info db)
+             index-db (if ti (:origin-db ti) db)
+             eavt-pss (:eavt index-db)
              result (java.util.ArrayList.)
              iter (.iterator ^java.util.HashSet demand-set)]
          ;; Point-lookup each NEW entity's edges (skip already-scanned)
@@ -3071,7 +3083,7 @@
                        (.add ^java.util.HashSet scanned-set e))
                (let [from-datom (datom (if (number? e) (long e) e) attr nil tx0)
                      to-datom (datom (if (number? e) (long e) e) attr nil txmax)
-                     slice (di/-slice eavt-pss from-datom to-datom :eavt)]
+                     slice (build-scan-slice db eavt-pss from-datom to-datom :eavt ti index-db attr)]
                  (doseq [^Datom sd slice]
                    (when (and (= (.-e sd) e) (= (.-a sd) attr))
                      (let [arr (object-array 2)
@@ -3081,6 +3093,38 @@
                        (.add result arr))))))))
          (when (pos? (.size result))
            (rel/->Relation (zipmap head-vars (range)) (vec result)))))
+     :cljs nil))
+
+(defn- magic-base-scan-general
+  "Demand-restricted base evaluation for the magic-set fixpoint, correct for ANY
+   base shape — value-join (`[?a :id ?x][?c :id ?x]`), multi-branch, or non-ref
+   edge — unlike the single-ref-edge `magic-base-scan` point-lookup (which feeds a
+   demand entity into the EAVT entity slot and maps [entity value] onto the head
+   vars, breaking whenever the propagated head var is not the scanned attr's value).
+
+   Computes the NEW demand entities (those not yet in `scanned-set`), marks them
+   scanned, then runs ALL base branch plans with the ground head var constrained to
+   that batch via `inject-magic-relation`. Range-restricted datalog guarantees every
+   base branch binds both head vars, so the injected demand relation always shares
+   the ground var and hash-joins (never a Cartesian product) — the same mechanism
+   the loop already uses to demand-restrict the recursive clause versions (aug-ctx).
+   Keeps the base O(demand). Returns a Relation or nil when there is nothing new."
+  [db base-plans head-vars ground-pos ^java.util.HashSet demand-set ^java.util.HashSet scanned-set ctx]
+  #?(:clj
+     (let [new-batch (java.util.ArrayList.)
+           it (.iterator demand-set)]
+       ;; Select the new-entity batch BEFORE marking, so an entity that appears in
+       ;; two branches (or twice in one) is still scanned exactly once and never
+       ;; marked-before-emitted.
+       (while (.hasNext it)
+         (let [e (.next it)]
+           (when (and scanned-set (not (.contains scanned-set e)))
+             (.add new-batch e))))
+       (when (pos? (.size new-batch))
+         (doseq [e new-batch] (.add scanned-set e))
+         (let [demand' (java.util.HashSet. new-batch)
+               ctx' (inject-magic-relation ctx head-vars ground-pos demand')]
+           (execute-branch-plans db base-plans ctx' head-vars))))
      :cljs nil))
 
 (defn- extract-demand-values
@@ -3146,11 +3190,18 @@
             (into {}
                   (map (fn [rn]
                          (let [{:keys [head-vars base-plans]} (get scc-rule-plans rn)
-                               base-rel (if (and magic-demand base-scan-attr (= rn rule-name))
-                                 ;; Magic: direct EAVT point lookups for demand entities
+                               base-rel (cond
+                                  ;; Magic, single ref-edge base: EAVT point lookups for demand entities
+                                          (and magic-demand base-scan-attr (= rn rule-name))
                                           (or (magic-base-scan db head-vars base-scan-attr magic-demand magic-scanned)
                                               (rel/->Relation (zipmap head-vars (range)) []))
-                                 ;; Normal: full base branch plan execution
+                                  ;; Magic, any other base shape: demand-restricted base branches
+                                          (and magic-demand (= rn rule-name))
+                                          (or (magic-base-scan-general db base-plans head-vars magic-ground-pos
+                                                                       magic-demand magic-scanned ctx)
+                                              (rel/->Relation (zipmap head-vars (range)) []))
+                                  ;; No magic: full base branch plan execution
+                                          :else
                                           (execute-branch-plans db base-plans ctx head-vars))
                                delta-rel (rel-dedup-into! base-rel head-vars (get seen-sets rn))]
                   ;; Propagate magic demand from base results
@@ -3198,13 +3249,26 @@
                         new-states
                         (into {}
                               (map (fn [rn]
-                                     (let [{:keys [head-vars rec-clause-versions]} (get scc-rule-plans rn)
+                                     (let [{:keys [head-vars rec-clause-versions base-plans]} (get scc-rule-plans rn)
                                   ;; With magic: scan newly demanded entities AND run
                                   ;; recursive branches (constrained by demand relation).
                                            magic-base-rel
-                                           (when (and use-magic? base-scan-attr (= rn rule-name))
+                                           (cond
+                                  ;; Single ref-edge fast path
+                                             (and use-magic? base-scan-attr (= rn rule-name))
                                              (magic-base-scan db head-vars base-scan-attr
-                                                              magic-demand magic-scanned))
+                                                              magic-demand magic-scanned)
+                                  ;; General demand-restricted base for newly demanded entities
+                                             (and use-magic? (= rn rule-name))
+                                             (magic-base-scan-general db base-plans head-vars magic-ground-pos
+                                                                      magic-demand magic-scanned ctx)
+                                  ;; Magic abandoned by the explosion guard (use-magic? now false)
+                                  ;; on the general path: the recursive step below runs
+                                  ;; unrestricted, so backfill the FULL base once per round
+                                  ;; (dedup makes it idempotent) so reflexive / leaf base
+                                  ;; facts exist for every entity the closure can reach.
+                                             (and (not use-magic?) magic-demand (not base-scan-attr) (= rn rule-name))
+                                             (execute-branch-plans db base-plans ctx head-vars))
                                   ;; Execute recursive clause versions
                                   ;; Optimization: delta-driven expansion for simple binary rules
                                   ;; Instead of full index scan + hash-join, iterate delta tuples
