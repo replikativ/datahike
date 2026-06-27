@@ -416,15 +416,24 @@
                              n (if (instance? java.util.Collection tuples)
                                  (.size ^java.util.Collection tuples)
                                  (count tuples))]
-                         (when (and (pos? n) (< (long n) scan-n))
+                         (when (pos? n)
+                           ;; Gate on the DISTINCT value count, not the raw tuple
+                           ;; count: a large intermediate rel from a deep join can
+                           ;; have many rows but few distinct values for this var
+                           ;; (e.g. ?b across a 219k-row hop result). Build the set
+                           ;; with an early-exit once it reaches scan-n — at that
+                           ;; point it isn't selective, so fall back to a full scan.
+                           ;; Bounds build cost to O(min(n, until scan-n distinct)).
                            (let [hs (java.util.HashSet.)]
-                             (doseq [t tuples]
-                               (let [val (cond
-                                           (instance? clojure.lang.Indexed t) (.nth ^clojure.lang.Indexed t col-idx)
-                                           (sequential? t) (nth t col-idx)
-                                           :else (get t col-idx))]
-                                 (when (some? val) (.add hs val))))
-                             (when (pos? (.size hs)) hs)))))
+                             (reduce (fn [_ t]
+                                       (let [val (cond
+                                                   (instance? clojure.lang.Indexed t) (.nth ^clojure.lang.Indexed t col-idx)
+                                                   (sequential? t) (nth t col-idx)
+                                                   :else (get t col-idx))]
+                                         (when (some? val) (.add hs val)))
+                                       (if (>= (.size hs) scan-n) (reduced nil) nil))
+                                     nil tuples)
+                             (when (and (pos? (.size hs)) (< (.size hs) scan-n)) hs)))))
              e-probe (when (and (symbol? e) (analyze/free-var? e))
                        (some (fn [rel]
                                (when-let [ci (get (:attrs rel) e)]
@@ -1366,9 +1375,18 @@
                                        (if anti?
                                          (when (not-any? (fn [^Datom d] (temporal-merge-datom-match? d eid ra vg? vgv check-v? check-tx? scan-d temporal-tx-filter added-filter)) mslice)
                                            (process-merges (inc mi)))
-                                         (doseq [^Datom d mslice]
-                                           (when (temporal-merge-datom-match? d eid ra vg? vgv check-v? check-tx? scan-d temporal-tx-filter added-filter)
-                                             (aset merge-datoms mi d)
+                                         (let [matched? (volatile! false)]
+                                           (doseq [^Datom d mslice]
+                                             (when (temporal-merge-datom-match? d eid ra vg? vgv check-v? check-tx? scan-d temporal-tx-filter added-filter)
+                                               (vreset! matched? true)
+                                               (aset merge-datoms mi d)
+                                               (process-merges (inc mi))))
+                                           ;; Optional merge (get-else): emit the default-valued
+                                           ;; datom when no version matched. :historical forces
+                                           ;; every merge card-many, so a card-one get-else (e.g.
+                                           ;; the valid-at :db.valid/to default) lands here.
+                                           (when (and (not @matched?) merge-optional (aget merge-optional mi))
+                                             (aset merge-datoms mi (datom eid ra (aget merge-defaults mi) tx0))
                                              (process-merges (inc mi))))))))
                                ;; Card-one merge
                                  (if (nil? temporal-type)
@@ -1474,9 +1492,17 @@
                                (if anti?
                                  (when (not-any? (fn [^Datom d] (temporal-merge-datom-match? d eid ra vg? vgv check-v? check-tx? scan-d temporal-tx-filter added-filter)) mslice)
                                    (process-merges (inc mi)))
-                                 (doseq [^Datom d mslice]
-                                   (when (temporal-merge-datom-match? d eid ra vg? vgv check-v? check-tx? scan-d temporal-tx-filter added-filter)
-                                     (aset merge-datoms mi d) (process-merges (inc mi))))))
+                                 (let [matched? (volatile! false)]
+                                   (doseq [^Datom d mslice]
+                                     (when (temporal-merge-datom-match? d eid ra vg? vgv check-v? check-tx? scan-d temporal-tx-filter added-filter)
+                                       (vreset! matched? true)
+                                       (aset merge-datoms mi d) (process-merges (inc mi))))
+                                   ;; Optional merge (get-else): emit default when no version
+                                   ;; matched (:historical forces card-many, so card-one
+                                   ;; get-else like valid-at :db.valid/to lands here).
+                                   (when (and (not @matched?) merge-optional (aget merge-optional mi))
+                                     (aset merge-datoms mi (datom eid ra (aget merge-defaults mi) tx0))
+                                     (process-merges (inc mi))))))
                              (let [probe (datom eid ra vgv tx0)
                                    ^Datom d (pss-lookup-ge eavt-pss probe)
                                    check-v? (aget merge-check-scan-v mi)
@@ -1609,11 +1635,25 @@
                                     (and probe-set
                                          resolved-a
                                          (or (= probe-field 0) (= probe-field 2)) ;; entity or value position
-                                         (if (= probe-field 2) (some? (:avet index-db)) true) ;; value needs AVET; entity always has EAVT
+                                         ;; Value-position seeks read the AVET index, which only
+                                         ;; contains :db/index / :db/unique attributes. For a
+                                         ;; non-indexed attr the AVET slice is empty, so gate on
+                                         ;; indexing? (matching scan-datoms' :seekable?) — otherwise
+                                         ;; fall through to the db-index scan + probe-set filter.
+                                         (if (= probe-field 2)
+                                           (and (some? (:avet index-db)) (dbu/indexing? index-db resolved-a))
+                                           true) ;; entity position always has EAVT
+                                         ;; For a TEMPORAL scan the non-probe path materializes the
+                                         ;; whole current+temporal history of the attribute — far
+                                         ;; costlier than per-value seeks — so prefer probe-driven
+                                         ;; whenever the probe set is smaller than the attribute, not
+                                         ;; just below the seek break-even for cheap current-DB slices.
                                          (let [est (long (or scan-estimate (di/-count db-index)))]
                                            (and (pos? est)
-                                                (< (* (long (probe-set-size probe-set)) (long probe-driven-threshold))
-                                                   est)))))
+                                                (if temporal
+                                                  (< (long (probe-set-size probe-set)) est)
+                                                  (< (* (long (probe-set-size probe-set)) (long probe-driven-threshold))
+                                                     est))))))
                              :cljs false)
         slice (if use-probe-driven?
                 (if temporal
@@ -2768,6 +2808,49 @@
                (assoc :unique-results? true))
            (inc (count merge-ops))])))))
 
+#?(:clj
+   (defn- execute-temporal-group-rel
+     "Temporal entity-group / pattern-scan kept on the FUSED fast path. Runs the
+      temporal-aware `execute-group-direct` (current+temporal merge, inline tx /
+      added / retraction resolution, per-value temporal probe seeks) driven by a
+      SIP probe-set from the bound context rels, returning [ctx' consumed] like
+      `execute-fused-scan-rel`. Avoids the legacy per-clause `lookup-batch-search`
+      fallback that materializes the whole intermediate join then runs one
+      temporal-search over it (the cross-product blowup). `temporal` is a non-nil
+      `(temporal-info db)`; its :origin-db carries the PersistentSortedSet indexes."
+     [db op context temporal]
+     (let [scan-op     (entity-group-scan-op op)
+           merge-ops   (entity-group-merge-ops op)
+           scan-clause (:clause scan-op)
+           index-db    (or (:origin-db temporal) db)
+           a           (second scan-clause)
+           resolved-a  (when (and (some? a) (not (symbol? a))) (resolve-attr index-db a))
+           scan-n      (or (:estimated-card scan-op)
+                           (di/-count (get index-db (:index scan-op))))
+           probe       (pattern-probe-set index-db scan-clause resolved-a (:rels context) scan-n)
+           ;; Project to ALL free vars across the scan + merge clauses (mirroring
+           ;; execute-fused-scan-rel's out-attrs), NOT (:vars op). (:vars op) is the
+           ;; group's declared interface and can omit the entity var (e.g. ?c when it
+           ;; is not in :find), but downstream ops — get-else / predicates / further
+           ;; joins — reference those clause vars, so the fused tuples must carry them.
+           find-vars   (vec (distinct (filter #(and (symbol? %) (analyze/free-var? %))
+                                              (concat scan-clause
+                                                      (mapcat :clause merge-ops)))))
+           result-list (make-result-list 4000)]
+       (execute-group-direct db scan-op merge-ops find-vars nil
+                             result-list
+                             (when probe (:values probe)) (if probe (int (:field probe)) (int 0))
+                             nil 0 -1 nil
+                             :temporal temporal :pipeline (:pipeline op)
+                             :cancel (:cancel context))
+       (let [attrs   (into {} (map-indexed (fn [i v] [v i]) find-vars))
+             out-rel (rel/->Relation attrs (vec (.toArray ^java.util.ArrayList result-list)))
+             merged  (binding [rel/*implicit-source* db
+                               rel/*lookup-attrs* (lookup-attrs-for-clauses db scan-clause merge-ops)]
+                       (rel/collapse-rels (:rels context) out-rel))]
+         [(-> context (assoc :rels merged) (assoc :unique-results? true))
+          (inc (count merge-ops))]))))
+
 ;; ---------------------------------------------------------------------------
 ;; OR / NOT execution (Relation-based fallback)
 
@@ -3498,7 +3581,21 @@
               ;; that have PersistentSortedSet indexes — temporal DBs like SinceDB/AsOfDB
               ;; filter via context, not index structure, so fused scan would bypass filters)
               :entity-group
-              (if (pss-instance? (:eavt op-db))
+              (let [ti (temporal-info op-db)]
+               (cond
+                ;; Single temporal wrapper over a PSS-backed origin — stay on the
+                ;; FUSED path (temporal-aware execute-group-direct + SIP probe)
+                ;; rather than the per-clause legacy lookup-batch-search fallback.
+                (and (some? ti) (pss-instance? (:eavt (:origin-db ti))))
+                (let [[ctx' _] (execute-temporal-group-rel op-db op ctx ti)
+                      actual-card (ctx-total-tuples ctx')
+                      plan' (if (and (> (- (count (:ops plan)) idx) 2)
+                                     (should-replan? actual-card estimated-card))
+                              (replan-fn plan idx actual-card op-db)
+                              plan)]
+                  (recur ctx' plan' (inc idx)))
+
+                (pss-instance? (:eavt op-db))
                 (let [[ctx' consumed] (execute-fused-scan-rel op-db (:scan-op op) (:merge-ops op) ctx)
                       actual-card (ctx-total-tuples ctx')
                       plan' (if (and (> (- (count (:ops plan)) idx) 2)
@@ -3514,6 +3611,7 @@
                 ;; semantics with a default-on-miss. lookup-batch-search is inner-join,
                 ;; so we route optional merges through bind-by-fn (which evaluates
                 ;; -get-else per row, mirroring the legacy engine).
+                :else
                 (let [scan-clause (:clause (:scan-op op))
                       scan-evar (first scan-clause)
                       all-merge-ops (:merge-ops op)
@@ -3593,7 +3691,7 @@
                                        (#?(:clj legacy/filter-by-pred :cljs (rel/get-legacy-fn :filter-by-pred))
                                         c pred-clause))
                                      ctx' (filter some? pushdown-pred-clauses)))]
-                  (recur ctx' plan (inc idx))))
+                  (recur ctx' plan (inc idx)))))
 
               ;; Single pattern scan
               :pattern-scan
