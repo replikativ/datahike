@@ -619,10 +619,21 @@
 ;; ---------------------------------------------------------------------------
 ;; Temporal query support helpers
 
-(defn- resolve-date-to-tx-id
-  "Resolve a Date time-point to the max numeric tx-id where :db/txInstant <= date.
-   Scans temporal AEVT for :db/txInstant datoms on the origin DB (plain DB).
-   Returns tx0 if no transactions exist at or before the given date."
+(def ^:private date-tx-id-cache
+  "Memoizes Date→tx-id resolution. `temporal-info` is recomputed per plan-op, so a
+   single date-based `(d/as-of db <Date>)` query would otherwise re-scan the whole
+   `:db/txInstant` log once per op (~Nx). Keyed on the origin-db's store id +
+   branch + `:max-tx` (which together identify an immutable db state, so the cached
+   tx-id can never be stale) plus the Date. Bounded; dropped wholesale when large."
+  (atom {}))
+
+(defn- date-tx-id-cache-key [origin-db date]
+  (let [cfg (dbi/-config origin-db)
+        sid (get-in cfg [:store :id])
+        mt  (:max-tx origin-db)]
+    (when (and sid mt) [sid (:branch cfg) mt date])))
+
+(defn- resolve-date-to-tx-id*
   [origin-db date]
   (let [txInstant-attr (if (:attribute-refs? (dbi/-config origin-db))
                          (dbi/-ref-for origin-db :db/txInstant)
@@ -635,6 +646,20 @@
     (if (seq matching)
       (long (.-e ^Datom (last matching)))
       (long tx0))))
+
+(defn- resolve-date-to-tx-id
+  "Resolve a Date time-point to the max numeric tx-id where :db/txInstant <= date.
+   Scans AEVT for :db/txInstant datoms on the origin DB. Returns tx0 if none.
+   Memoized per (origin-db :commit-id, date) — see `date-tx-id-cache`."
+  [origin-db date]
+  (let [k   (date-tx-id-cache-key origin-db date)
+        hit (when k (get @date-tx-id-cache k))]
+    (if (some? hit)
+      hit
+      (let [v (resolve-date-to-tx-id* origin-db date)]
+        (when k
+          (swap! date-tx-id-cache (fn [m] (assoc (if (> (count m) 2048) {} m) k v))))
+        v))))
 
 (defn- temporal-info
   "Extract temporal metadata from a DB wrapper.
