@@ -18,9 +18,9 @@
      2) tuple access sites use `get` (works uniformly on JS arrays,
         Object[], and PersistentVectors) instead of `da/aget`.
 
-   On CLJ this code path was masked by `*disable-planner* = true` (the
-   new planner is opt-in via DATAHIKE_QUERY_PLANNER); on CLJS the new
-   planner is the default."
+   On CLJ this code path was historically masked when the base engine ran;
+   the planner is now the default (opt out with DATAHIKE_QUERY_PLANNER=false),
+   and on CLJS the planner is always the default."
   (:require
    #?(:clj  [clojure.test :as t :refer [is]]
       :cljs [cljs.test :as t :refer-macros [is]])
