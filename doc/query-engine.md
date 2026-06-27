@@ -137,23 +137,31 @@ clj -M:bench-compare -m benchmark.planner-regression --assert
 ### Reporting slow queries
 
 **If a query is unexpectedly slow, please [open an issue](https://github.com/replikativ/datahike/issues).**
-The planner is meant to match or beat the relational engine on every supported shape,
-so a significant regression against a reasonable baseline is a bug we want to hear about
-— in particular:
 
-- a query that is **markedly slower with the planner on than off** — compare directly:
+We hold ourselves to a simple standard: on the same data, a supported query should not
+be meaningfully slower in Datahike than in any comparable database — and never slower
+than Datahike's own relational fallback. Performance isn't Datahike's headline feature
+(durable immutable history, time travel, flexible storage backends and distribution are),
+but we take it seriously and treat a significant slowdown against *any* baseline as a bug
+to fix, not a limitation to document. If you can show another database — Datalog, SQL,
+document, anything — answering the same query faster on the same dataset, that is exactly
+the kind of issue we want to see.
+
+Two cases especially worth a report:
+
+- a query **markedly slower with the planner on than off** — compare directly:
   ```clojure
   (require '[datahike.query :as dq])
-  (time (d/q my-query @conn))                                  ;; planner (default)
-  (time (binding [dq/*disable-planner* true] (d/q my-query @conn)))  ;; base engine
+  (time (d/q my-query @conn))                                       ;; planner (default)
+  (time (binding [dq/*disable-planner* true] (d/q my-query @conn))) ;; relational fallback
   ```
-  If the base engine is much faster, that is a planner regression.
-- a query whose latency is wildly out of line with a comparable shape in the tables
-  above, or with another Datalog/temporal store on the same data.
+  If the fallback is much faster, that is a planner regression.
+- a query whose latency is far out of line with a comparable shape in the tables above,
+  or with another database on the same data.
 
-Include the output of `(d/explain my-query @conn)` (the plan — see below), your schema
-for the attributes involved, rough dataset size, and both timings. A reproducible case
-with a synthetic dataset is ideal but not required.
+Include `(d/explain my-query @conn)` (the plan — see below), the schema for the attributes
+involved, rough dataset size, and your timings. A reproducible case with a synthetic
+dataset is ideal but not required.
 
 ## Architecture
 
