@@ -1306,7 +1306,138 @@
            (emit-tuple scan-d collect-set collect-datom-field collect-merge-idx merge-datoms
                        n-find find-source const-vals result-list))))))
 
+(defn- fast-eligible?
+  "True iff a temporal merge is the exact shape the cursor fast path handles:
+   a single, probe-less (fully unbound), card-many, temporal-only, NON-anti,
+   NON-optional merge with a pre-built ForwardCursor. Everything else (probe-bound
+   as-of, multi-merge, anti, get-else/optional, no cursor) delegates to the slow
+   path unchanged."
+  [n-merges temporal-ctx probe-set]
+  (and (== (int n-merges) 1)
+       (nil? probe-set)
+       (let [^objects tc temporal-ctx
+             ^objects merge-anti (aget tc 3)
+             ^objects merge-card-many (aget tc 4)
+             ^objects merge-temporal-only (aget tc 8)
+             ^objects temporal-cursors (aget tc 11)
+             ^objects merge-optional (when (> (alength tc) 16) (aget tc 16))]
+         (and (aget merge-card-many 0)
+              (aget merge-temporal-only 0)
+              (not (aget merge-anti 0))
+              (or (nil? merge-optional) (not (aget merge-optional 0)))
+              (some? temporal-cursors)
+              (some? (aget temporal-cursors 0))))))
+
+#?(:clj
+   (defn- execute-temporal-merge-fast
+     "Fast path for a single card-many temporal-only non-anti non-optional merge
+      with a forward cursor (already created by execute-group-direct). Replaces the
+      ~N root-anchored per-entity -slice calls (one per scanned datom) with ONE
+      monotonically advancing ForwardCursor: the scan emits entities in ascending
+      `e` and temporal-eavt is EAVT-sorted, so seekGE never re-seeks from root.
+
+      Peek-ahead handles the history cartesian: a singleton entity (next scan datom
+      is a different eid) emits directly while walking the cursor (single touch); a
+      repeated entity (next scan datom is the same eid — multiple name × age
+      versions) materializes the matched datoms into a small replay buffer once,
+      then replays it for each repeat without moving the cursor."
+     [eavt-pss slice ground-filter strict-filter
+      probe-set probe-datom-field
+      collect-set collect-datom-field collect-merge-idx
+      merge-datoms n-find find-source const-vals
+      result-list max-n temporal-ctx cancel]
+     (let [^objects merge-attrs (aget ^objects temporal-ctx 0)
+           ^objects merge-v-ground (aget ^objects temporal-ctx 1)
+           ^objects merge-v-vals (aget ^objects temporal-ctx 2)
+           ^objects merge-added-filter (aget ^objects temporal-ctx 5)
+           ^objects merge-check-scan-v (aget ^objects temporal-ctx 6)
+           ^objects merge-check-scan-tx (aget ^objects temporal-ctx 7)
+           ^objects temporal-cursors (aget ^objects temporal-ctx 11)
+           temporal-tx-filter (aget ^objects temporal-ctx 13)
+           scan-added-val (aget ^objects temporal-ctx 14)
+           ^objects merge-datoms merge-datoms
+           ^ints find-source find-source
+           ^objects const-vals const-vals
+           ra (aget merge-attrs 0)
+           vg? (aget merge-v-ground 0)
+           vgv (aget merge-v-vals 0)
+           check-v? (aget merge-check-scan-v 0)
+           check-tx? (aget merge-check-scan-tx 0)
+           added-filter (aget merge-added-filter 0)
+           ^PersistentSortedSet$ForwardCursor cur (aget temporal-cursors 0)
+           buf (java.util.ArrayList.)]
+       (when-let [^java.util.Iterator it (some-> ^Iterable slice .iterator)]
+         (loop [^Datom cur-d (when (.hasNext it) (.next it))
+                buffer-eid -1]
+           (when (and cur-d (or (neg? max-n) (< (result-list-size result-list) max-n)))
+             (check-cancel! cancel)
+             (let [^Datom nxt-d (when (.hasNext it) (.next it))
+                   next-eid (if nxt-d (.-e nxt-d) -1)]
+               (if (and (scan-filter-temporal cur-d ground-filter strict-filter probe-set probe-datom-field temporal-tx-filter)
+                        (or (nil? scan-added-val) (= (datom/datom-added cur-d) scan-added-val)))
+                 (let [eid (.-e cur-d)
+                       scan-d cur-d]
+                   (if (== eid buffer-eid)
+                     ;; replay buffer (same entity, cursor already consumed)
+                     (do (dotimes [bi (.size buf)]
+                           (aset merge-datoms 0 ^Datom (.get buf bi))
+                           (emit-tuple scan-d collect-set collect-datom-field collect-merge-idx merge-datoms
+                                       n-find find-source const-vals result-list))
+                         (recur nxt-d buffer-eid))
+                     ;; advance cursor to this entity
+                     (let [probe (datom eid ra (when vg? vgv) tx0)
+                           ^Datom d0 (.seekGE cur probe)]
+                       (if (== next-eid eid)
+                         ;; repeats follow -> materialize buffer, emit
+                         (do (.clear buf)
+                             (loop [^Datom md d0]
+                               (when (and md (== (.-e md) eid) (= (.-a md) ra))
+                                 (when (temporal-merge-datom-match? md eid ra vg? vgv check-v? check-tx? scan-d temporal-tx-filter added-filter)
+                                   (.add buf md))
+                                 (recur (.next cur))))
+                             (dotimes [bi (.size buf)]
+                               (aset merge-datoms 0 ^Datom (.get buf bi))
+                               (emit-tuple scan-d collect-set collect-datom-field collect-merge-idx merge-datoms
+                                           n-find find-source const-vals result-list))
+                             (recur nxt-d eid))
+                         ;; singleton -> direct emit (single touch)
+                         (do (loop [^Datom md d0]
+                               (when (and md (== (.-e md) eid) (= (.-a md) ra))
+                                 (when (temporal-merge-datom-match? md eid ra vg? vgv check-v? check-tx? scan-d temporal-tx-filter added-filter)
+                                   (aset merge-datoms 0 md)
+                                   (emit-tuple scan-d collect-set collect-datom-field collect-merge-idx merge-datoms
+                                               n-find find-source const-vals result-list))
+                                 (recur (.next cur))))
+                             (recur nxt-d -1))))))
+                 ;; scan datom filtered out
+                 (recur nxt-d buffer-eid)))))))))
+
+(declare execute-temporal-merge-slow)
+
 (defn- execute-temporal-merge
+  "Temporal path 2 dispatcher: route the probe-less single card-many temporal-only
+   merge (the fully-unbound history/as-of entity-group, e.g. [?e :name ?n][?e :age ?a])
+   through the one-pass ForwardCursor fast path; every other shape runs the slow
+   path unchanged."
+  [db eavt-pss slice ground-filter strict-filter
+   probe-set probe-datom-field
+   collect-set collect-datom-field collect-merge-idx
+   merge-datoms n-find find-source const-vals
+   result-list max-n n-merges temporal-ctx cancel]
+  (if #?(:clj (fast-eligible? n-merges temporal-ctx probe-set) :cljs false)
+    #?(:clj (execute-temporal-merge-fast eavt-pss slice ground-filter strict-filter
+                                         probe-set probe-datom-field
+                                         collect-set collect-datom-field collect-merge-idx
+                                         merge-datoms n-find find-source const-vals
+                                         result-list max-n temporal-ctx cancel)
+       :cljs nil)
+    (execute-temporal-merge-slow db eavt-pss slice ground-filter strict-filter
+                                 probe-set probe-datom-field
+                                 collect-set collect-datom-field collect-merge-idx
+                                 merge-datoms n-find find-source const-vals
+                                 result-list max-n n-merges temporal-ctx cancel)))
+
+(defn- execute-temporal-merge-slow
   "Temporal path 2: merge with card-many/card-one, anti-merge, cursor cache.
    temporal-ctx packs temporal-specific arrays to stay under 20-param limit."
   [db eavt-pss slice ground-filter strict-filter
