@@ -140,6 +140,13 @@
                        :main-opts ["-m" "benchmark.cli"]}
 
            ;; Benchmark deps (no :main-opts so it composes with -e / nREPL).
+           ;; Lightweight bench alias for the planner-regression gate: it needs only
+           ;; datahike + benchmark/src. The datalevin/datomic comparators in
+           ;; benchmark.datascript-bench are dynamically required, so they (and
+           ;; stratum's native libs from :bench-compare) stay off the classpath —
+           ;; keeping the CI job fast to load. Run: clj -M:bench -m benchmark.planner-regression --assert
+           :bench {:extra-paths ["benchmark/src"]}
+
            ;; Run via: clj -M:bench-compare -m benchmark.datascript-bench all
            :bench-compare {:extra-paths ["benchmark/src" "src-secondary"]
                            :jvm-opts ["--add-modules" "jdk.incubator.vector"]

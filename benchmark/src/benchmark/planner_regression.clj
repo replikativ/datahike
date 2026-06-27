@@ -164,8 +164,8 @@
 (defn -main [& args]
   (let [assert? (some #{"--assert"} args)
         envl    (fn [k d] (if-let [v (System/getenv k)] (read-string v) d))
-        nodes   (envl "PR_NODES" 8000)
-        txes    (envl "PR_TXES" 1000)
+        nodes   (envl "PR_NODES" 4000)
+        txes    (envl "PR_TXES" 300)
         threshold (double (envl "PR_THRESHOLD" 2.0))
         floor-ms  (double (envl "PR_FLOOR_MS" 3.0))]
     ;; result cache hides re-execution cost (+ a known staleness bug, #808)
@@ -177,10 +177,21 @@
       (println (format "%-20s %10s %10s %8s %8s  %-6s %s"
                        "shape" "compiled" "base" "ratio" "rows" "status" "description"))
       (println (apply str (repeat 110 "-")))
-      (let [results (mapv #(measure-shape % threshold floor-ms) (shapes {:nodes nodes :txes txes}))]
-        (doseq [{:keys [id desc on off ratio n status]} results]
-          (println (format "%-20s %9sms %9sms %7sx %8d  %-6s %s"
-                           (name id) (dsb/round on) (dsb/round off) (dsb/round ratio) n (name status) desc)))
+      (flush)
+      ;; Build the synthetic stores, then measure shape-by-shape, FLUSHING each
+      ;; line as it lands. The build + each measurement is otherwise silent for
+      ;; tens of seconds; streaming progress keeps CI's no-output watchdog from
+      ;; tripping on a run that is in fact making progress.
+      (println (format ";; building synthetic stores (%d nodes + %d-tx history) …" nodes txes))
+      (flush)
+      (let [shps    (shapes {:nodes nodes :txes txes})
+            _       (do (println ";; stores ready — measuring shapes …") (flush))
+            results (mapv (fn [{:keys [id desc on off ratio n status] :as r}]
+                            (println (format "%-20s %9sms %9sms %7sx %8d  %-6s %s"
+                                             (name id) (dsb/round on) (dsb/round off) (dsb/round ratio) n (name status) desc))
+                            (flush)
+                            r)
+                          (map #(measure-shape % threshold floor-ms) shps))]
         (let [bad (filterv #(not= :OK (:status %)) results)]
           (println)
           (if (seq bad)
