@@ -3434,33 +3434,33 @@
   ;; whose function may be unresolvable, is never actually invoked).
   (if (empty? tuples)
     tuples
-   (let [call    (first pred-clause)
-        fn-sym  (first call)
-        args    (rest call)
-        pred-fn (or (when (and (symbol? fn-sym)
-                               (analyze/free-var? fn-sym)
-                               (contains? consts fn-sym))
-                      (get consts fn-sym))
-                    (resolve-pred-symbol fn-sym))]
-    (when-not pred-fn
-      (throw (ex-info (str "Cannot resolve predicate in cross-component post-filter: " fn-sym
-                           #?(:cljs
-                              " (CLJS-only limitation: user-defined predicate functions are not resolvable at runtime — use a built-in comparison or restructure the query to avoid the cross-component span)"
-                              :clj nil))
-                      {:clause pred-clause})))
-    (let [arg-readers (mapv (fn [a]
-                              (if (and (symbol? a)
-                                       (analyze/free-var? a))
-                                (let [idx (get var->idx a)]
-                                  (when (nil? idx)
-                                    (throw (ex-info (str "Post-filter references unknown var: " a)
-                                                    {:clause pred-clause})))
-                                  (fn [t] (nth t idx)))
-                                (constantly a)))
-                            args)]
-      (into #{} (filter (fn [t]
-                          (apply pred-fn (map #(% t) arg-readers))))
-            tuples)))))
+    (let [call    (first pred-clause)
+          fn-sym  (first call)
+          args    (rest call)
+          pred-fn (or (when (and (symbol? fn-sym)
+                                 (analyze/free-var? fn-sym)
+                                 (contains? consts fn-sym))
+                        (get consts fn-sym))
+                      (resolve-pred-symbol fn-sym))]
+      (when-not pred-fn
+        (throw (ex-info (str "Cannot resolve predicate in cross-component post-filter: " fn-sym
+                             #?(:cljs
+                                " (CLJS-only limitation: user-defined predicate functions are not resolvable at runtime — use a built-in comparison or restructure the query to avoid the cross-component span)"
+                                :clj nil))
+                        {:clause pred-clause})))
+      (let [arg-readers (mapv (fn [a]
+                                (if (and (symbol? a)
+                                         (analyze/free-var? a))
+                                  (let [idx (get var->idx a)]
+                                    (when (nil? idx)
+                                      (throw (ex-info (str "Post-filter references unknown var: " a)
+                                                      {:clause pred-clause})))
+                                    (fn [t] (nth t idx)))
+                                  (constantly a)))
+                              args)]
+        (into #{} (filter (fn [t]
+                            (apply pred-fn (map #(% t) arg-readers))))
+              tuples)))))
 
 (defn- apply-post-filters
   "Apply each post-filter clause in sequence to the merged tuple set.
