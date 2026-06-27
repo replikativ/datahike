@@ -141,10 +141,21 @@
 
            ;; Benchmark deps (no :main-opts so it composes with -e / nREPL).
            ;; Run via: clj -M:bench-compare -m benchmark.datascript-bench all
-           :bench-compare {:extra-paths ["benchmark/src"]
+           :bench-compare {:extra-paths ["benchmark/src" "src-secondary"]
+                           :jvm-opts ["--add-modules" "jdk.incubator.vector"]
                            :extra-deps {datalevin/datalevin {:mvn/version "0.10.7"
                                                              :exclusions [com.taoensso/timbre]}
                                         com.datomic/peer {:mvn/version "1.0.7277"}
+                                        ;; stratum columnar secondary index — lets the
+                                        ;; aggregate suite measure the DH+stratum column
+                                        ;; instead of reporting N/A (ns datahike.index.secondary.stratum
+                                        ;; lives on src-secondary above). Exclude its
+                                        ;; slf4j-reload4j binding: with datomic's log4j-over-slf4j
+                                        ;; on the same classpath the two form an org.apache.log4j.MDC
+                                        ;; bridge loop (StackOverflowError on Datomic init).
+                                        org.replikativ/stratum {:mvn/version "0.3.69"
+                                                                :exclusions [org.slf4j/slf4j-reload4j
+                                                                             ch.qos.reload4j/reload4j]}
                                         com.clojure-goes-fast/clj-async-profiler {:mvn/version "1.6.1"}
                                         }}
 
