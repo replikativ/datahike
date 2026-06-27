@@ -2932,12 +2932,21 @@
            context-in (-> (Context. [] {} built-in-rules {} default-settings nil)
                           (resolve-ins qin args))
            db (get (:sources context-in) '$)
+           ;; Temporal wrappers (HistoricalDB/AsOfDB/SinceDB) carry no own
+           ;; :eavt/:avet indexes, so the planner's cardinality estimation
+           ;; (-count on the index) would NPE. Plan against the origin DB's
+           ;; indexes, mirroring how execute-plan uses (planner-origin-db ...).
+           plan-db (cond
+                     (nil? db) db
+                     (instance? DB db) db
+                     :else (let [o (dbi/-origin db)]
+                             (if (instance? DB o) o db)))
            bound-vars (context-bound-vars context-in)
            clauses (if db
                      (substitute-consts-with-lookup-refs db (:where query) (:consts context-in))
                      (:where query))
            rules (not-empty (:rules context-in))
-           plan (create-plan-via-ir db clauses bound-vars rules)
+           plan (create-plan-via-ir plan-db clauses bound-vars rules)
            find-vars (mapv #(.-symbol ^Variable %) (filter #(instance? Variable %) (dpip/find-elements qfind)))
            header (str "=== Query Plan ===\n"
                        "find: " (pr-str find-vars) "\n"
