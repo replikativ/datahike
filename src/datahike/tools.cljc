@@ -61,6 +61,17 @@
   #?(:clj (.getTime (Date.))
      :cljs (.getTime (js/Date.))))
 
+(defn date->epoch-ms
+  "Epoch milliseconds of a `Date`, cross-platform and native-image-safe.
+   The `^Date` hint is load-bearing: an un-hinted `.getTime` on a Date compiles
+   to a REFLECTIVE call (`clojure.lang.Reflector`), which works on the JVM but
+   throws on GraalVM native-image (no reflect-config for java.util.Date) — it was
+   exactly that, in `next-tx-instant`, that broke the native-image build. Route
+   every Date→millis conversion through here."
+  ^long [d]
+  #?(:clj  (.getTime ^Date d)
+     :cljs (.getTime d)))
+
 ;; Clock pinning for repeatable test runs / regulator replays:
 ;;
 ;; The writer runs transactions on a background thread, so per-call
