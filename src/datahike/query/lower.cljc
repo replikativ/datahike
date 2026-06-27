@@ -966,7 +966,13 @@
         ;; ---------------------------------------------------------------
         ;; Step 5: Order everything (entity-groups + other ops + remaining NOTs)
         all-ops (into (into all-groups other-ops) not-ops)
-        ordered-ops (plan/order-plan-ops all-ops)
+        ;; Seed the orderer with the externally-bound (:in collection/tuple) vars
+        ;; so a producer keyed on a bound root (e.g. a recursive rule, or/not) is
+        ;; "ready" from the start and ordered by its cost, not deferred behind a
+        ;; broad attribute scan. (bound-vars excludes $/%/scalar-consts/fn-outputs
+        ;; — only genuine bound relation columns; group DP order is independent of
+        ;; this seed, which only affects non-group op readiness.)
+        ordered-ops (plan/order-plan-ops all-ops bound-vars)
 
         ;; ---------------------------------------------------------------
         ;; Step 6: Detect inter-group value joins

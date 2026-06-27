@@ -1148,7 +1148,23 @@
     [#{} :none]
 
     :recursive-rule
-    [(set (or (:join-vars op) (:vars op))) :all]
+    ;; A recursive rule's required-vars is an ORDERING hint, not a correctness
+    ;; gate: execute-recursive-rule computes the rule's relation independently and
+    ;; hash-joins it in (collapse-rels), so it is correct as a generator (some
+    ;; args bound), a full producer (none bound), or a semijoin (all bound).
+    ;; A GROUND (literal) call-arg — e.g. a scalar :in root const-substituted into
+    ;; the call before planning — makes the magic-set fixpoint SELECTIVE, so the
+    ;; rule is a cheap producer that should LEAD. The old `[(:vars op) :all]`
+    ;; required the rule's OUTPUT var to be pre-bound, forcing it to run as a late
+    ;; filter behind a broad attribute scan that binds the output first (the
+    ;; jobtech `indirectly-replaced-by` full-scan). Recognize a ground call-arg and
+    ;; mark it runnable with nothing bound; otherwise stay ready once ANY call-arg
+    ;; var is bound (covers a collection/tuple :in root, seeded from bound-vars).
+    (let [free-args (filterv analyze/free-var? (:call-args op))]
+      (cond
+        (some #(not (analyze/free-var? %)) (:call-args op)) [#{} :none]
+        (seq free-args)                                     [(set free-args) :any]
+        :else                                               [#{} :none]))
 
     (:not :not-join)
     [(set (or (:join-vars op) (:vars op))) :all]

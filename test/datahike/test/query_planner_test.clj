@@ -851,3 +851,39 @@
                             [?r :edge/to ?b]
                             [?b :node/id ?to]]}]
         (assert-engines-agree db qy [ids])))))
+
+(deftest test-recursive-rule-ground-root-ordering
+  ;; A recursive rule with a GROUND root is a selective generator and must be
+  ;; ordered BEFORE a broad attribute scan that would otherwise bind its output
+  ;; var first (forcing the rule to run as a late semi-join filter behind a full
+  ;; attribute scan — the jobtech `indirectly-replaced-by` over-an-as-of-DB
+  ;; full-scan, ~1.2s → ~10ms once the rule leads). The scalar `:in ?start` is
+  ;; const-substituted into the call, so `op-required-vars` must recognise the
+  ;; literal call-arg and mark the rule a producer (runnable with nothing bound).
+  (let [n     300 ;; so the broad :node/id scan (n rows) costs > the rule's flat producer cost (100)
+        db    (d/db-with
+               (db/empty-db {:node/id   {:db/unique :db.unique/identity :db/index true}
+                             :edge/from {:db/valueType :db.type/ref}
+                             :edge/to   {:db/valueType :db.type/ref}})
+               ;; star: node 0 (entity 1) → every other node (ids 1..n-1)
+               (into (mapv (fn [i] {:db/id (inc i) :node/id i}) (range n))
+                     (mapv (fn [i] {:edge/from 1 :edge/to (+ i 2)}) (range (dec n)))))
+        rules '[[(reaches ?a ?b) [?r :edge/from ?a] [?r :edge/to ?b]]
+                [(reaches ?a ?b) [?r :edge/from ?a] [?r :edge/to ?c] (reaches ?c ?b)]]
+        query '{:find [?bid] :in [$ % ?start] :where [(reaches ?start ?b) [?b :node/id ?bid]]}]
+    (testing "engines agree; node 0 reaches all other nodes"
+      (let [legacy   (binding [q/*disable-planner* true]  (d/q query db rules 1))
+            compiled (binding [q/*disable-planner* false] (d/q query db rules 1))]
+        (is (= (set legacy) (set compiled)))
+        (is (= (dec n) (count compiled)))))
+    (testing "the ground-rooted recursive rule leads, the broad :node/id scan trails"
+      (let [plan     (binding [q/*disable-planner* false]
+                       (d/explain {:query query :args [db rules 1]}))
+            rule-idx (plan-line-index plan #"RECURSIVE-RULE")
+            scan-idx (plan-line-index plan #"SCAN.*\?bid")]
+        (is (some? rule-idx) (str "expected a RECURSIVE-RULE op in plan:\n" plan))
+        (is (some? scan-idx) (str "expected the broad :node/id ?bid scan in plan:\n" plan))
+        (when (and rule-idx scan-idx)
+          (is (< rule-idx scan-idx)
+              (str "ground-rooted recursive rule must precede the broad scan; got rule@"
+                   rule-idx " scan@" scan-idx "\n" plan)))))))
