@@ -22,18 +22,24 @@
   Note: the last tx might not be the biggest if the db
   has been imported before."
   [db datoms]
-  (assoc db :max-tx (reduce #(max %1 (nth %2 3)) 0 datoms)))
+  (assoc db :max-tx (reduce #(max %1 (nth %2 3)) (:max-tx db 0) datoms)))
 
 (defn- instance-to-date [v]
   (if (instance? java.time.Instant v) (java.util.Date/from v) v))
+
+(def ^:dynamic *import-batch-size* 10000)
 
 (defn import-db
   "Import a flat-file of datoms at path into your database.
   Intended as a temporary solution, pending developments in Wanderung."
   [conn path]
-  (println "Preparing import of" path "in batches of 1000")
+  (println "Preparing import of" path "in batches of" *import-batch-size*)
   (let [datoms (->> (cbor/slurp-all path)
                     (map #(-> (apply d/datom %) (update :v instance-to-date))))]
-    (swap! conn update-max-tx datoms)
     (print "Importing ")
-    (api/transact conn (vec datoms))))
+    (reduce (fn [_last-tx batch]
+              (let [batch (vec batch)]
+                (swap! conn update-max-tx batch)
+                (api/transact conn batch)))
+            nil
+            (partition-all *import-batch-size* datoms))))
