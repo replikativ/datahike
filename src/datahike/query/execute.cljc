@@ -3653,9 +3653,14 @@
                 (and (some? ti) (pss-instance? (:eavt (:origin-db ti))))
                 (let [[ctx' _] (execute-temporal-group-rel op-db op ctx ti)
                       actual-card (ctx-total-tuples ctx')
+                      ;; Re-plan cardinality estimation reads index subtree counts
+                      ;; (estimate-pattern → -has-subtree-counts?), which live on the
+                      ;; origin's PSS indexes — the temporal wrapper has none. Estimate
+                      ;; against the origin (filtering only changes counts, not the
+                      ;; relative ordering the re-plan decides); execution still uses op-db.
                       plan' (if (and (> (- (count (:ops plan)) idx) 2)
                                      (should-replan? actual-card estimated-card))
-                              (replan-fn plan idx actual-card op-db)
+                              (replan-fn plan idx actual-card (:origin-db ti))
                               plan)]
                   (recur ctx' plan' (inc idx)))
 
@@ -3769,6 +3774,22 @@
                              (update ctx :rels rel/collapse-rels new-rel))]
                   (recur ctx' plan (inc idx)))
                 (if (not (pss-instance? (:eavt op-db)))
+                  (let [ti (temporal-info op-db)
+                        scan-attr (second (:clause op))]
+                   (if (and (some? ti)
+                            (pss-instance? (:eavt (:origin-db ti)))
+                            (not (:optional? op))
+                            (some? scan-attr) (not (symbol? scan-attr)))
+                    ;; Temporal DB with a PSS-backed origin and a concrete-attr,
+                    ;; non-optional pattern: stay on the FUSED seek path (per bound
+                    ;; entity/value temporal index seeks via execute-group-direct +
+                    ;; build-scan-slice) instead of the per-clause legacy
+                    ;; lookup-batch-search, which cannot seek on a temporal wrapper
+                    ;; and full-scans the attribute every call (catastrophic inside
+                    ;; a recursive-rule fixpoint). Optional (get-else) and
+                    ;; variable-attribute patterns stay on legacy below.
+                    (let [[ctx' _] (execute-temporal-group-rel op-db op ctx ti)]
+                      (recur ctx' plan (inc idx)))
                   ;; Temporal/non-standard DB — use legacy lookup with search context.
                   ;; lookup-batch-search takes [source context orig-pattern resolved-pattern];
                   ;; passing clause twice — no resolution needed in fallback.
@@ -3797,7 +3818,7 @@
                                          (#?(:clj legacy/filter-by-pred :cljs (rel/get-legacy-fn :filter-by-pred))
                                           c pred-clause))
                                        ctx' (filter some? (mapv :pred-clause (:pushdown-preds op)))))]
-                    (recur ctx' plan (inc idx)))
+                    (recur ctx' plan (inc idx)))))
                 ;; DB source — use fused scan or single pattern scan
                   (let [;; Check if next ops form an ad-hoc fusable group
                         all-ops (:ops plan)
