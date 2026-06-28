@@ -102,6 +102,35 @@ jobs:
           paths:
             - /home/circleci/.m2
             - /home/circleci/.deps.clj
+
+  # Same suite with the query planner OFF (base/relational engine). The planner is
+  # the DEFAULT now, so the other test jobs exercise it; this one guards the base
+  # engine + the planner↔base parity that the legacy-vs-planner tests assert.
+  persistent-set-test-base-engine:
+    executor: tools/clojurecli
+    steps:
+      - attach_workspace:
+          at: /home/circleci
+      - run:
+          name: Run unittests for persistent sorted set index (query planner OFF)
+          command: bb test clj-pss
+          no_output_timeout: 5m
+          environment:
+            DATAHIKE_QUERY_PLANNER: "false"
+      - save_cache:
+          key: deps-{{ checksum "deps.edn" }}
+          paths:
+            - /home/circleci/.m2
+            - /home/circleci/.deps.clj
+  planner-regression:
+    executor: tools/clojurecli
+    steps:
+      - attach_workspace:
+          at: /home/circleci
+      - run:
+          name: Planner regression (compiled-vs-base ratio gate)
+          command: clojure -M:bench -m benchmark.planner-regression --assert
+          no_output_timeout: 10m
   hitchhiker-tree-test:
     executor: tools/clojurecli
     steps:
@@ -325,6 +354,14 @@ workflows:
           requires:
             - setup
       - persistent-set-test:
+          context: ghcr-read-package
+          requires:
+            - build
+      - persistent-set-test-base-engine:
+          context: ghcr-read-package
+          requires:
+            - build
+      - planner-regression:
           context: ghcr-read-package
           requires:
             - build

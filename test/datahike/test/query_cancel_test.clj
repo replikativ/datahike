@@ -56,7 +56,7 @@
 
 (deftest cancel-nil-is-free
   (testing ":cancel nil (default) does not affect results"
-    (binding [q/*force-legacy* false]
+    (binding [q/*disable-planner* false]
       (let [db (d/db *conn*)
             r1 (d/q '[:find ?e ?v :where [?e :x ?v]] db)
             r2 (d/q {:query '[:find ?e ?v :where [?e :x ?v]]
@@ -71,7 +71,7 @@
 
 (deftest preset-cancel-raises-fast
   (testing "pre-set cancel flag raises :datahike/canceled at first check point"
-    (binding [q/*force-legacy* false]
+    (binding [q/*disable-planner* false]
       (let [db (d/db *conn*)
             thrown (try
                      (d/q {:query '[:find ?e ?v :where [?e :x ?v]]
@@ -90,7 +90,7 @@
     ;; iteration after the flag is observed. We only assert correctness
     ;; (cancel-exception raised) — not a specific upper bound on
     ;; elapsed time, which is JIT/GC-sensitive.
-    (binding [q/*force-legacy* false]
+    (binding [q/*disable-planner* false]
       (let [db (d/db *conn*)
             cancel (volatile! false)
             watchdog (future
@@ -108,7 +108,7 @@
 
 (deftest concurrent-cancel-relation-path
   (testing "cancel also fires on the relation path (predicate forces fallback)"
-    (binding [q/*force-legacy* false]
+    (binding [q/*disable-planner* false]
       (let [db (d/db *conn*)
             cancel (volatile! false)
             watchdog (future
@@ -129,7 +129,7 @@
 
 (deftest cancel-reset-allows-reuse
   (testing "vreset! cancel false → query runs to completion again"
-    (binding [q/*force-legacy* false]
+    (binding [q/*disable-planner* false]
       (let [db (d/db *conn*)
             cancel (volatile! true)]
         (is (thrown? Exception

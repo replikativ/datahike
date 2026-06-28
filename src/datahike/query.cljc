@@ -54,11 +54,13 @@
 
 (def ^:const lru-cache-size 100)
 
-(def ^:dynamic *force-legacy*
-  "When true, bypass the query planner and use legacy engine.
-   Set DATAHIKE_QUERY_PLANNER=true to enable the query planner.
-   Default: legacy engine (query planner is opt-in during testing)."
-  #?(:clj (not= "true" (System/getenv "DATAHIKE_QUERY_PLANNER"))
+(def ^:dynamic *disable-planner*
+  "When true, bypass the query planner and run every query through the relational
+   (base) engine. The planner is the DEFAULT: it handles eligible queries and falls
+   back to the relational engine for the rest (multi-source disjoint joins, nested
+   temporal wrappers, stats), so the base engine is a permanent fallback, not legacy.
+   Set DATAHIKE_QUERY_PLANNER=false to disable the planner globally."
+  #?(:clj  (= "false" (System/getenv "DATAHIKE_QUERY_PLANNER"))
      :cljs false))
 
 (def ^:dynamic *query-result-cache?*
@@ -2930,12 +2932,21 @@
            context-in (-> (Context. [] {} built-in-rules {} default-settings nil)
                           (resolve-ins qin args))
            db (get (:sources context-in) '$)
+           ;; Temporal wrappers (HistoricalDB/AsOfDB/SinceDB) carry no own
+           ;; :eavt/:avet indexes, so the planner's cardinality estimation
+           ;; (-count on the index) would NPE. Plan against the origin DB's
+           ;; indexes, mirroring how execute-plan uses (planner-origin-db ...).
+           plan-db (cond
+                     (nil? db) db
+                     (instance? DB db) db
+                     :else (let [o (dbi/-origin db)]
+                             (if (instance? DB o) o db)))
            bound-vars (context-bound-vars context-in)
            clauses (if db
                      (substitute-consts-with-lookup-refs db (:where query) (:consts context-in))
                      (:where query))
            rules (not-empty (:rules context-in))
-           plan (create-plan-via-ir db clauses bound-vars rules)
+           plan (create-plan-via-ir plan-db clauses bound-vars rules)
            find-vars (mapv #(.-symbol ^Variable %) (filter #(instance? Variable %) (dpip/find-elements qfind)))
            header (str "=== Query Plan ===\n"
                        "find: " (pr-str find-vars) "\n"
@@ -3422,39 +3433,53 @@
 (defn- eval-post-filter
   "Apply a single predicate post-filter to a set of wide tuples.
    `pred-clause` is [(fn-sym arg ...)]; each arg is either a free var
-   (looked up in `var->idx`) or a constant value."
-  [tuples var->idx pred-clause]
-  (let [call    (first pred-clause)
-        fn-sym  (first call)
-        args    (rest call)
-        pred-fn (resolve-pred-symbol fn-sym)]
-    (when-not pred-fn
-      (throw (ex-info (str "Cannot resolve predicate in cross-component post-filter: " fn-sym
-                           #?(:cljs
-                              " (CLJS-only limitation: user-defined predicate functions are not resolvable at runtime — use a built-in comparison or restructure the query to avoid the cross-component span)"
-                              :clj nil))
-                      {:clause pred-clause})))
-    (let [arg-readers (mapv (fn [a]
-                              (if (and (symbol? a)
-                                       (analyze/free-var? a))
-                                (let [idx (get var->idx a)]
-                                  (when (nil? idx)
-                                    (throw (ex-info (str "Post-filter references unknown var: " a)
-                                                    {:clause pred-clause})))
-                                  (fn [t] (nth t idx)))
-                                (constantly a)))
-                            args)]
-      (into #{} (filter (fn [t]
-                          (apply pred-fn (map #(% t) arg-readers))))
-            tuples))))
+   (looked up in `var->idx`) or a constant value.
+   `consts` is the {:in var → value} binding map: when the predicate
+   position is itself a variable bound there (e.g. `:in $ ?pred` +
+   `[(?pred ?a)]`), it resolves to the supplied function value."
+  [tuples var->idx pred-clause consts]
+  ;; No tuples to test → nothing to resolve or apply. Short-circuits the
+  ;; case where an upstream component matched nothing (so the predicate,
+  ;; whose function may be unresolvable, is never actually invoked).
+  (if (empty? tuples)
+    tuples
+    (let [call    (first pred-clause)
+          fn-sym  (first call)
+          args    (rest call)
+          pred-fn (or (when (and (symbol? fn-sym)
+                                 (analyze/free-var? fn-sym)
+                                 (contains? consts fn-sym))
+                        (get consts fn-sym))
+                      (resolve-pred-symbol fn-sym))]
+      (when-not pred-fn
+        (throw (ex-info (str "Cannot resolve predicate in cross-component post-filter: " fn-sym
+                             #?(:cljs
+                                " (CLJS-only limitation: user-defined predicate functions are not resolvable at runtime — use a built-in comparison or restructure the query to avoid the cross-component span)"
+                                :clj nil))
+                        {:clause pred-clause})))
+      (let [arg-readers (mapv (fn [a]
+                                (if (and (symbol? a)
+                                         (analyze/free-var? a))
+                                  (let [idx (get var->idx a)]
+                                    (when (nil? idx)
+                                      (throw (ex-info (str "Post-filter references unknown var: " a)
+                                                      {:clause pred-clause})))
+                                    (fn [t] (nth t idx)))
+                                  (constantly a)))
+                              args)]
+        (into #{} (filter (fn [t]
+                            (apply pred-fn (map #(% t) arg-readers))))
+              tuples)))))
 
 (defn- apply-post-filters
-  "Apply each post-filter clause in sequence to the merged tuple set."
-  [tuples target-vars post-filters]
+  "Apply each post-filter clause in sequence to the merged tuple set.
+   `consts` is the {:in var → value} binding map, threaded to
+   `eval-post-filter` so a predicate passed as an :in parameter resolves."
+  [tuples target-vars post-filters consts]
   (if (empty? post-filters)
     tuples
     (let [var->idx (into {} (map-indexed (fn [i v] [v i])) target-vars)]
-      (reduce (fn [ts pf] (eval-post-filter ts var->idx pf))
+      (reduce (fn [ts pf] (eval-post-filter ts var->idx pf consts))
               tuples
               post-filters))))
 
@@ -3534,10 +3559,21 @@
    stats? qreturnmaps]
   (let [exec-direct-rel #?(:clj (requiring-resolve 'datahike.query.execute/execute-plan-direct-rel)
                            :cljs execute/execute-plan-direct-rel)
-        fused-rel (try (exec-direct-rel plan db (:cancel context-in))
-                       (catch #?(:clj Exception :cljs :default) e
-                         (log/debug "fused-scan-rel not applicable:" #?(:clj (.getMessage ^Exception e) :cljs (str e)))
-                         nil))
+        ;; Only take the direct-rel fast path when there are NO input relations.
+        ;; That path executes the plan from scratch and `collapse-rels`-joins the
+        ;; result with the :in rels AFTERWARD, which defeats sideways-information-
+        ;; passing: a pattern whose value/entity var is bound by an :in binding
+        ;; would scan its whole attribute instead of probing the bound values.
+        ;; execute-plan threads context-in into execute-fused-scan-rel, whose SIP
+        ;; extracts a probe-set from the input rels and uses AVET/EAVT seeks
+        ;; (jobtech batched lookups: 43ms -> 0.26ms at small batch sizes). This
+        ;; mirrors the `(empty? (:rels context-in))` gate already in
+        ;; execute-planned-direct.
+        fused-rel (when (empty? (:rels context-in))
+                    (try (exec-direct-rel plan db (:cancel context-in))
+                         (catch #?(:clj Exception :cljs :default) e
+                           (log/debug "fused-scan-rel not applicable:" #?(:clj (.getMessage ^Exception e) :cljs (str e)))
+                           nil)))
         context-out (if fused-rel
                       (update context-in :rels collapse-rels fused-rel)
                       (#?(:clj (requiring-resolve 'datahike.query.execute/execute-plan)
@@ -3605,7 +3641,7 @@
                          (some (fn [[_k v]] (when (and (dbu/db? v) (planner-eligible-db? v)) v))
                                sources)))
         multi-source? (> (count (:sources context-in)) 1)
-        use-planner? (and (not *force-legacy*)
+        use-planner? (and (not *disable-planner*)
                           (not stats?)
                           (some? primary-db)
                           (dbu/db? primary-db)
@@ -3668,8 +3704,21 @@
                            extended-find
                            (mapv (fn [{:keys [vars find-vars]}]
                                    (let [pf-here (filter vars post-filter-vars)
-                                         seen (into #{} find-vars)]
-                                     (vec (concat find-vars (remove seen pf-here)))))
+                                         seen (into #{} find-vars)
+                                         ef (vec (concat find-vars (remove seen pf-here)))]
+                                     ;; A component that projects NO var is a pure
+                                     ;; existence/liveness constraint (e.g. `[?e _ _]`
+                                     ;; sharing no var with the rest of the query). Running
+                                     ;; it with `:find []` returns #{} even when the
+                                     ;; component is satisfiable, which would wrongly
+                                     ;; collapse the whole cartesian-merge to #{}. Give it
+                                     ;; one of its own free vars so the sub-query yields
+                                     ;; ≥1 row iff the component matches; the extra var is
+                                     ;; dropped by the final projection to the user's
+                                     ;; find-vars.
+                                     (if (and (empty? ef) (seq vars))
+                                       [(first vars)]
+                                       ef)))
                                  components)
                            sub-results
                            (mapv
@@ -3690,7 +3739,8 @@
                             components extended-find)
                            wide-vars (vec (mapcat :vars sub-results))
                            merged    (cartesian-merge sub-results wide-vars)
-                           filtered  (apply-post-filters merged wide-vars post-filters)
+                           filtered  (apply-post-filters merged wide-vars post-filters
+                                                         (:consts context-in))
                            ;; Project wide tuples back to the user's find-var order.
                            wide->find-idxs (let [idx (into {} (map-indexed (fn [i v] [v i])) wide-vars)]
                                              (mapv idx find-var-syms))
@@ -3787,7 +3837,7 @@
       returns nil when its condition is false, or the body's last expression when true.
       The innermost when-let binds the result and returns (-post-process qfind result)."
      [{:keys [query args offset limit order-by stats?]}]
-     (when (and (not *force-legacy*)
+     (when (and (not *disable-planner*)
                 (not stats?)
                 (not order-by)
                 (not offset)
@@ -3834,7 +3884,7 @@
                 ;; Clojure, so they'd share a result-cache entry and return the
                 ;; first-cached scale. Keep them distinct.
                 cache-key (scale-sensitive-key
-                           [query non-db-args offset limit order-by *force-legacy*])
+                           [query non-db-args offset limit order-by *disable-planner*])
                 entry (result-cache-get db cache-key)]
             (if entry
               (:result entry)

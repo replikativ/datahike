@@ -1,5 +1,19 @@
 # Benchmarking Datahike
 
+> **Two benchmark suites live in this repo.**
+>
+> - **Cross-database comparison** (`:bench-compare`) — compares Datahike against
+>   **Datalevin** and **Datomic** on queries, joins, recursive rules, aggregates and
+>   temporal (as-of/history) workloads, plus a planner-vs-base-engine regression gate.
+>   This is the suite behind the numbers in [query-engine.md](query-engine.md#performance).
+>   ```bash
+>   clj -M:bench-compare -m benchmark.datascript-bench all          # full comparison
+>   clj -M:bench-compare -m benchmark.planner-regression --assert   # CI regression gate
+>   ```
+> - **Datahike backend measurement** (`:benchmark`) — the structured tool documented
+>   below, for measuring Datahike's own *in-memory* and *file* backends across index,
+>   history and cache configurations, with cross-version comparison.
+
 There is a small command line utility integrated in this project to measure the performance of our *in-memory* and our *file* backend. It is also capable of comparing benchmarking results.
 
 To run the benchmarks, navigate to the project folder in your console and run 

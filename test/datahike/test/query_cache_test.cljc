@@ -146,7 +146,7 @@
                  ;; const-only fn binding: value flows through verbatim, so the
                  ;; result's scale is exactly the input's scale.
                  run (fn [legacy? s]
-                       (binding [dq/*force-legacy* legacy?]
+                       (binding [dq/*disable-planner* legacy?]
                          (str (ffirst (d/q '{:find [?v] :in [$ ?p ?f] :where [[(?f ?p) ?v]]}
                                            db (bigdec s) identity)))))]
              (doseq [legacy? [true false]]

@@ -802,9 +802,16 @@
 ;; DP inter-group join ordering
 
 (defn- group-effective-card
-  "Effective output cardinality for a group, accounting for attached predicates."
+  "Effective output cardinality for a group, accounting for attached predicates.
+
+   Prefers the bound-aware :scan-card (set on single pattern-scan ops whose
+   entity/value var is bound by an :in input or an upstream producer) over the
+   unconstrained :estimated-card, so a selective lookup-by-bound-var is ordered
+   ahead of a full-attribute scan instead of behind it. :estimated-card is left
+   intact for assemble-entity-group's pass-rate math; only the ORDERING cost
+   reads the bound-aware value here."
   ^long [group]
-  (let [base (long (or (:estimated-card group) 1000000))]
+  (let [base (long (or (:scan-card group) (:estimated-card group) 1000000))]
     (if-let [preds (seq (:attached-preds group))]
       (max 1 (long (* base (Math/pow 0.33 (count preds)))))
       base)))
@@ -1141,7 +1148,23 @@
     [#{} :none]
 
     :recursive-rule
-    [(set (or (:join-vars op) (:vars op))) :all]
+    ;; A recursive rule's required-vars is an ORDERING hint, not a correctness
+    ;; gate: execute-recursive-rule computes the rule's relation independently and
+    ;; hash-joins it in (collapse-rels), so it is correct as a generator (some
+    ;; args bound), a full producer (none bound), or a semijoin (all bound).
+    ;; A GROUND (literal) call-arg — e.g. a scalar :in root const-substituted into
+    ;; the call before planning — makes the magic-set fixpoint SELECTIVE, so the
+    ;; rule is a cheap producer that should LEAD. The old `[(:vars op) :all]`
+    ;; required the rule's OUTPUT var to be pre-bound, forcing it to run as a late
+    ;; filter behind a broad attribute scan that binds the output first (the
+    ;; jobtech `indirectly-replaced-by` full-scan). Recognize a ground call-arg and
+    ;; mark it runnable with nothing bound; otherwise stay ready once ANY call-arg
+    ;; var is bound (covers a collection/tuple :in root, seeded from bound-vars).
+    (let [free-args (filterv analyze/free-var? (:call-args op))]
+      (cond
+        (some #(not (analyze/free-var? %)) (:call-args op)) [#{} :none]
+        (seq free-args)                                     [(set free-args) :any]
+        :else                                               [#{} :none]))
 
     (:not :not-join)
     [(set (or (:join-vars op) (:vars op))) :all]
@@ -1248,30 +1271,46 @@
                   result []]
              (if (and (nil? group-q) (empty? remaining))
                result
-              ;; First, flush any non-group ops whose deps are now satisfied
-               (let [ready (filterv (fn [op] (< (op-cost op bound-vars) max-cost)) remaining)]
-                 (if (seq ready)
-                  ;; Insert the cheapest ready non-group op
-                   (let [best (first (sort-by #(op-cost % bound-vars) ready))]
-                     (recur group-q
-                            (disj remaining best)
-                            (into bound-vars (:vars best))
-                            (conj result best)))
-                  ;; No ready non-group ops — emit next group
-                   (if group-q
-                     (let [g (first group-q)]
-                       (recur (next group-q)
-                              remaining
-                              (into bound-vars (:vars g))
-                              (conj result g)))
-                    ;; No more groups but remaining ops still unready — force them
-                     (let [scored (map (fn [op] [op (op-cost op bound-vars)]) remaining)
-                           best (first (sort-by second scored))
-                           [chosen-op _] best]
-                       (recur nil
-                              (disj remaining chosen-op)
-                              (into bound-vars (:vars chosen-op))
-                              (conj result chosen-op))))))))))))))
+              ;; Pick the globally cheapest READY action — either the cheapest
+              ;; ready non-group op OR the next pre-ordered group — rather than
+              ;; always flushing ready non-groups first. A rule/OR op that is a
+              ;; pure producer (op-required-vars :none) is "ready" with nothing
+              ;; bound, but is often far more expensive than a selective binder
+              ;; group that would constrain it; flushing it first made it scan
+              ;; its whole relation set as a generator (jobtech `edge` rule:
+              ;; 17s → ~ms once the concept binder runs first). Readiness still
+              ;; gates correctness (op-required-vars); among ready actions we
+              ;; now order purely by cost. Groups are preferred on ties since
+              ;; they bind producer vars that can unlock/cheapen pending ops.
+               (let [ready    (filterv (fn [op] (< (op-cost op bound-vars) max-cost)) remaining)
+                     best-ng  (when (seq ready)
+                                (apply min-key #(op-cost % bound-vars) ready))
+                     ng-cost  (when best-ng (long (op-cost best-ng bound-vars)))
+                     next-g   (first group-q)
+                     g-cost   (when next-g (long (group-effective-card next-g)))
+                     ;; choose :group | :non-group | :force
+                     choice   (cond
+                                (and best-ng next-g) (if (< ng-cost g-cost) :non-group :group)
+                                best-ng              :non-group
+                                next-g               :group
+                                :else                :force)]
+                 (case choice
+                   :group     (recur (next group-q)
+                                     remaining
+                                     (into bound-vars (:vars next-g))
+                                     (conj result next-g))
+                   :non-group (recur group-q
+                                     (disj remaining best-ng)
+                                     (into bound-vars (:vars best-ng))
+                                     (conj result best-ng))
+                   ;; No more groups, remaining ops still unready — force the
+                   ;; cheapest so we make progress (preserves prior behaviour).
+                   :force     (let [scored (map (fn [op] [op (op-cost op bound-vars)]) remaining)
+                                    [chosen-op _] (first (sort-by second scored))]
+                                (recur nil
+                                       (disj remaining chosen-op)
+                                       (into bound-vars (:vars chosen-op))
+                                       (conj result chosen-op)))))))))))))
 
 ;; ---------------------------------------------------------------------------
 ;; OR / NOT / Rule plan ops

@@ -15,9 +15,9 @@
   ([db query]
    (assert-engines-agree db query []))
   ([db query extra-args]
-   (let [legacy  (binding [q/*force-legacy* true]
+   (let [legacy  (binding [q/*disable-planner* true]
                    (apply d/q query db extra-args))
-         compiled (binding [q/*force-legacy* false]
+         compiled (binding [q/*disable-planner* false]
                     (apply d/q query db extra-args))]
      (is (= (set (seq legacy)) (set (seq compiled)))
          (str "Engines disagree on: " (pr-str query))))))
@@ -26,9 +26,9 @@
   "Run query with rules through both engines.
    Query must contain :in $ % for rules to be passed."
   [db query rules]
-  (let [legacy  (binding [q/*force-legacy* true]
+  (let [legacy  (binding [q/*disable-planner* true]
                   (d/q query db rules))
-        compiled (binding [q/*force-legacy* false]
+        compiled (binding [q/*disable-planner* false]
                    (d/q query db rules))]
     (is (= (set (seq legacy)) (set (seq compiled)))
         (str "Engines disagree on: " (pr-str query)))))
@@ -246,9 +246,9 @@
 (defn assert-engines-agree-ordered
   "Run query with :order-by through both engines, assert identical ordered results."
   [db query-map]
-  (let [legacy  (binding [q/*force-legacy* true]
+  (let [legacy  (binding [q/*disable-planner* true]
                   (d/q query-map))
-        compiled (binding [q/*force-legacy* false]
+        compiled (binding [q/*disable-planner* false]
                    (d/q query-map))]
     (is (= legacy compiled)
         (str "Engines disagree on ordered: " (pr-str (:query query-map))))))
@@ -334,8 +334,8 @@
 
   (testing "engines agree on aggregates"
     (let [query '[:find ?n (count ?e) :where [?e :name ?n]]
-          legacy   (binding [q/*force-legacy* true]  (d/q query @test-db))
-          compiled (binding [q/*force-legacy* false] (d/q query @test-db))]
+          legacy   (binding [q/*disable-planner* true]  (d/q query @test-db))
+          compiled (binding [q/*disable-planner* false] (d/q query @test-db))]
       (is (= (set legacy) (set compiled))))))
 
 ;; ---------------------------------------------------------------------------
@@ -378,18 +378,18 @@
 
 (deftest test-find-specs
   (testing "FindScalar"
-    (let [legacy   (binding [q/*force-legacy* true]  (d/q '[:find ?a . :where [7 :age ?a]] @test-db))
-          compiled (binding [q/*force-legacy* false] (d/q '[:find ?a . :where [7 :age ?a]] @test-db))]
+    (let [legacy   (binding [q/*disable-planner* true]  (d/q '[:find ?a . :where [7 :age ?a]] @test-db))
+          compiled (binding [q/*disable-planner* false] (d/q '[:find ?a . :where [7 :age ?a]] @test-db))]
       (is (= legacy compiled))))
 
   (testing "FindColl"
-    (let [legacy   (binding [q/*force-legacy* true]  (d/q '[:find [?e ...] :where [?e :name "Ivan"]] @test-db))
-          compiled (binding [q/*force-legacy* false] (d/q '[:find [?e ...] :where [?e :name "Ivan"]] @test-db))]
+    (let [legacy   (binding [q/*disable-planner* true]  (d/q '[:find [?e ...] :where [?e :name "Ivan"]] @test-db))
+          compiled (binding [q/*disable-planner* false] (d/q '[:find [?e ...] :where [?e :name "Ivan"]] @test-db))]
       (is (= (set legacy) (set compiled)))))
 
   (testing "FindTuple"
-    (let [legacy   (binding [q/*force-legacy* true]  (d/q '[:find [?e ?a] :where [?e :name "Dmitry"] [?e :age ?a]] @test-db))
-          compiled (binding [q/*force-legacy* false] (d/q '[:find [?e ?a] :where [?e :name "Dmitry"] [?e :age ?a]] @test-db))]
+    (let [legacy   (binding [q/*disable-planner* true]  (d/q '[:find [?e ?a] :where [?e :name "Dmitry"] [?e :age ?a]] @test-db))
+          compiled (binding [q/*disable-planner* false] (d/q '[:find [?e ?a] :where [?e :name "Dmitry"] [?e :age ?a]] @test-db))]
       (is (= legacy compiled))))
 
   (testing "FindRel (default)"
@@ -561,9 +561,9 @@
                         {:db/id 2 :name "Oleg" :id 2}])
         assert-multi
         (fn [query & extra-args]
-          (let [legacy  (binding [q/*force-legacy* true]
+          (let [legacy  (binding [q/*disable-planner* true]
                           (apply d/q query extra-args))
-                planner (binding [q/*force-legacy* false]
+                planner (binding [q/*disable-planner* false]
                           (apply d/q query extra-args))]
             (is (= (set (seq legacy)) (set (seq planner)))
                 (str "Engines disagree on: " (pr-str query)))))]
@@ -619,7 +619,7 @@
       ;; The planner correctly resolves lookup refs in NOT sub-queries.
       ;; Legacy has a known bug here (doesn't resolve lookup refs in NOT context),
       ;; so we assert the correct result directly.
-      (let [result (binding [q/*force-legacy* false]
+      (let [result (binding [q/*disable-planner* false]
                      (d/q '[:find ?e ?a
                             :in $1 [?e ...]
                             :where [$1 ?e :id ?a]
@@ -644,7 +644,7 @@
           query '[:find ?e :where [?e :val-a ?x] [?e :val-b ?x] (not [?e :flag :no])]]
       (assert-engines-agree db query)
       (is (= #{[4]}
-             (binding [q/*force-legacy* false] (d/q query db)))
+             (binding [q/*disable-planner* false] (d/q query db)))
           "Only entity 4 should match: val-a == val-b AND flag != :no")))
 
   (testing "shared value variable without NOT still correct (sorted-merge path)"
@@ -657,7 +657,7 @@
           query '[:find ?e :where [?e :val-a ?x] [?e :val-b ?x]]]
       (assert-engines-agree db query)
       (is (= #{[4] [6]}
-             (binding [q/*force-legacy* false] (d/q query db)))
+             (binding [q/*disable-planner* false] (d/q query db)))
           "Entities 4 and 6 match: both have val-a == val-b"))))
 
 ;; ---------------------------------------------------------------------------
@@ -717,7 +717,7 @@
                 [(get-else $ ?c :concept/legacy-id "missing") ?legacy]]]
     (assert-engines-agree db query [["T"]])
     (is (= #{["A" "1384"] ["B" "missing"]}
-           (binding [q/*force-legacy* false] (d/q query db ["T"])))
+           (binding [q/*disable-planner* false] (d/q query db ["T"])))
         "Both concepts returned: A with its legacy-id, B with the default.")
     (d/release conn)))
 
@@ -770,3 +770,120 @@
           (str "both-bound should be ≤ min(3,1,base)≤3, got " with-both)))
     (testing "empty bindings = base"
       (is (= base (estimate-with-bindings db pi-free si {}))))))
+
+;; ---------------------------------------------------------------------------
+;; Regression: rule+OR driven by a collection (:in [?x ...]) binding.
+;;
+;; The `edge`-style rule below is a pure producer (every OR branch binds all
+;; head vars), so before the join-ordering fix the planner scheduled the OR
+;; FIRST — generating every edge and hash-joining the bound ids afterward —
+;; which on a large store (jobtech-taxonomy: 150k relations) turned a
+;; millisecond lookup into a multi-second hang. The fix makes the planner
+;; order the selective `:node/id` binder (bound via the `[?ida ...]` input)
+;; AHEAD of the producer OR, and routes :in-binding queries through the
+;; SIP-capable execution path so the bound values drive the scan.
+;;
+;; Guards two invariants that are cheap and deterministic to assert:
+;;   (a) both engines agree (correctness), and
+;;   (b) the bound-var binder scan is ordered BEFORE the OR in the plan.
+
+(def ^:private or-rule-db
+  (delay
+    (let [base (db/empty-db {:node/id   {:db/unique :db.unique/identity
+                                         :db/index true}
+                             :edge/from {:db/valueType :db.type/ref}
+                             :edge/to   {:db/valueType :db.type/ref}})
+          n 1000
+          nodes (mapv (fn [i] {:db/id (inc i) :node/id i}) (range n))
+          edges (mapv (fn [i] {:edge/from (inc i)
+                               :edge/to   (inc (mod (inc i) n))})
+                      (range n))]
+      (d/db-with base (into nodes edges)))))
+
+(def ^:private edge-or-rules
+  '[[(linked ?a ?b ?r)
+     (or (and [?r :edge/from ?a] [?r :edge/to ?b])
+         (and [?r :edge/to ?a]   [?r :edge/from ?b]))]])
+
+(def ^:private edge-or-query
+  '{:find  [?ida ?idb]
+    :in    [$ % [?ida ...]]
+    :where [[?a :node/id ?ida]
+            (linked ?a ?b ?r)
+            [?b :node/id ?idb]]})
+
+(defn- plan-line-index
+  "Index of the first plan line matching `re`, or nil."
+  [plan-str re]
+  (first (keep-indexed (fn [i l] (when (re-find re l) i))
+                       (clojure.string/split-lines plan-str))))
+
+(deftest test-rule-or-collection-binding-ordering
+  (let [db   @or-rule-db
+        ids  (vec (range 50))]
+    (testing "engines agree on a rule+OR driven by a collection binding"
+      (let [legacy   (binding [q/*disable-planner* true]  (d/q edge-or-query db edge-or-rules ids))
+            compiled (binding [q/*disable-planner* false] (d/q edge-or-query db edge-or-rules ids))]
+        (is (= (set legacy) (set compiled)))
+        (is (seq compiled) "query should return rows")))
+    (testing "the selective :node/id binder is ordered before the producer OR"
+      (let [plan     (binding [q/*disable-planner* false]
+                       (d/explain {:query edge-or-query :args [db edge-or-rules ids]}))
+            scan-idx (plan-line-index plan #"SCAN.*node/id|node/id.*\?ida")
+            or-idx   (plan-line-index plan #"(?i)^\s*OR\b")]
+        (is (some? scan-idx) (str "expected a :node/id binder scan in plan:\n" plan))
+        (is (some? or-idx)   (str "expected an OR in plan:\n" plan))
+        (when (and scan-idx or-idx)
+          (is (< scan-idx or-idx)
+              (str "binder scan must precede the producer OR; got scan@" scan-idx
+                   " or@" or-idx "\n" plan)))))))
+
+(deftest test-collection-binding-join-agreement
+  ;; SIP path: an :in collection binding feeding a 2-pattern join (no rule).
+  ;; Guards that routing :in-binding queries through the SIP-capable engine
+  ;; preserves results across a range of batch sizes.
+  (let [db @or-rule-db]
+    (doseq [n [1 10 100 1000]]
+      (let [ids   (vec (range n))
+            qy    '{:find [?ida ?to] :in [$ [?ida ...]]
+                    :where [[?a :node/id ?ida]
+                            [?r :edge/from ?a]
+                            [?r :edge/to ?b]
+                            [?b :node/id ?to]]}]
+        (assert-engines-agree db qy [ids])))))
+
+(deftest test-recursive-rule-ground-root-ordering
+  ;; A recursive rule with a GROUND root is a selective generator and must be
+  ;; ordered BEFORE a broad attribute scan that would otherwise bind its output
+  ;; var first (forcing the rule to run as a late semi-join filter behind a full
+  ;; attribute scan — the jobtech `indirectly-replaced-by` over-an-as-of-DB
+  ;; full-scan, ~1.2s → ~10ms once the rule leads). The scalar `:in ?start` is
+  ;; const-substituted into the call, so `op-required-vars` must recognise the
+  ;; literal call-arg and mark the rule a producer (runnable with nothing bound).
+  (let [n     300 ;; so the broad :node/id scan (n rows) costs > the rule's flat producer cost (100)
+        db    (d/db-with
+               (db/empty-db {:node/id   {:db/unique :db.unique/identity :db/index true}
+                             :edge/from {:db/valueType :db.type/ref}
+                             :edge/to   {:db/valueType :db.type/ref}})
+               ;; star: node 0 (entity 1) → every other node (ids 1..n-1)
+               (into (mapv (fn [i] {:db/id (inc i) :node/id i}) (range n))
+                     (mapv (fn [i] {:edge/from 1 :edge/to (+ i 2)}) (range (dec n)))))
+        rules '[[(reaches ?a ?b) [?r :edge/from ?a] [?r :edge/to ?b]]
+                [(reaches ?a ?b) [?r :edge/from ?a] [?r :edge/to ?c] (reaches ?c ?b)]]
+        query '{:find [?bid] :in [$ % ?start] :where [(reaches ?start ?b) [?b :node/id ?bid]]}]
+    (testing "engines agree; node 0 reaches all other nodes"
+      (let [legacy   (binding [q/*disable-planner* true]  (d/q query db rules 1))
+            compiled (binding [q/*disable-planner* false] (d/q query db rules 1))]
+        (is (= (set legacy) (set compiled)))
+        (is (= (dec n) (count compiled)))))
+    (testing "the ground-rooted recursive rule leads, the broad :node/id scan trails"
+      (let [plan     (binding [q/*disable-planner* false]
+                       (d/explain {:query query :args [db rules 1]}))
+            rule-idx (plan-line-index plan #"RECURSIVE-RULE")
+            scan-idx (plan-line-index plan #"SCAN.*\?bid")]
+        (is (some? rule-idx) (str "expected a RECURSIVE-RULE op in plan:\n" plan))
+        (is (some? scan-idx) (str "expected the broad :node/id ?bid scan in plan:\n" plan))
+        (when (and rule-idx scan-idx)
+          (is (< rule-idx scan-idx)
+              (str "ground-rooted recursive rule must precede the broad scan; got rule@"
+                   rule-idx " scan@" scan-idx "\n" plan)))))))

@@ -31,9 +31,9 @@
    Return both result sets so tests can assert equality, capture both into
    the failure message, and check the planner result independently."
   [q-form & inputs]
-  {:legacy  (binding [q/*force-legacy* true]
+  {:legacy  (binding [q/*disable-planner* true]
               (apply d/q q-form inputs))
-   :planner (binding [q/*force-legacy* false]
+   :planner (binding [q/*disable-planner* false]
               (apply d/q q-form inputs))})
 
 ;; ---------------------------------------------------------------------------

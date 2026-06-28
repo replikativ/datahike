@@ -1,15 +1,15 @@
 # Compiled Query Engine
 
-Datahike includes an opt-in query planner that plans and executes Datalog queries using a fused scan+merge strategy over B-tree indices. For multi-clause entity joins, it can be significantly faster than the legacy engine.
+Datahike's query planner plans and executes Datalog queries using a fused scan+merge strategy over B-tree indices. For multi-clause entity joins it can be significantly faster than the relational (base) engine. **It is enabled by default.**
 
-**Status: Experimental** — The query planner produces identical results to the legacy engine for all supported query shapes. It is opt-in and the legacy engine remains the default.
+The planner runs for *eligible* queries (a single primary DB or temporal wrapper, non-stats); everything else — multi-source disjoint joins, nested temporal wrappers, stats — falls back to the relational engine. That engine is therefore a permanent fallback, not "legacy". The planner produces identical results to it for all supported query shapes.
 
-## Enabling the Compiled Engine
+## Disabling the planner
 
-Set the environment variable before starting your JVM:
+The planner is on by default. To run every query through the relational engine, set the environment variable before starting your JVM:
 
 ```bash
-DATAHIKE_QUERY_PLANNER=true clj -M:dev
+DATAHIKE_QUERY_PLANNER=false clj -M:dev
 ```
 
 Or bind the dynamic var at runtime:
@@ -17,13 +17,152 @@ Or bind the dynamic var at runtime:
 ```clojure
 (require '[datahike.query :as dq])
 
-;; Enable for a specific query
-(binding [dq/*force-legacy* false]
+;; Disable for a specific query
+(binding [dq/*disable-planner* true]
   (d/q '[:find ?n ?a :where [?e :name ?n] [?e :age ?a]] @conn))
 
-;; Enable globally (for the current thread)
-(alter-var-root #'dq/*force-legacy* (constantly false))
+;; Disable globally (for the current thread)
+(alter-var-root #'dq/*disable-planner* (constantly true))
 ```
+
+## Performance
+
+The compiled planner makes Datahike competitive with — and on most read-heavy
+shapes faster than — embedded Datalog/temporal databases. The tables below are from
+the in-repo cross-database suite (`benchmark.datascript-bench`) on a 20,000-entity
+dataset, all times **wall-clock milliseconds, lower is better**, Datahike running the
+compiled planner (the default).
+
+> **Methodology / caveats.** Single machine, single run, query-result cache disabled,
+> JIT pre-warmed; Datalevin 0.10.18, Datomic Peer 1.0.7387. Results are bit-for-bit
+> identical across engines (verified by row count on every shape). These are
+> *directional, reproducible* numbers from the bundled suite, not a controlled
+> multi-run study — reproduce them yourself with the commands at the end of this
+> section.
+
+### Queries (vs Datalevin and Datomic)
+
+Datahike wins 9 of 15 shapes; Datalevin edges it on simple multi-clause selections
+and the non-recursive rule — cases where both are already fast (well under a few ms).
+
+| Query | Datahike | Datalevin | Datomic |
+|---|---:|---:|---:|
+| simple lookup `[?e :name "Ivan"]` | **0.13** | 0.69 | 5.2 |
+| two-clause join (name + age) | 0.62 | **0.56** | 8.8 |
+| three clauses (reversed order) | 0.63 | **0.31** | 12.7 |
+| value join (shared `?age`) | **7.9** | 231 | 217 |
+| predicate `salary > ?min` | **1.5** | 2.5 | 19.6 |
+| NOT negation | **3.8** | 148 | 49.6 |
+| OR-join (name or name + age) | **5.5** | 228 | 70.7 |
+| NOT-join | **6.0** | 146 | 47.8 |
+| 5-clause entity merge | **2.4** | 2.9 | 138 |
+| non-recursive rule | 3.6 | **2.5** | 8.3 |
+
+### Cross-entity joins (vs Datalevin and Datomic)
+
+Datahike wins every join shape, often decisively.
+
+| Join | Datahike | Datalevin | Datomic |
+|---|---:|---:|---:|
+| ref join, 1 dept → people | **0.18** | 4.4 | 3.3 |
+| ref join, 10 depts → people | **1.2** | 8.9 | 6.0 |
+| ref join + predicate | **1.8** | 15.8 | 9.5 |
+| 3-hop chain (person → dept → division) | **30.5** | 73.2 | 94.5 |
+| selective (salary > 90k → dept) | **4.3** | 20.5 | 22.0 |
+
+### Recursive rules (vs Datalevin and Datomic)
+
+Datahike wins long chains; Datalevin wins the very-wide fan-out trees.
+
+| Rule | Datahike | Datalevin | Datomic |
+|---|---:|---:|---:|
+| wide tree 3×3 | **0.23** | 1.2 | 5.3 |
+| wide tree 7×3 | 23.4 | **13.1** | 163.7 |
+| chain 10×3 | **0.34** | 1.5 | 5.7 |
+| chain 30×5 | **3.3** | 5.7 | 64.2 |
+
+### Temporal: as-of / history (vs Datomic)
+
+Datahike wins all 9 temporal shapes — including the multi-clause history join, after
+the temporal-merge cursor fast path (it cursor-drives the entity-group merge in one
+pass instead of one index seek per entity).
+
+| Temporal query | Datahike | Datomic |
+|---|---:|---:|
+| current: name = Ivan | **0.13** | 5.0 |
+| current: name + age | **0.54** | 8.8 |
+| as-of: name + age | **4.9** | 9.8 |
+| as-of: name + age + sex | **6.4** | 13.5 |
+| history: all names | **4.8** | 6.6 |
+| history: age + tx | **7.3** | 13.4 |
+| history: name + age join | **16.2** | 40.2 |
+| history: retracted ages | **1.5** | 5.0 |
+
+### Aggregates
+
+PSS-based aggregates (the default) are mid-pack; with the **stratum** columnar
+secondary index they are the fastest measured (10–50× the alternatives) because the
+planner pushes the aggregate to native columnar storage.
+
+| Aggregate | Datahike (PSS) | Datahike + stratum | Datalevin | Datomic |
+|---|---:|---:|---:|---:|
+| avg salary | 2.0 | **0.27** | 11.7 | 22.8 |
+| avg + count by sex | 32.8 | **0.54** | 9.5 | 57.6 |
+| avg / min / max (filtered) | 3.2 | **0.98** | 5.6 | 48.2 |
+| avg salary > 50k by sex | 29.7 | **0.43** | 4.4 | 35.2 |
+| avg salary by sex × name | 36.7 | **0.45** | 15.2 | 101.5 |
+| variance + stddev + median | 8.1 | **4.9** | 12.0 | 55.7 |
+
+(See [secondary-indices.md](secondary-indices.md) for the stratum index.)
+
+### Writes
+
+The planner is a read-path optimization and does not change write throughput. On bulk
+insert (20k entities) Datahike is roughly on par with Datalevin and behind Datomic's
+in-memory peer — the write path is not the focus of this suite, so those numbers are
+not tracked here.
+
+### Reproducing these numbers
+
+```bash
+# Full cross-database suite (Datahike vs Datalevin vs Datomic)
+clj -M:bench-compare -m benchmark.datascript-bench all
+# Or a single category: queries | writes | rules | aggregates | temporal | joins
+clj -M:bench-compare -m benchmark.datascript-bench temporal
+
+# Planner-vs-base-engine regression gate (CI): asserts the planner is never
+# more than 2x slower than the relational engine on historically-tricky shapes.
+clj -M:bench-compare -m benchmark.planner-regression --assert
+```
+
+### Reporting slow queries
+
+**If a query is unexpectedly slow, please [open an issue](https://github.com/replikativ/datahike/issues).**
+
+We hold ourselves to a simple standard: on the same data, a supported query should not
+be meaningfully slower in Datahike than in any comparable database — and never slower
+than Datahike's own relational fallback. Performance isn't Datahike's headline feature
+(durable immutable history, time travel, flexible storage backends and distribution are),
+but we take it seriously and treat a significant slowdown against *any* baseline as a bug
+to fix, not a limitation to document. If you can show another database — Datalog, SQL,
+document, anything — answering the same query faster on the same dataset, that is exactly
+the kind of issue we want to see.
+
+Two cases especially worth a report:
+
+- a query **markedly slower with the planner on than off** — compare directly:
+  ```clojure
+  (require '[datahike.query :as dq])
+  (time (d/q my-query @conn))                                       ;; planner (default)
+  (time (binding [dq/*disable-planner* true] (d/q my-query @conn))) ;; relational fallback
+  ```
+  If the fallback is much faster, that is a planner regression.
+- a query whose latency is far out of line with a comparable shape in the tables above,
+  or with another database on the same data.
+
+Include `(d/explain my-query @conn)` (the plan — see below), the schema for the attributes
+involved, rough dataset size, and your timings. A reproducible case with a synthetic
+dataset is ideal but not required.
 
 ## Architecture
 
@@ -253,9 +392,9 @@ Use `d/explain` to see the query plan for any query:
 | ORDER BY | Yes | Independent of engine choice |
 | FindScalar / FindColl / FindTuple | Yes | |
 | Temporal DBs (`as-of`, `since`, `history`) | Yes | Numeric and Date time-points |
-| Nested temporal wrappers (`(history (as-of ...))`) | Fallback to legacy | |
+| Nested temporal wrappers (`(history (as-of ...))`) | Fallback to base engine | |
 
-When the query planner encounters an unsupported query shape, it automatically falls back to the legacy engine — no error, no configuration needed.
+When the query planner encounters an unsupported query shape, it automatically falls back to the relational (base) engine — no error, no configuration needed.
 
 ## ORDER BY
 

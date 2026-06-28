@@ -10,7 +10,7 @@
    [datahike.db.utils :as dbu]
    [datahike.bitemporal.platform :as bp]
    [datahike.constants :refer [tx0]]
-   [datahike.tools :refer [get-date]]
+   [datahike.tools :refer [get-date date->epoch-ms]]
    [replikativ.logging :as log]
    [datahike.schema :as ds]
    [datahike.index.secondary :as sec]
@@ -163,8 +163,8 @@
 
    See ADR for the design rationale."
   [db-before]
-  (let [now-ms  (#?(:clj .getTime :cljs .getTime) (get-date))
-        prev-ms (some-> (last-tx-instant db-before) .getTime)
+  (let [now-ms  (date->epoch-ms (get-date))
+        prev-ms (some-> (last-tx-instant db-before) date->epoch-ms)
         ms      (if (or (nil? prev-ms) (< (long prev-ms) (long now-ms)))
                   (long now-ms)
                   (inc (long prev-ms)))]

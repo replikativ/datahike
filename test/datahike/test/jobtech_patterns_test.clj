@@ -102,9 +102,9 @@
 
 (defn assert-engines-agree
   ([db query extra-args]
-   (let [legacy  (binding [q/*force-legacy* true]
+   (let [legacy  (binding [q/*disable-planner* true]
                    (apply d/q query db extra-args))
-         compiled (binding [q/*force-legacy* false]
+         compiled (binding [q/*disable-planner* false]
                     (apply d/q query db extra-args))]
      (is (= (set (seq legacy)) (set (seq compiled)))
          (str "Engines disagree on: " (pr-str query)))))
@@ -252,11 +252,11 @@
 
 (deftest test-count-aggregate
   (testing "Count concepts by type"
-    (let [legacy  (binding [q/*force-legacy* true]
+    (let [legacy  (binding [q/*disable-planner* true]
                     (d/q '[:find ?type (count ?c)
                            :where [?c :concept/type ?type]]
                          @test-db))
-          compiled (binding [q/*force-legacy* false]
+          compiled (binding [q/*disable-planner* false]
                      (d/q '[:find ?type (count ?c)
                             :where [?c :concept/type ?type]]
                           @test-db))]
@@ -266,12 +266,12 @@
 
 (deftest test-pull-pattern
   (testing "Pull with nested ref"
-    (let [legacy  (binding [q/*force-legacy* true]
+    (let [legacy  (binding [q/*disable-planner* true]
                     (d/q '[:find (pull ?c [:concept/id :concept/preferred-label
                                            {:concept/replaced-by [:concept/id]}])
                            :where [?c :concept/deprecated true]]
                          @test-db))
-          compiled (binding [q/*force-legacy* false]
+          compiled (binding [q/*disable-planner* false]
                      (d/q '[:find (pull ?c [:concept/id :concept/preferred-label
                                             {:concept/replaced-by [:concept/id]}])
                             :where [?c :concept/deprecated true]]
@@ -318,12 +318,12 @@
 
 (deftest test-find-scalar
   (testing "FindScalar: single concept label"
-    (let [legacy  (binding [q/*force-legacy* true]
+    (let [legacy  (binding [q/*disable-planner* true]
                     (d/q '[:find ?label . :in $ ?id
                            :where [?c :concept/id ?id]
                            [?c :concept/preferred-label ?label]]
                          @test-db "c1"))
-          compiled (binding [q/*force-legacy* false]
+          compiled (binding [q/*disable-planner* false]
                      (d/q '[:find ?label . :in $ ?id
                             :where [?c :concept/id ?id]
                             [?c :concept/preferred-label ?label]]
@@ -334,10 +334,10 @@
 
 (deftest test-find-coll
   (testing "FindColl: all concept ids"
-    (let [legacy  (binding [q/*force-legacy* true]
+    (let [legacy  (binding [q/*disable-planner* true]
                     (d/q '[:find [?id ...] :where [?c :concept/id ?id]]
                          @test-db))
-          compiled (binding [q/*force-legacy* false]
+          compiled (binding [q/*disable-planner* false]
                      (d/q '[:find [?id ...] :where [?c :concept/id ?id]]
                           @test-db))]
       (is (= (set legacy) (set compiled))))))
