@@ -1,5 +1,6 @@
 (ns datahike.test.migrate-test
   (:require [clojure.test :refer :all]
+            [clj-cbor.core :as cbor]
             [datahike.api :as d]
             [datahike.datom :as datom]
             [datahike.migrate :as m]
@@ -318,3 +319,28 @@
                                       (d/datoms @import-conn :eavt)))))
     (d/release conn)
     (d/release import-conn)))
+
+(deftest import-db-batches-with-dynamic-size
+  (let [export-path (str "/tmp/import-batch-test-" (utils/get-time))
+        datoms (mapv #(vec (rest %)) tx-data)
+        imported-tx (apply max (map #(nth % 3) datoms))
+        config {:store {:backend :memory
+                        :id #uuid "00210000-0000-0000-0000-000000000022"}
+                :schema-flexibility :read
+                :keep-history? false}
+        conn (utils/setup-db config)
+        batch-size 5]
+    (try
+      (cbor/spit-all export-path datoms)
+      (binding [m/*import-batch-size* batch-size]
+        (is (= {:tx-data (mapv #(apply datom/datom %) (last (partition-all batch-size datoms)))}
+               (select-keys (m/import-db conn export-path) [:tx-data])))
+        (is (= (+ imported-tx (count (partition-all batch-size datoms)))
+               (:max-tx @conn))))
+      (is (= (set (map #(apply datom/datom %) datoms))
+             (set (filter #(< (:e %) (:max-tx @conn))
+                          (d/datoms @conn :eavt)))))
+      (finally
+        (d/release conn)
+        (d/delete-database config)
+        (.delete (java.io.File. export-path))))))
