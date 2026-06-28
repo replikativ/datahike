@@ -437,7 +437,7 @@
          safe-root      (fn [x]
                           (when x
                             (try (audit/-merkle-root x)
-                                 (catch Throwable _ nil))))
+                                 (catch #?(:clj Throwable :cljs :default) _ nil))))
          merkle-roots   (cond-> {:eavt-key (safe-root eavt')
                                  :aevt-key (safe-root aevt')
                                  :avet-key (safe-root avet')}

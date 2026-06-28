@@ -9,8 +9,11 @@
                                       write-pending-kvs!]]
             [datahike.writer]
             [datahike.index.secondary :as sec]
+            ;; cljs: S is a VAR (the supervisor) → :refer; go-try-/<?-/<?/go-loop-try
+            ;; are MACROS → :refer-macros. (Was missing <? entirely and putting S
+            ;; under :refer-macros, so both were :undeclared-var on cljs.)
             #?(:clj  [superv.async :refer [go-try- <?- <? S go-loop-try]]
-               :cljs [superv.async :refer-macros [go-try- <?- S go-loop-try]])
+               :cljs [superv.async :refer [S] :refer-macros [go-try- <?- <? go-loop-try]])
             [datahike.db.utils :refer [db?]]
             [datahike.tools :as dt]
             [replikativ.logging :as log]

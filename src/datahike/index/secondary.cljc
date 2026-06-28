@@ -2,6 +2,8 @@
   "Pluggable secondary index protocol and registry.
    Secondary indices are declared through schema and maintained in-transaction.
    Anyone can register their own index type — the planner treats all uniformly."
+  ;; protocol methods -as-transient / -persistent! shadow cljs.core's names
+  #?(:cljs (:refer-clojure :exclude [-as-transient -persistent!]))
   (:require [replikativ.logging :as log]
             [datahike.bitemporal.predicate :as bp.pred]
             [datahike.db.interface :as dbi]
