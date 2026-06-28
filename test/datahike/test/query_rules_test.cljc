@@ -2,8 +2,11 @@
   (:require
    #?(:cljs [cljs.test    :as t :refer-macros [is deftest testing]]
       :clj  [clojure.test :as t :refer        [is deftest testing]])
+   [clojure.core.async :refer [<!]]
    [datahike.api :as d]
-   [datahike.db :as db]))
+   [datahike.db :as db]
+   [datahike.test.utils :as du]
+   [datahike.test.async #?(:clj :refer :cljs :refer-macros) [deftest-async]]))
 
 #?(:cljs (def Throwable js/Error))
 
@@ -210,7 +213,9 @@
                   :where (is ?id false)] db rules)
            #{[2]}))))
 
-(deftest test-rule-arguments
+;; Indexed-attr magic-set path over an :attribute-refs? true CONNECTION — runs on
+;; both platforms (cljs via deftest-async + the async setup-db).
+(deftest-async test-rule-arguments
   (let [cfg {:store {:backend :memory
                      :id #uuid "a0000000-0000-0000-0000-00000000000a"}
              :name "rule-test"
@@ -233,19 +238,17 @@
                  [(ground ["Alice" "Bob"]) [?name ...]]
                  [?p :name ?name]
                  [?p :age ?age]]]
-        _ (d/delete-database cfg)
-        _ (d/create-database cfg)
-        conn (d/connect cfg)]
+        conn (<! (du/setup-db-async cfg))]
 
-    (d/transact conn {:tx-data schema})
-    (d/transact conn {:tx-data [{:name "Alice"
-                                 :age  25}
-                                {:name "Bob"
-                                 :age 30}]})
-    (d/transact conn {:tx-data [{:name    "Charlie"
-                                 :age     5
-                                 :parents [[:name "Alice"]
-                                           [:name "Bob"]]}]})
+    (<! (d/transact! conn {:tx-data schema}))
+    (<! (d/transact! conn {:tx-data [{:name "Alice"
+                                      :age  25}
+                                     {:name "Bob"
+                                      :age 30}]}))
+    (<! (d/transact! conn {:tx-data [{:name    "Charlie"
+                                      :age     5
+                                      :parents [[:name "Alice"]
+                                                [:name "Bob"]]}]}))
 
     (is (= #{[25]}
            (d/q {:query '{:find [?age]

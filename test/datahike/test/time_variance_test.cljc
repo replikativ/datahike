@@ -2,13 +2,14 @@
   (:require
    #?(:cljs [cljs.test :as t :refer-macros [is are deftest testing]]
       :clj  [clojure.test :as t :refer [is are deftest testing]])
+   [clojure.core.async :refer [<! timeout]]
    [datahike.api :as d]
    #?(:cljs [datahike.cljs :refer [Throwable]])
    [datahike.constants :as const]
    [datahike.test.utils :as du]
    [datahike.db.interface :as dbi]
-   [datahike.test.utils :refer [setup-db sleep]])
-  (:import [java.util Date]))
+   [datahike.test.async #?(:clj :refer :cljs :refer-macros) [deftest-async]])
+  #?(:clj (:import [java.util Date])))
 
 (set! *print-namespace-maps* false)
 
@@ -32,7 +33,7 @@
                    :initial-tx schema})
 
 (defn now []
-  (Date.))
+  #?(:clj (Date.) :cljs (js/Date.)))
 
 (defn permute-and-repeat [max-repeat elements]
   (let [elements (vec elements)
@@ -57,16 +58,16 @@
   (for [fs (permute-and-repeat 2 ops)]
     ((apply comp fs) db)))
 
-(deftest test-base-history
+(deftest-async test-base-history
   (let [cfg (assoc-in cfg-template [:store :id] #uuid "71000000-0000-0000-0000-000000000001")
-        conn (setup-db cfg)
+        conn (<! (du/setup-db-async cfg))
         tx-id0 (:max-tx @conn)]
     (testing "Initial data"
       (is (= #{["Alice" 25] ["Bob" 35]}
              (d/q '[:find ?n ?a :where [?e :name ?n] [?e :age ?a]] @conn))))
 
     (testing "historical values"
-      (d/transact conn [{:db/id [:name "Alice"] :age 30}])
+      (<! (d/transact! conn [{:db/id [:name "Alice"] :age 30}]))
       (are [x y]
            (= x y)
         #{[30]}
@@ -75,7 +76,7 @@
         (d/q '[:find ?a :in $ ?e :where [?e :age ?a]] (d/history @conn) [:name "Alice"])))
     (testing "historical values after with retraction"
       (let [tx-id1 (:max-tx @conn)
-            _ (d/transact conn [[:db/retractEntity [:name "Alice"]]])
+            _ (<! (d/transact! conn [[:db/retractEntity [:name "Alice"]]]))
             tx-id2 (:max-tx @conn)]
         (is (thrown-with-msg? Throwable #"Nothing found for entity id"
                               (d/q '[:find ?a :in $ ?e :where [?e :age ?a]] @conn [:name "Alice"])))
@@ -116,19 +117,19 @@
 (defn replace-commit-id [s]
   (clojure.string/replace s #":commit-id #uuid \"[^\"]+\"" ":commit-id :REPLACED"))
 
-(deftest test-historical-queries
+(deftest-async test-historical-queries
   (let [cfg (-> cfg-template
                 (assoc-in [:store :id] #uuid "71000000-0000-0000-0000-000000000002"))
-        conn (setup-db cfg)]
+        conn (<! (du/setup-db-async cfg))]
 
     (testing "get all values before specific time"
-      (let [_ (d/transact conn [{:db/id [:name "Alice"] :age 30}])
+      (let [_ (<! (d/transact! conn [{:db/id [:name "Alice"] :age 30}]))
             ;; sleep to make sure that transact thread has older timestamp
-            _ (sleep 10)
+            _ (<! (timeout 10))
             date (now)
             ;; sleep to make sure that transact thread has newer timestamp
-            _ (sleep 10)
-            _ (d/transact conn [{:db/id [:name "Alice"] :age 35}])
+            _ (<! (timeout 10))
+            _ (<! (d/transact! conn [{:db/id [:name "Alice"] :age 35}]))
             history-db (d/history @conn)
             current-db @conn
             current-query '[:find ?a :in $ ?e :where [?e :age ?a]]
@@ -155,13 +156,13 @@
              (replace-commit-id (pr-str (d/history @conn))))))
     (d/release conn)))
 
-(deftest test-as-of-db
+(deftest-async test-as-of-db
   (let [cfg (-> cfg-template
                 (assoc-in [:store :id] #uuid "71000000-0000-0000-0000-000000000003"))
-        conn (setup-db cfg)
+        conn (<! (du/setup-db-async cfg))
         first-date (now)
         ;; sleep to make sure that transact thread has newer timestamp
-        _ (sleep 10)
+        _ (<! (timeout 10))
         tx-id 536870914
         query '[:find ?a :in $ ?e :where [?e :age ?a ?tx]]]
     (testing "get values at specific time"
@@ -183,19 +184,19 @@
         (testing "before"
           (is (= #{[25]}
                  (d/q find-alices-age (d/as-of @conn tx-id) "Alice"))))
-        (d/transact conn [[:db/retractEntity [:name "Alice"]]])
+        (<! (d/transact! conn [[:db/retractEntity [:name "Alice"]]]))
         (testing "after"
           (is (= #{}
                  (d/q find-alices-age (d/as-of @conn tx-id) "Alice"))))))
     (d/release conn)))
 
-(deftest test-since-db
+(deftest-async test-since-db
   (let [cfg (-> cfg-template
                 (assoc-in [:store :id] #uuid "71000000-0000-0000-0000-000000000004"))
-        conn (setup-db cfg)
+        conn (<! (du/setup-db-async cfg))
         first-date (now)
         ;; sleep to make sure that transact thread has newer timestamp
-        _ (sleep 10)
+        _ (<! (timeout 10))
         tx-id 536870913
         query '[:find ?a :where [?e :age ?a]]]
     (testing "empty after first insertion"
@@ -203,7 +204,7 @@
              (d/q query (d/since @conn first-date)))))
     (testing "added new value"
       (let [new-age 30
-            _ (d/transact conn [{:db/id [:name "Alice"] :age new-age}])]
+            _ (<! (d/transact! conn [{:db/id [:name "Alice"] :age new-age}]))]
         (is (= #{[new-age]}
                (d/q query (d/since @conn first-date))))
         (is (= #{[new-age]}
@@ -213,7 +214,7 @@
              (replace-commit-id (pr-str (d/since @conn tx-id))))))
     (d/release conn)))
 
-(deftest test-no-history
+(deftest-async test-no-history
   (let [initial-tx [{:db/ident :name
                      :db/cardinality :db.cardinality/one
                      :db/valueType :db.type/string
@@ -227,12 +228,12 @@
         cfg (-> cfg-template
                 (assoc-in [:store :id] #uuid "71000000-0000-0000-0000-000000000005")
                 (assoc :initial-tx initial-tx))
-        conn (setup-db cfg)
+        conn (<! (du/setup-db-async cfg))
         query '[:find ?n ?a :where [?e :name ?n] [?e :age ?a]]]
     (testing "all names and ages are present in history"
       (is (= #{["Alice" 25] ["Bob" 35]}
              (d/q query (d/history @conn)))))
-    (d/transact conn [[:db/retractEntity [:name "Alice"]]])
+    (<! (d/transact! conn [[:db/retractEntity [:name "Alice"]]]))
     (testing "no-history attributes are not present in history"
       (is (= #{["Bob" 35]}
              (d/q query (d/history @conn)))))
@@ -241,13 +242,13 @@
              (d/q '[:find ?n :where [?e :name ?n]] (d/history @conn)))))
     (d/release conn)))
 
-(deftest upsert-history
+(deftest-async upsert-history
   (let [cfg {:store {:backend :memory
                      :id #uuid "00120000-0000-0000-0000-000000000012"}
              :keep-history? true
              :schema-flexibility :read
              :initial-tx schema}
-        conn (setup-db cfg)
+        conn (<! (du/setup-db-async cfg))
         query '[:find ?a ?t ?op
                 :where
                 [?e :name "Alice"]
@@ -258,7 +259,7 @@
         (is (= [[(+ const/e0 3) :age 25 (+ const/tx0 1) true]]
                (into [] xf datoms)))))
     (testing "upsert entity"
-      (d/transact conn [[:db/add [:name "Alice"] :age 30]])
+      (<! (d/transact! conn [[:db/add [:name "Alice"] :age 30]]))
       (is (= #{[30 (+ const/tx0 2) true]}
              (d/q query @conn)))
       (is (= #{[25 (+ const/tx0 1) true]
@@ -266,7 +267,7 @@
                [30 (+ const/tx0 2) true]}
              (d/q query (d/history @conn)))))
     (testing "second upsert"
-      (d/transact conn [[:db/add [:name "Alice"] :age 35]])
+      (<! (d/transact! conn [[:db/add [:name "Alice"] :age 35]]))
       (is (= #{[35 (+ const/tx0 3) true]}
              (d/q query @conn)))
       (is (= #{[25 (+ const/tx0 1) true]
@@ -276,7 +277,7 @@
                [35 (+ const/tx0 3) true]}
              (d/q query (d/history @conn)))))
     (testing "re-insert previous value"
-      (d/transact conn [[:db/add [:name "Alice"] :age 25]])
+      (<! (d/transact! conn [[:db/add [:name "Alice"] :age 25]]))
       (is (= #{[25 (+ const/tx0 4) true]}
              (d/q query @conn)))
       (is (= #{[25 (+ const/tx0 1) true]
@@ -288,7 +289,7 @@
                [25 (+ const/tx0 4) true]}
              (d/q query (d/history @conn)))))
     (testing "retract upserted values"
-      (d/transact conn [[:db/retract [:name "Alice"] :age 25]])
+      (<! (d/transact! conn [[:db/retract [:name "Alice"] :age 25]]))
       (is (= #{}
              (d/q query @conn)))
       (is (= #{[25 (+ const/tx0 1) true]
@@ -361,34 +362,39 @@
                             (< const/tx0 e)))
                   set))))
     (testing "Datoms extracted like Wanderung does it"
+      ;; Compare as a set: get-all-datoms only sorts by tx (outer) and entity
+      ;; (inner), so the order of datoms WITHIN one [tx entity] group is the
+      ;; query's set-iteration order — unspecified and platform-dependent (d/q
+      ;; returns a set). Every datom carries its tx id, so the set still pins
+      ;; exact tx membership; tx ordering is guaranteed independently upstream.
       (let [datoms (du/get-all-datoms @conn (map du/unmap-tx-timestamp))]
-        (is (= [[536870913 :db/txInstant :timestamp 536870913 true]
-                [1 :db/unique :db.unique/identity 536870913 true]
-                [1 :db/ident :name 536870913 true]
-                [1 :db/valueType :db.type/string 536870913 true]
-                [1 :db/index true 536870913 true]
-                [1 :db/cardinality :db.cardinality/one 536870913 true]
-                [2 :db/valueType :db.type/long 536870913 true]
-                [2 :db/cardinality :db.cardinality/one 536870913 true]
-                [2 :db/ident :age 536870913 true]
-                [3 :name "Alice" 536870913 true]
-                [3 :age 25 536870913 true]
-                [4 :age 35 536870913 true]
-                [4 :name "Bob" 536870913 true]
-                [536870914 :db/txInstant :timestamp 536870914 true]
-                [3 :age 25 536870914 false]
-                [3 :age 30 536870914 true]
-                [536870915 :db/txInstant :timestamp 536870915 true]
-                [3 :age 30 536870915 false]
-                [3 :age 35 536870915 true]
-                [536870916 :db/txInstant :timestamp 536870916 true]
-                [3 :age 35 536870916 false]
-                [3 :age 25 536870916 true]
-                [536870917 :db/txInstant :timestamp 536870917 true]
-                [3 :age 25 536870917 false]]
-               datoms))))))
+        (is (= #{[536870913 :db/txInstant :timestamp 536870913 true]
+                 [1 :db/unique :db.unique/identity 536870913 true]
+                 [1 :db/ident :name 536870913 true]
+                 [1 :db/valueType :db.type/string 536870913 true]
+                 [1 :db/index true 536870913 true]
+                 [1 :db/cardinality :db.cardinality/one 536870913 true]
+                 [2 :db/valueType :db.type/long 536870913 true]
+                 [2 :db/cardinality :db.cardinality/one 536870913 true]
+                 [2 :db/ident :age 536870913 true]
+                 [3 :name "Alice" 536870913 true]
+                 [3 :age 25 536870913 true]
+                 [4 :age 35 536870913 true]
+                 [4 :name "Bob" 536870913 true]
+                 [536870914 :db/txInstant :timestamp 536870914 true]
+                 [3 :age 25 536870914 false]
+                 [3 :age 30 536870914 true]
+                 [536870915 :db/txInstant :timestamp 536870915 true]
+                 [3 :age 30 536870915 false]
+                 [3 :age 35 536870915 true]
+                 [536870916 :db/txInstant :timestamp 536870916 true]
+                 [3 :age 35 536870916 false]
+                 [3 :age 25 536870916 true]
+                 [536870917 :db/txInstant :timestamp 536870917 true]
+                 [3 :age 25 536870917 false]}
+               (set datoms)))))))
 
-(deftest test-no-duplicates-on-history-search
+(deftest-async test-no-duplicates-on-history-search
   (let [schema [{:db/ident       :name
                  :db/cardinality :db.cardinality/one
                  :db/index       true
@@ -404,33 +410,32 @@
              :keep-history? true
              :schema-flexibility :write
              :attribute-refs? false}
-        conn (do
-               (d/delete-database cfg)
-               (d/create-database cfg)
-               (d/connect cfg))]
+        conn (<! (du/setup-db-async cfg))]
 
-    (d/transact conn schema)
-    (d/transact conn [{:name "Alice"
-                       :age  25}
-                      {:name    "Charlie"
-                       :age     45
-                       :sibling [[:name "Alice"] [:name "Charlie"]]}])
+    (<! (d/transact! conn schema))
+    (<! (d/transact! conn [{:name "Alice"
+                            :age  25}
+                           {:name    "Charlie"
+                            :age     45
+                            :sibling [[:name "Alice"] [:name "Charlie"]]}]))
     (is (= 1 (count (d/datoms (d/history @conn) :eavt [:name "Alice"] :name "Alice"))))
     (is (= 1 (count (filter :added (d/datoms (d/history @conn) :eavt [:name "Alice"] :name "Alice")))))
 
     (d/release conn)
-    (d/delete-database cfg)))
+    ;; delete-database is synchronous on JVM (no channel to <!) and async on cljs
+    #?(:clj  (d/delete-database cfg)
+       :cljs (<! (d/delete-database cfg)))))
 ;; => #'datahike.test.time-variance/test-no-duplicates-with-cardinality-many
 
 ;; https://github.com/replikativ/datahike/issues/470
-(deftest test-history-record-attribute-access
+(deftest-async test-history-record-attribute-access
   (let [cfg                                {:store              {:backend :memory :id (random-uuid)}
                                             :keep-history?      true
                                             :schema-flexibility :read
                                             :attribute-refs?    false}
-        conn                               (setup-db cfg)
-        {{:keys [db/current-tx]} :tempids} (d/transact conn [{:name "Anne"}])
-        _                                  (d/transact conn [{:name "Bernard"}])
+        conn                               (<! (du/setup-db-async cfg))
+        {{:keys [db/current-tx]} :tempids} (<! (d/transact! conn [{:name "Anne"}]))
+        _                                  (<! (d/transact! conn [{:name "Bernard"}]))
         db                                 @conn]
     (testing "history db attributes"
       (is (= db (:origin-db (d/history db))))
@@ -445,7 +450,7 @@
       (is (= (:eavt db) (-> db (d/since current-tx) :origin-db :eavt))))
     (d/release conn)))
 
-(deftest test-filter-current-values-of-same-transaction
+(deftest-async test-filter-current-values-of-same-transaction
   (let [keyword-cfg                                {:store              {:backend :memory :id (random-uuid)}
                                                     :keep-history?      true
                                                     :schema-flexibility :write
@@ -459,14 +464,14 @@
                     {:db/ident       :aka
                      :db/cardinality :db.cardinality/one
                      :db/valueType   :db.type/string}]
-            conn (setup-db keyword-cfg)
-            _ (d/transact conn schema)
-            {:keys [tx-data] :as _tx-report} (d/transact conn [{:name "Michal" :aka "Tupen"}])
+            conn (<! (du/setup-db-async keyword-cfg))
+            _ (<! (d/transact! conn schema))
+            {:keys [tx-data] :as _tx-report} (<! (d/transact! conn [{:name "Michal" :aka "Tupen"}]))
             michal (:e (first (filter #(= "Michal" (:v %)) tx-data)))
-            {{:keys [db/current-tx]} :tempids} (d/transact conn [[:db/retract michal :aka "Tupen"]
-                                                                 [:db/add michal :aka "Devil"]
-                                                                 [:db/retract michal :aka "Tupen"]])
-            _                                  (d/transact conn [[:db/retract michal :aka "Devil"]])
+            {{:keys [db/current-tx]} :tempids} (<! (d/transact! conn [[:db/retract michal :aka "Tupen"]
+                                                                      [:db/add michal :aka "Devil"]
+                                                                      [:db/retract michal :aka "Tupen"]]))
+            _                                  (<! (d/transact! conn [[:db/retract michal :aka "Devil"]]))
             as-of-db (d/as-of @conn current-tx)]
         (is (= {:aka "Devil"}
                (d/pull as-of-db [:aka] michal)))
@@ -479,14 +484,14 @@
                       {:db/ident       :aka
                        :db/cardinality :db.cardinality/many
                        :db/valueType   :db.type/string}]
-              conn (setup-db keyword-cfg)
-              _ (d/transact conn schema)
-              {:keys [tx-data]} (d/transact conn [{:name "Michal" :aka "Tupen"}])
+              conn (<! (du/setup-db-async keyword-cfg))
+              _ (<! (d/transact! conn schema))
+              {:keys [tx-data]} (<! (d/transact! conn [{:name "Michal" :aka "Tupen"}]))
               michal (:e (first (filter #(= "Michal" (:v %)) tx-data)))
-              {{:keys [db/current-tx]} :tempids} (d/transact conn [[:db/retract michal :aka "Tupen"]
-                                                                   [:db/add michal :aka "Devil"]
-                                                                   [:db/retract michal :aka "Tupen"]])
-              _                                  (d/transact conn [[:db/retract michal :aka "Devil"]])
+              {{:keys [db/current-tx]} :tempids} (<! (d/transact! conn [[:db/retract michal :aka "Tupen"]
+                                                                        [:db/add michal :aka "Devil"]
+                                                                        [:db/retract michal :aka "Tupen"]]))
+              _                                  (<! (d/transact! conn [[:db/retract michal :aka "Devil"]]))
               as-of-db (d/as-of @conn current-tx)]
           (is (= {:aka ["Devil"]}
                  (d/pull as-of-db [:aka] michal)))
@@ -499,10 +504,10 @@
                       {:db/ident       :aka
                        :db/cardinality :db.cardinality/many
                        :db/valueType   :db.type/string}]
-              conn (setup-db (assoc keyword-cfg :attribute-refs? true))
-              _ (d/transact conn schema)
+              conn (<! (du/setup-db-async (assoc keyword-cfg :attribute-refs? true)))
+              _ (<! (d/transact! conn schema))
               {tx-data                 :tx-data
-               {:keys [db/current-tx]} :tempids} (d/transact conn [{:name "Michal" :aka ["Tupen" "Devil"]}])
+               {:keys [db/current-tx]} :tempids} (<! (d/transact! conn [{:name "Michal" :aka ["Tupen" "Devil"]}]))
               michal (:e (first (filter #(= "Michal" (:v %)) tx-data)))
               as-of-db (d/as-of @conn current-tx)]
           (is (= {:aka ["Devil" "Tupen"]}
@@ -510,9 +515,9 @@
           (d/release conn))))))
 
 ;; https://github.com/replikativ/datahike/issues/572
-(deftest as-of-should-fail-on-invalid-time-points
+(deftest-async as-of-should-fail-on-invalid-time-points
   (let [cfg (assoc-in cfg-template [:store :id] #uuid "71000000-0000-0000-0000-000000000006")
-        conn (setup-db cfg)]
+        conn (<! (du/setup-db-async cfg))]
     (is (thrown-with-msg? Throwable #"Invalid transaction ID. Must be bigger than 536870912."
                           (d/as-of @conn 42)))
     (d/release conn)))

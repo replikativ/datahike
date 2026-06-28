@@ -960,9 +960,12 @@
                           (let [e (.-e ^datahike.datom.Datom datom)
                                 a (.-a ^datahike.datom.Datom datom)
                                 a-kw (keyword (.-fqn ^clj a))  ; Extract from Keyword object
-                                v (.-v ^datahike.datom.Datom datom)
-                                tx (.-tx ^datahike.datom.Datom datom)]
-                            #js [e a-kw v tx (pos? tx)])  ; JS array for goog.array/get
+                                v (.-v ^datahike.datom.Datom datom)]
+                            ;; tx is sign-encoded with the added flag (retraction => negative
+                            ;; raw .-tx). Project the ABS tx (datom-tx) and read added from the
+                            ;; sign (datom-added) — using raw .-tx would give retractions a
+                            ;; negative ?t that no [?t :db/txInstant] join could ever match.
+                            #js [e a-kw v (datom/datom-tx datom) (datom/datom-added datom)])  ; JS array for goog.array/get
                           datom))
                 :clj (fn [[e a v tx added?]]
                        [e a v tx added?])))
@@ -976,11 +979,13 @@
                                                     (.-e d)))
                                          (let [a (.-a ^datahike.datom.Datom d)
                                                a-kw (keyword (.-fqn ^clj a))]
+                                           ;; abs tx + sign-derived added — see
+                                           ;; relation-from-datoms-xform.
                                            #js [(.-e ^datahike.datom.Datom d)
                                                 a-kw
                                                 (.-v ^datahike.datom.Datom d)
-                                                (.-tx ^datahike.datom.Datom d)
-                                                (pos? (.-tx ^datahike.datom.Datom d))])
+                                                (datom/datom-tx d)
+                                                (datom/datom-added d)])
                                          d))
                                      datoms)]
                  (rel/->Relation (var-mapping orig-pattern (range))

@@ -28,7 +28,7 @@
                    [java.util Date])))
 
 (declare equiv-db empty-db)
-#?(:cljs (declare pr-db))
+#?(:cljs (declare pr-db pr-hist-db))
 
 ;; ----------------------------------------------------------------------------
 ;; macros and funcs to support writing defrecords and updating
@@ -460,12 +460,12 @@
       [IEquiv (-equiv [db other] (equiv-db db other))
        ISeqable (-seq [db] (dbi/datoms db :eavt []))
        ICounted (-count [db] (count (dbi/datoms db :eavt [])))
-       IPrintWithWriter (-pr-writer [db w opts] (pr-db db w opts))
+       IPrintWithWriter (-pr-writer [db w opts] (pr-hist-db db w opts "HistoricalDB" false))
 
        IEmptyableCollection (-empty [_] (throw (js/Error. "-empty is not supported on HistoricalDB")))
 
-       ILookup (-lookup ([_ _] (throw (js/Error. "-lookup is not supported on HistoricalDB")))
-                        ([_ _ _] (throw (js/Error. "-lookup is not supported on HistoricalDB"))))
+       ;; No ILookup override: keep the defrecord's default field lookup so
+       ;; `(:origin-db db)` works as on the JVM (which doesn't override valAt).
 
        IAssociative
        (-contains-key? [_ _] (throw (js/Error. "-contains-key? is not supported on HistoricalDB")))
@@ -526,12 +526,11 @@
       [IEquiv (-equiv [db other] (equiv-db db other))
        ISeqable (-seq [db] (dbi/datoms db :eavt []))
        ICounted (-count [db] (count (dbi/datoms db :eavt [])))
-       IPrintWithWriter (-pr-writer [db w opts] (pr-db db w opts))
+       IPrintWithWriter (-pr-writer [db w opts] (pr-hist-db db w opts "AsOfDB" true))
 
        IEmptyableCollection (-empty [_] (throw (js/Error. "-empty is not supported on AsOfDB")))
 
-       ILookup (-lookup ([_ _] (throw (js/Error. "-lookup is not supported on AsOfDB")))
-                        ([_ _ _] (throw (js/Error. "-lookup is not supported on AsOfDB"))))
+       ;; No ILookup override — default field lookup (`:origin-db`, `:time-point`).
 
        IAssociative
        (-contains-key? [_ _] (throw (js/Error. "-contains-key? is not supported on AsOfDB")))
@@ -593,12 +592,11 @@
       [IEquiv (-equiv [db other] (equiv-db db other))
        ISeqable (-seq [db] (dbi/datoms db :eavt []))
        ICounted (-count [db] (count (dbi/datoms db :eavt [])))
-       IPrintWithWriter (-pr-writer [db w opts] (pr-db db w opts))
+       IPrintWithWriter (-pr-writer [db w opts] (pr-hist-db db w opts "SinceDB" true))
 
        IEmptyableCollection (-empty [_] (throw (js/Error. "-empty is not supported on SinceDB")))
 
-       ILookup (-lookup ([_ _] (throw (js/Error. "-lookup is not supported on SinceDB")))
-                        ([_ _ _] (throw (js/Error. "-lookup is not supported on SinceDB"))))
+       ;; No ILookup override — default field lookup (`:origin-db`, `:time-point`).
 
        IAssociative
        (-contains-key? [_ _] (throw (js/Error. "-contains-key? is not supported on SinceDB")))
@@ -674,11 +672,29 @@
        (equiv-db-index (dbi/datoms db :eavt []) (dbi/datoms other :eavt []))))
 
 #?(:cljs
-   (defn pr-db [db w opts]
-     (-write w "#datahike/DB {")
-     (-write w (str ":max-tx " (dbi/-max-tx db) " "))
-     (-write w (str ":max-eid " (dbi/-max-eid db) " "))
-     (-write w "}")))
+   (do
+     ;; Mirror the JVM pr-db EXACTLY (store-id + commit-id + max-tx + max-eid, no
+     ;; trailing space) so `pr-str` of a DB is identical across platforms.
+     (defn pr-db [db w _opts]
+       (-write w "#datahike/DB {")
+       (-write w ":store-id [")
+       (-write w (pr-str (store/store-identity (:store (dbi/-config db)))))
+       (-write w " ")
+       (-write w (pr-str (:branch (dbi/-config db))))
+       (-write w "] ")
+       (-write w (str ":commit-id " (pr-str (:datahike/commit-id (:meta db))) " "))
+       (-write w (str ":max-tx " (dbi/-max-tx db) " "))
+       (-write w (str ":max-eid " (dbi/-max-eid db)))
+       (-write w "}"))
+
+     ;; cljs counterpart of the JVM pr-hist-db — the hist DBs printed via pr-db
+     ;; before (wrong flavor + DB fields); now they render #datahike/<flavor>.
+     (defn pr-hist-db [db w opts flavor time-point?]
+       (-write w (str "#datahike/" flavor " {:origin "))
+       (pr-db (dbi/-origin db) w opts)
+       (when time-point?
+         (-write w (str " :time-point " (dbi/-time-point db))))
+       (-write w "}"))))
 
 #?(:clj
    (do
