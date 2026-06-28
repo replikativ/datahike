@@ -1,6 +1,7 @@
 (ns datahike.test.utils
   (:require ;; Load hitchhiker-tree FIRST before datahike.api which loads datahike.index
    #?(:clj [datahike.index.hitchhiker-tree])
+   [clojure.core.async :refer [<!]]
    [datahike.api :as d]
    [datahike.tools :as tools])
   #?(:clj (:import [java.util UUID Date])))
@@ -48,6 +49,19 @@
   (d/delete-database cfg)
   (d/create-database cfg)
   cfg)
+
+(defn setup-db-async
+  "Channel-returning `setup-db` for `deftest-async` bodies: recreate + connect,
+   AWAITING the async create/connect on cljs (plain `setup-db` connects before the
+   create channel resolves → \"store does not exist\"). `(<! (setup-db-async cfg))`
+   yields a connection on both platforms — on JVM the sync value is wrapped in a
+   go-channel. Reusable across all connection-based suites being ported to cljs."
+  [cfg]
+  (clojure.core.async/go
+    #?(:clj  (do (recreate-database cfg) (d/connect cfg))
+       :cljs (do (<! (d/delete-database cfg))
+                 (<! (d/create-database cfg))
+                 (<! (d/connect cfg {:sync? false}))))))
 
 (defn with-connect-fn [cfg body-fn]
   (let [conn (d/connect cfg)]

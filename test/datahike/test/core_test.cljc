@@ -7,8 +7,7 @@
    #?(:clj [kaocha.stacktrace])
    [datahike.core :as dc]
    [datahike.constants :as const]
-   [datahike.impl.entity :as de]
-   #?(:cljs [datahike.test.cljs])))
+   [datahike.impl.entity :as de]))
 
 #?(:cljs
    (enable-console-print!))

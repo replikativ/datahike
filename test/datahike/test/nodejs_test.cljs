@@ -10,7 +10,14 @@
             ;; covers them too.
             [datahike.test.cljs-pattern-scan-test]
             [datahike.test.optimistic-test]
-            [datahike.test.valid-time-test]))
+            [datahike.test.valid-time-test]
+            ;; Portable query suites — exercise the query-engine paths that were
+            ;; JVM-only (NOT-JOIN, OR, aggregates, recursive rules) on cljs too.
+            [datahike.test.time-variance-test]
+            [datahike.test.query-not-test]
+            [datahike.test.query-or-test]
+            [datahike.test.query-aggregates-test]
+            [datahike.test.query-rules-test]))
 
 ;; Hook cljs.test's end-of-run callback so the Node process exits with
 ;; status 0 only when all tests pass. The previous setup always exited
@@ -356,4 +363,9 @@
   (t/run-tests 'datahike.test.nodejs-test
                'datahike.test.cljs-pattern-scan-test
                'datahike.test.optimistic-test
-               'datahike.test.valid-time-test))
+               'datahike.test.valid-time-test
+               'datahike.test.time-variance-test
+               'datahike.test.query-not-test
+               'datahike.test.query-or-test
+               'datahike.test.query-aggregates-test
+               'datahike.test.query-rules-test))

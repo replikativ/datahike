@@ -408,11 +408,19 @@
                 (not (arrays/array? datoms))
                 (arrays/into-array)))
         _ (arrays/asort arr (index-type->cmp-quick index-type false))
+        ;; Wire the PSS storage at CONSTRUCTION on cljs (as empty-index's sorted-set*
+        ;; does): the cljs PersistentSortedSet keeps storage on `.-storage`, set via
+        ;; the :storage opt — the JVM-style post-hoc `(set! (.-_storage pset) …)` below
+        ;; doesn't reach it, so without this a POPULATED index (attribute-refs ref-
+        ;; datoms) fails to flush ("BTSet/store requires IStorage"), breaking
+        ;; attribute-refs DB creation on cljs. JVM path is unchanged.
         ^PersistentSortedSet pset (psset/from-sorted-array (index-type->cmp-quick index-type false)
                                                            arr
                                                            (arrays/alength arr)
-                                                           {:branching-factor (:datahike/branching-factor store DEFAULT_BRANCHING_FACTOR)})]
-    (set! (.-_storage pset) (:storage store))
+                                                           #?(:clj  {:branching-factor (:datahike/branching-factor store DEFAULT_BRANCHING_FACTOR)}
+                                                              :cljs {:branching-factor (:datahike/branching-factor store DEFAULT_BRANCHING_FACTOR)
+                                                                     :storage (:storage store)}))]
+    #?(:clj (set! (.-_storage pset) (:storage store)))
     (with-meta pset (root-meta store index-type))))
 
 ;; Datom — datahike's domain ELEMENT type, nested inside node :keys. Its handler recurses through

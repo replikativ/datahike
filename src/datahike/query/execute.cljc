@@ -512,13 +512,17 @@
                            (if strict-filter (filter strict-filter) identity)
                            (map (fn [^Datom d]
                                   (check-cancel! cancel)
-                                  #?(:clj  [(.-e d) (.-a d) (.-v d) (.-tx d) true]
+                                  ;; 5th component is the datom's actual added flag, NOT a
+                                  ;; hardcoded true — history/temporal scans emit retraction
+                                  ;; datoms whose op-var (e.g. [?e :age ?a ?t ?op]) must bind
+                                  ;; false. Mirrors the fused path's find-src-scan-added slot.
+                                  #?(:clj  [(.-e d) (.-a d) (.-v d) (.-tx d) (datom/datom-added d)]
                                      :cljs (let [t (make-array 5)]
                                              (aset t 0 (.-e d))
                                              (aset t 1 (.-a d))
                                              (aset t 2 (.-v d))
                                              (aset t 3 (.-tx d))
-                                             (aset t 4 true)
+                                             (aset t 4 (datom/datom-added d))
                                              t)))))
                      datoms)]
     (rel/->Relation var-map tuples)))
@@ -1835,11 +1839,15 @@
                                  (.add result (.next iter)))))))
                        result)
                      :cljs nil)
-                  ;; Non-temporal probe-driven
-                  (let [pf (int probe-datom-field)]
-                    (probe-driven-iterable
-                     (if (= pf 2) (:avet index-db) (:eavt index-db))
-                     resolved-a probe-set pf)))
+                  ;; Non-temporal probe-driven. JVM-only fast path (ForwardCursor);
+                  ;; never taken on cljs (use-probe-driven? is :cljs false above), so
+                  ;; :cljs nil just keeps the dead branch compilable (no undeclared-var).
+                  #?(:clj
+                     (let [pf (int probe-datom-field)]
+                       (probe-driven-iterable
+                        (if (= pf 2) (:avet index-db) (:eavt index-db))
+                        resolved-a probe-set pf))
+                     :cljs nil))
                 (if temporal
                   (build-scan-slice db db-index from-datom to-datom index
                                     temporal index-db resolved-a)
@@ -2141,12 +2149,20 @@
         (let [neg-attrs (:attrs neg-rel)
               jv-vec (vec join-vars)
               n-jv (count jv-vec)
-              excl-set (java.util.HashSet.)]
-          ;; Collect all join-var value tuples from negation result
-          (doseq [tuple (:tuples neg-rel)]
-            (if (= 1 n-jv)
-              (.add excl-set (get tuple (get neg-attrs (first jv-vec))))
-              (.add excl-set (mapv #(get tuple (get neg-attrs %)) jv-vec))))
+              neg-key (fn [tuple]
+                        (if (= 1 n-jv)
+                          (get tuple (get neg-attrs (first jv-vec)))
+                          (mapv #(get tuple (get neg-attrs %)) jv-vec)))
+              ;; Exclusion set. JVM keeps the fast java.util.HashSet (value equality
+              ;; via .equals/.hashCode, incl. vector keys); cljs uses a Clojure set —
+              ;; js/Set would key vectors by REFERENCE and never match (and HashSet is
+              ;; undeclared there). Correct on both; cljs is the acceptable slower side.
+              excl-set #?(:clj (let [^java.util.HashSet hs (java.util.HashSet.)]
+                                 (doseq [tuple (:tuples neg-rel)] (.add hs (neg-key tuple)))
+                                 hs)
+                          :cljs (persistent!
+                                 (reduce (fn [s tuple] (conj! s (neg-key tuple)))
+                                         (transient #{}) (:tuples neg-rel))))]
           ;; Filter result-list: remove tuples whose join-var values are in the exclusion set
           (let [jv-indices (mapv #(int (get var-index %)) jv-vec)
                 n (result-list-size result-list)]
@@ -2156,7 +2172,8 @@
                       probe (if (= 1 n-jv)
                               (aget tuple (int (first jv-indices)))
                               (mapv #(aget tuple (int %)) jv-indices))
-                      excluded? (.contains excl-set probe)]
+                      excluded? #?(:clj (.contains ^java.util.HashSet excl-set probe)
+                                   :cljs (contains? excl-set probe))]
                   (if excluded?
                     (recur (unchecked-inc-int read-i) write-i)
                     (do (when (not= read-i write-i)
@@ -2949,7 +2966,7 @@
                                   #?(:clj (es/entity-bitset-contains? entity-filter (.-e scan-d))
                                      :cljs true))
                           (process-merges scan-d (.-e scan-d) (int 0)
-                                          [(.-e scan-d) (.-a scan-d) (.-v scan-d) (.-tx scan-d) true])))
+                                          [(.-e scan-d) (.-a scan-d) (.-v scan-d) (.-tx scan-d) (datom/datom-added scan-d)])))
                       filtered-datoms))]
         (let [out-rel (rel/->Relation out-attrs #?(:clj (vec (.toArray ^java.util.ArrayList acc))
                                                    :cljs (vec acc)))
@@ -2964,48 +2981,56 @@
                (assoc :unique-results? true))
            (inc (count merge-ops))])))))
 
-#?(:clj
-   (defn- execute-temporal-group-rel
-     "Temporal entity-group / pattern-scan kept on the FUSED fast path. Runs the
-      temporal-aware `execute-group-direct` (current+temporal merge, inline tx /
-      added / retraction resolution, per-value temporal probe seeks) driven by a
-      SIP probe-set from the bound context rels, returning [ctx' consumed] like
-      `execute-fused-scan-rel`. Avoids the legacy per-clause `lookup-batch-search`
-      fallback that materializes the whole intermediate join then runs one
-      temporal-search over it (the cross-product blowup). `temporal` is a non-nil
-      `(temporal-info db)`; its :origin-db carries the PersistentSortedSet indexes."
-     [db op context temporal]
-     (let [scan-op     (entity-group-scan-op op)
-           merge-ops   (entity-group-merge-ops op)
-           scan-clause (:clause scan-op)
-           index-db    (or (:origin-db temporal) db)
-           a           (second scan-clause)
-           resolved-a  (when (and (some? a) (not (symbol? a))) (resolve-attr index-db a))
-           scan-n      (or (:estimated-card scan-op)
-                           (di/-count (get index-db (:index scan-op))))
-           probe       (pattern-probe-set index-db scan-clause resolved-a (:rels context) scan-n)
-           ;; Project to ALL free vars across the scan + merge clauses (mirroring
-           ;; execute-fused-scan-rel's out-attrs), NOT (:vars op). (:vars op) is the
-           ;; group's declared interface and can omit the entity var (e.g. ?c when it
-           ;; is not in :find), but downstream ops — get-else / predicates / further
-           ;; joins — reference those clause vars, so the fused tuples must carry them.
-           find-vars   (vec (distinct (filter #(and (symbol? %) (analyze/free-var? %))
-                                              (concat scan-clause
-                                                      (mapcat :clause merge-ops)))))
-           result-list (make-result-list 4000)]
-       (execute-group-direct db scan-op merge-ops find-vars nil
-                             result-list
-                             (when probe (:values probe)) (if probe (int (:field probe)) (int 0))
-                             nil 0 -1 nil
-                             :temporal temporal :pipeline (:pipeline op)
-                             :cancel (:cancel context))
-       (let [attrs   (into {} (map-indexed (fn [i v] [v i]) find-vars))
-             out-rel (rel/->Relation attrs (vec (.toArray ^java.util.ArrayList result-list)))
-             merged  (binding [rel/*implicit-source* db
-                               rel/*lookup-attrs* (lookup-attrs-for-clauses db scan-clause merge-ops)]
-                       (rel/collapse-rels (:rels context) out-rel))]
-         [(-> context (assoc :rels merged) (assoc :unique-results? true))
-          (inc (count merge-ops))]))))
+(defn- execute-temporal-group-rel
+  "Temporal entity-group / pattern-scan kept on the FUSED fast path. Runs the
+   temporal-aware `execute-group-direct` (current+temporal merge, inline tx /
+   added / retraction resolution, per-value temporal probe seeks) driven by a
+   SIP probe-set from the bound context rels, returning [ctx' consumed] like
+   `execute-fused-scan-rel`. Avoids the legacy per-clause `lookup-batch-search`
+   fallback that materializes the whole intermediate join then runs one
+   temporal-search over it (the cross-product blowup). `temporal` is a non-nil
+   `(temporal-info db)`; its :origin-db carries the PersistentSortedSet indexes.
+
+   Cross-platform: its callees (execute-group-direct, the temporal merge path) are
+   cljc; only the result-list drain differs (JVM ArrayList .toArray vs the cljs
+   #js [] dual, as elsewhere in this ns)."
+  [db op context temporal]
+  (let [scan-op     (entity-group-scan-op op)
+        merge-ops   (entity-group-merge-ops op)
+        scan-clause (:clause scan-op)
+        index-db    (or (:origin-db temporal) db)
+        a           (second scan-clause)
+        resolved-a  (when (and (some? a) (not (symbol? a))) (resolve-attr index-db a))
+        scan-n      (or (:estimated-card scan-op)
+                        (di/-count (get index-db (:index scan-op))))
+        ;; SIP probe-set is a JVM-only fast-path optimization (HashSet + ForwardCursor
+        ;; seeks). On cljs fall back to a full temporal scan — slower but identical
+        ;; results, since the probe only restricts the scan to already-bound values.
+        probe       #?(:clj  (pattern-probe-set index-db scan-clause resolved-a (:rels context) scan-n)
+                       :cljs nil)
+        ;; Project to ALL free vars across the scan + merge clauses (mirroring
+        ;; execute-fused-scan-rel's out-attrs), NOT (:vars op). (:vars op) is the
+        ;; group's declared interface and can omit the entity var (e.g. ?c when it
+        ;; is not in :find), but downstream ops — get-else / predicates / further
+        ;; joins — reference those clause vars, so the fused tuples must carry them.
+        find-vars   (vec (distinct (filter #(and (symbol? %) (analyze/free-var? %))
+                                           (concat scan-clause
+                                                   (mapcat :clause merge-ops)))))
+        result-list (make-result-list 4000)]
+    (execute-group-direct db scan-op merge-ops find-vars nil
+                          result-list
+                          (when probe (:values probe)) (if probe (int (:field probe)) (int 0))
+                          nil 0 -1 nil
+                          :temporal temporal :pipeline (:pipeline op)
+                          :cancel (:cancel context))
+    (let [attrs   (into {} (map-indexed (fn [i v] [v i]) find-vars))
+          out-rel (rel/->Relation attrs #?(:clj  (vec (.toArray ^java.util.ArrayList result-list))
+                                           :cljs (vec result-list)))
+          merged  (binding [rel/*implicit-source* db
+                            rel/*lookup-attrs* (lookup-attrs-for-clauses db scan-clause merge-ops)]
+                    (rel/collapse-rels (:rels context) out-rel))]
+      [(-> context (assoc :rels merged) (assoc :unique-results? true))
+       (inc (count merge-ops))])))
 
 ;; ---------------------------------------------------------------------------
 ;; OR / NOT execution (Relation-based fallback)
@@ -3133,19 +3158,25 @@
    or non-binary rule). When applicable, returns:
    {:ground-positions {pos value}, :head-vars [...], :propagation-pos int}"
   [call-args head-vars scc-rule-names]
-  ;; Only apply magic sets to single-rule SCCs with binary head vars
-  (when (and (= 1 (count scc-rule-names))
-             (= 2 (count head-vars)))
-    (let [ground-positions (into {}
-                                 (keep-indexed (fn [i arg]
-                                                 (when-not (analyze/free-var? arg)
-                                                   [i arg])))
-                                 call-args)]
-      (when (= 1 (count ground-positions))
-        (let [ground-pos (ffirst ground-positions)
-              prop-pos (if (= ground-pos 0) 1 0)]
-          {:ground-positions ground-positions
-           :propagation-pos prop-pos})))))
+  ;; Magic-set optimization is JVM-only — the magic-base-scan / demand-set machinery
+  ;; (java.util.HashSet, ArrayList) has :cljs nil bodies, so activating it on cljs
+  ;; collapses recursive rules to an EMPTY rel (silently incomplete results). Return
+  ;; nil on cljs so they take the correct (slower) full base-branch fixpoint instead.
+  #?(:cljs nil
+     :clj
+     ;; Only apply magic sets to single-rule SCCs with binary head vars
+     (when (and (= 1 (count scc-rule-names))
+                (= 2 (count head-vars)))
+       (let [ground-positions (into {}
+                                    (keep-indexed (fn [i arg]
+                                                    (when-not (analyze/free-var? arg)
+                                                      [i arg])))
+                                    call-args)]
+         (when (= 1 (count ground-positions))
+           (let [ground-pos (ffirst ground-positions)
+                 prop-pos (if (= ground-pos 0) 1 0)]
+             {:ground-positions ground-positions
+              :propagation-pos prop-pos}))))))
 
 (defn- inject-magic-relation
   "Add a magic demand relation to the context that constrains head-var at
@@ -3474,7 +3505,11 @@
                                                                  false))
                                                              (:ops cv-plan)))
                                                    rec-clause-versions)
-                                           use-delta-driven? (and base-scan-attr
+                                           ;; Delta-driven expansion is JVM-only
+                                           ;; (delta-driven-expand has a :cljs nil
+                                           ;; body); false on cljs → the correct
+                                           ;; non-delta recursive scan below.
+                                           use-delta-driven? (and #?(:cljs false :clj base-scan-attr)
                                                                   rec-has-db-pattern?
                                                                   rec-shape-simple?
                                                                   (= rn rule-name)

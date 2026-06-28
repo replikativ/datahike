@@ -2,12 +2,22 @@
   (:require
    #?(:cljs [cljs.test    :as t :refer-macros [is deftest testing]]
       :clj  [clojure.test :as t :refer        [is deftest testing]])
-   [datahike.api :as d]))
+   [clojure.core.async :refer [<!]]
+   [datahike.api :as d]
+   [datahike.test.async #?(:clj :refer :cljs :refer-macros) [deftest-async]]))
+
+(defn- connect!
+  "Create + connect to `cfg`. Returns a channel yielding the connection so the
+   body works on both JVM (sync) and cljs (async writer)."
+  [cfg]
+  (clojure.core.async/go
+    #?(:clj  (do (d/create-database cfg) (d/connect cfg))
+       :cljs (do (<! (d/create-database cfg)) (<! (d/connect cfg {:sync? false}))))))
 
 (defn sort-reverse [xs]
   (reverse (sort xs)))
 
-(deftest test-aggregates
+(deftest-async test-aggregates
   (let [monsters [["Cerberus" 3]
                   ["Medusa" 1]
                   ["Cyclops" 1]
@@ -103,26 +113,21 @@
   (testing "Aggregate with predicate filter"
     ;; Regression: the columnar aggregate path (via stratum) skipped
     ;; attached-preds, so predicates in WHERE were ignored for COUNT/SUM.
-    (let [cfg {:store {:backend :memory :id #?(:clj (java.util.UUID/randomUUID)
-                                               :cljs (random-uuid))}
+    (let [cfg {:store {:backend :memory :id (random-uuid)}
                :schema-flexibility :write
                :keep-history? true}
-          _ (d/create-database cfg)
-          conn (d/connect cfg)]
-      (try
-        (d/transact conn [{:db/ident :num/v :db/valueType :db.type/long
-                           :db/cardinality :db.cardinality/one}])
-        (d/transact conn [{:num/v 1} {:num/v 2} {:num/v 3} {:num/v 4} {:num/v 5}])
-        (let [db (d/db conn)]
-          (is (= [[3]] (d/q '{:find [(count ?e)]
-                              :where [[?e :num/v ?v] [(> ?v 2)]]} db))
-              "COUNT with > predicate")
-          (is (= [[12]] (d/q '{:find [(sum ?v)]
-                               :where [[?e :num/v ?v] [(> ?v 2)]]} db))
-              "SUM with > predicate")
-          (is (= [[2]] (d/q '{:find [(count ?e)]
-                              :where [[?e :num/v ?v] [(< ?v 3)]]} db))
-              "COUNT with < predicate"))
-        (finally
-          (d/release conn)
-          (d/delete-database cfg))))))
+          conn (<! (connect! cfg))]
+      (<! (d/transact! conn [{:db/ident :num/v :db/valueType :db.type/long
+                              :db/cardinality :db.cardinality/one}]))
+      (<! (d/transact! conn [{:num/v 1} {:num/v 2} {:num/v 3} {:num/v 4} {:num/v 5}]))
+      (let [db (d/db conn)]
+        (is (= [[3]] (d/q '{:find [(count ?e)]
+                            :where [[?e :num/v ?v] [(> ?v 2)]]} db))
+            "COUNT with > predicate")
+        (is (= [[12]] (d/q '{:find [(sum ?v)]
+                             :where [[?e :num/v ?v] [(> ?v 2)]]} db))
+            "SUM with > predicate")
+        (is (= [[2]] (d/q '{:find [(count ?e)]
+                            :where [[?e :num/v ?v] [(< ?v 3)]]} db))
+            "COUNT with < predicate"))
+      (d/release conn))))
