@@ -21,9 +21,18 @@
   (:require [datahike.api :as d]
             [datahike.db :as db]
             [datahike.query :as q]
+            [datahike.lru :as lru]
             [datahike.experimental.graph :as graph]
             [datahike.query.lower :as lower]
             [datahike.query.logical :as logical]))
+
+(defn clear-plan-cache!
+  "The query PLAN cache is keyed by query-shape + schema-hash, NOT by data —
+   so without clearing it the planner reuses the plan it computed for the FIRST
+   db of a given shape. The oracle sweeps must re-plan per db, so we reset the
+   (private) plan cache before each measured query."
+  []
+  (vreset! @#'q/plan-cache (lru/lru 100)))
 
 (def ^:private tc-meta (meta #'graph/transitive-closure))
 (def ^:private tc-oc (:datahike/output-cardinality tc-meta))
@@ -79,6 +88,7 @@
          where '[[(datahike.experimental.graph-spec/attr-graph :follows) ?g]
                  [?p :cites ?x] [?x :flagged ?ff]
                  [(datahike.test.experimental.graph-cost-oracle/filter-tcv ?g $ ?x) [?n ...]]]]
+     (clear-plan-cache!)
      (reset! filter-cnt 0)
      (let [res (binding [q/*query-result-cache?* false]
                  (d/q {:query {:find '[?p ?n] :where where} :args [dd]}))]
@@ -106,6 +116,7 @@
                 [?x :seed true]
                 [(datahike.test.experimental.graph-cost-oracle/expand-tcv ?g $ ?x) [?n ...]]
                 [?doc :tagged ?x]]]
+    (clear-plan-cache!)
     (reset! expand-cnt 0)
     (let [res (binding [q/*query-result-cache?* false]
                 (d/q {:query {:find '[?doc ?n] :where where} :args [dd]}))]
@@ -134,6 +145,7 @@
          where '[[(datahike.experimental.graph-spec/attr-graph :follows) ?g]
                  [?x :type "node"] [?o :owns ?x]
                  [(datahike.test.experimental.graph-cost-oracle/joinfn-tcv ?g $ ?x) [?n ...]]]]
+     (clear-plan-cache!)
      (reset! joinfn-cnt 0)
      (let [res (binding [q/*query-result-cache?* false]
                  (d/q {:query {:find '[?o ?n] :where where} :args [dd]}))]
@@ -168,6 +180,7 @@
                 [?a :aliveA true]
                 [(datahike.test.experimental.graph-cost-oracle/mutual-exp ?g $ ?x) [?b ...]]
                 [?b :aliveB true]]]
+    (clear-plan-cache!)
     (reset! mutual-cheap-cnt 0) (reset! mutual-exp-cnt 0)
     (binding [q/*query-result-cache?* false]
       (d/q {:query {:find '[?x] :where where} :args [dd]}))

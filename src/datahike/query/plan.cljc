@@ -971,13 +971,86 @@
                 best (apply min-key #(aget cards (int %)) candidates)]
             (recur (conj placed best) (conj order best) (disj remaining best))))))))
 
+(defn- group-probe-info
+  "Per-group [pattern-info schema-info base] used to RE-ESTIMATE a group's output
+   under upstream bindings (the bound-aware DP join estimate). For a single
+   pattern-scan the pattern is its clause; for a fused entity-group we proxy with
+   the driving scan-op's pattern (a sound lower bound on the group's selectivity
+   against a bound var). `base` is the UNCONSTRAINED attribute estimate so
+   estimate-pattern-with-bindings is not forced to re-sample the index per probe.
+   Returns [nil nil base] when the group has no usable pattern."
+  [group]
+  (case (:op group)
+    :pattern-scan
+    [(analyze/classify-clause (:clause group))
+     (:schema-info group)
+     (long (or (:estimated-card group) (group-effective-card group)))]
+    :entity-group
+    (let [s (:scan-op group)]
+      (if (:clause s)
+        [(analyze/classify-clause (:clause s))
+         (:schema-info s)
+         (long (or (:estimated-card s) (group-effective-card group)))]
+        [nil nil (group-effective-card group)]))
+    [nil nil (group-effective-card group)]))
+
+(defn- bound-aware-join-rows
+  "Estimate the join output of a partial plan (`rows` rows, `cards` = var→card of
+   what is already bound) extended by group i, given i's [pinfo sinfo base].
+   When db/pinfo are available and i shares a bound var, the result is the most
+   selective of two NON-INCREASING bounds (a probe can only filter the running
+   relation — a fan-out adds columns but the join key still bounds surviving rows
+   by `rows`):
+     i-eff   — the probe's own output under the bindings (containment join
+               estimate); caps `rows` at the probe size.
+     covered — rows × attribute coverage (base / max-eid), the fraction of the
+               entity domain that actually carries the probe attribute. This
+               expresses SELECTIVITY the containment estimate cannot: a sparse
+               ref-join (only 5 of 200 bound entities are :flagged) is row-reducing
+               even though i-eff = min(e-card, base) = 200.
+   This replaces the old (max rows i-card) which could never represent a
+   row-reducing join. Kept LOCAL to the DP so scan-card estimation (and its tests)
+   are untouched; a dense attribute (coverage ≈ 1) yields no spurious cut. Falls
+   back to (max rows i-card) when bound-aware estimation is not possible."
+  [db rows i-card cards pinfo sinfo base]
+  (if (or (nil? db) (nil? pinfo))
+    (Math/max (long rows) (long i-card))
+    (let [bound (select-keys cards (:vars pinfo))]
+      (if (empty? bound)
+        ;; No shared bound var — cross/independent extension: old upper bound.
+        (Math/max (long rows) (long i-card))
+        (let [i-eff (long (estimate/estimate-pattern-with-bindings
+                           db pinfo sinfo bound base))
+              max-eid (max 1 (long (dbi/-max-eid db)))
+              sel (min 1.0 (/ (double base) (double max-eid)))
+              covered (long (Math/ceil (* (double rows) sel)))]
+          (max 1 (min (long rows) i-eff (max 1 covered))))))))
+
+(defn- cap-cards
+  "All vars of a relation with `rows` rows have ≤ rows distinct values. Merge group
+   i's output cards into the running map (min) and cap every entry at `rows`, so a
+   selective join shrinks the carried cardinalities (used by Step 3 to feed a
+   function a smaller input)."
+  [cards group rows]
+  (let [merged (merge-with min cards (or (:output-var-cards group) {}))
+        cap (long rows)]
+    (persistent!
+     (reduce-kv (fn [m k v] (assoc! m k (min (long v) cap)))
+                (transient {}) merged))))
+
 (defn- dp-order-groups
   "DP bitmask enumeration for inter-group join ordering.
    Minimizes total intermediate cardinality (sum of rows at each step).
    Only considers connected extensions (groups sharing vars with the partial plan)
    to avoid cross-products. Falls back to greedy ordering when n > dp-group-threshold,
-   and to cardinality-ordered append for disconnected components."
-  [groups]
+   and to cardinality-ordered append for disconnected components.
+
+   When `db` is supplied, the per-step join estimate is BOUND-AWARE (see
+   bound-aware-join-rows): a selective probe reduces the carried row count instead
+   of the old (max rows i-card) lower bound. Passing nil db preserves the prior
+   purely-cardinality behaviour."
+  ([groups] (dp-order-groups groups nil))
+  ([groups db]
   (let [n (count groups)]
     (cond
       (<= n 1) (vec (range n))
@@ -995,21 +1068,22 @@
                                         j)))
                               (range n)))
                       (range n))
-            ;; Join selectivity: when joining group i into a partial plan,
-            ;; estimate result = max(plan-rows, group-rows) for FK-like joins.
-            ;; For M:N we'd need distinct counts; this is a safe upper bound.
+            ;; Per-group [pattern-info schema-info base] for bound-aware probes.
+            probe (when db (mapv group-probe-info groups))
             full (unchecked-dec (bit-shift-left 1 n))
             dp (object-array (unchecked-inc full))]
-        ;; Base cases: each single group as a starting point
+        ;; Base cases: each single group as a starting point. State carries a
+        ;; :cards map (var→card) threaded through the join estimate.
         (dotimes [i n]
           (let [mask (bit-shift-left 1 i)]
             (aset dp mask {:cost (aget cards i)
                            :order [i]
-                           :rows (aget cards i)})))
+                           :rows (aget cards i)
+                           :cards (cap-cards {} (nth groups i) (aget cards i))})))
         ;; Fill DP table: for each subset, try extending by one connected group
         (doseq [mask (range 1 (unchecked-inc full))]
           (when (aget dp (int mask))
-            (let [{:keys [cost order rows]} (aget dp (int mask))
+            (let [{:keys [cost order rows] cards-map :cards} (aget dp (int mask))
                   rows (long rows)
                   cost (long cost)]
               ;; Find groups not in mask that are adjacent to some group in mask
@@ -1022,17 +1096,20 @@
                     (when connected?
                       (let [new-mask (bit-or mask (bit-shift-left 1 i))
                             i-card (long (aget cards i))
-                            ;; Join cardinality estimate: for an equi-join on shared
-                            ;; vars, result ≈ max(probe-side, build-side) for FK joins.
-                            ;; Conservative: use max as the join output.
-                            join-rows (Math/max rows i-card)
+                            [pinfo sinfo base] (when probe (nth probe i))
+                            ;; Bound-aware join: a selective probe REDUCES rows
+                            ;; (was always max(rows,i-card), never row-reducing).
+                            join-rows (long (bound-aware-join-rows
+                                             db rows i-card cards-map pinfo sinfo base))
                             new-cost (+ cost join-rows)
+                            new-cards (cap-cards cards-map (nth groups i) join-rows)
                             prev (aget dp (int new-mask))]
                         (when (or (nil? prev) (< new-cost (long (:cost prev))))
                           (aset dp (int new-mask)
                                 {:cost new-cost
                                  :order (conj order i)
-                                 :rows join-rows}))))))))))
+                                 :rows join-rows
+                                 :cards new-cards}))))))))))
         ;; Extract result: if graph is connected, dp[full] has the answer.
         ;; If disconnected (multiple components), chain components by cardinality.
         (if-let [result (aget dp (int full))]
@@ -1055,7 +1132,7 @@
                                         (range n))
                 ;; Sort remaining disconnected groups by ascending cardinality
                 sorted-remaining (sort-by #(aget cards (int %)) remaining-idxs)]
-            (into (vec main-order) sorted-remaining)))))))
+            (into (vec main-order) sorted-remaining))))))))
 
 ;; ---------------------------------------------------------------------------
 ;; Cost-based ordering for mixed ops (groups + predicates + functions + OR/NOT)
@@ -1339,8 +1416,9 @@
    bindings` even though they're well-formed at execute time. Top-
    level callers (lower's outer scope) pass `nil` / omit and we treat
    the outer scope as empty."
-  ([ops] (order-plan-ops ops nil))
-  ([ops outer-bound-vars]
+  ([ops] (order-plan-ops ops nil nil))
+  ([ops outer-bound-vars] (order-plan-ops ops outer-bound-vars nil))
+  ([ops outer-bound-vars db]
    (let [;; LOptionalScan-derived pattern-scans (get-else with default) need
         ;; their entity var bound BEFORE they execute — at runtime the
         ;; optional path goes through bind-by-fn(get-else) which evaluates
@@ -1386,7 +1464,7 @@
                     (merge-with min var-cards (op-output-cards chosen-op))
                     (conj ordered chosen-op)))))
       ;; DP-order groups, then greedily interleave non-group ops
-       (let [dp-order (dp-order-groups groups)
+       (let [dp-order (dp-order-groups groups db)
              ordered-groups (mapv #(nth groups %) dp-order)]
          (if (empty? non-groups)
            ordered-groups
@@ -1555,5 +1633,5 @@
         ;; prefix: the runnability check for the remaining ops has to
         ;; honour what's already bound or :not / :predicate / :function
         ;; ops will be wrongly marked as Insufficient.
-        re-ordered (order-plan-ops re-estimated bound-vars)]
+        re-ordered (order-plan-ops re-estimated bound-vars db)]
     (assoc plan :ops (into (vec executed-ops) re-ordered))))

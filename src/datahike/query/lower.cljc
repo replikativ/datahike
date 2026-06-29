@@ -1002,7 +1002,7 @@
         ;; broad attribute scan. (bound-vars excludes $/%/scalar-consts/fn-outputs
         ;; — only genuine bound relation columns; group DP order is independent of
         ;; this seed, which only affects non-group op readiness.)
-        ordered-ops (plan/order-plan-ops all-ops bound-vars)
+        ordered-ops (plan/order-plan-ops all-ops bound-vars db)
 
         ;; ---------------------------------------------------------------
         ;; Step 6: Detect inter-group value joins
