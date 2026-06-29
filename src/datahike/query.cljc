@@ -2521,6 +2521,22 @@
   [context]
   (into #{} (mapcat (comp keys :attrs)) (:rels context)))
 
+(defn- in-card-seed
+  "Value-independent {var → card} cardinality seed for :in bindings, derived
+   from binding SHAPE alone (so it is safe to fold into the plan cache key).
+   Collection/relation bindings ([?x ...], [[?a ?b]]) bind many rows; tuple and
+   scalar bindings bind one. Routes through plan/source-cards so the planner has
+   a single produce-side definition of how each cardinality source seeds the
+   join-graph estimate. `qin` is the parsed :in vector of binding records."
+  [qin]
+  (reduce (fn [m b]
+            (let [shape (cond (instance? BindColl b)  :collection
+                              (instance? BindTuple b) :tuple
+                              :else                   :scalar)
+                  vars (map :symbol (dpi/collect-vars-distinct b))]
+              (merge m (plan/source-cards {:kind :input :shape shape :vars vars}))))
+          {} qin))
+
 (defn- substitute-consts
   "Replace const-bound variables in where clauses with their values.
    E.g., [?e :name ?name] with consts {?name \"Ivan\"} → [?e :name \"Ivan\"]."
@@ -2739,14 +2755,15 @@
       [context-in' @reverse-map])))
 
 (defn- create-plan-via-ir
-  "Build a plan using the IR pipeline: logical IR → lowering."
-  [db clauses bound-vars rules]
+  "Build a plan using the IR pipeline: logical IR → lowering.
+   `in-cards` is the value-independent :in cardinality seed (see in-card-seed)."
+  [db clauses bound-vars rules in-cards]
   (let [build-logical #?(:clj @(requiring-resolve 'datahike.query.logical/build-logical-plan)
                          :cljs logical/build-logical-plan)
         lower-plan #?(:clj @(requiring-resolve 'datahike.query.lower/lower)
                       :cljs lower/lower)
         logical (build-logical db clauses bound-vars rules)
-        plan (lower-plan logical db rules)]
+        plan (lower-plan logical db rules in-cards)]
     plan))
 
 #?(:clj
@@ -2814,19 +2831,26 @@
 
 (defn- get-or-create-plan
   "Get a cached query plan or create a new one. Plans are cached by
-   [clauses bound-vars rules-keys schema-hash] since the plan structure
+   [clauses bound-vars rules-keys in-cards schema-hash] since the plan structure
    (index selection, merge ordering) depends on query shape and schema,
-   not on the actual data.
+   not on the actual data. `in-cards` (shape-derived, value-independent) is in
+   the key only to separate tuple from relation :in bindings (see
+   get-or-create-plan body) — it does not make the plan data-dependent.
 
    `clauses` may embed substituted constants (substitute-consts-with-lookup-refs),
    so the key is run through `scale-sensitive-key` to keep BigDecimals of
    different scale distinct (Clojure `=`/`hash` would otherwise collapse them)."
-  [db clauses bound-vars rules]
+  [db clauses bound-vars rules in-cards]
   (let [schema-hash (hash (dbi/-schema db))
-        cache-key (scale-sensitive-key [clauses bound-vars (when rules rules) schema-hash])]
+        ;; `in-cards` is part of the key: it is value-independent (shape-only),
+        ;; but it distinguishes bindings the bound-var SET cannot — e.g. a tuple
+        ;; [?a ?b] (#{?a ?b}, card 1) from a relation [[?a ?b]] (#{?a ?b}, many)
+        ;; — which would otherwise collide on identical clauses + bound-vars.
+        cache-key (scale-sensitive-key [clauses bound-vars (when rules rules)
+                                        (not-empty in-cards) schema-hash])]
     (if-some [cached (get @plan-cache cache-key nil)]
       cached
-      (let [plan (create-plan-via-ir db clauses bound-vars rules)]
+      (let [plan (create-plan-via-ir db clauses bound-vars rules in-cards)]
         (vswap! plan-cache assoc cache-key plan)
         plan))))
 
@@ -2951,7 +2975,7 @@
                      (substitute-consts-with-lookup-refs db (:where query) (:consts context-in))
                      (:where query))
            rules (not-empty (:rules context-in))
-           plan (create-plan-via-ir plan-db clauses bound-vars rules)
+           plan (create-plan-via-ir plan-db clauses bound-vars rules (in-card-seed qin))
            find-vars (mapv #(.-symbol ^Variable %) (filter #(instance? Variable %) (dpip/find-elements qfind)))
            header (str "=== Query Plan ===\n"
                        "find: " (pr-str find-vars) "\n"
@@ -3766,7 +3790,7 @@
                 clauses (substitute-consts-with-lookup-refs db (:where query) (:consts context-in)
                                                             (when multi-source? (:sources context-in)))
                 rules (not-empty (:rules context-in))
-                plan (get-or-create-plan plan-db clauses bound-vars rules)]
+                plan (get-or-create-plan plan-db clauses bound-vars rules (in-card-seed qin))]
 
           ;; Try paths in order of preference:
           ;; 1. Direct HashSet (non-aggregate simple queries)
@@ -3863,7 +3887,7 @@
                                         (resolve-ins qin args))
                          clauses (substitute-consts-with-lookup-refs db (:where query) (:consts context-in))
                          bound-vars (context-bound-vars context-in)
-                         plan (get-or-create-plan db clauses bound-vars nil)]
+                         plan (get-or-create-plan db clauses bound-vars nil (in-card-seed qin))]
                      (when (and (empty? (:rels context-in))
                                 (seq (:ops plan)))
                        (when-let [result (try-secondary-index-aggregate db plan find-elements)]

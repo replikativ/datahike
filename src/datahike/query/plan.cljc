@@ -276,6 +276,63 @@
                 (log/debug :datahike/output-cardinality-meta-failed {:fn-sym fn-sym :error (.getMessage e)})
                 nil)))))
 
+(def default-in-collection-card
+  "Seed cardinality for an :in collection/relation binding whose size is unknown
+   at plan time. Matches the plain-function default used by op-cost /
+   plan-function-op (100): between a point lookup (1) and a full attribute scan,
+   so a join driven by a passed collection is ordered as a real multi-row source
+   instead of a singleton."
+  100)
+
+(defn source-cards
+  "Unified produce-side cardinality seed for the planner's {var → card} map.
+
+   The planner is an abstract interpreter over cardinalities: it seeds a
+   {var → card} map from `sources`, propagates it through the join graph
+   (order-plan-ops / dp-order-groups), and costs ops. There are three kinds of
+   source; this is the single place that defines how each one seeds the map.
+
+   Dispatch on :kind:
+     {:kind :pattern :classified ci :db db}
+        → attribute-stats estimate for an LScan's free output vars
+     {:kind :bind    :classified ci :db db :provenance prov}
+        → :datahike/output-cardinality estimate for an LBind's free vars
+          (ci carries :fn-sym / :args / :binding)
+     {:kind :input   :shape <kw> :vars <syms>}
+        → shape-based seed for :in vars: collection/relation bindings bind many
+          rows (`default-in-collection-card`); scalar/tuple bind one row and are
+          left to the card-1 placeholder. Value-independent, so it is safe to
+          fold into the plan cache key.
+
+   Returns {var → long}, or nil when no useful estimate applies (callers treat
+   nil as 'no contribution')."
+  [{:keys [kind] :as source}]
+  (case kind
+    :pattern
+    (let [{:keys [classified db]} source
+          si (analyze/pattern-schema-info db classified)
+          est (or (estimate/estimate-pattern db classified si)
+                  (di/-count (:eavt db)))
+          free-output-vars (filter analyze/free-var? (:vars classified))]
+      (when (seq free-output-vars)
+        (zipmap free-output-vars (repeat (long est)))))
+
+    :bind
+    (let [{:keys [classified db provenance]} source
+          card (resolve-fn-output-cardinality
+                (:fn-sym classified) (:args classified) (:binding classified) db provenance)]
+      (when card
+        (let [bvars (filter analyze/free-var? (analyze/extract-vars (:binding classified)))]
+          (when (seq bvars)
+            (zipmap bvars (repeat (long card)))))))
+
+    :input
+    (let [{:keys [shape vars]} source]
+      (when (contains? #{:collection :relation} shape)
+        (not-empty (zipmap vars (repeat (long default-in-collection-card))))))
+
+    nil))
+
 (defn resolve-fn-exec-cost
   "If `fn-sym` resolves to a var carrying :datahike/cost metadata, return a
    1-arg cost function `(fn [input-rows] total-cost)`, closing over `db`, the
