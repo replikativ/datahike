@@ -224,28 +224,48 @@
                 (log/debug :datahike/external-engine-meta-failed {:fn-sym fn-sym :error (.getMessage e)})
                 nil)))))
 
+(defn binding-shape
+  "Classify a function clause's :binding form:
+     :scalar      ?x          → one value (the whole result)
+     :tuple       [?a ?b]     → one tuple
+     :collection  [?x ...]    → many rows (the result collection is iterated)
+     :relation    [[?a ?b]]   → many rows (a relation of tuples)"
+  [binding]
+  (cond
+    (symbol? binding) :scalar
+    (and (vector? binding) (= 2 (count binding)) (= '... (second binding))) :collection
+    (and (vector? binding) (vector? (first binding))) :relation
+    (vector? binding) :tuple
+    :else :scalar))
+
 (defn resolve-fn-output-cardinality
-  "If fn-sym resolves to a var carrying :datahike/output-cardinality metadata,
-   compute an output-cardinality estimate for its binding. This lets any user
-   function (e.g. a graph algorithm whose result size is data-dependent) tell
-   the planner how many rows its binding produces, instead of the planner
-   treating every function bind as an opaque unknown.
+  "Output-row estimate for a function bind carrying :datahike/output-cardinality
+   metadata. This lets any user function (e.g. a graph algorithm whose result
+   size is data-dependent) tell the planner how many rows its binding produces,
+   instead of the planner treating every function bind as an opaque unknown.
+
+   The metadata describes the size of the RETURNED COLLECTION, so it only
+   applies to bindings that destructure it — `[?x ...]` (collection) and
+   `[[?a ?b]]` (relation). Scalar/tuple bindings hold the whole result in a
+   single row and are left to the planner's defaults.
 
    The metadata value may be:
-     - a number              → that many output rows
-     - a fn [db fn-sym args] → returns a number (computed from the db / args,
-                               e.g. node count for a reachability algorithm)
+     - a number                       → that many rows
+     - a fn [db fn-sym args binding]  → computed (e.g. node count for a
+                                        reachability algorithm, a small constant
+                                        for a path)
    Returns a positive long, or nil when no usable estimate is available.
    Purely additive: functions without the metadata are unaffected."
-  [fn-sym args db]
+  [fn-sym args binding db]
   #?(:cljs nil
-     :clj (when (and (symbol? fn-sym) (namespace fn-sym))
+     :clj (when (and (symbol? fn-sym) (namespace fn-sym)
+                     (contains? #{:collection :relation} (binding-shape binding)))
             (try
               (when-some [v (resolve fn-sym)]
                 (when-some [c (:datahike/output-cardinality (meta v))]
                   (let [n (cond
                             (number? c) c
-                            (fn? c)     (c db fn-sym args)
+                            (fn? c)     (c db fn-sym args binding)
                             :else       nil)]
                     (when (number? n) (max 1 (long n))))))
               (catch Exception e
@@ -375,7 +395,7 @@
              ;; didn't already determine the cards.
              meta-card (when-not out-cards
                          (resolve-fn-output-cardinality
-                          (:fn-sym fn-info) (:args fn-info) db))
+                          (:fn-sym fn-info) (:args fn-info) (:binding fn-info) db))
              bvars (when meta-card (function-binding-vars (:binding fn-info)))
              meta-cards (when (seq bvars) (zipmap bvars (repeat meta-card)))
              out-cards (or out-cards meta-cards)]
