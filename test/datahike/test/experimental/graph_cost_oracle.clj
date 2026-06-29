@@ -41,25 +41,30 @@
 (def ^:private tc-cost (:datahike/cost tc-meta))
 
 ;; Wrapper vars carry the REAL fn's metadata so the planner costs them
-;; identically to the algorithm. The invocation COUNTER is not global state — it
-;; is created lexically per measurement (an atom in the *-case `let`) and threaded
-;; in as the LAST argument via `:in`, so each query owns its own counter (no
-;; reset, no cross-query bleed, no thread caveats). The graph stays `(first args)`
-;; so the cost model is unaffected; the counter arg is a substituted constant, not
-;; a free var, so it doesn't perturb input-cardinality.
+;; identically to the algorithm. Invocations are counted by the ENGINE (no atom,
+;; no extra fn arg): `:count-fns? true` on the query makes bind-by-fn accumulate
+;; {fn-sym → invocations} into the threaded context, surfaced as :fn-counts result
+;; metadata. `count-of` reads it back by the wrapper's fully-qualified symbol.
 (defn ^{:datahike/output-cardinality tc-oc :datahike/cost tc-cost} filter-tcv
-  [g db s cnt] (swap! cnt inc) (graph/transitive-closure g db s))
+  [g db s] (graph/transitive-closure g db s))
 (defn ^{:datahike/output-cardinality tc-oc :datahike/cost tc-cost} expand-tcv
-  [g db s cnt] (swap! cnt inc) (graph/transitive-closure g db s))
+  [g db s] (graph/transitive-closure g db s))
 (defn ^{:datahike/output-cardinality tc-oc :datahike/cost tc-cost} joinfn-tcv
-  [g db s cnt] (swap! cnt inc) (graph/transitive-closure g db s))
+  [g db s] (graph/transitive-closure g db s))
 (defn ^{:datahike/output-cardinality tc-oc :datahike/cost tc-cost} sink-tcv
-  [g db s cnt] (swap! cnt inc) (graph/transitive-closure g db s))
+  [g db s] (graph/transitive-closure g db s))
 ;; MUTUAL: two wrappers, SAME input, DIFFERENT per-call cost.
 (defn ^{:datahike/output-cardinality tc-oc :datahike/cost 1} mutual-cheap
-  [g db s cnt] (swap! cnt inc) (graph/transitive-closure g db s))
+  [g db s] (graph/transitive-closure g db s))
 (defn ^{:datahike/output-cardinality tc-oc :datahike/cost 1000} mutual-exp
-  [g db s cnt] (swap! cnt inc) (graph/transitive-closure g db s))
+  [g db s] (graph/transitive-closure g db s))
+
+(def ^:private oracle-ns "datahike.test.experimental.graph-cost-oracle")
+(defn- count-of
+  "Engine-collected invocation count for wrapper `nm` from a result's :fn-counts
+   metadata (see :count-fns?)."
+  [res nm]
+  (get (:fn-counts (meta res)) (symbol oracle-ns nm) 0))
 
 (defn- plan-of [dd where]
   (mapv (juxt :op :fn-sym #(second (:clause %)))
@@ -88,14 +93,13 @@
               (-> (db/empty-db schema)
                   (d/db-with node-txs) (d/db-with doc-txs)
                   (d/db-with flag-core) (d/db-with flag-extra)))
-         cnt (atom 0)
          where '[[(datahike.experimental.graph-spec/attr-graph :follows) ?g]
                  [?p :cites ?x] [?x :flagged ?ff]
-                 [(datahike.test.experimental.graph-cost-oracle/filter-tcv ?g $ ?x ?cnt) [?n ...]]]]
+                 [(datahike.test.experimental.graph-cost-oracle/filter-tcv ?g $ ?x) [?n ...]]]]
      (clear-plan-cache!)
      (let [res (binding [q/*query-result-cache?* false]
-                 (d/q {:query {:find '[?p ?n] :in '[$ ?cnt] :where where} :args [dd cnt]}))]
-       {:invocations @cnt :rows (count res) :plan (plan-of dd where)}))))
+                 (d/q {:query {:find '[?p ?n] :where where} :args [dd] :count-fns? true}))]
+       {:invocations (count-of res "filter-tcv") :rows (count res) :plan (plan-of dd where)}))))
 
 ;; ---------------------------------------------------------------------------
 ;; EXPAND: the fn input ?x is bound by :seed (5).  A separate :tagged join EXPANDS
@@ -115,15 +119,14 @@
                              {:db/id (+ 50000 (* i 100) j) :tagged (+ 1000 i)}))]
              (-> (db/empty-db schema)
                  (d/db-with nodes) (d/db-with seeds) (d/db-with docs)))
-        cnt (atom 0)
         where '[[(datahike.experimental.graph-spec/attr-graph :follows) ?g]
                 [?x :seed true]
-                [(datahike.test.experimental.graph-cost-oracle/expand-tcv ?g $ ?x ?cnt) [?n ...]]
+                [(datahike.test.experimental.graph-cost-oracle/expand-tcv ?g $ ?x) [?n ...]]
                 [?doc :tagged ?x]]]
     (clear-plan-cache!)
     (let [res (binding [q/*query-result-cache?* false]
-                (d/q {:query {:find '[?doc ?n] :in '[$ ?cnt] :where where} :args [dd cnt]}))]
-      {:invocations @cnt :rows (count res) :plan (plan-of dd where)})))
+                (d/q {:query {:find '[?doc ?n] :where where} :args [dd] :count-fns? true}))]
+      {:invocations (count-of res "expand-tcv") :rows (count res) :plan (plan-of dd where)})))
 
 ;; ---------------------------------------------------------------------------
 ;; JOINFN: a join with a HIGH standalone card (n-decoy :owns datoms point to a
@@ -145,14 +148,13 @@
                   decoys (vec (for [i (range n-decoy)] {:db/id (+ 700000 i) :owns 999999}))]
               (-> (db/empty-db schema)
                   (d/db-with nodes) (d/db-with real-owns) (d/db-with decoys)))
-         cnt (atom 0)
          where '[[(datahike.experimental.graph-spec/attr-graph :follows) ?g]
                  [?x :type "node"] [?o :owns ?x]
-                 [(datahike.test.experimental.graph-cost-oracle/joinfn-tcv ?g $ ?x ?cnt) [?n ...]]]]
+                 [(datahike.test.experimental.graph-cost-oracle/joinfn-tcv ?g $ ?x) [?n ...]]]]
      (clear-plan-cache!)
      (let [res (binding [q/*query-result-cache?* false]
-                 (d/q {:query {:find '[?o ?n] :in '[$ ?cnt] :where where} :args [dd cnt]}))]
-       {:invocations @cnt :rows (count res) :plan (plan-of dd where)}))))
+                 (d/q {:query {:find '[?o ?n] :where where} :args [dd] :count-fns? true}))]
+       {:invocations (count-of res "joinfn-tcv") :rows (count res) :plan (plan-of dd where)}))))
 
 ;; ---------------------------------------------------------------------------
 ;; SINK: like JOINFN, but the graph is TINY so the fn's per-call complexity is
@@ -176,14 +178,13 @@
                   decoys (vec (for [i (range n-decoy)] {:db/id (+ 700000 i) :owns 999999}))]
               (-> (db/empty-db schema)
                   (d/db-with nodes) (d/db-with real-owns) (d/db-with decoys)))
-         cnt (atom 0)
          where '[[(datahike.experimental.graph-spec/attr-graph :tinyfollows) ?g]
                  [?x :type "node"] [?o :owns ?x]
-                 [(datahike.test.experimental.graph-cost-oracle/sink-tcv ?g $ ?x ?cnt) [?n ...]]]]
+                 [(datahike.test.experimental.graph-cost-oracle/sink-tcv ?g $ ?x) [?n ...]]]]
      (clear-plan-cache!)
      (let [res (binding [q/*query-result-cache?* false]
-                 (d/q {:query {:find '[?o ?n] :in '[$ ?cnt] :where where} :args [dd cnt]}))]
-       {:invocations @cnt :rows (count res) :plan (plan-of dd where)}))))
+                 (d/q {:query {:find '[?o ?n] :where where} :args [dd] :count-fns? true}))]
+       {:invocations (count-of res "sink-tcv") :rows (count res) :plan (plan-of dd where)}))))
 
 ;; ---------------------------------------------------------------------------
 ;; MUTUAL: two cost-annotated wrappers on the SAME input ?x with DIFFERENT
@@ -208,17 +209,16 @@
              (-> (db/empty-db schema)
                  (d/db-with chains) (d/db-with mids) (d/db-with tails)
                  (d/db-with aliveA) (d/db-with aliveB)))
-        cheap-cnt (atom 0) exp-cnt (atom 0)
         where '[[(datahike.experimental.graph-spec/attr-graph :follows) ?g]
                 [?x :seed true]
-                [(datahike.test.experimental.graph-cost-oracle/mutual-cheap ?g $ ?x ?cc) [?a ...]]
+                [(datahike.test.experimental.graph-cost-oracle/mutual-cheap ?g $ ?x) [?a ...]]
                 [?a :aliveA true]
-                [(datahike.test.experimental.graph-cost-oracle/mutual-exp ?g $ ?x ?ce) [?b ...]]
+                [(datahike.test.experimental.graph-cost-oracle/mutual-exp ?g $ ?x) [?b ...]]
                 [?b :aliveB true]]]
     (clear-plan-cache!)
-    (binding [q/*query-result-cache?* false]
-      (d/q {:query {:find '[?x] :in '[$ ?cc ?ce] :where where} :args [dd cheap-cnt exp-cnt]}))
-    {:cheap @cheap-cnt :exp @exp-cnt :plan (plan-of dd where)}))
+    (let [res (binding [q/*query-result-cache?* false]
+                (d/q {:query {:find '[?x] :where where} :args [dd] :count-fns? true}))]
+      {:cheap (count-of res "mutual-cheap") :exp (count-of res "mutual-exp") :plan (plan-of dd where)})))
 
 (defn run-all []
   (let [f (filter-case) e (expand-case) j (joinfn-case) s (sink-case) m (mutual-case)]
