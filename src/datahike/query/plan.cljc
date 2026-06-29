@@ -1546,6 +1546,13 @@
               ;; now order purely by cost. Groups are preferred on ties since
               ;; they bind producer vars that can unlock/cheapen pending ops.
                (let [ready    (filterv (fn [op] (< (op-cost op bound-vars var-cards) max-cost)) remaining)
+                     ;; One cost model: op-cost = rows × per-unit for every op.
+                     ;; This statically DEFERS an expensive function behind both
+                     ;; row-reducing joins and cheaper functions (correct), and
+                     ;; also behind an input-EXPANDING join (incorrect) — the
+                     ;; latter is the one case the executor's hoist corrects at
+                     ;; runtime (execute.cljc/hoist-expensive-fn), since whether a
+                     ;; join expands or reduces is not knowable statically.
                      best-ng  (when (seq ready)
                                 (apply min-key #(op-cost % bound-vars var-cards) ready))
                      ng-cost  (when best-ng (long (op-cost best-ng bound-vars var-cards)))

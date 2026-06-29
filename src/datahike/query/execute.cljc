@@ -3836,6 +3836,56 @@
            :any  (boolean (some bound req))
            true))))
 
+(defn- ctx-rows-over
+  "Rows the function would iterate over `in-vars` = the size of the production it
+   runs against = the product of the (disjoint) ctx relations that hold any of
+   those vars. Using the product (not the first/any rel) is essential: a graph
+   arg like ?g sits in its own 1-tuple rel, so picking that rel alone would make
+   every reducing join look like an expander and wrongly hoist the function."
+  [ctx in-vars]
+  (max 1 (long (->> (:rels ctx)
+                    (filter (fn [rel] (some in-vars (keys (:attrs rel)))))
+                    (map (fn [rel] (count (:tuples rel))))
+                    (reduce * 1)))))
+
+(defn- hoist-expensive-fn
+  "The runtime HALF of the single cost model: static `op-cost` correctly defers an
+   expensive function behind row-reducing joins and cheaper functions, but it also
+   over-defers it behind an input-EXPANDING join (which static stats can't tell
+   from a reducing one). Before running group `op` at `idx`, if a pending
+   downstream expensive function is ready and `op` would EXPAND its input
+   (measured rows > the function's current input rows), pull that function ahead
+   of `op` so it runs on the smaller pre-expansion relation. Row-reducing groups
+   are left ahead of the function — the beneficial order. Returns a reordered plan
+   or nil. Gated on :exec-cost-fn + a direct shared input var, so MUTUAL-style
+   deferral behind a cheaper function's OUTPUT filter is untouched."
+  [plan idx ctx db op]
+  (when (and (#{:pattern-scan :entity-group} (:op op)) (pss-instance? (:eavt db)))
+    (let [ops (:ops plan)
+          rest-ops (subvec ops idx)
+          bound (into #{} (mapcat (comp keys :attrs)) (:rels ctx))
+          ready-expensive-fn?
+          (fn [o] (and (= :function (:op o)) (:exec-cost-fn o) (not (:probed? o)) (nil? (:source o))
+                       (let [[req pol] (plan/op-required-vars o)]
+                         (case pol :none true :all (every? bound req)
+                               :any (boolean (some bound req)) true))))
+          cand-fns (filter (fn [o]
+                             (and (ready-expensive-fn? o)
+                                  (some (set (plan/args-free-vars (:args o))) (:vars op))))
+                           (rest rest-ops))]
+      (when (seq cand-fns)
+        (when-let [op-rows (probe-card db op ctx)]
+          (let [hoistable (filter (fn [f]
+                                    (> (long op-rows)
+                                       (long (ctx-rows-over ctx (set (plan/args-free-vars (:args f)))))))
+                                  cand-fns)]
+            (when (seq hoistable)
+              (let [vc (ctx-var-cards ctx)
+                    f (apply min-key #(plan/op-cost % bound vc) hoistable)
+                    rest' (into [(assoc f :probed? true)]
+                                (filterv #(not (identical? % f)) rest-ops))]
+                (assoc plan :ops (into (subvec ops 0 idx) rest'))))))))))
+
 (defn execute-plan
   "Execute a query plan with adaptive replanning.
    After each op, compares actual cardinality to estimate. If the ratio
@@ -3881,6 +3931,10 @@
                                           {:source src :available (set (keys (:sources ctx)))})
                                 db))
                         db)]
+            ;; Runtime corrector for the one thing static cost can't know: pull an
+            ;; expensive function ahead of a group that would EXPAND its input.
+            (if-let [plan' (hoist-expensive-fn plan idx ctx op-db op)]
+              (recur ctx plan' idx)
             (case (:op op)
               ;; Entity group — fused scan+merges (only works with concrete DB sources
               ;; that have PersistentSortedSet indexes — temporal DBs like SinceDB/AsOfDB
@@ -4184,7 +4238,7 @@
                          :cljs (fn [_ _ c] c)) op-db op ctx) plan (inc idx))
 
               ;; Unknown op — skip
-              (recur ctx plan (inc idx)))))))))
+              (recur ctx plan (inc idx))))))))))
 
 ;; ---------------------------------------------------------------------------
 ;; Columnar aggregate execution (JVM only)

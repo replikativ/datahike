@@ -69,23 +69,65 @@
   16)
 
 ;; --- execution-cost (:datahike/cost) ---------------------------------------
-;; Each algorithm carries `:datahike/cost 1`, i.e. cost = 1 × input-rows =
-;; the number of times it runs (the planner supplies :input-rows from bound-var
-;; cardinalities). This is the per-invocation cost we WANT for ordering, because
-;; a filter on the algorithm's input has cardinality ≤ input-rows (so the algo
-;; defers behind it) while a join that EXPANDS the input has cardinality >
-;; input-rows (so the algo runs first). A larger per-call factor (e.g. the graph
-;; size) is "truer" execution cost but, in a one-step greedy interleaver, would
-;; over-defer the algo past input-expanding joins — so we deliberately keep the
-;; per-call factor at 1. (A per-call-complexity-weighted cost would need a
-;; lookahead/DP-integrated cost model; see doc/query-engine.md.)
+;; The planner orders a function by per-call-cost × input-rows (the latter from
+;; bound-var cardinalities). The per-call factor is the algorithm's COMPLEXITY in
+;; the graph size, so the planner can (a) order a cheap algo before an expensive
+;; one when both feed selective filters on a shared input, and (b) defer an
+;; expensive algo behind row-reducing joins. The execution-time probe-and-sink
+;; (execute.cljc) handles the row-reducing-vs-expanding-join ambiguity that the
+;; static per-call factor cannot — so unlike before we can carry a TRUE
+;; complexity factor here without over-deferring past input-expanding joins.
+;;
+;; Graph size [V E] is read from the edge attribute via :provenance (so a graph
+;; passed as ?g resolves back through transformer wrappers). When the graph is
+;; not statically resolvable (weighted/multi/query graphs), per-call falls back
+;; to 1 (cost = input-rows), the prior behaviour.
+
+(def ^:private graph-size-cache
+  "Bounded cache of [V E] keyed by (edge-attr, db version). graph-size scans
+   :aevt (O(E)) and op-cost calls it many times per plan, but the size is fixed
+   for a given (attr, db) — so memoize on cheap db-version fields. Reset wholesale
+   past a cap to stay bounded across many transactions."
+  (atom {}))
+
+(defn- graph-size
+  "[node-count edge-count] for the graph `arg`, or nil when the edge attribute
+   isn't statically resolvable. Memoized per (attr, db-version)."
+  [db arg provenance]
+  (when-let [attr (graph-edge-attr arg provenance)]
+    (let [k [attr (:max-tx db) (:max-eid db)]]
+      (or (get @graph-size-cache k)
+          (let [edges (d/datoms db :aevt attr)
+                e (count edges)
+                v (count (into #{} (mapcat (fn [d] [(:e d) (:v d)])) edges))
+                sz [v e]]
+            (swap! graph-size-cache (fn [c] (assoc (if (> (count c) 256) {} c) k sz)))
+            sz)))))
+
+(defn- exec-cost
+  "Build a :datahike/cost fn: total = input-rows × `complexity`(V, E). Falls back
+   to input-rows when the graph size isn't statically resolvable."
+  [complexity]
+  (fn [{:keys [db args provenance input-rows]}]
+    (let [rows (max 1 (long (or input-rows 1)))]
+      (if-let [[v e] (graph-size db (first args) provenance)]
+        (* rows (max 1 (long (complexity v e))))
+        rows))))
+
+(defn- log2 [n] (/ (Math/log (inc (max 0 (double n)))) (Math/log 2.0)))
+
+;; Complexity tiers (per call), separated enough to order reliably on any graph:
+(def ^:private linear-exec-cost    (exec-cost (fn [v e] (+ (long v) (long e)))))           ; BFS/DFS: V+E
+(def ^:private loglinear-exec-cost (exec-cost (fn [v e] (long (* (long e) (inc (log2 v))))))) ; heap SSSP: E·log V
+(def ^:private quadratic-exec-cost (exec-cost (fn [v e] (* (long v) (long (max 1 e))))))   ; all-source BFS: V·E
+(def ^:private iterative-exec-cost (exec-cost (fn [v e] (* 20 (+ (long v) (long e))))))    ; ~20 passes ·(V+E)
 
 ;; ===========================================================================
 ;; Reachability
 ;; ===========================================================================
 
 (defn ^{:datahike/output-cardinality node-set-card
-        :datahike/cost 1} transitive-closure
+        :datahike/cost linear-exec-cost} transitive-closure
   "Set of nodes reachable from `start` via one or more out-edges. `start` is
    included iff it lies on a cycle (i.e. is reachable from itself)."
   [g db start]
@@ -98,7 +140,7 @@
           (recur seen (pop q))
           (recur (conj seen n) (into (pop q) (gs/out-neighbors g db n))))))))
 
-(defn ^{:datahike/cost 1} reachable?
+(defn ^{:datahike/cost linear-exec-cost} reachable?
   "True iff there is a path of length >= 1 from `source` to `target`."
   [g db source target]
   (loop [seen #{}
@@ -138,7 +180,7 @@
 ;; ===========================================================================
 
 (defn ^{:datahike/output-cardinality path-card
-        :datahike/cost 1} shortest-path
+        :datahike/cost linear-exec-cost} shortest-path
   "Shortest path (fewest edges) from `source` to `target` as a vector of nodes,
    or nil if unreachable. Plain BFS — the minimum hop count is guaranteed."
   [g db source target]
@@ -167,7 +209,7 @@
 ;; ===========================================================================
 
 (defn ^{:datahike/output-cardinality node-set-card
-        :datahike/cost 1} connected-component
+        :datahike/cost linear-exec-cost} connected-component
   "Set of nodes in the same undirected connected component as `start`
    (including `start`)."
   [g db start]
@@ -183,7 +225,7 @@
                  (into (pop q) (concat (gs/out-neighbors g db n)
                                        (gs/in-neighbors g db n)))))))))
 
-(defn connected-components
+(defn ^{:datahike/cost linear-exec-cost} connected-components
   "All undirected connected components as a seq of node sets."
   [g db]
   (let [mg (gs/materialize g db)
@@ -204,7 +246,7 @@
 ;; Strongly connected components (iterative Tarjan)
 ;; ===========================================================================
 
-(defn strongly-connected-components
+(defn ^{:datahike/cost linear-exec-cost} strongly-connected-components
   "All strongly connected components as a vector of node sets. O(V+E),
    iterative (no recursion depth limit)."
   [g db]
@@ -293,7 +335,7 @@
 ;; ===========================================================================
 
 (defn ^{:datahike/output-cardinality node-set-card
-        :datahike/cost 1} topological-sort
+        :datahike/cost linear-exec-cost} topological-sort
   "Topological order of a DAG as a vector, or nil if the graph has a cycle.
    O(V+E)."
   [g db]
@@ -364,7 +406,7 @@
 ;; Bipartite coloring (undirected)
 ;; ===========================================================================
 
-(defn bipartite-coloring
+(defn ^{:datahike/cost linear-exec-cost} bipartite-coloring
   "Check 2-colorability of the undirected view. Returns
    {:bipartite? true :coloring {node 0|1}} or {:bipartite? false}."
   [g db]
@@ -404,7 +446,7 @@
 ;; Bridges / cut edges (iterative Tarjan, undirected)
 ;; ===========================================================================
 
-(defn find-bridges
+(defn ^{:datahike/cost linear-exec-cost} find-bridges
   "Set of bridges (edges whose removal disconnects the graph) in the undirected
    view, as a set of [a b] pairs with a < b. O(V+E), iterative."
   [g db]
@@ -456,7 +498,7 @@
 ;; Semi-naive transitive closure + reusable Datalog rules
 ;; ===========================================================================
 
-(defn semi-naive-transitive-closure
+(defn ^{:datahike/cost quadratic-exec-cost} semi-naive-transitive-closure
   "All reachable [source target] pairs, computed by semi-naive evaluation
    (only new derivations are joined each round). Returns a set of pairs."
   [g db]
@@ -505,7 +547,7 @@
 ;; Weighted shortest path (Dijkstra)
 ;; ===========================================================================
 
-(defn weighted-shortest-path
+(defn ^{:datahike/cost loglinear-exec-cost} weighted-shortest-path
   "Dijkstra shortest path by edge weight. Returns {:path [...] :cost c} or nil
    if unreachable. Edge weights come from the spec's edge-weight (1 when
    unweighted). Non-negative weights only.
@@ -538,7 +580,7 @@
                           (gs/out-neighbors mg db node))]
               (recur pq' best' visited))))))))
 
-(defn bottleneck-path
+(defn ^{:datahike/cost loglinear-exec-cost} bottleneck-path
   "Widest path: maximize the minimum edge weight (capacity) along the path.
    Returns {:path [...] :capacity c} or nil. Capacity from edge-weight."
   [g db source target]
@@ -568,7 +610,7 @@
                           (gs/out-neighbors mg db node))]
               (recur pq' best' visited))))))))
 
-(defn astar-path
+(defn ^{:datahike/cost loglinear-exec-cost} astar-path
   "A* shortest path with an admissible heuristic. `heuristic-fn` takes
    [node target] and estimates remaining cost (never overestimating for an
    optimal result). Returns {:path [...] :cost c} or nil. Weights from
@@ -646,7 +688,7 @@
 ;; Centrality
 ;; ===========================================================================
 
-(defn ^{:datahike/cost 1} page-rank
+(defn ^{:datahike/cost iterative-exec-cost} page-rank
   "PageRank over the directed graph. Returns {node score}; scores sum to ~1.
 
    Options: :damping (0.85), :iterations (20), :tolerance (1e-6). Dangling nodes
@@ -683,7 +725,7 @@
                 new-scores
                 (recur new-scores (inc iter))))))))))
 
-(defn ^{:datahike/cost 1} closeness-centrality
+(defn ^{:datahike/cost quadratic-exec-cost} closeness-centrality
   "Closeness centrality over the undirected view: reciprocal of average distance
    to reachable nodes, scaled by the fraction reachable (so it is well-defined on
    disconnected graphs). Returns {node score in [0,1]}; isolated nodes score 0."
@@ -714,7 +756,7 @@
                           (* (/ reachable (dec n)) (/ reachable total))
                           0.0)]))))))
 
-(defn ^{:datahike/cost 1} betweenness-centrality
+(defn ^{:datahike/cost quadratic-exec-cost} betweenness-centrality
   "Betweenness centrality over the undirected view (Brandes' algorithm, O(VE)).
    Returns {node score in [0,1]}, normalized by (n-1)(n-2) — which folds in the
    undirected pair double-counting so values match the standard definition."
@@ -790,7 +832,7 @@
      :avg-size (if (pos? n) (/ (count communities) n) 0)
      :isolation-score (if (pos? n) (double (/ singletons n)) 0.0)}))
 
-(defn label-propagation
+(defn ^{:datahike/cost iterative-exec-cost} label-propagation
   "Label-propagation community detection over the undirected view: each node
    adopts the most frequent label among its neighbors (ties broken randomly).
    Returns {:communities {node label} :converged bool :iterations n :stats ...}.
@@ -903,7 +945,7 @@
                           m nbrs))
              {} adj))
 
-(defn ^{:datahike/cost 1} louvain
+(defn ^{:datahike/cost iterative-exec-cost} louvain
   "Louvain community detection (multi-level modularity maximization) over the
    undirected, weighted view of `g`. Returns
      {:communities {node community-id} :modularity Q :levels n :stats ...}.
@@ -939,7 +981,7 @@
 ;; Minimum spanning tree (Prim) and max-flow / min-cut (Edmonds-Karp)
 ;; ===========================================================================
 
-(defn prim-mst
+(defn ^{:datahike/cost loglinear-exec-cost} prim-mst
   "Minimum spanning tree (Prim) over the undirected weighted view of `g`.
    Returns {:edges [[a b weight] ...] :total-weight n} or nil if empty.
    Spans the component of `:start` (default an arbitrary node)."
@@ -977,7 +1019,7 @@
   [g db & opts]
   (:total-weight (apply prim-mst g db opts)))
 
-(defn max-flow
+(defn ^{:datahike/cost quadratic-exec-cost} max-flow
   "Maximum flow from `source` to `sink` (Edmonds-Karp, O(VE^2)). Edge capacities
    come from the spec's edge-weight. Returns {:flow n :flow-map {[a b] f}}.
    (Antiparallel real edges are not supported — model them via an intermediate
@@ -1028,7 +1070,7 @@
         {:flow total
          :flow-map (into {} (filter (fn [[_ v]] (pos? v))) flow-map)}))))
 
-(defn min-cut
+(defn ^{:datahike/cost quadratic-exec-cost} min-cut
   "Minimum s-t cut value (= max flow)."
   [g db source sink]
   (:flow (max-flow g db source sink)))
