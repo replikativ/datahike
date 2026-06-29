@@ -7,18 +7,20 @@
    COUNTS the ACTUAL number of algorithm invocations the planner's chosen order
    produces.  The query result cache is always disabled.
 
-   These are not asserted in the guard suite (the observed numbers move as the
-   planner evolves across the DP steps); run `(run-all)` to print a table.
-   Optimal invocation counts (what the planner should achieve):
+   `run-all` prints a table; `cost-oracle-optimal-placement` asserts the optimal
+   invocation counts the planner+executor now achieve:
 
-     FILTER  optimal 5   — a selective filter shrinks the fn input 200 -> 5
-     EXPAND  optimal 5   — an expanding join (5 -> 200) must NOT pull the fn late
-     JOINFN  optimal 5   — a high-card but row-reducing join shrinks input 100 -> 5
+     FILTER  5   — a selective filter shrinks the fn input 200 -> 5
+     EXPAND  5   — an expanding join (5 -> 200) must NOT pull the fn late
+     JOINFN  5   — a row-reducing join (100 -> 5) is probe-sunk ahead of the fn
+                   at execution time (no static cost model can see this skew)
      MUTUAL  cheap=20 exp=3 — cheaper/more-selective fn ordered before the dear one
 
-   Baseline (pre-Step-1, :datahike/cost 1 compromise) observed:
-     FILTER 5, EXPAND 5, JOINFN 100 (BAD), MUTUAL cheap=20 exp=3."
-  (:require [datahike.api :as d]
+   History: the static planner achieved FILTER/EXPAND/MUTUAL but left JOINFN at
+   100 (the row-reducing-vs-expanding-join ambiguity is invisible to per-
+   attribute stats); execute.cljc probe-and-sink closed it to 5."
+  (:require [clojure.test :refer [deftest testing is]]
+            [datahike.api :as d]
             [datahike.db :as db]
             [datahike.query :as q]
             [datahike.lru :as lru]
@@ -199,3 +201,18 @@
     (println "FILTER  n-extra sweep (invocations should stay 5):"
              (mapv #(:invocations (filter-case %)) [0 100 1000 3000 8000]))
     {:filter f :expand e :joinfn j :mutual m}))
+
+(deftest cost-oracle-optimal-placement
+  (testing "FILTER — selective filter shrinks the fn input to 5"
+    (is (= 5 (:invocations (filter-case)))))
+  (testing "EXPAND — fn runs before the expanding join (not deferred to 200)"
+    (is (= 5 (:invocations (expand-case)))))
+  (testing "JOINFN — row-reducing join is probe-sunk ahead of the fn (was 100)"
+    (is (= 5 (:invocations (joinfn-case)))))
+  (testing "MUTUAL — cheaper/more-selective fn ordered before the dear one"
+    (let [m (mutual-case)]
+      (is (= 20 (:cheap m)))
+      (is (= 3 (:exp m)))))
+  (testing "FILTER invocations invariant to unrelated decoy count"
+    (is (= [5 5 5 5 5]
+           (mapv #(:invocations (filter-case %)) [0 100 1000 3000 8000])))))
