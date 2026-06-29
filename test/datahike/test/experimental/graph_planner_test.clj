@@ -46,6 +46,22 @@
     (is (< 20 (scan-card-of '[[?n :node/name ?nm]] :node/name))
         "without an upstream cardinality the scan sees the full extent")))
 
+(deftest centrality-cardinality-flows-to-downstream-join
+  (testing "a per-node-score algorithm (page-rank/betweenness) destructured as
+            [[?node ?score]] bounds a downstream join by the graph's node count"
+    (is (= 20 (scan-card-of
+               '[[(datahike.experimental.graph-spec/attr-graph :follows) ?g]
+                 [(datahike.experimental.graph/page-rank ?g $) [[?node ?score]]]
+                 [?node :node/name ?nm]]
+               :node/name))
+        "page-rank output is bounded by the 20-node graph, not the 200-row extent")
+    (is (= 20 (scan-card-of
+               '[[(datahike.experimental.graph-spec/attr-graph :follows) ?g]
+                 [(datahike.experimental.graph/betweenness-centrality ?g $) [[?node ?score]]]
+                 [?node :node/name ?nm]]
+               :node/name))
+        "betweenness output is bounded the same way")))
+
 (deftest transformer-preserves-cardinality
   (testing "provenance chains through undirected-graph"
     (is (= 20 (scan-card-of

@@ -688,7 +688,8 @@
 ;; Centrality
 ;; ===========================================================================
 
-(defn ^{:datahike/cost iterative-exec-cost} page-rank
+(defn ^{:datahike/output-cardinality node-set-card
+        :datahike/cost iterative-exec-cost} page-rank
   "PageRank over the directed graph. Returns {node score}; scores sum to ~1.
 
    Options: :damping (0.85), :iterations (20), :tolerance (1e-6). Dangling nodes
@@ -725,7 +726,8 @@
                 new-scores
                 (recur new-scores (inc iter))))))))))
 
-(defn ^{:datahike/cost quadratic-exec-cost} closeness-centrality
+(defn ^{:datahike/output-cardinality node-set-card
+        :datahike/cost quadratic-exec-cost} closeness-centrality
   "Closeness centrality over the undirected view: reciprocal of average distance
    to reachable nodes, scaled by the fraction reachable (so it is well-defined on
    disconnected graphs). Returns {node score in [0,1]}; isolated nodes score 0."
@@ -756,7 +758,8 @@
                           (* (/ reachable (dec n)) (/ reachable total))
                           0.0)]))))))
 
-(defn ^{:datahike/cost quadratic-exec-cost} betweenness-centrality
+(defn ^{:datahike/output-cardinality node-set-card
+        :datahike/cost quadratic-exec-cost} betweenness-centrality
   "Betweenness centrality over the undirected view (Brandes' algorithm, O(VE)).
    Returns {node score in [0,1]}, normalized by (n-1)(n-2) — which folds in the
    undirected pair double-counting so values match the standard definition."
@@ -832,7 +835,8 @@
      :avg-size (if (pos? n) (/ (count communities) n) 0)
      :isolation-score (if (pos? n) (double (/ singletons n)) 0.0)}))
 
-(defn ^{:datahike/cost iterative-exec-cost} label-propagation
+(defn ^{:datahike/output-cardinality node-set-card
+        :datahike/cost iterative-exec-cost} label-propagation
   "Label-propagation community detection over the undirected view: each node
    adopts the most frequent label among its neighbors (ties broken randomly).
    Returns {:communities {node label} :converged bool :iterations n :stats ...}.
