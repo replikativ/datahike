@@ -101,7 +101,7 @@
                      (log/warn :datahike/query-input-ignored {:query query}))
                    (:args query-input))
                arg-inputs)
-        extra-ks [:offset :limit :order-by :stats? :settings :cancel]]
+        extra-ks [:offset :limit :order-by :stats? :count-fns? :settings :cancel]]
     (-> (cond-> {:query (apply dissoc query extra-ks)
                  :args args}
           (map? query-input)
@@ -1139,7 +1139,15 @@
       ;; in the function call are bound. If not, we return nil which
       ;; is handled by `datahike.tools/resolve-clauses`.
     (when (every? symbols-with-values attrs)
-      (let [new-rel (if fun
+      ;; Engine-level function-invocation count (atom-free): the fn is applied
+      ;; once per production tuple, so invocations = (count (:tuples production)).
+      ;; Accumulated into the threaded context by fn-symbol; surfaced as result
+      ;; metadata. Gated on :count-fns? so normal queries pay nothing.
+      (let [context (cond-> context
+                      (:count-fns? context)
+                      (update :fn-counts (fn [m] (update (or m {}) f (fnil + 0)
+                                                         (count (:tuples production))))))
+            new-rel (if fun
                       (let [tuple-fn (-call-fn context production fun args)
                             rels (for [tuple (:tuples production)
                                        :let [val (tuple-fn tuple)]
@@ -3580,6 +3588,15 @@
                                                                   (apply dissoc rs (keys built-in-rules))))
                                                         (assoc :ret % :query query)))))
 
+(defn- with-fn-counts
+  "Surface the engine-collected {fn-sym → invocations} map (accumulated in the
+   threaded context by bind-by-fn under :count-fns?) as :fn-counts metadata on
+   `result`, when present and the result supports metadata."
+  [context-out result]
+  (if-let [fc (:fn-counts context-out)]
+    (cond-> result (coll? result) (vary-meta assoc :fn-counts fc))
+    result))
+
 (defn- execute-planned-relation
   "Relation path: fused scan → collect → dedup → aggregate/pull.
    Returns final result."
@@ -3634,8 +3651,9 @@
                             deduped)
                       deduped))
                   deduped)]
-    (post-process-result deduped context-in context-out query qfind find-elements
-                         result-arity order-spec offset limit stats? qreturnmaps)))
+    (with-fn-counts context-out
+      (post-process-result deduped context-in context-out query qfind find-elements
+                           result-arity order-spec offset limit stats? qreturnmaps))))
 
 (defn- execute-legacy
   "Legacy engine path: -q → collect → dedup → aggregate/pull."
@@ -3644,10 +3662,11 @@
   (let [context-out (-q context-in (:where query))
         resultset (collect context-out all-vars)
         deduped (into #{} resultset)]
-    (post-process-result deduped context-in context-out query qfind find-elements
-                         result-arity order-spec offset limit stats? qreturnmaps)))
+    (with-fn-counts context-out
+      (post-process-result deduped context-in context-out query qfind find-elements
+                           result-arity order-spec offset limit stats? qreturnmaps))))
 
-(defn- raw-q* [{:keys [query args offset limit order-by stats? settings cancel] :as _query-map}]
+(defn- raw-q* [{:keys [query args offset limit order-by stats? count-fns? settings cancel] :as _query-map}]
   (let [t0 (when *profile?* #?(:clj (System/nanoTime) :cljs (* 1000 (.getTime (js/Date.)))))
         settings (merge default-settings settings)
         {:keys [qfind qwith qreturnmaps qin]} (memoized-parse-query query)
@@ -3655,7 +3674,11 @@
         context-in (-> (if stats?
                          (StatContext. [] {} built-in-rules {} [] settings cancel)
                          (Context. [] {} built-in-rules {} settings cancel))
-                       (resolve-ins qin args))
+                       (resolve-ins qin args)
+                       ;; When set, bind-by-fn accumulates {fn-sym → invocations}
+                       ;; into the threaded context :fn-counts; surfaced as result
+                       ;; metadata. (Extra defrecord keys persist via the extmap.)
+                       (cond-> count-fns? (assoc :count-fns? true)))
         t2 (when *profile?* #?(:clj (System/nanoTime) :cljs (* 1000 (.getTime (js/Date.)))))
 
         all-vars      (concat (dpi/find-vars qfind) (map :symbol qwith))
@@ -3893,13 +3916,14 @@
                        (when-let [result (try-secondary-index-aggregate db plan find-elements)]
                          (-post-process qfind result)))))))))))))
 
-(defn raw-q [{:keys [query args stats? offset limit order-by] :as query-map}]
+(defn raw-q [{:keys [query args stats? count-fns? offset limit order-by] :as query-map}]
   (let [uncached (fn []
                    #?(:clj (or (try-secondary-index-aggregate-fast query-map)
                                (raw-q* query-map))
                       :cljs (raw-q* query-map)))]
     (if (or (not *query-result-cache?*)
             stats?
+            count-fns?                         ;; counting needs re-execution; a cache hit wouldn't re-run the fn
             #?(:clj *profile?* :cljs false))
       (uncached)
       ;; Try result cache
