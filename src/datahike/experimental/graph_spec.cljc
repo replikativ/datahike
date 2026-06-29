@@ -1,76 +1,75 @@
 (ns datahike.experimental.graph-spec
-  "Graph specification protocol for abstracting graph access patterns.
+  "Graph specification protocol — the data-access layer for graph algorithms.
 
-   Enables data-driven graph construction in Datalog queries via nested expressions:
+   A GraphSpec abstracts *how* a graph is read out of a Datahike database, so
+   the algorithms in `datahike.experimental.graph` work uniformly over:
+     - simple ref edges          (attr-graph)
+     - a union of edge attrs     (multi-attr-graph)
+     - reified weighted edges    (weighted-graph)
+     - transformed views         (reverse-graph, undirected-graph,
+                                   filtered-graph, subgraph)
+     - an in-memory snapshot      (materialize)
+     - an arbitrary query         (query-graph)
 
-     (d/q '[:find ?name ?reachable
-            :where
-            [?cfg :edge-attr ?attr]           ;; bind attr from DB
-            [?p :name ?name]
-            [(attr-graph ?attr) ?g]           ;; nested: construct graph from bound var
-            [(bfs-reachable ?g $ ?p) ?r]]     ;; use constructed graph
-          db)
+   Two access methods matter for performance:
+     - index-backed (attr-graph): O(log n + degree) per neighbor lookup off
+       EAVT/AVET, zero up-front cost — best for local/bounded traversals.
+     - materialized (materialize): O(E) up-front build, then O(1) lookups —
+       best for whole-graph algorithms that visit most nodes repeatedly.
 
-   Graph specs can be composed:
-     [(bfs-reachable (reverse-graph (attr-graph ?attr)) $ ?p) ?r]"
+   Algorithms take `(graph-spec db ...)`. Construct a spec, then call an
+   algorithm:
+
+     (let [g (attr-graph :follows)]
+       (reachable g db alice))"
   (:require [datahike.api :as d]
             [datahike.db.utils :as dbu]))
 
 ;; =============================================================================
-;; GraphSpec Protocol
+;; GraphSpec protocol
 ;; =============================================================================
 
 (defprotocol GraphSpec
-  "Protocol for abstracting graph access patterns.
-
-   Implementations define how to traverse a graph structure stored in Datahike.
-   This allows algorithms to work with different edge types, filtered views,
-   reversed directions, etc."
+  "Abstraction over graph access patterns. Implementations define how to read
+   adjacency, edges, nodes and weights from a Datahike database."
 
   (out-neighbors [this db node]
-    "Return sequence of nodes reachable via outgoing edges from node.
-     Returns nil or empty seq if no outgoing edges.")
+    "Seq of nodes reachable via outgoing edges from `node` (nil/empty if none).")
 
   (in-neighbors [this db node]
-    "Return sequence of nodes with incoming edges to node.
-     Returns nil or empty seq if no incoming edges.")
+    "Seq of nodes with edges into `node` (nil/empty if none).")
 
   (all-edges [this db]
-    "Return sequence of [source target] pairs for all edges in graph.")
+    "Seq of [source target] pairs for every edge in the graph.")
 
   (all-nodes [this db]
-    "Return sequence of all node IDs in the graph.")
+    "Seq of all node ids in the graph.")
 
   (edge-weight [this db source target]
-    "Return weight of edge from source to target, or nil if no edge.
-     Default weight is 1 for unweighted graphs.")
+    "Weight of the edge source->target. 1 for unweighted graphs.")
 
   (directed? [this]
-    "Return true if graph is directed, false if undirected."))
+    "True if the graph is directed."))
 
 ;; =============================================================================
-;; Core Graph Spec Implementations
+;; Constructors
 ;; =============================================================================
 
 (defn attr-graph
-  "Create a graph spec from an edge attribute.
+  "Unweighted graph from a single ref edge attribute: each datom [e attr v]
+   is an edge e->v.
 
-   Each datom [e attr v] becomes an edge from e to v.
-
-   Usage:
-     [(attr-graph :follows) ?g]
-     [(attr-graph ?edge-attr) ?g]  ;; ?edge-attr bound earlier"
+     (attr-graph :follows)"
   [edge-attr]
   (reify GraphSpec
     (out-neighbors [_ db node]
-      ;; Forward adjacency straight off EAVT — always present, O(log n + deg).
+      ;; Forward adjacency off EAVT — always present, O(log n + degree).
       (seq (map :v (d/datoms db :eavt node edge-attr))))
 
     (in-neighbors [_ db node]
-      ;; Reverse adjacency off AVET when the attribute is indexed (refs,
-      ;; :db/index, :db/unique are all in AVET) — O(log n + in-deg), no scan.
-      ;; Fall back to a query only for non-indexed attributes, where AVET
-      ;; would be empty and silently wrong.
+      ;; Reverse adjacency off AVET when the attr is indexed (refs, :db/index,
+      ;; :db/unique all live in AVET); fall back to a query otherwise, where
+      ;; AVET would be empty and silently wrong.
       (if (dbu/indexing? db edge-attr)
         (seq (map :e (d/datoms db :avet edge-attr node)))
         (seq (d/q '[:find [?e ...]
@@ -86,35 +85,34 @@
        (mapcat (fn [datom] [(:e datom) (:v datom)])
                (d/datoms db :aevt edge-attr))))
 
-    (edge-weight [_ _db _source _target]
-      1)
+    (edge-weight [_ _db _source _target] 1)
 
     (directed? [_] true)))
 
 (defn multi-attr-graph
-  "Create a graph spec from multiple edge attributes (union).
+  "Unweighted graph from the union of several ref edge attributes.
 
-   Edges from any of the given attributes are included.
-
-   Usage:
-     [(multi-attr-graph [:follows :friends :colleagues]) ?g]"
+     (multi-attr-graph [:follows :friends :colleagues])"
   [edge-attrs]
   (reify GraphSpec
     (out-neighbors [_ db node]
       (seq (distinct
-            (mapcat (fn [attr]
-                      (map :v (d/datoms db :eavt node attr)))
+            (mapcat (fn [attr] (map :v (d/datoms db :eavt node attr)))
                     edge-attrs))))
 
     (in-neighbors [_ db node]
-      (seq (d/q '[:find [?e ...]
-                  :in $ ?target [?attr ...]
-                  :where [?e ?attr ?target]]
-                db node edge-attrs)))
+      (seq (distinct
+            (mapcat (fn [attr]
+                      (if (dbu/indexing? db attr)
+                        (map :e (d/datoms db :avet attr node))
+                        (d/q '[:find [?e ...]
+                               :in $ ?target ?attr
+                               :where [?e ?attr ?target]]
+                             db node attr)))
+                    edge-attrs))))
 
     (all-edges [_ db]
-      (mapcat (fn [attr]
-                (map (juxt :e :v) (d/datoms db :aevt attr)))
+      (mapcat (fn [attr] (map (juxt :e :v) (d/datoms db :aevt attr)))
               edge-attrs))
 
     (all-nodes [_ db]
@@ -124,173 +122,141 @@
                          (d/datoms db :aevt attr)))
                edge-attrs)))
 
-    (edge-weight [_ _db _source _target]
-      1)
+    (edge-weight [_ _db _source _target] 1)
 
     (directed? [_] true)))
 
 (defn weighted-graph
-  "Create a weighted graph spec.
+  "Weighted graph from REIFIED edges: each edge is an entity carrying a source
+   ref, a target ref and a weight, e.g.
 
-   edge-attr defines the graph structure.
-   weight-attr provides edge weights (looked up on source entity).
+     {:edge/from a :edge/to b :edge/weight 3.0}
 
-   Usage:
-     [(weighted-graph :connects :distance) ?g]"
-  [edge-attr weight-attr]
+   Construct with the three attributes:
+
+     (weighted-graph :edge/from :edge/to :edge/weight)
+
+   This is the only sound model for true per-edge weights (a weight attached to
+   a node would be shared by all of that node's out-edges)."
+  [from-attr to-attr weight-attr]
   (reify GraphSpec
     (out-neighbors [_ db node]
-      (seq (map :v (d/datoms db :eavt node edge-attr))))
+      (seq (d/q '[:find [?t ...]
+                  :in $ ?n ?fa ?ta
+                  :where [?e ?fa ?n] [?e ?ta ?t]]
+                db node from-attr to-attr)))
 
     (in-neighbors [_ db node]
-      (seq (d/q '[:find [?e ...]
-                  :in $ ?target ?attr
-                  :where [?e ?attr ?target]]
-                db node edge-attr)))
+      (seq (d/q '[:find [?s ...]
+                  :in $ ?n ?fa ?ta
+                  :where [?e ?ta ?n] [?e ?fa ?s]]
+                db node from-attr to-attr)))
 
     (all-edges [_ db]
-      (map (juxt :e :v) (d/datoms db :aevt edge-attr)))
+      (d/q '[:find ?s ?t
+             :in $ ?fa ?ta
+             :where [?e ?fa ?s] [?e ?ta ?t]]
+           db from-attr to-attr))
 
     (all-nodes [_ db]
       (distinct
-       (mapcat (fn [datom] [(:e datom) (:v datom)])
-               (d/datoms db :aevt edge-attr))))
+       (mapcat identity
+               (d/q '[:find ?s ?t
+                      :in $ ?fa ?ta
+                      :where [?e ?fa ?s] [?e ?ta ?t]]
+                    db from-attr to-attr))))
 
-    (edge-weight [_ db source _target]
+    (edge-weight [_ db source target]
       (or (ffirst (d/q '[:find ?w
-                         :in $ ?e ?wa
-                         :where [?e ?wa ?w]]
-                       db source weight-attr))
+                         :in $ ?s ?t ?fa ?ta ?wa
+                         :where [?e ?fa ?s] [?e ?ta ?t] [?e ?wa ?w]]
+                       db source target from-attr to-attr weight-attr))
           1))
 
     (directed? [_] true)))
 
+(defn query-graph
+  "Graph from a Datalog query returning [source target] pairs. Edges are
+   loaded once and cached on first access.
+
+     (query-graph '[:find ?a ?b :where [?a :trusts ?b] [?b :trusts ?a]])"
+  [query & inputs]
+  (let [edges-cache (atom nil)
+        edges (fn [db] (or @edges-cache
+                           (reset! edges-cache (vec (apply d/q query db inputs)))))]
+    (reify GraphSpec
+      (out-neighbors [_ db node]
+        (seq (for [[s t] (edges db) :when (= s node)] t)))
+      (in-neighbors [_ db node]
+        (seq (for [[s t] (edges db) :when (= t node)] s)))
+      (all-edges [_ db] (edges db))
+      (all-nodes [_ db] (distinct (mapcat (fn [[s t]] [s t]) (edges db))))
+      (edge-weight [_ _db _source _target] 1)
+      (directed? [_] true))))
+
 ;; =============================================================================
-;; Graph Spec Transformers
+;; Transformers
 ;; =============================================================================
 
 (defn reverse-graph
-  "Wrap a graph spec to reverse edge directions.
-
-   out-neighbors becomes in-neighbors and vice versa.
-
-   Usage:
-     [(reverse-graph (attr-graph :reports-to)) ?g]  ;; who reports TO me"
+  "View `spec` with edge directions reversed."
   [spec]
   (reify GraphSpec
-    (out-neighbors [_ db node]
-      (in-neighbors spec db node))
-
-    (in-neighbors [_ db node]
-      (out-neighbors spec db node))
-
-    (all-edges [_ db]
-      (map (fn [[s t]] [t s]) (all-edges spec db)))
-
-    (all-nodes [_ db]
-      (all-nodes spec db))
-
-    (edge-weight [_ db source target]
-      ;; Reversed: look up weight from target to source
-      (edge-weight spec db target source))
-
-    (directed? [_]
-      (directed? spec))))
+    (out-neighbors [_ db node] (in-neighbors spec db node))
+    (in-neighbors [_ db node] (out-neighbors spec db node))
+    (all-edges [_ db] (map (fn [[s t]] [t s]) (all-edges spec db)))
+    (all-nodes [_ db] (all-nodes spec db))
+    (edge-weight [_ db source target] (edge-weight spec db target source))
+    (directed? [_] (directed? spec))))
 
 (defn undirected-graph
-  "Wrap a graph spec to treat it as undirected.
-
-   Both forward and backward edges are traversable.
-
-   Usage:
-     [(undirected-graph (attr-graph :knows)) ?g]"
+  "View `spec` as undirected — both directions are traversable."
   [spec]
   (reify GraphSpec
     (out-neighbors [_ db node]
-      (distinct (concat (out-neighbors spec db node)
-                        (in-neighbors spec db node))))
-
-    (in-neighbors [_ db node]
-      (out-neighbors _ db node))  ;; Same as out for undirected
-
+      (seq (distinct (concat (out-neighbors spec db node)
+                             (in-neighbors spec db node)))))
+    (in-neighbors [this db node] (out-neighbors this db node))
     (all-edges [_ db]
-      ;; Include both directions
       (let [edges (all-edges spec db)]
         (distinct (concat edges (map (fn [[s t]] [t s]) edges)))))
-
-    (all-nodes [_ db]
-      (all-nodes spec db))
-
+    (all-nodes [_ db] (all-nodes spec db))
     (edge-weight [_ db source target]
       (or (edge-weight spec db source target)
           (edge-weight spec db target source)))
-
     (directed? [_] false)))
 
 (defn filtered-graph
-  "Wrap a graph spec to filter nodes.
-
-   node-pred is a function (fn [db node] -> boolean).
-   Only nodes satisfying the predicate are included.
-
-   Usage:
-     [(filtered-graph (attr-graph :follows)
-                      (fn [db n] (> (:salary (d/entity db n)) 50000))) ?g]"
+  "View `spec` keeping only nodes satisfying `(node-pred db node)`."
   [spec node-pred]
   (reify GraphSpec
     (out-neighbors [_ db node]
       (when (node-pred db node)
         (seq (filter #(node-pred db %) (out-neighbors spec db node)))))
-
     (in-neighbors [_ db node]
       (when (node-pred db node)
         (seq (filter #(node-pred db %) (in-neighbors spec db node)))))
-
     (all-edges [_ db]
-      (filter (fn [[s t]]
-                (and (node-pred db s) (node-pred db t)))
+      (filter (fn [[s t]] (and (node-pred db s) (node-pred db t)))
               (all-edges spec db)))
-
-    (all-nodes [_ db]
-      (filter #(node-pred db %) (all-nodes spec db)))
-
+    (all-nodes [_ db] (filter #(node-pred db %) (all-nodes spec db)))
     (edge-weight [_ db source target]
       (when (and (node-pred db source) (node-pred db target))
         (edge-weight spec db source target)))
-
-    (directed? [_]
-      (directed? spec))))
+    (directed? [_] (directed? spec))))
 
 (defn subgraph
-  "Wrap a graph spec to only include specific nodes.
-
-   node-set is the set of node IDs to include.
-
-   Usage:
-     [(subgraph (attr-graph :follows) #{1 2 3 4}) ?g]"
+  "View `spec` restricted to `node-set`."
   [spec node-set]
   (filtered-graph spec (fn [_db node] (contains? node-set node))))
 
 (defn materialize
-  "Snapshot `spec` against `db` into in-memory adjacency maps, returning a
-   GraphSpec with O(1) neighbor lookups.
+  "Snapshot `spec` against `db` into in-memory adjacency + weight maps, returning
+   a GraphSpec with O(1) lookups. Pay O(E) once; best for whole-graph algorithms
+   that visit most nodes. The result ignores the `db` passed to its methods.
 
-   This is the 'build once' access method: pay O(E) up front, then every
-   `out-neighbors`/`in-neighbors` is a map lookup. Use it for whole-graph
-   algorithms (page-rank, full connected-components, betweenness) that visit
-   most of the graph and call neighbor lookups repeatedly.
-
-   For local/bounded traversals (k-hop, near-pair shortest path, ego nets) do
-   NOT materialize — an index-backed `attr-graph` traverses only the nodes it
-   visits and avoids the O(E) build entirely.
-
-   The returned spec is a fixed snapshot: it ignores the `db` passed to its
-   methods and answers from the adjacency built here. Build it once per query
-   and share it across algorithm calls.
-
-   Usage:
-     [(materialize (attr-graph :follows) $) ?g]
-     [(page-rank-spec ?g $) ?scores]"
+   For local/bounded traversals do NOT materialize — an index-backed attr-graph
+   only touches the nodes it visits."
   [spec db]
   (let [edges (vec (all-edges spec db))
         fwd (persistent!
@@ -299,6 +265,9 @@
         rev (persistent!
              (reduce (fn [m [s t]] (assoc! m t (conj (get m t []) s)))
                      (transient {}) edges))
+        wmap (persistent!
+              (reduce (fn [m [s t]] (assoc! m [s t] (edge-weight spec db s t)))
+                      (transient {}) edges))
         nodes (vec (distinct (mapcat (fn [[s t]] [s t]) edges)))
         directed (directed? spec)]
     (reify GraphSpec
@@ -306,191 +275,22 @@
       (in-neighbors  [_ _db node] (seq (get rev node)))
       (all-edges     [_ _db] edges)
       (all-nodes     [_ _db] nodes)
-      (edge-weight   [_ db source target] (edge-weight spec db source target))
+      (edge-weight   [_ _db source target] (get wmap [source target] 1))
       (directed?     [_] directed))))
 
 ;; =============================================================================
-;; Graph Algorithms
+;; Helpers
 ;; =============================================================================
 
-(defn- attr-graph-node-card
-  "Plan-time output-cardinality estimate for reachability-style algorithms.
-
-   `args` is the function clause's raw arg forms, e.g.
-   `((attr-graph :e/to) $ ?start)`. When the graph is a literal
-   `(attr-graph <kw>)` we estimate the result as the graph's node count (a
-   sound upper bound for reachability/components: the result can't exceed the
-   number of nodes). Returns nil otherwise, so the planner just falls back to
-   its default — never worse than today."
-  [db _fn-sym args]
-  (let [graph-form (first args)
-        attr (when (and (seq? graph-form)
-                        (#{'attr-graph
-                           'datahike.experimental.graph-spec/attr-graph}
-                         (first graph-form)))
-               (second graph-form))]
-    (when (keyword? attr)
-      (count (into #{}
-                   (mapcat (fn [d] [(:e d) (:v d)]))
-                   (d/datoms db :aevt attr))))))
-
-(defn ^{:datahike/output-cardinality attr-graph-node-card} bfs-reachable
-  "Find all nodes reachable from start via BFS.
-
-   Returns a set of node IDs including start.
-
-   Usage in query:
-     [(bfs-reachable ?graph $ ?start) ?reachable-set]"
-  [spec db start]
-  (loop [seen #{start}
-         frontier #{start}]
-    (if (empty? frontier)
-      seen
-      (let [next-nodes (into #{}
-                             (comp
-                              (mapcat #(out-neighbors spec db %))
-                              (remove seen))
-                             frontier)]
-        (recur (into seen next-nodes) next-nodes)))))
-
-(defn bfs-shortest-path
-  "Find shortest path from source to target via BFS.
-
-   Returns vector of node IDs, or nil if no path.
-
-   Usage in query:
-     [(bfs-shortest-path ?graph $ ?source ?target) ?path]"
-  [spec db source target]
-  (if (= source target)
-    [source]
-    (loop [frontier [[source]]
-           visited #{source}]
-      (when (seq frontier)
-        (let [path (first frontier)
-              node (last path)
-              neighbors (out-neighbors spec db node)]
-          (if-let [found (some #(when (= % target) %) neighbors)]
-            (conj path found)
-            (let [new-paths (for [n neighbors
-                                  :when (not (visited n))]
-                              (conj path n))
-                  new-visited (into visited neighbors)]
-              (recur (concat (rest frontier) new-paths) new-visited))))))))
-
-(defn dfs-paths
-  "Find all paths from start up to max-depth via DFS.
-
-   Returns sequence of paths (vectors of node IDs).
-
-   Usage in query:
-     [(dfs-paths ?graph $ ?start 5) ?all-paths]"
-  [spec db start max-depth]
-  (letfn [(dfs [node path depth]
-            (if (>= depth max-depth)
-              [path]
-              (let [neighbors (out-neighbors spec db node)
-                    unvisited (remove (set path) neighbors)]
-                (if (empty? unvisited)
-                  [path]
-                  (mapcat (fn [n]
-                            (dfs n (conj path n) (inc depth)))
-                          unvisited)))))]
-    (dfs start [start] 0)))
-
-(defn connected-components
-  "Find all connected components in an undirected view of the graph.
-
-   Returns sequence of sets, each containing node IDs in one component.
-
-   Usage in query:
-     [(connected-components ?graph $) ?components]"
+(defn weighted-edges
+  "Seq of [source target weight] triples for every edge. On a materialized
+   spec the weight lookup is O(1)."
   [spec db]
-  (let [all (set (all-nodes spec db))
-        undirected (undirected-graph spec)]
-    (loop [remaining all
-           components []]
-      (if (empty? remaining)
-        components
-        (let [start (first remaining)
-              component (bfs-reachable undirected db start)]
-          (recur (clojure.set/difference remaining component)
-                 (conj components component)))))))
+  (map (fn [[s t]] [s t (edge-weight spec db s t)]) (all-edges spec db)))
 
-(defn topological-sort
-  "Topological sort of a directed acyclic graph.
-
-   Returns vector of node IDs in topological order, or nil if cycle detected.
-
-   Usage in query:
-     [(topological-sort ?graph $) ?sorted-nodes]"
+(defn ensure-materialized
+  "Return `spec` if it is already a cheap in-memory snapshot, else materialize
+   it. Algorithms that need repeated whole-graph access call this so callers can
+   pass either an index-backed spec or a pre-built one."
   [spec db]
-  (let [nodes (set (all-nodes spec db))
-        ;; Compute in-degrees
-        in-degrees (reduce (fn [m [_s t]]
-                             (update m t (fnil inc 0)))
-                           (zipmap nodes (repeat 0))
-                           (all-edges spec db))]
-    (loop [result []
-           degrees in-degrees
-           queue (into clojure.lang.PersistentQueue/EMPTY
-                       (filter #(zero? (degrees %)) nodes))]
-      (if (empty? queue)
-        (when (= (count result) (count nodes))
-          result)  ;; nil if cycle (not all nodes processed)
-        (let [node (peek queue)
-              neighbors (out-neighbors spec db node)
-              new-degrees (reduce (fn [m n]
-                                    (update m n dec))
-                                  degrees
-                                  neighbors)
-              new-queue (into (pop queue)
-                              (filter #(and (pos? (degrees %))
-                                            (zero? (new-degrees %)))
-                                      neighbors))]
-          (recur (conj result node) new-degrees new-queue))))))
-
-;; =============================================================================
-;; Convenience Constructors for Query Use
-;; =============================================================================
-
-(defn query-graph
-  "Create a graph spec from a Datalog query.
-
-   The query must return [source target] pairs.
-
-   Usage:
-     [(query-graph '[:find ?a ?b :where [?a :trusts ?b] [?b :trusts ?a]]) ?g]"
-  [query & inputs]
-  (let [cached-edges (atom nil)]
-    (reify GraphSpec
-      (out-neighbors [_ db node]
-        (let [edges (or @cached-edges
-                        (reset! cached-edges
-                                (apply d/q query db inputs)))
-              adj (reduce (fn [m [s t]] (update m s (fnil conj []) t))
-                          {} edges)]
-          (get adj node)))
-
-      (in-neighbors [_ db node]
-        (let [edges (or @cached-edges
-                        (reset! cached-edges
-                                (apply d/q query db inputs)))
-              rev-adj (reduce (fn [m [s t]] (update m t (fnil conj []) s))
-                              {} edges)]
-          (get rev-adj node)))
-
-      (all-edges [_ db]
-        (or @cached-edges
-            (reset! cached-edges
-                    (apply d/q query db inputs))))
-
-      (all-nodes [_ db]
-        (let [edges (or @cached-edges
-                        (reset! cached-edges
-                                (apply d/q query db inputs)))]
-          (distinct (mapcat identity edges))))
-
-      (edge-weight [_ _db _source _target]
-        1)
-
-      (directed? [_] true))))
+  (materialize spec db))
