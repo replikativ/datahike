@@ -965,3 +965,101 @@
   "Minimum s-t cut value (= max flow)."
   [g db source sink]
   (:flow (max-flow g db source sink)))
+
+;; ===========================================================================
+;; Random walks (seeded, deterministic, portable)
+;; ===========================================================================
+
+(defn- weighted-pick
+  "Pick an index from `weights` proportional to weight, using rng state. Returns
+   [rng' index]. Falls back to uniform when all weights are zero."
+  [rng weights]
+  (let [total (reduce + 0.0 weights)
+        n (count weights)]
+    (if (<= total 0.0)
+      (gu/rng-int rng n)
+      (let [[rng' u] (gu/rng-next rng)
+            r (* u total)]
+        (loop [i 0 cum 0.0]
+          (let [cum' (+ cum (nth weights i))]
+            (if (or (< r cum') (= i (dec n)))
+              [rng' i]
+              (recur (inc i) cum'))))))))
+
+(defn- do-uniform-walk [mg db start walk-length rng]
+  (loop [path [start] current start steps 0 rng rng]
+    (if (>= steps walk-length)
+      path
+      (let [nbrs (vec (gs/out-neighbors mg db current))]
+        (if (empty? nbrs)
+          path
+          (let [[rng' nxt] (gu/rng-nth rng nbrs)]
+            (recur (conj path nxt) nxt (inc steps) rng')))))))
+
+(defn- do-weighted-walk [mg db start walk-length rng]
+  (loop [path [start] current start steps 0 rng rng]
+    (if (>= steps walk-length)
+      path
+      (let [nbrs (vec (gs/out-neighbors mg db current))]
+        (if (empty? nbrs)
+          path
+          (let [ws (mapv #(max 0.0 (double (gs/edge-weight mg db current %))) nbrs)
+                [rng' i] (weighted-pick rng ws)]
+            (recur (conj path (nth nbrs i)) (nth nbrs i) (inc steps) rng')))))))
+
+(defn- do-biased-walk [mg db start walk-length p q rng]
+  (loop [path [start] prev nil current start steps 0 rng rng]
+    (if (>= steps walk-length)
+      path
+      (let [nbrs (vec (gs/out-neighbors mg db current))]
+        (if (empty? nbrs)
+          path
+          (let [prev-nbrs (if prev (set (gs/out-neighbors mg db prev)) #{})
+                ws (mapv (fn [x] (cond (= x prev) (/ 1.0 p)
+                                       (prev-nbrs x) 1.0
+                                       :else (/ 1.0 q)))
+                         nbrs)
+                [rng' i] (weighted-pick rng ws)]
+            (recur (conj path (nth nbrs i)) current (nth nbrs i) (inc steps) rng')))))))
+
+(defn random-walk
+  "Single uniform random walk of up to `walk-length` steps from `start`,
+   following out-edges. Returns a vector of nodes (terminates early at a dead
+   end). Deterministic given `:seed` (default 42)."
+  [g db start walk-length & {:keys [seed] :or {seed 42}}]
+  (do-uniform-walk (gs/materialize g db) db start walk-length (gu/rng seed)))
+
+(defn weighted-random-walk
+  "Random walk where the next node is chosen with probability proportional to
+   the out-edge weight. Deterministic given `:seed` (default 42)."
+  [g db start walk-length & {:keys [seed] :or {seed 42}}]
+  (do-weighted-walk (gs/materialize g db) db start walk-length (gu/rng seed)))
+
+(defn biased-random-walk
+  "Node2Vec-style biased walk with return parameter `p` and in-out parameter
+   `q`. Deterministic given `:seed` (default 42)."
+  [g db start walk-length p q & {:keys [seed] :or {seed 42}}]
+  (do-biased-walk (gs/materialize g db) db start walk-length p q (gu/rng seed)))
+
+(defn random-walks
+  "Generate `walks-per-node` uniform walks from each source node (default all
+   nodes). Materializes the graph once. Returns a seq of walks. Each walk gets a
+   distinct deterministic seed derived from `:seed` (default 42)."
+  [g db walk-length walks-per-node & {:keys [seed source-nodes] :or {seed 42}}]
+  (let [mg (gs/materialize g db)
+        sources (or source-nodes (gs/all-nodes mg db))]
+    (for [node sources
+          wi (range walks-per-node)]
+      (do-uniform-walk mg db node walk-length
+                       (gu/rng (+ seed (* node 1000003) wi))))))
+
+(defn biased-random-walks
+  "Generate `walks-per-node` Node2Vec biased walks (params `p`,`q`) from each
+   source node (default all nodes). Materializes once. Deterministic seeds."
+  [g db walk-length walks-per-node p q & {:keys [seed source-nodes] :or {seed 42}}]
+  (let [mg (gs/materialize g db)
+        sources (or source-nodes (gs/all-nodes mg db))]
+    (for [node sources
+          wi (range walks-per-node)]
+      (do-biased-walk mg db node walk-length p q
+                      (gu/rng (+ seed (* node 1000003) wi))))))

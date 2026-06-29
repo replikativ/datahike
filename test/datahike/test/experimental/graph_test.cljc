@@ -342,3 +342,52 @@
         {:keys [flow]} (g/max-flow gr db (id "s") (id "t"))]
     (is (= 23.0 flow) "CLRS textbook max flow")
     (is (= 23.0 (g/min-cut gr db (id "s") (id "t"))))))
+
+;; ---------------------------------------------------------------------------
+;; Batch 6 — random walks (seeded ⇒ deterministic)
+;; ---------------------------------------------------------------------------
+
+(defn- valid-walk? [edge-set walk]
+  (every? (fn [[a b]] (contains? edge-set [a b])) (partition 2 1 walk)))
+
+(deftest test-random-walk
+  (testing "forced path (no choices) is followed exactly, stops at dead end"
+    (let [f (build [["A" "B"] ["B" "C"] ["C" "D"]])
+          [gr db] (g-of f) id (:id f) nm (:name f)]
+      (is (= ["A" "B" "C" "D"] (mapv nm (g/random-walk gr db (id "A") 10))))))
+  (testing "branching walk: valid edges + deterministic for a fixed seed"
+    (let [f (build [["A" "B"] ["A" "C"] ["B" "D"] ["C" "D"] ["D" "A"]])
+          [gr db] (g-of f) id (:id f)
+          edges (set (gs/all-edges (gs/attr-graph :e/to) db))
+          w1 (g/random-walk gr db (id "A") 8 :seed 7)
+          w2 (g/random-walk gr db (id "A") 8 :seed 7)]
+      (is (= w1 w2) "same seed ⇒ same walk")
+      (is (valid-walk? edges w1) "every step is a real edge")
+      (is (= 9 (count w1)) "8 steps from A never dead-ends here"))))
+
+(deftest test-weighted-random-walk
+  (testing "strongly favors the heavy edge"
+    ;; From A: B has weight 100, C has weight 1, both sinks. Over many seeds the
+    ;; first step should land on B far more often.
+    (let [f (build-weighted [["A" "B" 100] ["A" "C" 1]])
+          [gr db] (wg-of f) id (:id f) nm (:name f)
+          firsts (for [s (range 50)]
+                   (nm (second (g/weighted-random-walk gr db (id "A") 1 :seed s))))
+          b-count (count (filter #{"B"} firsts))]
+      (is (> b-count 40) (str "expected mostly B, got " b-count "/50")))))
+
+(deftest test-biased-random-walk
+  (let [f (build [["A" "B"] ["A" "C"] ["B" "D"] ["C" "D"] ["D" "A"]])
+        [gr db] (g-of f) id (:id f)
+        edges (set (gs/all-edges (gs/attr-graph :e/to) db))
+        w (g/biased-random-walk gr db (id "A") 6 1.0 1.0 :seed 3)]
+    (is (valid-walk? edges w))
+    (is (= w (g/biased-random-walk gr db (id "A") 6 1.0 1.0 :seed 3)) "deterministic")))
+
+(deftest test-random-walks
+  (let [f (build [["A" "B"] ["B" "C"] ["C" "A"]])
+        [gr db] (g-of f)
+        edges (set (gs/all-edges (gs/attr-graph :e/to) db))
+        walks (g/random-walks gr db 5 3 :seed 1)]
+    (is (= 9 (count walks)) "3 nodes × 3 walks")
+    (is (every? #(valid-walk? edges %) walks))))
