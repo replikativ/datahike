@@ -653,7 +653,7 @@
                 true (conj (ir/->PEmitTuple 0)))]
     (ir/->PPipeline (vec steps) fused-path use-cursors? (boolean attr-refs?))))
 
-(defn- args-free-vars
+(defn args-free-vars
   "Walk an :args list recursively, collecting every free variable that
    appears anywhere inside. Mirrors `analyze/extract-vars`, which is
    already the recursive contract for `:vars` on every clause type.

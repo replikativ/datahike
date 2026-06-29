@@ -3794,10 +3794,60 @@
       (or (> ratio replan-threshold)
           (< ratio (/ 1.0 replan-threshold))))))
 
+(defn- ctx-var-cards
+  "{var → distinct-value count} over the materialized relations in `ctx`. Seeds
+   the probe-triggered re-order so a function's input-row estimate reflects the
+   ACTUAL bound cardinalities (not the card-1 default), and so every already-
+   bound var is in the re-order's runnability seed."
+  [ctx]
+  (persistent!
+   (reduce (fn [m rel]
+             (let [tuples (:tuples rel)]
+               (reduce-kv (fn [m v idx]
+                            (assoc! m v (count (into #{} (map #(nth % idx)) tuples))))
+                          m (:attrs rel))))
+           (transient {}) (:rels ctx))))
+
+(defn- probe-card
+  "MEASURE the relation cardinality running `op` would produce against the
+   already-materialized `ctx` — exact, not estimated. For an index-backed
+   pattern-scan this is a single SIP read (restricted to the bound probe-set),
+   so a row-reducing join returns its small true size and a row-expanding join
+   its true blow-up. Pure read over immutable indexes; the result is discarded.
+   Returns nil for op types we don't probe."
+  [op-db op ctx]
+  (case (:op op)
+    :pattern-scan (count (:tuples (execute-pattern-scan op-db op (:cancel ctx) (:rels ctx))))
+    :entity-group (ctx-total-tuples (first (execute-fused-scan-rel op-db (:scan-op op) (:merge-ops op) ctx)))
+    nil))
+
+(defn- probe-candidate?
+  "Can `op` be run early to (potentially) change a function's input? It must be
+   an index-backed producer sharing a free var with `in-vars`, on the default
+   source, whose own required vars are already bound."
+  [op in-vars bound]
+  (and (#{:pattern-scan :entity-group} (:op op))
+       (not (:source op))
+       (some in-vars (:vars op))
+       (let [[req pol] (plan/op-required-vars op)]
+         (case pol
+           :none true
+           :all  (every? bound req)
+           :any  (boolean (some bound req))
+           true))))
+
 (defn execute-plan
   "Execute a query plan with adaptive replanning.
    After each op, compares actual cardinality to estimate. If the ratio
    exceeds replan-threshold (10x), re-orders remaining ops.
+
+   Expensive functions (those carrying :datahike/cost via :exec-cost-fn) are
+   additionally PROBE-SUNK: before running one, the deferred index-backed joins
+   on its input are measured against the live relation; a join that REDUCES the
+   input is re-ordered ahead of the function (so it runs on fewer rows), while
+   one that EXPANDS it stays behind. This resolves the row-reducing-vs-expanding
+   join ambiguity that no static cost model can (correlation/skew is invisible
+   to per-attribute stats) — see plan/op-required-vars and the cost oracle.
    Takes and returns a query context."
   [plan context db]
   (if (:has-passthrough? plan)
@@ -4053,10 +4103,53 @@
                      plan (inc idx))
 
               :function
-              (recur (#?(:clj legacy/bind-by-fn
-                         :cljs (rel/get-legacy-fn :bind-by-fn))
-                      ctx (:clause op))
-                     plan (inc idx))
+              (let [run-fn (fn [c o] (#?(:clj legacy/bind-by-fn
+                                         :cljs (rel/get-legacy-fn :bind-by-fn))
+                                      c (:clause o)))
+                    in-vars (set (plan/args-free-vars (:args op)))
+                    rest-ops (subvec (:ops plan) (inc idx))
+                    ;; Only probe when it can pay off: the function is expensive
+                    ;; (:exec-cost-fn), not already probed, on a PSS default
+                    ;; source, AND some deferred index-backed op shares its input.
+                    probe? (and (:exec-cost-fn op)
+                                (not (:probed? op))
+                                (nil? (:source op))
+                                (pss-instance? (:eavt op-db))
+                                (some #(and (#{:pattern-scan :entity-group} (:op %))
+                                            (some in-vars (:vars %)))
+                                      rest-ops))]
+                (if-not probe?
+                  (recur (run-fn ctx op) plan (inc idx))
+                  (let [cur-cards (ctx-var-cards ctx)
+                        bound (set (keys cur-cards))
+                        ;; Measure each candidate's true join size and inject it
+                        ;; as the ordering cost (group-effective-card reads
+                        ;; :scan-card first, then :estimated-card; op-output-cards
+                        ;; reads :output-var-cards).
+                        rest' (mapv (fn [o]
+                                      (if (probe-candidate? o in-vars bound)
+                                        (if-let [c (probe-card op-db o ctx)]
+                                          (assoc o :scan-card c :estimated-card c
+                                                 :output-var-cards (zipmap (:vars o) (repeat c)))
+                                          o)
+                                        o))
+                                    rest-ops)
+                        ;; Re-order the function together with the remaining ops,
+                        ;; seeded with the live per-var cardinalities (MAP seed so
+                        ;; the function's input-rows estimate is real; db=nil so
+                        ;; the injected measured cards aren't re-derived away).
+                        to-order (into [(assoc op :probed? true)] rest')
+                        reordered (plan/order-plan-ops to-order cur-cards nil)
+                        moved? (not= :function (:op (first reordered)))]
+                    (if moved?
+                      ;; A reducing join sank ahead of the function — splice the
+                      ;; new order in and re-run from the function's slot.
+                      (recur ctx
+                             (assoc plan :ops (into (subvec (:ops plan) 0 idx) reordered))
+                             idx)
+                      ;; Nothing reduces the input (or only expansions remain) —
+                      ;; run the function now; mark probed so we don't re-probe.
+                      (recur (run-fn ctx op) plan (inc idx))))))
 
               :or (recur (execute-or op-db op ctx) plan (inc idx))
               :or-join (recur (execute-or-join op-db op ctx) plan (inc idx))
