@@ -145,3 +145,85 @@
         named (set (map (fn [[a b]] (set [(nm a) (nm b)])) bridges))]
     (is (= #{#{"C" "D"} #{"E" "F"}} named)
         "C-D and E-F are bridges; the A-B-C triangle has none")))
+
+;; ---------------------------------------------------------------------------
+;; Batch 2 — weighted paths (reified-edge fixtures)
+;; ---------------------------------------------------------------------------
+
+(def ^:private wschema
+  {:node/name {:db/unique :db.unique/identity}
+   :edge/from {:db/valueType :db.type/ref :db/cardinality :db.cardinality/one}
+   :edge/to {:db/valueType :db.type/ref :db/cardinality :db.cardinality/one}})
+
+(defn build-weighted
+  "Build a reified-edge weighted graph from [from to weight] triples."
+  [triples]
+  (let [names (vec (distinct (mapcat (fn [[a b _]] [a b]) triples)))
+        db0 (-> (db/empty-db wschema)
+                (d/db-with (mapv (fn [n] {:node/name n}) names)))
+        dbf (d/db-with db0 (mapv (fn [[a b w]]
+                                   {:edge/from [:node/name a]
+                                    :edge/to [:node/name b]
+                                    :edge/weight (double w)})
+                                 triples))
+        id (into {} (for [n names]
+                      [n (ffirst (d/q '[:find ?e :in $ ?n :where [?e :node/name ?n]] dbf n))]))]
+    {:db dbf :id id :name (into {} (map (fn [[k v]] [v k])) id)}))
+
+(defn wg-of [fixture]
+  [(gs/weighted-graph :edge/from :edge/to :edge/weight) (:db fixture)])
+
+(deftest test-weighted-shortest-path
+  (testing "cheaper multi-hop beats expensive direct edge"
+    (let [f (build-weighted [["A" "B" 1] ["B" "C" 1] ["A" "C" 5]])
+          [gr db] (wg-of f) id (:id f) nm (:name f)
+          {:keys [path cost]} (g/weighted-shortest-path gr db (id "A") (id "C"))]
+      (is (= ["A" "B" "C"] (mapv nm path)))
+      (is (= 2.0 cost))))
+  (testing "equal-cost frontier entries are not dropped (dedup-bug regression)"
+    ;; S→A and S→B both cost 1 (collide under a cost-only comparator); A is a
+    ;; dead end, the real path is S→B→T. The old sorted-set-by code returned nil.
+    (let [f (build-weighted [["S" "A" 1] ["S" "B" 1] ["B" "T" 1]])
+          [gr db] (wg-of f) id (:id f) nm (:name f)
+          {:keys [path cost]} (g/weighted-shortest-path gr db (id "S") (id "T"))]
+      (is (= ["S" "B" "T"] (mapv nm path)))
+      (is (= 2.0 cost)))))
+
+(deftest test-bottleneck-path
+  ;; widest path A→C: via B has bottleneck min(3,2)=2, beating direct A→C cap 1
+  (let [f (build-weighted [["A" "B" 3] ["B" "C" 2] ["A" "C" 1]])
+        [gr db] (wg-of f) id (:id f) nm (:name f)
+        {:keys [path capacity]} (g/bottleneck-path gr db (id "A") (id "C"))]
+    (is (= ["A" "B" "C"] (mapv nm path)))
+    (is (= 2.0 capacity))))
+
+(deftest test-astar-path
+  ;; zero heuristic ⇒ behaves like Dijkstra
+  (let [f (build-weighted [["A" "B" 1] ["B" "C" 1] ["A" "C" 5]])
+        [gr db] (wg-of f) id (:id f) nm (:name f)
+        {:keys [path cost]} (g/astar-path gr db (id "A") (id "C") (fn [_ _] 0))]
+    (is (= ["A" "B" "C"] (mapv nm path)))
+    (is (= 2.0 cost))))
+
+(deftest test-trust-propagation
+  (let [f (build-weighted [["A" "B" 0.5] ["B" "C" 0.5]])
+        [gr db] (wg-of f) id (:id f) nm (:name f)
+        trust (g/trust-propagation gr db (id "A") :discount 1.0)
+        by-name (into {} (map (fn [[k v]] [(nm k) v])) trust)]
+    (is (= 1.0 (by-name "A")))
+    (is (= 0.5 (by-name "B")))
+    (is (= 0.25 (by-name "C")))))
+
+(deftest test-probability-reachability
+  (let [f (build-weighted [["A" "B" 0.5] ["B" "C" 0.5] ["A" "C" 0.2]])
+        [gr db] (wg-of f) id (:id f)
+        p (g/probability-reachability gr db (id "A") (id "C"))]
+    (is (< 0.249 p 0.251) "max over paths: 0.5*0.5=0.25 beats direct 0.2")))
+
+(deftest test-semi-naive-transitive-closure
+  (let [[gr db] (g-of dag) id (:id dag) nm (:name dag)
+        pairs (set (map (fn [[a b]] [(nm a) (nm b)])
+                        (g/semi-naive-transitive-closure gr db)))]
+    (is (= #{["A" "B"] ["B" "C"] ["A" "C"] ["C" "D"] ["A" "D"] ["B" "D"] ["E" "F"]}
+           pairs)
+        "all transitively reachable pairs")))

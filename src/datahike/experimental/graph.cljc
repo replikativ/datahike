@@ -384,3 +384,193 @@
                                        bridges)]
                         (recur stack' disc low' timer bridges'))))))]
           (recur (rest roots) disc low timer bridges))))))
+
+;; ===========================================================================
+;; Semi-naive transitive closure + reusable Datalog rules
+;; ===========================================================================
+
+(defn semi-naive-transitive-closure
+  "All reachable [source target] pairs, computed by semi-naive evaluation
+   (only new derivations are joined each round). Returns a set of pairs."
+  [g db]
+  (let [edges (into #{} (gs/all-edges (gs/materialize g db) db))
+        by-src (group-by first edges)]
+    (loop [known edges
+           delta edges]
+      (if (empty? delta)
+        known
+        (let [new-facts (into #{}
+                              (for [[x z] delta
+                                    [_ y] (by-src z)
+                                    :when (not (known [x y]))]
+                                [x y]))]
+          (recur (into known new-facts) new-facts))))))
+
+(def ^{:doc "Datalog rules for transitive reachability over an attribute. Use
+             with (d/q query db transitive-rules):
+
+               (d/q '[:find ?t :in $ % ?start
+                      :where (reachable ?start ?t :follows)]
+                    db transitive-rules start)"}
+  transitive-rules
+  '[[(reachable ?x ?y ?attr)
+     [?x ?attr ?y]]
+    [(reachable ?x ?y ?attr)
+     [?x ?attr ?z]
+     (reachable ?z ?y ?attr)]])
+
+(def ^{:doc "Datalog rules producing (path-length ?x ?y ?attr ?len) tuples."}
+  path-length-rules
+  '[[(path-length ?x ?y ?attr 1)
+     [?x ?attr ?y]]
+    [(path-length ?x ?y ?attr ?len)
+     [?x ?attr ?z]
+     (path-length ?z ?y ?attr ?len-1)
+     [(inc ?len-1) ?len]]])
+
+(defn make-transitive-pred
+  "Return a predicate (fn [db source target]) testing reachability over `g`,
+   for use in query function clauses."
+  [g]
+  (fn [db source target] (reachable? g db source target)))
+
+;; ===========================================================================
+;; Weighted shortest path (Dijkstra)
+;; ===========================================================================
+
+(defn weighted-shortest-path
+  "Dijkstra shortest path by edge weight. Returns {:path [...] :cost c} or nil
+   if unreachable. Edge weights come from the spec's edge-weight (1 when
+   unweighted). Non-negative weights only.
+
+   Uses a total-order priority queue, so equal-cost frontier entries are never
+   dropped, and per-edge weights (not per-node)."
+  [g db source target]
+  (let [mg (gs/materialize g db)]
+    (loop [pq (gu/pq-push (gu/pq) 0 [source [source]])
+           best {source 0}
+           visited #{}]
+      (if (gu/pq-empty? pq)
+        nil
+        (let [[cost [node path]] (gu/pq-peek pq)
+              pq (gu/pq-pop pq)]
+          (cond
+            (= node target) {:path path :cost cost}
+            (contains? visited node) (recur pq best visited)
+            :else
+            (let [visited (conj visited node)
+                  [pq' best']
+                  (reduce (fn [[q b] nb]
+                            (if (contains? visited nb)
+                              [q b]
+                              (let [nc (+ cost (gs/edge-weight mg db node nb))]
+                                (if (< nc (get b nb gu/infinity))
+                                  [(gu/pq-push q nc [nb (conj path nb)]) (assoc b nb nc)]
+                                  [q b]))))
+                          [pq best]
+                          (gs/out-neighbors mg db node))]
+              (recur pq' best' visited))))))))
+
+(defn bottleneck-path
+  "Widest path: maximize the minimum edge weight (capacity) along the path.
+   Returns {:path [...] :capacity c} or nil. Capacity from edge-weight."
+  [g db source target]
+  (let [mg (gs/materialize g db)]
+    (loop [pq (gu/pq-push (gu/pq) (- gu/infinity) [source [source]])
+           best {source gu/infinity}
+           visited #{}]
+      (if (gu/pq-empty? pq)
+        nil
+        (let [[negcap [node path]] (gu/pq-peek pq)
+              cap (- negcap)
+              pq (gu/pq-pop pq)]
+          (cond
+            (= node target) {:path path :capacity cap}
+            (contains? visited node) (recur pq best visited)
+            :else
+            (let [visited (conj visited node)
+                  [pq' best']
+                  (reduce (fn [[q b] nb]
+                            (if (contains? visited nb)
+                              [q b]
+                              (let [nc (min cap (gs/edge-weight mg db node nb))]
+                                (if (> nc (get b nb (- gu/infinity)))
+                                  [(gu/pq-push q (- nc) [nb (conj path nb)]) (assoc b nb nc)]
+                                  [q b]))))
+                          [pq best]
+                          (gs/out-neighbors mg db node))]
+              (recur pq' best' visited))))))))
+
+(defn astar-path
+  "A* shortest path with an admissible heuristic. `heuristic-fn` takes
+   [node target] and estimates remaining cost (never overestimating for an
+   optimal result). Returns {:path [...] :cost c} or nil. Weights from
+   edge-weight."
+  [g db source target heuristic-fn]
+  (if (= source target)
+    {:path [source] :cost 0}
+    (let [mg (gs/materialize g db)]
+      (loop [pq (gu/pq-push (gu/pq) (heuristic-fn source target) [0 source [source]])
+             gscore {source 0}
+             closed #{}]
+        (if (gu/pq-empty? pq)
+          nil
+          (let [[_f [g-score node path]] (gu/pq-peek pq)
+                pq (gu/pq-pop pq)]
+            (cond
+              (= node target) {:path path :cost g-score}
+              (contains? closed node) (recur pq gscore closed)
+              :else
+              (let [closed (conj closed node)
+                    [pq' gscore']
+                    (reduce (fn [[q gm] nb]
+                              (let [tg (+ g-score (gs/edge-weight mg db node nb))]
+                                (if (and (not (contains? closed nb))
+                                         (< tg (get gm nb gu/infinity)))
+                                  [(gu/pq-push q (+ tg (heuristic-fn nb target))
+                                               [tg nb (conj path nb)])
+                                   (assoc gm nb tg)]
+                                  [q gm])))
+                            [pq gscore]
+                            (gs/out-neighbors mg db node))]
+                (recur pq' gscore' closed)))))))))
+
+;; ===========================================================================
+;; Semiring path computations (trust, probability)
+;; ===========================================================================
+
+(defn trust-propagation
+  "Propagate trust from `source`. Multiplicative max-semiring: each hop
+   multiplies by `:discount` (default 0.9) and the edge weight (a per-edge
+   trust multiplier, 1 when unweighted). Returns {node trust-score}."
+  [g db source & {:keys [discount] :or {discount 0.9}}]
+  (let [mg (gs/materialize g db)]
+    (loop [trust {source 1.0}
+           frontier #{source}]
+      (if (empty? frontier)
+        trust
+        (let [expansions (for [node frontier
+                               t (gs/out-neighbors mg db node)
+                               :let [prop (* (trust node) discount (gs/edge-weight mg db node t))]
+                               :when (> prop (get trust t 0))]
+                           [t prop])
+              new-trust (reduce (fn [m [t s]] (assoc m t (max s (get m t 0))))
+                                trust expansions)
+              new-frontier (into #{} (map first) expansions)]
+          (recur new-trust new-frontier))))))
+
+(defn probability-reachability
+  "Max probability of reaching `target` from `source`, treating edge weights as
+   independent probabilities — the maximum over simple paths (up to
+   `:max-depth`, default 5) of the product of edge weights. Returns 0.0 if
+   unreachable."
+  [g db source target & {:keys [max-depth] :or {max-depth 5}}]
+  (let [mg (gs/materialize g db)
+        paths (all-paths mg db source {:target target :max-depth max-depth})]
+    (if (empty? paths)
+      0.0
+      (apply max
+             (for [path paths]
+               (reduce (fn [p [a b]] (* p (gs/edge-weight mg db a b)))
+                       1.0
+                       (partition 2 1 path)))))))
