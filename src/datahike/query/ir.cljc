@@ -53,6 +53,11 @@
             binding   ;; binding form
             vars])    ;; #{free variables}
 
+(defn bind?
+  "True for LBind nodes (function-binding clauses like [(f ?x) ?out])."
+  [x]
+  (instance? LBind x))
+
 (defrecord LEntityJoin
            [entity-var  ;; the shared entity variable (?e)
             scans       ;; vector of LScan (positive patterns on this entity)

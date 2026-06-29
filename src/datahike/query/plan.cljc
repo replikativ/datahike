@@ -224,6 +224,34 @@
                 (log/debug :datahike/external-engine-meta-failed {:fn-sym fn-sym :error (.getMessage e)})
                 nil)))))
 
+(defn resolve-fn-output-cardinality
+  "If fn-sym resolves to a var carrying :datahike/output-cardinality metadata,
+   compute an output-cardinality estimate for its binding. This lets any user
+   function (e.g. a graph algorithm whose result size is data-dependent) tell
+   the planner how many rows its binding produces, instead of the planner
+   treating every function bind as an opaque unknown.
+
+   The metadata value may be:
+     - a number              → that many output rows
+     - a fn [db fn-sym args] → returns a number (computed from the db / args,
+                               e.g. node count for a reachability algorithm)
+   Returns a positive long, or nil when no usable estimate is available.
+   Purely additive: functions without the metadata are unaffected."
+  [fn-sym args db]
+  #?(:cljs nil
+     :clj (when (and (symbol? fn-sym) (namespace fn-sym))
+            (try
+              (when-some [v (resolve fn-sym)]
+                (when-some [c (:datahike/output-cardinality (meta v))]
+                  (let [n (cond
+                            (number? c) c
+                            (fn? c)     (c db fn-sym args)
+                            :else       nil)]
+                    (when (number? n) (max 1 (long n))))))
+              (catch Exception e
+                (log/debug :datahike/output-cardinality-meta-failed {:fn-sym fn-sym :error (.getMessage e)})
+                nil)))))
+
 (defn- detect-external-engine-mode
   "Determine execution mode from binding form and engine metadata.
    Returns :filter, :retrieval, or :solver."
@@ -340,14 +368,24 @@
      (if engine-meta
        (plan-external-engine-op fn-info engine-meta db)
        (let [out-cards (function-output-var-cards
-                        (:fn-sym fn-info) (:args fn-info) (:binding fn-info))]
+                        (:fn-sym fn-info) (:args fn-info) (:binding fn-info))
+             ;; Let a fn var advertise its output cardinality via metadata
+             ;; (:datahike/output-cardinality) so data-dependent binds aren't
+             ;; opaque to the planner. Only used when the static rules above
+             ;; didn't already determine the cards.
+             meta-card (when-not out-cards
+                         (resolve-fn-output-cardinality
+                          (:fn-sym fn-info) (:args fn-info) db))
+             bvars (when meta-card (function-binding-vars (:binding fn-info)))
+             meta-cards (when (seq bvars) (zipmap bvars (repeat meta-card)))
+             out-cards (or out-cards meta-cards)]
          (cond-> {:op :function
                   :clause (:clause fn-info)
                   :fn-sym (:fn-sym fn-info)
                   :args (:args fn-info)
                   :binding (:binding fn-info)
                   :vars (:vars fn-info)
-                  :estimated-card nil}
+                  :estimated-card meta-card}
            out-cards (assoc :output-var-cards out-cards)))))))
 
 (defn plan-passthrough-op [clause-info]

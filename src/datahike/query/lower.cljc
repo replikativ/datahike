@@ -578,6 +578,18 @@
       (when (seq free-output-vars)
         (zipmap free-output-vars (repeat (long est)))))
 
+    ;; Function binds whose var advertises :datahike/output-cardinality (e.g.
+    ;; a graph algorithm whose result size is data-dependent). Without this the
+    ;; bind is opaque and downstream patterns over its output var fall back to
+    ;; the full attribute extent. Only the binding's own free vars are bounded.
+    (ir/bind? node)
+    (let [ci (bind->classified node)
+          card (plan/resolve-fn-output-cardinality (:fn-sym ci) (:args ci) db)]
+      (when card
+        (let [bvars (filter analyze/free-var? (analyze/extract-vars (:binding ci)))]
+          (when (seq bvars)
+            (zipmap bvars (repeat (long card)))))))
+
     :else nil))
 
 (defn- bound-var-cards-for-node
