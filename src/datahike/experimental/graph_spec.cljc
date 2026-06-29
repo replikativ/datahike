@@ -13,7 +13,8 @@
 
    Graph specs can be composed:
      [(bfs-reachable (reverse-graph (attr-graph ?attr)) $ ?p) ?r]"
-  (:require [datahike.api :as d]))
+  (:require [datahike.api :as d]
+            [datahike.db.utils :as dbu]))
 
 ;; =============================================================================
 ;; GraphSpec Protocol
@@ -62,14 +63,20 @@
   [edge-attr]
   (reify GraphSpec
     (out-neighbors [_ db node]
+      ;; Forward adjacency straight off EAVT — always present, O(log n + deg).
       (seq (map :v (d/datoms db :eavt node edge-attr))))
 
     (in-neighbors [_ db node]
-      ;; Use query since AVET index may not be populated for this attr
-      (seq (d/q '[:find [?e ...]
-                  :in $ ?target ?attr
-                  :where [?e ?attr ?target]]
-                db node edge-attr)))
+      ;; Reverse adjacency off AVET when the attribute is indexed (refs,
+      ;; :db/index, :db/unique are all in AVET) — O(log n + in-deg), no scan.
+      ;; Fall back to a query only for non-indexed attributes, where AVET
+      ;; would be empty and silently wrong.
+      (if (dbu/indexing? db edge-attr)
+        (seq (map :e (d/datoms db :avet edge-attr node)))
+        (seq (d/q '[:find [?e ...]
+                    :in $ ?target ?attr
+                    :where [?e ?attr ?target]]
+                  db node edge-attr))))
 
     (all-edges [_ db]
       (map (juxt :e :v) (d/datoms db :aevt edge-attr)))
@@ -264,11 +271,70 @@
   [spec node-set]
   (filtered-graph spec (fn [_db node] (contains? node-set node))))
 
+(defn materialize
+  "Snapshot `spec` against `db` into in-memory adjacency maps, returning a
+   GraphSpec with O(1) neighbor lookups.
+
+   This is the 'build once' access method: pay O(E) up front, then every
+   `out-neighbors`/`in-neighbors` is a map lookup. Use it for whole-graph
+   algorithms (page-rank, full connected-components, betweenness) that visit
+   most of the graph and call neighbor lookups repeatedly.
+
+   For local/bounded traversals (k-hop, near-pair shortest path, ego nets) do
+   NOT materialize — an index-backed `attr-graph` traverses only the nodes it
+   visits and avoids the O(E) build entirely.
+
+   The returned spec is a fixed snapshot: it ignores the `db` passed to its
+   methods and answers from the adjacency built here. Build it once per query
+   and share it across algorithm calls.
+
+   Usage:
+     [(materialize (attr-graph :follows) $) ?g]
+     [(page-rank-spec ?g $) ?scores]"
+  [spec db]
+  (let [edges (vec (all-edges spec db))
+        fwd (persistent!
+             (reduce (fn [m [s t]] (assoc! m s (conj (get m s []) t)))
+                     (transient {}) edges))
+        rev (persistent!
+             (reduce (fn [m [s t]] (assoc! m t (conj (get m t []) s)))
+                     (transient {}) edges))
+        nodes (vec (distinct (mapcat (fn [[s t]] [s t]) edges)))
+        directed (directed? spec)]
+    (reify GraphSpec
+      (out-neighbors [_ _db node] (seq (get fwd node)))
+      (in-neighbors  [_ _db node] (seq (get rev node)))
+      (all-edges     [_ _db] edges)
+      (all-nodes     [_ _db] nodes)
+      (edge-weight   [_ db source target] (edge-weight spec db source target))
+      (directed?     [_] directed))))
+
 ;; =============================================================================
 ;; Graph Algorithms
 ;; =============================================================================
 
-(defn bfs-reachable
+(defn- attr-graph-node-card
+  "Plan-time output-cardinality estimate for reachability-style algorithms.
+
+   `args` is the function clause's raw arg forms, e.g.
+   `((attr-graph :e/to) $ ?start)`. When the graph is a literal
+   `(attr-graph <kw>)` we estimate the result as the graph's node count (a
+   sound upper bound for reachability/components: the result can't exceed the
+   number of nodes). Returns nil otherwise, so the planner just falls back to
+   its default — never worse than today."
+  [db _fn-sym args]
+  (let [graph-form (first args)
+        attr (when (and (seq? graph-form)
+                        (#{'attr-graph
+                           'datahike.experimental.graph-spec/attr-graph}
+                         (first graph-form)))
+               (second graph-form))]
+    (when (keyword? attr)
+      (count (into #{}
+                   (mapcat (fn [d] [(:e d) (:v d)]))
+                   (d/datoms db :aevt attr))))))
+
+(defn ^{:datahike/output-cardinality attr-graph-node-card} bfs-reachable
   "Find all nodes reachable from start via BFS.
 
    Returns a set of node IDs including start.
