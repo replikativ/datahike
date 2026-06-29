@@ -867,3 +867,101 @@
                :levels (inc level)
                :stats (community-stats final)})
             (recur (lv-aggregate adj comm) node->super' (inc level))))))))
+
+;; ===========================================================================
+;; Minimum spanning tree (Prim) and max-flow / min-cut (Edmonds-Karp)
+;; ===========================================================================
+
+(defn prim-mst
+  "Minimum spanning tree (Prim) over the undirected weighted view of `g`.
+   Returns {:edges [[a b weight] ...] :total-weight n} or nil if empty.
+   Spans the component of `:start` (default an arbitrary node)."
+  [g db & {:keys [start]}]
+  (let [mg (gs/materialize g db)
+        adj (reduce (fn [m [s t w]]
+                      (-> m
+                          (update s (fnil assoc {}) t w)
+                          (update t (fnil assoc {}) s w)))
+                    {} (gs/weighted-edges mg db))
+        all-nodes (set (keys adj))]
+    (when (seq all-nodes)
+      (let [start-node (or start (first all-nodes))]
+        (loop [mst-edges []
+               total-weight 0
+               in-mst #{start-node}
+               ;; sorted-set of [weight from to] — fully comparable ⇒ total order
+               candidates (into (sorted-set)
+                                (for [[nb w] (adj start-node {})] [w start-node nb]))]
+          (if (or (empty? candidates) (= (count in-mst) (count all-nodes)))
+            {:edges mst-edges :total-weight total-weight}
+            (let [[w from to] (first candidates)
+                  candidates' (disj candidates (first candidates))]
+              (if (in-mst to)
+                (recur mst-edges total-weight in-mst candidates')
+                (recur (conj mst-edges [from to w])
+                       (+ total-weight w)
+                       (conj in-mst to)
+                       (into candidates'
+                             (for [[nb w2] (adj to {}) :when (not (in-mst nb))]
+                               [w2 to nb])))))))))))
+
+(defn mst-weight
+  "Total weight of the minimum spanning tree."
+  [g db & opts]
+  (:total-weight (apply prim-mst g db opts)))
+
+(defn max-flow
+  "Maximum flow from `source` to `sink` (Edmonds-Karp, O(VE^2)). Edge capacities
+   come from the spec's edge-weight. Returns {:flow n :flow-map {[a b] f}}.
+   (Antiparallel real edges are not supported — model them via an intermediate
+   node.)"
+  [g db source sink]
+  (let [mg (gs/materialize g db)
+        wedges (gs/weighted-edges mg db)
+        capacity (reduce (fn [m [s t c]] (assoc m [s t] (or c 0))) {} wedges)
+        adj (reduce (fn [m [s t _]]
+                      (-> m
+                          (update s (fnil conj #{}) t)
+                          (update t (fnil conj #{}) s)))
+                    {} wedges)
+        residual (fn [flow-map node nbr]
+                   (+ (- (get capacity [node nbr] 0) (get flow-map [node nbr] 0))
+                      (get flow-map [nbr node] 0)))
+        find-path (fn [flow-map]
+                    (loop [queue (conj gu/empty-queue source)
+                           parent {source nil}]
+                      (if (empty? queue)
+                        nil
+                        (let [node (peek queue)]
+                          (if (= node sink)
+                            (loop [path [] n sink]
+                              (if (nil? (parent n))
+                                (vec (reverse path))
+                                (recur (conj path [(parent n) n]) (parent n))))
+                            (let [[q' p']
+                                  (reduce (fn [[q p] nbr]
+                                            (if (and (not (contains? p nbr))
+                                                     (pos? (residual flow-map node nbr)))
+                                              [(conj q nbr) (assoc p nbr node)]
+                                              [q p]))
+                                          [(pop queue) parent]
+                                          (adj node #{}))]
+                              (recur q' p')))))))]
+    (loop [flow-map {}
+           total 0]
+      (if-let [path (find-path flow-map)]
+        (let [bottleneck (reduce (fn [mn [from to]] (min mn (residual flow-map from to)))
+                                 gu/infinity path)
+              flow-map' (reduce (fn [fm [from to]]
+                                  (if (pos? (get capacity [from to] 0))
+                                    (update fm [from to] (fnil + 0) bottleneck)
+                                    (update fm [to from] (fnil - 0) bottleneck)))
+                                flow-map path)]
+          (recur flow-map' (+ total bottleneck)))
+        {:flow total
+         :flow-map (into {} (filter (fn [[_ v]] (pos? v))) flow-map)}))))
+
+(defn min-cut
+  "Minimum s-t cut value (= max flow)."
+  [g db source sink]
+  (:flow (max-flow g db source sink)))

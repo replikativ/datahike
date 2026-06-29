@@ -320,3 +320,25 @@
     (is (= {:a 2 :b 1 :c 1} (:sizes stats)))
     (is (= [:a 2] (:largest stats)))
     (is (approx (/ 2.0 3) (:isolation-score stats)) "two of three communities are singletons")))
+
+;; ---------------------------------------------------------------------------
+;; Batch 5 — MST and max-flow / min-cut
+;; ---------------------------------------------------------------------------
+
+(deftest test-prim-mst
+  (let [f (build-weighted [["A" "B" 1] ["A" "C" 4] ["B" "C" 2] ["B" "D" 6] ["C" "D" 3]])
+        [gr db] (wg-of f)
+        {:keys [edges total-weight]} (g/prim-mst gr db)]
+    ;; MST = A-B(1) + B-C(2) + C-D(3) = 6
+    (is (= 6.0 total-weight))
+    (is (= 3 (count edges)) "n-1 edges for 4 nodes")
+    (is (= 6.0 (g/mst-weight gr db)))))
+
+(deftest test-max-flow
+  ;; CLRS Figure 26.1 network; max flow s→t = 23
+  (let [f (build-weighted [["s" "1" 16] ["s" "2" 13] ["1" "3" 12] ["2" "1" 4]
+                           ["3" "2" 9] ["2" "4" 14] ["4" "3" 7] ["3" "t" 20] ["4" "t" 4]])
+        [gr db] (wg-of f) id (:id f)
+        {:keys [flow]} (g/max-flow gr db (id "s") (id "t"))]
+    (is (= 23.0 flow) "CLRS textbook max flow")
+    (is (= 23.0 (g/min-cut gr db (id "s") (id "t"))))))
