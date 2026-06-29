@@ -391,3 +391,44 @@
         walks (g/random-walks gr db 5 3 :seed 1)]
     (is (= 9 (count walks)) "3 nodes × 3 walks")
     (is (every? #(valid-walk? edges %) walks))))
+
+;; ---------------------------------------------------------------------------
+;; Batch 7 — neighborhood / link prediction
+;; ---------------------------------------------------------------------------
+
+;; Hub: A→C, B→C, C→X, C→Y. On the undirected view C has degree 4; A and B
+;; share exactly the common neighbor C.
+(def hub (build [["A" "C"] ["B" "C"] ["C" "X"] ["C" "Y"]]))
+
+(defn- ug-of [fixture]
+  [(gs/undirected-graph (gs/attr-graph :e/to)) (:db fixture)])
+
+(deftest test-neighborhood-metrics
+  (let [[gr db] (ug-of hub) id (:id hub)]
+    (is (= 1 (g/common-neighbors gr db (id "A") (id "B"))) "A,B share only C")
+    (is (= #{(id "C")} (g/common-neighbors-set gr db (id "A") (id "B"))))
+    (is (approx 1.0 (g/jaccard-index gr db (id "A") (id "B"))))
+    (is (= 1 (g/preferential-attachment gr db (id "A") (id "B"))))
+    (is (= 1 (g/total-neighbors gr db (id "A") (id "B"))))
+    (is (= 4 (g/degree gr db (id "C"))) "C has 4 undirected neighbors")
+    (is (approx (/ 1.0 (Math/log 4)) (g/adamic-adar gr db (id "A") (id "B"))))
+    (is (approx 0.25 (g/resource-allocation gr db (id "A") (id "B"))))))
+
+(deftest test-node-similarity
+  (let [[gr db] (ug-of hub) id (:id hub) nm (:name hub)
+        sims (g/node-similarity gr db (id "A"))]
+    (is (vector? sims) "ordered result, not a map")
+    (is (apply >= (map second sims)) "sorted by score descending")
+    ;; A's neighbor set {C}; B, X, Y also have neighbor set {C} ⇒ similarity 1.0
+    (let [top (set (map (comp nm first) (filter #(approx 1.0 (second %)) sims)))]
+      (is (= #{"B" "X" "Y"} top)))))
+
+(deftest test-link-prediction-candidates
+  ;; directed shared target: A→Z, B→Z, no A→B ⇒ (A,B) is a candidate
+  (let [f (build [["A" "Z"] ["B" "Z"]])
+        [gr db] (g-of f) id (:id f) nm (:name f)
+        cands (g/link-prediction-candidates gr db g/common-neighbors)]
+    (is (some (fn [{:keys [source target score]}]
+                (and (= #{"A" "B"} #{(nm source) (nm target)}) (= 1 score)))
+              cands)
+        "(A,B) scored 1 by common neighbors")))

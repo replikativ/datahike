@@ -1063,3 +1063,123 @@
           wi (range walks-per-node)]
       (do-biased-walk mg db node walk-length p q
                       (gu/rng (+ seed (* node 1000003) wi))))))
+
+;; ===========================================================================
+;; Neighborhood / link prediction
+;; ===========================================================================
+;; Direction is encoded by the spec: pass (reverse-graph g) for incoming or
+;; (undirected-graph g) for both.
+
+(defn neighbors
+  "Set of out-neighbors of `node`."
+  [g db node]
+  (set (gs/out-neighbors g db node)))
+
+(defn degree
+  "Number of out-neighbors of `node`."
+  [g db node]
+  (count (gs/out-neighbors g db node)))
+
+(defn common-neighbors-set
+  "Set of nodes that are out-neighbors of both `a` and `b`."
+  [g db a b]
+  (set/intersection (neighbors g db a) (neighbors g db b)))
+
+(defn common-neighbors
+  "Count of common neighbors |Γ(a) ∩ Γ(b)|."
+  [g db a b]
+  (count (common-neighbors-set g db a b)))
+
+(defn adamic-adar
+  "Adamic–Adar index: Σ 1/log(deg z) over common neighbors z (deg z > 1)."
+  [g db a b]
+  (let [common (common-neighbors-set g db a b)]
+    (reduce + 0.0
+            (for [z common
+                  :let [d (degree g db z)]
+                  :when (> d 1)]
+              (/ 1.0 (Math/log d))))))
+
+(defn resource-allocation
+  "Resource-allocation index: Σ 1/deg z over common neighbors z (deg z > 0)."
+  [g db a b]
+  (let [common (common-neighbors-set g db a b)]
+    (reduce + 0.0
+            (for [z common
+                  :let [d (degree g db z)]
+                  :when (pos? d)]
+              (/ 1.0 d)))))
+
+(defn preferential-attachment
+  "Preferential attachment score |Γ(a)| × |Γ(b)|."
+  [g db a b]
+  (* (degree g db a) (degree g db b)))
+
+(defn total-neighbors
+  "Size of the combined neighborhood |Γ(a) ∪ Γ(b)|."
+  [g db a b]
+  (count (set/union (neighbors g db a) (neighbors g db b))))
+
+(defn jaccard-index
+  "Jaccard index |Γ(a) ∩ Γ(b)| / |Γ(a) ∪ Γ(b)| in [0,1]."
+  [g db a b]
+  (let [na (neighbors g db a)
+        nb (neighbors g db b)
+        uni (count (set/union na nb))]
+    (if (zero? uni)
+      0.0
+      (/ (double (count (set/intersection na nb))) uni))))
+
+(defn node-similarity
+  "Nodes most similar to `node` by neighborhood Jaccard. Returns a vector of
+   [other score] pairs sorted by score descending (a real ordering — not a map).
+
+   Options: :min-similarity (0.0), :top-k."
+  [g db node & {:keys [min-similarity top-k] :or {min-similarity 0.0}}]
+  (let [mg (gs/materialize g db)
+        nn (neighbors mg db node)
+        others (disj (set (gs/all-nodes mg db)) node)
+        sims (for [other others
+                   :let [on (neighbors mg db other)
+                         uni (count (set/union nn on))
+                         sim (if (zero? uni)
+                               0.0
+                               (double (/ (count (set/intersection nn on)) uni)))]
+                   :when (>= sim min-similarity)]
+               [other sim])
+        sorted (sort-by second > sims)]
+    (vec (if top-k (take top-k sorted) sorted))))
+
+(defn same-community
+  "1.0 if `a` and `b` share a community in the `communities` map (e.g. from
+   louvain), else 0.0."
+  [communities a b]
+  (if (and (contains? communities a)
+           (= (communities a) (communities b)))
+    1.0
+    0.0))
+
+(defn link-prediction-candidates
+  "Score candidate (non-edge) pairs that share at least one common neighbor.
+   `score-fn` is called as (score-fn g db a b) — e.g. common-neighbors,
+   adamic-adar, resource-allocation. Returns a vector of
+   {:source :target :score} sorted by score descending.
+
+   Options: :limit (100), :min-score (0). O(Σ deg²), not O(n²)."
+  [g db score-fn & {:keys [limit min-score] :or {limit 100 min-score 0}}]
+  (let [mg (gs/materialize g db)
+        nodes (gs/all-nodes mg db)
+        pairs (into #{}
+                    (for [z nodes
+                          :let [ins (vec (gs/in-neighbors mg db z))]
+                          a ins
+                          b ins
+                          :when (< a b)
+                          :when (not (contains? (set (gs/out-neighbors mg db a)) b))]
+                      [a b]))]
+    (->> pairs
+         (map (fn [[a b]] {:source a :target b :score (score-fn mg db a b)}))
+         (filter #(>= (:score %) min-score))
+         (sort-by :score >)
+         (take limit)
+         vec)))
