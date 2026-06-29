@@ -567,7 +567,7 @@
    propagation falls back to the existing all-vars-treated-as-free behavior.
    Extensions for LEntityJoin / LRuleCall / LUnion can be added in follow-ups
    as we measure their planning impact."
-  [node db]
+  [node db provenance]
   (cond
     (ir/scan? node)
     (let [ci (scan->classified node)
@@ -584,13 +584,30 @@
     ;; the full attribute extent. Only the binding's own free vars are bounded.
     (ir/bind? node)
     (let [ci (bind->classified node)
-          card (plan/resolve-fn-output-cardinality (:fn-sym ci) (:args ci) (:binding ci) db)]
+          card (plan/resolve-fn-output-cardinality
+                (:fn-sym ci) (:args ci) (:binding ci) db provenance)]
       (when card
         (let [bvars (filter analyze/free-var? (analyze/extract-vars (:binding ci)))]
           (when (seq bvars)
             (zipmap bvars (repeat (long card)))))))
 
     :else nil))
+
+(defn- bind-provenance
+  "Map each var bound by a scalar function bind to the form that produced it,
+   e.g. {?g (attr-graph :follows)}. Lets a downstream op's
+   :datahike/output-cardinality cost model resolve a graph passed by variable
+   back to its constructor (and through transformer wrappers)."
+  [nodes]
+  (reduce (fn [m node]
+            (if (ir/bind? node)
+              (let [ci (bind->classified node)
+                    b (:binding ci)]
+                (if (symbol? b)
+                  (assoc m b (first (:clause ci)))
+                  m))
+              m))
+          {} nodes))
 
 (defn- bound-var-cards-for-node
   "Compute the bound-var-cards map to pass when lowering `node`: the merge of
@@ -692,6 +709,7 @@
     :has-passthrough? boolean}"
   [logical-plan db rules]
   (let [nodes (.-nodes ^datahike.query.ir.LogicalPlan logical-plan)
+        provenance (bind-provenance nodes)
         bound-vars (.-bound_vars ^datahike.query.ir.LogicalPlan logical-plan)
         classified (.-classified ^datahike.query.ir.LogicalPlan logical-plan)
         all-clause-vars (into bound-vars (mapcat :vars) classified)
@@ -732,7 +750,7 @@
         ;; so source-idx is a reasonable proxy for "what's bound entering
         ;; this clause." The execution path itself is reordered later by
         ;; order-plan-ops based on actual cost, independent of this.
-        node->output-cards (zipmap nodes (map #(estimate-node-output-cards % db) nodes))
+        node->output-cards (zipmap nodes (map #(estimate-node-output-cards % db provenance) nodes))
         ;; Per-node BINDING vars — the free vars a node binds for
         ;; downstream consumption. Distinct from output-cards (which
         ;; carries numeric cardinality estimates and is restricted to
@@ -838,7 +856,7 @@
 
                ;; LBind → function op
                (instance? datahike.query.ir.LBind node)
-               (update acc :ops conj (plan/plan-function-op (bind->classified node) db))
+               (update acc :ops conj (plan/plan-function-op (bind->classified node) db provenance))
 
                ;; LAntiJoin → NOT/NOT-JOIN op (delegate to plan.cljc)
                (instance? datahike.query.ir.LAntiJoin node)

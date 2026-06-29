@@ -250,13 +250,16 @@
    single row and are left to the planner's defaults.
 
    The metadata value may be:
-     - a number                       → that many rows
-     - a fn [db fn-sym args binding]  → computed (e.g. node count for a
-                                        reachability algorithm, a small constant
-                                        for a path)
+     - a number     → that many rows
+     - a fn [ctx]   → computed, where ctx is
+                      {:db :fn-sym :args :binding :provenance}. `:provenance`
+                      maps each var bound by a scalar function bind to the form
+                      that produced it (e.g. {?g (attr-graph :follows)}), so a
+                      cost model can resolve a graph passed by variable back to
+                      its constructor and introspect it.
    Returns a positive long, or nil when no usable estimate is available.
    Purely additive: functions without the metadata are unaffected."
-  [fn-sym args binding db]
+  [fn-sym args binding db provenance]
   #?(:cljs nil
      :clj (when (and (symbol? fn-sym) (namespace fn-sym)
                      (contains? #{:collection :relation} (binding-shape binding)))
@@ -265,7 +268,8 @@
                 (when-some [c (:datahike/output-cardinality (meta v))]
                   (let [n (cond
                             (number? c) c
-                            (fn? c)     (c db fn-sym args binding)
+                            (fn? c)     (c {:db db :fn-sym fn-sym :args args
+                                           :binding binding :provenance provenance})
                             :else       nil)]
                     (when (number? n) (max 1 (long n))))))
               (catch Exception e
@@ -381,9 +385,13 @@
       nil)))
 
 (defn plan-function-op
-  "Create a plan op for a function clause. Checks for external engine metadata."
-  ([fn-info] (plan-function-op fn-info nil))
-  ([fn-info db]
+  "Create a plan op for a function clause. Checks for external engine metadata.
+   `provenance` maps scalar-bind vars to the form that produced them, so an
+   algorithm's :datahike/output-cardinality cost model can resolve a graph
+   passed by variable back to its constructor."
+  ([fn-info] (plan-function-op fn-info nil nil))
+  ([fn-info db] (plan-function-op fn-info db nil))
+  ([fn-info db provenance]
    (let [engine-meta (resolve-external-engine-meta (:fn-sym fn-info))]
      (if engine-meta
        (plan-external-engine-op fn-info engine-meta db)
@@ -395,7 +403,7 @@
              ;; didn't already determine the cards.
              meta-card (when-not out-cards
                          (resolve-fn-output-cardinality
-                          (:fn-sym fn-info) (:args fn-info) (:binding fn-info) db))
+                          (:fn-sym fn-info) (:args fn-info) (:binding fn-info) db provenance))
              bvars (when meta-card (function-binding-vars (:binding fn-info)))
              meta-cards (when (seq bvars) (zipmap bvars (repeat meta-card)))
              out-cards (or out-cards meta-cards)]

@@ -13,15 +13,66 @@
    on the same graph, materialize once (graph-spec/materialize) and reuse it.
 
    Portable across Clojure and ClojureScript."
-  (:require [datahike.experimental.graph-spec :as gs]
+  (:require [datahike.api :as d]
+            [datahike.experimental.graph-spec :as gs]
             [datahike.experimental.graph-util :as gu]
             [clojure.set :as set]))
+
+;; ===========================================================================
+;; Planner cost models (:datahike/output-cardinality)
+;; ===========================================================================
+;; When an algorithm is called inside a Datalog query and its result is
+;; destructured (e.g. [(transitive-closure ?g $ ?s) [?n ...]]), these tell the
+;; planner how many rows the bind produces, so a downstream join on the output
+;; is ordered/costed well. The cost fn receives
+;; {:db :fn-sym :args :binding :provenance}; :provenance maps a graph var to the
+;; form that built it (e.g. ?g -> (attr-graph :follows)), so we can introspect a
+;; graph passed by variable. Users attach the same metadata to their own algos.
+
+(defn- graph-edge-attr
+  "Resolve a graph argument to its single underlying edge attribute, following
+   :provenance for vars and descending through transformer/constructor forms.
+   Returns a keyword, or nil if not statically resolvable (e.g. weighted/
+   multi-attr/query graphs, or a runtime-only spec)."
+  [arg provenance]
+  (let [form (if (symbol? arg) (get provenance arg) arg)]
+    (cond
+      (keyword? form) form
+      (not (seq? form)) nil
+      :else
+      (let [head (first form)
+            head-name (when (symbol? head) (name head))]
+        (case head-name
+          "attr-graph" (let [a (second form)] (when (keyword? a) a))
+          ("undirected-graph" "reverse-graph" "filtered-graph" "subgraph"
+           "materialize" "ensure-materialized")
+          (recur (second form) provenance)
+          nil)))))
+
+(defn- graph-node-count
+  "Number of distinct nodes touched by the graph's edge attribute, or nil."
+  [db arg provenance]
+  (when-let [attr (graph-edge-attr arg provenance)]
+    (count (into #{} (mapcat (fn [d] [(:e d) (:v d)])) (d/datoms db :aevt attr)))))
+
+(defn- node-set-card
+  "Cost model for node-set-returning algorithms (reachability, components,
+   topo-sort): the graph's node count, an upper bound on the result size. The
+   graph is the first argument."
+  [{:keys [db args provenance]}]
+  (graph-node-count db (first args) provenance))
+
+(defn- path-card
+  "Cost model for single-path algorithms: a small constant — shortest paths are
+   short (≈ graph diameter), so destructuring one yields few rows."
+  [_ctx]
+  16)
 
 ;; ===========================================================================
 ;; Reachability
 ;; ===========================================================================
 
-(defn transitive-closure
+(defn ^{:datahike/output-cardinality node-set-card} transitive-closure
   "Set of nodes reachable from `start` via one or more out-edges. `start` is
    included iff it lies on a cycle (i.e. is reachable from itself)."
   [g db start]
@@ -73,7 +124,7 @@
 ;; Shortest path (unweighted, BFS)
 ;; ===========================================================================
 
-(defn shortest-path
+(defn ^{:datahike/output-cardinality path-card} shortest-path
   "Shortest path (fewest edges) from `source` to `target` as a vector of nodes,
    or nil if unreachable. Plain BFS — the minimum hop count is guaranteed."
   [g db source target]
@@ -101,7 +152,7 @@
 ;; Connected components (undirected)
 ;; ===========================================================================
 
-(defn connected-component
+(defn ^{:datahike/output-cardinality node-set-card} connected-component
   "Set of nodes in the same undirected connected component as `start`
    (including `start`)."
   [g db start]
@@ -226,7 +277,7 @@
 ;; Topological sort (Kahn)
 ;; ===========================================================================
 
-(defn topological-sort
+(defn ^{:datahike/output-cardinality node-set-card} topological-sort
   "Topological order of a DAG as a vector, or nil if the graph has a cycle.
    O(V+E)."
   [g db]
