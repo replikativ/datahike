@@ -1,5 +1,11 @@
 # OddBall: Egonet-Based Anomaly Detection with Datalog
 
+> **This page is a recipe, not a shipped API.** Datahike does not export an
+> `oddball` function. It shows how to build egonet-based anomaly detection from
+> the [graph algorithms](graph-algorithms.md) and the shipped
+> [ECOD detector](anomaly-detection.md); the code blocks below are illustrative
+> user code.
+
 OddBall is a graph anomaly detection algorithm that identifies suspicious nodes by analyzing their **ego networks** (the subgraph consisting of a node, its neighbors, and the edges between them). Normal nodes follow predictable power-law patterns; anomalies deviate from these patterns.
 
 ## Key Concept: Ego Network Features
