@@ -68,11 +68,24 @@
   [_ctx]
   16)
 
+;; --- execution-cost (:datahike/cost) ---------------------------------------
+;; Each algorithm carries `:datahike/cost 1`, i.e. cost = 1 × input-rows =
+;; the number of times it runs (the planner supplies :input-rows from bound-var
+;; cardinalities). This is the per-invocation cost we WANT for ordering, because
+;; a filter on the algorithm's input has cardinality ≤ input-rows (so the algo
+;; defers behind it) while a join that EXPANDS the input has cardinality >
+;; input-rows (so the algo runs first). A larger per-call factor (e.g. the graph
+;; size) is "truer" execution cost but, in a one-step greedy interleaver, would
+;; over-defer the algo past input-expanding joins — so we deliberately keep the
+;; per-call factor at 1. (A per-call-complexity-weighted cost would need a
+;; lookahead/DP-integrated cost model; see doc/query-engine.md.)
+
 ;; ===========================================================================
 ;; Reachability
 ;; ===========================================================================
 
-(defn ^{:datahike/output-cardinality node-set-card} transitive-closure
+(defn ^{:datahike/output-cardinality node-set-card
+        :datahike/cost 1} transitive-closure
   "Set of nodes reachable from `start` via one or more out-edges. `start` is
    included iff it lies on a cycle (i.e. is reachable from itself)."
   [g db start]
@@ -85,7 +98,7 @@
           (recur seen (pop q))
           (recur (conj seen n) (into (pop q) (gs/out-neighbors g db n))))))))
 
-(defn reachable?
+(defn ^{:datahike/cost 1} reachable?
   "True iff there is a path of length >= 1 from `source` to `target`."
   [g db source target]
   (loop [seen #{}
@@ -124,7 +137,8 @@
 ;; Shortest path (unweighted, BFS)
 ;; ===========================================================================
 
-(defn ^{:datahike/output-cardinality path-card} shortest-path
+(defn ^{:datahike/output-cardinality path-card
+        :datahike/cost 1} shortest-path
   "Shortest path (fewest edges) from `source` to `target` as a vector of nodes,
    or nil if unreachable. Plain BFS — the minimum hop count is guaranteed."
   [g db source target]
@@ -152,7 +166,8 @@
 ;; Connected components (undirected)
 ;; ===========================================================================
 
-(defn ^{:datahike/output-cardinality node-set-card} connected-component
+(defn ^{:datahike/output-cardinality node-set-card
+        :datahike/cost 1} connected-component
   "Set of nodes in the same undirected connected component as `start`
    (including `start`)."
   [g db start]
@@ -277,7 +292,8 @@
 ;; Topological sort (Kahn)
 ;; ===========================================================================
 
-(defn ^{:datahike/output-cardinality node-set-card} topological-sort
+(defn ^{:datahike/output-cardinality node-set-card
+        :datahike/cost 1} topological-sort
   "Topological order of a DAG as a vector, or nil if the graph has a cycle.
    O(V+E)."
   [g db]
@@ -630,7 +646,7 @@
 ;; Centrality
 ;; ===========================================================================
 
-(defn page-rank
+(defn ^{:datahike/cost 1} page-rank
   "PageRank over the directed graph. Returns {node score}; scores sum to ~1.
 
    Options: :damping (0.85), :iterations (20), :tolerance (1e-6). Dangling nodes
@@ -667,7 +683,7 @@
                 new-scores
                 (recur new-scores (inc iter))))))))))
 
-(defn closeness-centrality
+(defn ^{:datahike/cost 1} closeness-centrality
   "Closeness centrality over the undirected view: reciprocal of average distance
    to reachable nodes, scaled by the fraction reachable (so it is well-defined on
    disconnected graphs). Returns {node score in [0,1]}; isolated nodes score 0."
@@ -698,7 +714,7 @@
                           (* (/ reachable (dec n)) (/ reachable total))
                           0.0)]))))))
 
-(defn betweenness-centrality
+(defn ^{:datahike/cost 1} betweenness-centrality
   "Betweenness centrality over the undirected view (Brandes' algorithm, O(VE)).
    Returns {node score in [0,1]}, normalized by (n-1)(n-2) — which folds in the
    undirected pair double-counting so values match the standard definition."
@@ -887,7 +903,7 @@
                           m nbrs))
              {} adj))
 
-(defn louvain
+(defn ^{:datahike/cost 1} louvain
   "Louvain community detection (multi-level modularity maximization) over the
    undirected, weighted view of `g`. Returns
      {:communities {node community-id} :modularity Q :levels n :stats ...}.

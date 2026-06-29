@@ -276,6 +276,33 @@
                 (log/debug :datahike/output-cardinality-meta-failed {:fn-sym fn-sym :error (.getMessage e)})
                 nil)))))
 
+(defn resolve-fn-exec-cost
+  "If `fn-sym` resolves to a var carrying :datahike/cost metadata, return a
+   1-arg cost function `(fn [input-rows] total-cost)`, closing over `db`, the
+   clause `args`, and `provenance`. The metadata may be:
+     - a number    → a per-call cost; total = number × input-rows
+     - a fn [ctx]  → total cost, where ctx is
+                     {:db :fn-sym :args :provenance :input-rows}
+   Returns nil when there is no metadata. Lets a function tell the planner how
+   expensive it is to run, so the ordering can defer it behind selective filters
+   that shrink its input. Purely additive: unannotated functions cost 1."
+  [fn-sym args db provenance]
+  #?(:cljs nil
+     :clj (when (and (symbol? fn-sym) (namespace fn-sym))
+            (try
+              (when-some [v (resolve fn-sym)]
+                (when-some [c (:datahike/cost (meta v))]
+                  (cond
+                    (number? c) (fn [input-rows] (* c input-rows))
+                    (fn? c)     (fn [input-rows]
+                                  (let [r (c {:db db :fn-sym fn-sym :args args
+                                              :provenance provenance :input-rows input-rows})]
+                                    (if (number? r) r input-rows)))
+                    :else       nil)))
+              (catch Exception e
+                (log/debug :datahike/cost-meta-failed {:fn-sym fn-sym :error (.getMessage e)})
+                nil)))))
+
 (defn- detect-external-engine-mode
   "Determine execution mode from binding form and engine metadata.
    Returns :filter, :retrieval, or :solver."
@@ -406,7 +433,11 @@
                           (:fn-sym fn-info) (:args fn-info) (:binding fn-info) db provenance))
              bvars (when meta-card (function-binding-vars (:binding fn-info)))
              meta-cards (when (seq bvars) (zipmap bvars (repeat meta-card)))
-             out-cards (or out-cards meta-cards)]
+             out-cards (or out-cards meta-cards)
+             ;; Execution-cost model (:datahike/cost) — lets the planner defer an
+             ;; expensive function behind selective filters that shrink its input.
+             exec-cost-fn (resolve-fn-exec-cost
+                           (:fn-sym fn-info) (:args fn-info) db provenance)]
          (cond-> {:op :function
                   :clause (:clause fn-info)
                   :fn-sym (:fn-sym fn-info)
@@ -414,7 +445,8 @@
                   :binding (:binding fn-info)
                   :vars (:vars fn-info)
                   :estimated-card meta-card}
-           out-cards (assoc :output-var-cards out-cards)))))))
+           out-cards (assoc :output-var-cards out-cards)
+           exec-cost-fn (assoc :exec-cost-fn exec-cost-fn)))))))
 
 (defn plan-passthrough-op [clause-info]
   {:op :passthrough
@@ -1250,22 +1282,45 @@
     ;; Unknown / passthrough — gate forever (caller must decide what to do).
     [#{} :all]))
 
-(defn op-cost [op bound-vars]
-  (let [[required policy] (op-required-vars op)
-        ready? (case policy
-                 :none true
-                 :all  (or (empty? required)
-                           (every? #(contains? bound-vars %) required))
-                 :any  (some #(contains? bound-vars %) required))]
-    (if-not ready?
-      max-cost
-      ;; Per-op cost when ready: producers use cardinality, filters cost 0,
-      ;; functions cost 1, others use :estimated-card or fall back to 100.
-      (case (:op op)
-        (:entity-group :pattern-scan) (group-effective-card op)
-        :predicate                    0
-        :function                     1
-        (or (:estimated-card op) 100)))))
+(defn- op-output-cards
+  "The {var → cardinality} an op contributes once it runs. Used to keep a
+   running per-var cardinality map through ordering."
+  [op]
+  (or (:output-var-cards op) {}))
+
+(defn- function-input-rows
+  "Estimated number of times a function op runs = size of the relation over its
+   input (argument) free vars, approximated as the product of their known
+   cardinalities (unknown → 1; the graph/source args are singletons)."
+  [op var-cards]
+  (reduce (fn [acc v] (* acc (max 1 (long (get var-cards v 1)))))
+          1
+          (args-free-vars (:args op))))
+
+(defn op-cost
+  "Cost of running `op` next given the currently bound vars and their
+   cardinalities. Unrunnable ops cost `max-cost`. Producers cost their
+   cardinality, predicates 0. Functions cost 1 by default, UNLESS the function
+   declares an execution-cost model (`:exec-cost-fn`, from :datahike/cost
+   metadata) — then cost = model(input-rows), so an expensive function that
+   would run on many input rows is deferred behind selective filters."
+  ([op bound-vars] (op-cost op bound-vars {}))
+  ([op bound-vars var-cards]
+   (let [[required policy] (op-required-vars op)
+         ready? (case policy
+                  :none true
+                  :all  (or (empty? required)
+                            (every? #(contains? bound-vars %) required))
+                  :any  (some #(contains? bound-vars %) required))]
+     (if-not ready?
+       max-cost
+       (case (:op op)
+         (:entity-group :pattern-scan) (group-effective-card op)
+         :predicate                    0
+         :function                     (if-let [f (:exec-cost-fn op)]
+                                         (max 1 (long (f (function-input-rows op var-cards))))
+                                         1)
+         (or (:estimated-card op) 100))))))
 
 (defn order-plan-ops
   "Order plan operations using DP for entity-group ordering and greedy
@@ -1309,20 +1364,26 @@
                       (nil? outer-bound-vars) #{}
                       (set? outer-bound-vars) outer-bound-vars
                       (map? outer-bound-vars) (set (keys outer-bound-vars))
-                      :else (set outer-bound-vars))]
+                      :else (set outer-bound-vars))
+         ;; Running per-var cardinality map, threaded alongside bound-vars so a
+         ;; function's :exec-cost-fn can be costed against how many input rows it
+         ;; would run on at this point in the order.
+         seed-cards (if (map? outer-bound-vars) outer-bound-vars {})]
      (if (empty? groups)
       ;; No groups — pure greedy on non-group ops
        (loop [remaining (set ops)
               bound-vars seed-bound
+              var-cards seed-cards
               ordered []]
          (if (empty? remaining)
            ordered
-           (let [scored (map (fn [op] [op (op-cost op bound-vars)]) remaining)
+           (let [scored (map (fn [op] [op (op-cost op bound-vars var-cards)]) remaining)
                  executable (filter #(< (second %) max-cost) scored)
                  best (first (sort-by second (if (seq executable) executable scored)))
                  [chosen-op _] best]
              (recur (disj remaining chosen-op)
                     (into bound-vars (:vars chosen-op))
+                    (merge-with min var-cards (op-output-cards chosen-op))
                     (conj ordered chosen-op)))))
       ;; DP-order groups, then greedily interleave non-group ops
        (let [dp-order (dp-order-groups groups)
@@ -1334,6 +1395,7 @@
            (loop [group-q (seq ordered-groups)
                   remaining (set non-groups)
                   bound-vars seed-bound
+                  var-cards seed-cards
                   result []]
              (if (and (nil? group-q) (empty? remaining))
                result
@@ -1348,10 +1410,10 @@
               ;; gates correctness (op-required-vars); among ready actions we
               ;; now order purely by cost. Groups are preferred on ties since
               ;; they bind producer vars that can unlock/cheapen pending ops.
-               (let [ready    (filterv (fn [op] (< (op-cost op bound-vars) max-cost)) remaining)
+               (let [ready    (filterv (fn [op] (< (op-cost op bound-vars var-cards) max-cost)) remaining)
                      best-ng  (when (seq ready)
-                                (apply min-key #(op-cost % bound-vars) ready))
-                     ng-cost  (when best-ng (long (op-cost best-ng bound-vars)))
+                                (apply min-key #(op-cost % bound-vars var-cards) ready))
+                     ng-cost  (when best-ng (long (op-cost best-ng bound-vars var-cards)))
                      next-g   (first group-q)
                      g-cost   (when next-g (long (group-effective-card next-g)))
                      ;; choose :group | :non-group | :force
@@ -1364,18 +1426,21 @@
                    :group     (recur (next group-q)
                                      remaining
                                      (into bound-vars (:vars next-g))
+                                     (merge-with min var-cards (op-output-cards next-g))
                                      (conj result next-g))
                    :non-group (recur group-q
                                      (disj remaining best-ng)
                                      (into bound-vars (:vars best-ng))
+                                     (merge-with min var-cards (op-output-cards best-ng))
                                      (conj result best-ng))
                    ;; No more groups, remaining ops still unready — force the
                    ;; cheapest so we make progress (preserves prior behaviour).
-                   :force     (let [scored (map (fn [op] [op (op-cost op bound-vars)]) remaining)
+                   :force     (let [scored (map (fn [op] [op (op-cost op bound-vars var-cards)]) remaining)
                                     [chosen-op _] (first (sort-by second scored))]
                                 (recur nil
                                        (disj remaining chosen-op)
                                        (into bound-vars (:vars chosen-op))
+                                       (merge-with min var-cards (op-output-cards chosen-op))
                                        (conj result chosen-op)))))))))))))
 
 ;; ---------------------------------------------------------------------------
