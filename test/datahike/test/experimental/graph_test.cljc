@@ -227,3 +227,48 @@
     (is (= #{["A" "B"] ["B" "C"] ["A" "C"] ["C" "D"] ["A" "D"] ["B" "D"] ["E" "F"]}
            pairs)
         "all transitively reachable pairs")))
+
+;; ---------------------------------------------------------------------------
+;; Batch 3 — centrality (baselines from NetworkX on the path P5)
+;; ---------------------------------------------------------------------------
+
+(defn- approx [a b] (< (#?(:clj Math/abs :cljs js/Math.abs) (- a b)) 1e-3))
+
+;; Path: A-B-C-D-E (stored directed; centrality uses the undirected view)
+(def path5 (build [["A" "B"] ["B" "C"] ["C" "D"] ["D" "E"]]))
+
+(deftest test-betweenness-centrality
+  (let [[gr db] (g-of path5) id (:id path5)
+        bc (g/betweenness-centrality gr db)]
+    ;; NetworkX betweenness_centrality(P5): ends 0, B/D 0.5, C 0.667
+    (is (approx 0.0   (bc (id "A"))))
+    (is (approx 0.5   (bc (id "B"))))
+    (is (approx 0.667 (bc (id "C"))))
+    (is (approx 0.5   (bc (id "D"))))
+    (is (approx 0.0   (bc (id "E"))))
+    (is (every? #(<= 0.0 % 1.0) (vals bc)) "all within [0,1]")))
+
+(deftest test-closeness-centrality
+  (let [[gr db] (g-of path5) id (:id path5)
+        cc (g/closeness-centrality gr db)]
+    ;; NetworkX closeness_centrality(P5): A/E 0.4, B/D 0.571, C 0.667
+    (is (approx 0.4   (cc (id "A"))))
+    (is (approx 0.571 (cc (id "B"))))
+    (is (approx 0.667 (cc (id "C"))))
+    (is (approx 0.571 (cc (id "D"))))
+    (is (approx 0.4   (cc (id "E"))))))
+
+(deftest test-page-rank
+  (testing "symmetric cycle ⇒ equal scores"
+    (let [f (build [["A" "B"] ["B" "C"] ["C" "A"]])
+          [gr db] (g-of f) id (:id f)
+          pr (g/page-rank gr db)]
+      (is (approx (/ 1.0 3) (pr (id "A"))))
+      (is (approx (/ 1.0 3) (pr (id "B"))))
+      (is (approx (/ 1.0 3) (pr (id "C"))))))
+  (testing "dangling node (sink) ⇒ rank still conserved (sums to 1)"
+    (let [f (build [["A" "B"] ["B" "C"]]) ;; C is a sink
+          [gr db] (g-of f)
+          pr (g/page-rank gr db)]
+      (is (approx 1.0 (reduce + (vals pr))) "no rank leaks out of the sink")
+      (is (every? pos? (vals pr))))))

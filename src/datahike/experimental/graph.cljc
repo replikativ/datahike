@@ -574,3 +574,131 @@
                (reduce (fn [p [a b]] (* p (gs/edge-weight mg db a b)))
                        1.0
                        (partition 2 1 path)))))))
+
+;; ===========================================================================
+;; Centrality
+;; ===========================================================================
+
+(defn page-rank
+  "PageRank over the directed graph. Returns {node score}; scores sum to ~1.
+
+   Options: :damping (0.85), :iterations (20), :tolerance (1e-6). Dangling nodes
+   (out-degree 0) have their mass redistributed to all nodes each iteration, so
+   rank is conserved even when the graph has sinks."
+  [g db & {:keys [damping iterations tolerance]
+           :or {damping 0.85 iterations 20 tolerance 1e-6}}]
+  (let [mg (gs/materialize g db)
+        nodes (set (gs/all-nodes mg db))
+        n (count nodes)]
+    (when (pos? n)
+      (let [out-deg (into {} (map (fn [v] [v (count (gs/out-neighbors mg db v))])) nodes)
+            in-links (reduce (fn [m [s t]] (update m t (fnil conj []) s))
+                             {} (gs/all-edges mg db))
+            init (/ 1.0 n)
+            base (/ (- 1.0 damping) n)]
+        (loop [scores (zipmap nodes (repeat init))
+               iter 0]
+          (if (>= iter iterations)
+            scores
+            (let [dangling-mass (reduce (fn [s v] (if (zero? (out-deg v)) (+ s (scores v)) s))
+                                        0.0 nodes)
+                  dangling (* damping (/ dangling-mass n))
+                  new-scores
+                  (reduce (fn [acc node]
+                            (let [incoming (reduce (fn [sum src]
+                                                     (+ sum (/ (scores src) (out-deg src))))
+                                                   0.0
+                                                   (get in-links node []))]
+                              (assoc acc node (+ base dangling (* damping incoming)))))
+                          {} nodes)
+                  max-diff (apply max (map #(gu/abs (- (scores %) (new-scores %))) nodes))]
+              (if (< max-diff tolerance)
+                new-scores
+                (recur new-scores (inc iter))))))))))
+
+(defn closeness-centrality
+  "Closeness centrality over the undirected view: reciprocal of average distance
+   to reachable nodes, scaled by the fraction reachable (so it is well-defined on
+   disconnected graphs). Returns {node score in [0,1]}; isolated nodes score 0."
+  [g db]
+  (let [ug (gs/materialize (gs/undirected-graph g) db)
+        nodes (set (gs/all-nodes ug db))
+        n (count nodes)]
+    (when (> n 1)
+      (into {}
+            (for [source nodes]
+              (let [distances
+                    (loop [queue (conj gu/empty-queue source)
+                           dist {source 0}]
+                      (if (empty? queue)
+                        dist
+                        (let [node (peek queue)
+                              d (dist node)
+                              [nq nd] (reduce (fn [[q dm] nb]
+                                                (if (contains? dm nb)
+                                                  [q dm]
+                                                  [(conj q nb) (assoc dm nb (inc d))]))
+                                              [(pop queue) dist]
+                                              (gs/out-neighbors ug db node))]
+                          (recur nq nd))))
+                    reachable (dec (count distances))
+                    total (reduce + 0 (vals distances))]
+                [source (if (and (pos? reachable) (pos? total))
+                          (* (/ reachable (dec n)) (/ reachable total))
+                          0.0)]))))))
+
+(defn betweenness-centrality
+  "Betweenness centrality over the undirected view (Brandes' algorithm, O(VE)).
+   Returns {node score in [0,1]}, normalized by (n-1)(n-2) — which folds in the
+   undirected pair double-counting so values match the standard definition."
+  [g db]
+  (let [ug (gs/materialize (gs/undirected-graph g) db)
+        nodes (vec (gs/all-nodes ug db))
+        n (count nodes)]
+    (when (> n 2)
+      (let [bc (reduce
+                (fn [betweenness source]
+                  (let [[stack pred sigma dist]
+                        (loop [queue (conj gu/empty-queue source)
+                               stack []
+                               pred (zipmap nodes (repeat []))
+                               sigma (assoc (zipmap nodes (repeat 0)) source 1)
+                               dist (assoc (zipmap nodes (repeat -1)) source 0)]
+                          (if (empty? queue)
+                            [stack pred sigma dist]
+                            (let [v (peek queue)
+                                  queue' (pop queue)
+                                  dv (dist v)
+                                  [q' p' s' d']
+                                  (reduce
+                                   (fn [[q p s d] w]
+                                     (cond
+                                       (neg? (d w))
+                                       [(conj q w) (update p w conj v)
+                                        (update s w + (s v)) (assoc d w (inc dv))]
+                                       (= (d w) (inc dv))
+                                       [q (update p w conj v) (update s w + (s v)) d]
+                                       :else [q p s d]))
+                                   [queue' pred sigma dist]
+                                   (gs/out-neighbors ug db v))]
+                              (recur q' (conj stack v) p' s' d'))))
+                        delta (zipmap nodes (repeat 0.0))
+                        delta' (reduce
+                                (fn [d w]
+                                  (reduce
+                                   (fn [d' v]
+                                     (let [coeff (/ (sigma v) (sigma w))
+                                           contrib (* coeff (+ 1 (d w)))]
+                                       (update d' v + contrib)))
+                                   d
+                                   (pred w)))
+                                delta
+                                (reverse stack))]
+                    (reduce (fn [bc' v]
+                              (if (= v source) bc' (update bc' v + (delta' v))))
+                            betweenness
+                            nodes)))
+                (zipmap nodes (repeat 0.0))
+                nodes)
+            norm (* (dec n) (- n 2) 1.0)]
+        (reduce-kv (fn [m k v] (assoc m k (/ v norm))) {} bc)))))
