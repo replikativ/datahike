@@ -272,3 +272,51 @@
           pr (g/page-rank gr db)]
       (is (approx 1.0 (reduce + (vals pr))) "no rank leaks out of the sink")
       (is (every? pos? (vals pr))))))
+
+;; ---------------------------------------------------------------------------
+;; Batch 4 — community detection
+;; ---------------------------------------------------------------------------
+
+(defn- comm-groups
+  "Set of communities (as name-sets) from a {node -> community} map."
+  [fixture communities]
+  (->> communities
+       (group-by val)
+       vals
+       (map (fn [members] (set (map (comp (:name fixture) first) members))))
+       set))
+
+(def ^:private two-triangles
+  ;; A-B-C clique and D-E-F clique
+  [["A" "B"] ["B" "C"] ["A" "C"] ["D" "E"] ["E" "F"] ["D" "F"]])
+
+(deftest test-louvain
+  (testing "two disconnected triangles ⇒ two communities"
+    (let [f (build two-triangles) [gr db] (g-of f)
+          {:keys [communities modularity]} (g/louvain gr db)]
+      (is (= #{#{"A" "B" "C"} #{"D" "E" "F"}} (comm-groups f communities)))
+      (is (> modularity 0.3) "clear community structure has positive modularity")))
+  (testing "two triangles joined by a bridge ⇒ STILL two communities (not collapsed)"
+    (let [f (build (conj two-triangles ["C" "D"])) [gr db] (g-of f)
+          {:keys [communities]} (g/louvain gr db)]
+      (is (= #{#{"A" "B" "C"} #{"D" "E" "F"}} (comm-groups f communities))
+          "the bridge must not merge the two triangles")))
+  (testing "a single clique ⇒ one community"
+    (let [f (build [["A" "B"] ["A" "C"] ["A" "D"] ["B" "C"] ["B" "D"] ["C" "D"]])
+          [gr db] (g-of f)
+          {:keys [communities]} (g/louvain gr db)]
+      (is (= 1 (count (comm-groups f communities)))))))
+
+(deftest test-label-propagation
+  (let [f (build two-triangles) [gr db] (g-of f)
+        {:keys [communities converged]} (g/label-propagation gr db)]
+    (is converged)
+    (is (= #{#{"A" "B" "C"} #{"D" "E" "F"}} (comm-groups f communities))
+        "each disconnected triangle homogenizes to one label")))
+
+(deftest test-community-stats
+  (let [stats (g/community-stats {1 :a 2 :a 3 :b 4 :c})]
+    (is (= 3 (:num-communities stats)))
+    (is (= {:a 2 :b 1 :c 1} (:sizes stats)))
+    (is (= [:a 2] (:largest stats)))
+    (is (approx (/ 2.0 3) (:isolation-score stats)) "two of three communities are singletons")))

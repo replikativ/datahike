@@ -702,3 +702,168 @@
                 nodes)
             norm (* (dec n) (- n 2) 1.0)]
         (reduce-kv (fn [m k v] (assoc m k (/ v norm))) {} bc)))))
+
+;; ===========================================================================
+;; Community detection
+;; ===========================================================================
+
+(defn community-stats
+  "Statistics for a {node -> community} map: :num-communities, :sizes,
+   :largest, :smallest, :avg-size, :isolation-score (fraction of singletons)."
+  [communities]
+  (let [by-comm (group-by val communities)
+        sizes (reduce-kv (fn [m comm members] (assoc m comm (count members))) {} by-comm)
+        sorted (sort-by val > sizes)
+        n (count sizes)
+        singletons (count (filter #(= 1 (val %)) sizes))]
+    {:num-communities n
+     :sizes sizes
+     :largest (first sorted)
+     :smallest (last sorted)
+     :avg-size (if (pos? n) (/ (count communities) n) 0)
+     :isolation-score (if (pos? n) (double (/ singletons n)) 0.0)}))
+
+(defn label-propagation
+  "Label-propagation community detection over the undirected view: each node
+   adopts the most frequent label among its neighbors (ties broken randomly).
+   Returns {:communities {node label} :converged bool :iterations n :stats ...}.
+
+   Options: :max-iterations (10), :seeds {node label} (fixed labels)."
+  [g db & {:keys [max-iterations seeds] :or {max-iterations 10 seeds {}}}]
+  (let [ug (gs/materialize (gs/undirected-graph g) db)
+        nodes (vec (gs/all-nodes ug db))
+        initial (merge (zipmap nodes nodes) seeds)
+        seed-nodes (set (keys seeds))]
+    (loop [labels initial
+           iter 0]
+      (if (>= iter max-iterations)
+        {:communities labels :converged false :iterations iter
+         :stats (community-stats labels)}
+        (let [[new-labels changed?]
+              (reduce
+               (fn [[lbls changed] node]
+                 (if (seed-nodes node)
+                   [lbls changed]
+                   (let [freqs (frequencies (map lbls (gs/out-neighbors ug db node)))
+                         max-freq (when (seq freqs) (apply max (vals freqs)))
+                         best (when max-freq (for [[l f] freqs :when (= f max-freq)] l))
+                         new-label (when (seq best) (rand-nth (vec best)))]
+                     (if (and new-label (not= new-label (lbls node)))
+                       [(assoc lbls node new-label) true]
+                       [lbls changed]))))
+               [labels false]
+               (shuffle nodes))]
+          (if changed?
+            (recur new-labels (inc iter))
+            {:communities new-labels :converged true :iterations (inc iter)
+             :stats (community-stats new-labels)}))))))
+
+;; --- Louvain (multi-level modularity optimization) -------------------------
+
+(defn- lv-degrees [adj]
+  (persistent!
+   (reduce-kv (fn [m n nbrs] (assoc! m n (reduce + 0.0 (vals nbrs)))) (transient {}) adj)))
+
+(defn- lv-modularity
+  "Modularity of `comm` (node -> community) over weighted adjacency `adj`,
+   m2 = total weight (sum of all adjacency entries = 2m)."
+  [adj comm m2]
+  (if (zero? m2)
+    0.0
+    (let [deg (lv-degrees adj)
+          in-c (reduce-kv (fn [m i nbrs]
+                            (reduce-kv (fn [m j w]
+                                         (if (= (comm i) (comm j))
+                                           (update m (comm i) (fnil + 0.0) w)
+                                           m))
+                                       m nbrs))
+                          {} adj)
+          tot-c (reduce-kv (fn [m i d] (update m (comm i) (fnil + 0.0) d)) {} deg)]
+      (reduce (fn [q c]
+                (+ q (- (/ (get in-c c 0.0) m2)
+                        (let [t (/ (get tot-c c 0.0) m2)] (* t t)))))
+              0.0
+              (set (vals comm))))))
+
+(defn- lv-one-level
+  "One pass of local moving. Returns {node community}. Each node starts in its
+   own community and repeatedly moves to the neighbor community with the highest
+   positive modularity gain until stable."
+  [adj m2 resolution]
+  (let [deg (lv-degrees adj)
+        m (/ m2 2.0)
+        nodes (vec (keys adj))]
+    (loop [comm (into {} (map (fn [n] [n n])) nodes)
+           tot (into {} (map (fn [n] [n (deg n)])) nodes)]
+      (let [[comm' tot' moved]
+            (reduce
+             (fn [[comm tot _moved :as acc] node]
+               (let [ki (deg node)
+                     ci (comm node)
+                     tot-wo (update tot ci - ki)
+                     nbr-comm-w (reduce-kv (fn [mm nbr w]
+                                             (if (= nbr node)
+                                               mm
+                                               (update mm (comm nbr) (fnil + 0.0) w)))
+                                           {} (adj node {}))
+                     gain (fn [c]
+                            (- (/ (get nbr-comm-w c 0.0) m)
+                               (/ (* resolution (get tot-wo c 0.0) ki) (* 2.0 m m))))
+                     candidates (conj (set (keys nbr-comm-w)) ci)
+                     [bc bg] (reduce (fn [[bc bg] c]
+                                       (let [g (gain c)]
+                                         (if (> g bg) [c g] [bc bg])))
+                                     [ci (gain ci)]
+                                     candidates)]
+                 (if (= bc ci)
+                   acc
+                   [(assoc comm node bc)
+                    (update tot-wo bc (fnil + 0.0) ki)
+                    true])))
+             [comm tot false]
+             nodes)]
+        (if moved
+          (recur comm' tot')
+          comm)))))
+
+(defn- lv-aggregate
+  "Contract communities into super-nodes; inter/intra weights summed (intra
+   become self-loops)."
+  [adj comm]
+  (reduce-kv (fn [m i nbrs]
+               (reduce-kv (fn [m j w]
+                            (update-in m [(comm i) (comm j)] (fnil + 0.0) w))
+                          m nbrs))
+             {} adj))
+
+(defn louvain
+  "Louvain community detection (multi-level modularity maximization) over the
+   undirected, weighted view of `g`. Returns
+     {:communities {node community-id} :modularity Q :levels n :stats ...}.
+
+   Options: :resolution (1.0; higher ⇒ more, smaller communities),
+            :max-levels (10)."
+  [g db & {:keys [resolution max-levels] :or {resolution 1.0 max-levels 10}}]
+  (let [mg (gs/materialize g db)
+        wedges (gs/weighted-edges mg db)
+        adj0 (reduce (fn [m [s t w]]
+                       (-> m
+                           (update-in [s t] (fnil + 0.0) (double w))
+                           (update-in [t s] (fnil + 0.0) (double w))))
+                     {} wedges)
+        m2 (reduce-kv (fn [s _ nbrs] (+ s (reduce + 0.0 (vals nbrs)))) 0.0 adj0)]
+    (if (or (empty? adj0) (zero? m2))
+      {:communities {} :modularity 0.0 :levels 0 :stats (community-stats {})}
+      (loop [adj adj0
+             node->super (into {} (map (fn [n] [n n])) (keys adj0))
+             level 0]
+        (let [comm (lv-one-level adj m2 resolution)
+              n-comms (count (set (vals comm)))
+              node->super' (into {} (map (fn [[orig super]] [orig (comm super)])) node->super)]
+          (if (or (>= (inc level) max-levels) (= n-comms (count adj)))
+            (let [final node->super']
+              {:communities final
+               :modularity (lv-modularity adj0 final m2)
+               :levels (inc level)
+               :stats (community-stats final)})
+            (recur (lv-aggregate adj comm) node->super' (inc level))))))))
