@@ -40,25 +40,26 @@
 (def ^:private tc-oc (:datahike/output-cardinality tc-meta))
 (def ^:private tc-cost (:datahike/cost tc-meta))
 
-;; Counter atoms (reset per run).
-(def filter-cnt (atom 0))
-(def expand-cnt (atom 0))
-(def joinfn-cnt (atom 0))
-(def mutual-cheap-cnt (atom 0))
-(def mutual-exp-cnt (atom 0))
-
-;; Wrapper vars carry the REAL fn's metadata so the planner costs them identically.
+;; Wrapper vars carry the REAL fn's metadata so the planner costs them
+;; identically to the algorithm. The invocation COUNTER is not global state — it
+;; is created lexically per measurement (an atom in the *-case `let`) and threaded
+;; in as the LAST argument via `:in`, so each query owns its own counter (no
+;; reset, no cross-query bleed, no thread caveats). The graph stays `(first args)`
+;; so the cost model is unaffected; the counter arg is a substituted constant, not
+;; a free var, so it doesn't perturb input-cardinality.
 (defn ^{:datahike/output-cardinality tc-oc :datahike/cost tc-cost} filter-tcv
-  [g db s] (swap! filter-cnt inc) (graph/transitive-closure g db s))
+  [g db s cnt] (swap! cnt inc) (graph/transitive-closure g db s))
 (defn ^{:datahike/output-cardinality tc-oc :datahike/cost tc-cost} expand-tcv
-  [g db s] (swap! expand-cnt inc) (graph/transitive-closure g db s))
+  [g db s cnt] (swap! cnt inc) (graph/transitive-closure g db s))
 (defn ^{:datahike/output-cardinality tc-oc :datahike/cost tc-cost} joinfn-tcv
-  [g db s] (swap! joinfn-cnt inc) (graph/transitive-closure g db s))
+  [g db s cnt] (swap! cnt inc) (graph/transitive-closure g db s))
+(defn ^{:datahike/output-cardinality tc-oc :datahike/cost tc-cost} sink-tcv
+  [g db s cnt] (swap! cnt inc) (graph/transitive-closure g db s))
 ;; MUTUAL: two wrappers, SAME input, DIFFERENT per-call cost.
 (defn ^{:datahike/output-cardinality tc-oc :datahike/cost 1} mutual-cheap
-  [g db s] (swap! mutual-cheap-cnt inc) (graph/transitive-closure g db s))
+  [g db s cnt] (swap! cnt inc) (graph/transitive-closure g db s))
 (defn ^{:datahike/output-cardinality tc-oc :datahike/cost 1000} mutual-exp
-  [g db s] (swap! mutual-exp-cnt inc) (graph/transitive-closure g db s))
+  [g db s cnt] (swap! cnt inc) (graph/transitive-closure g db s))
 
 (defn- plan-of [dd where]
   (mapv (juxt :op :fn-sym #(second (:clause %)))
@@ -87,14 +88,14 @@
               (-> (db/empty-db schema)
                   (d/db-with node-txs) (d/db-with doc-txs)
                   (d/db-with flag-core) (d/db-with flag-extra)))
+         cnt (atom 0)
          where '[[(datahike.experimental.graph-spec/attr-graph :follows) ?g]
                  [?p :cites ?x] [?x :flagged ?ff]
-                 [(datahike.test.experimental.graph-cost-oracle/filter-tcv ?g $ ?x) [?n ...]]]]
+                 [(datahike.test.experimental.graph-cost-oracle/filter-tcv ?g $ ?x ?cnt) [?n ...]]]]
      (clear-plan-cache!)
-     (reset! filter-cnt 0)
      (let [res (binding [q/*query-result-cache?* false]
-                 (d/q {:query {:find '[?p ?n] :where where} :args [dd]}))]
-       {:invocations @filter-cnt :rows (count res) :plan (plan-of dd where)}))))
+                 (d/q {:query {:find '[?p ?n] :in '[$ ?cnt] :where where} :args [dd cnt]}))]
+       {:invocations @cnt :rows (count res) :plan (plan-of dd where)}))))
 
 ;; ---------------------------------------------------------------------------
 ;; EXPAND: the fn input ?x is bound by :seed (5).  A separate :tagged join EXPANDS
@@ -114,15 +115,15 @@
                              {:db/id (+ 50000 (* i 100) j) :tagged (+ 1000 i)}))]
              (-> (db/empty-db schema)
                  (d/db-with nodes) (d/db-with seeds) (d/db-with docs)))
+        cnt (atom 0)
         where '[[(datahike.experimental.graph-spec/attr-graph :follows) ?g]
                 [?x :seed true]
-                [(datahike.test.experimental.graph-cost-oracle/expand-tcv ?g $ ?x) [?n ...]]
+                [(datahike.test.experimental.graph-cost-oracle/expand-tcv ?g $ ?x ?cnt) [?n ...]]
                 [?doc :tagged ?x]]]
     (clear-plan-cache!)
-    (reset! expand-cnt 0)
     (let [res (binding [q/*query-result-cache?* false]
-                (d/q {:query {:find '[?doc ?n] :where where} :args [dd]}))]
-      {:invocations @expand-cnt :rows (count res) :plan (plan-of dd where)})))
+                (d/q {:query {:find '[?doc ?n] :in '[$ ?cnt] :where where} :args [dd cnt]}))]
+      {:invocations @cnt :rows (count res) :plan (plan-of dd where)})))
 
 ;; ---------------------------------------------------------------------------
 ;; JOINFN: a join with a HIGH standalone card (n-decoy :owns datoms point to a
@@ -144,14 +145,45 @@
                   decoys (vec (for [i (range n-decoy)] {:db/id (+ 700000 i) :owns 999999}))]
               (-> (db/empty-db schema)
                   (d/db-with nodes) (d/db-with real-owns) (d/db-with decoys)))
+         cnt (atom 0)
          where '[[(datahike.experimental.graph-spec/attr-graph :follows) ?g]
                  [?x :type "node"] [?o :owns ?x]
-                 [(datahike.test.experimental.graph-cost-oracle/joinfn-tcv ?g $ ?x) [?n ...]]]]
+                 [(datahike.test.experimental.graph-cost-oracle/joinfn-tcv ?g $ ?x ?cnt) [?n ...]]]]
      (clear-plan-cache!)
-     (reset! joinfn-cnt 0)
      (let [res (binding [q/*query-result-cache?* false]
-                 (d/q {:query {:find '[?o ?n] :where where} :args [dd]}))]
-       {:invocations @joinfn-cnt :rows (count res) :plan (plan-of dd where)}))))
+                 (d/q {:query {:find '[?o ?n] :in '[$ ?cnt] :where where} :args [dd cnt]}))]
+       {:invocations @cnt :rows (count res) :plan (plan-of dd where)}))))
+
+;; ---------------------------------------------------------------------------
+;; SINK: like JOINFN, but the graph is TINY so the fn's per-call complexity is
+;;   small — small enough that its op-cost is BELOW the decoy-inflated static
+;;   scan-card of the reducing :owns join, so the STATIC planner places the fn
+;;   BEFORE the reducer. Optimal still = 5, reached only because the execution
+;;   SINK probes :owns, sees it reduces, and pulls it ahead of the fn. This is
+;;   the case static-deferral + hoist do NOT cover, so it guards the sink.
+;; ---------------------------------------------------------------------------
+
+(defn sink-case
+  ([] (sink-case 3000))
+  ([n-decoy]
+   (let [schema {:type        {:db/cardinality :db.cardinality/one}
+                 :owns        {:db/valueType :db.type/ref :db/cardinality :db.cardinality/one}
+                 :tinyfollows {:db/valueType :db.type/ref :db/cardinality :db.cardinality/many}}
+         dd (let [nodes (vec (for [i (range 100)]
+                               (cond-> {:db/id (+ 1000 i) :type "node"}
+                                 (< i 3) (assoc :tinyfollows (+ 1000 i 1)))))
+                  real-owns (vec (for [i (range 5)] {:db/id (+ 20000 i) :owns (+ 1000 i)}))
+                  decoys (vec (for [i (range n-decoy)] {:db/id (+ 700000 i) :owns 999999}))]
+              (-> (db/empty-db schema)
+                  (d/db-with nodes) (d/db-with real-owns) (d/db-with decoys)))
+         cnt (atom 0)
+         where '[[(datahike.experimental.graph-spec/attr-graph :tinyfollows) ?g]
+                 [?x :type "node"] [?o :owns ?x]
+                 [(datahike.test.experimental.graph-cost-oracle/sink-tcv ?g $ ?x ?cnt) [?n ...]]]]
+     (clear-plan-cache!)
+     (let [res (binding [q/*query-result-cache?* false]
+                 (d/q {:query {:find '[?o ?n] :in '[$ ?cnt] :where where} :args [dd cnt]}))]
+       {:invocations @cnt :rows (count res) :plan (plan-of dd where)}))))
 
 ;; ---------------------------------------------------------------------------
 ;; MUTUAL: two cost-annotated wrappers on the SAME input ?x with DIFFERENT
@@ -176,20 +208,22 @@
              (-> (db/empty-db schema)
                  (d/db-with chains) (d/db-with mids) (d/db-with tails)
                  (d/db-with aliveA) (d/db-with aliveB)))
+        cheap-cnt (atom 0) exp-cnt (atom 0)
         where '[[(datahike.experimental.graph-spec/attr-graph :follows) ?g]
                 [?x :seed true]
-                [(datahike.test.experimental.graph-cost-oracle/mutual-cheap ?g $ ?x) [?a ...]]
+                [(datahike.test.experimental.graph-cost-oracle/mutual-cheap ?g $ ?x ?cc) [?a ...]]
                 [?a :aliveA true]
-                [(datahike.test.experimental.graph-cost-oracle/mutual-exp ?g $ ?x) [?b ...]]
+                [(datahike.test.experimental.graph-cost-oracle/mutual-exp ?g $ ?x ?ce) [?b ...]]
                 [?b :aliveB true]]]
     (clear-plan-cache!)
-    (reset! mutual-cheap-cnt 0) (reset! mutual-exp-cnt 0)
     (binding [q/*query-result-cache?* false]
-      (d/q {:query {:find '[?x] :where where} :args [dd]}))
-    {:cheap @mutual-cheap-cnt :exp @mutual-exp-cnt :plan (plan-of dd where)}))
+      (d/q {:query {:find '[?x] :in '[$ ?cc ?ce] :where where} :args [dd cheap-cnt exp-cnt]}))
+    {:cheap @cheap-cnt :exp @exp-cnt :plan (plan-of dd where)}))
 
 (defn run-all []
-  (let [f (filter-case) e (expand-case) j (joinfn-case) m (mutual-case)]
+  (let [f (filter-case) e (expand-case) j (joinfn-case) s (sink-case) m (mutual-case)]
+    (println "SINK    invocations:" (:invocations s) " rows:" (:rows s) " (optimal 5)")
+    (println "        plan:" (:plan s))
     (println "FILTER  invocations:" (:invocations f) " rows:" (:rows f) " (optimal 5)")
     (println "        plan:" (:plan f))
     (println "EXPAND  invocations:" (:invocations e) " rows:" (:rows e) " (optimal 5)")
@@ -200,7 +234,7 @@
     (println "        plan:" (:plan m))
     (println "FILTER  n-extra sweep (invocations should stay 5):"
              (mapv #(:invocations (filter-case %)) [0 100 1000 3000 8000]))
-    {:filter f :expand e :joinfn j :mutual m}))
+    {:filter f :expand e :joinfn j :sink s :mutual m}))
 
 (deftest cost-oracle-optimal-placement
   (testing "FILTER — selective filter shrinks the fn input to 5"
@@ -209,6 +243,8 @@
     (is (= 5 (:invocations (expand-case)))))
   (testing "JOINFN — row-reducing join is probe-sunk ahead of the fn (was 100)"
     (is (= 5 (:invocations (joinfn-case)))))
+  (testing "SINK — tiny-graph fn placed before an inflated reducer; sink corrects it"
+    (is (= 5 (:invocations (sink-case)))))
   (testing "MUTUAL — cheaper/more-selective fn ordered before the dear one"
     (let [m (mutual-case)]
       (is (= 20 (:cheap m)))
