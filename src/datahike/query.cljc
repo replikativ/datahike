@@ -3550,6 +3550,10 @@
   [plan db qfind find-elements context-in query stats? qreturnmaps]
   (let [direct-eligible? (and (instance? FindRel qfind)
                               (not stats?)
+                              ;; the fused HashSet path applies fns via post-apply-fns,
+                              ;; which doesn't accumulate :fn-counts — route counting
+                              ;; queries through the relation path (bind-by-fn) instead.
+                              (not (:count-fns? context-in))
                               (not qreturnmaps)
                               (not (:with query))
                               (not-any? #(instance? Aggregate %) find-elements)
