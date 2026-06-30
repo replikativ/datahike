@@ -2215,21 +2215,29 @@
      (-collect [start-array] rels symbols)))
   ([acc rels symbols]
    (if-some [rel (first rels)]
-     (let [keep-attrs (select-keys (:attrs rel) symbols)]
-       (if (empty? keep-attrs)
-         (recur acc (next rels) symbols)
-         (let [copy-map (to-array (map #(get keep-attrs %) symbols))
-               len (count symbols)]
-           (recur (for [#?(:cljs t1
-                           :clj ^{:tag "[[Ljava.lang.Object;"} t1) acc
-                        t2 (:tuples rel)]
-                    (let [res (aclone t1)]
-                      (dotimes [i len]
-                        (when-some [idx (aget copy-map i)]
-                          (aset res i (get t2 idx))))
-                      res))
-                  (next rels)
-                  symbols))))
+     (if (empty? (:tuples rel))
+       ;; A zero-tuple relation means this conjunct has no satisfying bindings,
+       ;; so the whole conjunctive result is empty — annihilate. This must run
+       ;; before the keep-attrs test below: a const-only / no-find-var clause
+       ;; (e.g. a predicate over `:in` constants like `[(= ?e 999)]`) produces
+       ;; an empty-attrs eliminating relation that would otherwise be skipped,
+       ;; letting the const-seeded accumulator survive unfiltered (issue #848).
+       []
+       (let [keep-attrs (select-keys (:attrs rel) symbols)]
+         (if (empty? keep-attrs)
+           (recur acc (next rels) symbols)
+           (let [copy-map (to-array (map #(get keep-attrs %) symbols))
+                 len (count symbols)]
+             (recur (for [#?(:cljs t1
+                             :clj ^{:tag "[[Ljava.lang.Object;"} t1) acc
+                          t2 (:tuples rel)]
+                      (let [res (aclone t1)]
+                        (dotimes [i len]
+                          (when-some [idx (aget copy-map i)]
+                            (aset res i (get t2 idx))))
+                        res))
+                    (next rels)
+                    symbols)))))
      acc)))
 
 (defprotocol IContextResolve
