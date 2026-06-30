@@ -269,7 +269,7 @@
                   (let [n (cond
                             (number? c) c
                             (fn? c)     (c {:db db :fn-sym fn-sym :args args
-                                           :binding binding :provenance provenance})
+                                            :binding binding :provenance provenance})
                             :else       nil)]
                     (when (number? n) (max 1 (long n))))))
               (catch Exception e
@@ -1108,88 +1108,88 @@
    purely-cardinality behaviour."
   ([groups] (dp-order-groups groups nil))
   ([groups db]
-  (let [n (count groups)]
-    (cond
-      (<= n 1) (vec (range n))
-      (> n dp-group-threshold) (greedy-order-groups groups)
-      :else
-      (let [cards (long-array (map group-effective-card groups))
-            edges (build-group-join-graph groups)
+   (let [n (count groups)]
+     (cond
+       (<= n 1) (vec (range n))
+       (> n dp-group-threshold) (greedy-order-groups groups)
+       :else
+       (let [cards (long-array (map group-effective-card groups))
+             edges (build-group-join-graph groups)
             ;; Precompute adjacency: for each group i, which groups share vars?
-            adj (mapv (fn [i]
-                        (into #{}
-                              (keep (fn [j]
-                                      (when (and (not= i j)
-                                                 (or (contains? edges [i j])
-                                                     (contains? edges [j i])))
-                                        j)))
-                              (range n)))
-                      (range n))
+             adj (mapv (fn [i]
+                         (into #{}
+                               (keep (fn [j]
+                                       (when (and (not= i j)
+                                                  (or (contains? edges [i j])
+                                                      (contains? edges [j i])))
+                                         j)))
+                               (range n)))
+                       (range n))
             ;; Per-group [pattern-info schema-info base] for bound-aware probes.
-            probe (when db (mapv group-probe-info groups))
-            full (unchecked-dec (bit-shift-left 1 n))
-            dp (object-array (unchecked-inc full))]
+             probe (when db (mapv group-probe-info groups))
+             full (unchecked-dec (bit-shift-left 1 n))
+             dp (object-array (unchecked-inc full))]
         ;; Base cases: each single group as a starting point. State carries a
         ;; :cards map (var→card) threaded through the join estimate.
-        (dotimes [i n]
-          (let [mask (bit-shift-left 1 i)]
-            (aset dp mask {:cost (aget cards i)
-                           :order [i]
-                           :rows (aget cards i)
-                           :cards (cap-cards {} (nth groups i) (aget cards i))})))
+         (dotimes [i n]
+           (let [mask (bit-shift-left 1 i)]
+             (aset dp mask {:cost (aget cards i)
+                            :order [i]
+                            :rows (aget cards i)
+                            :cards (cap-cards {} (nth groups i) (aget cards i))})))
         ;; Fill DP table: for each subset, try extending by one connected group
-        (doseq [mask (range 1 (unchecked-inc full))]
-          (when (aget dp (int mask))
-            (let [{:keys [cost order rows] cards-map :cards} (aget dp (int mask))
-                  rows (long rows)
-                  cost (long cost)]
+         (doseq [mask (range 1 (unchecked-inc full))]
+           (when (aget dp (int mask))
+             (let [{:keys [cost order rows] cards-map :cards} (aget dp (int mask))
+                   rows (long rows)
+                   cost (long cost)]
               ;; Find groups not in mask that are adjacent to some group in mask
-              (doseq [i (range n)]
-                (when (zero? (bit-and mask (bit-shift-left 1 i)))
+               (doseq [i (range n)]
+                 (when (zero? (bit-and mask (bit-shift-left 1 i)))
                   ;; Connectivity check: i must share vars with some group in mask
-                  (let [connected? (some (fn [j]
-                                           (pos? (bit-and mask (bit-shift-left 1 j))))
-                                         (nth adj i))]
-                    (when connected?
-                      (let [new-mask (bit-or mask (bit-shift-left 1 i))
-                            i-card (long (aget cards i))
-                            [pinfo sinfo base] (when probe (nth probe i))
+                   (let [connected? (some (fn [j]
+                                            (pos? (bit-and mask (bit-shift-left 1 j))))
+                                          (nth adj i))]
+                     (when connected?
+                       (let [new-mask (bit-or mask (bit-shift-left 1 i))
+                             i-card (long (aget cards i))
+                             [pinfo sinfo base] (when probe (nth probe i))
                             ;; Bound-aware join: a selective probe REDUCES rows
                             ;; (was always max(rows,i-card), never row-reducing).
-                            join-rows (long (bound-aware-join-rows
-                                             db rows i-card cards-map pinfo sinfo base))
-                            new-cost (+ cost join-rows)
-                            new-cards (cap-cards cards-map (nth groups i) join-rows)
-                            prev (aget dp (int new-mask))]
-                        (when (or (nil? prev) (< new-cost (long (:cost prev))))
-                          (aset dp (int new-mask)
-                                {:cost new-cost
-                                 :order (conj order i)
-                                 :rows join-rows
-                                 :cards new-cards}))))))))))
+                             join-rows (long (bound-aware-join-rows
+                                              db rows i-card cards-map pinfo sinfo base))
+                             new-cost (+ cost join-rows)
+                             new-cards (cap-cards cards-map (nth groups i) join-rows)
+                             prev (aget dp (int new-mask))]
+                         (when (or (nil? prev) (< new-cost (long (:cost prev))))
+                           (aset dp (int new-mask)
+                                 {:cost new-cost
+                                  :order (conj order i)
+                                  :rows join-rows
+                                  :cards new-cards}))))))))))
         ;; Extract result: if graph is connected, dp[full] has the answer.
         ;; If disconnected (multiple components), chain components by cardinality.
-        (if-let [result (aget dp (int full))]
-          (:order result)
+         (if-let [result (aget dp (int full))]
+           (:order result)
           ;; Disconnected graph: find largest solved component, then chain remaining
-          (let [popcount (fn [^long x]
-                           #?(:clj (Long/bitCount x)
-                              :cljs (loop [v x c 0]
-                                      (if (zero? v) c
-                                          (recur (bit-and v (dec v)) (inc c))))))
-                best-mask (reduce (fn [best mask]
-                                    (if (aget dp (int mask))
-                                      (if (> (long (popcount mask)) (long (popcount best)))
-                                        mask best)
-                                      best))
-                                  0
-                                  (range 1 (unchecked-inc full)))
-                main-order (:order (aget dp (int best-mask)))
-                remaining-idxs (filterv (fn [i] (zero? (bit-and best-mask (bit-shift-left 1 i))))
-                                        (range n))
+           (let [popcount (fn [^long x]
+                            #?(:clj (Long/bitCount x)
+                               :cljs (loop [v x c 0]
+                                       (if (zero? v) c
+                                           (recur (bit-and v (dec v)) (inc c))))))
+                 best-mask (reduce (fn [best mask]
+                                     (if (aget dp (int mask))
+                                       (if (> (long (popcount mask)) (long (popcount best)))
+                                         mask best)
+                                       best))
+                                   0
+                                   (range 1 (unchecked-inc full)))
+                 main-order (:order (aget dp (int best-mask)))
+                 remaining-idxs (filterv (fn [i] (zero? (bit-and best-mask (bit-shift-left 1 i))))
+                                         (range n))
                 ;; Sort remaining disconnected groups by ascending cardinality
-                sorted-remaining (sort-by #(aget cards (int %)) remaining-idxs)]
-            (into (vec main-order) sorted-remaining))))))))
+                 sorted-remaining (sort-by #(aget cards (int %)) remaining-idxs)]
+             (into (vec main-order) sorted-remaining))))))))
 
 ;; ---------------------------------------------------------------------------
 ;; Cost-based ordering for mixed ops (groups + predicates + functions + OR/NOT)

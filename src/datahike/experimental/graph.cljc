@@ -45,7 +45,7 @@
         (case head-name
           "attr-graph" (let [a (second form)] (when (keyword? a) a))
           ("undirected-graph" "reverse-graph" "filtered-graph" "subgraph"
-           "materialize" "ensure-materialized")
+                              "materialize" "ensure-materialized")
           (recur (second form) provenance)
           nil)))))
 
