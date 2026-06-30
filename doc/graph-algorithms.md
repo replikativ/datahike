@@ -242,6 +242,21 @@ engine evaluates directly:
      db graph/transitive-rules start)
 ```
 
+### Planner integration
+
+The algorithms carry planner metadata so they compose well inside Datalog:
+
+- **`:datahike/output-cardinality`** lets the planner bound a *downstream* join by the result size. A join on `transitive-closure`/`page-rank`/`betweenness-centrality` output is sized by the graph's node count rather than the whole attribute extent.
+- **`:datahike/cost`** is the algorithm's per-invocation complexity (computed from the graph's size). It lets the planner order a cheaper algorithm before a dearer one on a shared input, and — together with an execution-time probe — place an expensive algorithm *after* the joins that shrink its input and *before* any join that would expand it.
+
+You can annotate **your own** functions with the same two keys to get the same treatment. To see how many times an algorithm was actually invoked under the chosen plan, pass `:count-fns? true` and read `:fn-counts` from the result metadata:
+
+```clojure
+(:fn-counts (meta (d/q {:query '{:find [?n] :where [...]} :args [db] :count-fns? true})))
+```
+
+See [the query engine docs](query-engine.md) (*Function cost model*, *Adaptive function placement*) for the mechanics.
+
 ## ClojureScript
 
 Everything here is portable: the algorithms, the `GraphSpec` data layer, and the
