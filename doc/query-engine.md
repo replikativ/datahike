@@ -498,20 +498,6 @@ Speculative queries via `d/with` also benefit from cache propagation:
   (d/q '[:find ?n :where [?e :name ?n]] speculative-db))
 ```
 
-## Profiling function invocations (`:count-fns?`)
-
-Pass `:count-fns? true` in the query map to have the engine report how many times each datalog function was actually invoked, as `:fn-counts` metadata on the result (a `{fn-symbol → invocations}` map):
-
-```clojure
-(let [res (d/q {:query '{:find [?p ?n]
-                         :where [[(my.ns/expensive-fn ?g $ ?x) [?n ...]] ...]}
-                :args [db]
-                :count-fns? true})]
-  (:fn-counts (meta res)))   ;; => {my.ns/expensive-fn 5}
-```
-
-The count is accumulated functionally in the threaded query context (no global state) by `bind-by-fn`, which applies a function once per production tuple, so the number reflects the planner's *actual* runtime order (after adaptive placement). Because counting requires re-execution, a `:count-fns?` query **bypasses the result cache**. Like `:stats?`, this is opt-in: normal queries pay nothing. (Currently only the relation/legacy engine's `bind-by-fn` path is counted, not the fused direct path.)
-
 ## Cross-Platform Support (CLJ + CLJS)
 
 The compiled engine works on both JVM Clojure and ClojureScript (Node.js / browser). The execution layer uses cross-platform abstractions for:
