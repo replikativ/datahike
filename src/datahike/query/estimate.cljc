@@ -248,50 +248,55 @@
    `estimate-pattern`. Defensive: if a caller still passes a plain set
    instead of a map (legacy interface), entries are treated as bound with
    unknown cardinality — fall back to 3-arity behavior for those vars."
-  [db pattern-info schema-info bound-var-cards]
-  (let [base (estimate-pattern db pattern-info schema-info)
-        ;; Tolerate both map (var → card) and set (legacy) forms.
-        card-of (fn [m k]
-                  (when (contains? m k)
-                    (let [v (get m k)]
-                      (when (number? v) (long v)))))]
-    (if (or (empty? bound-var-cards) (nil? base))
-      base
-      (let [{:keys [e v]} pattern-info
-            free-var? analyze/free-var?
-            e-card (when (free-var? e) (card-of bound-var-cards e))
-            v-card (when (free-var? v) (card-of bound-var-cards v))]
-        (cond
-          ;; No bound free vars in this pattern — base estimate stands.
-          (and (nil? e-card) (nil? v-card))
-          base
+  ([db pattern-info schema-info bound-var-cards]
+   (estimate-pattern-with-bindings
+    db pattern-info schema-info bound-var-cards
+    (estimate-pattern db pattern-info schema-info)))
+  ([db pattern-info schema-info bound-var-cards base]
+   ;; `base` is the unconstrained estimate; callers in a hot loop (the group DP)
+   ;; precompute it once per pattern to avoid re-sampling the index per probe.
+   (let [;; Tolerate both map (var → card) and set (legacy) forms.
+         card-of (fn [m k]
+                   (when (contains? m k)
+                     (let [v (get m k)]
+                       (when (number? v) (long v)))))]
+     (if (or (empty? bound-var-cards) (nil? base))
+       base
+       (let [{:keys [e v]} pattern-info
+             free-var? analyze/free-var?
+             e-card (when (free-var? e) (card-of bound-var-cards e))
+             v-card (when (free-var? v) (card-of bound-var-cards v))]
+         (cond
+           ;; No bound free vars in this pattern — base estimate stands.
+           (and (nil? e-card) (nil? v-card))
+           base
 
-          ;; Both bound — point lookup; matches ≤ min(both cards, base).
-          (and e-card v-card)
-          (max 1 (long (min e-card v-card (or base 1))))
+           ;; Both bound — point lookup; matches ≤ min(both cards, base).
+           (and e-card v-card)
+           (max 1 (long (min e-card v-card (or base 1))))
 
-          ;; Entity bound: per-entity probes.
-          e-card
-          (if (:card-one? schema-info)
-            ;; Each bound entity contributes at most 1 datom for this attr.
-            (max 1 (long (min e-card base)))
-            ;; Cardinality-many: rough per-entity fan-out.
-            (let [max-eid (max 1 (long (dbi/-max-eid db)))
-                  fan-out (max 1 (long (/ base max-eid)))]
-              (max 1 (long (min base (* e-card fan-out))))))
+           ;; Entity bound: per-entity probes.
+           e-card
+           (if (:card-one? schema-info)
+             ;; Each bound entity contributes at most 1 datom for this attr.
+             (max 1 (long (min e-card base)))
+             ;; Cardinality-many: rough per-entity fan-out.
+             (let [max-eid (max 1 (long (dbi/-max-eid db)))
+                   fan-out (max 1 (long (/ base max-eid)))]
+               (max 1 (long (min base (* e-card fan-out))))))
 
-          ;; Value bound: per-value probes via AVET (or non-indexed fallback).
-          v-card
-          (if (:indexed? schema-info)
-            (let [distinct-v (or (sample-distinct-v-count db pattern-info schema-info)
-                                 (max 1 (long (/ base 10))))
-                  per-v (max 1 (long (/ base (max 1 distinct-v))))]
-              (max 1 (long (min base (* v-card per-v)))))
-            ;; Non-indexed attr: lacking AVET, use a softer reduction.
-            ;; The existing legacy/temporal path will scan AEVT, so we still
-            ;; pay attribute-count cost; cap at attr-count to avoid false
-            ;; over-estimates of selectivity.
-            (max 1 (long (min base (* v-card 10))))))))))
+           ;; Value bound: per-value probes via AVET (or non-indexed fallback).
+           v-card
+           (if (:indexed? schema-info)
+             (let [distinct-v (or (sample-distinct-v-count db pattern-info schema-info)
+                                  (max 1 (long (/ base 10))))
+                   per-v (max 1 (long (/ base (max 1 distinct-v))))]
+               (max 1 (long (min base (* v-card per-v)))))
+             ;; Non-indexed attr: lacking AVET, use a softer reduction.
+             ;; The existing legacy/temporal path will scan AEVT, so we still
+             ;; pay attribute-count cost; cap at attr-count to avoid false
+             ;; over-estimates of selectivity.
+             (max 1 (long (min base (* v-card 10)))))))))))
 
 (defn estimate-predicate-selectivity-heuristic
   "Heuristic selectivity estimate for a predicate operator.
