@@ -16,6 +16,7 @@
   (:require [datahike.api :as d]
             [datahike.experimental.graph-spec :as gs]
             [datahike.experimental.graph-util :as gu]
+            [datahike.lru :as lru]
             [clojure.set :as set]))
 
 ;; ===========================================================================
@@ -84,24 +85,25 @@
 ;; to 1 (cost = input-rows), the prior behaviour.
 
 (def ^:private graph-size-cache
-  "Bounded cache of [V E] keyed by (edge-attr, db version). graph-size scans
-   :aevt (O(E)) and op-cost calls it many times per plan, but the size is fixed
-   for a given (attr, db) — so memoize on cheap db-version fields. Reset wholesale
-   past a cap to stay bounded across many transactions."
-  (atom {}))
+  "LRU cache of [V E] keyed by [edge-attr db-content-hash max-eid]. graph-size
+   scans :aevt (O(E)) and op-cost calls it many times per plan, but the size is
+   fixed for a given (attr, db). The key is scoped on the db's CONTENT identity
+   (`:hash` — datahike's own db-equality basis) rather than max-tx/max-eid, which
+   can collide across independently-built dbs of equal size but different content."
+  (atom (lru/lru 256)))
 
 (defn- graph-size
   "[node-count edge-count] for the graph `arg`, or nil when the edge attribute
-   isn't statically resolvable. Memoized per (attr, db-version)."
+   isn't statically resolvable. Memoized per (attr, db-content)."
   [db arg provenance]
   (when-let [attr (graph-edge-attr arg provenance)]
-    (let [k [attr (:max-tx db) (:max-eid db)]]
+    (let [k [attr (:hash db) (:max-eid db)]]
       (or (get @graph-size-cache k)
           (let [edges (d/datoms db :aevt attr)
                 e (count edges)
                 v (count (into #{} (mapcat (fn [d] [(:e d) (:v d)])) edges))
                 sz [v e]]
-            (swap! graph-size-cache (fn [c] (assoc (if (> (count c) 256) {} c) k sz)))
+            (swap! graph-size-cache assoc k sz)
             sz)))))
 
 (defn- exec-cost
