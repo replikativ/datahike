@@ -100,6 +100,17 @@
         [s i] (rng-int state (count v))]
     [s (nth v i)]))
 
+(defn rng-shuffle
+  "Return [new-state shuffled-vector] — a deterministic Fisher-Yates shuffle of
+   `coll` driven by the PRNG (portable across JVM and JS, unlike clojure.core
+   `shuffle`, which is unseeded and platform-specific)."
+  [state coll]
+  (loop [st state i (dec (count coll)) v (vec coll)]
+    (if (<= i 0)
+      [st v]
+      (let [[st' j] (rng-int st (inc i))]
+        (recur st' (dec i) (assoc v i (v j) j (v i)))))))
+
 ;; ---------------------------------------------------------------------------
 ;; Math helpers.
 

@@ -838,36 +838,42 @@
 (defn ^{:datahike/output-cardinality node-set-card
         :datahike/cost iterative-exec-cost} label-propagation
   "Label-propagation community detection over the undirected view: each node
-   adopts the most frequent label among its neighbors (ties broken randomly).
+   adopts the most frequent label among its neighbors (ties broken via the
+   seeded PRNG, so results are deterministic and reproducible across JVM and JS).
    Returns {:communities {node label} :converged bool :iterations n :stats ...}.
 
-   Options: :max-iterations (10), :seeds {node label} (fixed labels)."
-  [g db & {:keys [max-iterations seeds] :or {max-iterations 10 seeds {}}}]
+   Options: :max-iterations (10), :seeds {node label} (fixed labels),
+            :rng-seed (1) — PRNG seed for the node visit order and tie-breaking."
+  [g db & {:keys [max-iterations seeds rng-seed] :or {max-iterations 10 seeds {} rng-seed 1}}]
   (let [ug (gs/materialize (gs/undirected-graph g) db)
         nodes (vec (gs/all-nodes ug db))
         initial (merge (zipmap nodes nodes) seeds)
         seed-nodes (set (keys seeds))]
     (loop [labels initial
-           iter 0]
+           iter 0
+           rng (gu/rng rng-seed)]
       (if (>= iter max-iterations)
         {:communities labels :converged false :iterations iter
          :stats (community-stats labels)}
-        (let [[new-labels changed?]
+        (let [[rng order] (gu/rng-shuffle rng nodes)
+              [new-labels changed? rng]
               (reduce
-               (fn [[lbls changed] node]
+               (fn [[lbls changed r] node]
                  (if (seed-nodes node)
-                   [lbls changed]
+                   [lbls changed r]
                    (let [freqs (frequencies (map lbls (gs/out-neighbors ug db node)))
                          max-freq (when (seq freqs) (apply max (vals freqs)))
-                         best (when max-freq (for [[l f] freqs :when (= f max-freq)] l))
-                         new-label (when (seq best) (rand-nth (vec best)))]
-                     (if (and new-label (not= new-label (lbls node)))
-                       [(assoc lbls node new-label) true]
-                       [lbls changed]))))
-               [labels false]
-               (shuffle nodes))]
+                         best (when max-freq (vec (for [[l f] freqs :when (= f max-freq)] l)))]
+                     (if (seq best)
+                       (let [[r' new-label] (gu/rng-nth r best)]
+                         (if (not= new-label (lbls node))
+                           [(assoc lbls node new-label) true r']
+                           [lbls changed r']))
+                       [lbls changed r]))))
+               [labels false rng]
+               order)]
           (if changed?
-            (recur new-labels (inc iter))
+            (recur new-labels (inc iter) rng)
             {:communities new-labels :converged true :iterations (inc iter)
              :stats (community-stats new-labels)}))))))
 

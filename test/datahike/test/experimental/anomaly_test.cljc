@@ -1,6 +1,19 @@
 (ns datahike.test.experimental.anomaly-test
   (:require [clojure.test :refer [deftest testing is are]]
-            [datahike.experimental.anomaly :as anomaly]))
+            [datahike.experimental.anomaly :as anomaly]
+            [datahike.experimental.graph-util :as gu]))
+
+(defn- seeded-points
+  "n deterministic 2-D points with each coord in [lo, hi), driven by the seedable
+   PRNG so the anomaly tests don't flake (clojure.core `rand` is unseeded)."
+  [n seed lo hi]
+  (loop [r (gu/rng seed) acc [] i 0]
+    (if (= i n)
+      acc
+      (let [[r x] (gu/rng-next r)
+            [r y] (gu/rng-next r)
+            f (fn [u] (+ lo (* (- hi lo) u)))]
+        (recur r (conj acc [(f x) (f y)]) (inc i))))))
 
 ;; =============================================================================
 ;; Unit Tests for Statistical Utilities
@@ -43,8 +56,7 @@
 
 (deftest ecod-scores-test
   (testing "Outliers score higher than normal points"
-    (let [normal (vec (for [_ (range 20)]
-                        [(- (rand) 0.5) (- (rand) 0.5)]))
+    (let [normal (seeded-points 20 1 -0.5 0.5)
           outliers [[5.0 5.0] [-5.0 -5.0]]
           data (vec (concat normal outliers))
           scores (anomaly/ecod-scores data)
@@ -76,22 +88,19 @@
 
 (deftest find-outliers-test
   (testing "top-k returns exactly k results"
-    (let [data (vec (for [_ (range 50)]
-                      [(rand) (rand)]))
+    (let [data (seeded-points 50 2 0.0 1.0)
           result (anomaly/find-outliers data {:top-k 5})]
       (is (= 5 (count result)))))
 
   (testing "results are sorted by score descending"
-    (let [data (vec (for [_ (range 50)]
-                      [(rand) (rand)]))
+    (let [data (seeded-points 50 3 0.0 1.0)
           result (anomaly/find-outliers data {:top-k 10})
           scores (map :score result)]
       (is (= scores (reverse (sort scores))))))
 
   (testing "threshold filters correctly"
     ;; Create clustered normal points around origin, outlier far away
-    (let [normal (vec (for [_ (range 30)]
-                        [(- (rand) 0.5) (- (rand) 0.5)]))  ;; [-0.5, 0.5] range
+    (let [normal (seeded-points 30 4 -0.5 0.5)  ;; [-0.5, 0.5] range
           outlier [[10.0 10.0]]  ;; Far outside
           data (vec (concat normal outlier))
           scores (anomaly/ecod-scores data)
@@ -107,8 +116,7 @@
       (is (= [10.0 10.0] (:point (first result))))))
 
   (testing "default contamination returns ~10%"
-    (let [data (vec (for [_ (range 100)]
-                      [(rand) (rand)]))
+    (let [data (seeded-points 100 5 0.0 1.0)
           result (anomaly/find-outliers data)]
       (is (= 10 (count result))))))
 
@@ -130,8 +138,7 @@
 
 (deftest ecod-score-test
   (testing "scoring new extreme point"
-    (let [normal-data (vec (for [_ (range 50)]
-                             [(- (rand) 0.5) (- (rand) 0.5)]))
+    (let [normal-data (seeded-points 50 6 -0.5 0.5)
           extreme-point [10.0 10.0]
           score (anomaly/ecod-score normal-data extreme-point)
           normal-scores (anomaly/ecod-scores normal-data)
