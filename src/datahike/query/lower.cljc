@@ -562,51 +562,44 @@
   "Estimate output cardinality per free-var for an LP node, without lowering it.
    Returns {var-symbol → long} or nil if the estimate isn't useful.
 
-   Currently handles pure data-pattern nodes (LScan, LOptionalScan) where the
-   estimate is direct and cheap. Other node types return nil — their downstream
-   propagation falls back to the existing all-vars-treated-as-free behavior.
-   Extensions for LEntityJoin / LRuleCall / LUnion can be added in follow-ups
-   as we measure their planning impact."
-  [node db]
+   The node-borne half of the planner's produce-side cardinality seeding: it
+   routes LScan/LOptionalScan (pattern source) and LBind (function-bind source)
+   through plan/source-cards — the single definition of how each cardinality
+   source seeds the {var → card} map. The :in-input source is seeded separately
+   (initial-bvc in `lower`), since :in bindings are not LP nodes. Other node
+   types return nil — their downstream propagation falls back to the existing
+   all-vars-treated-as-free behavior; LEntityJoin / LRuleCall / LUnion arms can
+   be added as follow-ups."
+  [node db provenance]
   (cond
     (ir/scan? node)
-    (let [ci (scan->classified node)
-          si (analyze/pattern-schema-info db ci)
-          est (or (estimate/estimate-pattern db ci si)
-                  (di/-count (:eavt db)))
-          free-output-vars (filter analyze/free-var? (:vars ci))]
-      (when (seq free-output-vars)
-        (zipmap free-output-vars (repeat (long est)))))
+    (plan/source-cards {:kind :pattern :classified (scan->classified node) :db db})
+
+    ;; Function binds whose var advertises :datahike/output-cardinality (e.g.
+    ;; a graph algorithm whose result size is data-dependent). Without this the
+    ;; bind is opaque and downstream patterns over its output var fall back to
+    ;; the full attribute extent. Only the binding's own free vars are bounded.
+    (ir/bind? node)
+    (plan/source-cards {:kind :bind :classified (bind->classified node) :db db
+                        :provenance provenance})
 
     :else nil))
 
-(defn- bound-var-cards-for-node
-  "Compute the bound-var-cards map to pass when lowering `node`: the merge of
-   every OTHER node's output-card estimate plus the static initial bound-vars
-   (treated as known but with unknown cardinality — placeholder card 1 since
-   :in-bound vars are typically singletons in practice and a placeholder is
-   safer than omitting them entirely).
-
-   When duplicate vars appear across multiple producers, take the MIN — the
-   tightest known bound."
-  [node node->cards initial-bound-vars]
-  (let [merged (reduce-kv (fn [acc other-node other-cards]
-                            (if (or (identical? other-node node) (nil? other-cards))
-                              acc
-                              (reduce-kv (fn [acc' v c]
-                                           (let [prev (get acc' v)]
-                                             (assoc acc' v (if prev (min prev c) c))))
-                                         acc
-                                         other-cards)))
-                          {}
-                          node->cards)]
-    ;; Add initial :in-bound vars with placeholder cardinality.
-    ;; Existing call sites that pass a Set still work via estimate-pattern-with-bindings'
-    ;; defensive lookup, but going forward callers within the planner should pass
-    ;; this enriched map.
-    (reduce (fn [m v] (if (contains? m v) m (assoc m v 1)))
-            merged
-            (seq initial-bound-vars))))
+(defn- bind-provenance
+  "Map each var bound by a scalar function bind to the form that produced it,
+   e.g. {?g (attr-graph :follows)}. Lets a downstream op's
+   :datahike/output-cardinality cost model resolve a graph passed by variable
+   back to its constructor (and through transformer wrappers)."
+  [nodes]
+  (reduce (fn [m node]
+            (if (ir/bind? node)
+              (let [ci (bind->classified node)
+                    b (:binding ci)]
+                (if (symbol? b)
+                  (assoc m b (first (:clause ci)))
+                  m))
+              m))
+          {} nodes))
 
 ;; ---------------------------------------------------------------------------
 ;; Entity group construction from LEntityJoin
@@ -677,9 +670,15 @@
     :consumed-preds #{consumed-predicate-clauses}
     :classified [classified-clause-maps...]
     :group-joins {consumer-idx → {:producer-idx :probe-vars}}
-    :has-passthrough? boolean}"
-  [logical-plan db rules]
+    :has-passthrough? boolean}
+
+   `in-cards` (optional) is a value-independent {var → card} seed for :in
+   collection/relation bindings (see plan/source-cards :input); it overrides the
+   card-1 placeholder so a join driven by a passed collection is ordered as a
+   multi-row source. nil for sub-plans / queries without relation :in bindings."
+  [logical-plan db rules & [in-cards]]
   (let [nodes (.-nodes ^datahike.query.ir.LogicalPlan logical-plan)
+        provenance (bind-provenance nodes)
         bound-vars (.-bound_vars ^datahike.query.ir.LogicalPlan logical-plan)
         classified (.-classified ^datahike.query.ir.LogicalPlan logical-plan)
         all-clause-vars (into bound-vars (mapcat :vars) classified)
@@ -720,7 +719,7 @@
         ;; so source-idx is a reasonable proxy for "what's bound entering
         ;; this clause." The execution path itself is reordered later by
         ;; order-plan-ops based on actual cost, independent of this.
-        node->output-cards (zipmap nodes (map #(estimate-node-output-cards % db) nodes))
+        node->output-cards (zipmap nodes (map #(estimate-node-output-cards % db provenance) nodes))
         ;; Per-node BINDING vars — the free vars a node binds for
         ;; downstream consumption. Distinct from output-cards (which
         ;; carries numeric cardinality estimates and is restricted to
@@ -760,8 +759,12 @@
         max-src-idx #?(:clj Long/MAX_VALUE :cljs (.-MAX_SAFE_INTEGER js/Number))
         node->src-idx (into {} (map (fn [n] [n (or (:source-idx (meta n))
                                                    max-src-idx)])) nodes)
+        ;; :in vars seed at card 1 (placeholder), overridden by `in-cards` for
+        ;; collection/relation bindings (plan/source-cards :input) so a passed
+        ;; collection is ordered as a real multi-row source, not a singleton.
         initial-bvc (cond (map? bound-vars) bound-vars
-                          :else (zipmap (or bound-vars #{}) (repeat 1)))
+                          :else (merge (zipmap (or bound-vars #{}) (repeat 1))
+                                       (or in-cards {})))
         merge-cards (fn [acc-map outs]
                       (reduce-kv
                        (fn [m v c]
@@ -826,7 +829,7 @@
 
                ;; LBind → function op
                (instance? datahike.query.ir.LBind node)
-               (update acc :ops conj (plan/plan-function-op (bind->classified node) db))
+               (update acc :ops conj (plan/plan-function-op (bind->classified node) db provenance))
 
                ;; LAntiJoin → NOT/NOT-JOIN op (delegate to plan.cljc)
                (instance? datahike.query.ir.LAntiJoin node)
@@ -972,7 +975,7 @@
         ;; broad attribute scan. (bound-vars excludes $/%/scalar-consts/fn-outputs
         ;; — only genuine bound relation columns; group DP order is independent of
         ;; this seed, which only affects non-group op readiness.)
-        ordered-ops (plan/order-plan-ops all-ops bound-vars)
+        ordered-ops (plan/order-plan-ops all-ops bound-vars db)
 
         ;; ---------------------------------------------------------------
         ;; Step 6: Detect inter-group value joins

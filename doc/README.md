@@ -71,6 +71,8 @@ For experienced users building production systems:
 - **[Versioning](./versioning.md)** - Git-like branching and merging (beta)
 - **[Norms](./norms.md)** - Database migration system
 - **[Unstructured Input Support](./unstructured.md)** - Schema inference from JSON/EDN (experimental)
+- **[Graph Algorithms](./graph-algorithms.md)** - Reachability, paths, centrality, community detection, flows, random walks over a `GraphSpec` (experimental)
+- **[Anomaly Detection](./anomaly-detection.md)** - Parameter-free ECOD outlier detection (experimental)
 
 ## 🔍 Reference
 

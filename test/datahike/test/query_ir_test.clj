@@ -411,3 +411,54 @@
       (is (< (plan/op-cost op #{'?e '?v}) Long/MAX_VALUE)
           "all join-vars bound → ready"))))
 
+;; ---------------------------------------------------------------------------
+;; source-card: unified produce-side cardinality seeding (patterns / binds / :in)
+
+(deftest source-cards-input-arm
+  (testing "plan/source-cards :input — collection/relation bind many rows, tuple/scalar one"
+    (is (= '{?x 100} (plan/source-cards {:kind :input :shape :collection :vars '[?x]}))
+        "collection :in seeds the unknown-size default, not 1")
+    (is (= '{?a 100 ?b 100} (plan/source-cards {:kind :input :shape :relation :vars '[?a ?b]}))
+        "relation :in seeds every column")
+    (is (nil? (plan/source-cards {:kind :input :shape :tuple :vars '[?a ?b]}))
+        "tuple :in is a single row → no override (card-1 placeholder stands)")
+    (is (nil? (plan/source-cards {:kind :input :shape :scalar :vars '[?x]}))
+        "scalar :in is a single value → no override")))
+
+(def ^:private in-card-test-db
+  ;; :name spans 500 entities — a join on it is broad unless the other side bounds it.
+  (-> (db/empty-db {:name {:db/unique :db.unique/identity}})
+      (d/db-with (mapv (fn [i] {:db/id (+ i 100) :name (str i)}) (range 500)))))
+
+(defn- scan-card-with-in
+  "scan-card the planner assigns to the :name pattern when ?v is an :in var,
+   with the given in-cards seed (nil = today's card-1 placeholder)."
+  [in-cards]
+  (let [logical (logical/build-logical-plan in-card-test-db '[[?e :name ?v]] '#{?v} nil)
+        plan (lower/lower logical in-card-test-db nil in-cards)]
+    (some (fn [op] (when (and (= :pattern-scan (:op op)) (= :name (second (:clause op))))
+                     (:scan-card op)))
+          (:ops plan))))
+
+(deftest in-collection-cardinality-flows-into-scan
+  (testing "a collection :in var seeds a multi-row source, not a point lookup"
+    (let [placeholder (scan-card-with-in nil)
+          seeded (scan-card-with-in '{?v 100})]
+      (is (= 1 placeholder)
+          "without the seed, the :in var is treated as a single value (card 1)")
+      (is (= 100 seeded)
+          "with the source-card :input seed, the join is sized as a 100-row source")
+      (is (< placeholder seeded)
+          "the seed corrects the under-estimate that mis-orders collection joins"))))
+
+(deftest in-card-seed-distinguishes-tuple-from-relation
+  (testing "tuple [?a ?b] and relation [[?a ?b]] differ — must not collide in the plan cache"
+    (let [tuple-seed (#'q/in-card-seed
+                      (:qin (q/memoized-parse-query '[:find ?e :in $ [?a ?b] :where [?e :name ?a]])))
+          rel-seed (#'q/in-card-seed
+                    (:qin (q/memoized-parse-query '[:find ?e :in $ [[?a ?b]] :where [?e :name ?a]])))]
+      (is (= '{} tuple-seed) "tuple binds one row → empty seed")
+      (is (= '{?a 100 ?b 100} rel-seed) "relation binds many rows → non-empty seed")
+      (is (not= tuple-seed rel-seed)
+          "distinct seeds keep the two queries on distinct plan-cache keys"))))
+

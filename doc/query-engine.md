@@ -195,7 +195,7 @@ Query Text
 │   DP merge ordering within groups       │
 │   Pipeline annotation (fused path)      │
 │   Inter-group join detection            │
-│   Cost-based operation ordering         │
+│   Cost ordering (one cost model)        │
 │   Output: ordered ops with pipelines    │
 └─────────────────────┬───────────────────┘
                       │ plan map {:ops [...] :pipeline ...}
@@ -204,7 +204,7 @@ Query Text
 │ execute.cljc: Execute plan              │
 │   Fused scan+merge (no intermediates)   │
 │   Hash-probe value joins (multi-group)  │
-│   Post-filter preds, apply functions    │
+│   Adaptive fn placement, post-filter    │
 │   Project to find-vars                  │
 │   Semi-naive fixpoint (recursive rules) │
 └─────────────────────────────────────────┘
@@ -218,12 +218,30 @@ The core optimization logic lives in plan.cljc as reusable primitives, called by
 - **DP merge ordering** (`dp-order-fuse-ops`) — For N patterns on the same entity, finds the optimal (scan, merge₁, merge₂, ...) ordering using a short-circuit AND cost model: `merge-cost / (1 - pass-rate)`
 - **Entity group assembly** (`assemble-entity-group`) — Combines DP ordering, anti-merge selectivity sorting, cardinality estimation, and pipeline annotation into a single entity-group op
 - **Inter-group join detection** (`detect-inter-group-joins`) — Finds shared variables between entity groups for hash-probe value joins
-- **Cost-based operation ordering** (`order-plan-ops`) — Greedy ordering: lowest-cost executable operation first, respecting data dependencies
+- **Inter-group ordering** (`dp-order-groups`) — Bitmask DP over entity-groups/pattern-scans, minimizing total intermediate join cardinality (Σ rows). Falls back to greedy (GOO) above `dp-group-threshold` (16) groups.
+- **Cost-based operation ordering** (`order-plan-ops`) — Runs the inter-group DP, then greedily interleaves the non-group ops (functions, predicates, OR/NOT, rules) by **one cost model** — `cost = rows × per-unit` — subject to the hard readiness constraint (a consumer can't precede the producer of its inputs).
 
 Cardinality estimation (estimate.cljc) uses two techniques:
 
 1. **Count-slice** (O(log n)) — Counts datoms in an index range without scanning. Used for pattern cardinality: `[?e :name ?v]` → count all `:name` datoms; `[42 :name ?v]` → 1 for card-one.
 2. **Sample-based selectivity** — For predicates, samples 64 datoms from the relevant index slice, applies the predicate, and computes the pass rate. Falls back to operator-based heuristics (`=` → 0.1, `>` → 0.33, etc.) when sampling isn't possible.
+
+These feed a single `{var → cardinality}` map that the orderer threads through the join graph. The map is seeded from **three sources** (`source-cards` in plan.cljc), all reduced to the same shape:
+
+- **Pattern** — attribute stats (above).
+- **Function bind** — a function's `:datahike/output-cardinality` (see *Function cost model* below), so a downstream join on the bind's output is bounded by it.
+- **`:in` input** — the binding's *shape*: a scalar/tuple seeds card 1, a collection/relation `[?x ...]` / `[[?a ?b]]` seeds a real multi-row default rather than 1.
+
+### Function cost model (plan.cljc)
+
+A function bind `[(f ?g $ ?x) [?n ...]]` can carry metadata the planner reads via `(meta (resolve fn-sym))`. This is the general mechanism graph algorithms use, and **any user function can opt in** by carrying the same keys:
+
+- **`:datahike/output-cardinality`** — how many rows the bind produces (a number, or `(fn [ctx])`). Feeds the `{var → card}` map as the function `source-card`, so a downstream join on the output is bounded (e.g. a reachability result bounds the join by node count, not the whole attribute).
+- **`:datahike/cost`** — per-invocation cost (a number, or `(fn [ctx])`). With it, `op-cost = invocations × per-call`; without it a function costs 1 (ordered eagerly).
+
+Both can be *computed from the inputs*: a graph passed as `?g` is resolved back to its underlying edge attribute through **provenance** (`?g → (attr-graph :follows) → :follows`, descending `undirected`/`reverse`/`filtered`/`subgraph` wrappers), so a cost fn can read the graph's `[V E]`. The graph algorithms use this for complexity tiers (linear `V+E`, log-linear `E·log V`, quadratic `V·E`, iterative `k·(V+E)`), memoized per `(attr, db-version)`. When the graph isn't statically resolvable (weighted/multi/query graphs), both fall back to safe defaults.
+
+There is **one cost** for every op: `cost = rows × per-unit` (scans: `rows × 1`; functions: `invocations × per-call`; predicates: 0). The three quantities for a function are distinct: *output cardinality* (a property of the function, feeds downstream), *per-call cost* (a property of the function), and *invocation count* (NOT a property of the function — it's the relation cardinality at the function's position, propagated through the joins). What the static cost cannot know — whether a join will *expand* or *reduce* a function's input — is corrected at execution time (see *Adaptive function placement*).
 
 ### Logical IR (ir.cljc, logical.cljc)
 
@@ -321,6 +339,15 @@ Group-attached predicates are evaluated during or immediately after their owning
 1. **Post-filter** — Applies remaining predicates in-place, compacting the result list
 2. **Post-apply** — Evaluates functions, extending tuples with output vars (or filtering on already-bound vars)
 3. **Project** — Narrows wide tuples to find-vars only
+
+### Adaptive function placement (probe-and-sink)
+
+Whether a join *expands* or *reduces* a function's input is a matter of data correlation/skew — invisible to per-attribute statistics, so no static cost model can place an expensive function correctly relative to such a join in general. The executor measures it instead, but only for functions that declare `:datahike/cost` (so ordinary queries pay nothing):
+
+- **Sink** (at a function op) — if a row-*reducing* join on the function's input is still ahead in the plan, run it first, so the function then runs on fewer rows.
+- **Hoist** (at a group op) — if the group would *expand* a pending downstream function's input, run the function first, so it isn't applied to the blown-up relation.
+
+The decision uses a single index probe to get the *exact* post-join cardinality, then reorders the remaining ops (a one-shot `:probed?` flag prevents re-probing). Together they place each expensive function on its minimal input — after reducing joins, before expanding ones. Worked examples are the cost oracles in `test/datahike/test/experimental/graph_cost_oracle.clj` (FILTER/EXPAND/JOINFN/SINK/MUTUAL), which assert the optimal invocation counts.
 
 ### Recursive Rules (Semi-Naive Fixpoint)
 

@@ -103,7 +103,7 @@
                      (log/warn :datahike/query-input-ignored {:query query}))
                    (:args query-input))
                arg-inputs)
-        extra-ks [:offset :limit :order-by :stats? :settings :cancel]]
+        extra-ks [:offset :limit :order-by :stats? :count-fns? :settings :cancel]]
     (-> (cond-> {:query (apply dissoc query extra-ks)
                  :args args}
           (map? query-input)
@@ -1141,7 +1141,15 @@
       ;; in the function call are bound. If not, we return nil which
       ;; is handled by `datahike.tools/resolve-clauses`.
     (when (every? symbols-with-values attrs)
-      (let [new-rel (if fun
+      ;; Engine-level function-invocation count (atom-free): the fn is applied
+      ;; once per production tuple, so invocations = (count (:tuples production)).
+      ;; Accumulated into the threaded context by fn-symbol; surfaced as result
+      ;; metadata. Gated on :count-fns? so normal queries pay nothing.
+      (let [context (cond-> context
+                      (:count-fns? context)
+                      (update :fn-counts (fn [m] (update (or m {}) f (fnil + 0)
+                                                         (count (:tuples production))))))
+            new-rel (if fun
                       (let [tuple-fn (-call-fn context production fun args)
                             rels (for [tuple (:tuples production)
                                        :let [val (tuple-fn tuple)]
@@ -1367,7 +1375,7 @@
   Instead, they will ask for all tuples from the database and then filter them, so
   the fact that `?e` can be bound to an impossible entity id `\"A\"` is not a problem.
 
-  But with the strategy `select-all`, the substituted pattern will become 
+  But with the strategy `select-all`, the substituted pattern will become
 
   [\"A\" :friend 3]
 
@@ -2209,21 +2217,29 @@
      (-collect [start-array] rels symbols)))
   ([acc rels symbols]
    (if-some [rel (first rels)]
-     (let [keep-attrs (select-keys (:attrs rel) symbols)]
-       (if (empty? keep-attrs)
-         (recur acc (next rels) symbols)
-         (let [copy-map (to-array (map #(get keep-attrs %) symbols))
-               len (count symbols)]
-           (recur (for [#?(:cljs t1
-                           :clj ^{:tag "[[Ljava.lang.Object;"} t1) acc
-                        t2 (:tuples rel)]
-                    (let [res (aclone t1)]
-                      (dotimes [i len]
-                        (when-some [idx (aget copy-map i)]
-                          (aset res i (get t2 idx))))
-                      res))
-                  (next rels)
-                  symbols))))
+     (if (empty? (:tuples rel))
+       ;; A zero-tuple relation means this conjunct has no satisfying bindings,
+       ;; so the whole conjunctive result is empty — annihilate. This must run
+       ;; before the keep-attrs test below: a const-only / no-find-var clause
+       ;; (e.g. a predicate over `:in` constants like `[(= ?e 999)]`) produces
+       ;; an empty-attrs eliminating relation that would otherwise be skipped,
+       ;; letting the const-seeded accumulator survive unfiltered (issue #848).
+       []
+       (let [keep-attrs (select-keys (:attrs rel) symbols)]
+         (if (empty? keep-attrs)
+           (recur acc (next rels) symbols)
+           (let [copy-map (to-array (map #(get keep-attrs %) symbols))
+                 len (count symbols)]
+             (recur (for [#?(:cljs t1
+                             :clj ^{:tag "[[Ljava.lang.Object;"} t1) acc
+                          t2 (:tuples rel)]
+                      (let [res (aclone t1)]
+                        (dotimes [i len]
+                          (when-some [idx (aget copy-map i)]
+                            (aset res i (get t2 idx))))
+                        res))
+                    (next rels)
+                    symbols)))))
      acc)))
 
 (defprotocol IContextResolve
@@ -2523,6 +2539,22 @@
   [context]
   (into #{} (mapcat (comp keys :attrs)) (:rels context)))
 
+(defn- in-card-seed
+  "Value-independent {var → card} cardinality seed for :in bindings, derived
+   from binding SHAPE alone (so it is safe to fold into the plan cache key).
+   Collection/relation bindings ([?x ...], [[?a ?b]]) bind many rows; tuple and
+   scalar bindings bind one. Routes through plan/source-cards so the planner has
+   a single produce-side definition of how each cardinality source seeds the
+   join-graph estimate. `qin` is the parsed :in vector of binding records."
+  [qin]
+  (reduce (fn [m b]
+            (let [shape (cond (instance? BindColl b)  :collection
+                              (instance? BindTuple b) :tuple
+                              :else                   :scalar)
+                  vars (map :symbol (dpi/collect-vars-distinct b))]
+              (merge m (plan/source-cards {:kind :input :shape shape :vars vars}))))
+          {} qin))
+
 (defn- substitute-consts
   "Replace const-bound variables in where clauses with their values.
    E.g., [?e :name ?name] with consts {?name \"Ivan\"} → [?e :name \"Ivan\"]."
@@ -2741,10 +2773,12 @@
       [context-in' @reverse-map])))
 
 (defn- create-plan-via-ir
-  "Build a plan using the IR pipeline: logical IR → lowering."
-  [db clauses bound-vars rules]
+
+  "Build a plan using the IR pipeline: logical IR → lowering.
+   `in-cards` is the value-independent :in cardinality seed (see in-card-seed)."
+  [db clauses bound-vars rules in-cards]
   (let [logical (logical/build-logical-plan db clauses bound-vars rules)
-        plan (lower/lower logical db rules)]
+        plan (lower/lower logical db rules in-cards)]
     plan))
 
 #?(:clj
@@ -2812,19 +2846,26 @@
 
 (defn- get-or-create-plan
   "Get a cached query plan or create a new one. Plans are cached by
-   [clauses bound-vars rules-keys schema-hash] since the plan structure
+   [clauses bound-vars rules-keys in-cards schema-hash] since the plan structure
    (index selection, merge ordering) depends on query shape and schema,
-   not on the actual data.
+   not on the actual data. `in-cards` (shape-derived, value-independent) is in
+   the key only to separate tuple from relation :in bindings (see
+   get-or-create-plan body) — it does not make the plan data-dependent.
 
    `clauses` may embed substituted constants (substitute-consts-with-lookup-refs),
    so the key is run through `scale-sensitive-key` to keep BigDecimals of
    different scale distinct (Clojure `=`/`hash` would otherwise collapse them)."
-  [db clauses bound-vars rules]
+  [db clauses bound-vars rules in-cards]
   (let [schema-hash (hash (dbi/-schema db))
-        cache-key (scale-sensitive-key [clauses bound-vars (when rules rules) schema-hash])]
+        ;; `in-cards` is part of the key: it is value-independent (shape-only),
+        ;; but it distinguishes bindings the bound-var SET cannot — e.g. a tuple
+        ;; [?a ?b] (#{?a ?b}, card 1) from a relation [[?a ?b]] (#{?a ?b}, many)
+        ;; — which would otherwise collide on identical clauses + bound-vars.
+        cache-key (scale-sensitive-key [clauses bound-vars (when rules rules)
+                                        (not-empty in-cards) schema-hash])]
     (if-some [cached (get @plan-cache cache-key nil)]
       cached
-      (let [plan (create-plan-via-ir db clauses bound-vars rules)]
+      (let [plan (create-plan-via-ir db clauses bound-vars rules in-cards)]
         (vswap! plan-cache assoc cache-key plan)
         plan))))
 
@@ -2949,7 +2990,7 @@
                      (substitute-consts-with-lookup-refs db (:where query) (:consts context-in))
                      (:where query))
            rules (not-empty (:rules context-in))
-           plan (create-plan-via-ir plan-db clauses bound-vars rules)
+           plan (create-plan-via-ir plan-db clauses bound-vars rules (in-card-seed qin))
            find-vars (mapv #(.-symbol ^Variable %) (filter #(instance? Variable %) (dpip/find-elements qfind)))
            header (str "=== Query Plan ===\n"
                        "find: " (pr-str find-vars) "\n"
@@ -3516,6 +3557,10 @@
   [plan db qfind find-elements context-in query stats? qreturnmaps]
   (let [direct-eligible? (and (instance? FindRel qfind)
                               (not stats?)
+                              ;; the fused HashSet path applies fns via post-apply-fns,
+                              ;; which doesn't accumulate :fn-counts — route counting
+                              ;; queries through the relation path (bind-by-fn) instead.
+                              (not (:count-fns? context-in))
                               (not qreturnmaps)
                               (not (:with query))
                               (not-any? #(instance? Aggregate %) find-elements)
@@ -3553,6 +3598,15 @@
                                                                   ;; Subtract built-ins; stats only show user-supplied rules.
                                                                   (apply dissoc rs (keys built-in-rules))))
                                                         (assoc :ret % :query query)))))
+
+(defn- with-fn-counts
+  "Surface the engine-collected {fn-sym → invocations} map (accumulated in the
+   threaded context by bind-by-fn under :count-fns?) as :fn-counts metadata on
+   `result`, when present and the result supports metadata."
+  [context-out result]
+  (if-let [fc (:fn-counts context-out)]
+    (cond-> result (coll? result) (vary-meta assoc :fn-counts fc))
+    result))
 
 (defn- execute-planned-relation
   "Relation path: fused scan → collect → dedup → aggregate/pull.
@@ -3608,8 +3662,9 @@
                             deduped)
                       deduped))
                   deduped)]
-    (post-process-result deduped context-in context-out query qfind find-elements
-                         result-arity order-spec offset limit stats? qreturnmaps)))
+    (with-fn-counts context-out
+      (post-process-result deduped context-in context-out query qfind find-elements
+                           result-arity order-spec offset limit stats? qreturnmaps))))
 
 (defn- execute-legacy
   "Legacy engine path: -q → collect → dedup → aggregate/pull."
@@ -3618,10 +3673,11 @@
   (let [context-out (-q context-in (:where query))
         resultset (collect context-out all-vars)
         deduped (into #{} resultset)]
-    (post-process-result deduped context-in context-out query qfind find-elements
-                         result-arity order-spec offset limit stats? qreturnmaps)))
+    (with-fn-counts context-out
+      (post-process-result deduped context-in context-out query qfind find-elements
+                           result-arity order-spec offset limit stats? qreturnmaps))))
 
-(defn- raw-q* [{:keys [query args offset limit order-by stats? settings cancel] :as _query-map}]
+(defn- raw-q* [{:keys [query args offset limit order-by stats? count-fns? settings cancel] :as _query-map}]
   (let [t0 (when *profile?* #?(:clj (System/nanoTime) :cljs (* 1000 (.getTime (js/Date.)))))
         settings (merge default-settings settings)
         {:keys [qfind qwith qreturnmaps qin]} (memoized-parse-query query)
@@ -3629,7 +3685,11 @@
         context-in (-> (if stats?
                          (StatContext. [] {} built-in-rules {} [] settings cancel)
                          (Context. [] {} built-in-rules {} settings cancel))
-                       (resolve-ins qin args))
+                       (resolve-ins qin args)
+                       ;; When set, bind-by-fn accumulates {fn-sym → invocations}
+                       ;; into the threaded context :fn-counts; surfaced as result
+                       ;; metadata. (Extra defrecord keys persist via the extmap.)
+                       (cond-> count-fns? (assoc :count-fns? true)))
         t2 (when *profile?* #?(:clj (System/nanoTime) :cljs (* 1000 (.getTime (js/Date.)))))
 
         all-vars      (concat (dpi/find-vars qfind) (map :symbol qwith))
@@ -3764,7 +3824,7 @@
                 clauses (substitute-consts-with-lookup-refs db (:where query) (:consts context-in)
                                                             (when multi-source? (:sources context-in)))
                 rules (not-empty (:rules context-in))
-                plan (get-or-create-plan plan-db clauses bound-vars rules)]
+                plan (get-or-create-plan plan-db clauses bound-vars rules (in-card-seed qin))]
 
           ;; Try paths in order of preference:
           ;; 1. Direct HashSet (non-aggregate simple queries)
@@ -3861,19 +3921,20 @@
                                         (resolve-ins qin args))
                          clauses (substitute-consts-with-lookup-refs db (:where query) (:consts context-in))
                          bound-vars (context-bound-vars context-in)
-                         plan (get-or-create-plan db clauses bound-vars nil)]
+                         plan (get-or-create-plan db clauses bound-vars nil (in-card-seed qin))]
                      (when (and (empty? (:rels context-in))
                                 (seq (:ops plan)))
                        (when-let [result (try-secondary-index-aggregate db plan find-elements)]
                          (-post-process qfind result)))))))))))))
 
-(defn raw-q [{:keys [query args stats? offset limit order-by] :as query-map}]
+(defn raw-q [{:keys [query args stats? count-fns? offset limit order-by] :as query-map}]
   (let [uncached (fn []
                    #?(:clj (or (try-secondary-index-aggregate-fast query-map)
                                (raw-q* query-map))
                       :cljs (raw-q* query-map)))]
     (if (or (not *query-result-cache?*)
             stats?
+            count-fns?                         ;; counting needs re-execution; a cache hit wouldn't re-run the fn
             #?(:clj *profile?* :cljs false))
       (uncached)
       ;; Try result cache

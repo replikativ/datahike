@@ -288,6 +288,93 @@
                   [])
              #{})))))
 
+(deftest test-predicate-over-bound-vars
+  ;; Issue #848: a predicate/function clause whose vars are all bound by `:in`
+  ;; constants (no relation in context) was never allowed to eliminate those
+  ;; bindings — the const passed through unfiltered. Root cause was in -collect:
+  ;; a zero-tuple eliminating relation with no find-var attrs was skipped instead
+  ;; of annihilating the const-seeded accumulator. Datomic semantics: a predicate
+  ;; that returns false/nil removes the binding (present->drop, absent->keep,
+  ;; false->drop), including when every input is an `:in` const. (CI runs the
+  ;; whole suite under both the compiled planner and the legacy engine, so these
+  ;; plain assertions cover both.)
+  (let [db (-> (db/empty-db) (d/db-with [{:db/id 100 :a "v" :b "v"}]))]
+
+    (testing "const-only predicate over :in binding filters that binding"
+      ;; present attribute -> missing? false -> binding dropped
+      (is (= nil (d/q '[:find ?e . :in $ ?e
+                        :where [(missing? $ ?e :a)]] db 100)))
+      ;; absent attribute -> missing? true -> binding kept
+      (is (= 100 (d/q '[:find ?e . :in $ ?e
+                        :where [(missing? $ ?e :c)]] db 100)))
+      ;; plain predicate, false / true over a const
+      (is (= nil (d/q '[:find ?e . :in $ ?e :where [(= ?e 999)]] db 100)))
+      (is (= 100 (d/q '[:find ?e . :in $ ?e :where [(= ?e 100)]] db 100))))
+
+    (testing "const-only predicate with no var args"
+      (is (= 100 (d/q '[:find ?e . :in $ ?e :where [(= 1 1)]] db 100)))
+      (is (= nil (d/q '[:find ?e . :in $ ?e :where [(= 1 2)]] db 100))))
+
+    (testing "multiple const-only predicates compose"
+      (is (= 100 (d/q '[:find ?e . :in $ ?e
+                        :where [(= ?e 100)] [(missing? $ ?e :c)]] db 100)))
+      (is (= nil (d/q '[:find ?e . :in $ ?e
+                        :where [(= ?e 100)] [(missing? $ ?e :a)]] db 100))))
+
+    (testing "a where-clause with no matches and a const find-var annihilates"
+      (is (= nil (d/q '[:find ?e . :in $ ?e
+                        :where [?x :nope ?y]] db 100))))
+
+    (testing "pattern-bound predicates are unaffected (no regression)"
+      ;; present -> missing? false -> []
+      (is (= [] (d/q '[:find [?e ...] :where
+                       [?e :b ?v] [(missing? $ ?e :a)]] db)))
+      ;; absent -> missing? true -> [100]  (the case a stale REPL mis-reported)
+      (is (= [100] (d/q '[:find [?e ...] :where
+                          [?e :a ?v] [(missing? $ ?e :c)]] db)))
+      (is (= [] (d/q '[:find [?e ...] :where
+                       [?e :a ?v] [(= ?e 999)]] db)))
+      (is (= [100] (d/q '[:find [?e ...] :where
+                          [?e :a ?v] [(> ?e 0)]] db))))
+
+    (testing "mixed const+pattern predicate"
+      (is (= [] (d/q '[:find [?x ...] :in $ ?e
+                       :where [?e :a ?x] [(= ?e 999)]] db 100)))
+      (is (= ["v"] (d/q '[:find [?x ...] :in $ ?e
+                          :where [?e :a ?x] [(= ?e 100)]] db 100))))
+
+    (testing "const-only predicate alongside a db-bound pattern"
+      ;; The empty eliminating relation produced by a false const-only predicate
+      ;; must annihilate even when a separate, non-empty pattern relation is also
+      ;; in context (it is conj'd onto :rels and -collect honors it). A true one
+      ;; is a no-op. Before the fix this diverged: the legacy engine kept all
+      ;; tuples for the false case while the planner correctly dropped them.
+      (let [ndb (-> (db/empty-db) (d/db-with [{:db/id 1 :v 10}
+                                              {:db/id 2 :v 20}]))]
+        (is (= [] (d/q '[:find [?v ...] :in $ ?lim
+                         :where [?e :v ?v] [(< 1 ?lim)]] ndb 0)))
+        (is (= #{10 20} (set (d/q '[:find [?v ...] :in $ ?lim
+                                    :where [?e :v ?v] [(< 1 ?lim)]] ndb 99))))
+        ;; mixed within a single predicate: db var + :in const, all/some filtered
+        (is (= [] (d/q '[:find [?v ...] :in $ ?lim
+                         :where [?e :v ?v] [(< ?v ?lim)]] ndb 5)))
+        (is (= #{10} (set (d/q '[:find [?v ...] :in $ ?lim
+                                 :where [?e :v ?v] [(< ?v ?lim)]] ndb 15))))))
+
+    (testing "binding fns and negation unaffected"
+      (is (= ["def"] (d/q '[:find [?x ...] :where
+                            [?e :a ?v] [(get-else $ ?e :c "def") ?x]] db)))
+      (is (= [100] (d/q '[:find [?e ...] :where
+                          [?e :a ?v] (not [?e :c ?z])] db))))
+
+    (testing "empty-result aggregates agree across const and pattern paths"
+      ;; const-false path and empty-pattern path now both yield nil (they
+      ;; disagreed before the fix: const-false wrongly counted 1)
+      (is (= nil (d/q '[:find (count ?e) . :in $ ?e
+                        :where [(= ?e 999)]] db 100)))
+      (is (= nil (d/q '[:find (count ?e) . :where [?e :nope ?v]] db)))
+      (is (= 1 (d/q '[:find (count ?e) . :where [?e :a ?v]] db))))))
+
 (deftest test-predicates
   (let [entities [{:db/id 1 :name "Ivan" :age 10}
                   {:db/id 2 :name "Ivan" :age 20}

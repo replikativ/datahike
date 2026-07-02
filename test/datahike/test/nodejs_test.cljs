@@ -17,7 +17,11 @@
             [datahike.test.query-not-test]
             [datahike.test.query-or-test]
             [datahike.test.query-aggregates-test]
-            [datahike.test.query-rules-test]))
+            [datahike.test.query-rules-test]
+            ;; Portable graph algorithms.
+            [datahike.test.experimental.graph-util-test]
+            [datahike.test.experimental.graph-test]
+            [datahike.test.experimental.anomaly-test]))
 
 ;; Hook cljs.test's end-of-run callback so the Node process exits with
 ;; status 0 only when all tests pass. The previous setup always exited
@@ -368,4 +372,7 @@
                'datahike.test.query-not-test
                'datahike.test.query-or-test
                'datahike.test.query-aggregates-test
-               'datahike.test.query-rules-test))
+               'datahike.test.query-rules-test
+               'datahike.test.experimental.graph-util-test
+               'datahike.test.experimental.graph-test
+               'datahike.test.experimental.anomaly-test))

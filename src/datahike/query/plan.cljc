@@ -224,6 +224,142 @@
                 (log/debug :datahike/external-engine-meta-failed {:fn-sym fn-sym :error (.getMessage e)})
                 nil)))))
 
+(defn binding-shape
+  "Classify a function clause's :binding form:
+     :scalar      ?x          → one value (the whole result)
+     :tuple       [?a ?b]     → one tuple
+     :collection  [?x ...]    → many rows (the result collection is iterated)
+     :relation    [[?a ?b]]   → many rows (a relation of tuples)"
+  [binding]
+  (cond
+    (symbol? binding) :scalar
+    (and (vector? binding) (= 2 (count binding)) (= '... (second binding))) :collection
+    (and (vector? binding) (vector? (first binding))) :relation
+    (vector? binding) :tuple
+    :else :scalar))
+
+(defn resolve-fn-output-cardinality
+  "Output-row estimate for a function bind carrying :datahike/output-cardinality
+   metadata. This lets any user function (e.g. a graph algorithm whose result
+   size is data-dependent) tell the planner how many rows its binding produces,
+   instead of the planner treating every function bind as an opaque unknown.
+
+   The metadata describes the size of the RETURNED COLLECTION, so it only
+   applies to bindings that destructure it — `[?x ...]` (collection) and
+   `[[?a ?b]]` (relation). Scalar/tuple bindings hold the whole result in a
+   single row and are left to the planner's defaults.
+
+   The metadata value may be:
+     - a number     → that many rows
+     - a fn [ctx]   → computed, where ctx is
+                      {:db :fn-sym :args :binding :provenance}. `:provenance`
+                      maps each var bound by a scalar function bind to the form
+                      that produced it (e.g. {?g (attr-graph :follows)}), so a
+                      cost model can resolve a graph passed by variable back to
+                      its constructor and introspect it.
+   Returns a positive long, or nil when no usable estimate is available.
+   Purely additive: functions without the metadata are unaffected."
+  [fn-sym args binding db provenance]
+  #?(:cljs nil
+     :clj (when (and (symbol? fn-sym) (namespace fn-sym)
+                     (contains? #{:collection :relation} (binding-shape binding)))
+            (try
+              (when-some [v (resolve fn-sym)]
+                (when-some [c (:datahike/output-cardinality (meta v))]
+                  (let [n (cond
+                            (number? c) c
+                            (fn? c)     (c {:db db :fn-sym fn-sym :args args
+                                            :binding binding :provenance provenance})
+                            :else       nil)]
+                    (when (number? n) (max 1 (long n))))))
+              (catch Exception e
+                (log/debug :datahike/output-cardinality-meta-failed {:fn-sym fn-sym :error (.getMessage e)})
+                nil)))))
+
+(def default-in-collection-card
+  "Seed cardinality for an :in collection/relation binding whose size is unknown
+   at plan time. Matches the plain-function default used by op-cost /
+   plan-function-op (100): between a point lookup (1) and a full attribute scan,
+   so a join driven by a passed collection is ordered as a real multi-row source
+   instead of a singleton."
+  100)
+
+(defn source-cards
+  "Unified produce-side cardinality seed for the planner's {var → card} map.
+
+   The planner is an abstract interpreter over cardinalities: it seeds a
+   {var → card} map from `sources`, propagates it through the join graph
+   (order-plan-ops / dp-order-groups), and costs ops. There are three kinds of
+   source; this is the single place that defines how each one seeds the map.
+
+   Dispatch on :kind:
+     {:kind :pattern :classified ci :db db}
+        → attribute-stats estimate for an LScan's free output vars
+     {:kind :bind    :classified ci :db db :provenance prov}
+        → :datahike/output-cardinality estimate for an LBind's free vars
+          (ci carries :fn-sym / :args / :binding)
+     {:kind :input   :shape <kw> :vars <syms>}
+        → shape-based seed for :in vars: collection/relation bindings bind many
+          rows (`default-in-collection-card`); scalar/tuple bind one row and are
+          left to the card-1 placeholder. Value-independent, so it is safe to
+          fold into the plan cache key.
+
+   Returns {var → long}, or nil when no useful estimate applies (callers treat
+   nil as 'no contribution')."
+  [{:keys [kind] :as source}]
+  (case kind
+    :pattern
+    (let [{:keys [classified db]} source
+          si (analyze/pattern-schema-info db classified)
+          est (or (estimate/estimate-pattern db classified si)
+                  (di/-count (:eavt db)))
+          free-output-vars (filter analyze/free-var? (:vars classified))]
+      (when (seq free-output-vars)
+        (zipmap free-output-vars (repeat (long est)))))
+
+    :bind
+    (let [{:keys [classified db provenance]} source
+          card (resolve-fn-output-cardinality
+                (:fn-sym classified) (:args classified) (:binding classified) db provenance)]
+      (when card
+        (let [bvars (filter analyze/free-var? (analyze/extract-vars (:binding classified)))]
+          (when (seq bvars)
+            (zipmap bvars (repeat (long card)))))))
+
+    :input
+    (let [{:keys [shape vars]} source]
+      (when (contains? #{:collection :relation} shape)
+        (not-empty (zipmap vars (repeat (long default-in-collection-card))))))
+
+    nil))
+
+(defn resolve-fn-exec-cost
+  "If `fn-sym` resolves to a var carrying :datahike/cost metadata, return a
+   1-arg cost function `(fn [input-rows] total-cost)`, closing over `db`, the
+   clause `args`, and `provenance`. The metadata may be:
+     - a number    → a per-call cost; total = number × input-rows
+     - a fn [ctx]  → total cost, where ctx is
+                     {:db :fn-sym :args :provenance :input-rows}
+   Returns nil when there is no metadata. Lets a function tell the planner how
+   expensive it is to run, so the ordering can defer it behind selective filters
+   that shrink its input. Purely additive: unannotated functions cost 1."
+  [fn-sym args db provenance]
+  #?(:cljs nil
+     :clj (when (and (symbol? fn-sym) (namespace fn-sym))
+            (try
+              (when-some [v (resolve fn-sym)]
+                (when-some [c (:datahike/cost (meta v))]
+                  (cond
+                    (number? c) (fn [input-rows] (* c input-rows))
+                    (fn? c)     (fn [input-rows]
+                                  (let [r (c {:db db :fn-sym fn-sym :args args
+                                              :provenance provenance :input-rows input-rows})]
+                                    (if (number? r) r input-rows)))
+                    :else       nil)))
+              (catch Exception e
+                (log/debug :datahike/cost-meta-failed {:fn-sym fn-sym :error (.getMessage e)})
+                nil)))))
+
 (defn- detect-external-engine-mode
   "Determine execution mode from binding form and engine metadata.
    Returns :filter, :retrieval, or :solver."
@@ -333,22 +469,41 @@
       nil)))
 
 (defn plan-function-op
-  "Create a plan op for a function clause. Checks for external engine metadata."
-  ([fn-info] (plan-function-op fn-info nil))
-  ([fn-info db]
+  "Create a plan op for a function clause. Checks for external engine metadata.
+   `provenance` maps scalar-bind vars to the form that produced them, so an
+   algorithm's :datahike/output-cardinality cost model can resolve a graph
+   passed by variable back to its constructor."
+  ([fn-info] (plan-function-op fn-info nil nil))
+  ([fn-info db] (plan-function-op fn-info db nil))
+  ([fn-info db provenance]
    (let [engine-meta (resolve-external-engine-meta (:fn-sym fn-info))]
      (if engine-meta
        (plan-external-engine-op fn-info engine-meta db)
        (let [out-cards (function-output-var-cards
-                        (:fn-sym fn-info) (:args fn-info) (:binding fn-info))]
+                        (:fn-sym fn-info) (:args fn-info) (:binding fn-info))
+             ;; Let a fn var advertise its output cardinality via metadata
+             ;; (:datahike/output-cardinality) so data-dependent binds aren't
+             ;; opaque to the planner. Only used when the static rules above
+             ;; didn't already determine the cards.
+             meta-card (when-not out-cards
+                         (resolve-fn-output-cardinality
+                          (:fn-sym fn-info) (:args fn-info) (:binding fn-info) db provenance))
+             bvars (when meta-card (function-binding-vars (:binding fn-info)))
+             meta-cards (when (seq bvars) (zipmap bvars (repeat meta-card)))
+             out-cards (or out-cards meta-cards)
+             ;; Execution-cost model (:datahike/cost) — lets the planner defer an
+             ;; expensive function behind selective filters that shrink its input.
+             exec-cost-fn (resolve-fn-exec-cost
+                           (:fn-sym fn-info) (:args fn-info) db provenance)]
          (cond-> {:op :function
                   :clause (:clause fn-info)
                   :fn-sym (:fn-sym fn-info)
                   :args (:args fn-info)
                   :binding (:binding fn-info)
                   :vars (:vars fn-info)
-                  :estimated-card nil}
-           out-cards (assoc :output-var-cards out-cards)))))))
+                  :estimated-card meta-card}
+           out-cards (assoc :output-var-cards out-cards)
+           exec-cost-fn (assoc :exec-cost-fn exec-cost-fn)))))))
 
 (defn plan-passthrough-op [clause-info]
   {:op :passthrough
@@ -498,7 +653,7 @@
                 true (conj (ir/->PEmitTuple 0)))]
     (ir/->PPipeline (vec steps) fused-path use-cursors? (boolean attr-refs?))))
 
-(defn- args-free-vars
+(defn args-free-vars
   "Walk an :args list recursively, collecting every free variable that
    appears anywhere inside. Mirrors `analyze/extract-vars`, which is
    already the recursive contract for `:vars` on every clause type.
@@ -873,91 +1028,168 @@
                 best (apply min-key #(aget cards (int %)) candidates)]
             (recur (conj placed best) (conj order best) (disj remaining best))))))))
 
+(defn- group-probe-info
+  "Per-group [pattern-info schema-info base] used to RE-ESTIMATE a group's output
+   under upstream bindings (the bound-aware DP join estimate). For a single
+   pattern-scan the pattern is its clause; for a fused entity-group we proxy with
+   the driving scan-op's pattern (a sound lower bound on the group's selectivity
+   against a bound var). `base` is the UNCONSTRAINED attribute estimate so
+   estimate-pattern-with-bindings is not forced to re-sample the index per probe.
+   Returns [nil nil base] when the group has no usable pattern."
+  [group]
+  (case (:op group)
+    :pattern-scan
+    [(analyze/classify-clause (:clause group))
+     (:schema-info group)
+     (long (or (:estimated-card group) (group-effective-card group)))]
+    :entity-group
+    (let [s (:scan-op group)]
+      (if (:clause s)
+        [(analyze/classify-clause (:clause s))
+         (:schema-info s)
+         (long (or (:estimated-card s) (group-effective-card group)))]
+        [nil nil (group-effective-card group)]))
+    [nil nil (group-effective-card group)]))
+
+(defn- bound-aware-join-rows
+  "Estimate the join output of a partial plan (`rows` rows, `cards` = var→card of
+   what is already bound) extended by group i, given i's [pinfo sinfo base].
+   When db/pinfo are available and i shares a bound var, the result is the most
+   selective of two NON-INCREASING bounds (a probe can only filter the running
+   relation — a fan-out adds columns but the join key still bounds surviving rows
+   by `rows`):
+     i-eff   — the probe's own output under the bindings (containment join
+               estimate); caps `rows` at the probe size.
+     covered — rows × attribute coverage (base / max-eid), the fraction of the
+               entity domain that actually carries the probe attribute. This
+               expresses SELECTIVITY the containment estimate cannot: a sparse
+               ref-join (only 5 of 200 bound entities are :flagged) is row-reducing
+               even though i-eff = min(e-card, base) = 200.
+   This replaces the old (max rows i-card) which could never represent a
+   row-reducing join. Kept LOCAL to the DP so scan-card estimation (and its tests)
+   are untouched; a dense attribute (coverage ≈ 1) yields no spurious cut. Falls
+   back to (max rows i-card) when bound-aware estimation is not possible."
+  [db rows i-card cards pinfo sinfo base]
+  (if (or (nil? db) (nil? pinfo))
+    (Math/max (long rows) (long i-card))
+    (let [bound (select-keys cards (:vars pinfo))]
+      (if (empty? bound)
+        ;; No shared bound var — cross/independent extension: old upper bound.
+        (Math/max (long rows) (long i-card))
+        (let [i-eff (long (estimate/estimate-pattern-with-bindings
+                           db pinfo sinfo bound base))
+              max-eid (max 1 (long (dbi/-max-eid db)))
+              sel (min 1.0 (/ (double base) (double max-eid)))
+              covered (long (Math/ceil (* (double rows) sel)))]
+          (max 1 (min (long rows) i-eff (max 1 covered))))))))
+
+(defn- cap-cards
+  "All vars of a relation with `rows` rows have ≤ rows distinct values. Merge group
+   i's output cards into the running map (min) and cap every entry at `rows`, so a
+   selective join shrinks the carried cardinalities (used by Step 3 to feed a
+   function a smaller input)."
+  [cards group rows]
+  (let [merged (merge-with min cards (or (:output-var-cards group) {}))
+        cap (long rows)]
+    (persistent!
+     (reduce-kv (fn [m k v] (assoc! m k (min (long v) cap)))
+                (transient {}) merged))))
+
 (defn- dp-order-groups
   "DP bitmask enumeration for inter-group join ordering.
    Minimizes total intermediate cardinality (sum of rows at each step).
    Only considers connected extensions (groups sharing vars with the partial plan)
    to avoid cross-products. Falls back to greedy ordering when n > dp-group-threshold,
-   and to cardinality-ordered append for disconnected components."
-  [groups]
-  (let [n (count groups)]
-    (cond
-      (<= n 1) (vec (range n))
-      (> n dp-group-threshold) (greedy-order-groups groups)
-      :else
-      (let [cards (long-array (map group-effective-card groups))
-            edges (build-group-join-graph groups)
+   and to cardinality-ordered append for disconnected components.
+
+   When `db` is supplied, the per-step join estimate is BOUND-AWARE (see
+   bound-aware-join-rows): a selective probe reduces the carried row count instead
+   of the old (max rows i-card) lower bound. Passing nil db preserves the prior
+   purely-cardinality behaviour."
+  ([groups] (dp-order-groups groups nil))
+  ([groups db]
+   (let [n (count groups)]
+     (cond
+       (<= n 1) (vec (range n))
+       (> n dp-group-threshold) (greedy-order-groups groups)
+       :else
+       (let [cards (long-array (map group-effective-card groups))
+             edges (build-group-join-graph groups)
             ;; Precompute adjacency: for each group i, which groups share vars?
-            adj (mapv (fn [i]
-                        (into #{}
-                              (keep (fn [j]
-                                      (when (and (not= i j)
-                                                 (or (contains? edges [i j])
-                                                     (contains? edges [j i])))
-                                        j)))
-                              (range n)))
-                      (range n))
-            ;; Join selectivity: when joining group i into a partial plan,
-            ;; estimate result = max(plan-rows, group-rows) for FK-like joins.
-            ;; For M:N we'd need distinct counts; this is a safe upper bound.
-            full (unchecked-dec (bit-shift-left 1 n))
-            dp (object-array (unchecked-inc full))]
-        ;; Base cases: each single group as a starting point
-        (dotimes [i n]
-          (let [mask (bit-shift-left 1 i)]
-            (aset dp mask {:cost (aget cards i)
-                           :order [i]
-                           :rows (aget cards i)})))
+             adj (mapv (fn [i]
+                         (into #{}
+                               (keep (fn [j]
+                                       (when (and (not= i j)
+                                                  (or (contains? edges [i j])
+                                                      (contains? edges [j i])))
+                                         j)))
+                               (range n)))
+                       (range n))
+            ;; Per-group [pattern-info schema-info base] for bound-aware probes.
+             probe (when db (mapv group-probe-info groups))
+             full (unchecked-dec (bit-shift-left 1 n))
+             dp (object-array (unchecked-inc full))]
+        ;; Base cases: each single group as a starting point. State carries a
+        ;; :cards map (var→card) threaded through the join estimate.
+         (dotimes [i n]
+           (let [mask (bit-shift-left 1 i)]
+             (aset dp mask {:cost (aget cards i)
+                            :order [i]
+                            :rows (aget cards i)
+                            :cards (cap-cards {} (nth groups i) (aget cards i))})))
         ;; Fill DP table: for each subset, try extending by one connected group
-        (doseq [mask (range 1 (unchecked-inc full))]
-          (when (aget dp (int mask))
-            (let [{:keys [cost order rows]} (aget dp (int mask))
-                  rows (long rows)
-                  cost (long cost)]
+         (doseq [mask (range 1 (unchecked-inc full))]
+           (when (aget dp (int mask))
+             (let [{:keys [cost order rows] cards-map :cards} (aget dp (int mask))
+                   rows (long rows)
+                   cost (long cost)]
               ;; Find groups not in mask that are adjacent to some group in mask
-              (doseq [i (range n)]
-                (when (zero? (bit-and mask (bit-shift-left 1 i)))
+               (doseq [i (range n)]
+                 (when (zero? (bit-and mask (bit-shift-left 1 i)))
                   ;; Connectivity check: i must share vars with some group in mask
-                  (let [connected? (some (fn [j]
-                                           (pos? (bit-and mask (bit-shift-left 1 j))))
-                                         (nth adj i))]
-                    (when connected?
-                      (let [new-mask (bit-or mask (bit-shift-left 1 i))
-                            i-card (long (aget cards i))
-                            ;; Join cardinality estimate: for an equi-join on shared
-                            ;; vars, result ≈ max(probe-side, build-side) for FK joins.
-                            ;; Conservative: use max as the join output.
-                            join-rows (Math/max rows i-card)
-                            new-cost (+ cost join-rows)
-                            prev (aget dp (int new-mask))]
-                        (when (or (nil? prev) (< new-cost (long (:cost prev))))
-                          (aset dp (int new-mask)
-                                {:cost new-cost
-                                 :order (conj order i)
-                                 :rows join-rows}))))))))))
+                   (let [connected? (some (fn [j]
+                                            (pos? (bit-and mask (bit-shift-left 1 j))))
+                                          (nth adj i))]
+                     (when connected?
+                       (let [new-mask (bit-or mask (bit-shift-left 1 i))
+                             i-card (long (aget cards i))
+                             [pinfo sinfo base] (when probe (nth probe i))
+                            ;; Bound-aware join: a selective probe REDUCES rows
+                            ;; (was always max(rows,i-card), never row-reducing).
+                             join-rows (long (bound-aware-join-rows
+                                              db rows i-card cards-map pinfo sinfo base))
+                             new-cost (+ cost join-rows)
+                             new-cards (cap-cards cards-map (nth groups i) join-rows)
+                             prev (aget dp (int new-mask))]
+                         (when (or (nil? prev) (< new-cost (long (:cost prev))))
+                           (aset dp (int new-mask)
+                                 {:cost new-cost
+                                  :order (conj order i)
+                                  :rows join-rows
+                                  :cards new-cards}))))))))))
         ;; Extract result: if graph is connected, dp[full] has the answer.
         ;; If disconnected (multiple components), chain components by cardinality.
-        (if-let [result (aget dp (int full))]
-          (:order result)
+         (if-let [result (aget dp (int full))]
+           (:order result)
           ;; Disconnected graph: find largest solved component, then chain remaining
-          (let [popcount (fn [^long x]
-                           #?(:clj (Long/bitCount x)
-                              :cljs (loop [v x c 0]
-                                      (if (zero? v) c
-                                          (recur (bit-and v (dec v)) (inc c))))))
-                best-mask (reduce (fn [best mask]
-                                    (if (aget dp (int mask))
-                                      (if (> (long (popcount mask)) (long (popcount best)))
-                                        mask best)
-                                      best))
-                                  0
-                                  (range 1 (unchecked-inc full)))
-                main-order (:order (aget dp (int best-mask)))
-                remaining-idxs (filterv (fn [i] (zero? (bit-and best-mask (bit-shift-left 1 i))))
-                                        (range n))
+           (let [popcount (fn [^long x]
+                            #?(:clj (Long/bitCount x)
+                               :cljs (loop [v x c 0]
+                                       (if (zero? v) c
+                                           (recur (bit-and v (dec v)) (inc c))))))
+                 best-mask (reduce (fn [best mask]
+                                     (if (aget dp (int mask))
+                                       (if (> (long (popcount mask)) (long (popcount best)))
+                                         mask best)
+                                       best))
+                                   0
+                                   (range 1 (unchecked-inc full)))
+                 main-order (:order (aget dp (int best-mask)))
+                 remaining-idxs (filterv (fn [i] (zero? (bit-and best-mask (bit-shift-left 1 i))))
+                                         (range n))
                 ;; Sort remaining disconnected groups by ascending cardinality
-                sorted-remaining (sort-by #(aget cards (int %)) remaining-idxs)]
-            (into (vec main-order) sorted-remaining)))))))
+                 sorted-remaining (sort-by #(aget cards (int %)) remaining-idxs)]
+             (into (vec main-order) sorted-remaining))))))))
 
 ;; ---------------------------------------------------------------------------
 ;; Cost-based ordering for mixed ops (groups + predicates + functions + OR/NOT)
@@ -1184,22 +1416,45 @@
     ;; Unknown / passthrough — gate forever (caller must decide what to do).
     [#{} :all]))
 
-(defn op-cost [op bound-vars]
-  (let [[required policy] (op-required-vars op)
-        ready? (case policy
-                 :none true
-                 :all  (or (empty? required)
-                           (every? #(contains? bound-vars %) required))
-                 :any  (some #(contains? bound-vars %) required))]
-    (if-not ready?
-      max-cost
-      ;; Per-op cost when ready: producers use cardinality, filters cost 0,
-      ;; functions cost 1, others use :estimated-card or fall back to 100.
-      (case (:op op)
-        (:entity-group :pattern-scan) (group-effective-card op)
-        :predicate                    0
-        :function                     1
-        (or (:estimated-card op) 100)))))
+(defn- op-output-cards
+  "The {var → cardinality} an op contributes once it runs. Used to keep a
+   running per-var cardinality map through ordering."
+  [op]
+  (or (:output-var-cards op) {}))
+
+(defn- function-input-rows
+  "Estimated number of times a function op runs = size of the relation over its
+   input (argument) free vars, approximated as the product of their known
+   cardinalities (unknown → 1; the graph/source args are singletons)."
+  [op var-cards]
+  (reduce (fn [acc v] (* acc (max 1 (long (get var-cards v 1)))))
+          1
+          (args-free-vars (:args op))))
+
+(defn op-cost
+  "Cost of running `op` next given the currently bound vars and their
+   cardinalities. Unrunnable ops cost `max-cost`. Producers cost their
+   cardinality, predicates 0. Functions cost 1 by default, UNLESS the function
+   declares an execution-cost model (`:exec-cost-fn`, from :datahike/cost
+   metadata) — then cost = model(input-rows), so an expensive function that
+   would run on many input rows is deferred behind selective filters."
+  ([op bound-vars] (op-cost op bound-vars {}))
+  ([op bound-vars var-cards]
+   (let [[required policy] (op-required-vars op)
+         ready? (case policy
+                  :none true
+                  :all  (or (empty? required)
+                            (every? #(contains? bound-vars %) required))
+                  :any  (some #(contains? bound-vars %) required))]
+     (if-not ready?
+       max-cost
+       (case (:op op)
+         (:entity-group :pattern-scan) (group-effective-card op)
+         :predicate                    0
+         :function                     (if-let [f (:exec-cost-fn op)]
+                                         (max 1 (long (f (function-input-rows op var-cards))))
+                                         1)
+         (or (:estimated-card op) 100))))))
 
 (defn order-plan-ops
   "Order plan operations using DP for entity-group ordering and greedy
@@ -1218,8 +1473,9 @@
    bindings` even though they're well-formed at execute time. Top-
    level callers (lower's outer scope) pass `nil` / omit and we treat
    the outer scope as empty."
-  ([ops] (order-plan-ops ops nil))
-  ([ops outer-bound-vars]
+  ([ops] (order-plan-ops ops nil nil))
+  ([ops outer-bound-vars] (order-plan-ops ops outer-bound-vars nil))
+  ([ops outer-bound-vars db]
    (let [;; LOptionalScan-derived pattern-scans (get-else with default) need
         ;; their entity var bound BEFORE they execute — at runtime the
         ;; optional path goes through bind-by-fn(get-else) which evaluates
@@ -1243,23 +1499,29 @@
                       (nil? outer-bound-vars) #{}
                       (set? outer-bound-vars) outer-bound-vars
                       (map? outer-bound-vars) (set (keys outer-bound-vars))
-                      :else (set outer-bound-vars))]
+                      :else (set outer-bound-vars))
+         ;; Running per-var cardinality map, threaded alongside bound-vars so a
+         ;; function's :exec-cost-fn can be costed against how many input rows it
+         ;; would run on at this point in the order.
+         seed-cards (if (map? outer-bound-vars) outer-bound-vars {})]
      (if (empty? groups)
       ;; No groups — pure greedy on non-group ops
        (loop [remaining (set ops)
               bound-vars seed-bound
+              var-cards seed-cards
               ordered []]
          (if (empty? remaining)
            ordered
-           (let [scored (map (fn [op] [op (op-cost op bound-vars)]) remaining)
+           (let [scored (map (fn [op] [op (op-cost op bound-vars var-cards)]) remaining)
                  executable (filter #(< (second %) max-cost) scored)
                  best (first (sort-by second (if (seq executable) executable scored)))
                  [chosen-op _] best]
              (recur (disj remaining chosen-op)
                     (into bound-vars (:vars chosen-op))
+                    (merge-with min var-cards (op-output-cards chosen-op))
                     (conj ordered chosen-op)))))
       ;; DP-order groups, then greedily interleave non-group ops
-       (let [dp-order (dp-order-groups groups)
+       (let [dp-order (dp-order-groups groups db)
              ordered-groups (mapv #(nth groups %) dp-order)]
          (if (empty? non-groups)
            ordered-groups
@@ -1268,6 +1530,7 @@
            (loop [group-q (seq ordered-groups)
                   remaining (set non-groups)
                   bound-vars seed-bound
+                  var-cards seed-cards
                   result []]
              (if (and (nil? group-q) (empty? remaining))
                result
@@ -1282,10 +1545,17 @@
               ;; gates correctness (op-required-vars); among ready actions we
               ;; now order purely by cost. Groups are preferred on ties since
               ;; they bind producer vars that can unlock/cheapen pending ops.
-               (let [ready    (filterv (fn [op] (< (op-cost op bound-vars) max-cost)) remaining)
+               (let [ready    (filterv (fn [op] (< (op-cost op bound-vars var-cards) max-cost)) remaining)
+                     ;; One cost model: op-cost = rows × per-unit for every op.
+                     ;; This statically DEFERS an expensive function behind both
+                     ;; row-reducing joins and cheaper functions (correct), and
+                     ;; also behind an input-EXPANDING join (incorrect) — the
+                     ;; latter is the one case the executor's hoist corrects at
+                     ;; runtime (execute.cljc/hoist-expensive-fn), since whether a
+                     ;; join expands or reduces is not knowable statically.
                      best-ng  (when (seq ready)
-                                (apply min-key #(op-cost % bound-vars) ready))
-                     ng-cost  (when best-ng (long (op-cost best-ng bound-vars)))
+                                (apply min-key #(op-cost % bound-vars var-cards) ready))
+                     ng-cost  (when best-ng (long (op-cost best-ng bound-vars var-cards)))
                      next-g   (first group-q)
                      g-cost   (when next-g (long (group-effective-card next-g)))
                      ;; choose :group | :non-group | :force
@@ -1298,18 +1568,21 @@
                    :group     (recur (next group-q)
                                      remaining
                                      (into bound-vars (:vars next-g))
+                                     (merge-with min var-cards (op-output-cards next-g))
                                      (conj result next-g))
                    :non-group (recur group-q
                                      (disj remaining best-ng)
                                      (into bound-vars (:vars best-ng))
+                                     (merge-with min var-cards (op-output-cards best-ng))
                                      (conj result best-ng))
                    ;; No more groups, remaining ops still unready — force the
                    ;; cheapest so we make progress (preserves prior behaviour).
-                   :force     (let [scored (map (fn [op] [op (op-cost op bound-vars)]) remaining)
+                   :force     (let [scored (map (fn [op] [op (op-cost op bound-vars var-cards)]) remaining)
                                     [chosen-op _] (first (sort-by second scored))]
                                 (recur nil
                                        (disj remaining chosen-op)
                                        (into bound-vars (:vars chosen-op))
+                                       (merge-with min var-cards (op-output-cards chosen-op))
                                        (conj result chosen-op)))))))))))))
 
 ;; ---------------------------------------------------------------------------
@@ -1424,5 +1697,5 @@
         ;; prefix: the runnability check for the remaining ops has to
         ;; honour what's already bound or :not / :predicate / :function
         ;; ops will be wrongly marked as Insufficient.
-        re-ordered (order-plan-ops re-estimated bound-vars)]
+        re-ordered (order-plan-ops re-estimated bound-vars db)]
     (assoc plan :ops (into (vec executed-ops) re-ordered))))
