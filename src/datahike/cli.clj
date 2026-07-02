@@ -5,6 +5,7 @@
             [clojure.string :as str]
             [clojure.tools.cli :refer [parse-opts]]
             [datahike.api :as d]
+            [datahike.query.execute]
             [datahike.pod :refer [run-pod]]
             [datahike.codegen.cli :as cli-gen]
             [clojure.edn :as edn]
