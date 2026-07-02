@@ -1375,7 +1375,7 @@
   Instead, they will ask for all tuples from the database and then filter them, so
   the fact that `?e` can be bound to an impossible entity id `\"A\"` is not a problem.
 
-  But with the strategy `select-all`, the substituted pattern will become
+  But with the strategy `select-all`, the substituted pattern will become 
 
   [\"A\" :friend 3]
 
@@ -2773,7 +2773,6 @@
       [context-in' @reverse-map])))
 
 (defn- create-plan-via-ir
-
   "Build a plan using the IR pipeline: logical IR → lowering.
    `in-cards` is the value-independent :in cardinality seed (see in-card-seed)."
   [db clauses bound-vars rules in-cards]
