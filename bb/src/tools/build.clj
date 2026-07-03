@@ -1,13 +1,13 @@
 (ns tools.build
   (:refer-clojure :exclude [compile])
   (:require
-    [babashka.fs :as fs]
-    [babashka.process :as p]
-    [cheshire.core :as json]
-    [clojure.string :as str]
-    [clojure.tools.build.api :as b]
-    [selmer.parser :refer [render]]
-    [tools.version :as version :refer [read-edn-file]]))
+   [babashka.fs :as fs]
+   [babashka.process :as p]
+   [cheshire.core :as json]
+   [clojure.string :as str]
+   [clojure.tools.build.api :as b]
+   [selmer.parser :refer [render]]
+   [tools.version :as version :refer [read-edn-file]]))
 
 (defn clean [{:keys [target-dir] :as _project-config}]
   (print (str "Cleaning up target directory '" target-dir "'..."))
@@ -80,12 +80,36 @@
           :jar-file (jar-path repo-config project-config)})
   (println "Done."))
 
+(defn- delete-compiled-ns! [class-dir ns-sym]
+  (let [class-path (str/replace (str ns-sym) "." "/")
+        slash-idx (str/last-index-of class-path "/")
+        dir (if slash-idx
+              (fs/file class-dir (subs class-path 0 slash-idx))
+              (fs/file class-dir))
+        prefix (if slash-idx
+                 (subs class-path (inc slash-idx))
+                 class-path)]
+    (when (fs/exists? dir)
+      (doseq [file (fs/list-dir dir)
+              :let [file-name (fs/file-name file)]
+              :when (and (str/starts-with? file-name prefix)
+                         (str/ends-with? file-name ".class")
+                         (contains? #{\. \$ \_} (nth file-name (count prefix) \.)))]
+        (fs/delete file)))))
+
 (defn uber
   "Builds uber jar file"
-  [repo-config {:keys [class-dir target-dir src-dirs resource-dir main] :as project-config}]
+  [repo-config {:keys [class-dir target-dir src-dirs resource-dir main gen-class-namespaces] :as project-config}]
   (print (str "Packaging uber jar at '" target-dir "'..."))
   (b/copy-dir {:src-dirs (filter identity (conj src-dirs resource-dir))
                :target-dir class-dir})
+  (when (seq gen-class-namespaces)
+    (doseq [ns-sym gen-class-namespaces]
+      (delete-compiled-ns! class-dir ns-sym))
+    (b/compile-clj {:src-dirs src-dirs
+                    :class-dir class-dir
+                    :basis (basis project-config)
+                    :ns-compile gen-class-namespaces}))
   (b/uber {:class-dir class-dir
            :uber-file (jar-path repo-config project-config)
            :basis (basis project-config)

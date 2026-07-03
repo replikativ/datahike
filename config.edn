@@ -33,6 +33,7 @@
                   :class-dir "target/classes"
                   :deps-file "deps.edn"
                   :aliases [:libdatahike]
+                  :gen-class-namespaces [datahike.impl.libdatahike]
                   :jar-pattern "{{repo.lib}}-{{version-str}}-native-shared-library.jar"
                   :main datahike.cli
                   ;; native build
