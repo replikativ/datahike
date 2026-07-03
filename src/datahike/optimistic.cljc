@@ -282,12 +282,19 @@
 ;; `try-drop-and-emit-realized!` is the single entry point both triggers call.
 
 (defn- drop-caught-up!
-  "Atomically remove entries whose `:expected-max-tx` is <= `new-max`.
+  "Atomically remove entries that have caught up:
+   - `:expected-max-tx` is <= `new-max` (writer-dispatched entries), OR
+   - `:caught-up-pred` returns truthy for `db` (local-only entries whose
+     durable write arrives out-of-band, e.g. a message dispatched through
+     an application channel and echoed back via store sync).
   Returns the entries this swap actually removed (race-free: a concurrent
   caller's swap returns the entries IT removed, with no overlap)."
-  [overlay new-max]
-  (let [caught-up? (fn [{:keys [expected-max-tx]}]
-                     (and expected-max-tx new-max (>= new-max expected-max-tx)))
+  [overlay new-max db]
+  (let [caught-up? (fn [{:keys [expected-max-tx caught-up-pred]}]
+                     (or (and expected-max-tx new-max (>= new-max expected-max-tx))
+                         (and caught-up-pred db
+                              (try (boolean (caught-up-pred db))
+                                   (catch #?(:clj Throwable :cljs :default) _ false)))))
         [old _new] (swap-vals! overlay
                                (fn [v] (filterv (complement caught-up?) v)))]
     (filterv caught-up? old)))
@@ -321,7 +328,7 @@
   [conn]
   (when-let [{:keys [overlay last-effective-db]} (conn-state conn)]
     (let [db-before (or @last-effective-db @conn)
-          dropped (drop-caught-up! overlay (:max-tx @conn))]
+          dropped (drop-caught-up! overlay (:max-tx @conn) @conn)]
       (when (seq dropped)
         (emit-overlay-realized! conn dropped db-before (effective-db conn))))))
 
@@ -545,6 +552,58 @@
   (when-let [{:keys [on-conflicts]} (conn-state conn)]
     (swap! on-conflicts dissoc k))
   nil)
+
+(defn transact-local!
+  "Overlay-only optimistic transact — NO writer dispatch.
+
+  For writes whose durable path is an APPLICATION channel rather than
+  this conn's writer (e.g. a chat message dispatched through a discourse
+  room server-side and echoed back into this replica via store sync).
+  The entry renders immediately through `effective-db` exactly like
+  `transact!`, and reconciles when `caught-up-pred` (a predicate over
+  the advancing durable db, e.g. entity-exists-by-uuid) turns truthy on
+  a conn advance. TTL applies as usual: if the echo never arrives the
+  entry expires and its `:result` channel yields a TimeoutException —
+  surface that as a delivery failure.
+
+  Returns `{:ov-id uuid :result <chan>}`."
+  ([conn tx-data caught-up-pred] (transact-local! conn tx-data caught-up-pred {}))
+  ([conn tx-data caught-up-pred opts]
+   (let [{:keys [overlay] :as st}
+         (or (conn-state conn)
+             (throw (ex-info "Conn not registered for optimistic updates"
+                             {:conn conn})))
+         db-before-add     (effective-db conn)
+         validate-report   (d/with db-before-add tx-data)
+         predicted-tx-data (vec (:tx-data validate-report))
+         ov-id             (random-uuid)
+         submitted-at      (now-ms)
+         ttl-ms            (if (contains? opts :ttl-ms) (:ttl-ms opts) (:ttl-ms st))
+         expires-at        (when ttl-ms (+ submitted-at ttl-ms))
+         result-ch         (chan 1)
+         entry             {:ov-id               ov-id
+                            :tx-data             tx-data
+                            :predicted-tx-data   predicted-tx-data
+                            :submitted-at        submitted-at
+                            :expires-at          expires-at
+                            :expected-max-tx     nil
+                            :caught-up-pred      caught-up-pred
+                            :conflicting?        false
+                            :last-conflict-error nil
+                            :result-ch           result-ch
+                            :result-delivered?   (atom false)}]
+     (swap! overlay conj entry)
+     (recompute-and-emit-conflicts! conn)
+     (emit-tx! conn {:db-before db-before-add
+                     :db-after  (effective-db conn)
+                     :tx-data   predicted-tx-data
+                     :tempids   (:tempids validate-report)
+                     :tx-meta   (:tx-meta validate-report)
+                     :origin    :overlay-add
+                     :ov-id     ov-id})
+     ;; The durable write may ALREADY be visible (echo raced the add).
+     (try-drop-and-emit-realized! conn)
+     {:ov-id ov-id :result result-ch})))
 
 (defn transact!
   "Optimistic transact.
