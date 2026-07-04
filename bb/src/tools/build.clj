@@ -1,13 +1,13 @@
 (ns tools.build
   (:refer-clojure :exclude [compile])
   (:require
-   [babashka.fs :as fs]
-   [babashka.process :as p]
-   [cheshire.core :as json]
-   [clojure.string :as str]
-   [clojure.tools.build.api :as b]
-   [selmer.parser :refer [render]]
-   [tools.version :as version :refer [read-edn-file]]))
+    [babashka.fs :as fs]
+    [babashka.process :as p]
+    [cheshire.core :as json]
+    [clojure.string :as str]
+    [clojure.tools.build.api :as b]
+    [selmer.parser :refer [render]]
+    [tools.version :as version :refer [read-edn-file]]))
 
 (defn clean [{:keys [target-dir] :as _project-config}]
   (print (str "Cleaning up target directory '" target-dir "'..."))
