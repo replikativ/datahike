@@ -42,6 +42,13 @@
                                                       :valid #inst "2026-06-01T00:00:00.000-00:00"})]
         (is (= rv (ref/parse (ref/render rv))))
         (is (= rb (ref/parse (ref/render rb))))))
+    (testing "bare entity-id selector — single numeric segment"
+      (let [re (ref/reference db-id 387)
+            rt (ref/reference db-id 387 {:tx 536871113})]
+        (is (= [:db/id 387] (ref/lookup-ref re)))
+        (is (= (str "dh://" db-id "/387") (ref/render re)))
+        (is (= re (ref/parse (ref/render re))))
+        (is (= rt (ref/parse (ref/render rt))))))
     (testing "malformed URIs throw"
       (is (thrown? #?(:clj Exception :cljs js/Error) (ref/parse "dh://nope")))
       (is (thrown? #?(:clj Exception :cljs js/Error) (ref/parse "http://x/y/z"))))))
@@ -127,6 +134,17 @@
     (testing "unknown / ungranted database → nil (dangling, not an error)"
       (let [r (ref/reference (rand-uuid) [:thing/id tid])]
         (is (nil? (ref/resolve-reference r connect-fn)))))
+
+    (testing "bare eid pointer: strict, no AVET, no unique attr required"
+      (let [eid (d/q '[:find ?e . :in $ ?u :where [?e :thing/id ?u]] @conn tid)
+            live (ref/reference db-id eid)]
+        (is (= eid (:eid (ref/resolve-reference live connect-fn)))
+            "existing eid resolves strictly (unique by construction)")
+        (is (nil? (ref/resolve-reference (ref/reference db-id 999999) connect-fn))
+            "never-allocated eid dangles")
+        (is (nil? (:eid (ref/resolve-reference
+                         (ref/reference db-id eid {:tx (dec 536870913)}) connect-fn)))
+            "eid pinned before its creation dangles")))
 
     (<! (teardown conn c))))
 

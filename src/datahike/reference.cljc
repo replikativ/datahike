@@ -12,7 +12,16 @@
    - db-id     the target store's `:id` — the same logical database on
                any peer that replicates it.
    - selector  a LOOKUP REF `[attr value]` on a `:db/unique` attribute —
-               datahike's native value-level entity addressing.
+               datahike's native value-level entity addressing — or a bare
+               ENTITY ID (represented as `[:db/id eid]`). An eid is the
+               cheapest and most general pointer: a direct EAVT seek, no
+               AVET, no schema, works for entities with no unique attr.
+               Eids are stable within a logical database (replicas share
+               the index, branches share it copy-on-write, datahike never
+               reuses eids) but do NOT survive re-materialization
+               (export/import, migration-by-retransaction) — value
+               selectors do. Physically-bound vs semantically-robust:
+               pick per use.
    - temporal  which version of that database:
                  nil               the live head (a LIVING reference —
                                    follows edits; navigation, mentions)
@@ -30,6 +39,7 @@
      dh://5d7…c1/entity%2Fuuid/0830…9e                      ; living
      dh://5d7…c1/S.Page%2Ftitle/str:Roadmap@tx:536871113    ; record
      dh://5d7…c1/entity%2Fuuid/0830…9e@branch:exploration-2 ; branch head
+     dh://5d7…c1/387                                        ; bare entity id
 
    Attr keywords are URL-encoded whole (`entity%2Fuuid` ≙ :entity/uuid).
    Values carry an optional type tag — `uuid:` `str:` `long:` `kw:` —
@@ -72,12 +82,18 @@
 (defrecord Reference [db-id attr value temporal])
 
 (defn reference
-  "Construct a Reference. `lookup-ref` is `[unique-attr value]`;
-   `temporal` one of nil, {:tx long}, {:date inst}, {:branch string}."
-  ([db-id lookup-ref] (reference db-id lookup-ref nil))
-  ([db-id [attr value] temporal]
-   {:pre [(uuid? db-id) (keyword? attr)]}
-   (->Reference db-id attr value temporal)))
+  "Construct a Reference. `selector` is `[unique-attr value]`, a bare
+   entity id (long — becomes `[:db/id eid]`), or `[:db/id eid]`;
+   `temporal` one of nil, {:tx long}, {:date inst}, {:valid inst},
+   {:branch string}."
+  ([db-id selector] (reference db-id selector nil))
+  ([db-id selector temporal]
+   {:pre [(uuid? db-id)]}
+   (if (number? selector)
+     (->Reference db-id :db/id (long selector) temporal)
+     (let [[attr value] selector]
+       (assert (keyword? attr) "selector attr must be a keyword")
+       (->Reference db-id attr value temporal)))))
 
 (defn lookup-ref
   "The datahike lookup ref `[attr value]` of a Reference."
@@ -106,7 +122,7 @@
   (cond
     (uuid? v)    (str v)                     ; uuids are the untagged default
     (string? v)  (str "str:" (url-encode v))
-    (int? v)     (str "long:" v)
+    (int? v)     (str "long:" v)            ; also carries :db/id eids in tx-maps
     (keyword? v) (str "kw:" (url-encode (subs (str v) 1)))
     :else (throw (ex-info "Unsupported reference value type"
                           {:value v :type (type v)}))))
@@ -152,23 +168,34 @@
      (str/split s #","))))
 
 (defn render
-  "Reference → `dh://…` URI string."
+  "Reference → `dh://…` URI string. Eid selectors (`:db/id`) render as a
+   single numeric path segment; attr selectors as `<attr>/<value>`."
   [{:keys [db-id attr value temporal] :as _ref}]
-  (str "dh://" db-id "/" (encode-attr attr) "/" (encode-value value)
+  (str "dh://" db-id "/"
+       (if (= :db/id attr)
+         (str value)
+         (str (encode-attr attr) "/" (encode-value value)))
        (when-let [t (encode-temporal temporal)] (str "@" t))))
 
 (defn parse
-  "`dh://…` URI string → Reference. Throws ex-info on malformed input."
+  "`dh://…` URI string → Reference. A single all-digit path segment is an
+   entity-id selector; `<attr>/<value>` is a lookup-ref selector. Throws
+   ex-info on malformed input."
   [s]
-  (let [[_ db-id attr-s rest-s]
-        (or (re-matches #"dh://([0-9a-fA-F-]{36})/([^/]+)/(.+)" (str s))
-            (throw (ex-info "Malformed dh:// reference"
-                            {:uri s :expected "dh://<db-id>/<attr>/<value>[@<temporal>]"})))
-        [value-s temporal-s] (str/split rest-s #"@" 2)]
-    (->Reference (parse-uuid* db-id)
-                 (decode-attr attr-s)
-                 (decode-value value-s)
-                 (decode-temporal temporal-s))))
+  (if-let [[_ db-id eid-s temporal-s]
+           (re-matches #"dh://([0-9a-fA-F-]{36})/([0-9]+)(?:@(.+))?" (str s))]
+    (->Reference (parse-uuid* db-id) :db/id
+                 #?(:clj (Long/parseLong eid-s) :cljs (js/parseInt eid-s 10))
+                 (decode-temporal temporal-s))
+    (let [[_ db-id attr-s rest-s]
+          (or (re-matches #"dh://([0-9a-fA-F-]{36})/([^/]+)/(.+)" (str s))
+              (throw (ex-info "Malformed dh:// reference"
+                              {:uri s :expected "dh://<db-id>/(<eid>|<attr>/<value>)[@<temporal>]"})))
+          [value-s temporal-s] (str/split rest-s #"@" 2)]
+      (->Reference (parse-uuid* db-id)
+                   (decode-attr attr-s)
+                   (decode-value value-s)
+                   (decode-temporal temporal-s)))))
 
 ;; ============================================================================
 ;; Reified reference entities
@@ -259,8 +286,15 @@
    in the attribute's datom count, which is exactly why non-unique
    resolution is opt-in rather than the default."
   [db attr value]
-  (if (indexed-attr? db attr)
+  (cond
+    ;; bare entity id — direct EAVT seek; no AVET, no schema involved
+    (= :db/id attr)
+    (if (seq (d/datoms db :eavt value)) [value] [])
+
+    (indexed-attr? db attr)
     (mapv :e (d/datoms db :avet attr value))
+
+    :else
     (into [] (comp (filter #(= (:v %) value)) (map :e))
           (d/datoms db :aevt attr))))
 
@@ -294,7 +328,9 @@
   ([{:keys [db-id temporal] :as ref} connect-fn {:keys [ambiguous]}]
    (when-let [conn-or-db (connect-fn db-id (select-keys temporal [:branch]))]
      (let [db (->db conn-or-db temporal)]
-       (when-not (or (unique-attr? db (:attr ref)) (= ambiguous :first))
+       (when-not (or (= :db/id (:attr ref))     ; eids unique by construction
+                     (unique-attr? db (:attr ref))
+                     (= ambiguous :first))
          (throw (ex-info "Selector attr is not :db/unique — a reference must be single-valued"
                          {:attr (:attr ref) :db-id db-id
                           :hint "declare :db/unique on the attr, pass {:ambiguous :first}, or use resolve-all"})))

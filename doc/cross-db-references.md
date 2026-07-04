@@ -23,7 +23,7 @@ to one index. It must be value-level:
 | part | what | datahike primitive |
 |---|---|---|
 | `db-id` | target database | the store `:id` (mandatory UUID) |
-| `selector` | entity inside it | a lookup ref `[attr value]` (unique attr; non-unique falls back to a value query) |
+| `selector` | entity inside it | a lookup ref `[attr value]` (unique attr; non-unique via explicit opt-in) or a bare **entity id** (`dh://<db-id>/387`) — the cheapest, most general pointer: direct EAVT seek, no AVET, no schema, no unique attr needed |
 | `temporal` | which version | `nil` = live head; `{:tx n}` / `{:date inst}` = `as-of`; `{:valid inst}` = [valid-time](./valid_time.md) point (combinable with `:tx`/`:date`); `{:branch "name"}` = branch head |
 
 The temporal distinguishes the **two reference kinds**:
@@ -54,8 +54,19 @@ dh://96ae43a7-…/entity%2Fuuid/08308437-…@tx:536871113,valid:2026-06-01T00:00
 ```
 
 Attr keywords are URL-encoded whole; values carry an optional type tag
-(`str:` `long:` `kw:`; untagged = UUID-or-string). `render` / `parse`
-round-trip.
+(`str:` `long:` `kw:`; untagged = UUID-or-string). A single all-digit
+path segment is an entity-id selector. `render` / `parse` round-trip.
+
+**Eid vs value selectors.** An eid is stable within its logical
+database — replicas of the same store `:id` share the index, branches
+share it copy-on-write, and datahike never reuses eids (a dangling eid
+can never silently point at a new entity). What eids do NOT survive is
+re-materialization: export/import or migration-by-retransaction
+renumbers them, while value selectors survive anything that preserves
+values. Eid = physically-bound pointer (cheapest, works for entities
+with no unique attribute at all, on schemaless databases); value
+selector = semantically-robust pointer. Pick per use; record references
+(`@tx:`) compose with both.
 
 ## Reified references (queryable links)
 
