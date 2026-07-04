@@ -1,0 +1,35 @@
+{:count-evicts
+ {:limit 2,
+  :weight-limit 0,
+  :put-keys [:a :b :c],
+  :kept-keys [:b :c],
+  :entry-count 2,
+  :total-weight 0},
+ :empty
+ {:limit 3,
+  :weight-limit 5,
+  :put-keys [],
+  :kept-keys [],
+  :entry-count 0,
+  :total-weight 0},
+ :keep-newest
+ {:limit 100,
+  :weight-limit 2,
+  :put-keys [:big],
+  :kept-keys [:big],
+  :entry-count 1,
+  :total-weight 5},
+ :touch-protects
+ {:limit 2,
+  :weight-limit 0,
+  :put-keys [:a :b :c],
+  :kept-keys [:a :c],
+  :entry-count 2,
+  :total-weight 0},
+ :weight-evicts
+ {:limit 100,
+  :weight-limit 5,
+  :put-keys [:a :b],
+  :kept-keys [:b],
+  :entry-count 1,
+  :total-weight 3}}
