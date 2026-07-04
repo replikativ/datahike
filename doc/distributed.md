@@ -231,6 +231,20 @@ unique UUID with `(random-uuid)` for ephemeral/test databases.
         (<? S (d/delete-database config))))))
 ```
 
+# Cross-database references
+
+The Distributed Index Space makes many-database deployments natural: databases
+are the unit of replication (the store `:id` names the same logical database on
+every peer) and of selective sharing. References ACROSS databases must be
+value-level — entity ids are internal to a single index. `datahike.reference`
+provides the systematic form: `(db-id, selector, temporal)` with a `dh://` URI
+serialization, *living* references that track a head and *record* references
+pinned via `as-of` (durable on `:keep-history?` stores), plus a reified-link
+schema so cross-database links stay queryable in datalog.
+
+See **[Cross-database references](./cross-db-references.md)** for the full
+grammar, resolution semantics, and the RDF correspondence.
+
 # Remote Procedure Calls (RPC)
 
 In addition to DIS, Datahike supports **remote procedure calls** where all operations (reads and writes) are executed on a server. This approach is complementary to DIS:

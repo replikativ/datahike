@@ -1,5 +1,10 @@
 # Cross-database references (`datahike.reference`)
 
+Part of datahike's [distributed architecture](./distributed.md): the
+[Distributed Index Space](./distributed.md#distributed-index-space-dis)
+shares single databases across peers; this document covers addressing
+*between* databases.
+
 Datahike deployments legitimately span many databases: per domain, per
 tenant, per permission boundary. Multiple databases are a feature — they
 are the unit of replication (the store `:id` names the same logical
