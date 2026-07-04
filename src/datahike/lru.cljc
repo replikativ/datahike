@@ -65,6 +65,98 @@
 (defn lru [limit]
   (->LRU {} (sorted-map) {} 0 limit))
 
+(defn- empty-weighted-state [limit weight-limit weigh]
+  {:key-value    {}
+   :gen-key      (sorted-map)
+   :key-gen      {}
+   :gen          0
+   :weights      {}
+   :total-weight 0
+   :limit        limit
+   :weight-limit weight-limit
+   :weigh        weigh})
+
+(defn- forget-generation [{:keys [gen-key key-gen] :as state} k]
+  (if-let [g (get key-gen k)]
+    (assoc state :gen-key (dissoc gen-key g))
+    state))
+
+(defn- record-generation [{:keys [gen-key key-gen gen] :as state} k]
+  (assoc state
+         :gen-key (assoc gen-key gen k)
+         :key-gen (assoc key-gen k gen)
+         :gen     (inc gen)))
+
+(defn- reweigh [{:keys [weights total-weight] :as state} k w]
+  (assoc state
+         :weights      (assoc weights k w)
+         :total-weight (+ (- total-weight (get weights k 0)) w)))
+
+(defn- store-value [state k v]
+  (update state :key-value assoc k v))
+
+(defn- oldest-key [{:keys [gen-key]}]
+  (val (first gen-key)))
+
+(defn- evict-key [{:keys [weights] :as state} k]
+  (-> state
+      (forget-generation k)
+      (update :key-value dissoc k)
+      (update :key-gen dissoc k)
+      (update :weights dissoc k)
+      (update :total-weight - (get weights k 0))))
+
+(defn- over-budget? [{:keys [key-value total-weight limit weight-limit]}]
+  (and (> (count key-value) 1)
+       (or (> (count key-value) limit)
+           (and (pos? weight-limit)
+                (> total-weight weight-limit)))))
+
+(defn- shrink-to-budget [state]
+  (if (over-budget? state)
+    (recur (evict-key state (oldest-key state)))
+    state))
+
+(defn- entry-weight [{:keys [weigh weight-limit]} v]
+  (if (pos? weight-limit) (weigh v) 0))
+
+(defn- put-entry [state k v]
+  (-> state
+      (forget-generation k)
+      (record-generation k)
+      (reweigh k (entry-weight state v))
+      (store-value k v)
+      shrink-to-budget))
+
+#?(:cljs
+   (deftype WeightedLRU [state]
+     IAssociative
+     (-assoc [_ k v] (WeightedLRU. (put-entry state k v)))
+     (-contains-key? [_ k] (contains? (:key-value state) k))
+     ILookup
+     (-lookup [_ k]    (get (:key-value state) k))
+     (-lookup [_ k nf] (get (:key-value state) k nf))
+     IPrintWithWriter
+     (-pr-writer [_ writer opts] (-pr-writer (:key-value state) writer opts)))
+   :clj
+   (deftype WeightedLRU [state]
+     clojure.lang.ILookup
+     (valAt [_ k]           (get (:key-value state) k))
+     (valAt [_ k not-found] (get (:key-value state) k not-found))
+     clojure.lang.Associative
+     (containsKey [_ k] (contains? (:key-value state) k))
+     (entryAt [_ k]     (find (:key-value state) k))
+     (assoc [_ k v]     (WeightedLRU. (put-entry state k v)))))
+
+(defn weighted-lru
+  "LRU bounded by BOTH an entry-count `limit` and a cumulative `weight-limit`,
+   where `weigh` maps a stored value to its non-negative weight. The
+   most-recently-used entry is always retained; a `weight-limit` of 0 disables
+   the weight budget, leaving a plain count-bounded LRU."
+  ([limit weight-limit] (weighted-lru limit weight-limit count))
+  ([limit weight-limit weigh]
+   (->WeightedLRU (empty-weighted-state limit weight-limit weigh))))
+
 (defcache LRUDatomCache [cache lru counts n-total-datoms tick datom-limit]
   CacheProtocol
   (lookup [_ item]
