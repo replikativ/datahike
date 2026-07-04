@@ -86,7 +86,19 @@
 (s/def :db.secondary/status-type #{:building :ready :disabled})
 (s/def :db.type/any any?)
 
-(def ^:const implicit-schema-spec {:db.secondary/type {:db/valueType   :db.type/keyword
+(def ^:const implicit-schema-spec {:dh.ref/db {:db/valueType   :db.type/uuid
+                                               :db/cardinality :db.cardinality/one
+                                               :db/index       true}
+                                   :dh.ref/attr {:db/valueType   :db.type/keyword
+                                                 :db/cardinality :db.cardinality/one}
+                                   :dh.ref/value {:db/valueType   :db.type/string
+                                                  :db/cardinality :db.cardinality/one
+                                                  :db/index       true}
+                                   :dh.ref/temporal {:db/valueType   :db.type/string
+                                                     :db/cardinality :db.cardinality/one}
+                                   :dh.ref/type {:db/valueType   :db.type/keyword
+                                                 :db/cardinality :db.cardinality/one}
+                                   :db.secondary/type {:db/valueType   :db.type/keyword
                                                        :db/cardinality :db.cardinality/one}
                                    :db.secondary/attrs {:db/valueType   :db.type/tuple
                                                         :db/cardinality :db.cardinality/one}
@@ -202,9 +214,20 @@
 (defn secondary-index-attr? [a-ident]
   (s/valid? ::secondary-index-attribute a-ident))
 
+;; Cross-database reference attrs (datahike.reference) — system-installed
+;; USER-DATA attrs: transactable without user schema (see the
+;; schema-flexibility gate in db.utils), type-validated against
+;; implicit-schema-spec, but NOT schema-entities (no `schema?` datom
+;; classification).
+(s/def ::reference-attribute #{:dh.ref/db :dh.ref/attr :dh.ref/value
+                               :dh.ref/temporal :dh.ref/type})
+
+(defn reference-attr? [a-ident]
+  (s/valid? ::reference-attribute a-ident))
+
 (defn value-valid? [a-ident v-ident schema]
   (let [schema (if (or (meta-attr? a-ident) (schema-attr? a-ident) (entity-spec-attr? a-ident)
-                       (secondary-index-attr? a-ident))
+                       (secondary-index-attr? a-ident) (reference-attr? a-ident))
                  implicit-schema-spec
                  schema)
         value-type (get-in schema [a-ident :db/valueType])]

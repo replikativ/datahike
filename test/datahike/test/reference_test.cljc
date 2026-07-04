@@ -36,6 +36,12 @@
             rk (ref/reference db-id [:item/kind :alpha/beta])]
         (is (= rl (ref/parse (ref/render rl))))
         (is (= rk (ref/parse (ref/render rk))))))
+    (testing "valid-time temporal, alone and combined with tx (bitemporal pin)"
+      (let [rv (ref/reference db-id [:entity/uuid u] {:valid #inst "2026-06-01T00:00:00.000-00:00"})
+            rb (ref/reference db-id [:entity/uuid u] {:tx 536871113
+                                                      :valid #inst "2026-06-01T00:00:00.000-00:00"})]
+        (is (= rv (ref/parse (ref/render rv))))
+        (is (= rb (ref/parse (ref/render rb))))))
     (testing "malformed URIs throw"
       (is (thrown? #?(:clj Exception :cljs js/Error) (ref/parse "dh://nope")))
       (is (thrown? #?(:clj Exception :cljs js/Error) (ref/parse "http://x/y/z"))))))
@@ -122,4 +128,39 @@
       (let [r (ref/reference (rand-uuid) [:thing/id tid])]
         (is (nil? (ref/resolve-reference r connect-fn)))))
 
+    (<! (teardown conn c))))
+
+(deftest-async valid-time-references
+  ;; Bitemporal record references: an entity whose vt-window starts
+  ;; 2026-06-01 resolves for {:valid ≥ start}, dangles for {:valid < start}.
+  (let [c     (cfg)
+        db-id (get-in c [:store :id])
+        conn  (<! (setup c))
+        _     (<! (d/transact! conn schema))
+        vid   (rand-uuid)
+        _     (<! (d/transact! conn {:tx-data [{:thing/id vid :thing/title "Windowed"}]
+                                     :tx-meta {:db.valid/from #inst "2026-06-01T00:00:00.000-00:00"}}))
+        connect-fn (fn [id _] (when (= id db-id) conn))
+        inside  (ref/reference db-id [:thing/id vid] {:valid #inst "2026-07-01T00:00:00.000-00:00"})
+        before  (ref/reference db-id [:thing/id vid] {:valid #inst "2025-01-01T00:00:00.000-00:00"})]
+    (is (some? (:eid (ref/resolve-reference inside connect-fn)))
+        "valid-time point inside the window resolves")
+    (is (nil? (:eid (ref/resolve-reference before connect-fn)))
+        "valid-time point before the window dangles")
+    (<! (teardown conn c))))
+
+(deftest-async system-schema-graduation
+  ;; :dh.ref/* are system-installed: a schema-on-write database accepts
+  ;; reified references WITHOUT any user schema declaration, and they are
+  ;; datalog-queryable by predicate.
+  (let [c    (cfg)
+        conn (<! (setup c))
+        r    (ref/reference (rand-uuid) [:entity/uuid (rand-uuid)] {:tx 42})
+        _    (<! (d/transact! conn [(ref/reference->tx-map r :derived-from)]))
+        types (d/q '[:find [?t ...] :where [?e :dh.ref/type ?t]] @conn)]
+    (is (= [:derived-from] types)
+        "reified reference transacted with no user schema, queryable by type")
+    (is (= r (let [eid (d/q '[:find ?e . :where [?e :dh.ref/type :derived-from]] @conn)]
+               (ref/tx-map->reference (d/pull @conn '[*] eid))))
+        "pull round-trips back to the original Reference")
     (<! (teardown conn c))))

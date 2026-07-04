@@ -104,7 +104,25 @@
               [:db/ident :db.secondary/config 536870912 true]
               [:db/ident :db.secondary/status 536870912 true]
               [:db/ident :db.secondary/building-since-tx 536870912 true]
-              [:db/ident :db.secondary/only 536870912 true]])
+              [:db/ident :db.secondary/only 536870912 true]
+              ;; Cross-database reference attrs — the :dh.ref/* family
+              ;; graduated into system-schema (datahike.reference), full
+              ;; declarations like :db.valid/*. Five idents + four doc
+              ;; strings + ONE new distinct valueType ref-datom
+              ;; (29 = :db.type/uuid); the keyword/string valueTypes,
+              ;; cardinality (11) and `:db/index true` ref-datoms collapse
+              ;; with existing entries when materialised through `into #{}`.
+              [:db/ident :dh.ref/db 536870912 true]
+              [:db/ident :dh.ref/attr 536870912 true]
+              [:db/ident :dh.ref/value 536870912 true]
+              [:db/ident :dh.ref/temporal 536870912 true]
+              [:db/ident :dh.ref/type 536870912 true]
+              [:db/valueType 29 536870912 true]
+              [:db/doc "Cross-db reference: target database (store :id)" 536870912 true]
+              [:db/doc "Cross-db reference: unique attribute of the target lookup ref" 536870912 true]
+              [:db/doc "Cross-db reference: lookup-ref value, canonically encoded" 536870912 true]
+              [:db/doc "Cross-db reference: temporal qualifier (tx:/date:/valid:/branch:); absent = live head" 536870912 true]
+              [:db/doc "Cross-db reference: link predicate (application vocabulary)" 536870912 true]])
 
 (deftest export-import-test
   (let [os-prefix (case (System/getProperty "os.name")

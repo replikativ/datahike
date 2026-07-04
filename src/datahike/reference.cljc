@@ -123,24 +123,33 @@
     (str/starts-with? s "kw:")   (keyword (url-decode (subs s 3)))
     :else (or (parse-uuid* s) (url-decode s))))
 
-(defn- encode-temporal [{:keys [tx date branch]}]
-  (cond
-    tx     (str "tx:" tx)
-    date   (str "date:" #?(:clj (.toInstant ^java.util.Date date)
-                           :cljs (.toISOString date)))
-    branch (str "branch:" (url-encode branch))
-    :else nil))
+(defn- inst-str [d]
+  #?(:clj (str (.toInstant ^java.util.Date d)) :cljs (.toISOString d)))
+
+(defn- encode-temporal [{:keys [tx date valid branch]}]
+  (let [parts (cond-> []
+                tx     (conj (str "tx:" tx))
+                date   (conj (str "date:" (inst-str date)))
+                valid  (conj (str "valid:" (inst-str valid)))
+                branch (conj (str "branch:" (url-encode branch))))]
+    (when (seq parts) (str/join "," parts))))
+
+(defn- parse-inst [s]
+  #?(:clj (java.util.Date/from (java.time.Instant/parse s)) :cljs (js/Date. s)))
 
 (defn- decode-temporal [s]
   (when (seq s)
-    (cond
-      (str/starts-with? s "tx:")     {:tx #?(:clj (Long/parseLong (subs s 3))
-                                             :cljs (js/parseInt (subs s 3) 10))}
-      (str/starts-with? s "date:")   {:date #?(:clj (java.util.Date/from
-                                                     (java.time.Instant/parse (subs s 5)))
-                                               :cljs (js/Date. (subs s 5)))}
-      (str/starts-with? s "branch:") {:branch (url-decode (subs s 7))}
-      :else (throw (ex-info "Unknown temporal qualifier" {:temporal s})))))
+    (reduce
+     (fn [m part]
+       (cond
+         (str/starts-with? part "tx:")     (assoc m :tx #?(:clj (Long/parseLong (subs part 3))
+                                                           :cljs (js/parseInt (subs part 3) 10)))
+         (str/starts-with? part "date:")   (assoc m :date (parse-inst (subs part 5)))
+         (str/starts-with? part "valid:")  (assoc m :valid (parse-inst (subs part 6)))
+         (str/starts-with? part "branch:") (assoc m :branch (url-decode (subs part 7)))
+         :else (throw (ex-info "Unknown temporal qualifier" {:temporal part}))))
+     {}
+     (str/split s #","))))
 
 (defn render
   "Reference → `dh://…` URI string."
@@ -168,7 +177,12 @@
 (def ref-schema
   "Schema for storing OUTGOING cross-database references as first-class,
    datalog-queryable entities. `:dh.ref/type` is the link predicate —
-   application-defined (`:mentions`, `:summarizes`, `:derived-from`, …)."
+   application-defined (`:mentions`, `:summarizes`, `:derived-from`, …).
+
+   NEW databases have these pre-installed in the system schema (they
+   graduated like `:db.valid/*` / `:db.secondary/*`) — transact `:dh.ref/*`
+   directly, no schema declaration needed. Keep this def for stores
+   created before the graduation: transact it once there."
   [{:db/ident :dh.ref/db
     :db/valueType :db.type/uuid
     :db/cardinality :db.cardinality/one
@@ -210,11 +224,14 @@
 ;; Resolution
 ;; ============================================================================
 
-(defn- apply-temporal [db {:keys [tx date]}]
-  (cond
-    tx   (d/as-of db tx)
-    date (d/as-of db date)
-    :else db))
+(defn- apply-temporal
+  ;; Composition order per the valid-time API doc: wrap as-of (tx-time
+  ;; horizon) FIRST, valid-at (valid-time point) OUTERMOST.
+  [db {:keys [tx date valid]}]
+  (cond-> db
+    tx    (d/as-of tx)
+    date  (d/as-of date)
+    valid (d/valid-at valid)))
 
 (defn- ->db
   "connect-fn result (conn or db value) + temporal → the db to read."

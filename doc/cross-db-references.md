@@ -24,7 +24,7 @@ to one index. It must be value-level:
 |---|---|---|
 | `db-id` | target database | the store `:id` (mandatory UUID) |
 | `selector` | entity inside it | a lookup ref `[attr value]` (unique attr; non-unique falls back to a value query) |
-| `temporal` | which version | `nil` = live head; `{:tx n}` / `{:date inst}` = `as-of`; `{:branch "name"}` = branch head |
+| `temporal` | which version | `nil` = live head; `{:tx n}` / `{:date inst}` = `as-of`; `{:valid inst}` = [valid-time](./valid_time.md) point (combinable with `:tx`/`:date`); `{:branch "name"}` = branch head |
 
 The temporal distinguishes the **two reference kinds**:
 
@@ -33,6 +33,12 @@ The temporal distinguishes the **two reference kinds**:
 - **Record reference** (`:tx` / `:date`): pinned to a snapshot. For
   provenance, citation, audit — immutable, and resolvable forever on
   stores with `:keep-history? true`.
+
+With [bitemporal valid-time](./valid_time.md), `{:valid inst}` pins the
+*valid-time* axis (`valid-at`, supersession semantics) and composes with
+the tx-time pin — `{:tx n :valid v}` reads "what we believed at tx `n`
+about the state valid at `v`", the classic bitemporal citation. Applied
+in the documented composition order (`valid-at` outermost over `as-of`).
 
 ## URI form
 
@@ -44,6 +50,7 @@ dh://<db-id>/<attr>/<value>[@<temporal>]
 dh://96ae43a7-…/entity%2Fuuid/08308437-…                    ; living
 dh://96ae43a7-…/S.Page%2Ftitle/str:Roadmap@tx:536871113     ; record
 dh://96ae43a7-…/entity%2Fuuid/08308437-…@branch:experiment  ; branch head
+dh://96ae43a7-…/entity%2Fuuid/08308437-…@tx:536871113,valid:2026-06-01T00:00:00Z  ; bitemporal
 ```
 
 Attr keywords are URL-encoded whole; values carry an optional type tag
@@ -65,6 +72,13 @@ URI string, so links stay queryable in datalog by predicate and target:
 `reference->tx-map` / `tx-map->reference` convert. Keep *within*-database
 links as plain `:db.type/ref` attributes — reified references are only
 for crossing stores.
+
+The `:dh.ref/*` attributes are **installed in the system schema** (they
+graduated like `:db.valid/*` and `:db.secondary/*`): new databases accept
+reified references without any schema declaration, in both
+schema-flexibility modes, with `:dh.ref/db` and `:dh.ref/value`
+AVET-indexed for reverse lookups ("all references into database X"). For
+stores created before the graduation, transact `ref-schema` once.
 
 ## Resolution
 

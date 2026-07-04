@@ -155,7 +155,41 @@
    {:db/id 45
     :db/ident :db.secondary/building-since-tx}
    {:db/id 46
-    :db/ident :db.secondary/only}])
+    :db/ident :db.secondary/only}
+   ;; Cross-database reference attrs (datahike.reference) — graduated into
+   ;; the system schema like `:db.valid/*`, so reified `dh://` references
+   ;; are transactable on any database without a user schema declaration.
+   ;; Plain USER-DATA attrs (not schema-meta): deliberately NOT part of the
+   ;; `schema?` datom classification in db.transaction. `:dh.ref/db` and
+   ;; `:dh.ref/value` are AVET-indexed for reverse lookups ("all references
+   ;; into database X / to value V"). See `doc/cross-db-references.md`.
+   {:db/id 47
+    :db/ident :dh.ref/db
+    :db/valueType :db.type/uuid
+    :db/cardinality :db.cardinality/one
+    :db/doc "Cross-db reference: target database (store :id)"
+    :db/index true}
+   {:db/id 48
+    :db/ident :dh.ref/attr
+    :db/valueType :db.type/keyword
+    :db/cardinality :db.cardinality/one
+    :db/doc "Cross-db reference: unique attribute of the target lookup ref"}
+   {:db/id 49
+    :db/ident :dh.ref/value
+    :db/valueType :db.type/string
+    :db/cardinality :db.cardinality/one
+    :db/doc "Cross-db reference: lookup-ref value, canonically encoded"
+    :db/index true}
+   {:db/id 50
+    :db/ident :dh.ref/temporal
+    :db/valueType :db.type/string
+    :db/cardinality :db.cardinality/one
+    :db/doc "Cross-db reference: temporal qualifier (tx:/date:/valid:/branch:); absent = live head"}
+   {:db/id 51
+    :db/ident :dh.ref/type
+    :db/valueType :db.type/keyword
+    :db/cardinality :db.cardinality/one
+    :db/doc "Cross-db reference: link predicate (application vocabulary)"}])
 
 (def ^:const system-entities
   "Holds the entity IDs of system attributes"
@@ -193,6 +227,8 @@
    :db/txInstant  {:db/noHistory true}
    :db.valid/from {:db/index true}
    :db.valid/to   {:db/index true}
+   :dh.ref/db     {:db/index true}
+   :dh.ref/value  {:db/index true}
    :db.entity/attrs {:db/cardinality :db.cardinality/many}
    :db.entity/preds {:db/cardinality :db.cardinality/many}})
 
