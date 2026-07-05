@@ -80,22 +80,16 @@
           :jar-file (jar-path repo-config project-config)})
   (println "Done."))
 
+(defn- compiled-ns-paths [ns-sym]
+  (let [class-path (str/replace (str ns-sym) "." "/")]
+    [(str class-path ".class")
+     (str class-path "__init.class")
+     (str class-path "$*.class")]))
+
 (defn- delete-compiled-ns! [class-dir ns-sym]
-  (let [class-path (str/replace (str ns-sym) "." "/")
-        slash-idx (str/last-index-of class-path "/")
-        dir (if slash-idx
-              (fs/file class-dir (subs class-path 0 slash-idx))
-              (fs/file class-dir))
-        prefix (if slash-idx
-                 (subs class-path (inc slash-idx))
-                 class-path)]
-    (when (fs/exists? dir)
-      (doseq [file (fs/list-dir dir)
-              :let [file-name (fs/file-name file)]
-              :when (and (str/starts-with? file-name prefix)
-                         (str/ends-with? file-name ".class")
-                         (contains? #{\. \$ \_} (nth file-name (count prefix) \.)))]
-        (fs/delete file)))))
+  (doseq [path (compiled-ns-paths ns-sym)
+          file (fs/glob class-dir path)]
+    (fs/delete-if-exists file)))
 
 (defn uber
   "Builds uber jar file"
