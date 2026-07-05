@@ -4,6 +4,8 @@ on:
   push:
     branches:
       - main
+      # TEMP: run native build for PR #851 (harismh/fix-native-image-builds). Do not merge.
+      - ci/pr-851-native
     paths-ignore:
       - '**/README.md'
       - 'doc/**'
