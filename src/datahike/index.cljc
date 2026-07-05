@@ -26,6 +26,7 @@
 (def add-konserve-handlers di/add-konserve-handlers)
 (def konserve-backend di/konserve-backend)
 (def default-index-config di/default-index-config)
+(def with-storage di/with-storage)
 
 ;; Other functions
 

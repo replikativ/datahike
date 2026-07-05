@@ -475,6 +475,29 @@
         (reset! storage-cell storage)
         (assoc store :storage storage :datahike/store-id store-id :datahike/branching-factor bf)))))
 
+(defmethod di/with-storage :datahike.index/persistent-set [_index-name pset storage]
+  ;; A PSS root carries its IStorage in the `_storage` field — connection-
+  ;; scoped context, not value state: the canonical write handler strips it
+  ;; and the read handler re-binds it on deserialize. Identity-preserving
+  ;; stores (a tiered memory frontend) return live roots WITHOUT
+  ;; deserializing, so binding must not rely on serialization. Produce a
+  ;; shallow copy bound to `storage` (nil ⇒ detached), sharing the node
+  ;; tree; the comparator is rebuilt from :index-type meta exactly as the
+  ;; read handler does, so the copy equals what a deserialize would yield.
+  #?(:clj
+     (if (instance? PersistentSortedSet pset)
+       (let [^PersistentSortedSet p pset
+             m (meta p)
+             cmp (index-type->cmp-quick (:index-type m) false)]
+         (PersistentSortedSet. m cmp (.-_address p) storage (.-_root p)
+                               (.-_count p) (.-_settings p) (.-_version p)))
+       pset)
+     :cljs
+     (if (instance? BTSet pset)
+       (BTSet. (.-root pset) (.-cnt pset) (.-comparator pset) (.-meta pset)
+               nil storage (.-address pset) (.-settings pset))
+       pset)))
+
 (defmethod di/konserve-backend :datahike.index/persistent-set [_index-name store]
   store)
 

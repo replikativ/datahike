@@ -131,7 +131,14 @@
                    :temporal-aevt-key (safe-root temporal-aevt')
                    :temporal-avet-key (safe-root temporal-avet'))
             sec-roots
-            (assoc :secondary sec-roots))]
+            (assoc :secondary sec-roots))
+          ;; Detach index roots before they enter the store: a stored value
+          ;; must never carry a live storage handle. Serializing backends
+          ;; strip it anyway (the canonical write handler); this makes the
+          ;; same invariant hold for identity-preserving stores (tiered
+          ;; memory frontend), which would otherwise cache the live root
+          ;; with this connection's storage inside. stored->db rebinds.
+          detach (fn [idx] (di/with-storage (:index config) idx nil))]
       [schema-meta-kv-to-write
        (merge
         {:schema-meta-key  schema-meta-key
@@ -142,13 +149,13 @@
          :max-eid         max-eid
          :op-count        op-count
          :merkle-roots    merkle-roots
-         :eavt-key        eavt'
-         :aevt-key        aevt'
-         :avet-key        avet'}
+         :eavt-key        (detach eavt')
+         :aevt-key        (detach aevt')
+         :avet-key        (detach avet')}
         (when (:keep-history? config)
-          {:temporal-eavt-key temporal-eavt'
-           :temporal-aevt-key temporal-aevt'
-           :temporal-avet-key temporal-avet'})
+          {:temporal-eavt-key (detach temporal-eavt')
+           :temporal-aevt-key (detach temporal-aevt')
+           :temporal-avet-key (detach temporal-avet')})
         (when secondary-index-keys
           {:secondary-index-keys secondary-index-keys}))])))
 
@@ -214,7 +221,13 @@
         effective-ident-ref-map (or (:ident-ref-map schema-meta) ident-ref-map)
         sec-indices (restore-secondary-indices effective-schema effective-ident-ref-map
                                                secondary-index-keys store)
-        empty       (db/empty-db nil config store)]
+        empty       (db/empty-db nil config store)
+        ;; Bind each index to THIS connection's storage (as a copy). Stored
+        ;; values are storage-detached (db->stored) and deserializing
+        ;; backends bind on read anyway, but identity-preserving stores
+        ;; (tiered memory frontend) return the stored object as-is — so
+        ;; binding must happen here, at materialization, for every backend.
+        attach (fn [idx] (di/with-storage (:index config) idx (:storage store)))]
     (merge
      (assoc empty
             :max-tx max-tx
@@ -224,12 +237,12 @@
             :schema schema
             :hash hash
             :op-count op-count
-            :eavt eavt-key
-            :aevt aevt-key
-            :avet avet-key
-            :temporal-eavt temporal-eavt-key
-            :temporal-aevt temporal-aevt-key
-            :temporal-avet temporal-avet-key
+            :eavt (attach eavt-key)
+            :aevt (attach aevt-key)
+            :avet (attach avet-key)
+            :temporal-eavt (attach temporal-eavt-key)
+            :temporal-aevt (attach temporal-aevt-key)
+            :temporal-avet (attach temporal-avet-key)
             :rschema rschema
             :system-entities system-entities
             :ident-ref-map ident-ref-map
@@ -445,6 +458,8 @@
                           (assoc :temporal-eavt-key (safe-root temporal-eavt')
                                  :temporal-aevt-key (safe-root temporal-aevt')
                                  :temporal-avet-key (safe-root temporal-avet')))
+         ;; Detach roots before they enter the store (see db->stored).
+         detach (fn [idx] (di/with-storage (:index config) idx nil))
          pre-cid-stored
          (merge {:max-tx          max-tx
                  :max-eid         max-eid
@@ -454,13 +469,13 @@
                  :schema-meta-key schema-meta-key
                  :config          (update config :initial-tx (comp not empty?))
                  :meta            meta
-                 :eavt-key        eavt'
-                 :aevt-key        aevt'
-                 :avet-key        avet'}
+                 :eavt-key        (detach eavt')
+                 :aevt-key        (detach aevt')
+                 :avet-key        (detach avet')}
                 (when keep-history?
-                  {:temporal-eavt-key temporal-eavt'
-                   :temporal-aevt-key temporal-aevt'
-                   :temporal-avet-key temporal-avet'}))
+                  {:temporal-eavt-key (detach temporal-eavt')
+                   :temporal-aevt-key (detach temporal-aevt')
+                   :temporal-avet-key (detach temporal-avet')}))
          cid (create-commit-id db pre-cid-stored)
          meta (assoc meta :datahike/commit-id cid)
          db-to-store (assoc pre-cid-stored :meta meta)]

@@ -42,6 +42,20 @@
   "Returns the default index configuration."
   (fn [index-name] index-name))
 
+(defmulti with-storage
+  "Return `index` bound to `storage` as a shallow copy sharing the
+   (immutable) node tree. Storage is connection-scoped context, not part
+   of the index value: bind an index to the live connection's storage
+   when materializing it from a store, and detach it (storage nil) before
+   writing it into a store, so a stored value never carries a foreign
+   storage handle — even through identity-preserving stores that skip
+   serialization (e.g. a tiered memory frontend). Never mutates the
+   input; returns the index unchanged for index types without embedded
+   storage and for nil."
+  (fn [index-name _index _storage] index-name))
+
+(defmethod with-storage :default [_index-name index _storage] index)
+
 ;; Default handlers for missing index implementations
 
 (defn- hitchhiker-tree-missing-error []
