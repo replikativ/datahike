@@ -8,7 +8,6 @@
   (:import [datahike.datom Datom]
            [datahike.connector Connection])
   (:gen-class
-   :name datahike.impl.libdatahike
    :methods [^{:static true} [parseJSON [String] Object]
              ^{:static true} [parseEdn [String] Object]
              ^{:static true} [parseCBOR [bytes] Object]
