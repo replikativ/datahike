@@ -12,10 +12,10 @@
   (:require [kabel.pubsub :as pubsub]
             [kabel.pubsub.protocol :as proto]
             [kabel.peer :as peer]
-            #?(:clj [kabel.platform-log :refer [debug info warn]])
+            #?(:clj  [replikativ.logging :refer [debug info warn]]
+               :cljs [replikativ.logging :refer [debug info warn] :include-macros true])
             #?(:clj [clojure.core.async :refer [go put! chan close!]]
-               :cljs [clojure.core.async :refer [go put! chan close!] :include-macros true]))
-  #?(:cljs (:require-macros [kabel.platform-log :refer [debug info warn]])))
+               :cljs [clojure.core.async :refer [go put! chan close!] :include-macros true])))
 
 ;; =============================================================================
 ;; Topic Naming
