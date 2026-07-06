@@ -2365,10 +2365,26 @@
         (if (nat-int? n) n 1000000))
       1000000)))
 
+(defn- result-weight
+  "Cached-tuple weight of one query result. Relation / collection finds
+   return countable collections (weight = tuple count); scalar-find (`.`)
+   and single-tuple / single-pull finds return a non-collection value
+   that weighs 1. Computed once at cache-put time and stored on the entry
+   as :weight, so the weigh path never calls `count` on a raw result
+   (a scalar `:result` would otherwise throw)."
+  [result]
+  (cond
+    (nil? result)     0
+    (counted? result) (count result)
+    #?@(:clj [(instance? java.util.Collection result) (count result)])
+    (coll? result)    (count result)
+    :else             1))
+
 (defn- bucket-weight
-  "Total number of result tuples cached in one DB-snapshot bucket."
+  "Total cached-tuple weight of one DB-snapshot bucket — sums the
+   per-entry :weight precomputed at cache-put time (see `result-weight`)."
   [bucket]
-  (reduce-kv (fn [acc _ entry] (+ acc (count (:result entry)))) 0 bucket))
+  (reduce-kv (fn [acc _ entry] (+ acc (:weight entry 0))) 0 bucket))
 
 (defonce ^{:doc "Global weighted LRU query result cache. Keys are [hash max-tx max-eid]
    identifying a DB snapshot. Values are maps of {cache-key -> {:result r :attrs #{...}}}.
@@ -2508,7 +2524,9 @@
     (swap! query-result-cache
            (fn [lru]
              (let [existing (or (get lru dk) {})]
-               (assoc lru dk (assoc existing cache-key {:result result :attrs attr-deps})))))))
+               (assoc lru dk (assoc existing cache-key
+                                    {:result result :attrs attr-deps
+                                     :weight (result-weight result)})))))))
 
 (defn propagate-query-cache
   "Propagate query result cache from parent DB to child DB after a transaction.

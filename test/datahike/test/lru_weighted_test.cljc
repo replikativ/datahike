@@ -77,3 +77,31 @@
            (q/set-query-cache-size! orig-size)
            (q/set-query-cache-weight-limit! orig-limit)
            (q/clear-query-cache!))))))
+
+#?(:clj
+   (deftest scalar-find-cacheable-under-weight-budget
+     ;; Regression: a scalar find (`[:find ?x .]`) caches a non-collection
+     ;; result. The weigh path must not `(count ...)` it — that threw
+     ;; "count not supported on this type" and broke every scalar query
+     ;; while the (default) weight budget was enabled.
+     (let [orig-limit @#'q/*query-cache-weight-limit*
+           cfg        {:store {:backend :memory :id (random-uuid)}
+                       :schema-flexibility :write
+                       :keep-history?      false}]
+       (try
+         (q/set-query-cache-weight-limit! 1000000)   ; default budget on
+         (q/clear-query-cache!)
+         (d/create-database cfg)
+         (let [conn (d/connect cfg)]
+           (d/transact conn [{:db/ident :pos/x :db/valueType :db.type/long
+                              :db/cardinality :db.cardinality/one}])
+           (d/transact conn [{:pos/x 42}])
+           (let [db @conn]
+             (is (= 42 (d/q '[:find ?x . :where [_ :pos/x ?x]] db)))
+             (is (= 42 (d/q '[:find ?x . :where [_ :pos/x ?x]] db)))   ; cache-hit path
+             (is (= #{[42]} (d/q '[:find ?x :where [_ :pos/x ?x]] db)))) ; other finds still fine
+           (d/release conn))
+         (finally
+           (d/delete-database cfg)
+           (q/set-query-cache-weight-limit! orig-limit)
+           (q/clear-query-cache!))))))
