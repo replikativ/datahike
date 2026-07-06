@@ -69,29 +69,29 @@
 
 (def prop-matches-model
   (prop/for-all [{:keys [limit weight-limit puts]} gen-input]
-    (let [real  (run-real  limit weight-limit weigh puts)
-          st    (state real)
-          model (run-model limit weight-limit weigh puts)
-          kept  (set (:order model))]
-      (and
+                (let [real  (run-real  limit weight-limit weigh puts)
+                      st    (state real)
+                      model (run-model limit weight-limit weigh puts)
+                      kept  (set (:order model))]
+                  (and
        ;; same surviving key set as the independently-derived model
-       (= kept (set (keys (:key-value st))))
+                   (= kept (set (keys (:key-value st))))
        ;; every surviving key returns its last-put value, via ILookup
-       (every? (fn [k] (= (get (:vals model) k) (get real k))) kept)
+                   (every? (fn [k] (= (get (:vals model) k) (get real k))) kept)
        ;; bookkeeping consistency: tracked total-weight = recomputed weight
        ;; (0 when the budget is disabled, matching the impl's untracked path)
-       (= (:total-weight st)
-          (reduce (fn [a k] (+ a (eff-weigh weight-limit (get (:vals model) k)))) 0 kept))))))
+                   (= (:total-weight st)
+                      (reduce (fn [a k] (+ a (eff-weigh weight-limit (get (:vals model) k)))) 0 kept))))))
 
 (def prop-invariants
   (prop/for-all [{:keys [limit weight-limit puts]} gen-input]
-    (let [st       (state (run-real limit weight-limit weigh puts))
-          n        (count (:key-value st))
-          put-keys (set (map first puts))]
-      (and (<= n (max 1 limit))                                   ; entry cap
-           (or (zero? weight-limit) (<= n 1)
-               (<= (:total-weight st) weight-limit))               ; weight budget
-           (every? put-keys (keys (:key-value st)))))))            ; kept ⊆ put
+                (let [st       (state (run-real limit weight-limit weigh puts))
+                      n        (count (:key-value st))
+                      put-keys (set (map first puts))]
+                  (and (<= n (max 1 limit))                                   ; entry cap
+                       (or (zero? weight-limit) (<= n 1)
+                           (<= (:total-weight st) weight-limit))               ; weight budget
+                       (every? put-keys (keys (:key-value st)))))))            ; kept ⊆ put
 
 (deftest weighted-lru-matches-reference-model
   (let [{:keys [pass? fail]} (tc/quick-check 500 prop-matches-model)]
