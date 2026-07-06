@@ -145,6 +145,46 @@
     #?(:clj (d/delete-database cfg)
        :cljs (<! (d/delete-database cfg)))))
 
+(defn- temporal-rseek-cfg []
+  {:store {:backend :memory
+           :id #?(:clj (java.util.UUID/randomUUID) :cljs (random-uuid))}
+   :keep-history? true
+   :schema-flexibility :write
+   :initial-tx [{:db/ident :name :db/valueType :db.type/string
+                 :db/cardinality :db.cardinality/one}
+                {:db/ident :age :db/valueType :db.type/long
+                 :db/cardinality :db.cardinality/one}]})
+
+(deftest-async test-temporal-rseek-datoms
+  ;; History dbs merge the current + temporal indexes. The reverse seek
+  ;; must be the exact reverse of the forward seek over the same full
+  ;; range — this pins the lazy two-index reverse merge against the
+  ;; forward path — and `take` must stay lazy.
+  (let [cfg (temporal-rseek-cfg)
+        conn #?(:clj (do (d/create-database cfg) (d/connect cfg))
+                :cljs (do (<! (d/create-database cfg))
+                          (<! (d/connect cfg {:sync? false}))))
+        tx! (fn [data] #?(:clj (go (d/transact conn data))
+                          :cljs (go (<! (d/transact! conn data)))))]
+    (<! (tx! [{:db/id 1 :name "Petr" :age 44} {:db/id 2 :name "Ivan" :age 25}]))
+    (<! (tx! [{:db/id 1 :age 45}]))     ; 44 → history
+    (<! (tx! [{:db/id 2 :age 26}]))     ; 25 → history
+    (<! (tx! [{:db/id 1 :age 46}]))     ; 45 → history
+    (let [hist (d/history @conn)
+          dvec #(vector (:e %) (:a %) (:v %) (:added %))]
+      (doseq [idx [:eavt :aevt :avet]]
+        (testing (str "rseek = reverse of seek over the full history index — " idx)
+          (is (= (map dvec (d/rseek-datoms hist idx))
+                 (reverse (map dvec (d/seek-datoms hist idx)))))))
+      (testing "history includes retracted datoms (:added false)"
+        (is (some (comp false? last) (map dvec (d/rseek-datoms hist :eavt)))))
+      (testing "lazy take returns a prefix"
+        (is (= (map dvec (take 4 (d/rseek-datoms hist :eavt)))
+               (take 4 (map dvec (d/rseek-datoms hist :eavt)))))))
+    (d/release conn)
+    #?(:clj (d/delete-database cfg)
+       :cljs (<! (d/delete-database cfg)))))
+
 (deftest test-index-range
   (let [dvec #(vector (:e %) (:a %) (:v %))
         db    (d/db-with
