@@ -181,6 +181,12 @@
   IIndex
   (-slice [^PersistentSortedSet pset from to index-type]
     (psset/slice pset from to (slice-comparator-constructor index-type from to)))
+  (-rslice [^PersistentSortedSet pset from to index-type]
+    ;; rslice iterates DESCENDING from `from` down to `to` (from = upper
+    ;; bound). Lazy: only the seek path + consumed range restore nodes.
+    ;; The generated comparator inspects nil components of both bounds
+    ;; symmetrically, so the same constructor serves both directions.
+    (psset/rslice pset from to (slice-comparator-constructor index-type from to)))
   (-lookup [^PersistentSortedSet pset key cmp]
     #?(:clj  (.lookup pset key cmp)
        :cljs (psset/lookup pset key cmp)))

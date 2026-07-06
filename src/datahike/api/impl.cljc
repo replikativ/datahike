@@ -100,6 +100,21 @@
   [db {:keys [index components]}]
   (dbi/seek-datoms db index components))
 
+(defmulti rseek-datoms
+  (fn
+    ([_db arg-map] (if (map? arg-map) ::arg-map ::index))
+    ([_db _index & _components] ::index)))
+
+(defmethod rseek-datoms ::arg-map
+  [db {:keys [index components]}]
+  (dbi/rseek-datoms db index components))
+
+(defmethod rseek-datoms ::index
+  [db index & components]
+  (if (nil? components)
+    (dbi/rseek-datoms db index [])
+    (dbi/rseek-datoms db index components)))
+
 (defmethod seek-datoms ::index
   [db index & components]
   (if (nil? components)

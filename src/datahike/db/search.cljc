@@ -279,18 +279,23 @@
                          (di/-slice index from to index-type)
                          (di/-slice temporal-index from to index-type))))
 
-(defn temporal-rseek-datoms [db index-type cs]
+(defn temporal-rseek-datoms
+  "Reverse seek over history dbs: datoms <= cs, descending to the index
+   beginning (matching rseek-datoms' documented semantics; previously it
+   went from the index END down to cs). Still realizes the bounded range
+   (distinct-datoms merges the current+temporal indexes in ascending
+   order); a fully lazy two-index reverse merge can come later if needed."
+  [db index-type cs]
   (let [index (get db index-type)
         temporal-index (get db (keyword (str "temporal-" (name index-type))))
-        from (dbu/components->pattern db index-type cs e0 tx0)
-        to (datom emax nil nil txmax)]
-    (concat
-     (-> (dbu/distinct-datoms db
-                              index-type
-                              (di/-slice index from to index-type)
-                              (di/-slice temporal-index from to index-type))
-         vec
-         rseq))))
+        from (datom e0 nil nil tx0)
+        to (dbu/components->pattern db index-type cs emax txmax)]
+    (-> (dbu/distinct-datoms db
+                             index-type
+                             (di/-slice index from to index-type)
+                             (di/-slice temporal-index from to index-type))
+        vec
+        rseq)))
 
 (defn temporal-index-range [db current-db attr start end]
   (when-not (dbu/indexing? db attr)

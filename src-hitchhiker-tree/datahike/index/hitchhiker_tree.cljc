@@ -141,6 +141,12 @@
     (remove-datom tree datom index-type op-count))
   (-slice [tree from to index-type]
     (slice tree from to index-type))
+  (-rslice [tree from to index-type]
+    ;; hitchhiker-tree has no reverse iterator: realize the BOUNDED
+    ;; range [to .. from] forward and reverse it. Correct semantics
+    ;; (from = upper bound, descending), non-lazy — the pss index has
+    ;; the lazy fast path.
+    (-> (slice tree to from index-type) vec rseq))
   (-flush [tree backend]
     (flush-tree tree backend))
   (-transient [tree]
@@ -170,6 +176,12 @@
     (remove-datom tree datom index-type op-count))
   (-slice [tree from to index-type]
     (slice tree from to index-type))
+  (-rslice [tree from to index-type]
+    ;; hitchhiker-tree has no reverse iterator: realize the BOUNDED
+    ;; range [to .. from] forward and reverse it. Correct semantics
+    ;; (from = upper bound, descending), non-lazy — the pss index has
+    ;; the lazy fast path.
+    (-> (slice tree to from index-type) vec rseq))
   (-flush [tree backend]
     (flush-tree tree backend))
   (-transient [tree]

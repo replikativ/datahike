@@ -8,6 +8,7 @@
             [cljs.nodejs :as nodejs]
             ;; Sibling test namespaces — included so `bb node-cljs-test`
             ;; covers them too.
+            [datahike.test.index-test]
             [datahike.test.cljs-pattern-scan-test]
             [datahike.test.optimistic-test]
             [datahike.test.valid-time-test]
@@ -365,6 +366,7 @@
 
 (defn -main []
   (t/run-tests 'datahike.test.nodejs-test
+               'datahike.test.index-test
                'datahike.test.cljs-pattern-scan-test
                'datahike.test.optimistic-test
                'datahike.test.valid-time-test
