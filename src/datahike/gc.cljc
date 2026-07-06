@@ -1,6 +1,6 @@
 (ns datahike.gc
   (:require [clojure.set :as set]
-            [datahike.index.interface :refer [-mark]]
+            [datahike.index.interface :refer [-mark with-storage]]
             [datahike.index.secondary :as sec]
             [konserve.core :as k]
             [konserve.gc :refer [sweep!]]
@@ -37,15 +37,18 @@
                                            (fn [acc _idx-ident key-map]
                                              (set/union acc (sec/mark-from-key-map key-map store)))
                                            #{} secondary-index-keys))
+                          ;; Stored roots are storage-detached; bind them to
+                          ;; this store's storage so -mark can walk the tree.
+                          mark (fn [idx] (-mark (with-storage (:index config) idx (:storage store))))
                           new-reachable (cond-> (set/union reachable #{to-check}
                                                            (when schema-meta-key #{schema-meta-key})
-                                                           (-mark eavt-key)
-                                                           (-mark aevt-key)
-                                                           (-mark avet-key))
+                                                           (mark eavt-key)
+                                                           (mark aevt-key)
+                                                           (mark avet-key))
                                           (:keep-history? config)
-                                          (set/union (-mark temporal-eavt-key)
-                                                     (-mark temporal-aevt-key)
-                                                     (-mark temporal-avet-key))
+                                          (set/union (mark temporal-eavt-key)
+                                                     (mark temporal-aevt-key)
+                                                     (mark temporal-avet-key))
                                           sec-reachable
                                           (set/union sec-reachable))]
                       (recur (concat r (when in-range? parents))
