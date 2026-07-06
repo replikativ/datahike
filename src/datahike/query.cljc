@@ -2354,11 +2354,44 @@
         (if (pos? n) n 64))
       64)))
 
-(defonce ^{:doc "Global LRU query result cache. Keys are [hash max-tx max-eid] identifying
-   a DB snapshot. Values are maps of {cache-key -> {:result r :attrs #{...}}}.
+(def ^:dynamic *query-cache-weight-limit*
+  "Maximum total number of cached result tuples retained across all DB snapshots
+   in the query result cache. 0 disables the budget, leaving only the
+   snapshot-count cap *query-cache-size*. Set DATAHIKE_QUERY_CACHE_WEIGHT_LIMIT
+   env var or call set-query-cache-weight-limit! to change. Default: 1000000."
+  (let [env-val #?(:clj (System/getenv "DATAHIKE_QUERY_CACHE_WEIGHT_LIMIT") :cljs nil)]
+    (if env-val
+      (let [n #?(:clj (Long/parseLong env-val) :cljs (js/parseInt env-val))]
+        (if (nat-int? n) n 1000000))
+      1000000)))
+
+(defn- result-weight
+  "Cached-tuple weight of one query result. Relation / collection finds
+   return countable collections (weight = tuple count); scalar-find (`.`)
+   and single-tuple / single-pull finds return a non-collection value
+   that weighs 1. Computed once at cache-put time and stored on the entry
+   as :weight, so the weigh path never calls `count` on a raw result
+   (a scalar `:result` would otherwise throw)."
+  [result]
+  (cond
+    (nil? result)     0
+    (counted? result) (count result)
+    #?@(:clj [(instance? java.util.Collection result) (count result)])
+    (coll? result)    (count result)
+    :else             1))
+
+(defn- bucket-weight
+  "Total cached-tuple weight of one DB-snapshot bucket — sums the
+   per-entry :weight precomputed at cache-put time (see `result-weight`)."
+  [bucket]
+  (reduce-kv (fn [acc _ entry] (+ acc (:weight entry 0))) 0 bucket))
+
+(defonce ^{:doc "Global weighted LRU query result cache. Keys are [hash max-tx max-eid]
+   identifying a DB snapshot. Values are maps of {cache-key -> {:result r :attrs #{...}}}.
+   Bounded by *query-cache-size* snapshots and *query-cache-weight-limit* total tuples.
    Inspect with @datahike.query/query-result-cache."}
   query-result-cache
-  (atom (datahike.lru/lru *query-cache-size*)))
+  (atom (datahike.lru/weighted-lru *query-cache-size* *query-cache-weight-limit* bucket-weight)))
 
 (defn set-query-cache-size!
   "Set the maximum number of DB snapshots retained in the query result cache.
@@ -2367,13 +2400,26 @@
   {:pre [(pos-int? n)]}
   #?(:clj (alter-var-root #'*query-cache-size* (constantly n))
      :cljs (set! *query-cache-size* n))
-  (reset! query-result-cache (datahike.lru/lru n))
+  (reset! query-result-cache
+          (datahike.lru/weighted-lru n *query-cache-weight-limit* bucket-weight))
   n)
 
 (defn clear-query-cache!
   "Clear all entries from the query result cache."
   []
-  (reset! query-result-cache (datahike.lru/lru *query-cache-size*)))
+  (reset! query-result-cache
+          (datahike.lru/weighted-lru *query-cache-size* *query-cache-weight-limit* bucket-weight)))
+
+(defn set-query-cache-weight-limit!
+  "Set the maximum total number of cached result tuples across all DB snapshots.
+   0 disables the weight budget. Takes effect immediately by replacing the cache."
+  [n]
+  {:pre [(nat-int? n)]}
+  #?(:clj (alter-var-root #'*query-cache-weight-limit* (constantly n))
+     :cljs (set! *query-cache-weight-limit* n))
+  (reset! query-result-cache
+          (datahike.lru/weighted-lru *query-cache-size* n bucket-weight))
+  n)
 
 (defn- db-cache-key
   "Compute the cache identity key for a DB snapshot."
@@ -2478,7 +2524,9 @@
     (swap! query-result-cache
            (fn [lru]
              (let [existing (or (get lru dk) {})]
-               (assoc lru dk (assoc existing cache-key {:result result :attrs attr-deps})))))))
+               (assoc lru dk (assoc existing cache-key
+                                    {:result result :attrs attr-deps
+                                     :weight (result-weight result)})))))))
 
 (defn propagate-query-cache
   "Propagate query result cache from parent DB to child DB after a transaction.
