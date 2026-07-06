@@ -418,6 +418,20 @@
                  :code "(seek-datoms db {:index :eavt :components [1]})"}]
      :impl datahike.api.impl/seek-datoms}
 
+    rseek-datoms
+    {:args [:function
+            [:=> [:cat :datahike/SDB :datahike/SIndexLookupArgs] [:maybe :datahike/SDatoms]]
+            [:=> [:cat :datahike/SDB :keyword [:* :any]] [:maybe :datahike/SDatoms]]]
+     :ret [:maybe :datahike/SDatoms]
+     :categories [:query :index :advanced]
+     :stability :experimental
+     :supports-remote? true
+     :referentially-transparent? true
+     :doc "Like seek-datoms, but iterates BACKWARDS: datoms <= the given components, descending to the beginning of the index. Lazy on the persistent-sorted-set index — the primitive for windowed backwards pagination (latest-N, N-before-cursor)."
+     :examples [{:desc "Latest room messages, newest first"
+                 :code "(take 20 (rseek-datoms db {:index :avet :components [:message/room room-eid]}))"}]
+     :impl datahike.api.impl/rseek-datoms}
+
     index-range
     {:args [:=> [:cat :datahike/SDB :datahike/SIndexRangeArgs] :datahike/SDatoms]
      :ret :datahike/SDatoms

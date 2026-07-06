@@ -262,15 +262,20 @@
                          index-type))
       (post-process-datoms db context)))
 
-(defn contextual-rseek-datoms [db index-type cs context]
+(defn contextual-rseek-datoms
+  "Datoms <= the components pattern, DESCENDING to the beginning of the
+   index — the documented rseek-datoms semantics ('same as seek-datoms,
+   but goes backwards until the beginning of the index'). The previous
+   implementation forward-sliced from cs to the END of the index and
+   reversed a realized vector: wrong direction per its own docstring,
+   and O(everything after cs) on lazy konserve-backed indexes."
+  [db index-type cs context]
   (-> (case (dbi/context-temporal? context)
         true (dbs/temporal-rseek-datoms db index-type cs)
-        false (-> (di/-slice (get db index-type)
-                             (dbu/components->pattern db index-type cs e0 tx0)
-                             (datom emax nil nil txmax)
-                             index-type)
-                  vec
-                  rseq))
+        false (di/-rslice (get db index-type)
+                          (dbu/components->pattern db index-type cs emax txmax)
+                          (datom e0 nil nil tx0)
+                          index-type))
       (post-process-datoms db context)))
 
 (defn contextual-index-range [db avet attr start end context]

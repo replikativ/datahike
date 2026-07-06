@@ -2,8 +2,10 @@
   (:require
    #?(:cljs [cljs.test    :as t :refer-macros [is deftest testing]]
       :clj  [clojure.test :as t :refer        [is deftest testing]])
+   [clojure.core.async :as a :refer [<! go]]
    [datahike.api :as d]
    [datahike.constants :refer [e0 tx0 emax txmax]]
+   [datahike.test.async #?(:clj :refer :cljs :refer-macros) [deftest-async]]
    [datahike.datom :as dd]
    [datahike.db :as db]
    [datahike.index :as di]
@@ -84,34 +86,64 @@
              [[1 :name "Petr"]
               [3 :name "Sergey"]])))))
 
-#_(deftest test-rseek-datoms ;; TODO: implement rseek within hitchhiker tree
-    (let [dvec #(vector (:e %) (:a %) (:v %))
-          db (-> (db/empty-db {:name {:db/index true}
-                               :age  {:db/index true}})
-                 (d/db-with [[:db/add 1 :name "Petr"]
-                             [:db/add 1 :age 44]
-                             [:db/add 2 :name "Ivan"]
-                             [:db/add 2 :age 25]
-                             [:db/add 3 :name "Sergey"]
-                             [:db/add 3 :age 11]]))]
+;; Connection-based + deftest-async so it runs cross-platform (CLJS
+;; connects async) and exercises the store-backed index. Assertions are
+;; [a v] pairs — eid-independent.
+(defn- rseek-cfg []
+  {:store {:backend :memory
+           :id #?(:clj (java.util.UUID/randomUUID)
+                  :cljs (random-uuid))}
+   :keep-history? false
+   :schema-flexibility :write
+   :initial-tx [{:db/ident :name
+                 :db/valueType :db.type/string
+                 :db/cardinality :db.cardinality/one
+                 :db/index true}
+                {:db/ident :age
+                 :db/valueType :db.type/long
+                 :db/cardinality :db.cardinality/one
+                 :db/index true}]})
 
-      (testing "Non-termination"
-        (is (= (map dvec (d/rseek-datoms db :avet :name "Petr"))
-               [[1 :name "Petr"]
-                [2 :name "Ivan"]
-                [1 :age 44]
-                [2 :age 25]
-                [3 :age 11]])))
+(deftest-async test-rseek-datoms
+  (let [cfg (rseek-cfg)
+        conn #?(:clj (do (d/create-database cfg) (d/connect cfg))
+                :cljs (do (<! (d/create-database cfg))
+                          (<! (d/connect cfg {:sync? false}))))
+        _ #?(:clj (d/transact conn [{:name "Petr" :age 44}
+                                    {:name "Ivan" :age 25}
+                                    {:name "Sergey" :age 11}])
+             :cljs (<! (d/transact! conn [{:name "Petr" :age 44}
+                                          {:name "Ivan" :age 25}
+                                          {:name "Sergey" :age 11}])))
+        db @conn
+        av #(vector (:a %) (:v %))]
 
-      (testing "Closest value lookup"
-        (is (= (map dvec (d/rseek-datoms db :avet :age 26))
-               [[2 :age 25]
-                [3 :age 11]])))
+    (testing "descends from the seek point to the index beginning"
+      (is (= (map av (d/rseek-datoms db :avet :name "Petr"))
+             [[:name "Petr"]
+              [:name "Ivan"]
+              [:age 44]
+              [:age 25]
+              [:age 11]])))
 
-      (testing "Exact value lookup"
-        (is (= (map dvec (d/rseek-datoms db :avet :age 25))
-               [[2 :age 25]
-                [3 :age 11]])))))
+    (testing "closest value lookup (no exact match)"
+      (is (= (map av (d/rseek-datoms db :avet :age 26))
+             [[:age 25]
+              [:age 11]])))
+
+    (testing "exact value lookup is inclusive"
+      (is (= (map av (d/rseek-datoms db :avet :age 25))
+             [[:age 25]
+              [:age 11]])))
+
+    (testing "windowed take touches only the tail"
+      (is (= (map av (take 2 (d/rseek-datoms db :avet :age)))
+             [[:age 44]
+              [:age 25]])))
+
+    (d/release conn)
+    #?(:clj (d/delete-database cfg)
+       :cljs (<! (d/delete-database cfg)))))
 
 (deftest test-index-range
   (let [dvec #(vector (:e %) (:a %) (:v %))
