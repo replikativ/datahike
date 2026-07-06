@@ -42,3 +42,6 @@
               (reduced false)))
           true
           indices))
+
+(defn safe-rseq [coll]
+  (when (reversible? coll) (rseq coll)))

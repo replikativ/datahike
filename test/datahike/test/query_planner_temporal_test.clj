@@ -10,7 +10,7 @@
    [clojure.test :refer [deftest is testing]]
    [datahike.api :as d]
    [datahike.query :as q])
-  (:import [java.util UUID]))
+  (:import [java.util Date UUID]))
 
 (defn- fresh-cfg
   "In-memory DB with history enabled and attr-refs on — the mode where
@@ -35,6 +35,10 @@
               (apply d/q q-form inputs))
    :planner (binding [q/*disable-planner* false]
               (apply d/q q-form inputs))})
+
+(defn- tx-instant [tx-report]
+  (:v (first (filter #(= :db/txInstant (:a %))
+                     (:tx-data tx-report)))))
 
 ;; ---------------------------------------------------------------------------
 ;; Bug 1 — rule body with nested or-join + :attribute-refs? mode
@@ -451,3 +455,79 @@
         (finally
           (d/delete-database baseline-cfg)
           (d/delete-database vt-cfg))))))
+
+;; ---------------------------------------------------------------------------
+;; Bug — date as-of card-one merge skipped the older visible value
+;;
+;;
+;; Minimal repro:
+;;
+;;   (d/transact conn [{:name "Alice" :age 20}
+;;                     {:name "Bob" :age 30}
+;;                     {:name "Charlie" :age 40}])
+;;   (let [timestamp (Date.)]
+;;     (d/transact conn {:tx-data [{:db/id 3 :age 25}]})
+;;     (d/q '[:find ?e ?n ?a
+;;            :where
+;;            [?e :name ?n]
+;;            [?e :age ?a]]
+;;          (d/as-of (d/db conn) timestamp)))
+;;
+;;  as-of timestamp
+;;   expected: #{[1 "Alice" 20] [2 "Bob" 30] [3 "Charlie" 40]}
+;;     actual: #{[1 "Alice" 20] [2 "Bob" 30]}
+;;
+;;
+;; From native-pod tests but was reproducible on JVM and JS. The failure
+;; only appeared when the Date used for `as-of` landed in the millisecond
+;; gap after the initial txInstant and before the update txInstant. In that
+;; window the planner's card-one merge found Charlie's current age datom,
+;; rejected it as too new, and stopped instead of looking back through
+;; temporal history for the older visible age.
+
+(deftest test-as-of-card-one-merge-uses-older-visible-value-when-current-value-is-too-new
+  (testing "date-based as-of keeps the old card-one value between tx instants"
+    (let [cfg {:keep-history? true
+               :search-cache-size 10000
+               :index :datahike.index/persistent-set
+               :store {:id (UUID/randomUUID)
+                       :backend :memory
+                       :scope "query-planner-temporal-test"}
+               :store-cache-size 1000
+               :attribute-refs? false
+               :writer {:backend :self}
+               :crypto-hash? false
+               :schema-flexibility :read
+               :branch :db}
+          q '[:find ?e ?n ?a
+              :where
+              [?e :name ?n]
+              [?e :age ?a]]]
+      (try
+        (d/create-database cfg)
+        (let [conn (d/connect cfg)
+              tx1 (d/transact conn [{:name "Alice" :age 20}
+                                    {:name "Bob" :age 30}
+                                    {:name "Charlie" :age 40}])
+              tx1-ms (.getTime ^Date (tx-instant tx1))]
+          (Thread/sleep 20)
+          (let [tx2 (d/transact conn {:tx-data [{:db/id 3 :age 25}]})
+                tx2-ms (.getTime ^Date (tx-instant tx2))
+                before-tx1 (Date. (dec tx1-ms))
+                at-tx1 (Date. tx1-ms)
+                before-tx2 (Date. (dec tx2-ms))
+                at-tx2 (Date. tx2-ms)
+                before-update #{[1 "Alice" 20] [2 "Bob" 30] [3 "Charlie" 40]}
+                after-update #{[1 "Alice" 20] [2 "Bob" 30] [3 "Charlie" 25]}]
+            (is (< tx1-ms (.getTime before-tx2) tx2-ms))
+            (doseq [[label as-of-date expected]
+                    [["before first tx" before-tx1 #{}]
+                     ["at first tx" at-tx1 before-update]
+                     ["one ms before second tx" before-tx2 before-update]
+                     ["at second tx" at-tx2 after-update]]]
+              (let [result (run-both q (d/as-of (d/db conn) as-of-date))]
+                (is (= (:legacy result) (:planner result)))
+                (is (= expected (:planner result)) label))))
+          (d/release conn))
+        (finally
+          (d/delete-database cfg))))))

@@ -8,6 +8,7 @@
    [datahike.db.interface :as dbi]
    [datahike.db.utils :as dbu]
    [datahike.index.interface :as di]
+   [datahike.index.utils :as iutils]
    [datahike.query.analyze :as analyze]
    [datahike.query.plan :as plan]
    [datahike.query.relation :as rel]
@@ -842,6 +843,23 @@
       ;; regular DB
       (maybe-post-process current-slice db origin-db))))
 
+(defn- visible-eavt-datom
+  "Find the first visible temporal EAVT datom for one card-one merge key.
+   Assemble the temporal slice, scan newest-first when the slice supports rseq,
+   and return the first datom that satisfies the temporal merge constraints."
+  [origin-db db temporal-type temporal-eavt
+   eid ra vg? vgv check-v? check-tx? scan-d temporal-tx-filter added-filter]
+  (when temporal-eavt
+    (let [from-d (datom eid ra (when vg? vgv) tx0)
+          to-d (datom eid ra (when vg? vgv) txmax)
+          slice (temporal-merge-slice origin-db from-d to-d temporal-type temporal-tx-filter db)
+          datoms (or (iutils/safe-rseq slice) slice)]
+      (some (fn [^Datom td]
+              (when (temporal-merge-datom-match? td eid ra vg? vgv check-v? check-tx? scan-d
+                                                 temporal-tx-filter added-filter)
+                td))
+            datoms))))
+
 (defn- build-scan-slice
   "Build the scan slice for execute-group-direct / execute-fused-scan-rel.
    For temporal DBs, merges current + temporal indexes.
@@ -1582,27 +1600,20 @@
                                            (do (aset merge-datoms mi d)
                                                (process-merges (inc mi))))
                                        ;; Not in current or tx too new — check temporal index
-                                         (let [temporal-eavt (:temporal-eavt origin-db)]
-                                           (if temporal-eavt
-                                             (let [^Datom td (.lookupGE ^PersistentSortedSet temporal-eavt probe)
-                                                   found-t? (and td (temporal-merge-datom-match? td eid ra vg? vgv check-v? check-tx? scan-d temporal-tx-filter added-filter))]
-                                               (if found-t?
-                                                 (if anti? nil
-                                                     (do (aset merge-datoms mi td)
-                                                         (process-merges (inc mi))))
-                                                 (cond
-                                                   anti? (process-merges (inc mi))
-                                                   ;; Optional merge: emit default on miss
-                                                   (and merge-optional (aget merge-optional mi))
-                                                   (do (aset merge-datoms mi
-                                                             (datom eid ra (aget merge-defaults mi) tx0))
-                                                       (process-merges (inc mi))))))
-                                             (cond
-                                               anti? (process-merges (inc mi))
-                                               (and merge-optional (aget merge-optional mi))
-                                               (do (aset merge-datoms mi
-                                                         (datom eid ra (aget merge-defaults mi) tx0))
-                                                   (process-merges (inc mi))))))))
+                                         (if-let [found-t (when (= temporal-type :as-of)
+                                                            (visible-eavt-datom origin-db db temporal-type (:temporal-eavt origin-db)
+                                                                                eid ra vg? vgv check-v? check-tx? scan-d
+                                                                                temporal-tx-filter added-filter))]
+                                           (if anti? nil
+                                               (do (aset merge-datoms mi found-t)
+                                                   (process-merges (inc mi))))
+                                           (cond
+                                             anti? (process-merges (inc mi))
+                                             ;; Optional merge: emit default on miss
+                                             (and merge-optional (aget merge-optional mi))
+                                             (do (aset merge-datoms mi
+                                                       (datom eid ra (aget merge-defaults mi) tx0))
+                                                 (process-merges (inc mi)))))))
                                    ;; Historical: full temporal-merge-slice (needs all versions)
                                      (let [from-d (datom eid ra (when vg? vgv) tx0)
                                            to-d (datom eid ra (when vg? vgv) txmax)
@@ -1667,12 +1678,17 @@
                                    ^Datom d (pss-lookup-ge eavt-pss probe)
                                    check-v? (aget merge-check-scan-v mi)
                                    check-tx? (aget merge-check-scan-tx mi)
-                                   found? (and d (temporal-merge-datom-match? d eid ra vg? vgv check-v? check-tx? scan-d temporal-tx-filter added-filter))]
+                                   found-d (or (when (and d (temporal-merge-datom-match? d eid ra vg? vgv check-v? check-tx? scan-d temporal-tx-filter added-filter))
+                                                 d)
+                                               (when (= temporal-type :as-of)
+                                                 (visible-eavt-datom origin-db db temporal-type (:temporal-eavt origin-db)
+                                                                     eid ra vg? vgv check-v? check-tx? scan-d
+                                                                     temporal-tx-filter added-filter)))]
                                (if anti?
-                                 (when (not found?) (process-merges (inc mi)))
+                                 (when (not found-d) (process-merges (inc mi)))
                                  (cond
-                                   found?
-                                   (do (aset merge-datoms mi d) (process-merges (inc mi)))
+                                   found-d
+                                   (do (aset merge-datoms mi found-d) (process-merges (inc mi)))
                                    ;; Optional merge: emit synthetic default datom on miss
                                    (and merge-optional (aget merge-optional mi))
                                    (do (aset merge-datoms mi
@@ -4381,4 +4397,3 @@
 
               ;; Call the external aggregate engine
                  (aggregate-fn column-map group-keys agg-specs)))))))))
-
