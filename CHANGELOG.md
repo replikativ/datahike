@@ -420,6 +420,7 @@ Thanks to all the contributors and the community for helping on this release. Sp
 [#844]: https://github.com/replikativ/datahike/pull/844
 [#845]: https://github.com/replikativ/datahike/pull/845
 [#852]: https://github.com/replikativ/datahike/pull/852
+[#861]: https://github.com/replikativ/datahike/pull/861
 [#859]: https://github.com/replikativ/datahike/pull/859
 [#865]: https://github.com/replikativ/datahike/pull/865
 [#867]: https://github.com/replikativ/datahike/pull/867
