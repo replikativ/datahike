@@ -9,6 +9,8 @@
             [konserve.node-filestore :as nfs] ;; Register :file backend for Node.js
             [cljs.core.async :refer [go <!] :include-macros true]
             [cljs.nodejs :as nodejs]
+            [clojure.string :as str]
+            [datahike.attr-preds :as ap]
             ;; Sibling test namespaces — included so `bb node-cljs-test`
             ;; covers them too.
             [datahike.test.index-test]
@@ -40,7 +42,10 @@
             ;; Weighted LRU query-cache — the cljs WeightedLRU deftype has its
             ;; own implementation, so cover it (unit + test.check property) here.
             [datahike.test.lru-weighted-test]
-            [datahike.test.lru-weighted-property-test]))
+            [datahike.test.lru-weighted-property-test]
+            ;; Attribute-value constraints — registry resolution (pure, here)
+            ;; and an async enforcement test below.
+            [datahike.test.attr-preds-test]))
 
 ;; Hook cljs.test's end-of-run callback so the Node process exits with
 ;; status 0 only when all tests pass. The previous setup always exited
@@ -684,6 +689,40 @@
                (is false (str "xhost-fress-probe error: " (.-message e))))
              (finally
                (done))))))
+(deftest attr-constraints-node-test
+  ;; Exercises the cljs enforcement path (transact-add + resolve-pred + rschema
+  ;; gate). Asserted behaviorally: a violating value must never land in the DB.
+  (let [dir (tmp-dir)
+        cfg {:store {:backend :file :path dir :id (random-uuid)}
+             :keep-history? false
+             :schema-flexibility :write}]
+    (async done
+           (go
+             (try
+               (ap/register-attr-pred! 'node/nonblank (fn [s] (boolean (seq (str/trim s)))))
+               (<! (d/create-database cfg))
+               (let [conn (d/connect cfg)]
+                 (<! (d/transact! conn [{:db/ident :nm :db/valueType :db.type/string
+                                         :db/cardinality :db.cardinality/one :db/maxLength 5}
+                                        {:db/ident :code :db/valueType :db.type/string
+                                         :db/cardinality :db.cardinality/one
+                                         :db.attr/preds ['node/nonblank]}]))
+                 ;; valid commit
+                 (let [r (<! (d/transact! conn [{:nm "abc" :code "x"}]))]
+                   (is (:db-after r) "valid values commit"))
+                 ;; maxLength violation must not commit
+                 (<! (d/transact! conn [{:nm "toolong"}]))
+                 (is (empty? (d/q '[:find ?e :where [?e :nm "toolong"]] @conn))
+                     "over-maxLength value not committed")
+                 ;; predicate violation must not commit
+                 (<! (d/transact! conn [{:code "   "}]))
+                 (is (empty? (d/q '[:find ?e :where [?e :code "   "]] @conn))
+                     "predicate-failing value not committed")
+                 (d/release conn))
+               (<! (d/delete-database cfg))
+               (catch js/Error e
+                 (is false (str "Error: " (.-message e))))
+               (finally (done)))))))
 
 (defn -main []
   (t/run-tests 'datahike.test.nodejs-test
@@ -706,4 +745,5 @@
                'datahike.test.experimental.graph-test
                'datahike.test.experimental.anomaly-test
                'datahike.test.lru-weighted-test
-               'datahike.test.lru-weighted-property-test))
+               'datahike.test.lru-weighted-property-test
+               'datahike.test.attr-preds-test))

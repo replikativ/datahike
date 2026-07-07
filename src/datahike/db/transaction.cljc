@@ -5,6 +5,7 @@
    [datahike.index :as di]
    [datahike.datom :as dd :refer [datom datom-tx datom-added datom?]]
    #?(:cljs [datahike.db :refer [HistoricalDB]])
+   [datahike.attr-preds :as ap]
    [datahike.db.interface :as dbi]
    [datahike.db.search :as dbs]
    [datahike.db.utils :as dbu]
@@ -108,16 +109,21 @@
                          (assoc-in [:schema e] v-ident)
                          (assoc-in [:ident-ref-map v-ident] e)
                          (assoc-in [:ref-ident-map e] v-ident)))
-                   (if-let [schema-entry (schema e)]
-                     (if (schema schema-entry)
-                       (update-in db [:schema schema-entry a-ident] (fn [old]
-                                                                      (if (ds/entity-spec-attr? a-ident)
-                                                                        (if old
-                                                                          (conj old v-ident)
-                                                                          [v-ident])
-                                                                        v-ident)))
-                       (assoc-in db [:schema e a-ident] v-ident))
-                     (assoc-in db [:schema e] (hash-map a-ident v-ident))))]
+                   ;; Many-valued schema attrs (entity-spec preds/attrs, :db.attr/preds)
+                   ;; accumulate into a vector; single-valued overwrite. Applied in EVERY
+                   ;; branch so the result is order-independent — a pred datom arriving
+                   ;; before its entity's :db/ident (map ordering differs across
+                   ;; platforms) must still land as a vector, not a bare value.
+                   (let [accum (fn [old]
+                                 (if (or (ds/entity-spec-attr? a-ident)
+                                         (= a-ident :db.attr/preds))
+                                   (if old (conj old v-ident) [v-ident])
+                                   v-ident))]
+                     (if-let [schema-entry (schema e)]
+                       (if (schema schema-entry)
+                         (update-in db [:schema schema-entry a-ident] accum)
+                         (update-in db [:schema e a-ident] accum))
+                       (update-in db [:schema e a-ident] accum))))]
       ;; A schema mutation must not produce a shape that lets GC delete a
       ;; still-referenced object — a :db.type/store-ref inside a tuple, or under
       ;; :db/noHistory (schema/key-bearing-misuse). check-schema-update rejects the
@@ -293,7 +299,11 @@
             (update-in [:ref-ident-map] #(dissoc % e))))
       (if-let [schema-entry (schema e)]
         (if (schema schema-entry)
-          (update-in db [:schema schema-entry] #(dissoc % a-ident))
+          (if (= a-ident :db.attr/preds)
+            ;; many-valued: drop just the retracted predicate, keep the rest
+            (update-in db [:schema schema-entry a-ident]
+                       (fn [old] (vec (remove #{v-ident} old))))
+            (update-in db [:schema schema-entry] #(dissoc % a-ident)))
           (update-in db [:schema e] #(dissoc % a-ident v-ident)))
         (let [err-msg (str "Schema with entity id " e " does not exist")
               err-map {:error :retract/schema :entity-id e :attribute a :value e}]
@@ -705,6 +715,29 @@
   [a-ident]
   (or (= a-ident :db.valid/from) (= a-ident :db.valid/to)))
 
+(defn- enforce-attr-constraints
+  "Opt-in per-value constraints (`:db/maxLength`, `:db.attr/preds`). Runs on
+   assertion only (called from `transact-add`, never on retract), gated on an
+   O(1) rschema lookup so unconstrained attributes pay nothing. Raises
+   `:transact/attr-pred` on violation (or `:transact/attr-pred-unresolved`
+   when a named predicate isn't registered/resolvable)."
+  [db a-ident v ctx]
+  (when (contains? (get-in db [:rschema :db.attr/constrained]) a-ident)
+    (let [attr (get (dbi/-schema db) a-ident)]
+      (when-let [m (:db/maxLength attr)]
+        (when (and (string? v) (> (count v) m))
+          (log/raise "Value for " a-ident " exceeds :db/maxLength " m " (length " (count v) ")"
+                     {:error :transact/attr-pred :attribute a-ident :value v :max-length m :context ctx})))
+      (doseq [p (let [ps (:db.attr/preds attr)]      ; tolerate bare or collection
+                  (cond (nil? ps) nil (coll? ps) ps :else [ps]))]
+        (if-let [f (ap/resolve-pred p)]
+          (when-not (true? (f v))
+            (log/raise "Value for " a-ident " failed :db.attr/preds predicate " p
+                       {:error :transact/attr-pred :attribute a-ident :value v :pred p :context ctx}))
+          (log/raise "Unresolved :db.attr/preds predicate " p " for " a-ident
+                     " — register it with datahike.attr-preds/register-attr-pred! (or ensure the symbol is resolvable)"
+                     {:error :transact/attr-pred-unresolved :attribute a-ident :pred p :context ctx}))))))
+
 (defn- transact-add [{:keys [db-after] :as report} [_ e a v tx :as ent]]
   (let [a (dbu/normalize-and-validate-attr a ent db-after)
         _ (validate-val v ent db-after)
@@ -713,6 +746,7 @@
         db db-after
         e (dbu/entid-strict db e)
         a-ident (if attribute-refs? (dbi/ident-for db a :error-on-missing) a)
+        _ (enforce-attr-constraints db a-ident v ent)
         v (if (dbu/ref? db a-ident) (dbu/entid-strict db v) v)
         new-datom (datom e a v tx)
         upsert? (not (dbu/multival? db a))

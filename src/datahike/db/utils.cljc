@@ -311,15 +311,19 @@
     :db.type/cardinality [:db/systemAttribRef]
     :db.type/unique [:db/systemAttribRef]
 
-    (if (= k :db/ident)
-      [:db/ident]
-      (when (true? v)
-        (case k
-          :db/isComponent [:db/isComponent]
-          :db/index [:db/index]
-          :db/noHistory [:db/noHistory]
-          :db.secondary/only [:db.secondary/only]
-          [])))))
+    (cond
+      (= k :db/ident) [:db/ident]
+      ;; attribute-value constraints — mark the attr constrained so the
+      ;; transactor can gate enforcement on an O(1) rschema lookup.
+      (= k :db/maxLength) [:db.attr/constrained]
+      (= k :db.attr/preds) [:db.attr/constrained]
+      (true? v)
+      (case k
+        :db/isComponent [:db/isComponent]
+        :db/index [:db/index]
+        :db/noHistory [:db/noHistory]
+        :db.secondary/only [:db.secondary/only]
+        []))))
 
 (defn reduce-indexed
   "Same as reduce, but `f` takes [acc el idx]"
