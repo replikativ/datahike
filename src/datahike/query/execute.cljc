@@ -3859,7 +3859,11 @@
                  ;; Create relation from entity IDs
                  entity-var (first binding-vars)
                  eids (es/entity-bitset-seq result-bs)
-                 tuples (mapv (fn [eid] [eid]) eids)
+                 ;; EntityBitSet (Roaring) yields 32-bit Ints; datom entity ids
+                 ;; are Longs. Coerce so the downstream hash-join on the entity
+                 ;; var matches (Java Integer != Long even when numerically equal,
+                 ;; which silently drops every joined row).
+                 tuples (mapv (fn [eid] [(long eid)]) eids)
                  rel (rel/->Relation
                       {entity-var 0}
                       (set tuples))]
@@ -3883,7 +3887,8 @@
                  tuples (set (mapv (fn [r]
                                      (mapv (fn [v]
                                              (cond
-                                               (= v (first binding-vars)) (:entity-id r)
+                                               ;; entity id -> Long (Roaring yields Int; join needs Long)
+                                               (= v (first binding-vars)) (long (:entity-id r))
                                                :else (get r (keyword (name v)))))
                                            binding-vars))
                                    results))
