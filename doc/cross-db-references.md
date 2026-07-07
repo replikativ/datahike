@@ -13,12 +13,17 @@ sharing. What was missing is a systematic way to *point across* them.
 
 ## The reference triple
 
-A cross-database reference can never be an entity id — eids are internal
-to one index. It must be value-level:
+A cross-database reference is a triple — the target database, a selector
+for the entity inside it, and which version:
 
 ```
 (db-id, selector, temporal)
 ```
+
+The selector is either **value-level** (a lookup ref on a `:db/unique`
+attribute — portable, survives export/import) or a **bare entity id** —
+the cheapest, most general pointer, stable within a logical database but
+renumbered by re-materialization (see [Eid vs value selectors](#uri-form)).
 
 | part | what | datahike primitive |
 |---|---|---|
@@ -77,8 +82,8 @@ selector = semantically-robust pointer. Pick per use; record references
 
 ## Reified references (queryable links)
 
-Store an *outgoing* cross-db link as a small entity (`ref-schema`), not a
-URI string, so links stay queryable in datalog by predicate and target:
+Store an *outgoing* cross-db link as a small entity, not a URI string, so
+links stay queryable in datalog by predicate and target:
 
 ```clojure
 {:dh.ref/db    #uuid "96ae43a7-…"
@@ -92,11 +97,10 @@ links as plain `:db.type/ref` attributes — reified references are only
 for crossing stores.
 
 The `:dh.ref/*` attributes are **installed in the system schema** (they
-graduated like `:db.valid/*` and `:db.secondary/*`): new databases accept
+graduated like `:db.valid/*` and `:db.secondary/*`): every database accepts
 reified references without any schema declaration, in both
 schema-flexibility modes, with `:dh.ref/db` and `:dh.ref/value`
-AVET-indexed for reverse lookups ("all references into database X"). For
-stores created before the graduation, transact `ref-schema` once.
+AVET-indexed for reverse lookups ("all references into database X").
 
 ## Resolution
 

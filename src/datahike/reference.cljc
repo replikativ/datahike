@@ -4,8 +4,7 @@
    Datahike deployments legitimately span MANY databases — per-domain,
    per-tenant, per-permission-boundary — synchronized across peers by
    their store `:id` (a UUID; mandatory in every store config). A
-   reference that crosses a database boundary can never be an entity id
-   (eids are internal to one index) — it must be VALUE-level:
+   reference that crosses a database boundary is a triple:
 
      (db-id, selector, temporal)
 
@@ -57,15 +56,17 @@
    ## Reified references
 
    Inside a database, model an OUTGOING cross-db link as a small entity
-   (`ref-schema`) rather than a URI string, so links stay queryable in
-   datalog by type/target without string parsing:
+   rather than a URI string, so links stay queryable in datalog by
+   type/target without string parsing:
 
      {:dh.ref/db #uuid \"…\" :dh.ref/attr :entity/uuid
       :dh.ref/value \"0830…9e\" :dh.ref/type :derived-from}
 
-   `reference->tx-map` / `tx-map->reference` convert. Within-database
-   links should remain plain `:db.type/ref` attributes — this namespace
-   is only for crossing stores.
+   The `:dh.ref/*` attributes live in datahike's system schema (graduated
+   like `:db.valid/*` / `:db.secondary/*`), so every store accepts them
+   directly — no schema declaration needed. `reference->tx-map` /
+   `tx-map->reference` convert. Within-database links should remain plain
+   `:db.type/ref` attributes — this namespace is only for crossing stores.
 
    ## Resolution
 
@@ -219,37 +220,12 @@
 
 ;; ============================================================================
 ;; Reified reference entities
+;;
+;; The `:dh.ref/*` attributes are installed in datahike's system schema
+;; (`datahike.schema/implicit-schema-spec`), so every store accepts them
+;; without a schema declaration. `:dh.ref/db` and `:dh.ref/value` are
+;; AVET-indexed there for reverse lookups ("all references into database X").
 ;; ============================================================================
-
-(def ref-schema
-  "Schema for storing OUTGOING cross-database references as first-class,
-   datalog-queryable entities. `:dh.ref/type` is the link predicate —
-   application-defined (`:mentions`, `:summarizes`, `:derived-from`, …).
-
-   NEW databases have these pre-installed in the system schema (they
-   graduated like `:db.valid/*` / `:db.secondary/*`) — transact `:dh.ref/*`
-   directly, no schema declaration needed. Keep this def for stores
-   created before the graduation: transact it once there."
-  [{:db/ident :dh.ref/db
-    :db/valueType :db.type/uuid
-    :db/cardinality :db.cardinality/one
-    :db/doc "Target database (store :id)"}
-   {:db/ident :dh.ref/attr
-    :db/valueType :db.type/keyword
-    :db/cardinality :db.cardinality/one
-    :db/doc "Unique attribute of the target lookup ref"}
-   {:db/ident :dh.ref/value
-    :db/valueType :db.type/string
-    :db/cardinality :db.cardinality/one
-    :db/doc "Lookup-ref value, canonically encoded (encode-value)"}
-   {:db/ident :dh.ref/temporal
-    :db/valueType :db.type/string
-    :db/cardinality :db.cardinality/one
-    :db/doc "Temporal qualifier (encode-temporal); absent = live head"}
-   {:db/ident :dh.ref/type
-    :db/valueType :db.type/keyword
-    :db/cardinality :db.cardinality/one
-    :db/doc "Link predicate (application vocabulary)"}])
 
 (defn reference->tx-map
   "Reference → entity map for transacting (merge into an entity of your
