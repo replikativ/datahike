@@ -718,6 +718,17 @@
                  (<! (d/transact! conn [{:code "   "}]))
                  (is (empty? (d/q '[:find ?e :where [?e :code "   "]] @conn))
                      "predicate-failing value not committed")
+                 ;; default value-size cap (4096) on a plain string attribute
+                 (<! (d/transact! conn [{:db/ident :plain :db/valueType :db.type/string
+                                         :db/cardinality :db.cardinality/one}]))
+                 (let [ok (apply str (repeat 4096 \x))
+                       too (apply str (repeat 5000 \x))]
+                   (<! (d/transact! conn [{:plain ok}]))
+                   (is (seq (d/q '[:find ?e :where [?e :plain _]] @conn))
+                       "at-limit string commits under the default cap")
+                   (<! (d/transact! conn [{:plain too}]))
+                   (is (empty? (d/q '[:find ?e :in $ ?v :where [?e :plain ?v]] @conn too))
+                       "over-default string not committed"))
                  (d/release conn))
                (<! (d/delete-database cfg))
                (catch js/Error e

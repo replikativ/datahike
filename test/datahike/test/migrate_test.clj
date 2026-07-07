@@ -125,7 +125,18 @@
               [:db/doc "Cross-db reference: unique attribute of the target lookup ref" 536870912 true]
               [:db/doc "Cross-db reference: lookup-ref value, canonically encoded" 536870912 true]
               [:db/doc "Cross-db reference: temporal qualifier (tx:/date:/valid:/branch:); absent = live head" 536870912 true]
-              [:db/doc "Cross-db reference: link predicate (application vocabulary)" 536870912 true]])
+              [:db/doc "Cross-db reference: link predicate (application vocabulary)" 536870912 true]
+              ;; Attribute-value constraints — :db/maxLength / :db.attr/preds
+              ;; graduated into system-schema (ids 53/54 after rebase onto main)
+              ;; with full specs inline. New idents; :db.attr/preds also
+              ;; contributes symbol valueType (27) and cardinality-many (10).
+              ;; :db/maxLength's long valueType and cardinality-one collapse
+              ;; with existing entries via `into #{}`.
+              [:db/ident :db/maxLength 536870912 true]
+              [:db/ident :db.attr/preds 536870912 true]
+              [:db/valueType 24 536870912 true]
+              [:db/valueType 27 536870912 true]
+              [:db/cardinality 10 536870912 true]])
 
 (deftest export-import-test
   (let [os-prefix (case (System/getProperty "os.name")

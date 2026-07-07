@@ -68,6 +68,13 @@
 
 (s/def ::store map?)
 
+;; Default value-size resource model: per-database caps on the size of
+;; :db.type/string / :db.type/bytes values (and string slots inside tuples).
+;; nat-int? so 0 (explicitly disabled) is valid; nilable/absent = unbounded.
+(s/def ::max-string-length (s/nilable nat-int?))
+(s/def ::max-bytes-length (s/nilable nat-int?))
+(s/def ::max-tuple-string-length (s/nilable nat-int?))
+
 (s/def :datahike/config (s/keys :opt-un [:datahike/store
                                          ::index
                                          ::index-config
@@ -82,7 +89,10 @@
                                          ::initial-tx
                                          ::name
                                          ::branch
-                                         ::writer]))
+                                         ::writer
+                                         ::max-string-length
+                                         ::max-bytes-length
+                                         ::max-tuple-string-length]))
 
 (s/def :deprecated/schema-on-read boolean?)
 (s/def :deprecated/temporal-index boolean?)
@@ -179,6 +189,24 @@
    :branch *default-db-branch*
    :writer self-writer
    :index-config (di/default-index-config *default-index*)})
+
+(def default-value-caps
+  "Datomic-parity default value-size caps, injected into a database's config at
+   creation. `:max-string-length` bounds `:db.type/string` values (chars);
+   `:max-bytes-length` bounds `:db.type/bytes` values (bytes); string slots
+   inside a `:db.type/tuple` are bounded by `:max-tuple-string-length`. A `0`
+   disables a cap; absent (existing databases) means unbounded."
+  {:max-string-length 4096
+   :max-bytes-length 4096
+   :max-tuple-string-length 256})
+
+(defn apply-default-value-caps
+  "Fill in any value-size caps the caller did not specify with the Datomic-parity
+   defaults. A user-supplied key (including `0` = disabled) always wins. Applied
+   only at `create-database`, so existing databases whose stored config predates
+   the feature keep no caps (= unbounded)."
+  [config]
+  (merge default-value-caps config))
 
 (defn remove-nils
   "Thanks to https://stackoverflow.com/a/34221816"

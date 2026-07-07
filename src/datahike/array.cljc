@@ -53,6 +53,12 @@
      (and (instance? js/ArrayBuffer (.-buffer x))
           (number? (.-byteLength x)))))
 
+(defn byte-count
+  "Number of bytes in a byte-array value (`:db.type/bytes`)."
+  [x]
+  #?(:clj  (alength ^bytes x)
+     :cljs (.-byteLength x)))
+
 (defn compare-arrays
   "Compare two arrays a and b element-wise in ascending order. If one array is a
 prefix of another then it comes first."

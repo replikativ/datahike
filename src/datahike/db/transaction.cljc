@@ -5,6 +5,7 @@
    [datahike.index :as di]
    [datahike.datom :as dd :refer [datom datom-tx datom-added datom?]]
    #?(:cljs [datahike.db :refer [HistoricalDB]])
+   [datahike.array :as arr]
    [datahike.attr-preds :as ap]
    [datahike.db.interface :as dbi]
    [datahike.db.search :as dbs]
@@ -715,19 +716,50 @@
   [a-ident]
   (or (= a-ident :db.valid/from) (= a-ident :db.valid/to)))
 
+(defn- system-ident?
+  "System / meta / entity-spec / secondary-index attribute — exempt from the
+   implicit value-size default (e.g. `:db/doc` is a string but must not be
+   capped)."
+  [a-ident]
+  (or (ds/schema-attr? a-ident) (ds/meta-attr? a-ident)
+      (ds/entity-spec-attr? a-ident) (ds/secondary-index-attr? a-ident)))
+
 (defn- enforce-attr-constraints
-  "Opt-in per-value constraints (`:db/maxLength`, `:db.attr/preds`). Runs on
-   assertion only (called from `transact-add`, never on retract), gated on an
-   O(1) rschema lookup so unconstrained attributes pay nothing. Raises
-   `:transact/attr-pred` on violation (or `:transact/attr-pred-unresolved`
-   when a named predicate isn't registered/resolvable)."
+  "Per-value constraints, on assertion only (called from `transact-add`, never on
+   retract), gated on the O(1) `:db.attr/constrained` rschema set so
+   unconstrained attributes pay nothing:
+
+   - Value-size caps for `:db.type/string` (chars) / `:db.type/bytes` (bytes):
+     an explicit `:db/maxLength` wins; otherwise, under `:write` and for a
+     user attribute, the per-database default (`:max-string-length` /
+     `:max-bytes-length` config) applies. `:db.secondary/only` values (stored
+     out-of-line) are exempt. Raises `:transact/max-length`.
+   - `:db.attr/preds` value predicates. Raises `:transact/attr-pred`
+     (`:transact/attr-pred-unresolved` when a named predicate can't be resolved)."
   [db a-ident v ctx]
   (when (contains? (get-in db [:rschema :db.attr/constrained]) a-ident)
-    (let [attr (get (dbi/-schema db) a-ident)]
-      (when-let [m (:db/maxLength attr)]
-        (when (and (string? v) (> (count v) m))
-          (log/raise "Value for " a-ident " exceeds :db/maxLength " m " (length " (count v) ")"
-                     {:error :transact/attr-pred :attribute a-ident :value v :max-length m :context ctx})))
+    (let [attr    (get (dbi/-schema db) a-ident)
+          config  (dbi/-config db)
+          write?  (= :write (:schema-flexibility config))
+          default? (and write? (not (system-ident? a-ident))
+                        (not (dbu/secondary-only? db a-ident)))]
+      ;; --- value-size caps ---
+      (cond
+        (string? v)
+        (when-let [eff (or (:db/maxLength attr)
+                           (when default? (:max-string-length config)))]
+          (when (and (pos? eff) (> (count v) eff))
+            (log/raise "String value for " a-ident " exceeds max length " eff " (was " (count v) ")"
+                       {:error :transact/max-length :attribute a-ident
+                        :length (count v) :limit eff :unit :chars :context ctx})))
+
+        (arr/bytes? v)
+        (when-let [eff (when default? (:max-bytes-length config))]
+          (when (and (pos? eff) (> (arr/byte-count v) eff))
+            (log/raise "Byte value for " a-ident " exceeds max length " eff " bytes (was " (arr/byte-count v) ")"
+                       {:error :transact/max-length :attribute a-ident
+                        :length (arr/byte-count v) :limit eff :unit :bytes :context ctx}))))
+      ;; --- predicates ---
       (doseq [p (let [ps (:db.attr/preds attr)]      ; tolerate bare or collection
                   (cond (nil? ps) nil (coll? ps) ps :else [ps]))]
         (if-let [f (ap/resolve-pred p)]
@@ -967,7 +999,7 @@
       [report []])))
 
 (defn check-tuple [db op-vec]
-  (let [[_ _ a v] op-vec
+  (let [[op _ a v] op-vec
         attr-schema (-> db dbi/-schema (get a))]
     (cond (:db/tupleType attr-schema)
           (cond (> (count v) 8)
@@ -992,7 +1024,22 @@
           (and (:db/tupleAttrs attr-schema)
                (not (::internal (meta op-vec))))
           (log/raise "Can’t modify tuple attrs directly: " op-vec
-                     {:error :transact/syntax, :tx-data op-vec}))))
+                     {:error :transact/syntax, :tx-data op-vec}))
+    ;; String-slot length cap (Datomic parity, default 256). Assert-only
+    ;; (`:db/add` — never blocks retracting a pre-cap value) and `:write`-only,
+    ;; mirroring the scalar string default. Structural checks above run first.
+    (when (and (= :db/add op)
+               (= :write (:schema-flexibility (dbi/-config db))))
+      (when-let [limit (:max-tuple-string-length (dbi/-config db))]
+        (when (pos? limit)
+          (let [types (cond
+                        (:db/tupleType attr-schema)  (repeat (count v) (:db/tupleType attr-schema))
+                        (:db/tupleTypes attr-schema) (:db/tupleTypes attr-schema))]
+            (doseq [[t slot] (map vector types v)]
+              (when (and (= :db.type/string t) (string? slot) (> (count slot) limit))
+                (log/raise "Tuple string slot for " a " exceeds max length " limit " (was " (count slot) ")"
+                           {:error :transact/max-length :attribute a :length (count slot)
+                            :limit limit :unit :chars :context op-vec})))))))))
 
 (defn- filter-before [datoms ^Date before-date db]
   (let [before-pred (fn [^Datom d]

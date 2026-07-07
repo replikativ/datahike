@@ -581,7 +581,11 @@
 (defn -create-database* [config deprecated-config]
   (go-try-
    (let [opts {:sync? false}
-         {:keys [keep-history?] :as config} (dc/load-config config deprecated-config)
+         ;; Inject the default value-size caps at create only, so they persist
+         ;; into this DB's stored config. Existing DBs (whose stored config
+         ;; predates the feature) never get them → unbounded.
+         {:keys [keep-history?] :as config} (dc/apply-default-value-caps
+                                             (dc/load-config config deprecated-config))
          store-config (:store config)
          store (ds/add-cache-and-handlers (<?- (ks/create-store store-config opts)) config)
          stored-db (<?- (k/get store :db nil opts))

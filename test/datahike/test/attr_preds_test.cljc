@@ -6,7 +6,8 @@
       :clj  [clojure.test :as t :refer [is deftest testing]])
    [clojure.string :as str]
    [datahike.attr-preds :as ap]
-   #?(:clj [datahike.api :as d])))
+   #?(:clj [datahike.api :as d])
+   #?(:clj [datahike.config :as dc])))
 
 ;; ---------------------------------------------------------------------------
 ;; Registry / resolution — pure, cross-platform
@@ -66,8 +67,8 @@
              (d/transact conn [(decl flex {:db/ident :nm :db/maxLength 5})])
              (testing (str flex " within bound passes")
                (is (= :ok (tx-error #(d/transact conn [{:nm "abcde"}])))))
-             (testing (str flex " over bound raises :transact/attr-pred")
-               (is (= :transact/attr-pred (tx-error #(d/transact conn [{:nm "abcdef"}])))))))))
+             (testing (str flex " over bound raises :transact/max-length")
+               (is (= :transact/max-length (tx-error #(d/transact conn [{:nm "abcdef"}])))))))))
 
      (deftest maxlength-skips-non-string
        ;; :read lets a non-string value through the type gate; maxLength must
@@ -138,12 +139,77 @@
            (is (= :ok (tx-error #(d/transact conn [{:nm "anything-long-ok"}]))))
            (d/transact conn [{:db/ident :nm :db/maxLength 5
                               :db.attr/preds ['attr-preds-test/nonblank2]}])
-           (is (= :transact/attr-pred (tx-error #(d/transact conn [{:nm "toolong"}]))))
+           (is (= :transact/max-length (tx-error #(d/transact conn [{:nm "toolong"}]))))
            (is (= :ok (tx-error #(d/transact conn [{:nm "ok"}])))))))
 
      (deftest unconstrained-attr-unaffected
+       ;; A non-string/bytes attribute is never touched by the value-size model.
        (with-conn* :write
          (fn [conn]
-           (d/transact conn [{:db/ident :free :db/valueType :db.type/string
+           (d/transact conn [{:db/ident :n :db/valueType :db.type/long
                               :db/cardinality :db.cardinality/one}])
-           (is (= :ok (tx-error #(d/transact conn [{:free (apply str (repeat 10000 \x))}])))))))))
+           (is (= :ok (tx-error #(d/transact conn [{:n 123456789}])))))))
+
+     ;; ---- default value-size resource model (Datomic parity) ----
+
+     (defn- big [n] (apply str (repeat n \x)))
+
+     (deftest default-string-cap-write-only
+       ;; New :write DBs get the 4096 default; :read (no declared types) does not.
+       (with-conn* :write
+         (fn [conn]
+           (d/transact conn [{:db/ident :s :db/valueType :db.type/string
+                              :db/cardinality :db.cardinality/one}])
+           (is (= :transact/max-length (tx-error #(d/transact conn [{:s (big 5000)}]))))
+           (is (= :ok (tx-error #(d/transact conn [{:s (big 4096)}]))))))
+       (with-conn* :read
+         (fn [conn]
+           (is (= :ok (tx-error #(d/transact conn [{:s (big 5000)}])))))))
+
+     (deftest explicit-maxlength-overrides-default
+       (with-conn* :write
+         (fn [conn]
+           (d/transact conn [{:db/ident :bigcap :db/valueType :db.type/string
+                              :db/cardinality :db.cardinality/one :db/maxLength 8192}
+                             {:db/ident :nocap :db/valueType :db.type/string
+                              :db/cardinality :db.cardinality/one :db/maxLength 0}])
+           (is (= :ok (tx-error #(d/transact conn [{:bigcap (big 5000)}]))))   ; 5000 < 8192
+           (is (= :ok (tx-error #(d/transact conn [{:nocap (big 9000)}])))))))  ; disabled
+
+     (deftest default-bytes-cap
+       (with-conn* :write
+         (fn [conn]
+           (d/transact conn [{:db/ident :b :db/valueType :db.type/bytes
+                              :db/cardinality :db.cardinality/one}])
+           (is (= :transact/max-length (tx-error #(d/transact conn [{:b (byte-array 5000)}]))))
+           (is (= :ok (tx-error #(d/transact conn [{:b (byte-array 4096)}])))))))
+
+     (deftest tuple-string-slot-cap
+       (with-conn* :write
+         (fn [conn]
+           (d/transact conn [{:db/ident :t :db/valueType :db.type/tuple
+                              :db/tupleTypes [:db.type/string :db.type/long]
+                              :db/cardinality :db.cardinality/one}])
+           (is (= :transact/max-length (tx-error #(d/transact conn [{:t [(big 300) 1]}]))))
+           (is (= :ok (tx-error #(d/transact conn [{:t [(big 256) 1]}])))))))
+
+     (deftest system-string-attr-exempt-from-default
+       ;; :db/doc is a system string attribute — the default must not cap it.
+       (with-conn* :write
+         (fn [conn]
+           (d/transact conn [{:db/ident :s :db/valueType :db.type/string
+                              :db/cardinality :db.cardinality/one}])
+           (is (= :ok (tx-error #(d/transact conn [{:db/ident :s :db/doc (big 9000)}])))))))
+
+     (deftest existing-db-unbounded
+       ;; A DB created without the caps (predating the feature) stays unbounded.
+       (let [cfg {:store {:backend :memory :id (random-uuid)}
+                  :schema-flexibility :write :keep-history? false}]
+         (with-redefs [dc/apply-default-value-caps identity]
+           (d/create-database cfg))
+         (let [conn (d/connect cfg)]
+           (try
+             (d/transact conn [{:db/ident :s :db/valueType :db.type/string
+                                :db/cardinality :db.cardinality/one}])
+             (is (= :ok (tx-error #(d/transact conn [{:s (big 9000)}]))))
+             (finally (d/release conn) (d/delete-database cfg))))))))
