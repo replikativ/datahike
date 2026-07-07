@@ -26,6 +26,8 @@
    [datahike.query.relation :as rel]
    [datahike.query.plan :as plan]
    [datahike.query.analyze :as analyze]
+   #?(:clj [datahike.query.logical :as logical])
+   #?(:clj [datahike.query.lower :as lower])
    #?(:cljs [datahike.db :refer [DB AsOfDB SinceDB HistoricalDB]])
    #?(:cljs [datahike.query.execute :as execute])
    #?(:cljs [datahike.query.logical :as logical])
@@ -2822,12 +2824,8 @@
   "Build a plan using the IR pipeline: logical IR → lowering.
    `in-cards` is the value-independent :in cardinality seed (see in-card-seed)."
   [db clauses bound-vars rules in-cards]
-  (let [build-logical #?(:clj @(requiring-resolve 'datahike.query.logical/build-logical-plan)
-                         :cljs logical/build-logical-plan)
-        lower-plan #?(:clj @(requiring-resolve 'datahike.query.lower/lower)
-                      :cljs lower/lower)
-        logical (build-logical db clauses bound-vars rules)
-        plan (lower-plan logical db rules in-cards)]
+  (let [logical (logical/build-logical-plan db clauses bound-vars rules)
+        plan (lower/lower logical db rules in-cards)]
     plan))
 
 #?(:clj
