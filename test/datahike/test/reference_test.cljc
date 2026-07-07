@@ -145,17 +145,22 @@
         (is (nil? (:eid (ref/resolve-reference record connect-fn)))
             "record reference pinned before creation is dangling")))
 
-    (testing "commit reference: exact content-addressed pin resolves via commit-as-db"
-      (let [cid (d/commit-id @conn)
-            r   (ref/reference db-id [:thing/id tid] {:commit cid})]
-        (is (some? cid) "head db carries a commit-id")
-        (is (= (:eid (ref/resolve-reference (ref/reference db-id [:thing/id tid]) connect-fn))
-               (:eid (ref/resolve-reference r connect-fn)))
-            "commit pin resolves the same entity as the live head")))
+    ;; `:commit` resolution loads a different db value via `commit-as-db`,
+    ;; which is synchronous only on CLJ (async on CLJS). resolve-reference is a
+    ;; sync API, so commit-pinned resolution is CLJ-only.
+    #?(:clj
+       (testing "commit reference: exact content-addressed pin resolves via commit-as-db"
+         (let [cid (d/commit-id @conn)
+               r   (ref/reference db-id [:thing/id tid] {:commit cid})]
+           (is (some? cid) "head db carries a commit-id")
+           (is (= (:eid (ref/resolve-reference (ref/reference db-id [:thing/id tid]) connect-fn))
+                  (:eid (ref/resolve-reference r connect-fn)))
+               "commit pin resolves the same entity as the live head"))))
 
-    (testing "commit reference to an unknown commit → dangling"
-      (let [r (ref/reference db-id [:thing/id tid] {:commit (rand-uuid)})]
-        (is (nil? (ref/resolve-reference r connect-fn)))))
+    #?(:clj
+       (testing "commit reference to an unknown commit → dangling"
+         (let [r (ref/reference db-id [:thing/id tid] {:commit (rand-uuid)})]
+           (is (nil? (ref/resolve-reference r connect-fn))))))
 
     (testing "unknown / ungranted database → nil (dangling, not an error)"
       (let [r (ref/reference (rand-uuid) [:thing/id tid])]

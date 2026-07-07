@@ -294,11 +294,20 @@
    `:commit` is a content-addressed exact db value (loaded via
    `commit-as-db`) and is self-sufficient — it takes precedence over the
    `:tx`/`:date` tx-time pins, which it makes redundant. `:valid` is
-   orthogonal (valid-time) and still composes on top."
+   orthogonal (valid-time) and still composes on top.
+
+   `:commit` resolution loads a *different* db value from the store, which is
+   synchronous only on CLJ. On CLJS `commit-as-db` is async, so a `:commit`
+   pin cannot be resolved through this synchronous API — load the commit db
+   yourself (`(commit-as-db conn cid)`) and hand it to `connect-fn`. The
+   `:tx`/`:date`/`:branch`/`:valid` temporals resolve synchronously on both
+   platforms (they transform an already-connected db)."
   [conn-or-db {:keys [commit valid] :as temporal}]
   (if commit
-    (when-let [base (d/commit-as-db conn-or-db commit)]  ; commit-as-db extracts the store
-      (cond-> base valid (d/valid-at valid)))
+    #?(:clj  (when-let [base (d/commit-as-db conn-or-db commit)]  ; commit-as-db extracts the store
+               (cond-> base valid (d/valid-at valid)))
+       :cljs (throw (ex-info "Commit-pinned reference resolution is synchronous-only (CLJ). On CLJS, load the commit db via (commit-as-db conn cid) and pass it through connect-fn."
+                             {:error :reference/commit-resolution-unsupported-cljs :commit commit})))
     (apply-temporal (deref-conn conn-or-db) temporal)))
 
 (defn- unique-attr?
