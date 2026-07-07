@@ -3802,6 +3802,24 @@
        (into {} (map (fn [v] [v (keyword (subs (name v) 1))]) binding-vars)))))
 
 #?(:clj
+   (defn- external-query-spec
+     "Build the query-spec passed to a secondary index's `-search` /
+      `-slice-ordered` from an external-engine call's (index-ident-stripped)
+      args.
+
+      The `ISecondaryIndex` protocol treats query-spec as index-type-specific
+      (opaque). An engine may declare a `:query-spec-fn` in its
+      `:datahike/external-engine` metadata to construct an arbitrary, arity-free
+      spec from `query-args`; absent that, we default to the text-search-shaped
+      `{:query <arg0> :field <arg1>}` for backward compatibility (so existing
+      engines are unaffected)."
+     [engine-meta query-args]
+     (if-let [f (:query-spec-fn engine-meta)]
+       (f (vec query-args))
+       {:query (first query-args)
+        :field (second query-args)})))
+
+#?(:clj
    (defn- execute-external-engine
      "Execute an external engine op and merge results into context.
       Dispatches on :mode — :filter, :retrieval, or :solver."
@@ -3815,7 +3833,9 @@
            binding-vars (if (and (sequential? binding-form)
                                  (sequential? (first binding-form)))
                           (first binding-form)
-                          [binding-form])]
+                          [binding-form])
+           engine-meta (:engine-meta op)
+           build-query-spec (fn [query-args] (external-query-spec engine-meta query-args))]
        (case mode
          ;; Filter: produce EntityBitSet, create single-column relation of entity IDs.
          ;; Also stores the bitmap in :entity-filters for downstream entity-group optimization.
@@ -3829,13 +3849,11 @@
                  resolved-fn (when (and (symbol? fn-sym) (namespace fn-sym))
                                (some-> (resolve fn-sym) deref))
                  result-bs (if resolved-fn
-                             ;; Call the function which should return results.
                              ;; `search-with-vt` reads the db's `:datahike/valid-at`
                              ;; marker (set by `d/valid-at`) and routes through
                              ;; `-search-at-vt` for vt-aware indices.
                              (sec/search-with-vt db idx
-                                                 {:query (first resolved-args)
-                                                  :field (second resolved-args)}
+                                                 (build-query-spec resolved-args)
                                                  nil)
                              (es/entity-bitset))
                  ;; Create relation from entity IDs
@@ -3857,8 +3875,7 @@
          (if idx
            (let [query-args (vec (drop 1 args))
                  results (sec/slice-ordered-with-vt db idx
-                                                    {:query (first query-args)
-                                                     :field (second query-args)}
+                                                    (build-query-spec query-args)
                                                     nil nil nil nil)
                  ;; Map binding vars to column indices
                  attrs (into {} (map-indexed (fn [i v] [v i]) binding-vars))
