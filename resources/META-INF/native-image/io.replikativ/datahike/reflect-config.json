@@ -1,0 +1,10 @@
+[
+  {
+    "name": "org.replikativ.persistent_sorted_set.Leaf",
+    "allPublicConstructors": true
+  },
+  {
+    "name": "org.replikativ.persistent_sorted_set.Branch",
+    "allPublicConstructors": true
+  }
+]
