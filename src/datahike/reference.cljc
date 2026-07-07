@@ -27,19 +27,24 @@
                                    follows edits; navigation, mentions)
                  {:tx 536871113}   `as-of` a transaction id
                  {:date #inst …}   `as-of` a point in time
+                 {:commit #uuid …} an exact content-addressed commit
+                                   (via `commit-as-db`) — the most precise
+                                   record reference; supersedes :tx/:date
                  {:branch \"exp\"}   a branch head
                A pinned temporal is a RECORD reference — immutable,
                resolvable forever on stores with `:keep-history? true`;
                use it for provenance, citation, audit.
 
-   The URI serialization (for text, hyperlinks, logs, export):
+   The URI serialization (for text, hyperlinks, logs, export). The
+   temporal is a standard URL query string:
 
-     dh://<db-id>/<attr>/<value>[@<temporal>]
+     dh://<db-id>/<attr>/<value>[?<temporal>]
 
-     dh://5d7…c1/entity%2Fuuid/0830…9e                      ; living
-     dh://5d7…c1/S.Page%2Ftitle/str:Roadmap@tx:536871113    ; record
-     dh://5d7…c1/entity%2Fuuid/0830…9e@branch:exploration-2 ; branch head
-     dh://5d7…c1/387                                        ; bare entity id
+     dh://5d7…c1/entity%2Fuuid/0830…9e                       ; living
+     dh://5d7…c1/S.Page%2Ftitle/str:Roadmap?tx=536871113     ; record (as-of tx)
+     dh://5d7…c1/entity%2Fuuid/0830…9e?commit=1a2b…          ; record (exact commit)
+     dh://5d7…c1/entity%2Fuuid/0830…9e?branch=exploration-2  ; branch head
+     dh://5d7…c1/387                                         ; bare entity id
 
    Attr keywords are URL-encoded whole (`entity%2Fuuid` ≙ :entity/uuid).
    Values carry an optional type tag — `uuid:` `str:` `long:` `kw:` —
@@ -84,8 +89,10 @@
 (defn reference
   "Construct a Reference. `selector` is `[unique-attr value]`, a bare
    entity id (long — becomes `[:db/id eid]`), or `[:db/id eid]`;
-   `temporal` one of nil, {:tx long}, {:date inst}, {:valid inst},
-   {:branch string}."
+   `temporal` a map combining any of {:tx long} {:date inst}
+   {:valid inst} {:branch string} {:commit uuid} (nil = live head).
+   `:commit` pins an exact content-addressed db value (via `commit-as-db`)
+   and supersedes `:tx`/`:date`; `:valid` composes with any of them."
   ([db-id selector] (reference db-id selector nil))
   ([db-id selector temporal]
    {:pre [(uuid? db-id)]}
@@ -142,30 +149,42 @@
 (defn- inst-str [d]
   #?(:clj (str (.toInstant ^java.util.Date d)) :cljs (.toISOString d)))
 
-(defn- encode-temporal [{:keys [tx date valid branch]}]
-  (let [parts (cond-> []
-                tx     (conj (str "tx:" tx))
-                date   (conj (str "date:" (inst-str date)))
-                valid  (conj (str "valid:" (inst-str valid)))
-                branch (conj (str "branch:" (url-encode branch))))]
-    (when (seq parts) (str/join "," parts))))
+(defn- encode-temporal
+  "Temporal map → URL query string (`tx=…&branch=…`), or nil when empty.
+   Insts are left as readable ISO (`:` and `-` are query-legal per RFC 3986,
+   and `.toInstant` yields a `Z` UTC form with no `+` to mangle); branch is
+   url-encoded; commit is a bare UUID."
+  [{:keys [tx date valid branch commit]}]
+  (let [pairs (cond-> []
+                tx     (conj (str "tx=" tx))
+                date   (conj (str "date=" (inst-str date)))
+                valid  (conj (str "valid=" (inst-str valid)))
+                branch (conj (str "branch=" (url-encode branch)))
+                commit (conj (str "commit=" commit)))]
+    (when (seq pairs) (str/join "&" pairs))))
 
 (defn- parse-inst [s]
   #?(:clj (java.util.Date/from (java.time.Instant/parse s)) :cljs (js/Date. s)))
 
-(defn- decode-temporal [s]
+(defn- decode-temporal
+  "URL query string (`tx=…&branch=…`) → temporal map. Unknown keys and a
+   non-UUID `commit` throw ex-info."
+  [s]
   (when (seq s)
     (reduce
-     (fn [m part]
-       (cond
-         (str/starts-with? part "tx:")     (assoc m :tx #?(:clj (Long/parseLong (subs part 3))
-                                                           :cljs (js/parseInt (subs part 3) 10)))
-         (str/starts-with? part "date:")   (assoc m :date (parse-inst (subs part 5)))
-         (str/starts-with? part "valid:")  (assoc m :valid (parse-inst (subs part 6)))
-         (str/starts-with? part "branch:") (assoc m :branch (url-decode (subs part 7)))
-         :else (throw (ex-info "Unknown temporal qualifier" {:temporal part}))))
+     (fn [m pair]
+       (let [[k v] (str/split pair #"=" 2)]
+         (case k
+           "tx"     (assoc m :tx #?(:clj (Long/parseLong v) :cljs (js/parseInt v 10)))
+           "date"   (assoc m :date (parse-inst v))
+           "valid"  (assoc m :valid (parse-inst v))
+           "branch" (assoc m :branch (url-decode v))
+           "commit" (assoc m :commit (or (parse-uuid* v)
+                                         (throw (ex-info "commit qualifier must be a UUID"
+                                                         {:commit v}))))
+           (throw (ex-info "Unknown temporal qualifier" {:temporal pair})))))
      {}
-     (str/split s #","))))
+     (str/split s #"&"))))
 
 (defn render
   "Reference → `dh://…` URI string. Eid selectors (`:db/id`) render as a
@@ -175,23 +194,24 @@
        (if (= :db/id attr)
          (str value)
          (str (encode-attr attr) "/" (encode-value value)))
-       (when-let [t (encode-temporal temporal)] (str "@" t))))
+       (when-let [t (encode-temporal temporal)] (str "?" t))))
 
 (defn parse
   "`dh://…` URI string → Reference. A single all-digit path segment is an
-   entity-id selector; `<attr>/<value>` is a lookup-ref selector. Throws
-   ex-info on malformed input."
+   entity-id selector; `<attr>/<value>` is a lookup-ref selector. The
+   temporal is a URL query string (`?tx=…&branch=…`). Throws ex-info on
+   malformed input."
   [s]
   (if-let [[_ db-id eid-s temporal-s]
-           (re-matches #"dh://([0-9a-fA-F-]{36})/([0-9]+)(?:@(.+))?" (str s))]
+           (re-matches #"dh://([0-9a-fA-F-]{36})/([0-9]+)(?:\?(.+))?" (str s))]
     (->Reference (parse-uuid* db-id) :db/id
                  #?(:clj (Long/parseLong eid-s) :cljs (js/parseInt eid-s 10))
                  (decode-temporal temporal-s))
     (let [[_ db-id attr-s rest-s]
-          (or (re-matches #"dh://([0-9a-fA-F-]{36})/([^/]+)/(.+)" (str s))
+          (or (re-matches #"dh://([0-9a-fA-F-]{36})/([^/?]+)/(.+)" (str s))
               (throw (ex-info "Malformed dh:// reference"
-                              {:uri s :expected "dh://<db-id>/(<eid>|<attr>/<value>)[@<temporal>]"})))
-          [value-s temporal-s] (str/split rest-s #"@" 2)]
+                              {:uri s :expected "dh://<db-id>/(<eid>|<attr>/<value>)[?<temporal>]"})))
+          [value-s temporal-s] (str/split rest-s #"\?" 2)]
       (->Reference (parse-uuid* db-id)
                    (decode-attr attr-s)
                    (decode-value value-s)
@@ -251,6 +271,13 @@
 ;; Resolution
 ;; ============================================================================
 
+(defn- deref-conn
+  [conn-or-db]
+  (if #?(:clj (instance? clojure.lang.IDeref conn-or-db)
+         :cljs (satisfies? cljs.core/IDeref conn-or-db))
+    @conn-or-db
+    conn-or-db))
+
 (defn- apply-temporal
   ;; Composition order per the valid-time API doc: wrap as-of (tx-time
   ;; horizon) FIRST, valid-at (valid-time point) OUTERMOST.
@@ -261,13 +288,18 @@
     valid (d/valid-at valid)))
 
 (defn- ->db
-  "connect-fn result (conn or db value) + temporal → the db to read."
-  [conn-or-db temporal]
-  (let [db* (if #?(:clj (instance? clojure.lang.IDeref conn-or-db)
-                   :cljs (satisfies? cljs.core/IDeref conn-or-db))
-              @conn-or-db
-              conn-or-db)]
-    (apply-temporal db* temporal)))
+  "connect-fn result (conn, db value, or store) + temporal → the db to
+   read, or nil when a `:commit` pin names a commit the store doesn't hold.
+
+   `:commit` is a content-addressed exact db value (loaded via
+   `commit-as-db`) and is self-sufficient — it takes precedence over the
+   `:tx`/`:date` tx-time pins, which it makes redundant. `:valid` is
+   orthogonal (valid-time) and still composes on top."
+  [conn-or-db {:keys [commit valid] :as temporal}]
+  (if commit
+    (when-let [base (d/commit-as-db conn-or-db commit)]  ; commit-as-db extracts the store
+      (cond-> base valid (d/valid-at valid)))
+    (apply-temporal (deref-conn conn-or-db) temporal)))
 
 (defn- unique-attr?
   [db attr]
@@ -304,7 +336,7 @@
    unique or not — this is the honest API for non-unique selectors."
   [{:keys [db-id temporal] :as ref} connect-fn]
   (when-let [conn-or-db (connect-fn db-id (select-keys temporal [:branch]))]
-    (let [db (->db conn-or-db temporal)]
+    (when-let [db (->db conn-or-db temporal)]     ; nil = commit pin the store lacks
       {:db db :eids (selector-eids db (:attr ref) (:value ref))})))
 
 (defn resolve-reference
@@ -322,12 +354,12 @@
 
    `connect-fn`: `(fn [db-id {:keys [branch]}] conn-or-db-or-nil)` —
    deployment-supplied (peer registry, grant checks, branch selection).
-   The `:tx`/`:date` temporal is applied via `as-of`. Lookups are direct
-   AVET index slices (no query engine)."
+   The `:tx`/`:date` temporal is applied via `as-of`, `:commit` via
+   `commit-as-db`. Lookups are direct AVET index slices (no query engine)."
   ([ref connect-fn] (resolve-reference ref connect-fn {}))
   ([{:keys [db-id temporal] :as ref} connect-fn {:keys [ambiguous]}]
    (when-let [conn-or-db (connect-fn db-id (select-keys temporal [:branch]))]
-     (let [db (->db conn-or-db temporal)]
+     (when-let [db (->db conn-or-db temporal)]    ; nil = commit pin the store lacks
        (when-not (or (= :db/id (:attr ref))     ; eids unique by construction
                      (unique-attr? db (:attr ref))
                      (= ambiguous :first))

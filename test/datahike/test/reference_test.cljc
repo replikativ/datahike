@@ -31,6 +31,20 @@
     (testing "branch temporal"
       (let [r (ref/reference db-id [:entity/uuid u] {:branch "exploration 2"})]
         (is (= r (ref/parse (ref/render r))))))
+    (testing "commit temporal — exact content-addressed pin"
+      (let [c (rand-uuid)
+            r (ref/reference db-id [:entity/uuid u] {:commit c})]
+        (is (= r (ref/parse (ref/render r))))
+        (is (= (str "dh://" db-id "/entity%2Fuuid/" u "?commit=" c)
+               (ref/render r)))))
+    (testing "temporal serializes as a URL query string (not @-syntax)"
+      (let [r (ref/reference db-id [:entity/uuid u] {:tx 536871113 :branch "exp"})
+            s (ref/render r)]
+        (is (re-find #"\?tx=536871113&branch=exp$" s))
+        (is (nil? (re-find #"@" s)))))
+    (testing "unknown temporal qualifier throws"
+      (is (thrown? #?(:clj Exception :cljs js/Error)
+                   (ref/parse (str "dh://" db-id "/entity%2Fuuid/" u "?bogus=1")))))
     (testing "long and keyword selector values"
       (let [rl (ref/reference db-id [:item/code 42])
             rk (ref/reference db-id [:item/kind :alpha/beta])]
@@ -130,6 +144,18 @@
             "live reference resolves at head")
         (is (nil? (:eid (ref/resolve-reference record connect-fn)))
             "record reference pinned before creation is dangling")))
+
+    (testing "commit reference: exact content-addressed pin resolves via commit-as-db"
+      (let [cid (d/commit-id @conn)
+            r   (ref/reference db-id [:thing/id tid] {:commit cid})]
+        (is (some? cid) "head db carries a commit-id")
+        (is (= (:eid (ref/resolve-reference (ref/reference db-id [:thing/id tid]) connect-fn))
+               (:eid (ref/resolve-reference r connect-fn)))
+            "commit pin resolves the same entity as the live head")))
+
+    (testing "commit reference to an unknown commit → dangling"
+      (let [r (ref/reference db-id [:thing/id tid] {:commit (rand-uuid)})]
+        (is (nil? (ref/resolve-reference r connect-fn)))))
 
     (testing "unknown / ungranted database → nil (dangling, not an error)"
       (let [r (ref/reference (rand-uuid) [:thing/id tid])]

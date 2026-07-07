@@ -24,15 +24,18 @@ to one index. It must be value-level:
 |---|---|---|
 | `db-id` | target database | the store `:id` (mandatory UUID) |
 | `selector` | entity inside it | a lookup ref `[attr value]` (unique attr; non-unique via explicit opt-in) or a bare **entity id** (`dh://<db-id>/387`) — the cheapest, most general pointer: direct EAVT seek, no AVET, no schema, no unique attr needed |
-| `temporal` | which version | `nil` = live head; `{:tx n}` / `{:date inst}` = `as-of`; `{:valid inst}` = [valid-time](./valid_time.md) point (combinable with `:tx`/`:date`); `{:branch "name"}` = branch head |
+| `temporal` | which version | `nil` = live head; `{:tx n}` / `{:date inst}` = `as-of`; `{:commit uuid}` = an exact content-addressed commit (via `commit-as-db`); `{:valid inst}` = [valid-time](./valid_time.md) point (combinable with the tx-time pin); `{:branch "name"}` = branch head |
 
 The temporal distinguishes the **two reference kinds**:
 
 - **Living reference** (no temporal / branch): tracks the head. For
   navigation, mentions, "see also" — follows edits.
-- **Record reference** (`:tx` / `:date`): pinned to a snapshot. For
-  provenance, citation, audit — immutable, and resolvable forever on
-  stores with `:keep-history? true`.
+- **Record reference** (`:tx` / `:date` / `:commit`): pinned to a snapshot.
+  For provenance, citation, audit — immutable, and resolvable forever on
+  stores with `:keep-history? true`. `:commit` is the most precise form:
+  the commit-id fully determines the db value (content-addressed — a
+  merkle root under `:crypto-hash?`), independent of branch, so it
+  supersedes `:tx`/`:date` when present.
 
 With [bitemporal valid-time](./valid_time.md), `{:valid inst}` pins the
 *valid-time* axis (`valid-at`, supersession semantics) and composes with
@@ -42,20 +45,24 @@ in the documented composition order (`valid-at` outermost over `as-of`).
 
 ## URI form
 
-For text, hyperlinks, logs, and export:
+For text, hyperlinks, logs, and export. The temporal is a standard URL
+query string (`?key=value&key=value`):
 
 ```
-dh://<db-id>/<attr>/<value>[@<temporal>]
+dh://<db-id>/<attr>/<value>[?<temporal>]
 
 dh://96ae43a7-…/entity%2Fuuid/08308437-…                    ; living
-dh://96ae43a7-…/S.Page%2Ftitle/str:Roadmap@tx:536871113     ; record
-dh://96ae43a7-…/entity%2Fuuid/08308437-…@branch:experiment  ; branch head
-dh://96ae43a7-…/entity%2Fuuid/08308437-…@tx:536871113,valid:2026-06-01T00:00:00Z  ; bitemporal
+dh://96ae43a7-…/S.Page%2Ftitle/str:Roadmap?tx=536871113     ; record (as-of tx)
+dh://96ae43a7-…/entity%2Fuuid/08308437-…?commit=1a2b…       ; record (exact commit)
+dh://96ae43a7-…/entity%2Fuuid/08308437-…?branch=experiment  ; branch head
+dh://96ae43a7-…/entity%2Fuuid/08308437-…?tx=536871113&valid=2026-06-01T00:00:00Z  ; bitemporal
 ```
 
 Attr keywords are URL-encoded whole; values carry an optional type tag
 (`str:` `long:` `kw:`; untagged = UUID-or-string). A single all-digit
-path segment is an entity-id selector. `render` / `parse` round-trip.
+path segment is an entity-id selector. The temporal qualifiers —
+`tx` `date` `commit` `valid` `branch` — combine with `&`. `render` /
+`parse` round-trip.
 
 **Eid vs value selectors.** An eid is stable within its logical
 database — replicas of the same store `:id` share the index, branches
@@ -66,7 +73,7 @@ renumbers them, while value selectors survive anything that preserves
 values. Eid = physically-bound pointer (cheapest, works for entities
 with no unique attribute at all, on schemaless databases); value
 selector = semantically-robust pointer. Pick per use; record references
-(`@tx:`) compose with both.
+(`?tx=` / `?commit=`) compose with both.
 
 ## Reified references (queryable links)
 
@@ -100,7 +107,7 @@ control, branch selection), so it is injected:
 (require '[datahike.reference :as ref])
 
 (ref/resolve-reference
-  (ref/parse "dh://96ae43a7-…/entity%2Fuuid/08308437-…@tx:536871113")
+  (ref/parse "dh://96ae43a7-…/entity%2Fuuid/08308437-…?tx=536871113")
   (fn [db-id {:keys [branch]}]
     (my-registry/connect db-id branch)))   ; conn, db value, or nil
 ;; => {:db <as-of db> :eid 387}   or nil (dangling)

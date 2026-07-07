@@ -20,8 +20,7 @@
             [konserve.utils :refer [#?(:clj async+sync) multi-key-capable? *default-sync-translation*]
              #?@(:cljs [:refer-macros [async+sync]])]
             #?(:cljs [clojure.core.async :refer [<!]]))
-  #?(:cljs (:require-macros [clojure.core.async :refer [go]]))
-  #?(:clj (:import [datahike.connector Connection])))
+  #?(:cljs (:require-macros [clojure.core.async :refer [go]])))
 
 (defn- branch-check [branch]
   (when-not (keyword? branch)
@@ -42,10 +41,17 @@
                {:type :commit-id-must-be-uuid :commit-id commit-id})))
 
 (defn- extract-store
-  "Extract konserve store from a connection or db value."
+  "Extract konserve store from a connection or db value.
+
+   A connection is detected via `IDeref` rather than the concrete
+   `Connection` class: `deftype` recompilation (circular loads, REPL
+   reloads) can drift the class identity so `instance? Connection` sees a
+   stale class and silently misroutes a live connection to the raw-store
+   branch — which surfaced as a konserve `get-lock` NPE from
+   `commit-as-db`. A db value is not `IDeref`, so the two stay distinct."
   [conn-or-db]
   (cond
-    #?(:clj (instance? Connection conn-or-db) :cljs (satisfies? IDeref conn-or-db))
+    #?(:clj (instance? clojure.lang.IDeref conn-or-db) :cljs (satisfies? IDeref conn-or-db))
     (:store @conn-or-db)
 
     (db? conn-or-db)
