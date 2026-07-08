@@ -450,6 +450,38 @@
                              rels))]
          (or e-probe v-probe)))))
 
+#?(:clj
+   (defn- var-attr-avet-pairs
+     "Distinct (attr, value) pairs bound in `rels` for a VARIABLE-attribute
+      clause `[?e ?a ?v]` (both ?a and ?v logic vars), returned only when a
+      per-pair AVET point-seek beats a full scan: one rel binds BOTH ?a and ?v,
+      every distinct attr is AVET-indexed, and the pair count is selective
+      (K * probe-driven-threshold < scan-n). nil → caller falls back to
+      scan/filter. Result-preserving: the seeks only restrict to the bound
+      (attr, value) set the downstream join enforces anyway."
+     [db clause rels scan-n]
+     (let [[_ a v] clause
+           scan-n (long scan-n)
+           cell (fn [t i] (cond (instance? clojure.lang.Indexed t) (.nth ^clojure.lang.Indexed t (int i))
+                                (sequential? t) (nth t i)
+                                :else (get t i)))]
+       (some (fn [rel]
+               (let [ai (get (:attrs rel) a)
+                     vi (get (:attrs rel) v)]
+                 (when (and ai vi)
+                   (let [seen (java.util.HashSet.)
+                         aborted (reduce (fn [_ t]
+                                           (let [pa (cell t ai) pv (cell t vi)]
+                                             (when (and (some? pa) (some? pv)) (.add seen [pa pv])))
+                                           (if (>= (.size seen) scan-n) (reduced true) nil))
+                                         nil (:tuples rel))]
+                     (when (and (not (true? aborted)) (pos? (.size seen)))
+                       (let [ps (vec seen)]
+                         (when (and (< (* (long (count ps)) (long probe-driven-threshold)) scan-n)
+                                    (every? (fn [[pa _]] (dbu/indexing? db pa)) ps))
+                           ps)))))))
+             rels))))
+
 (defn- scan-datoms
   "Datoms for a scan clause, driven by the currently-bound `rels` (sideways
    information passing) when beneficial — the single retrieval seam shared by
@@ -474,26 +506,38 @@
         scan-n (long (or scan-n (di/-count db-index)))
         full (fn [] (di/-slice db-index from to index))]
     #?(:clj
-       (if-let [probe (pattern-probe-set db clause resolved-a rels scan-n)]
-         (let [k     (.size ^java.util.HashSet (:values probe))
-               field (int (:field probe))
-               seek-index (if (== field 2) (:avet db) (:eavt db))]
+       (if-let [avet-pairs (when (and (:avet db)
+                                      (nil? resolved-a)
+                                      (symbol? a) (analyze/free-var? a)
+                                      (symbol? v) (analyze/free-var? v))
+                             (var-attr-avet-pairs db clause rels scan-n))]
+         ;; Variable-attribute pattern [?e ?a ?v] with ?a and ?v both bound
+         ;; upstream (e.g. a reference-driven join whose attribute comes from the
+         ;; data): AVET point-seek per (attr, value) pair instead of full-scanning
+         ;; EAVT and filtering. O(pairs * log n) vs O(all datoms).
+         (mapcat (fn [[pa pv]]
+                   (di/-slice (:avet db) (datom e0 pa pv tx0) (datom emax pa pv txmax) :avet))
+                 avet-pairs)
+         (if-let [probe (pattern-probe-set db clause resolved-a rels scan-n)]
+           (let [k     (.size ^java.util.HashSet (:values probe))
+                 field (int (:field probe))
+                 seek-index (if (== field 2) (:avet db) (:eavt db))]
            ;; Seeks build (entity attr nil)/(e0 attr value) probe datoms and use
            ;; a PersistentSortedSet ForwardCursor, so they need (a) a PSS index
            ;; and (b) a RESOLVED, non-nil attribute — a variable-attribute
            ;; pattern [?e ?a ?v] has resolved-a=nil, which would feed nil into
            ;; the no-nil-check attr comparator (cmp-attr-quick → NPE). In both
            ;; cases the index-agnostic filter regime below is correct instead.
-           (if (and (:seekable? probe)
-                    (some? resolved-a)
-                    (pss-instance? seek-index)
-                    (< (* (long k) (long probe-driven-threshold)) scan-n))
-             (probe-driven-iterable seek-index resolved-a (:values probe) field)
-             (let [^java.util.HashSet hs (:values probe)]
-               (filter (fn [^Datom d]
-                         (.contains hs (if (== field 0) (.-e d) (.-v d))))
-                       (full)))))
-         (full))
+             (if (and (:seekable? probe)
+                      (some? resolved-a)
+                      (pss-instance? seek-index)
+                      (< (* (long k) (long probe-driven-threshold)) scan-n))
+               (probe-driven-iterable seek-index resolved-a (:values probe) field)
+               (let [^java.util.HashSet hs (:values probe)]
+                 (filter (fn [^Datom d]
+                           (.contains hs (if (== field 0) (.-e d) (.-v d))))
+                         (full)))))
+           (full)))
        :cljs (full))))
 
 (defn- execute-pattern-scan [db op cancel rels]

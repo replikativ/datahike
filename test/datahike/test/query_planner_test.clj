@@ -935,3 +935,31 @@
       (is (= expected (binding [q/*disable-planner* false] (d/q query dba dbb)))))
     (testing "legacy engine handles the variable-attribute cross-source pattern"
       (is (= expected (binding [q/*disable-planner* true] (d/q query dba dbb)))))))
+
+;; When the target relation is large enough to cross the AVET-seek cost
+;; threshold, the variable-attribute scan `[$b ?p ?attr ?val]` (attr + value
+;; bound upstream) must point-seek AVET per (attr, value) pair rather than
+;; full-scanning — and must still return EXACTLY the matching entities, not the
+;; unrelated bulk. This test forces C's seek path (thousands of non-matching
+;; people) and asserts precise results.
+(def var-attr-many-people-db
+  (delay
+    (d/db-with (db/empty-db {:person/email {:db/unique :db.unique/identity}
+                             :person/name  {:db/index true}})
+               (into [{:person/email "peter@x" :person/name "Peter"}
+                      {:person/email "anna@x"  :person/name "Anna"}]
+                     (map (fn [i] {:person/email (str "u" i "@x") :person/name (str "U" i)}))
+                     (range 5000)))))
+
+(deftest test-variable-attribute-multisource-avet-seek
+  (let [dba @var-attr-docs-db
+        dbb @var-attr-many-people-db
+        query '[:find ?title ?pname :in $a $b :where
+                [$a ?doc :doc/title ?title] [$a ?doc :doc/author ?r]
+                [$a ?r :link/attr ?attr] [$a ?r :link/enc ?enc]
+                [(subs ?enc 3) ?val]
+                [$b ?p ?attr ?val] [$b ?p :person/name ?pname]]
+        expected #{["Doc1" "Peter"] ["Doc2" "Anna"]}]
+    (testing "AVET-seek path returns exactly the matching entities (large target)"
+      (is (= expected (binding [q/*disable-planner* false] (d/q query dba dbb))))
+      (is (= expected (binding [q/*disable-planner* true] (d/q query dba dbb)))))))
