@@ -67,6 +67,34 @@
       (is (thrown? #?(:clj Exception :cljs js/Error) (ref/parse "dh://nope")))
       (is (thrown? #?(:clj Exception :cljs js/Error) (ref/parse "http://x/y/z"))))))
 
+(deftest value-type-codec
+  (testing "every datahike value type survives the URL value codec"
+    (let [db-id (rand-uuid)
+          rt    (fn [v] (ref/parse (ref/render (ref/reference db-id [:some/attr v]))))
+          ;; full-record equality also asserts type fidelity: (= (float 1.5) 1.5)
+          ;; and (= 1.5M 1.50M) are both false, so a widened float or a dropped
+          ;; bigdec scale would fail this, not silently pass.
+          same? (fn [v] (= (ref/reference db-id [:some/attr v]) (rt v)))]
+      (is (same? true))                                    ; boolean → bool:
+      (is (same? "road / map?x=1&y"))                      ; string (URL-special chars)
+      (is (same? 42))                                      ; long → long:
+      (is (same? :alpha/beta))                             ; keyword → kw:
+      (is (same? (rand-uuid)))                             ; uuid → untagged
+      (is (same? 3.14159))                                 ; double → edn:
+      (is (same? 'my.ns/sym))                              ; symbol → edn:
+      (is (same? [1 "a" :k]))                              ; tuple → edn:
+      (is (same? #inst "2026-01-01T12:30:00.000-00:00"))   ; instant → inst:
+      (testing "bytes → b64: (base64url; java.util.Base64 / goog.crypt.base64)"
+        (let [b   #?(:clj (byte-array [1 2 3 4]) :cljs (js/Uint8Array. #js [1 2 3 4]))
+              out (:value (rt b))]
+          (is #?(:clj  (java.util.Arrays/equals ^bytes b ^bytes out)
+                 :cljs (= (vec (js/Array.from b)) (vec (js/Array.from out)))))))
+      #?(:clj
+         (testing "clj type fidelity: float≠double, bigdec scale, bigint"
+           (is (same? (float 1.5)))                        ; flt: keeps Float
+           (is (same? 1.50M))                              ; edn: keeps bigdec scale
+           (is (same? 123456789012345678901234567890N)))))))  ; bigint
+
 (deftest reified-reference-round-trip
   (let [r (ref/reference (rand-uuid) [:page/title "Roadmap"] {:tx 42})
         m (ref/reference->tx-map r :derived-from)]

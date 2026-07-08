@@ -78,7 +78,9 @@
    correct behaviour at a permission boundary."
   (:refer-clojure :exclude [resolve])
   (:require [clojure.string :as str]
-            [datahike.api :as d])
+            [datahike.api :as d]
+            #?(:clj [clojure.edn :as edn] :cljs [cljs.reader :as reader])
+            #?(:cljs [goog.crypt.base64 :as gb64]))
   #?(:clj (:import [java.net URLEncoder URLDecoder])))
 
 ;; ============================================================================
@@ -126,18 +128,54 @@
 (defn- decode-attr [s]
   (keyword (url-decode s)))
 
-(defn- encode-value [v]
-  (cond
-    (uuid? v)    (str v)                     ; uuids are the untagged default
-    (string? v)  (str "str:" (url-encode v))
-    (int? v)     (str "long:" v)            ; also carries :db/id eids in tx-maps
-    (keyword? v) (str "kw:" (url-encode (subs (str v) 1)))
-    :else (throw (ex-info "Unsupported reference value type"
-                          {:value v :type (type v)}))))
-
 (defn- parse-uuid* [s]
   #?(:clj  (try (java.util.UUID/fromString s) (catch Exception _ nil))
      :cljs (when (re-matches #"[0-9a-fA-F-]{36}" s) (uuid s))))
+
+(defn- inst-str [d]
+  #?(:clj (str (.toInstant ^java.util.Date d)) :cljs (.toISOString d)))
+
+(defn- parse-inst [s]
+  #?(:clj (java.util.Date/from (java.time.Instant/parse s)) :cljs (js/Date. s)))
+
+(defn- read-edn [s]
+  #?(:clj (edn/read-string s) :cljs (reader/read-string s)))
+
+;; base64url (url-safe alphabet, no padding) so a bytes value drops straight
+;; into a URL path segment. CLJ: java.util.Base64; CLJS: goog.crypt.base64 over
+;; the Uint8Array that is datahike's bytes representation (schema.cljc).
+(defn- b64url-encode [b]
+  #?(:clj  (.encodeToString (.withoutPadding (java.util.Base64/getUrlEncoder)) ^bytes b)
+     :cljs (gb64/encodeByteArray b (.-WEBSAFE_NO_PADDING gb64/Alphabet))))
+
+(defn- b64url-decode [s]
+  #?(:clj  (.decode (java.util.Base64/getUrlDecoder) ^String s)
+     :cljs (gb64/decodeStringToUint8Array s)))
+
+(defn- bytes-val? [v]
+  #?(:clj  (bytes? v)
+     :cljs (and (some? (.-buffer v)) (instance? js/ArrayBuffer (.-buffer v)))))
+
+;; Value ⇄ URL-segment codec. Readable tags for the identity-friendly scalars
+;; (uuid untagged; str:/long:/kw:/bool:/inst:). Bytes get b64: (base64url, both
+;; platforms) and Float gets a clj-only flt: (CLJS has no Float distinct from
+;; double). Everything else — bigint, bigdec, double, symbol, tuple — rides an
+;; `edn:` fallback whose pr-str / read-string preserves the exact type,
+;; *including bigdec scale*. The payloads of str:/kw:/edn: are url-encoded and
+;; the fixed tags use only URL-safe chars, so no encoded value ever contains a
+;; raw `/` or `?` to confuse `parse`.
+(defn- encode-value [v]
+  (cond
+    (uuid? v)      (str v)                   ; uuids are the untagged default
+    (string? v)    (str "str:" (url-encode v))
+    (keyword? v)   (str "kw:" (url-encode (subs (str v) 1)))
+    (boolean? v)   (str "bool:" v)
+    (inst? v)      (str "inst:" (inst-str v))
+    (bytes-val? v) (str "b64:" (b64url-encode v))
+    #?@(:clj [(instance? Long v)  (str "long:" v)   ; also carries :db/id eids
+              (instance? Float v) (str "flt:" v)]
+        :cljs [(and (number? v) (js/Number.isSafeInteger v)) (str "long:" v)])
+    :else (str "edn:" (url-encode (pr-str v)))))
 
 (defn- decode-value [s]
   (cond
@@ -145,10 +183,15 @@
     (str/starts-with? s "long:") #?(:clj (Long/parseLong (subs s 5))
                                     :cljs (js/parseInt (subs s 5) 10))
     (str/starts-with? s "kw:")   (keyword (url-decode (subs s 3)))
+    (str/starts-with? s "bool:") (= "true" (subs s 5))
+    (str/starts-with? s "inst:") (parse-inst (subs s 5))
+    (str/starts-with? s "b64:")  (b64url-decode (subs s 4))
+    ;; flt: is only emitted on CLJ (CLJS has no distinct Float); a CLJ-produced
+    ;; float reference still decodes on CLJS, best-effort, to a plain number.
+    (str/starts-with? s "flt:")  #?(:clj (Float/parseFloat (subs s 4))
+                                    :cljs (js/parseFloat (subs s 4)))
+    (str/starts-with? s "edn:")  (read-edn (url-decode (subs s 4)))
     :else (or (parse-uuid* s) (url-decode s))))
-
-(defn- inst-str [d]
-  #?(:clj (str (.toInstant ^java.util.Date d)) :cljs (.toISOString d)))
 
 (defn- encode-temporal
   "Temporal map → URL query string (`tx=…&branch=…`), or nil when empty.
@@ -163,9 +206,6 @@
                 branch (conj (str "branch=" (url-encode branch)))
                 commit (conj (str "commit=" commit)))]
     (when (seq pairs) (str/join "&" pairs))))
-
-(defn- parse-inst [s]
-  #?(:clj (java.util.Date/from (java.time.Instant/parse s)) :cljs (js/Date. s)))
 
 (defn- decode-temporal
   "URL query string (`tx=…&branch=…`) → temporal map. Unknown keys and a

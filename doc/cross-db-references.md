@@ -63,11 +63,16 @@ dh://96ae43a7-…/entity%2Fuuid/08308437-…?branch=experiment  ; branch head
 dh://96ae43a7-…/entity%2Fuuid/08308437-…?tx=536871113&valid=2026-06-01T00:00:00Z  ; bitemporal
 ```
 
-Attr keywords are URL-encoded whole; values carry an optional type tag
-(`str:` `long:` `kw:`; untagged = UUID-or-string). A single all-digit
-path segment is an entity-id selector. The temporal qualifiers —
-`tx` `date` `commit` `valid` `branch` — combine with `&`. `render` /
-`parse` round-trip.
+Attr keywords are URL-encoded whole; the value carries a type tag so the
+selector round-trips to the exact datahike value. **Every value type is
+supported.** Readable tags cover the identity-friendly scalars — untagged
+UUID, `str:`, `long:`, `kw:`, `bool:`, `inst:` (ISO-8601); `flt:` and
+`b64:` (url-safe base64) carry `float` and `bytes`; and an `edn:` fallback
+losslessly encodes the rest — `bigint`, `bigdec` (**scale preserved**),
+`double`, `symbol`, and `tuple` — via `pr-str` / `edn/read-string`. A
+single all-digit path segment is an entity-id selector. The temporal
+qualifiers — `tx` `date` `commit` `valid` `branch` — combine with `&`.
+`render` / `parse` round-trip.
 
 **Eid vs value selectors.** An eid is stable within its logical
 database — replicas of the same store `:id` share the index, branches
