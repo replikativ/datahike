@@ -107,6 +107,29 @@ reified references without any schema declaration, in both
 schema-flexibility modes, with `:dh.ref/db` and `:dh.ref/value`
 AVET-indexed for reverse lookups ("all references into database X").
 
+`:dh.ref/value` stores the value in the same self-describing tagged
+encoding as the URI (`long:42`, `str:…`, `edn:…`; a bare uuid is untagged),
+so the selector's **datatype travels inside the string** — there is no
+separate value-type attribute to keep in sync, and `tx-map->reference`
+recovers the exact typed value. The practical consequence: a reverse lookup
+*by value* must query the **encoded** form, most easily obtained via
+`reference->tx-map`:
+
+```clojure
+;; every reified link pointing at [:item/code 42] in database X
+(let [needle (:dh.ref/value (ref/reference->tx-map (ref/reference db-x [:item/code 42])))]
+  (d/q '[:find ?r :in $ ?db ?v :where
+         [?r :dh.ref/db ?db] [?r :dh.ref/value ?v]]
+       db db-x needle))
+```
+
+Because the stored form sorts lexically, value queries are **exact-match,
+not native range/order**. That is exactly right for a pointer (you resolve
+it, you don't range-query it). If you ever need to range- or type-query
+reference values, store a native-typed mirror alongside the string — e.g. a
+`:db.type/literal` from the experimental RDF support — rather than reaching
+for a value-type tag.
+
 ## Resolution
 
 Connection acquisition is deployment-specific (peer registry, access
