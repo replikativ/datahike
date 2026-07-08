@@ -1741,11 +1741,23 @@
         pattern-substitution-inds (map :tuple-element-index substituted-vars)
         pattern-filter-inds (map :tuple-element-index filtered-vars)
 
+        ;; The filter feature-extractor reads a var's value from the RELATION
+        ;; TUPLE (via `:tuple-element-index`) but `lrr`
+        ;; (resolve-pattern-lookup-ref-at-index) resolves lookup-refs by the
+        ;; var's PATTERN position (e/a/v/tx/added). On a wide multi-source
+        ;; relation the two indices differ, so the raw tuple index would pick
+        ;; the wrong resolution case (and, past index 4, formerly crashed).
+        ;; Translate tuple-index → pattern-index before resolving.
+        tuple-idx->pattern-idx (into {} (map (juxt :tuple-element-index :pattern-element-index))
+                                     filtered-vars)
+        lrr-by-tuple-idx (fn [tuple-idx v]
+                           (lrr (get tuple-idx->pattern-idx tuple-idx tuple-idx) v))
+
         ;; This function returns a unique feature for the values at
         ;; `pattern-filter-inds` given a pattern.
         feature-extractor (index-feature-extractor pattern-filter-inds
                                                    true
-                                                   lrr)
+                                                   lrr-by-tuple-idx)
 
         ;; These are the indices of the locations in the pattern that will be substituted
         ;; with values from the tuples in this relation.

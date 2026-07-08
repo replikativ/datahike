@@ -1467,26 +1467,31 @@
                                          1)
          (or (:estimated-card op) 100))))))
 
-(defn- scan-var-attr-info
-  "For an entity-group / pattern-scan whose DRIVING scan is a variable-attribute
-   pattern `[?e ?a ?v]` (attribute in a logic var), return {:attr-var :val-var};
-   nil otherwise. A variable attribute forces a full scan, so such a pattern
-   must be correlated on its (attr, value) rather than DP-ordered as a producer."
+(defn- group-var-attr-clauses
+  "Every variable-attribute clause `[?e ?a ?v]` (attribute in a logic var) in an
+   entity-group / pattern-scan — its DRIVING scan AND its merge ops — each as
+   {:attr-var :val-var}. A variable attribute forces a full scan, so such a
+   pattern must be correlated on its (attr, value) rather than DP-ordered as a
+   producer. Covering merge ops too handles the case where a fixed-attr pattern
+   wins the driving-scan slot and the variable-attribute pattern is a merge."
   [op]
   (when (#{:entity-group :pattern-scan} (:op op))
-    (let [clause (or (get-in op [:scan-op :clause]) (:clause op))]
-      (when (and (sequential? clause) (>= (count clause) 3)
-                 (analyze/free-var? (nth clause 1)))
+    (let [clauses (if (= :entity-group (:op op))
+                    (keep :clause (cons (:scan-op op) (:merge-ops op)))
+                    (some-> (:clause op) vector))]
+      (for [clause clauses
+            :when (and (sequential? clause) (>= (count clause) 3)
+                       (analyze/free-var? (nth clause 1)))]
         {:attr-var (nth clause 1)
          :val-var  (let [v (nth clause 2)] (when (analyze/free-var? v) v))}))))
 
 (defn mark-correlated-var-attr-scans
-  "Stamp `:requires-bound` on any variable-attribute driving scan whose attr
-   (and/or value) var is produced by ANOTHER op — turning it from a
-   DP-ordered producer into a dependency-ordered correlated join. Reuses the
-   canonical `op-produced-vars` (so rule-call / external-engine producers count
-   too). Clearing-idempotent: recomputes and drops a stale marker, so it is
-   safe to re-run on a replan suffix."
+  "Stamp `:requires-bound` on any variable-attribute scan (driving scan or
+   merge) whose attr (and/or value) var is produced by ANOTHER op — turning it
+   from a DP-ordered producer into a dependency-ordered correlated join. Reuses
+   the canonical `op-produced-vars` (so rule-call / external-engine producers
+   count too). Clearing-idempotent: recomputes and drops a stale marker, so it
+   is safe to re-run on a replan suffix."
   [ops]
   (let [produce-count (frequencies (mapcat op-produced-vars ops))
         bound-elsewhere? (fn [op v]
@@ -1494,14 +1499,15 @@
                                 (> (long (get produce-count v 0))
                                    (if (contains? (op-produced-vars op) v) 1 0))))]
     (mapv (fn [op]
-            (if-let [{:keys [attr-var val-var]} (scan-var-attr-info op)]
-              (let [req (cond-> #{}
-                          (bound-elsewhere? op attr-var) (conj attr-var)
-                          (bound-elsewhere? op val-var)  (conj val-var))]
-                (if (seq req)
-                  (assoc op :requires-bound req)
-                  (dissoc op :requires-bound)))
-              op))
+            (let [req (into #{}
+                            (mapcat (fn [{:keys [attr-var val-var]}]
+                                      (cond-> []
+                                        (bound-elsewhere? op attr-var) (conj attr-var)
+                                        (bound-elsewhere? op val-var)  (conj val-var))))
+                            (group-var-attr-clauses op))]
+              (if (seq req)
+                (assoc op :requires-bound req)
+                (dissoc op :requires-bound))))
           ops)))
 
 (defn order-plan-ops
