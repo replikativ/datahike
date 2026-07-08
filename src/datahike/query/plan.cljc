@@ -1345,11 +1345,22 @@
   [op]
   (case (:op op)
     (:entity-group :pattern-scan)
-    (if (and (:optional? op)
-             (let [e (first (:clause op))]
-               (analyze/free-var? e)))
+    (cond
+      ;; A variable-attribute driving scan (`[?e ?a ?v]` with ?a a logic var)
+      ;; whose attr/value vars are produced elsewhere is a CORRELATED join, not
+      ;; a fresh producer: order-plan-ops stamps :requires-bound so it waits for
+      ;; those vars. Without this it is DP-ordered as a producer and can run
+      ;; before its value's producer, collapsing the join onto the non-selective
+      ;; attribute var (a Cartesian product across sources).
+      (seq (:requires-bound op))
+      [(:requires-bound op) :all]
+
+      (and (:optional? op)
+           (let [e (first (:clause op))]
+             (analyze/free-var? e)))
       [#{(first (:clause op))} :all]
-      [#{} :none])
+
+      :else [#{} :none])
 
     :predicate
     [(set (:vars op)) :all]
@@ -1456,6 +1467,49 @@
                                          1)
          (or (:estimated-card op) 100))))))
 
+(defn- group-var-attr-clauses
+  "Every variable-attribute clause `[?e ?a ?v]` (attribute in a logic var) in an
+   entity-group / pattern-scan — its DRIVING scan AND its merge ops — each as
+   {:attr-var :val-var}. A variable attribute forces a full scan, so such a
+   pattern must be correlated on its (attr, value) rather than DP-ordered as a
+   producer. Covering merge ops too handles the case where a fixed-attr pattern
+   wins the driving-scan slot and the variable-attribute pattern is a merge."
+  [op]
+  (when (#{:entity-group :pattern-scan} (:op op))
+    (let [clauses (if (= :entity-group (:op op))
+                    (keep :clause (cons (:scan-op op) (:merge-ops op)))
+                    (some-> (:clause op) vector))]
+      (for [clause clauses
+            :when (and (sequential? clause) (>= (count clause) 3)
+                       (analyze/free-var? (nth clause 1)))]
+        {:attr-var (nth clause 1)
+         :val-var  (let [v (nth clause 2)] (when (analyze/free-var? v) v))}))))
+
+(defn mark-correlated-var-attr-scans
+  "Stamp `:requires-bound` on any variable-attribute scan (driving scan or
+   merge) whose attr (and/or value) var is produced by ANOTHER op — turning it
+   from a DP-ordered producer into a dependency-ordered correlated join. Reuses
+   the canonical `op-produced-vars` (so rule-call / external-engine producers
+   count too). Clearing-idempotent: recomputes and drops a stale marker, so it
+   is safe to re-run on a replan suffix."
+  [ops]
+  (let [produce-count (frequencies (mapcat op-produced-vars ops))
+        bound-elsewhere? (fn [op v]
+                           (and (some? v)
+                                (> (long (get produce-count v 0))
+                                   (if (contains? (op-produced-vars op) v) 1 0))))]
+    (mapv (fn [op]
+            (let [req (into #{}
+                            (mapcat (fn [{:keys [attr-var val-var]}]
+                                      (cond-> []
+                                        (bound-elsewhere? op attr-var) (conj attr-var)
+                                        (bound-elsewhere? op val-var)  (conj val-var))))
+                            (group-var-attr-clauses op))]
+              (if (seq req)
+                (assoc op :requires-bound req)
+                (dissoc op :requires-bound))))
+          ops)))
+
 (defn order-plan-ops
   "Order plan operations using DP for entity-group ordering and greedy
    interleaving for dependency-constrained ops (predicates, functions, etc.).
@@ -1476,7 +1530,11 @@
   ([ops] (order-plan-ops ops nil nil))
   ([ops outer-bound-vars] (order-plan-ops ops outer-bound-vars nil))
   ([ops outer-bound-vars db]
-   (let [;; LOptionalScan-derived pattern-scans (get-else with default) need
+   (let [;; Correlated variable-attribute driving scans get :requires-bound so
+        ;; they leave the DP producer pool and wait for their (attr, value) —
+        ;; see mark-correlated-var-attr-scans.
+         ops (mark-correlated-var-attr-scans ops)
+        ;; LOptionalScan-derived pattern-scans (get-else with default) need
         ;; their entity var bound BEFORE they execute — at runtime the
         ;; optional path goes through bind-by-fn(get-else) which evaluates
         ;; per-row, and a row without the e-var bound emits a tuple where
@@ -1488,13 +1546,16 @@
         ;; can land before their binders. Demoting them to non-groups
         ;; routes them through the cost-based interleaver, which checks
         ;; bound-vars via op-cost and waits until the e-var is bound.
+        ;; A :requires-bound (correlated var-attr) scan is demoted the same way.
          optional-scan? (fn [op]
                           (and (= :pattern-scan (:op op))
                                (:optional? op)))
+         dependency-ordered? (fn [op]
+                               (or (optional-scan? op) (seq (:requires-bound op))))
          groups (filterv #(and (#{:entity-group :pattern-scan} (:op %))
-                               (not (optional-scan? %))) ops)
+                               (not (dependency-ordered? %))) ops)
          non-groups (filterv #(or (not (#{:entity-group :pattern-scan} (:op %)))
-                                  (optional-scan? %)) ops)
+                                  (dependency-ordered? %)) ops)
          seed-bound (cond
                       (nil? outer-bound-vars) #{}
                       (set? outer-bound-vars) outer-bound-vars

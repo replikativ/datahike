@@ -1574,7 +1574,16 @@
       3 (if (lookup-ref? pattern-value)
           (dbu/entid-strict source pattern-value error-code)
           pattern-value)
-      4 pattern-value)))
+      4 pattern-value
+      ;; Indices 0-4 are the datom positions (e, a, v, tx, added). A larger
+      ;; index reaches here only when the caller passes a `:tuple-element-index`
+      ;; — a var's position in a WIDE relation tuple (e.g. a multi-source query
+      ;; whose driving relation joined several entity-groups) — rather than a
+      ;; pattern position. Such a position is not a datom slot, so it can never
+      ;; be a resolvable pattern lookup-ref: return the value unchanged.
+      ;; (Previously this threw "No matching clause: N", crashing the legacy
+      ;; engine on variable-attribute cross-source patterns.)
+      pattern-value)))
 
 (defn lookup-ref-replacer
   ([context] (lookup-ref-replacer context ::error))
@@ -1732,11 +1741,23 @@
         pattern-substitution-inds (map :tuple-element-index substituted-vars)
         pattern-filter-inds (map :tuple-element-index filtered-vars)
 
+        ;; The filter feature-extractor reads a var's value from the RELATION
+        ;; TUPLE (via `:tuple-element-index`) but `lrr`
+        ;; (resolve-pattern-lookup-ref-at-index) resolves lookup-refs by the
+        ;; var's PATTERN position (e/a/v/tx/added). On a wide multi-source
+        ;; relation the two indices differ, so the raw tuple index would pick
+        ;; the wrong resolution case (and, past index 4, formerly crashed).
+        ;; Translate tuple-index → pattern-index before resolving.
+        tuple-idx->pattern-idx (into {} (map (juxt :tuple-element-index :pattern-element-index))
+                                     filtered-vars)
+        lrr-by-tuple-idx (fn [tuple-idx v]
+                           (lrr (get tuple-idx->pattern-idx tuple-idx tuple-idx) v))
+
         ;; This function returns a unique feature for the values at
         ;; `pattern-filter-inds` given a pattern.
         feature-extractor (index-feature-extractor pattern-filter-inds
                                                    true
-                                                   lrr)
+                                                   lrr-by-tuple-idx)
 
         ;; These are the indices of the locations in the pattern that will be substituted
         ;; with values from the tuples in this relation.
