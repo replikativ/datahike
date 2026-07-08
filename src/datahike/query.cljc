@@ -1574,7 +1574,16 @@
       3 (if (lookup-ref? pattern-value)
           (dbu/entid-strict source pattern-value error-code)
           pattern-value)
-      4 pattern-value)))
+      4 pattern-value
+      ;; Indices 0-4 are the datom positions (e, a, v, tx, added). A larger
+      ;; index reaches here only when the caller passes a `:tuple-element-index`
+      ;; — a var's position in a WIDE relation tuple (e.g. a multi-source query
+      ;; whose driving relation joined several entity-groups) — rather than a
+      ;; pattern position. Such a position is not a datom slot, so it can never
+      ;; be a resolvable pattern lookup-ref: return the value unchanged.
+      ;; (Previously this threw "No matching clause: N", crashing the legacy
+      ;; engine on variable-attribute cross-source patterns.)
+      pattern-value)))
 
 (defn lookup-ref-replacer
   ([context] (lookup-ref-replacer context ::error))

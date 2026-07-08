@@ -933,8 +933,5 @@
         expected #{["Doc1" "Peter"] ["Doc2" "Anna"]}]
     (testing "compiled planner correlates the variable attribute (no Cartesian product)"
       (is (= expected (binding [q/*disable-planner* false] (d/q query dba dbb)))))
-    ;; NOTE: the legacy engine currently crashes on this shape
-    ;; ("No matching clause: 5" in resolve-pattern-lookup-ref-at-index); that is
-    ;; a separate fix. Re-enable this assertion once the legacy path is fixed.
-    #_(testing "legacy engine handles the variable-attribute cross-source pattern"
-        (is (= expected (binding [q/*disable-planner* true] (d/q query dba dbb)))))))
+    (testing "legacy engine handles the variable-attribute cross-source pattern"
+      (is (= expected (binding [q/*disable-planner* true] (d/q query dba dbb)))))))
