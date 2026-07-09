@@ -141,11 +141,13 @@
    (deftest test-detached-root-count-after-reopen
      ;; Regression (pre-existing on main, found by a diff-buf equivalence probe):
      ;; a restore+mutate can leave the PSS cached count unknown (-1); the
-     ;; canonical root WRITE handler serializes :count, and recomputing it on
-     ;; the storage-DETACHED stored copy (db->stored detaches, #854) NPE'd in
-     ;; Branch.child while materializing lazy children. with-storage now forces
-     ;; the count while the source is still attached. Recipe: deep tree (small
-     ;; bf), history on, mixed upserts/retractions, reconnect mid-stream.
+     ;; canonical root WRITE handler serialized :count via (count pset), and
+     ;; recomputing it on the storage-DETACHED stored copy (db->stored detaches,
+     ;; #854) NPE'd in Branch.child while materializing lazy children. Fixed
+     ;; upstream in persistent-sorted-set 0.4.132 (the handler serializes the
+     ;; cached count as-is; readers resolve -1 lazily with their own storage).
+     ;; Recipe: deep tree (small bf), history on, mixed upserts/retractions,
+     ;; reconnect mid-stream.
      (testing "commits keep succeeding across reopen+mutate on a deep tree"
        (let [cfg {:store {:backend :file
                           :path (str (System/getProperty "java.io.tmpdir") "/dh-detached-count")

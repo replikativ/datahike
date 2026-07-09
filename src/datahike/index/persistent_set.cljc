@@ -578,15 +578,11 @@
        (let [^PersistentSortedSet p pset
              m (meta p)
              cmp (index-type->cmp-quick (:index-type m) false)]
-         ;; Detaching: make the copy self-contained. A restore+mutate can leave
-         ;; the cached count unknown (-1 — PSS defers the subtree-count
-         ;; recomputation), and the canonical root WRITE handler serializes
-         ;; :count — recomputing it on the detached copy would need storage to
-         ;; materialize lazy children and NPEs. Force it here, while the source
-         ;; still has its storage; the recompute touches at most the direct
-         ;; children of invalidated spine ancestors and is cached after.
-         (when (and (nil? storage) (neg? (.-_count p)) (some? (.-_storage p)))
-           (count p))
+         ;; A detached copy may carry an UNKNOWN cached count (-1) after a
+         ;; restore+mutate; that's fine — since PSS 0.4.132 the root write
+         ;; handler serializes the cached value as-is (no storage-dependent
+         ;; recompute) and readers resolve it lazily with their own storage.
+         ;; Guarded by store_test/test-detached-root-count-after-reopen.
          (PersistentSortedSet. m cmp (.-_address p) storage (.-_root p)
                                (.-_count p) (.-_settings p) (.-_version p)))
        pset)
