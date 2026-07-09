@@ -8,8 +8,9 @@
         org.replikativ/superv.async                 {:mvn/version "0.3.50"
                                                      :exclusions [org.clojure/clojurescript]}
         org.replikativ/datalog-parser               {:mvn/version "0.2.37"}
-        ;; canonical fressian node+root handlers + MST boundary, shipped in 0.4.126
-        org.replikativ/persistent-sorted-set        {:mvn/version "0.4.126"}
+        ;; canonical fressian node+root handlers + MST boundary (0.4.126); diff-buf write-buffering
+        ;; (opt-in, Settings diffBufSize); 0.4.127-130 add cljs iterator/disjoin fixes
+        org.replikativ/persistent-sorted-set        {:mvn/version "0.4.130"}
         environ/environ                             {:mvn/version "1.2.0"}
         nrepl/bencode                               {:mvn/version "1.2.0"}
         org.replikativ/logging                      {:mvn/version "0.1.3"}
