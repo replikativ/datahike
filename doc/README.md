@@ -67,6 +67,7 @@ For experienced users building production systems:
 - **[Compiled Query Engine](./query-engine.md)** - Fused scan execution, ORDER BY, query result cache, `d/explain` (beta; default engine)
 - **[Secondary Indices](./secondary-indices.md)** - Full-text search, vector similarity, columnar aggregates (experimental)
 - **[Distributed Architecture](./distributed.md)** - Distributed Index Space and real-time sync with Kabel
+- **[Cross-database references](./cross-db-references.md)** - `dh://` URIs and reified links across databases (living vs record references)
 - **[Optimistic Overlay](./optimistic-overlay.md)** - Zero-latency UI updates over a remote writer via `d/with` (experimental)
 - **[Versioning](./versioning.md)** - Git-like branching and merging (beta)
 - **[Norms](./norms.md)** - Database migration system
