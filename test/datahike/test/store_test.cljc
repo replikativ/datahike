@@ -136,3 +136,44 @@
                "exactly one :name + one :age datom per entity (no stale buffered-replace duplicate)")
            (d/release conn))
          (d/delete-database cfg)))))
+
+#?(:clj
+   (deftest test-detached-root-count-after-reopen
+     ;; Regression (pre-existing on main, found by a diff-buf equivalence probe):
+     ;; a restore+mutate can leave the PSS cached count unknown (-1); the
+     ;; canonical root WRITE handler serializes :count, and recomputing it on
+     ;; the storage-DETACHED stored copy (db->stored detaches, #854) NPE'd in
+     ;; Branch.child while materializing lazy children. with-storage now forces
+     ;; the count while the source is still attached. Recipe: deep tree (small
+     ;; bf), history on, mixed upserts/retractions, reconnect mid-stream.
+     (testing "commits keep succeeding across reopen+mutate on a deep tree"
+       (let [cfg {:store {:backend :file
+                          :path (str (System/getProperty "java.io.tmpdir") "/dh-detached-count")
+                          :id #uuid "d1ffb000-0000-0000-0000-00000000dead"}
+                  :schema-flexibility :write :keep-history? true
+                  :index-config {:branching-factor 16}}
+             rng (java.util.Random. 42)]
+         (d/delete-database cfg)
+         (d/create-database cfg)
+         (let [conn (atom (d/connect cfg))]
+           (d/transact @conn [{:db/ident :id :db/valueType :db.type/long :db/cardinality :db.cardinality/one :db/unique :db.unique/identity}
+                              {:db/ident :score :db/valueType :db.type/long :db/cardinality :db.cardinality/one}])
+           (dotimes [i 150]
+             (let [r (.nextInt rng 4) id (long (.nextInt rng 300))]
+               (try
+                 (case r
+                   0 (d/transact @conn [{:id id :score (long (.nextInt rng 100))}])
+                   1 (d/transact @conn [[:db/retractEntity [:id id]]])
+                   (d/transact @conn (vec (for [j (range 5)] {:id (long (+ 300 (* i 5) j)) :score (long j)}))))
+                 (catch Exception e
+                   (when-not (re-find #"(?i)nothing to retract" (str (.getMessage e)))
+                     (throw e)))))
+             (when (zero? (mod (inc i) 50))
+               (d/release @conn)
+               (reset! conn (d/connect cfg))))
+           ;; count must be consistent with the actual datom set after all that
+           (let [db @@conn]
+             (is (= (count (filter #(= :id (:a %)) (d/datoms db :eavt)))
+                    (d/q '[:find (count ?e) . :where [?e :id _]] db))))
+           (d/release @conn))
+         (d/delete-database cfg)))))
