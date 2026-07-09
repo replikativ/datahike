@@ -380,64 +380,79 @@
   ([db parents sync?]
    (async+sync sync? *default-sync-translation*
                (go-try-
-                (let [{:keys [store config]} db
-                      parents       (or parents #{(get config :branch)})
-                      parents       (branch-heads-as-commits store parents)
+                ;; Contain fatal ERRORS (AssertionError, OOM, ...): go-try- catches
+                ;; Exception only, so an Error would escape the go state machine,
+                ;; kill the dispatch thread, and leave the returned channel silent —
+                ;; the writer's commit loop parks on it FOREVER and every queued
+                ;; transact hangs with no diagnostic. Convert to ex-info at the go
+                ;; boundary so the error flows through the channel to the writer's
+                ;; Throwable handler: callbacks get the error and the writer shuts
+                ;; down loudly. Commit ordering is unaffected (the HEAD flip never
+                ;; happened when we land here).
+                (try
+                  (let [{:keys [store config]} db
+                        parents       (or parents #{(get config :branch)})
+                        parents       (branch-heads-as-commits store parents)
                       ;; Stamp parents BEFORE flushing so they're in the
                       ;; stored form the cid will be derived from.
-                      db            (assoc-in db [:meta :datahike/parents] parents)
+                        db            (assoc-in db [:meta :datahike/parents] parents)
                       ;; Flush first → cid sees post-flush storage
                       ;; addresses (true merkle leaves under crypto-hash?).
-                      [schema-meta-kv-to-write db-to-store-pre]
-                      (db->stored db true)
-                      cid           (create-commit-id db db-to-store-pre)
-                      db            (assoc-in db [:meta :datahike/commit-id] cid)
-                      db-to-store   (assoc-in db-to-store-pre
-                                              [:meta :datahike/commit-id] cid)
+                        [schema-meta-kv-to-write db-to-store-pre]
+                        (db->stored db true)
+                        cid           (create-commit-id db db-to-store-pre)
+                        db            (assoc-in db [:meta :datahike/commit-id] cid)
+                        db-to-store   (assoc-in db-to-store-pre
+                                                [:meta :datahike/commit-id] cid)
                       ;; Root fusion: roots are inlined in db-to-store, so drop
                       ;; them from the separate-object writes.
-                      fused-addrs   (fused-root-addresses config db-to-store)
-                      pending-kvs   (cond->> (get-and-clear-pending-kvs! store)
-                                      (seq fused-addrs)
-                                      (remove (fn [[k _]] (contains? fused-addrs k))))]
+                        fused-addrs   (fused-root-addresses config db-to-store)
+                        pending-kvs   (cond->> (get-and-clear-pending-kvs! store)
+                                        (seq fused-addrs)
+                                        (remove (fn [[k _]] (contains? fused-addrs k))))]
 
-                  (if (multi-key-capable? store)
-                    (let [[meta-key meta-val] schema-meta-kv-to-write
-                          writes-map (cond-> (into {} pending-kvs) ; Initialize with pending KVs
-                                       schema-meta-kv-to-write (assoc meta-key meta-val)
-                                       true                    (assoc cid db-to-store)
-                                       true                    (assoc (:branch config) db-to-store))]
+                    (if (multi-key-capable? store)
+                      (let [[meta-key meta-val] schema-meta-kv-to-write
+                            writes-map (cond-> (into {} pending-kvs) ; Initialize with pending KVs
+                                         schema-meta-kv-to-write (assoc meta-key meta-val)
+                                         true                    (assoc cid db-to-store)
+                                         true                    (assoc (:branch config) db-to-store))]
                       ;; nodes + schema-meta (uuid) + commit (cid) are content-addressed →
                       ;; immutable; the branch-head pointer (:branch config) stays mutable.
                       ;; per-key meta map: every key but the branch head marked immutable.
-                      (<?- (k/multi-assoc store writes-map
-                                          (reduce-kv (fn [m k _] (cond-> m
-                                                                   (not= k (:branch config))
-                                                                   (assoc k {:immutable? true})))
-                                                     {} writes-map)
-                                          {:sync? sync?})))
+                        (<?- (k/multi-assoc store writes-map
+                                            (reduce-kv (fn [m k _] (cond-> m
+                                                                     (not= k (:branch config))
+                                                                     (assoc k {:immutable? true})))
+                                                       {} writes-map)
+                                            {:sync? sync?})))
                     ;; Then write schema-meta, commit-log, branch
-                    (let [[meta-key meta-val] schema-meta-kv-to-write
-                          schema-meta-written (when schema-meta-kv-to-write
+                      (let [[meta-key meta-val] schema-meta-kv-to-write
+                            schema-meta-written (when schema-meta-kv-to-write
                                                 ;; schema-meta-key = (uuid schema-meta) → content-addressed → immutable
-                                                (k/assoc store meta-key meta-val {:immutable? true} {:sync? sync?}))
+                                                  (k/assoc store meta-key meta-val {:immutable? true} {:sync? sync?}))
 
                           ;; Make sure all pointed to values are written before the commit log and branch
-                          _ (when schema-meta-kv-to-write (<?- schema-meta-written))
-                          _ (<?- (write-pending-kvs! store pending-kvs sync?))
+                            _ (when schema-meta-kv-to-write (<?- schema-meta-written))
+                            _ (<?- (write-pending-kvs! store pending-kvs sync?))
 
                           ;; the commit is content-addressed by cid → immutable; the branch head is mutable
-                          commit-log-written (k/assoc store cid db-to-store {:immutable? true} {:sync? sync?})
-                          branch-written     (k/assoc store (:branch config) db-to-store {:sync? sync?})]
-                      (when-not sync?
-                        (<?- commit-log-written)
-                        (<?- branch-written))))
+                            commit-log-written (k/assoc store cid db-to-store {:immutable? true} {:sync? sync?})
+                            branch-written     (k/assoc store (:branch config) db-to-store {:sync? sync?})]
+                        (when-not sync?
+                          (<?- commit-log-written)
+                          (<?- branch-written))))
 
                   ;; Online GC: delete freed addresses after writes are committed
-                  (when (get-in config [:online-gc :enabled?])
-                    (<?- (online-gc/online-gc! store (assoc (:online-gc config) :sync? false))))
+                    (when (get-in config [:online-gc :enabled?])
+                      (<?- (online-gc/online-gc! store (assoc (:online-gc config) :sync? false))))
 
-                  db)))))
+                    db)
+                  (catch #?(:clj Error :cljs :default) e
+                    #?(:clj  (throw (ex-info "Fatal error during commit."
+                                             {:type :fatal-commit-error}
+                                             e))
+                       :cljs (throw e))))))))
 
 (defn complete-db-update [old tx-report]
   (let [{:keys [writer]} old

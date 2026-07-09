@@ -22,7 +22,11 @@
   PWriter
   (-dispatch! [_ arg-map]
     (let [p (promise-chan)]
-      (put! transaction-queue (assoc arg-map :callback p))
+      ;; put! on a CLOSED queue returns false and would leave p silent — the
+      ;; caller's deref would hang forever. Deliver the failure instead.
+      (when-not (put! transaction-queue (assoc arg-map :callback p))
+        (put! p (ex-info "Writer is shut down (a previous fatal error closed it); release and reconnect."
+                         {:type :writer-shut-down})))
       p))
   (-shutdown [_]
     (close! transaction-queue)
@@ -82,8 +86,13 @@
                                                            :error      e})
                                                  e)))
                               ;; Re-throw Errors (AssertionError, OutOfMemoryError, etc.) to crash the writer
-                              ;; Only Exceptions should be handled and allow the writer to continue
+                              ;; Only Exceptions should be handled and allow the writer to continue.
+                              ;; CLOSE the queues first: a dead loop with open queues would accept
+                              ;; further transacts whose callbacks can never be delivered — every
+                              ;; subsequent transact would hang silently instead of failing loudly.
                                       #?(:clj (when (instance? Error e)
+                                                (close! transaction-queue)
+                                                (close! commit-queue)
                                                 (throw e)))
                                       :error))]
                         (cond (chan? res)
