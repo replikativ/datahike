@@ -2,7 +2,7 @@
   (:require [clojure.string]
             [org.replikativ.persistent-sorted-set :as psset]
             #?(:cljs [org.replikativ.persistent-sorted-set.btset :refer [BTSet]])
-            #?(:cljs [org.replikativ.persistent-sorted-set.branch :refer [Branch]])
+            #?(:cljs [org.replikativ.persistent-sorted-set.branch :as branch :refer [Branch]])
             #?(:cljs [org.replikativ.persistent-sorted-set.leaf :refer [Leaf]])
             #?(:cljs [org.replikativ.persistent-sorted-set.impl.storage :refer [IStorage]])
             [org.replikativ.persistent-sorted-set.arrays :as arrays]
@@ -221,11 +221,49 @@
   (-mark [^PersistentSortedSet pset]
     (mark pset)))
 
-(defn- gen-address [^ANode node crypto-hash?]
+(defn- canon
+  "Normalize a value for content hashing: Datoms become [e a v tx added] vectors,
+   recursively through maps and sequences. Keeps the hash input plain data so a
+   live node (slot diffs hold Datom objects in a sorted map) and its deserialized
+   twin (plain maps/vectors) hash identically."
+  [x]
+  (cond
+    (dd/datom? x)   (vec (seq x))
+    (map? x)        (persistent!
+                     (reduce-kv (fn [m k v] (assoc! m (canon k) (canon v)))
+                                (transient {}) x))
+    (sequential? x) (mapv canon x)
+    :else x))
+
+(defn- branch-content-uuid
+  "Content-addressed UUID of a Branch. Baseline (no diff-buf slots): hash of the
+   child-address vector — UNCHANGED from pre-diff-buf stores. With buffered slots,
+   the durable representation is (anchors + per-child diffs), so the slots must
+   fold into the hash: two logically different trees can share identical anchor
+   addresses and differ only in their diffs, and a tampered slot diff would
+   otherwise be invisible to the merkle audit. Slot data is canonicalized via
+   `canon` so live and restored nodes hash identically. Representation-dependent
+   by design: the same logical content hashes differently under different
+   :diff-buf-size settings (which are create-time-fixed per store)."
+  [node]
+  (let [addrs #?(:clj (vec (.addresses ^Branch node))
+                 :cljs (vec (.-addresses node)))
+        slots #?(:clj (.slotsForStorage ^Branch node)
+                 :cljs (branch/slots-for-storage node))]
+    (if (seq slots)
+      (uuid [addrs (canon slots)])
+      (uuid addrs))))
+
+(defn- leaf-content-uuid
+  "Content-addressed UUID of a Leaf: hash of its datoms in vector form."
+  [node]
+  (uuid (mapv (comp vec seq) #?(:clj (.keys ^Leaf node) :cljs (.-keys node)))))
+
+(defn- gen-address [#?(:clj ^ANode node :cljs node) crypto-hash?]
   (if crypto-hash?
     (if (instance? Branch node)
-      (uuid (vec (.addresses ^Branch node)))
-      (uuid (mapv (comp vec seq) (.keys node))))
+      (branch-content-uuid node)
+      (leaf-content-uuid node))
     (squuid)))  ;; Sequential UUID for better index locality
 
 #?(:clj
@@ -258,10 +296,13 @@
 
            :else
            (let [recomputed (cond
+                              ;; Same projections as gen-address: a Branch folds
+                              ;; its diff-buf slots (when present) so a tampered
+                              ;; buffered diff is detected like any other content.
                               (instance? Branch node)
-                              (uuid (vec (.addresses ^Branch node)))
+                              (branch-content-uuid node)
                               (instance? Leaf node)
-                              (uuid (mapv (comp vec seq) (.keys ^Leaf node))))]
+                              (leaf-content-uuid node))]
              (cond
                (nil? recomputed)
                (swap! errors conj {:type :audit/unknown-node-class
@@ -402,7 +443,8 @@
 (defmethod di/empty-index :datahike.index/persistent-set [_index-name store index-type _]
   (let [^PersistentSortedSet pset (psset/sorted-set* {:comparator (index-type->cmp-quick index-type false)
                                                       :storage (:storage store)
-                                                      :branching-factor (:datahike/branching-factor store DEFAULT_BRANCHING_FACTOR)})]
+                                                      :branching-factor (:datahike/branching-factor store DEFAULT_BRANCHING_FACTOR)
+                                                      :diff-buf-size (:datahike/diff-buf-size store 0)})]
     (with-meta pset (root-meta store index-type))))
 
 (defmethod di/init-index :datahike.index/persistent-set [_index-name store datoms index-type _ {:keys [indexed]}]
@@ -423,8 +465,10 @@
         ^PersistentSortedSet pset (psset/from-sorted-array (index-type->cmp-quick index-type false)
                                                            arr
                                                            (arrays/alength arr)
-                                                           #?(:clj  {:branching-factor (:datahike/branching-factor store DEFAULT_BRANCHING_FACTOR)}
+                                                           #?(:clj  {:branching-factor (:datahike/branching-factor store DEFAULT_BRANCHING_FACTOR)
+                                                                     :diff-buf-size (:datahike/diff-buf-size store 0)}
                                                               :cljs {:branching-factor (:datahike/branching-factor store DEFAULT_BRANCHING_FACTOR)
+                                                                     :diff-buf-size (:datahike/diff-buf-size store 0)
                                                                      :storage (:storage store)}))]
     #?(:clj (set! (.-_storage pset) (:storage store)))
     (with-meta pset (root-meta store index-type))))
@@ -444,12 +488,18 @@
 
 (defmethod di/add-konserve-handlers :datahike.index/persistent-set [config store]
   (let [store-id (or (get-in config [:store :id]) (:id config))  ; the konserve store's UUID
-        bf       (get-in config [:index-config :branching-factor] DEFAULT_BRANCHING_FACTOR)]
+        bf       (get-in config [:index-config :branching-factor] DEFAULT_BRANCHING_FACTOR)
+        ;; diff-buf write-buffering (EXPERIMENTAL, default off). Like bf this is a
+        ;; create-time-fixed per-store setting consumed when fresh sets are built
+        ;; (empty-index/init-index); restore needs nothing — node and root blobs
+        ;; self-describe their :diff-buf-size via the canonical handlers.
+        dbs      (get-in config [:index-config :diff-buf-size] 0)]
     (if-let [storage-atom (:storage-atom store)]
       ;; Pre-configured (e.g. LMDB) store — handlers already attached; just create the storage.
       (let [storage (or (:storage store) (create-storage store config))]
         (reset! storage-atom storage)
-        (assoc store :storage storage :datahike/store-id store-id :datahike/branching-factor bf))
+        (assoc store :storage storage :datahike/store-id store-id
+               :datahike/branching-factor bf :datahike/diff-buf-size dbs))
 
       ;; Standard fressian store — attach the CANONICAL PSS serializer with LEXICAL in-store
       ;; resolvers. The circular storage↔store reference is broken by a write-once cell LOCAL to THIS
@@ -479,7 +529,8 @@
             store   (k/assoc-serializers store {:FressianSerializer (fressian-serializer read-handlers* write-handlers*)})
             storage (or (:storage store) (create-storage store config))]
         (reset! storage-cell storage)
-        (assoc store :storage storage :datahike/store-id store-id :datahike/branching-factor bf)))))
+        (assoc store :storage storage :datahike/store-id store-id
+               :datahike/branching-factor bf :datahike/diff-buf-size dbs)))))
 
 (defmethod di/with-storage :datahike.index/persistent-set [_index-name pset storage]
   ;; A PSS root carries its IStorage in the `_storage` field — connection-
@@ -508,7 +559,8 @@
   store)
 
 (defmethod di/default-index-config :datahike.index/persistent-set [_index-name]
-  ;; branching-factor is NOT defaulted into the stored config — it's read with a DEFAULT_BRANCHING_FACTOR
-  ;; fallback in add-konserve-handlers/empty-index, so an unset config stays {} (and a user may still
-  ;; override via :index-config {:branching-factor n}).
+  ;; branching-factor and diff-buf-size are NOT defaulted into the stored config — they're read with
+  ;; fallbacks (DEFAULT_BRANCHING_FACTOR / 0) in add-konserve-handlers, so an unset config stays {}
+  ;; (and a user may still override via :index-config {:branching-factor n :diff-buf-size n} at
+  ;; create time; both are create-time-fixed and adopted from the stored config at connect).
   {})
