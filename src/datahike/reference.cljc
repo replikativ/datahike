@@ -115,18 +115,28 @@
 ;; ============================================================================
 
 (defn- url-encode [s]
-  #?(:clj  (URLEncoder/encode (str s) "UTF-8")
+  ;; Java's URLEncoder emits `+` for space (the form-urlencoded convention),
+  ;; but a dh:// value/attr lives in a URL *path* segment where `+` is a
+  ;; literal plus — and CLJS `decodeURIComponent` would not turn it back into a
+  ;; space. Normalize to `%20` so encoding is RFC-3986-correct for paths and
+  ;; byte-identical across CLJ and CLJS (references are cross-platform).
+  #?(:clj  (str/replace (URLEncoder/encode (str s) "UTF-8") "+" "%20")
      :cljs (js/encodeURIComponent (str s))))
 
 (defn- url-decode [s]
   #?(:clj  (URLDecoder/decode (str s) "UTF-8")
      :cljs (js/decodeURIComponent (str s))))
 
+;; A qualified keyword's `/` is kept as a literal path separator so the attr
+;; reads hierarchically (`:S.Page/title` → `S.Page/title`, not `S.Page%2Ftitle`).
+;; Each `/`-delimited part is still url-encoded, so any *other* special char in
+;; the namespace or name is escaped. `parse` recovers the attr as everything
+;; between the db-id and the (always `/`-free) value segment.
 (defn- encode-attr [attr]
-  (url-encode (subs (str attr) 1)))          ; :entity/uuid → "entity%2Fuuid"
+  (str/join "/" (map url-encode (str/split (subs (str attr) 1) #"/"))))
 
 (defn- decode-attr [s]
-  (keyword (url-decode s)))
+  (keyword (str/join "/" (map url-decode (str/split s #"/")))))
 
 (defn- parse-uuid* [s]
   #?(:clj  (try (java.util.UUID/fromString s) (catch Exception _ nil))
@@ -248,11 +258,19 @@
     (->Reference (parse-uuid* db-id) :db/id
                  #?(:clj (Long/parseLong eid-s) :cljs (js/parseInt eid-s 10))
                  (decode-temporal temporal-s))
-    (let [[_ db-id attr-s rest-s]
-          (or (re-matches #"dh://([0-9a-fA-F-]{36})/([^/?]+)/(.+)" (str s))
+    ;; The value is always the last, `/`-free path segment; the attr is
+    ;; whatever lies between the db-id and it (one or more segments, so a
+    ;; namespaced keyword keeps its `/`). Temporal follows the first `?`.
+    (let [[_ db-id body temporal-s]
+          (or (re-matches #"dh://([0-9a-fA-F-]{36})/([^?]+)(?:\?(.+))?" (str s))
               (throw (ex-info "Malformed dh:// reference"
                               {:uri s :expected "dh://<db-id>/(<eid>|<attr>/<value>)[?<temporal>]"})))
-          [value-s temporal-s] (str/split rest-s #"\?" 2)]
+          segs    (str/split body #"/")
+          value-s (last segs)
+          attr-s  (str/join "/" (butlast segs))]
+      (when (str/blank? attr-s)
+        (throw (ex-info "Malformed dh:// reference — expected <attr>/<value>"
+                        {:uri s :expected "dh://<db-id>/(<eid>|<attr>/<value>)[?<temporal>]"})))
       (->Reference (parse-uuid* db-id)
                    (decode-attr attr-s)
                    (decode-value value-s)

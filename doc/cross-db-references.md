@@ -56,14 +56,18 @@ query string (`?key=value&key=value`):
 ```
 dh://<db-id>/<attr>/<value>[?<temporal>]
 
-dh://96ae43a7-…/entity%2Fuuid/08308437-…                    ; living
-dh://96ae43a7-…/S.Page%2Ftitle/str:Roadmap?tx=536871113     ; record (as-of tx)
-dh://96ae43a7-…/entity%2Fuuid/08308437-…?commit=1a2b…       ; record (exact commit)
-dh://96ae43a7-…/entity%2Fuuid/08308437-…?branch=experiment  ; branch head
-dh://96ae43a7-…/entity%2Fuuid/08308437-…?tx=536871113&valid=2026-06-01T00:00:00Z  ; bitemporal
+dh://96ae43a7-…/entity/uuid/08308437-…                    ; living
+dh://96ae43a7-…/S.Page/title/str:Roadmap?tx=536871113     ; record (as-of tx)
+dh://96ae43a7-…/entity/uuid/08308437-…?commit=1a2b…       ; record (exact commit)
+dh://96ae43a7-…/entity/uuid/08308437-…?branch=experiment  ; branch head
+dh://96ae43a7-…/entity/uuid/08308437-…?tx=536871113&valid=2026-06-01T00:00:00Z  ; bitemporal
 ```
 
-Attr keywords are URL-encoded whole; the value carries a type tag so the
+A namespaced attr keeps its `/` as a literal path separator, so it reads
+hierarchically (`:S.Page/title` → `S.Page/title`, not `S.Page%2Ftitle`);
+each part is still url-encoded for any other special char. The value is
+always the last, `/`-free path segment (`parse` uses this to recover the
+attr, whether it spans one segment or two), and carries a type tag so the
 selector round-trips to the exact datahike value. **Every value type is
 supported.** Readable tags cover the identity-friendly scalars — untagged
 UUID, `str:`, `long:`, `kw:`, `bool:`, `inst:` (ISO-8601); `flt:` and
@@ -139,7 +143,7 @@ control, branch selection), so it is injected:
 (require '[datahike.reference :as ref])
 
 (ref/resolve-reference
-  (ref/parse "dh://96ae43a7-…/entity%2Fuuid/08308437-…?tx=536871113")
+  (ref/parse "dh://96ae43a7-…/entity/uuid/08308437-…?tx=536871113")
   (fn [db-id {:keys [branch]}]
     (my-registry/connect db-id branch)))   ; conn, db value, or nil
 ;; => {:db <as-of db> :eid 387}   or nil (dangling)

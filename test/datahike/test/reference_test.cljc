@@ -35,7 +35,7 @@
       (let [c (rand-uuid)
             r (ref/reference db-id [:entity/uuid u] {:commit c})]
         (is (= r (ref/parse (ref/render r))))
-        (is (= (str "dh://" db-id "/entity%2Fuuid/" u "?commit=" c)
+        (is (= (str "dh://" db-id "/entity/uuid/" u "?commit=" c)
                (ref/render r)))))
     (testing "temporal serializes as a URL query string (not @-syntax)"
       (let [r (ref/reference db-id [:entity/uuid u] {:tx 536871113 :branch "exp"})
@@ -44,7 +44,15 @@
         (is (nil? (re-find #"@" s)))))
     (testing "unknown temporal qualifier throws"
       (is (thrown? #?(:clj Exception :cljs js/Error)
-                   (ref/parse (str "dh://" db-id "/entity%2Fuuid/" u "?bogus=1")))))
+                   (ref/parse (str "dh://" db-id "/entity/uuid/" u "?bogus=1")))))
+    (testing "namespaced attr keeps its slash readable (not %2F)"
+      (let [r (ref/reference db-id [:S.Page/title "Roadmap / Q3"])]
+        (is (= (str "dh://" db-id "/S.Page/title/str:Roadmap%20%2F%20Q3") (ref/render r)))
+        (is (= r (ref/parse (ref/render r))))))
+    (testing "non-namespaced attr and a value that contains slashes"
+      (let [r (ref/reference db-id [:title "a/b/c"])]
+        (is (= (str "dh://" db-id "/title/str:a%2Fb%2Fc") (ref/render r)))
+        (is (= r (ref/parse (ref/render r))))))
     (testing "long and keyword selector values"
       (let [rl (ref/reference db-id [:item/code 42])
             rk (ref/reference db-id [:item/kind :alpha/beta])]
