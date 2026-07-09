@@ -169,36 +169,50 @@
   #{:branching-factor :diff-buf-size})
 
 (defn- adopt-create-time-fixed
-  "Adopt create-time-fixed :index-config settings from the stored config into
-   `config`. A key the caller did not specify is taken from the store; an
-   explicitly conflicting value raises (these settings cannot change after
-   creation). Returns the possibly-updated config."
+  "Adopt store-fixed settings from the stored config into `config`: the
+   create-time-fixed :index-config sub-keys and :fuse-index-roots? (which
+   describes how records in the store are laid out). A key the caller did not
+   specify is taken from the store, so reconnects don't need to re-specify
+   creation settings; an explicitly conflicting value raises unless
+   :allow-unsafe-config is set (then the given value wins). Returns the
+   possibly-updated config."
   [config stored-config]
-  (let [stored-ic (select-keys (:index-config stored-config) create-time-fixed-index-keys)
+  (let [unsafe?   (:allow-unsafe-config config)
+        stored-ic (select-keys (:index-config stored-config) create-time-fixed-index-keys)
         given-ic  (:index-config config)
-        conflicts (into {}
-                        (keep (fn [[k stored-v]]
-                                (when (and (contains? given-ic k)
-                                           (not= (get given-ic k) stored-v))
-                                  [k {:given (get given-ic k) :stored stored-v}])))
-                        stored-ic)]
-    (when (seq conflicts)
+        conflicts (cond-> (into {}
+                                (keep (fn [[k stored-v]]
+                                        (when (and (contains? given-ic k)
+                                                   (not= (get given-ic k) stored-v))
+                                          [k {:given (get given-ic k) :stored stored-v}])))
+                                stored-ic)
+                    (and (contains? stored-config :fuse-index-roots?)
+                         (contains? config :fuse-index-roots?)
+                         (not= (:fuse-index-roots? config) (:fuse-index-roots? stored-config)))
+                    (assoc :fuse-index-roots? {:given (:fuse-index-roots? config)
+                                               :stored (:fuse-index-roots? stored-config)}))]
+    (when (and (seq conflicts) (not unsafe?))
       (log/raise "Create-time-fixed index settings differ from the stored configuration."
                  {:type      :create-time-fixed-index-config-mismatch
                   :conflicts conflicts
                   :config    config}))
-    (let [ic (merge given-ic stored-ic)]
-      (if (seq ic)
-        (assoc config :index-config ic)
-        (dissoc config :index-config)))))
+    (let [ic (if unsafe? (merge stored-ic given-ic) (merge given-ic stored-ic))
+          config (if (seq ic)
+                   (assoc config :index-config ic)
+                   (dissoc config :index-config))]
+      (if (and (contains? stored-config :fuse-index-roots?)
+               (or (not (contains? config :fuse-index-roots?)) (not unsafe?)))
+        (assoc config :fuse-index-roots? (:fuse-index-roots? stored-config))
+        config))))
 
 (defn- normalize-config [cfg]
   (-> cfg
-      ;; :index-config is create-time-fixed and adopted from the store on a fresh
-      ;; connect (adopt-create-time-fixed), so an existing connection may carry
-      ;; adopted keys the caller's config omits; conflicts are guarded on the
-      ;; fresh-connect path, not here.
-      (dissoc :writer :store :store-cache-size :search-cache-size :index-config)))
+      ;; :index-config and :fuse-index-roots? are store-fixed and adopted on a
+      ;; fresh connect (adopt-create-time-fixed), so an existing connection may
+      ;; carry adopted keys the caller's config omits; conflicts are guarded on
+      ;; the fresh-connect path, not here.
+      (dissoc :writer :store :store-cache-size :search-cache-size
+              :index-config :fuse-index-roots?)))
 
 (defn -connect-impl* [config opts]
   (async+sync (:sync? opts) *default-sync-translation*

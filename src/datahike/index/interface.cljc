@@ -19,7 +19,9 @@
   (-flush [index backend] "Saves the changes to the index to the given konserve backend")
   (-transient [index] "Returns a transient version of the index")
   (-persistent! [index] "Returns a persistent version of the index")
-  (-mark [index] "Return konserve addresses that should be whitelisted for mark and sweep gc."))
+  (-mark [index] "Return konserve addresses that should be whitelisted for mark and sweep gc.")
+  (-root-node [index] "Returns the in-memory root node of a flushed index, for root fusion (inlining the root into the db-record).")
+  (-seed-root! [index root-node] "Seeds the in-memory root node after restoring a db-record that inlined it (root fusion). Returns the index."))
 
 (defmulti empty-index
   "Creates an empty index"

@@ -219,7 +219,17 @@
   (-persistent! [^PersistentSortedSet pset]
     (persistent! pset))
   (-mark [^PersistentSortedSet pset]
-    (mark pset)))
+    (mark pset))
+  (-root-node [^PersistentSortedSet pset]
+    ;; In-memory top node; populated after -flush set the root/address.
+    #?(:clj  (.root pset)
+       :cljs (.-root pset)))
+  (-seed-root! [^PersistentSortedSet pset root-node]
+    ;; Install an inlined (fused) root so root() returns it without a
+    ;; storage round-trip; deeper children stay lazy via the set's storage.
+    #?(:clj  (set! (.-_root pset) root-node)
+       :cljs (set! (.-root pset) root-node))
+    pset))
 
 (defn- canon
   "Normalize a value for content hashing: Datoms become [e a v tx added] vectors,
@@ -266,6 +276,8 @@
       (leaf-content-uuid node))
     (squuid)))  ;; Sequential UUID for better index locality
 
+#?(:clj (declare walk-pss-node!))
+
 #?(:clj
    (defn- walk-pss-address!
      "Read the node at `address` directly from konserve, recompute its
@@ -290,38 +302,45 @@
      [store address verified errors]
      (when-not (contains? @verified address)
        (let [node (k/get store address nil {:sync? true})]
-         (cond
-           (nil? node)
+         (if (nil? node)
            (swap! errors conj {:type :audit/node-missing :address address})
+           (walk-pss-node! store node address verified errors))))))
+
+#?(:clj
+   (defn- walk-pss-node!
+     "Like walk-pss-address! but for a node already in hand — used for a FUSED
+      root, which is inlined in the db-record and therefore not a separate
+      konserve object. Recomputes the node's content UUID (same projections as
+      gen-address: a Branch folds its diff-buf slots, so a tampered buffered
+      diff is detected like any other content), confirms it equals `address`,
+      and recurses into its children (which ARE separate objects) via
+      walk-pss-address!."
+     [store node address verified errors]
+     (when-not (contains? @verified address)
+       (let [recomputed (cond
+                          (instance? Branch node)
+                          (branch-content-uuid node)
+                          (instance? Leaf node)
+                          (leaf-content-uuid node))]
+         (cond
+           (nil? recomputed)
+           (swap! errors conj {:type :audit/unknown-node-class
+                               :address address
+                               :node-class (some-> node class .getName)})
+
+           (not= address recomputed)
+           (swap! errors conj {:type :audit/merkle-mismatch
+                               :address address
+                               :expected address
+                               :recomputed recomputed
+                               :node-class (some-> node class .getName)})
 
            :else
-           (let [recomputed (cond
-                              ;; Same projections as gen-address: a Branch folds
-                              ;; its diff-buf slots (when present) so a tampered
-                              ;; buffered diff is detected like any other content.
-                              (instance? Branch node)
-                              (branch-content-uuid node)
-                              (instance? Leaf node)
-                              (leaf-content-uuid node))]
-             (cond
-               (nil? recomputed)
-               (swap! errors conj {:type :audit/unknown-node-class
-                                   :address address
-                                   :node-class (some-> node class .getName)})
-
-               (not= address recomputed)
-               (swap! errors conj {:type :audit/merkle-mismatch
-                                   :address address
-                                   :expected address
-                                   :recomputed recomputed
-                                   :node-class (some-> node class .getName)})
-
-               :else
-               (do
-                 (when (instance? Branch node)
-                   (doseq [child-addr (.addresses ^Branch node)]
-                     (walk-pss-address! store child-addr verified errors)))
-                 (swap! verified conj address)))))))))
+           (do
+             (when (instance? Branch node)
+               (doseq [child-addr (.addresses ^Branch node)]
+                 (walk-pss-address! store child-addr verified errors)))
+             (swap! verified conj address)))))))
 
 (extend-type #?(:clj PersistentSortedSet :cljs BTSet)
   IAuditable
@@ -347,9 +366,19 @@
            (nil? store)
            {:status :unsupported :reason :no-store}
            :else
-           (let [verified (atom #{})
-                 errors   (atom [])]
-             (walk-pss-address! store address verified errors)
+           (let [verified  (atom #{})
+                 errors    (atom [])
+                 ;; Fused root (root fusion): inlined in the db-record, not a
+                 ;; separate konserve object — a direct store read returns nil.
+                 ;; Verify the seeded in-memory root instead (recomputing its
+                 ;; content hash still detects db-record tampering of the root
+                 ;; on a cold connection), then recurse children (separate
+                 ;; objects) as usual.
+                 root-node (or (k/get store address nil {:sync? true})
+                               (.root pset))]
+             (if (nil? root-node)
+               (swap! errors conj {:type :audit/node-missing :address address})
+               (walk-pss-node! store root-node address verified errors))
              (if (seq @errors)
                {:status :mismatch :root nil :errors @errors}
                {:status :ok :root address}))))
