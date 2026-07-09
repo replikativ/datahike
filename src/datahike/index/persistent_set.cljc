@@ -276,114 +276,117 @@
       (leaf-content-uuid node))
     (squuid)))  ;; Sequential UUID for better index locality
 
-#?(:clj (declare walk-pss-node!))
+(declare walk-pss-node!)
 
-#?(:clj
-   (defn- walk-pss-address!
-     "Read the node at `address` directly from konserve, recompute its
-      content-addressed UUID, and confirm it matches `address`. Recurses
-      into Branch children, accumulating any anomalies into the
-      `errors` atom (instead of throwing).
+(defn- node-class-name [node]
+  #?(:clj  (some-> node class .getName)
+     :cljs (cond (instance? Branch node) "Branch"
+                 (instance? Leaf node)   "Leaf"
+                 :else (str (type node)))))
 
-      Each error has shape:
-        {:type :audit/merkle-mismatch | :audit/node-missing | :audit/unknown-node-class
-         :address <expected-address>
-         :recomputed <uuid?>           ;; only for :merkle-mismatch
-         :node-class <class-name?>}
+(defn- walk-pss-address!
+  "Read the node at `address` directly from konserve, recompute its
+   content-addressed UUID, and confirm it matches `address`. Recurses
+   into Branch children, accumulating any anomalies into the
+   `errors` atom (instead of throwing).
 
-      `verified` holds addresses already proven good in this pass; the
-      walker prunes their subtrees. Within a single tree this is a
-      no-op (B-tree nodes have one parent) but it keeps the function
-      composable across multiple calls sharing the same atom.
+   Each error has shape:
+     {:type :audit/merkle-mismatch | :audit/node-missing | :audit/unknown-node-class
+      :address <expected-address>
+      :recomputed <uuid?>           ;; only for :merkle-mismatch
+      :node-class <class-name?>}
 
-      Reads go through `k/get store` directly, bypassing the live
-      `CachedStorage` LRU; otherwise a hot in-memory copy could mask a
-      tampered on-disk blob."
-     [store address verified errors]
-     (when-not (contains? @verified address)
-       (let [node (k/get store address nil {:sync? true})]
-         (if (nil? node)
-           (swap! errors conj {:type :audit/node-missing :address address})
-           (walk-pss-node! store node address verified errors))))))
+   `verified` holds addresses already proven good in this pass; the
+   walker prunes their subtrees. Within a single tree this is a
+   no-op (B-tree nodes have one parent) but it keeps the function
+   composable across multiple calls sharing the same atom.
 
-#?(:clj
-   (defn- walk-pss-node!
-     "Like walk-pss-address! but for a node already in hand — used for a FUSED
-      root, which is inlined in the db-record and therefore not a separate
-      konserve object. Recomputes the node's content UUID (same projections as
-      gen-address: a Branch folds its diff-buf slots, so a tampered buffered
-      diff is detected like any other content), confirms it equals `address`,
-      and recurses into its children (which ARE separate objects) via
-      walk-pss-address!."
-     [store node address verified errors]
-     (when-not (contains? @verified address)
-       (let [recomputed (cond
-                          (instance? Branch node)
-                          (branch-content-uuid node)
-                          (instance? Leaf node)
-                          (leaf-content-uuid node))]
-         (cond
-           (nil? recomputed)
-           (swap! errors conj {:type :audit/unknown-node-class
-                               :address address
-                               :node-class (some-> node class .getName)})
+   Reads go through `k/get store` directly, bypassing the live
+   `CachedStorage` LRU; otherwise a hot in-memory copy could mask a
+   tampered on-disk blob."
+  [store address verified errors]
+  (when-not (contains? @verified address)
+    (let [node (k/get store address nil {:sync? true})]
+      (if (nil? node)
+        (swap! errors conj {:type :audit/node-missing :address address})
+        (walk-pss-node! store node address verified errors)))))
 
-           (not= address recomputed)
-           (swap! errors conj {:type :audit/merkle-mismatch
-                               :address address
-                               :expected address
-                               :recomputed recomputed
-                               :node-class (some-> node class .getName)})
+(defn- walk-pss-node!
+  "Like walk-pss-address! but for a node already in hand — used for a FUSED
+   root, which is inlined in the db-record and therefore not a separate
+   konserve object. Recomputes the node's content UUID (same projections as
+   gen-address: a Branch folds its diff-buf slots, so a tampered buffered
+   diff is detected like any other content), confirms it equals `address`,
+   and recurses into its children (which ARE separate objects) via
+   walk-pss-address!."
+  [store node address verified errors]
+  (when-not (contains? @verified address)
+    (let [recomputed (cond
+                       (instance? Branch node)
+                       (branch-content-uuid node)
+                       (instance? Leaf node)
+                       (leaf-content-uuid node))]
+      (cond
+        (nil? recomputed)
+        (swap! errors conj {:type :audit/unknown-node-class
+                            :address address
+                            :node-class (node-class-name node)})
 
-           :else
-           (do
-             (when (instance? Branch node)
-               (doseq [child-addr (.addresses ^Branch node)]
-                 (walk-pss-address! store child-addr verified errors)))
-             (swap! verified conj address)))))))
+        (not= address recomputed)
+        (swap! errors conj {:type :audit/merkle-mismatch
+                            :address address
+                            :expected address
+                            :recomputed recomputed
+                            :node-class (node-class-name node)})
+
+        :else
+        (do
+          (when (instance? Branch node)
+            (doseq [child-addr #?(:clj (.addresses ^Branch node) :cljs (.-addresses node))]
+              (walk-pss-address! store child-addr verified errors)))
+          (swap! verified conj address))))))
 
 (extend-type #?(:clj PersistentSortedSet :cljs BTSet)
   IAuditable
-  (-merkle-root [^PersistentSortedSet pset]
-    ;; gen-address (below) makes every node UUID a recursive content
-    ;; hash of its datoms under :crypto-hash?, so the root _address
+  (-merkle-root [pset]
+    ;; gen-address (above) makes every node UUID a recursive content
+    ;; hash of its datoms under :crypto-hash?, so the root address
     ;; captures the whole tree. Set by psset/store during -flush.
     ;; Returns nil when unflushed; never throws.
-    (.-_address pset))
-  (-recompute-merkle-root [^PersistentSortedSet pset]
+    #?(:clj (.-_address ^PersistentSortedSet pset) :cljs (.-address pset)))
+  (-recompute-merkle-root [pset]
     ;; Walk the tree from konserve, deserialize each node, and confirm
     ;; its bytes hash back to its address. Konserve does NOT verify
     ;; content on read, so without this walk a tampered .ksv file would
-    ;; round-trip undetected — only the in-memory `_address` would still
+    ;; round-trip undetected — only the in-memory address would still
     ;; look correct. Returns a result map; never throws on mismatch.
-    #?(:clj
-       (let [address (.-_address pset)
-             storage (.-_storage pset)
-             store   (some-> storage :store)]
-         (cond
-           (nil? address)
-           {:status :unsupported :reason :unflushed}
-           (nil? store)
-           {:status :unsupported :reason :no-store}
-           :else
-           (let [verified  (atom #{})
-                 errors    (atom [])
-                 ;; Fused root (root fusion): inlined in the db-record, not a
-                 ;; separate konserve object — a direct store read returns nil.
-                 ;; Verify the seeded in-memory root instead (recomputing its
-                 ;; content hash still detects db-record tampering of the root
-                 ;; on a cold connection), then recurse children (separate
-                 ;; objects) as usual.
-                 root-node (or (k/get store address nil {:sync? true})
-                               (.root pset))]
-             (if (nil? root-node)
-               (swap! errors conj {:type :audit/node-missing :address address})
-               (walk-pss-node! store root-node address verified errors))
-             (if (seq @errors)
-               {:status :mismatch :root nil :errors @errors}
-               {:status :ok :root address}))))
-       :cljs
-       {:status :unsupported :reason :cljs-not-implemented})))
+    ;; Cross-platform: the walk/recompute (branch-content-uuid + canon +
+    ;; uuid) is shared, so hashes match cross-host.
+    (let [address #?(:clj (.-_address ^PersistentSortedSet pset) :cljs (.-address pset))
+          storage #?(:clj (.-_storage ^PersistentSortedSet pset) :cljs (.-storage pset))
+          store   (some-> storage :store)]
+      (cond
+        (nil? address)
+        {:status :unsupported :reason :unflushed}
+        (nil? store)
+        {:status :unsupported :reason :no-store}
+        :else
+        (let [verified  (atom #{})
+              errors    (atom [])
+              ;; Fused root (root fusion): inlined in the db-record, not a
+              ;; separate konserve object — a direct store read returns nil.
+              ;; Verify the seeded in-memory root instead (recomputing its
+              ;; content hash still detects db-record tampering of the root
+              ;; on a cold connection), then recurse children (separate
+              ;; objects) as usual.
+              root-node (or (k/get store address nil {:sync? true})
+                            #?(:clj (.root ^PersistentSortedSet pset) :cljs (.-root pset)))]
+          (if (nil? root-node)
+            (swap! errors conj {:type :audit/node-missing :address address})
+            (walk-pss-node! store root-node address verified errors))
+          (if (seq @errors)
+            {:status :mismatch :root nil :errors @errors}
+            {:status :ok :root address}))))))
 
 (defn- freelist-pop!
   "Atomically pop an address from the freelist. Returns nil if empty."
