@@ -115,7 +115,12 @@
                       (log/debug :datahike/writer-closed "Writer thread gracefully closed")))))
         ;; commit loop
         (go-try S
-                (loop [tx (<?- commit-queue)]
+                (loop [tx (<?- commit-queue)
+                       ;; last committed cid of OUR branch: nil on the first
+                       ;; iteration (commit! falls back to the storage read),
+                       ;; threaded through afterwards so ordinary commits skip
+                       ;; the per-commit branch-head read (S3: 3 requests)
+                       last-cid nil]
                   (when tx
                     (let [txs (into [tx] (take-while some?) (repeatedly #(poll! commit-queue)))]
               ;; empty channel of pending transactions
@@ -131,7 +136,7 @@
                         (try
                           (let [start-ts (get-time-ms)
                                 {{:keys [datahike/commit-id]} :meta
-                                 :as commit-db} (<?- (w/commit! db merge-parents false))
+                                 :as commit-db} (<?- (w/commit! db merge-parents false last-cid))
                                 commit-time (- (get-time-ms) start-ts)]
                             (log/trace :datahike/commit-time {:duration-ms commit-time})
                             (reset! connection commit-db)
@@ -151,7 +156,8 @@
                             #?(:clj (when (instance? Error e)
                                       (throw e)))))
                         (<! (timeout commit-wait-time))
-                        (recur (<?- commit-queue)))))))))]))
+                        (recur (<?- commit-queue)
+                               (get-in @connection [:meta :datahike/commit-id])))))))))]))
 
 ;; public API to internal mapping
 (def default-write-fn-map {'transact!     w/transact!

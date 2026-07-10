@@ -286,20 +286,34 @@
        {:secondary-indices sec-indices})
      schema-meta)))
 
-(defn branch-heads-as-commits [store parents]
-  (set (doall (for [p parents]
-                (do
-                  (when (nil? p)
-                    (log/raise "Parent cannot be nil." {:type :parent-cannot-be-nil
-                                                        :parent p}))
-                  (if-not (keyword? p) p
-                          (let [{{:keys [datahike/commit-id]} :meta :as old-db}
-                                (k/get store p nil {:sync? true})]
-                            (when-not old-db
-                              (log/raise "Parent does not exist in store."
-                                         {:type   :parent-does-not-exist-in-store
-                                          :parent p}))
-                            commit-id)))))))
+(defn branch-heads-as-commits
+  "Resolve keyword parents (branch names) to their head commit-ids.
+
+   `known-heads` is an optional {branch-keyword commit-id} map of heads the
+   caller already holds in memory: under datahike's single-writer invariant
+   the writer's current db carries its own branch's head cid in
+   [:meta :datahike/commit-id], so re-reading the branch record from storage
+   (3 sequential requests on S3-class backends) is redundant for it. A nil or
+   missing entry falls back to the storage read — first load, foreign
+   branches (merge parents), or writers without an in-memory head. This is a
+   read elision, not a fence: head-flip semantics on concurrent writer misuse
+   are unchanged (last-writer-wins, exactly as with the read)."
+  ([store parents] (branch-heads-as-commits store parents {}))
+  ([store parents known-heads]
+   (set (doall (for [p parents]
+                 (do
+                   (when (nil? p)
+                     (log/raise "Parent cannot be nil." {:type :parent-cannot-be-nil
+                                                         :parent p}))
+                   (if-not (keyword? p) p
+                           (or (get known-heads p)
+                               (let [{{:keys [datahike/commit-id]} :meta :as old-db}
+                                     (k/get store p nil {:sync? true})]
+                                 (when-not old-db
+                                   (log/raise "Parent does not exist in store."
+                                              {:type   :parent-does-not-exist-in-store
+                                               :parent p}))
+                                 commit-id)))))))))
 
 (defn- audit-grade?
   "Audit-grade cids require :crypto-hash? on a persistent backend,
@@ -378,6 +392,8 @@
   ([db parents]
    (commit! db parents true))
   ([db parents sync?]
+   (commit! db parents sync? nil))
+  ([db parents sync? known-head-cid]
    (async+sync sync? *default-sync-translation*
                (go-try-
                 ;; Contain fatal ERRORS (AssertionError, OOM, ...): go-try- catches
@@ -391,8 +407,27 @@
                 ;; happened when we land here).
                 (try
                   (let [{:keys [store config]} db
+                        ;; Head-cid cache: for an ORDINARY commit (no explicit
+                        ;; parents) the writer's own head cid is already in
+                        ;; memory — stamped by the previous commit!, or by
+                        ;; stored->db at connect — so skip the per-commit
+                        ;; branch-head storage read (3 sequential requests on
+                        ;; S3 backends). Explicit-parents commits (merge!,
+                        ;; branch machinery) keep the read: their db may
+                        ;; descend from ANOTHER branch's lineage, so its meta
+                        ;; cid is not necessarily this branch's head.
+                        ;; known-head-cid is threaded by the WRITER's commit
+                        ;; loop (its previous commit's cid) — nil on the first
+                        ;; commit after connect, which falls back to the read.
+                        ;; The db's own meta cid is NOT usable here: the
+                        ;; transaction loop chains applied dbs whose meta
+                        ;; predates recent commits (the old storage read was,
+                        ;; in effect, the cross-loop synchronization point).
+                        known-heads   (if (and (nil? parents) known-head-cid)
+                                        {(get config :branch) known-head-cid}
+                                        {})
                         parents       (or parents #{(get config :branch)})
-                        parents       (branch-heads-as-commits store parents)
+                        parents       (branch-heads-as-commits store parents known-heads)
                       ;; Stamp parents BEFORE flushing so they're in the
                       ;; stored form the cid will be derived from.
                         db            (assoc-in db [:meta :datahike/parents] parents)
