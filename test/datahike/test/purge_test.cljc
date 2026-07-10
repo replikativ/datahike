@@ -1,8 +1,10 @@
 (ns datahike.test.purge-test
   (:require
-   #?(:cljs [cljs.test :as t :refer-macros [is are deftest testing]]
-      :clj  [clojure.test :as t :refer [is are deftest testing]])
+   #?(:cljs [cljs.test :as t :refer-macros [is are testing]]
+      :clj  [clojure.test :as t :refer [is are testing]])
+   [clojure.core.async :refer [<!]]
    [datahike.api :as d]
+   [datahike.test.async #?(:clj :refer :cljs :refer-macros) [deftest-async]]
    [datahike.test.utils :as tu]))
 
 #?(:cljs (def Throwable js/Error))
@@ -36,33 +38,35 @@
   (into #{}
         (d/q '[:find [(pull ?e [:name :age]) ...] :where [?e :name _]] db)))
 
-(deftest test-purge
-  (let [conn (tu/setup-db (assoc-in cfg-template [:store :id] #uuid "09000000-0000-0000-0000-000000000001"))]
+(deftest-async test-purge
+  (let [cfg (assoc-in cfg-template [:store :id] #uuid "09000000-0000-0000-0000-000000000001")
+        conn (<! (tu/setup-db-async cfg))]
     (testing "retract datom, data is removed from current db and found in history"
       (let [name "Alice"]
-        (d/transact conn [[:db/retract [:name name] :age 25]])
+        (<! (d/transact! conn [[:db/retract [:name name] :age 25]]))
         (are [x y] (= x y)
           true (nil? (find-age @conn name))
           25 (find-age (d/history @conn) name))))
     (testing "purge datom from current index and from history"
       (let [name "Bob"]
-        (d/transact conn [[:db/purge [:name name] :age 35]])
+        (<! (d/transact! conn [[:db/purge [:name name] :age 35]]))
         (are [x y] (= x y)
           true (nil? (find-age @conn name))
           true (nil? (find-age (d/history @conn) name)))))
     (testing "purge retracted datom"
       (let [name "Alice"]
-        (d/transact conn [[:db/purge [:name name] :age 25]])
+        (<! (d/transact! conn [[:db/purge [:name name] :age 25]]))
         (are [x y] (= x y)
           nil (find-age @conn name)
           nil (find-age (d/history @conn) name))))
     (d/release conn)))
 
-(deftest test-purge-attribute
-  (let [conn (tu/setup-db (assoc-in cfg-template [:store :id] #uuid "09000000-0000-0000-0000-000000000002"))]
+(deftest-async test-purge-attribute
+  (let [cfg (assoc-in cfg-template [:store :id] #uuid "09000000-0000-0000-0000-000000000002")
+        conn (<! (tu/setup-db-async cfg))]
     (testing "purge attribute from current index"
       (let [name "Alice"]
-        (d/transact conn [[:db.purge/attribute [:name name] :age]])
+        (<! (d/transact! conn [[:db.purge/attribute [:name name] :age]]))
         (are [x y] (= x y)
           true (nil? (find-age @conn name))
           true (nil? (find-age (d/history @conn) name))
@@ -70,47 +74,51 @@
     (testing "retract attribute from current index and purge from history"
       (let [name "Bob"]
         (testing "retracting from current index"
-          (d/transact conn [[:db.fn/retractAttribute [:name name] :age]])
+          (<! (d/transact! conn [[:db.fn/retractAttribute [:name name] :age]]))
           (are [x y] (= x y)
             true (nil? (find-age @conn name))
             35 (find-age (d/history @conn) name)))
         (testing "purging from history"
-          (d/transact conn [[:db.purge/entity [:name name] :age]])
+          (<! (d/transact! conn [[:db.purge/entity [:name name] :age]]))
           (are [x y] (= x y)
             true (nil? (find-age @conn name))
             true (nil? (find-age (d/history @conn) name))))))
     (d/release conn)))
 
-(deftest test-purge-entity
-  (let [conn (tu/setup-db (assoc-in cfg-template [:store :id] #uuid "09000000-0000-0000-0000-000000000003"))]
+(deftest-async test-purge-entity
+  (let [cfg (assoc-in cfg-template [:store :id] #uuid "09000000-0000-0000-0000-000000000003")
+        conn (<! (tu/setup-db-async cfg))]
     (testing "purge entity from current index"
       (is (= #{{:name "Alice" :age 25} {:name "Bob" :age 35}} (find-entities @conn)))
-      (d/transact conn [[:db.purge/entity [:name "Alice"]]])
+      (<! (d/transact! conn [[:db.purge/entity [:name "Alice"]]]))
       (is (= #{{:name "Bob" :age 35}} (find-entities @conn)))
       (is (= #{{:name "Bob" :age 35}} (find-entities (d/history @conn)))))
     (testing "retract entity from current index and purge from history"
       (let [name "Bob"]
         (testing "retracting from current index"
-          (d/transact conn [[:db/retractEntity [:name name]]])
+          (<! (d/transact! conn [[:db/retractEntity [:name name]]]))
           (is (= #{} (find-entities @conn)))
           (is (= #{{:name "Bob" :age 35}} (find-entities (d/history @conn)))))
         (testing "purging from history"
-          (d/transact conn [[:db.purge/entity [:name name]]])
+          (<! (d/transact! conn [[:db.purge/entity [:name name]]]))
           (is (= #{} (find-entities @conn)))
           (is (= #{} (find-entities (d/history @conn)))))))
-    (testing "purge something that is not present in the database"
-      (is (thrown-with-msg? Throwable
-                            #"Can't find entity with ID \[:name \"Alice\"\] to be purged"
-                            (d/transact conn [[:db.purge/entity [:name "Alice"]]]))))
-    (d/release conn)))
 
-(deftest test-purge-non-temporal-database
-  (let [conn (tu/setup-db (-> (assoc-in cfg-template [:store :id] #uuid "09000000-0000-0000-0000-000000000004")
-                              (assoc :keep-history? false)))]
+    (testing "purge something that is not present in the database"
+      (is (tu/error-msg-satisfies?
+           #(re-find #"Can't find entity with ID \[:name \"Alice\"\] to be purged" %)
+           (<! (d/transact! conn [[:db.purge/entity [:name "Alice"]]])))))
+    (when conn (d/release conn))))
+
+(deftest-async test-purge-non-temporal-database
+  (let [cfg (-> (assoc-in cfg-template [:store :id] #uuid "09000000-0000-0000-0000-000000000004")
+                (assoc :keep-history? false))
+        conn (<! (tu/setup-db-async cfg))]
     (testing "purge data in non temporal database"
-      (is (thrown-with-msg? Throwable #"Purge entity is only available in temporal databases\."
-                            (d/transact conn [[:db.purge/entity [:name "Alice"]]]))))
-    (d/release conn)))
+      (is (tu/error-msg-satisfies?
+           #(re-find #"Purge entity is only available in temporal databases\." %)
+           (<! (d/transact! conn [[:db.purge/entity [:name "Alice"]]])))))
+    (when conn (d/release conn))))
 
 (defn find-ages [db name]
   (d/q '[:find ?a ?op
@@ -121,24 +129,25 @@
        db
        name))
 
-(deftest test-history-purge-before
-  (let [conn (tu/setup-db (assoc-in cfg-template [:store :id] #uuid "09000000-0000-0000-0000-000000000005"))
+(deftest-async test-history-purge-before
+  (let [cfg (assoc-in cfg-template [:store :id] #uuid "09000000-0000-0000-0000-000000000005")
+        conn (<! (tu/setup-db-async cfg))
         name "Alice"]
     (testing "remove all historical data before date"
       (is (= #{[25 true]}
              (find-ages @conn name)))
-      (let [upsert-date (java.util.Date.)]
-        (d/transact conn [{:db/id [:name name] :age 30}])
+      (let [upsert-date #?(:clj (java.util.Date.) :cljs (js/Date.))]
+        (<! (d/transact! conn [{:db/id [:name name] :age 30}]))
         (is (= #{[30 true]}
                (find-ages @conn name)))
         (is (= #{[25 true] [25 false] [30 true]}
                (find-ages (d/history @conn) name)))
-        (d/transact conn [[:db.history.purge/before upsert-date]])
+        (<! (d/transact! conn [[:db.history.purge/before upsert-date]]))
         (is (= #{[30 true]}
                (find-ages @conn name)))
         (is (= #{[25 false] [30 true]}
                (find-ages (d/history @conn) name)))
-        (d/transact conn [[:db.history.purge/before (java.util.Date.)]])
+        (<! (d/transact! conn [[:db.history.purge/before #?(:clj (java.util.Date.) :cljs (js/Date.))]]))
         (is (= #{[30 true]}
                (find-ages (d/history @conn) name)))))
     (d/release conn)))
