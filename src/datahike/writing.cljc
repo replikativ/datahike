@@ -444,13 +444,20 @@
                         fused-addrs   (fused-root-addresses config db-to-store)
                         pending-kvs   (cond->> (get-and-clear-pending-kvs! store)
                                         (seq fused-addrs)
-                                        (remove (fn [[k _]] (contains? fused-addrs k))))]
+                                        (remove (fn [[k _]] (contains? fused-addrs k))))
+                        ;; Commit graph (opt-out): the immutable cid record is
+                        ;; the provenance chain (audit, ancestry, ?commit=
+                        ;; refs). With :commit-graph? false only the branch
+                        ;; head is written — the cid is still computed and
+                        ;; stamped in :meta, so identity, sync dedup and the
+                        ;; writer's head-cid threading are unaffected.
+                        commit-graph? (get config :commit-graph? true)]
 
                     (if (multi-key-capable? store)
                       (let [[meta-key meta-val] schema-meta-kv-to-write
                             writes-map (cond-> (into {} pending-kvs) ; Initialize with pending KVs
                                          schema-meta-kv-to-write (assoc meta-key meta-val)
-                                         true                    (assoc cid db-to-store)
+                                         commit-graph?           (assoc cid db-to-store)
                                          true                    (assoc (:branch config) db-to-store))]
                       ;; nodes + schema-meta (uuid) + commit (cid) are content-addressed →
                       ;; immutable; the branch-head pointer (:branch config) stays mutable.
@@ -472,10 +479,11 @@
                             _ (<?- (write-pending-kvs! store pending-kvs sync?))
 
                           ;; the commit is content-addressed by cid → immutable; the branch head is mutable
-                            commit-log-written (k/assoc store cid db-to-store {:immutable? true} {:sync? sync?})
+                            commit-log-written (when commit-graph?
+                                                 (k/assoc store cid db-to-store {:immutable? true} {:sync? sync?}))
                             branch-written     (k/assoc store (:branch config) db-to-store {:sync? sync?})]
                         (when-not sync?
-                          (<?- commit-log-written)
+                          (when commit-log-written (<?- commit-log-written))
                           (<?- branch-written))))
 
                   ;; Online GC: delete freed addresses after writes are committed

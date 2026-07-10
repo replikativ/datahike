@@ -168,29 +168,39 @@
    the stored config, so a reconnect does not need to re-specify them."
   #{:branching-factor :diff-buf-size})
 
+(def store-fixed-record-keys
+  "Top-level config keys that describe how records in the store are laid out
+   and are therefore fixed when the database is created: :fuse-index-roots?
+   (index roots inlined into the db record) and :commit-graph? (whether each
+   commit persists an immutable cid record). Adopted at connect like the
+   create-time-fixed :index-config sub-keys."
+  #{:fuse-index-roots? :commit-graph?})
+
 (defn- adopt-create-time-fixed
   "Adopt store-fixed settings from the stored config into `config`: the
-   create-time-fixed :index-config sub-keys and :fuse-index-roots? (which
-   describes how records in the store are laid out). A key the caller did not
-   specify is taken from the store, so reconnects don't need to re-specify
-   creation settings; an explicitly conflicting value raises unless
+   create-time-fixed :index-config sub-keys and the store-fixed-record-keys
+   (which describe how records in the store are laid out). A key the caller
+   did not specify is taken from the store, so reconnects don't need to
+   re-specify creation settings; an explicitly conflicting value raises unless
    :allow-unsafe-config is set (then the given value wins). Returns the
    possibly-updated config."
   [config stored-config]
   (let [unsafe?   (:allow-unsafe-config config)
         stored-ic (select-keys (:index-config stored-config) create-time-fixed-index-keys)
         given-ic  (:index-config config)
-        conflicts (cond-> (into {}
-                                (keep (fn [[k stored-v]]
-                                        (when (and (contains? given-ic k)
-                                                   (not= (get given-ic k) stored-v))
-                                          [k {:given (get given-ic k) :stored stored-v}])))
-                                stored-ic)
-                    (and (contains? stored-config :fuse-index-roots?)
-                         (contains? config :fuse-index-roots?)
-                         (not= (:fuse-index-roots? config) (:fuse-index-roots? stored-config)))
-                    (assoc :fuse-index-roots? {:given (:fuse-index-roots? config)
-                                               :stored (:fuse-index-roots? stored-config)}))]
+        conflicts (into (into {}
+                              (keep (fn [[k stored-v]]
+                                      (when (and (contains? given-ic k)
+                                                 (not= (get given-ic k) stored-v))
+                                        [k {:given (get given-ic k) :stored stored-v}])))
+                              stored-ic)
+                        (keep (fn [k]
+                                (when (and (contains? stored-config k)
+                                           (contains? config k)
+                                           (not= (get config k) (get stored-config k)))
+                                  [k {:given (get config k)
+                                      :stored (get stored-config k)}])))
+                        store-fixed-record-keys)]
     (when (and (seq conflicts) (not unsafe?))
       (log/raise "Create-time-fixed index settings differ from the stored configuration."
                  {:type      :create-time-fixed-index-config-mismatch
@@ -200,19 +210,22 @@
           config (if (seq ic)
                    (assoc config :index-config ic)
                    (dissoc config :index-config))]
-      (if (and (contains? stored-config :fuse-index-roots?)
-               (or (not (contains? config :fuse-index-roots?)) (not unsafe?)))
-        (assoc config :fuse-index-roots? (:fuse-index-roots? stored-config))
-        config))))
+      (reduce (fn [config k]
+                (if (and (contains? stored-config k)
+                         (or (not (contains? config k)) (not unsafe?)))
+                  (assoc config k (get stored-config k))
+                  config))
+              config
+              store-fixed-record-keys))))
 
 (defn- normalize-config [cfg]
   (-> cfg
-      ;; :index-config and :fuse-index-roots? are store-fixed and adopted on a
-      ;; fresh connect (adopt-create-time-fixed), so an existing connection may
-      ;; carry adopted keys the caller's config omits; conflicts are guarded on
-      ;; the fresh-connect path, not here.
+      ;; :index-config and the store-fixed-record-keys are store-fixed and
+      ;; adopted on a fresh connect (adopt-create-time-fixed), so an existing
+      ;; connection may carry adopted keys the caller's config omits;
+      ;; conflicts are guarded on the fresh-connect path, not here.
       (dissoc :writer :store :store-cache-size :search-cache-size
-              :index-config :fuse-index-roots?)))
+              :index-config :fuse-index-roots? :commit-graph?)))
 
 (defn -connect-impl* [config opts]
   (async+sync (:sync? opts) *default-sync-translation*

@@ -39,6 +39,15 @@
 ;; Presence-based — not defaulted into configs; restore handles fused and
 ;; legacy records alike, and connect adopts the stored value.
 (s/def ::fuse-index-roots? boolean?)
+;; Commit graph (EXPERIMENTAL, opt-out): every commit persists an immutable
+;; record under its commit-id, forming the provenance chain consumed by
+;; audit/verify-chain, ancestry walks, branch!-from-cid and dh://…?commit=
+;; references. Stores that need none of these (typical :keep-history? false
+;; tenants) can set :commit-graph? false: commits then write only the branch
+;; head — steady-state commits become a single PUT and the per-commit
+;; record garbage disappears. Presence-based and store-fixed like
+;; ::fuse-index-roots?; connect adopts the stored value.
+(s/def ::commit-graph? boolean?)
 (s/def ::writer map?)
 (s/def ::branch keyword?)
 (s/def ::entity (s/or :map associative? :vec vector?))
@@ -60,6 +69,7 @@
                                          ::store-cache-size
                                          ::crypto-hash?
                                          ::fuse-index-roots?
+                                         ::commit-graph?
                                          ::initial-tx
                                          ::name
                                          ::branch
@@ -141,7 +151,9 @@
   (when-not (s/valid? :datahike/config config)
     (throw (ex-info "Invalid Datahike configuration." (s/explain-data :datahike/config config))))
   (when (and attribute-refs? (= :read schema-flexibility))
-    (throw (ex-info "Attribute references cannot be used with schema-flexibility ':read'." config))))
+    (throw (ex-info "Attribute references cannot be used with schema-flexibility ':read'." config)))
+  (when (and (:crypto-hash? config) (false? (:commit-graph? config)))
+    (throw (ex-info "Crypto-hash auditing verifies the persisted commit chain; it cannot be combined with :commit-graph? false." config))))
 
 (defn storeless-config []
   {:store nil
