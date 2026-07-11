@@ -122,3 +122,9 @@
 
 (defn conn-id []
   (str (get-time)))
+
+(defn error-msg-satisfies? [pred err]
+  (and err
+       (pred
+        #?(:clj  (ex-message err)
+           :cljs (or (ex-message err) (.-message err))))))
