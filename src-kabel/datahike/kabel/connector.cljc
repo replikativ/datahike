@@ -179,6 +179,7 @@
           ;; Use a single subscription that handles both initial sync and ongoing updates
           ;; The conn-atom switches behavior after connection is set up
          sync-complete-ch (promise-chan)
+         handshake-complete-ch (promise-chan)  ;; fires when the initial sync has FULLY applied
          stored-db-atom (atom cached-stored-db)  ;; Pre-fill with cached value if available
          conn-atom (atom nil)  ;; Set after connection is created
          ;; Use UUID directly as topic (kabel pubsub supports any EDN value)
@@ -204,7 +205,11 @@
                                      (log/trace "Initial branch received via sync" {:branch branch
                                                                                     :max-tx (:max-tx value)})
                                      (reset! stored-db-atom value-with-client-config)
-                                     (put! sync-complete-ch :synced))))))}))
+                                     (put! sync-complete-ch :synced))))))
+                           :on-complete
+                           ;; Fired once the initial handshake has fully drained:
+                           ;; every reachable index node, then the :db head, applied.
+                           (fn [] (put! handshake-complete-ch :handshake-done))}))
          _ (log/trace "subscribe-store! returned" {:subscribed? (some? sub-result)})
 
           ;; 3. Wait for initial sync (or skip if we have cached data)
