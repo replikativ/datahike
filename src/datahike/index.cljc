@@ -19,6 +19,8 @@
 (def -transient di/-transient)
 (def -persistent! di/-persistent!)
 (def -mark di/-mark)
+(def -root-node di/-root-node)
+(def -seed-root! di/-seed-root!)
 
 ;; Aliases for multimethods
 

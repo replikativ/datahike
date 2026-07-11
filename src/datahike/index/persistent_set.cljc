@@ -2,7 +2,7 @@
   (:require [clojure.string]
             [org.replikativ.persistent-sorted-set :as psset]
             #?(:cljs [org.replikativ.persistent-sorted-set.btset :refer [BTSet]])
-            #?(:cljs [org.replikativ.persistent-sorted-set.branch :refer [Branch]])
+            #?(:cljs [org.replikativ.persistent-sorted-set.branch :as branch :refer [Branch]])
             #?(:cljs [org.replikativ.persistent-sorted-set.leaf :refer [Leaf]])
             #?(:cljs [org.replikativ.persistent-sorted-set.impl.storage :refer [IStorage]])
             [org.replikativ.persistent-sorted-set.arrays :as arrays]
@@ -219,101 +219,174 @@
   (-persistent! [^PersistentSortedSet pset]
     (persistent! pset))
   (-mark [^PersistentSortedSet pset]
-    (mark pset)))
+    (mark pset))
+  (-root-node [^PersistentSortedSet pset]
+    ;; In-memory top node; populated after -flush set the root/address.
+    #?(:clj  (.root pset)
+       :cljs (.-root pset)))
+  (-seed-root! [^PersistentSortedSet pset root-node]
+    ;; Install an inlined (fused) root so root() returns it without a
+    ;; storage round-trip; deeper children stay lazy via the set's storage.
+    #?(:clj  (set! (.-_root pset) root-node)
+       :cljs (set! (.-root pset) root-node))
+    pset))
 
-(defn- gen-address [^ANode node crypto-hash?]
+(defn- canon
+  "Normalize a value for content hashing: Datoms become [e a v tx added] vectors,
+   recursively through maps and sequences. Keeps the hash input plain data so a
+   live node (slot diffs hold Datom objects in a sorted map) and its deserialized
+   twin (plain maps/vectors) hash identically."
+  [x]
+  (cond
+    (dd/datom? x)   (vec (seq x))
+    (map? x)        (persistent!
+                     (reduce-kv (fn [m k v] (assoc! m (canon k) (canon v)))
+                                (transient {}) x))
+    (sequential? x) (mapv canon x)
+    :else x))
+
+(defn- branch-content-uuid
+  "Content-addressed UUID of a Branch. Baseline (no diff-buf slots): hash of the
+   child-address vector — UNCHANGED from pre-diff-buf stores. With buffered slots,
+   the durable representation is (anchors + per-child diffs), so the slots must
+   fold into the hash: two logically different trees can share identical anchor
+   addresses and differ only in their diffs, and a tampered slot diff would
+   otherwise be invisible to the merkle audit. Slot data is canonicalized via
+   `canon` so live and restored nodes hash identically. Representation-dependent
+   by design: the same logical content hashes differently under different
+   :diff-buf-size settings (which are create-time-fixed per store)."
+  [node]
+  (let [addrs #?(:clj (vec (.addresses ^Branch node))
+                 :cljs (vec (.-addresses node)))
+        slots #?(:clj (.slotsForStorage ^Branch node)
+                 :cljs (branch/slots-for-storage node))]
+    (if (seq slots)
+      (uuid [addrs (canon slots)])
+      (uuid addrs))))
+
+(defn- leaf-content-uuid
+  "Content-addressed UUID of a Leaf: hash of its datoms in vector form."
+  [node]
+  (uuid (mapv (comp vec seq) #?(:clj (.keys ^Leaf node) :cljs (.-keys node)))))
+
+(defn- gen-address [#?(:clj ^ANode node :cljs node) crypto-hash?]
   (if crypto-hash?
     (if (instance? Branch node)
-      (uuid (vec (.addresses ^Branch node)))
-      (uuid (mapv (comp vec seq) (.keys node))))
+      (branch-content-uuid node)
+      (leaf-content-uuid node))
     (squuid)))  ;; Sequential UUID for better index locality
 
-#?(:clj
-   (defn- walk-pss-address!
-     "Read the node at `address` directly from konserve, recompute its
-      content-addressed UUID, and confirm it matches `address`. Recurses
-      into Branch children, accumulating any anomalies into the
-      `errors` atom (instead of throwing).
+(declare walk-pss-node!)
 
-      Each error has shape:
-        {:type :audit/merkle-mismatch | :audit/node-missing | :audit/unknown-node-class
-         :address <expected-address>
-         :recomputed <uuid?>           ;; only for :merkle-mismatch
-         :node-class <class-name?>}
+(defn- node-class-name [node]
+  #?(:clj  (some-> node class .getName)
+     :cljs (cond (instance? Branch node) "Branch"
+                 (instance? Leaf node)   "Leaf"
+                 :else (str (type node)))))
 
-      `verified` holds addresses already proven good in this pass; the
-      walker prunes their subtrees. Within a single tree this is a
-      no-op (B-tree nodes have one parent) but it keeps the function
-      composable across multiple calls sharing the same atom.
+(defn- walk-pss-address!
+  "Read the node at `address` directly from konserve, recompute its
+   content-addressed UUID, and confirm it matches `address`. Recurses
+   into Branch children, accumulating any anomalies into the
+   `errors` atom (instead of throwing).
 
-      Reads go through `k/get store` directly, bypassing the live
-      `CachedStorage` LRU; otherwise a hot in-memory copy could mask a
-      tampered on-disk blob."
-     [store address verified errors]
-     (when-not (contains? @verified address)
-       (let [node (k/get store address nil {:sync? true})]
-         (cond
-           (nil? node)
-           (swap! errors conj {:type :audit/node-missing :address address})
+   Each error has shape:
+     {:type :audit/merkle-mismatch | :audit/node-missing | :audit/unknown-node-class
+      :address <expected-address>
+      :recomputed <uuid?>           ;; only for :merkle-mismatch
+      :node-class <class-name?>}
 
-           :else
-           (let [recomputed (cond
-                              (instance? Branch node)
-                              (uuid (vec (.addresses ^Branch node)))
-                              (instance? Leaf node)
-                              (uuid (mapv (comp vec seq) (.keys ^Leaf node))))]
-             (cond
-               (nil? recomputed)
-               (swap! errors conj {:type :audit/unknown-node-class
-                                   :address address
-                                   :node-class (some-> node class .getName)})
+   `verified` holds addresses already proven good in this pass; the
+   walker prunes their subtrees. Within a single tree this is a
+   no-op (B-tree nodes have one parent) but it keeps the function
+   composable across multiple calls sharing the same atom.
 
-               (not= address recomputed)
-               (swap! errors conj {:type :audit/merkle-mismatch
-                                   :address address
-                                   :expected address
-                                   :recomputed recomputed
-                                   :node-class (some-> node class .getName)})
+   Reads go through `k/get store` directly, bypassing the live
+   `CachedStorage` LRU; otherwise a hot in-memory copy could mask a
+   tampered on-disk blob."
+  [store address verified errors]
+  (when-not (contains? @verified address)
+    (let [node (k/get store address nil {:sync? true})]
+      (if (nil? node)
+        (swap! errors conj {:type :audit/node-missing :address address})
+        (walk-pss-node! store node address verified errors)))))
 
-               :else
-               (do
-                 (when (instance? Branch node)
-                   (doseq [child-addr (.addresses ^Branch node)]
-                     (walk-pss-address! store child-addr verified errors)))
-                 (swap! verified conj address)))))))))
+(defn- walk-pss-node!
+  "Like walk-pss-address! but for a node already in hand — used for a FUSED
+   root, which is inlined in the db-record and therefore not a separate
+   konserve object. Recomputes the node's content UUID (same projections as
+   gen-address: a Branch folds its diff-buf slots, so a tampered buffered
+   diff is detected like any other content), confirms it equals `address`,
+   and recurses into its children (which ARE separate objects) via
+   walk-pss-address!."
+  [store node address verified errors]
+  (when-not (contains? @verified address)
+    (let [recomputed (cond
+                       (instance? Branch node)
+                       (branch-content-uuid node)
+                       (instance? Leaf node)
+                       (leaf-content-uuid node))]
+      (cond
+        (nil? recomputed)
+        (swap! errors conj {:type :audit/unknown-node-class
+                            :address address
+                            :node-class (node-class-name node)})
+
+        (not= address recomputed)
+        (swap! errors conj {:type :audit/merkle-mismatch
+                            :address address
+                            :expected address
+                            :recomputed recomputed
+                            :node-class (node-class-name node)})
+
+        :else
+        (do
+          (when (instance? Branch node)
+            (doseq [child-addr #?(:clj (.addresses ^Branch node) :cljs (.-addresses node))]
+              (walk-pss-address! store child-addr verified errors)))
+          (swap! verified conj address))))))
 
 (extend-type #?(:clj PersistentSortedSet :cljs BTSet)
   IAuditable
-  (-merkle-root [^PersistentSortedSet pset]
-    ;; gen-address (below) makes every node UUID a recursive content
-    ;; hash of its datoms under :crypto-hash?, so the root _address
+  (-merkle-root [pset]
+    ;; gen-address (above) makes every node UUID a recursive content
+    ;; hash of its datoms under :crypto-hash?, so the root address
     ;; captures the whole tree. Set by psset/store during -flush.
     ;; Returns nil when unflushed; never throws.
-    (.-_address pset))
-  (-recompute-merkle-root [^PersistentSortedSet pset]
+    #?(:clj (.-_address ^PersistentSortedSet pset) :cljs (.-address pset)))
+  (-recompute-merkle-root [pset]
     ;; Walk the tree from konserve, deserialize each node, and confirm
     ;; its bytes hash back to its address. Konserve does NOT verify
     ;; content on read, so without this walk a tampered .ksv file would
-    ;; round-trip undetected — only the in-memory `_address` would still
+    ;; round-trip undetected — only the in-memory address would still
     ;; look correct. Returns a result map; never throws on mismatch.
-    #?(:clj
-       (let [address (.-_address pset)
-             storage (.-_storage pset)
-             store   (some-> storage :store)]
-         (cond
-           (nil? address)
-           {:status :unsupported :reason :unflushed}
-           (nil? store)
-           {:status :unsupported :reason :no-store}
-           :else
-           (let [verified (atom #{})
-                 errors   (atom [])]
-             (walk-pss-address! store address verified errors)
-             (if (seq @errors)
-               {:status :mismatch :root nil :errors @errors}
-               {:status :ok :root address}))))
-       :cljs
-       {:status :unsupported :reason :cljs-not-implemented})))
+    ;; Cross-platform: the walk/recompute (branch-content-uuid + canon +
+    ;; uuid) is shared, so hashes match cross-host.
+    (let [address #?(:clj (.-_address ^PersistentSortedSet pset) :cljs (.-address pset))
+          storage #?(:clj (.-_storage ^PersistentSortedSet pset) :cljs (.-storage pset))
+          store   (some-> storage :store)]
+      (cond
+        (nil? address)
+        {:status :unsupported :reason :unflushed}
+        (nil? store)
+        {:status :unsupported :reason :no-store}
+        :else
+        (let [verified  (atom #{})
+              errors    (atom [])
+              ;; Fused root (root fusion): inlined in the db-record, not a
+              ;; separate konserve object — a direct store read returns nil.
+              ;; Verify the seeded in-memory root instead (recomputing its
+              ;; content hash still detects db-record tampering of the root
+              ;; on a cold connection), then recurse children (separate
+              ;; objects) as usual.
+              root-node (or (k/get store address nil {:sync? true})
+                            #?(:clj (.root ^PersistentSortedSet pset) :cljs (.-root pset)))]
+          (if (nil? root-node)
+            (swap! errors conj {:type :audit/node-missing :address address})
+            (walk-pss-node! store root-node address verified errors))
+          (if (seq @errors)
+            {:status :mismatch :root nil :errors @errors}
+            {:status :ok :root address}))))))
 
 (defn- freelist-pop!
   "Atomically pop an address from the freelist. Returns nil if empty."
@@ -402,7 +475,8 @@
 (defmethod di/empty-index :datahike.index/persistent-set [_index-name store index-type _]
   (let [^PersistentSortedSet pset (psset/sorted-set* {:comparator (index-type->cmp-quick index-type false)
                                                       :storage (:storage store)
-                                                      :branching-factor (:datahike/branching-factor store DEFAULT_BRANCHING_FACTOR)})]
+                                                      :branching-factor (:datahike/branching-factor store DEFAULT_BRANCHING_FACTOR)
+                                                      :diff-buf-size (:datahike/diff-buf-size store 0)})]
     (with-meta pset (root-meta store index-type))))
 
 (defmethod di/init-index :datahike.index/persistent-set [_index-name store datoms index-type _ {:keys [indexed]}]
@@ -423,8 +497,10 @@
         ^PersistentSortedSet pset (psset/from-sorted-array (index-type->cmp-quick index-type false)
                                                            arr
                                                            (arrays/alength arr)
-                                                           #?(:clj  {:branching-factor (:datahike/branching-factor store DEFAULT_BRANCHING_FACTOR)}
+                                                           #?(:clj  {:branching-factor (:datahike/branching-factor store DEFAULT_BRANCHING_FACTOR)
+                                                                     :diff-buf-size (:datahike/diff-buf-size store 0)}
                                                               :cljs {:branching-factor (:datahike/branching-factor store DEFAULT_BRANCHING_FACTOR)
+                                                                     :diff-buf-size (:datahike/diff-buf-size store 0)
                                                                      :storage (:storage store)}))]
     #?(:clj (set! (.-_storage pset) (:storage store)))
     (with-meta pset (root-meta store index-type))))
@@ -444,12 +520,18 @@
 
 (defmethod di/add-konserve-handlers :datahike.index/persistent-set [config store]
   (let [store-id (or (get-in config [:store :id]) (:id config))  ; the konserve store's UUID
-        bf       (get-in config [:index-config :branching-factor] DEFAULT_BRANCHING_FACTOR)]
+        bf       (get-in config [:index-config :branching-factor] DEFAULT_BRANCHING_FACTOR)
+        ;; diff-buf write-buffering (EXPERIMENTAL, default off). Like bf this is a
+        ;; create-time-fixed per-store setting consumed when fresh sets are built
+        ;; (empty-index/init-index); restore needs nothing — node and root blobs
+        ;; self-describe their :diff-buf-size via the canonical handlers.
+        dbs      (get-in config [:index-config :diff-buf-size] 0)]
     (if-let [storage-atom (:storage-atom store)]
       ;; Pre-configured (e.g. LMDB) store — handlers already attached; just create the storage.
       (let [storage (or (:storage store) (create-storage store config))]
         (reset! storage-atom storage)
-        (assoc store :storage storage :datahike/store-id store-id :datahike/branching-factor bf))
+        (assoc store :storage storage :datahike/store-id store-id
+               :datahike/branching-factor bf :datahike/diff-buf-size dbs))
 
       ;; Standard fressian store — attach the CANONICAL PSS serializer with LEXICAL in-store
       ;; resolvers. The circular storage↔store reference is broken by a write-once cell LOCAL to THIS
@@ -479,7 +561,8 @@
             store   (k/assoc-serializers store {:FressianSerializer (fressian-serializer read-handlers* write-handlers*)})
             storage (or (:storage store) (create-storage store config))]
         (reset! storage-cell storage)
-        (assoc store :storage storage :datahike/store-id store-id :datahike/branching-factor bf)))))
+        (assoc store :storage storage :datahike/store-id store-id
+               :datahike/branching-factor bf :datahike/diff-buf-size dbs)))))
 
 (defmethod di/with-storage :datahike.index/persistent-set [_index-name pset storage]
   ;; A PSS root carries its IStorage in the `_storage` field — connection-
@@ -495,6 +578,11 @@
        (let [^PersistentSortedSet p pset
              m (meta p)
              cmp (index-type->cmp-quick (:index-type m) false)]
+         ;; A detached copy may carry an UNKNOWN cached count (-1) after a
+         ;; restore+mutate; that's fine — since PSS 0.4.132 the root write
+         ;; handler serializes the cached value as-is (no storage-dependent
+         ;; recompute) and readers resolve it lazily with their own storage.
+         ;; Guarded by store_test/test-detached-root-count-after-reopen.
          (PersistentSortedSet. m cmp (.-_address p) storage (.-_root p)
                                (.-_count p) (.-_settings p) (.-_version p)))
        pset)
@@ -508,7 +596,8 @@
   store)
 
 (defmethod di/default-index-config :datahike.index/persistent-set [_index-name]
-  ;; branching-factor is NOT defaulted into the stored config — it's read with a DEFAULT_BRANCHING_FACTOR
-  ;; fallback in add-konserve-handlers/empty-index, so an unset config stays {} (and a user may still
-  ;; override via :index-config {:branching-factor n}).
+  ;; branching-factor and diff-buf-size are NOT defaulted into the stored config — they're read with
+  ;; fallbacks (DEFAULT_BRANCHING_FACTOR / 0) in add-konserve-handlers, so an unset config stays {}
+  ;; (and a user may still override via :index-config {:branching-factor n :diff-buf-size n} at
+  ;; create time; both are create-time-fixed and adopted from the stored config at connect).
   {})

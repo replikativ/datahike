@@ -34,6 +34,11 @@
 (s/def ::search-cache-size nat-int?)
 (s/def ::store-cache-size pos-int?)
 (s/def ::crypto-hash? boolean?)
+;; Root fusion (EXPERIMENTAL, opt-in): inline each index's root node into the
+;; db-record so commit! skips writing those roots as separate objects.
+;; Presence-based — not defaulted into configs; restore handles fused and
+;; legacy records alike, and connect adopts the stored value.
+(s/def ::fuse-index-roots? boolean?)
 (s/def ::writer map?)
 (s/def ::branch keyword?)
 (s/def ::entity (s/or :map associative? :vec vector?))
@@ -54,6 +59,7 @@
                                          ::search-cache-size
                                          ::store-cache-size
                                          ::crypto-hash?
+                                         ::fuse-index-roots?
                                          ::initial-tx
                                          ::name
                                          ::branch

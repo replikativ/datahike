@@ -1,6 +1,6 @@
 (ns datahike.gc
   (:require [clojure.set :as set]
-            [datahike.index.interface :refer [-mark with-storage]]
+            [datahike.index.interface :refer [-mark -seed-root! with-storage]]
             [datahike.index.secondary :as sec]
             [konserve.core :as k]
             [konserve.gc :refer [sweep!]]
@@ -25,6 +25,8 @@
                   (recur r visited reachable)
                   (let [{:keys                         [eavt-key avet-key aevt-key
                                                         temporal-eavt-key temporal-avet-key temporal-aevt-key
+                                                        eavt-root aevt-root avet-root
+                                                        temporal-eavt-root temporal-aevt-root temporal-avet-root
                                                         schema-meta-key secondary-index-keys]
                          {:keys [datahike/parents
                                  datahike/created-at
@@ -39,16 +41,26 @@
                                            #{} secondary-index-keys))
                           ;; Stored roots are storage-detached; bind them to
                           ;; this store's storage so -mark can walk the tree.
-                          mark (fn [idx] (-mark (with-storage (:index config) idx (:storage store))))
+                          ;; Root fusion: inlined roots aren't separate konserve
+                          ;; objects, so -mark on the lazy index would try to
+                          ;; restore the root by address and fail. Seed the
+                          ;; inlined root into the with-storage COPY (owned,
+                          ;; unpublished) — never into the stored record's
+                          ;; index, which may be shared through the store's
+                          ;; cache (mirrors stored->db) — so walk-addresses
+                          ;; uses it and only its children are fetched.
+                          mark (fn [idx root]
+                                 (-mark (cond-> (with-storage (:index config) idx (:storage store))
+                                          root (-seed-root! root))))
                           new-reachable (cond-> (set/union reachable #{to-check}
                                                            (when schema-meta-key #{schema-meta-key})
-                                                           (mark eavt-key)
-                                                           (mark aevt-key)
-                                                           (mark avet-key))
+                                                           (mark eavt-key eavt-root)
+                                                           (mark aevt-key aevt-root)
+                                                           (mark avet-key avet-root))
                                           (:keep-history? config)
-                                          (set/union (mark temporal-eavt-key)
-                                                     (mark temporal-aevt-key)
-                                                     (mark temporal-avet-key))
+                                          (set/union (mark temporal-eavt-key temporal-eavt-root)
+                                                     (mark temporal-aevt-key temporal-aevt-root)
+                                                     (mark temporal-avet-key temporal-avet-root))
                                           sec-reachable
                                           (set/union sec-reachable))]
                       (recur (concat r (when in-range? parents))

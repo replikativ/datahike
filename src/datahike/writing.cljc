@@ -138,7 +138,26 @@
           ;; same invariant hold for identity-preserving stores (tiered
           ;; memory frontend), which would otherwise cache the live root
           ;; with this connection's storage inside. stored->db rebinds.
-          detach (fn [idx] (di/with-storage (:index config) idx nil))]
+          detach (fn [idx] (di/with-storage (:index config) idx nil))
+          ;; Root fusion (EXPERIMENTAL, opt-in): inline each flushed index's
+          ;; root NODE into the db-record; `commit!` then skips writing those
+          ;; roots as separate objects (fused-root-addresses). Nodes carry no
+          ;; storage handle, so no detach is needed. Works under crypto-hash?:
+          ;; the root's address is still its content hash and the audit walk
+          ;; verifies the inlined root (walk-pss-node!) before recursing into
+          ;; its separately-stored children. PSS-only (the protocol methods
+          ;; are implemented for the persistent-set index).
+          fuse? (and flush!
+                     (:fuse-index-roots? config)
+                     (= (:index config) :datahike.index/persistent-set))
+          fused-roots (when fuse?
+                        (cond-> {:eavt-root (di/-root-node eavt')
+                                 :aevt-root (di/-root-node aevt')
+                                 :avet-root (di/-root-node avet')}
+                          (:keep-history? config)
+                          (assoc :temporal-eavt-root (di/-root-node temporal-eavt')
+                                 :temporal-aevt-root (di/-root-node temporal-aevt')
+                                 :temporal-avet-root (di/-root-node temporal-avet'))))]
       [schema-meta-kv-to-write
        (merge
         {:schema-meta-key  schema-meta-key
@@ -157,7 +176,8 @@
            :temporal-aevt-key (detach temporal-aevt')
            :temporal-avet-key (detach temporal-avet')})
         (when secondary-index-keys
-          {:secondary-index-keys secondary-index-keys}))])))
+          {:secondary-index-keys secondary-index-keys})
+        fused-roots)])))
 
 (defn- restore-secondary-indices
   "Restore secondary index instances from stored key-maps.
@@ -208,6 +228,8 @@
   [stored-db store]
   (let [{:keys [eavt-key aevt-key avet-key
                 temporal-eavt-key temporal-aevt-key temporal-avet-key
+                eavt-root aevt-root avet-root
+                temporal-eavt-root temporal-aevt-root temporal-avet-root
                 secondary-index-keys
                 schema rschema system-entities ref-ident-map ident-ref-map
                 config max-tx max-eid op-count hash meta schema-meta-key]
@@ -227,7 +249,19 @@
         ;; backends bind on read anyway, but identity-preserving stores
         ;; (tiered memory frontend) return the stored object as-is — so
         ;; binding must happen here, at materialization, for every backend.
-        attach (fn [idx] (di/with-storage (:index config) idx (:storage store)))]
+        ;;
+        ;; Root fusion: seed an inlined root into the COPY, never into the
+        ;; stored record's index — the record may be shared through the
+        ;; store's cache by every reader of this key, and shared objects are
+        ;; read-only (the cross-version projection lesson, persistent-sorted-set
+        ;; #19). The with-storage copy is owned and unpublished, so the
+        ;; seed mutation is single-threaded by construction; root() then
+        ;; returns the fused root with no storage round-trip (deeper
+        ;; children stay lazy). Presence-based, so fused and legacy records
+        ;; both restore — no reader config needed.
+        attach (fn [idx root]
+                 (cond-> (di/with-storage (:index config) idx (:storage store))
+                   root (di/-seed-root! root)))]
     (merge
      (assoc empty
             :max-tx max-tx
@@ -237,12 +271,12 @@
             :schema schema
             :hash hash
             :op-count op-count
-            :eavt (attach eavt-key)
-            :aevt (attach aevt-key)
-            :avet (attach avet-key)
-            :temporal-eavt (attach temporal-eavt-key)
-            :temporal-aevt (attach temporal-aevt-key)
-            :temporal-avet (attach temporal-avet-key)
+            :eavt (attach eavt-key eavt-root)
+            :aevt (attach aevt-key aevt-root)
+            :avet (attach avet-key avet-root)
+            :temporal-eavt (attach temporal-eavt-key temporal-eavt-root)
+            :temporal-aevt (attach temporal-aevt-key temporal-aevt-root)
+            :temporal-avet (attach temporal-avet-key temporal-avet-root)
             :rschema rschema
             :system-entities system-entities
             :ident-ref-map ident-ref-map
@@ -252,20 +286,34 @@
        {:secondary-indices sec-indices})
      schema-meta)))
 
-(defn branch-heads-as-commits [store parents]
-  (set (doall (for [p parents]
-                (do
-                  (when (nil? p)
-                    (log/raise "Parent cannot be nil." {:type :parent-cannot-be-nil
-                                                        :parent p}))
-                  (if-not (keyword? p) p
-                          (let [{{:keys [datahike/commit-id]} :meta :as old-db}
-                                (k/get store p nil {:sync? true})]
-                            (when-not old-db
-                              (log/raise "Parent does not exist in store."
-                                         {:type   :parent-does-not-exist-in-store
-                                          :parent p}))
-                            commit-id)))))))
+(defn branch-heads-as-commits
+  "Resolve keyword parents (branch names) to their head commit-ids.
+
+   `known-heads` is an optional {branch-keyword commit-id} map of heads the
+   caller already holds in memory: under datahike's single-writer invariant
+   the writer's current db carries its own branch's head cid in
+   [:meta :datahike/commit-id], so re-reading the branch record from storage
+   (3 sequential requests on S3-class backends) is redundant for it. A nil or
+   missing entry falls back to the storage read — first load, foreign
+   branches (merge parents), or writers without an in-memory head. This is a
+   read elision, not a fence: head-flip semantics on concurrent writer misuse
+   are unchanged (last-writer-wins, exactly as with the read)."
+  ([store parents] (branch-heads-as-commits store parents {}))
+  ([store parents known-heads]
+   (set (doall (for [p parents]
+                 (do
+                   (when (nil? p)
+                     (log/raise "Parent cannot be nil." {:type :parent-cannot-be-nil
+                                                         :parent p}))
+                   (if-not (keyword? p) p
+                           (or (get known-heads p)
+                               (let [{{:keys [datahike/commit-id]} :meta :as old-db}
+                                     (k/get store p nil {:sync? true})]
+                                 (when-not old-db
+                                   (log/raise "Parent does not exist in store."
+                                              {:type   :parent-does-not-exist-in-store
+                                               :parent p}))
+                                 commit-id)))))))))
 
 (defn- audit-grade?
   "Audit-grade cids require :crypto-hash? on a persistent backend,
@@ -301,6 +349,32 @@
        content-uuid
        (squuid content-uuid)))))
 
+(defn- fused-root-addresses
+  "When root fusion is enabled, the addresses of the index root nodes that
+  `db->stored` inlined into the record. These must be excluded from the
+  pending-writes drain so they are not also written as separate objects.
+  Each index's root address == its post-flush `_address` — exactly the value
+  `db->stored` captured in `:merkle-roots`, and exactly its pending-writes
+  key. Exact-by-address: deeper dirty nodes stay.
+
+  NOT under :crypto-hash?: content-derived addresses dedup across trees, so a
+  root's address can also be referenced as an interior CHILD of another
+  index's tree (e.g. a temporal leaf identical to the current index's whole
+  single-leaf root); excluding the object would dangle that reference. squuid
+  addresses are minted uniquely per stored node, so exclusion is exact there.
+  Under crypto the roots stay separate objects (fusion still saves the
+  per-index cold-open GET via the inlined copy, just not the PUT)."
+  [config db-to-store]
+  (when (and (:fuse-index-roots? config)
+             (not (:crypto-hash? config))
+             (= (:index config) :datahike.index/persistent-set))
+    (->> (select-keys (:merkle-roots db-to-store)
+                      [:eavt-key :aevt-key :avet-key
+                       :temporal-eavt-key :temporal-aevt-key :temporal-avet-key])
+         vals
+         (remove nil?)
+         set)))
+
 (defn write-pending-kvs!
   "Writes a collection of key-value pairs to the store.
   Handles synchronous and asynchronous writes.
@@ -318,61 +392,102 @@
   ([db parents]
    (commit! db parents true))
   ([db parents sync?]
+   (commit! db parents sync? nil))
+  ([db parents sync? known-head-cid]
    (async+sync sync? *default-sync-translation*
                (go-try-
-                (let [{:keys [store config]} db
-                      parents       (or parents #{(get config :branch)})
-                      parents       (branch-heads-as-commits store parents)
+                ;; Contain fatal ERRORS (AssertionError, OOM, ...): go-try- catches
+                ;; Exception only, so an Error would escape the go state machine,
+                ;; kill the dispatch thread, and leave the returned channel silent —
+                ;; the writer's commit loop parks on it FOREVER and every queued
+                ;; transact hangs with no diagnostic. Convert to ex-info at the go
+                ;; boundary so the error flows through the channel to the writer's
+                ;; Throwable handler: callbacks get the error and the writer shuts
+                ;; down loudly. Commit ordering is unaffected (the HEAD flip never
+                ;; happened when we land here).
+                (try
+                  (let [{:keys [store config]} db
+                        ;; Head-cid cache: for an ORDINARY commit (no explicit
+                        ;; parents) the writer's own head cid is already in
+                        ;; memory — stamped by the previous commit!, or by
+                        ;; stored->db at connect — so skip the per-commit
+                        ;; branch-head storage read (3 sequential requests on
+                        ;; S3 backends). Explicit-parents commits (merge!,
+                        ;; branch machinery) keep the read: their db may
+                        ;; descend from ANOTHER branch's lineage, so its meta
+                        ;; cid is not necessarily this branch's head.
+                        ;; known-head-cid is threaded by the WRITER's commit
+                        ;; loop (its previous commit's cid) — nil on the first
+                        ;; commit after connect, which falls back to the read.
+                        ;; The db's own meta cid is NOT usable here: the
+                        ;; transaction loop chains applied dbs whose meta
+                        ;; predates recent commits (the old storage read was,
+                        ;; in effect, the cross-loop synchronization point).
+                        known-heads   (if (and (nil? parents) known-head-cid)
+                                        {(get config :branch) known-head-cid}
+                                        {})
+                        parents       (or parents #{(get config :branch)})
+                        parents       (branch-heads-as-commits store parents known-heads)
                       ;; Stamp parents BEFORE flushing so they're in the
                       ;; stored form the cid will be derived from.
-                      db            (assoc-in db [:meta :datahike/parents] parents)
+                        db            (assoc-in db [:meta :datahike/parents] parents)
                       ;; Flush first → cid sees post-flush storage
                       ;; addresses (true merkle leaves under crypto-hash?).
-                      [schema-meta-kv-to-write db-to-store-pre]
-                      (db->stored db true)
-                      cid           (create-commit-id db db-to-store-pre)
-                      db            (assoc-in db [:meta :datahike/commit-id] cid)
-                      db-to-store   (assoc-in db-to-store-pre
-                                              [:meta :datahike/commit-id] cid)
-                      pending-kvs   (get-and-clear-pending-kvs! store)]
+                        [schema-meta-kv-to-write db-to-store-pre]
+                        (db->stored db true)
+                        cid           (create-commit-id db db-to-store-pre)
+                        db            (assoc-in db [:meta :datahike/commit-id] cid)
+                        db-to-store   (assoc-in db-to-store-pre
+                                                [:meta :datahike/commit-id] cid)
+                      ;; Root fusion: roots are inlined in db-to-store, so drop
+                      ;; them from the separate-object writes.
+                        fused-addrs   (fused-root-addresses config db-to-store)
+                        pending-kvs   (cond->> (get-and-clear-pending-kvs! store)
+                                        (seq fused-addrs)
+                                        (remove (fn [[k _]] (contains? fused-addrs k))))]
 
-                  (if (multi-key-capable? store)
-                    (let [[meta-key meta-val] schema-meta-kv-to-write
-                          writes-map (cond-> (into {} pending-kvs) ; Initialize with pending KVs
-                                       schema-meta-kv-to-write (assoc meta-key meta-val)
-                                       true                    (assoc cid db-to-store)
-                                       true                    (assoc (:branch config) db-to-store))]
+                    (if (multi-key-capable? store)
+                      (let [[meta-key meta-val] schema-meta-kv-to-write
+                            writes-map (cond-> (into {} pending-kvs) ; Initialize with pending KVs
+                                         schema-meta-kv-to-write (assoc meta-key meta-val)
+                                         true                    (assoc cid db-to-store)
+                                         true                    (assoc (:branch config) db-to-store))]
                       ;; nodes + schema-meta (uuid) + commit (cid) are content-addressed →
                       ;; immutable; the branch-head pointer (:branch config) stays mutable.
                       ;; per-key meta map: every key but the branch head marked immutable.
-                      (<?- (k/multi-assoc store writes-map
-                                          (reduce-kv (fn [m k _] (cond-> m
-                                                                   (not= k (:branch config))
-                                                                   (assoc k {:immutable? true})))
-                                                     {} writes-map)
-                                          {:sync? sync?})))
+                        (<?- (k/multi-assoc store writes-map
+                                            (reduce-kv (fn [m k _] (cond-> m
+                                                                     (not= k (:branch config))
+                                                                     (assoc k {:immutable? true})))
+                                                       {} writes-map)
+                                            {:sync? sync?})))
                     ;; Then write schema-meta, commit-log, branch
-                    (let [[meta-key meta-val] schema-meta-kv-to-write
-                          schema-meta-written (when schema-meta-kv-to-write
+                      (let [[meta-key meta-val] schema-meta-kv-to-write
+                            schema-meta-written (when schema-meta-kv-to-write
                                                 ;; schema-meta-key = (uuid schema-meta) → content-addressed → immutable
-                                                (k/assoc store meta-key meta-val {:immutable? true} {:sync? sync?}))
+                                                  (k/assoc store meta-key meta-val {:immutable? true} {:sync? sync?}))
 
                           ;; Make sure all pointed to values are written before the commit log and branch
-                          _ (when schema-meta-kv-to-write (<?- schema-meta-written))
-                          _ (<?- (write-pending-kvs! store pending-kvs sync?))
+                            _ (when schema-meta-kv-to-write (<?- schema-meta-written))
+                            _ (<?- (write-pending-kvs! store pending-kvs sync?))
 
                           ;; the commit is content-addressed by cid → immutable; the branch head is mutable
-                          commit-log-written (k/assoc store cid db-to-store {:immutable? true} {:sync? sync?})
-                          branch-written     (k/assoc store (:branch config) db-to-store {:sync? sync?})]
-                      (when-not sync?
-                        (<?- commit-log-written)
-                        (<?- branch-written))))
+                            commit-log-written (k/assoc store cid db-to-store {:immutable? true} {:sync? sync?})
+                            branch-written     (k/assoc store (:branch config) db-to-store {:sync? sync?})]
+                        (when-not sync?
+                          (<?- commit-log-written)
+                          (<?- branch-written))))
 
                   ;; Online GC: delete freed addresses after writes are committed
-                  (when (get-in config [:online-gc :enabled?])
-                    (<?- (online-gc/online-gc! store (assoc (:online-gc config) :sync? false))))
+                    (when (get-in config [:online-gc :enabled?])
+                      (<?- (online-gc/online-gc! store (assoc (:online-gc config) :sync? false))))
 
-                  db)))))
+                    db)
+                  (catch #?(:clj Error :cljs :default) e
+                    #?(:clj  (throw (ex-info "Fatal error during commit."
+                                             {:type :fatal-commit-error}
+                                             e))
+                       :cljs (throw e))))))))
 
 (defn complete-db-update [old tx-report]
   (let [{:keys [writer]} old

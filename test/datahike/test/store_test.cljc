@@ -105,3 +105,77 @@
                           #"\s+:id\s+"
                           (d/database-exists?
                            {:store {:backend :memory}})))))
+
+#?(:clj
+   (deftest test-diff-buf-upsert-reopen
+     ;; Regression: diff-buf buffers a value-changing upsert as Absent(old)+Present(new) in a leaf-diff.
+     ;; The leaf-diff must serialize to the comparator-agnostic {:absent :present} form; if it were a
+     ;; map keyed by the Datom, fressian round-trip would re-key by Datom equality (e,a,v — ignores tx),
+     ;; collapsing the two entries and dropping the removal → a stale old datom survives reopen.
+     (testing "many value-changing upserts survive store→reopen with no stale/duplicate datoms (diff-buf)"
+       (let [cfg {:store {:backend :file
+                          :path (str (System/getProperty "java.io.tmpdir") "/dh-diffbuf-upsert")
+                          :id #uuid "d1ffb000-0000-0000-0000-00000000d1ff"}
+                  :schema-flexibility :write :keep-history? false
+                  :index-config {:diff-buf-size 256 :branching-factor 16}}
+             n   400]
+         (d/delete-database cfg)
+         (d/create-database cfg)
+         (let [conn (d/connect cfg)]
+           (d/transact conn [{:db/ident :name :db/valueType :db.type/string :db/cardinality :db.cardinality/one :db/unique :db.unique/identity}
+                             {:db/ident :age  :db/valueType :db.type/long   :db/cardinality :db.cardinality/one}])
+           (doseq [i (range n)]       (d/transact conn [{:name (str "p" i) :age (mod (* i 7) 100)}]))
+           (doseq [i (range 0 n 3)]   (d/transact conn [{:name (str "p" i) :age (+ 100 i)}]))   ; value-changing upserts
+           (d/release conn))
+         (let [conn (d/connect cfg)
+               db   @conn
+               got  (set (d/q '[:find ?n ?a :where [?e :name ?n] [?e :age ?a]] db))
+               exp  (into #{} (for [i (range n)] [(str "p" i) (if (zero? (mod i 3)) (+ 100 i) (mod (* i 7) 100))]))]
+           (is (= exp got) "name/age query exact after reopen")
+           (is (= (* 2 n) (count (filter #(#{:name :age} (:a %)) (d/datoms db :eavt))))
+               "exactly one :name + one :age datom per entity (no stale buffered-replace duplicate)")
+           (d/release conn))
+         (d/delete-database cfg)))))
+
+#?(:clj
+   (deftest test-detached-root-count-after-reopen
+     ;; Regression (pre-existing on main, found by a diff-buf equivalence probe):
+     ;; a restore+mutate can leave the PSS cached count unknown (-1); the
+     ;; canonical root WRITE handler serialized :count via (count pset), and
+     ;; recomputing it on the storage-DETACHED stored copy (db->stored detaches,
+     ;; #854) NPE'd in Branch.child while materializing lazy children. Fixed
+     ;; upstream in persistent-sorted-set 0.4.132 (the handler serializes the
+     ;; cached count as-is; readers resolve -1 lazily with their own storage).
+     ;; Recipe: deep tree (small bf), history on, mixed upserts/retractions,
+     ;; reconnect mid-stream.
+     (testing "commits keep succeeding across reopen+mutate on a deep tree"
+       (let [cfg {:store {:backend :file
+                          :path (str (System/getProperty "java.io.tmpdir") "/dh-detached-count")
+                          :id #uuid "d1ffb000-0000-0000-0000-00000000dead"}
+                  :schema-flexibility :write :keep-history? true
+                  :index-config {:branching-factor 16}}
+             rng (java.util.Random. 42)]
+         (d/delete-database cfg)
+         (d/create-database cfg)
+         (let [conn (atom (d/connect cfg))]
+           (d/transact @conn [{:db/ident :id :db/valueType :db.type/long :db/cardinality :db.cardinality/one :db/unique :db.unique/identity}
+                              {:db/ident :score :db/valueType :db.type/long :db/cardinality :db.cardinality/one}])
+           (dotimes [i 150]
+             (let [r (.nextInt rng 4) id (long (.nextInt rng 300))]
+               (try
+                 (case r
+                   0 (d/transact @conn [{:id id :score (long (.nextInt rng 100))}])
+                   1 (d/transact @conn [[:db/retractEntity [:id id]]])
+                   (d/transact @conn (vec (for [j (range 5)] {:id (long (+ 300 (* i 5) j)) :score (long j)}))))
+                 (catch Exception e
+                   (when-not (re-find #"(?i)nothing to retract" (str (.getMessage e)))
+                     (throw e)))))
+             (when (zero? (mod (inc i) 50))
+               (d/release @conn)
+               (reset! conn (d/connect cfg))))
+           ;; count must be consistent with the actual datom set after all that
+           (let [db @@conn]
+             (is (= (count (filter #(= :id (:a %)) (d/datoms db :eavt)))
+                    (d/q '[:find (count ?e) . :where [?e :id _]] db))))
+           (d/release @conn))
+         (d/delete-database cfg)))))

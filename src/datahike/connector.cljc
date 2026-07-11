@@ -162,9 +162,57 @@
                   :stored-config stored-config
                   :diff          (diff config stored-config)}))))
 
+(def create-time-fixed-index-keys
+  "Sub-keys of :index-config that shape the on-disk index representation and are
+   therefore fixed when the database is created. At connect they are adopted from
+   the stored config, so a reconnect does not need to re-specify them."
+  #{:branching-factor :diff-buf-size})
+
+(defn- adopt-create-time-fixed
+  "Adopt store-fixed settings from the stored config into `config`: the
+   create-time-fixed :index-config sub-keys and :fuse-index-roots? (which
+   describes how records in the store are laid out). A key the caller did not
+   specify is taken from the store, so reconnects don't need to re-specify
+   creation settings; an explicitly conflicting value raises unless
+   :allow-unsafe-config is set (then the given value wins). Returns the
+   possibly-updated config."
+  [config stored-config]
+  (let [unsafe?   (:allow-unsafe-config config)
+        stored-ic (select-keys (:index-config stored-config) create-time-fixed-index-keys)
+        given-ic  (:index-config config)
+        conflicts (cond-> (into {}
+                                (keep (fn [[k stored-v]]
+                                        (when (and (contains? given-ic k)
+                                                   (not= (get given-ic k) stored-v))
+                                          [k {:given (get given-ic k) :stored stored-v}])))
+                                stored-ic)
+                    (and (contains? stored-config :fuse-index-roots?)
+                         (contains? config :fuse-index-roots?)
+                         (not= (:fuse-index-roots? config) (:fuse-index-roots? stored-config)))
+                    (assoc :fuse-index-roots? {:given (:fuse-index-roots? config)
+                                               :stored (:fuse-index-roots? stored-config)}))]
+    (when (and (seq conflicts) (not unsafe?))
+      (log/raise "Create-time-fixed index settings differ from the stored configuration."
+                 {:type      :create-time-fixed-index-config-mismatch
+                  :conflicts conflicts
+                  :config    config}))
+    (let [ic (if unsafe? (merge stored-ic given-ic) (merge given-ic stored-ic))
+          config (if (seq ic)
+                   (assoc config :index-config ic)
+                   (dissoc config :index-config))]
+      (if (and (contains? stored-config :fuse-index-roots?)
+               (or (not (contains? config :fuse-index-roots?)) (not unsafe?)))
+        (assoc config :fuse-index-roots? (:fuse-index-roots? stored-config))
+        config))))
+
 (defn- normalize-config [cfg]
   (-> cfg
-      (dissoc :writer :store :store-cache-size :search-cache-size)))
+      ;; :index-config and :fuse-index-roots? are store-fixed and adopted on a
+      ;; fresh connect (adopt-create-time-fixed), so an existing connection may
+      ;; carry adopted keys the caller's config omits; conflicts are guarded on
+      ;; the fresh-connect path, not here.
+      (dissoc :writer :store :store-cache-size :search-cache-size
+              :index-config :fuse-index-roots?)))
 
 (defn -connect-impl* [config opts]
   (async+sync (:sync? opts) *default-sync-translation*
@@ -208,6 +256,20 @@
                                      stored-db (<?- (k/get store (:branch config) nil opts))]
                                  [config store stored-db]))
                              [config store stored-db]))
+                         ;; Adopt create-time-fixed index settings (:index-config
+                         ;; {:branching-factor :diff-buf-size}) from the stored config.
+                         ;; When adoption changes the config, re-derive the store
+                         ;; handlers with it (same pattern as the index reconciliation
+                         ;; above) so e.g. a legacy store's non-default branching-factor
+                         ;; reaches the node read handlers.
+                         [config store stored-db]
+                         (let [config' (adopt-create-time-fixed config (:config stored-db))]
+                           (if (= config' config)
+                             [config store stored-db]
+                             (let [store     (ds/add-cache-and-handlers raw-store config')
+                                   _ (<?- (ds/ready-store (assoc store-config :opts opts) store))
+                                   stored-db (<?- (k/get store (:branch config') nil opts))]
+                               [config' store stored-db])))
                          _ (version-check stored-db)
                          _ (when-not (:allow-unsafe-config config)
                              (ensure-stored-config-consistency config (:config stored-db)))

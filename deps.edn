@@ -1,15 +1,22 @@
 {:deps {org.clojure/clojure                         {:mvn/version "1.12.4"}
         org.replikativ/hasch                        {:mvn/version "0.4.98"
                                                      :exclusions [org.clojure/clojurescript]}
-        org.replikativ/konserve                     {:mvn/version "0.9.350"
+        org.replikativ/konserve                     {:mvn/version "0.9.353"
                                                      :exclusions [org.clojure/clojurescript
                                                                   org.clojars.mmb90/cljs-cache]}
                                                      
         org.replikativ/superv.async                 {:mvn/version "0.3.50"
                                                      :exclusions [org.clojure/clojurescript]}
         org.replikativ/datalog-parser               {:mvn/version "0.2.37"}
-        ;; canonical fressian node+root handlers + MST boundary, shipped in 0.4.126
-        org.replikativ/persistent-sorted-set        {:mvn/version "0.4.126"}
+        ;; canonical fressian node+root handlers + MST boundary (0.4.126); diff-buf write-buffering
+        ;; (opt-in, Settings diffBufSize); 0.4.132 serializes the CACHED root count (may be -1) so
+        ;; writing a storage-detached root never forces a recompute (cures the cljs side too);
+        ;; 0.4.133 makes the diff-buf {slots, entries} pair atomically published (BufState);
+        ;; 0.4.136 folds ALL per-child state {addresses, children, buf} into one atomically
+        ;; published NodeState — a pipelining writer's copies can never observe a torn settle;
+        ;; 0.4.137 projects diff-buf diffs onto a COPY of the restored node, so tree versions
+        ;; sharing a durable anchor through the node cache can't clobber each other's reads
+        org.replikativ/persistent-sorted-set        {:mvn/version "0.4.137"}
         environ/environ                             {:mvn/version "1.2.0"}
         nrepl/bencode                               {:mvn/version "1.2.0"}
         org.replikativ/logging                      {:mvn/version "0.1.3"}

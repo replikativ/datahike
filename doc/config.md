@@ -275,6 +275,17 @@ Choose the underlying index implementation:
 
 Most users should use the default. Hitchhiker-tree is maintained for backward compatibility with existing databases.
 
+### Reducing Write Amplification (Object Stores)
+
+On request-priced object stores (S3, R2, Tigris, GCS) the number of objects
+written per commit dominates cost and latency. Three opt-in, per-store options —
+diff buffering (`:index-config {:diff-buf-size N}`), root fusion
+(`:fuse-index-roots? true`), and commit-graph opt-out (`:commit-graph? false`) —
+cut that object count, approaching a single write per small commit. Each is
+create-time-fixed and adopted from the store on reconnect. See [Reducing write
+amplification](./write-amplification.md) for how they work and when to enable
+them.
+
 ## Advanced Configuration
 
 ### Single-Writer Model (Distributed Access)

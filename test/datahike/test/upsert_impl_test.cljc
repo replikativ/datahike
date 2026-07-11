@@ -29,6 +29,8 @@
                              projected-vec}))]
     (testing "Against an entry in the projection area,"
       (testing "we are in a projection"
+        ;; NOTE: :op-buf here is the hitchhiker-tree's own Bε operation buffer — unrelated to
+        ;; persistent-sorted-set's diff-buf. Do NOT rename.
         (is (= (:key (first (:op-buf tree))) projected-vec)))
       (testing "basic lookup works"
         (is (= [[1 :age 44 1] nil] (first (msg/lookup-fwd-iter tree [1 :age 44 1])))))
