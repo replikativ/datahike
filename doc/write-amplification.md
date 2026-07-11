@@ -111,14 +111,32 @@ fusion inlines the entire index — the commit collapses to just its records.
 
 ## Commit-graph opt-out
 
-*Planned — the `:commit-graph?` option is not yet in a release; this section
-will be filled in with the version that ships it.*
+```clojure
+{:store {:backend :s3 ...}
+ :keep-history? false
+ :commit-graph? false}                 ;; default true
+```
 
-Every commit also writes an immutable **provenance record** keyed by its commit
-id (read by `datahike.audit/verify-chain`, ancestry walks, branching from a
-commit id, and `dh://…?commit=<id>` references). A store that needs none of those
-— a typical `:keep-history? false` tenant — will be able to skip writing it, so a
-commit writes only its branch head.
+Every commit normally also writes an immutable **provenance record** keyed by its
+commit id. That record is what `datahike.audit/verify-chain`, ancestry walks,
+branching from a commit id, and `dh://…?commit=<id>` references read. A store that
+needs none of those — a typical `:keep-history? false` tenant — can skip writing
+it, so a commit writes only its branch head.
+
+The commit id is still computed and stamped in the db metadata, so one-step
+lineage, streaming-reader deduplication, and the writer's head tracking are
+unchanged. **Time travel is unaffected** — `as-of`/`history` read the temporal
+indices, not the commit graph. What you give up is the ability to audit, walk
+ancestry, branch from a bare commit id, or resolve `?commit=` references on that
+store.
+
+**Behaviour**
+
+- Store-fixed and adopted from the store on reconnect, like the options above.
+- Cannot be combined with `:crypto-hash? true` (an audit chain with no persisted
+  chain is rejected at creation).
+- Branching from a branch keyword still works; branching from a commit id fails
+  with an explanatory error.
 
 ## Putting it together for object storage
 
@@ -130,16 +148,16 @@ round-trip floor while keeping full query and time-independent semantics:
 {:store {:backend :s3 :bucket "tenant-42" :id tenant-id ...}
  :keep-history? false
  :index-config {:diff-buf-size 256}
- :fuse-index-roots? true}
+ :fuse-index-roots? true
+ :commit-graph? false}
 ```
 
 - Diff buffering removes the interior node PUTs of the commit.
 - Root fusion removes the per-index root PUTs and folds the roots into the record.
-- Commit-graph opt-out (when available) will remove the provenance record.
+- Commit-graph opt-out removes the provenance record.
 
-What remains is the two commit records — and, once commit-graph opt-out lands,
-just the branch-head write. Storage still grows with superseded nodes over time;
-reclaim it with [garbage collection](./gc.md).
+What remains is the branch-head write. Storage still grows with superseded nodes
+over time; reclaim it with [garbage collection](./gc.md).
 
 Enable these against a representative workload and measure — see
 [Benchmarking](./benchmarking.md) — rather than assuming; the win depends on

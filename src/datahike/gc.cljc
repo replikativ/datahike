@@ -23,22 +23,23 @@
               (if to-check
                 (if (visited to-check) ;; skip
                   (recur r visited reachable)
-                  (let [{:keys                         [eavt-key avet-key aevt-key
-                                                        temporal-eavt-key temporal-avet-key temporal-aevt-key
-                                                        eavt-root aevt-root avet-root
-                                                        temporal-eavt-root temporal-aevt-root temporal-avet-root
-                                                        schema-meta-key secondary-index-keys]
-                         {:keys [datahike/parents
-                                 datahike/created-at
-                                 datahike/updated-at]} :meta}
-                        (<? S (k/get store to-check))
-                        in-range? (> (get-time (or updated-at created-at))
-                                     (get-time after-date))]
-                    (let [sec-reachable (when (seq secondary-index-keys)
-                                          (reduce-kv
-                                           (fn [acc _idx-ident key-map]
-                                             (set/union acc (sec/mark-from-key-map key-map store)))
-                                           #{} secondary-index-keys))
+                  (if-let [record (<? S (k/get store to-check))]
+                    (let [{:keys                         [eavt-key avet-key aevt-key
+                                                          temporal-eavt-key temporal-avet-key temporal-aevt-key
+                                                          eavt-root aevt-root avet-root
+                                                          temporal-eavt-root temporal-aevt-root temporal-avet-root
+                                                          schema-meta-key secondary-index-keys]
+                           {:keys [datahike/parents
+                                   datahike/created-at
+                                   datahike/updated-at]} :meta}
+                          record
+                          in-range? (> (get-time (or updated-at created-at))
+                                       (get-time after-date))]
+                      (let [sec-reachable (when (seq secondary-index-keys)
+                                            (reduce-kv
+                                             (fn [acc _idx-ident key-map]
+                                               (set/union acc (sec/mark-from-key-map key-map store)))
+                                             #{} secondary-index-keys))
                           ;; Stored roots are storage-detached; bind them to
                           ;; this store's storage so -mark can walk the tree.
                           ;; Root fusion: inlined roots aren't separate konserve
@@ -49,23 +50,29 @@
                           ;; index, which may be shared through the store's
                           ;; cache (mirrors stored->db) — so walk-addresses
                           ;; uses it and only its children are fetched.
-                          mark (fn [idx root]
-                                 (-mark (cond-> (with-storage (:index config) idx (:storage store))
-                                          root (-seed-root! root))))
-                          new-reachable (cond-> (set/union reachable #{to-check}
-                                                           (when schema-meta-key #{schema-meta-key})
-                                                           (mark eavt-key eavt-root)
-                                                           (mark aevt-key aevt-root)
-                                                           (mark avet-key avet-root))
-                                          (:keep-history? config)
-                                          (set/union (mark temporal-eavt-key temporal-eavt-root)
-                                                     (mark temporal-aevt-key temporal-aevt-root)
-                                                     (mark temporal-avet-key temporal-avet-root))
-                                          sec-reachable
-                                          (set/union sec-reachable))]
-                      (recur (concat r (when in-range? parents))
-                             (conj visited to-check)
-                             new-reachable))))
+                            mark (fn [idx root]
+                                   (-mark (cond-> (with-storage (:index config) idx (:storage store))
+                                            root (-seed-root! root))))
+                            new-reachable (cond-> (set/union reachable #{to-check}
+                                                             (when schema-meta-key #{schema-meta-key})
+                                                             (mark eavt-key eavt-root)
+                                                             (mark aevt-key aevt-root)
+                                                             (mark avet-key avet-root))
+                                            (:keep-history? config)
+                                            (set/union (mark temporal-eavt-key temporal-eavt-root)
+                                                       (mark temporal-aevt-key temporal-aevt-root)
+                                                       (mark temporal-avet-key temporal-avet-root))
+                                            sec-reachable
+                                            (set/union sec-reachable))]
+                        (recur (concat r (when in-range? parents))
+                               (conj visited to-check)
+                               new-reachable)))
+                    ;; Record absent: already swept by an earlier pass with a
+                    ;; narrower window, or the store runs :commit-graph? false
+                    ;; and never persisted it. Lineage ends here — nothing to
+                    ;; mark. (Without this guard the nil destructure NPEs at
+                    ;; get-time.)
+                    (recur r (conj visited to-check) reachable)))
                 reachable)))))
 
 (defn gc-storage!
