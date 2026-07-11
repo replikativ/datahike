@@ -14,7 +14,7 @@
 
 (defn- base-cfg [id]
   {:store {:backend :file
-           :path (str (System/getProperty "user.home") "/tmp/dh-tests/commit-graph-" id)
+           :path (str (System/getProperty "java.io.tmpdir") "/dh-commit-graph-" id)
            :id id}
    :schema-flexibility :write
    :keep-history? false

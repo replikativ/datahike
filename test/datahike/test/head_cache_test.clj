@@ -11,7 +11,7 @@
 (deftest no-branch-head-read-per-commit
   (testing "steady-state commits do zero k/get reads of the branch-head key"
     (let [cfg {:store {:backend :file
-                       :path (str (System/getProperty "user.home") "/tmp/dh-tests/head-cache")
+                       :path (str (System/getProperty "java.io.tmpdir") "/dh-head-cache")
                        :id #uuid "6ead0000-0000-0000-0000-000000000001"}
                :schema-flexibility :write :keep-history? false}]
       (when (d/database-exists? cfg) (d/delete-database cfg))
