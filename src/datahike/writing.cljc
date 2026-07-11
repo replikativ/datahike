@@ -234,18 +234,6 @@
                 schema rschema system-entities ref-ident-map ident-ref-map
                 config max-tx max-eid op-count hash meta schema-meta-key]
          :or   {op-count 0}} stored-db
-        ;; Root fusion: if the record inlined index root nodes, seed them into
-        ;; the restored indexes so root() returns them with no storage
-        ;; round-trip (deeper children stay lazy). Presence-based, so fused and
-        ;; legacy records both restore — no reader config needed. Seeding
-        ;; happens BEFORE `attach`: with-storage's shallow copy carries the
-        ;; seeded root forward.
-        _ (do (when eavt-root (di/-seed-root! eavt-key eavt-root))
-              (when aevt-root (di/-seed-root! aevt-key aevt-root))
-              (when avet-root (di/-seed-root! avet-key avet-root))
-              (when temporal-eavt-root (di/-seed-root! temporal-eavt-key temporal-eavt-root))
-              (when temporal-aevt-root (di/-seed-root! temporal-aevt-key temporal-aevt-root))
-              (when temporal-avet-root (di/-seed-root! temporal-avet-key temporal-avet-root)))
         schema-meta (or (sc/cache-lookup schema-meta-key)
                         ;; not in store in case we load an old db where the schema meta data was inline
                         (when-let [schema-meta (k/get store schema-meta-key nil {:sync? true})]
@@ -261,7 +249,19 @@
         ;; backends bind on read anyway, but identity-preserving stores
         ;; (tiered memory frontend) return the stored object as-is — so
         ;; binding must happen here, at materialization, for every backend.
-        attach (fn [idx] (di/with-storage (:index config) idx (:storage store)))]
+        ;;
+        ;; Root fusion: seed an inlined root into the COPY, never into the
+        ;; stored record's index — the record may be shared through the
+        ;; store's cache by every reader of this key, and shared objects are
+        ;; read-only (the cross-version projection lesson, persistent-sorted-set
+        ;; #19). The with-storage copy is owned and unpublished, so the
+        ;; seed mutation is single-threaded by construction; root() then
+        ;; returns the fused root with no storage round-trip (deeper
+        ;; children stay lazy). Presence-based, so fused and legacy records
+        ;; both restore — no reader config needed.
+        attach (fn [idx root]
+                 (cond-> (di/with-storage (:index config) idx (:storage store))
+                   root (di/-seed-root! root)))]
     (merge
      (assoc empty
             :max-tx max-tx
@@ -271,12 +271,12 @@
             :schema schema
             :hash hash
             :op-count op-count
-            :eavt (attach eavt-key)
-            :aevt (attach aevt-key)
-            :avet (attach avet-key)
-            :temporal-eavt (attach temporal-eavt-key)
-            :temporal-aevt (attach temporal-aevt-key)
-            :temporal-avet (attach temporal-avet-key)
+            :eavt (attach eavt-key eavt-root)
+            :aevt (attach aevt-key aevt-root)
+            :avet (attach avet-key avet-root)
+            :temporal-eavt (attach temporal-eavt-key temporal-eavt-root)
+            :temporal-aevt (attach temporal-aevt-key temporal-aevt-root)
+            :temporal-avet (attach temporal-avet-key temporal-avet-root)
             :rschema rschema
             :system-entities system-entities
             :ident-ref-map ident-ref-map

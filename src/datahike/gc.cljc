@@ -32,19 +32,6 @@
                                  datahike/created-at
                                  datahike/updated-at]} :meta}
                         (<? S (k/get store to-check))
-                        ;; Root fusion: inlined roots aren't separate konserve
-                        ;; objects, so -mark on the lazy index would try to
-                        ;; restore the root by address and fail. Seed each
-                        ;; inlined root into its index (mirrors stored->db;
-                        ;; with-storage's shallow copy in `mark` below carries
-                        ;; the seeded root forward) so walk-addresses uses it
-                        ;; and only its children are fetched.
-                        _ (do (when eavt-root (-seed-root! eavt-key eavt-root))
-                              (when aevt-root (-seed-root! aevt-key aevt-root))
-                              (when avet-root (-seed-root! avet-key avet-root))
-                              (when temporal-eavt-root (-seed-root! temporal-eavt-key temporal-eavt-root))
-                              (when temporal-aevt-root (-seed-root! temporal-aevt-key temporal-aevt-root))
-                              (when temporal-avet-root (-seed-root! temporal-avet-key temporal-avet-root)))
                         in-range? (> (get-time (or updated-at created-at))
                                      (get-time after-date))]
                     (let [sec-reachable (when (seq secondary-index-keys)
@@ -54,16 +41,26 @@
                                            #{} secondary-index-keys))
                           ;; Stored roots are storage-detached; bind them to
                           ;; this store's storage so -mark can walk the tree.
-                          mark (fn [idx] (-mark (with-storage (:index config) idx (:storage store))))
+                          ;; Root fusion: inlined roots aren't separate konserve
+                          ;; objects, so -mark on the lazy index would try to
+                          ;; restore the root by address and fail. Seed the
+                          ;; inlined root into the with-storage COPY (owned,
+                          ;; unpublished) — never into the stored record's
+                          ;; index, which may be shared through the store's
+                          ;; cache (mirrors stored->db) — so walk-addresses
+                          ;; uses it and only its children are fetched.
+                          mark (fn [idx root]
+                                 (-mark (cond-> (with-storage (:index config) idx (:storage store))
+                                          root (-seed-root! root))))
                           new-reachable (cond-> (set/union reachable #{to-check}
                                                            (when schema-meta-key #{schema-meta-key})
-                                                           (mark eavt-key)
-                                                           (mark aevt-key)
-                                                           (mark avet-key))
+                                                           (mark eavt-key eavt-root)
+                                                           (mark aevt-key aevt-root)
+                                                           (mark avet-key avet-root))
                                           (:keep-history? config)
-                                          (set/union (mark temporal-eavt-key)
-                                                     (mark temporal-aevt-key)
-                                                     (mark temporal-avet-key))
+                                          (set/union (mark temporal-eavt-key temporal-eavt-root)
+                                                     (mark temporal-aevt-key temporal-aevt-root)
+                                                     (mark temporal-avet-key temporal-avet-root))
                                           sec-reachable
                                           (set/union sec-reachable))]
                       (recur (concat r (when in-range? parents))
