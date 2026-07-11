@@ -147,11 +147,19 @@
                                                   (assoc :db-after commit-db))]
                                 (>! callback tx-report))))
                           (catch #?(:clj Throwable :cljs js/Error) e
+                            ;; Close the queues BEFORE delivering the failed
+                            ;; callbacks. Delivering first unblocks the caller
+                            ;; while the queues are still open, so a subsequent
+                            ;; transact could race into the still-open queue and
+                            ;; commit AFTER the fatal error (writer_error_test
+                            ;; saw the "dead" writer accept a further write).
+                            ;; Closing first makes that transact observe the
+                            ;; closed queue and fail loudly (:writer-shut-down).
+                            (close! commit-queue)
+                            (close! transaction-queue)
                             (doseq [[_ callback] txs]
                               (put! callback e))
                             (log/error :datahike/writer-shutdown {:error e})
-                            (close! commit-queue)
-                            (close! transaction-queue)
                             ;; Re-throw Errors (AssertionError, OutOfMemoryError, etc.) to crash the writer
                             #?(:clj (when (instance? Error e)
                                       (throw e)))))
