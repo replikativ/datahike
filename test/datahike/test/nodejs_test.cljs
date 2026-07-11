@@ -24,6 +24,8 @@
             [datahike.test.query-or-test]
             [datahike.test.query-aggregates-test]
             [datahike.test.query-rules-test]
+            ;; Background GC (start-background-gc! / gc-storage!) — portable smoke.
+            [datahike.test.background-gc-test]
             ;; Portable graph algorithms.
             [datahike.test.experimental.graph-util-test]
             [datahike.test.experimental.graph-test]
@@ -689,6 +691,7 @@
                'datahike.test.query-or-test
                'datahike.test.query-aggregates-test
                'datahike.test.query-rules-test
+               'datahike.test.background-gc-test
                'datahike.test.experimental.graph-util-test
                'datahike.test.experimental.graph-test
                'datahike.test.experimental.anomaly-test

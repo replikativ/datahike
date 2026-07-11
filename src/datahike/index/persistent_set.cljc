@@ -169,8 +169,12 @@
                     (index-type->cmp-quick index-type false))
         pset))))
 
-(defn mark [^PersistentSortedSet pset]
-  (when-not (.-_address pset)
+(defn mark [pset]
+  ;; The flushed root address is `_address` on the JVM PersistentSortedSet but
+  ;; `address` on the cljs BTSet (see -merkle-root below) — reading the bare
+  ;; JVM field on cljs always saw nil and wrongly threw here, so GC never ran
+  ;; on ClojureScript.
+  (when-not #?(:clj (.-_address ^PersistentSortedSet pset) :cljs (.-address pset))
     (throw (ex-info "Index needs to be properly flushed before marking."
                     {:type :flush-before-marking})))
   (let [addresses (atom #{})]
