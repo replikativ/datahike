@@ -173,9 +173,12 @@
 
             ;; Register for konserve-sync (use UUID as topic to match client)
                   store (:store @(:wrapped-atom conn))
+                  ;; no :key-sort-fn — the walk and the commit batch both carry the order
+                  ;; (mutable branch pointers last); :always-send-mutable? so a branch head
+                  ;; is never timestamp-deduped away. See register-store-for-remote-access!
                   _ (sync/register-store! peer store-id store
                                           {:walk-fn dh-walker/datahike-walk-fn
-                                           :key-sort-fn (fn [k] (if (keyword? k) 1 0))})
+                                           :always-send-mutable? true})
                   _ (log/trace "Registered for sync" {:store-id store-id})
 
             ;; Register tx-report topic for pubsub (use UUID directly)
@@ -331,11 +334,30 @@
          walk-fn (if branches
                    (fn [s opts] (dh-walker/datahike-walk-fn s (assoc opts :branches branches)))
                    dh-walker/datahike-walk-fn)]
-     (sync/register-store! peer store-id store
-                           {:walk-fn walk-fn
-                            ;; sort ALL branch pointers (keywords) last, not just :db,
-                            ;; so non-trunk branch HEADs fetch-gate correctly on sync
-                            :key-sort-fn (fn [k] (if (keyword? k) 1 0))}))
+     ;; No :key-sort-fn. The order is CARRIED, not guessed:
+     ;;   • handshake — datahike-walk-fn returns an ordered vector, index nodes first and
+     ;;     the mutable branch pointers LAST, and konserve-sync preserves walk order;
+     ;;   • ongoing   — a commit is an ordered multi-assoc batch (branch head last), which
+     ;;     konserve-sync relays verbatim.
+     ;; Both give the one guarantee that matters: a branch head is applied only after every
+     ;; index node it references. :key-sort-fn used to reconstruct that downstream by
+     ;; sorting on the SHAPE of the key ("keywords are roots, sort them last") — a guess
+     ;; that happened to fit datahike's keys, and would silently misorder any store whose
+     ;; keys didn't.
+     ;;
+     ;; :always-send-mutable? — the branch heads must never be timestamp-deduped away.
+     ;; Index nodes are content-addressed and write-once, so "does the peer have it?" is
+     ;; settled by presence and the timestamps are harmless. A branch HEAD is the one
+     ;; MUTABLE cell — same key, new value every commit — and there a wall-clock compare
+     ;; across two machines answers the wrong question: a peer that wrote its own copy
+     ;; (e.g. a tiered reader pre-filling its cache from the backing store before it
+     ;; subscribes) stamps a LATER time than our commit, so we would conclude it is
+     ;; "current" and skip the head entirely. It would then never receive one — and a
+     ;; peer whose clock merely runs fast would sit on a stale head indefinitely.
+     ;; Commit metadata already marks the nodes :immutable? and leaves the head unmarked,
+     ;; so this needs no guesswork about keys.
+     (sync/register-store! peer store-id store {:walk-fn walk-fn
+                                                :always-send-mutable? true}))
 
   ;; Register tx-report topic for pubsub
    (tx-broadcast/register-tx-report-topic! peer store-id)))
