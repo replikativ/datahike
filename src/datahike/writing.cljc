@@ -455,19 +455,36 @@
 
                     (if (multi-key-capable? store)
                       (let [[meta-key meta-val] schema-meta-kv-to-write
-                            writes-map (cond-> (into {} pending-kvs) ; Initialize with pending KVs
-                                         schema-meta-kv-to-write (assoc meta-key meta-val)
-                                         commit-graph?           (assoc cid db-to-store)
-                                         true                    (assoc (:branch config) db-to-store))]
-                      ;; nodes + schema-meta (uuid) + commit (cid) are content-addressed →
-                      ;; immutable; the branch-head pointer (:branch config) stays mutable.
-                      ;; per-key meta map: every key but the branch head marked immutable.
-                        (<?- (k/multi-assoc store writes-map
-                                            (reduce-kv (fn [m k _] (cond-> m
-                                                                     (not= k (:branch config))
-                                                                     (assoc k {:immutable? true})))
-                                                       {} writes-map)
-                                            {:sync? sync?})))
+                            branch-key (:branch config)
+                            ;; ORDERED batch. konserve applies a [k v] seq in sequence order,
+                            ;; so state the SAME causal discipline the non-atomic path below
+                            ;; spells out ("make sure all pointed to values are written before
+                            ;; the commit log and branch"): every value the new head references
+                            ;; first, the MUTABLE branch head LAST.
+                            ;;
+                            ;; Handing konserve a MAP would throw that order away — and the
+                            ;; order is real: pending-kvs comes out of the index flush with
+                            ;; children before the parents that address them. A torn batch then
+                            ;; leaves unreachable orphans (collectable), never a head pointing
+                            ;; at values that were never written. That is what makes the batch
+                            ;; safe WITHOUT atomic multi-key writes, which S3 and filesystems
+                            ;; cannot give us anyway.
+                            ;;
+                            ;; It also means a sync subscriber relaying this batch applies it
+                            ;; in the order we committed it, instead of guessing an order back
+                            ;; from the shape of the keys.
+                            writes (cond-> (vec pending-kvs)
+                                     schema-meta-kv-to-write (conj [meta-key meta-val])
+                                     commit-graph?           (conj [cid db-to-store])
+                                     true                    (conj [branch-key db-to-store]))
+                            ;; nodes + schema-meta (uuid) + commit (cid) are content-addressed →
+                            ;; immutable; the branch-head pointer stays mutable (unmarked).
+                            metas  (into {}
+                                         (comp (map first)
+                                               (remove #(= % branch-key))
+                                               (map (fn [k] [k {:immutable? true}])))
+                                         writes)]
+                        (<?- (k/multi-assoc store writes metas {:sync? sync?})))
                     ;; Then write schema-meta, commit-log, branch
                       (let [[meta-key meta-val] schema-meta-kv-to-write
                             schema-meta-written (when schema-meta-kv-to-write
