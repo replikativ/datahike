@@ -152,6 +152,22 @@
          store (ds/add-cache-and-handlers raw-store config)
          _ (log/trace "Store ready, adding handlers...")
 
+          ;; The store konserve-sync applies pushed nodes to — and dedups against.
+          ;; For a :frontend-only tiered store the backend is a SHARED, read-only
+          ;; truth (the writer's S3): the peer must never write it, and it already
+          ;; holds every node. If we subscribed the tiered store, konserve-sync's
+          ;; immutable-skip (`k/exists?` before store) would fall through the
+          ;; frontend-first read to that shared backend, see the node "present", and
+          ;; skip it — leaving the local frontend cache permanently COLD (warmed only
+          ;; by lazy read-through). Subscribe the FRONTEND directly so applies land
+          ;; in — and existence is checked against — the local cache. Other tiered
+          ;; modes (e.g. {memory, indexeddb} write-through, where the backend IS the
+          ;; local durable tier) keep subscribing the whole store.
+         sync-store (if (and is-tiered?
+                             (= :frontend-only (:write-policy store-config)))
+                      (:frontend-store store)
+                      store)
+
           ;; 1b. For tiered stores, populate memory from backend BEFORE sync
           ;; This ensures sync handshake sends accurate timestamps for cached keys
           ;; For non-tiered stores, just call ready-store normally
@@ -188,7 +204,7 @@
 
          _ (log/trace "Calling subscribe-store!")
          sub-result (<?- (kp/subscribe-store!
-                          local-peer store-topic store
+                          local-peer store-topic sync-store
                           {:on-key-update
                            (fn [key value _op]
                              (when (= key branch)
