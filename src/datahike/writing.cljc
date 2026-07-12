@@ -34,33 +34,6 @@
     (= (count (select-keys obj keys-to-check))
        (count keys-to-check))))
 
-(defn- dedupe-kvs
-  "Distinct [k v] pairs by key, keeping the FIRST occurrence and its position.
-
-  Preserves the dedup the previous map-based batch got for free from `(into {} ...)`;
-  an ordered batch has to do it explicitly.
-
-  DEFENSIVE, not load-bearing — the flush is not known to repeat a key. `gen-address`
-  mints a fresh squuid per stored node, so an address cannot recur within a flush.
-  Only under `:crypto-hash?` are addresses content-derived, where two structurally
-  identical nodes (say a temporal leaf equal to a current-index leaf) would collide
-  onto one address; that was not reproduced in practice — over 1000 commits, with and
-  without history and crypto-hash, this dropped nothing. And a duplicate would carry an
-  identical value under an identical key (same content ⇒ same address), so dropping it
-  costs nothing and only avoids a redundant write.
-
-  Keeping the EARLIEST position is the safe choice: that is where the node's own
-  children had already been written."
-  [kvs]
-  (:out (reduce (fn [acc [k _ :as kv]]
-                  (if (contains? (:seen acc) k)
-                    acc
-                    (-> acc
-                        (update :seen conj k)
-                        (update :out conj kv))))
-                {:seen #{} :out []}
-                kvs)))
-
 (defn get-and-clear-pending-kvs!
   "Retrieves and clears pending key-value pairs from the store's pending-writes atom.
   Assumes :pending-writes in store's storage holds an atom of a collection of [key value] pairs."
@@ -500,7 +473,7 @@
                             ;; It also means a sync subscriber relaying this batch applies it
                             ;; in the order we committed it, instead of guessing an order back
                             ;; from the shape of the keys.
-                            writes (cond-> (dedupe-kvs pending-kvs)
+                            writes (cond-> (vec pending-kvs)
                                      schema-meta-kv-to-write (conj [meta-key meta-val])
                                      commit-graph?           (conj [cid db-to-store])
                                      true                    (conj [branch-key db-to-store]))
