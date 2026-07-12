@@ -37,10 +37,20 @@
 (defn- dedupe-kvs
   "Distinct [k v] pairs by key, keeping the FIRST occurrence and its position.
 
-  An index flush can emit the same content-addressed node twice (same address ⇒ same
-  value), and the previous map-based batch deduped that implicitly. An ordered batch
-  must dedupe explicitly — and keep the EARLIEST position, which is where the node's
-  own children were already written."
+  Preserves the dedup the previous map-based batch got for free from `(into {} ...)`;
+  an ordered batch has to do it explicitly.
+
+  DEFENSIVE, not load-bearing — the flush is not known to repeat a key. `gen-address`
+  mints a fresh squuid per stored node, so an address cannot recur within a flush.
+  Only under `:crypto-hash?` are addresses content-derived, where two structurally
+  identical nodes (say a temporal leaf equal to a current-index leaf) would collide
+  onto one address; that was not reproduced in practice — over 1000 commits, with and
+  without history and crypto-hash, this dropped nothing. And a duplicate would carry an
+  identical value under an identical key (same content ⇒ same address), so dropping it
+  costs nothing and only avoids a redundant write.
+
+  Keeping the EARLIEST position is the safe choice: that is where the node's own
+  children had already been written."
   [kvs]
   (:out (reduce (fn [acc [k _ :as kv]]
                   (if (contains? (:seen acc) k)
