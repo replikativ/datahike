@@ -647,7 +647,21 @@
      (doseq [conn active-conns]
        (log/warn :datahike/delete-unreleased-connections {:connection conn})
        (delete-connection! conn))
-     (ks/delete-store (:store config)))))
+     ;; AWAIT the deletion.
+     ;;
+     ;; konserve.store/delete-store defaults to {:sync? false}, and the async backends
+     ;; (:s3, …) then hand back a CHANNEL. Without awaiting it, this go-try- yields that
+     ;; channel as its value, so `delete-database` resolves — handing a raw core.async
+     ;; channel to the caller — while the store is still being deleted. `(d/delete-database
+     ;; cfg)` followed by `(d/database-exists? cfg)` then still sees the database, and
+     ;; delete-then-recreate races its own deletion.
+     ;;
+     ;; Requires konserve >= 0.9.357: -delete-store used to ignore :sync? on :memory
+     ;; and :file (returning a plain value where the contract promises a channel), and
+     ;; :tiered dropped its backend's channel entirely — so a tiered delete over S3
+     ;; removed nothing. konserve#152 makes all backends honour the contract, which is
+     ;; what lets us simply await here.
+     (<?- (ks/delete-store (:store config))))))
 
 (extend-protocol PDatabaseManager
   #?(:clj String :cljs string)
