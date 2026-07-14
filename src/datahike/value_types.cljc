@@ -2,6 +2,31 @@
   "EXPERIMENTAL — a registry seam for custom `:db/valueType`s, so a value type can
    be added WITHOUT editing datahike core each time.
 
+   A VALUE TYPE IS SOMETHING THAT SORTS. Read this before registering one.
+
+   Datahike's AVET order IS the value's `compareTo` — `datahike.datom/compare-value`
+   ends in `(compare v1 v2)`. That is what makes a value FINDABLE: seekable, joinable,
+   range-queryable. It is the whole reason to put data in this database rather than a
+   document store.
+
+   So if your value has no meaningful total order, it is NOT a value type:
+
+     - bytes with no queryable structure (a PDF, an image, model weights)
+         -> `:db.type/store-ref` — name it, store it, let GC track it.
+     - a document you would ever want to filter or JOIN on
+         -> transact it as DATOMS (`datahike.experimental.unstructured`), or index it
+            with a secondary index (`:db.secondary/*`).
+
+   Datoms are already sparse — an entity has whatever attributes it has, and you never
+   declared your fields. The schema only pins TYPES, cardinality, uniqueness, indexing.
+   So storing a document as an opaque value buys you no flexibility you did not already
+   have; it only costs you the indices. (Every database in this family agrees: XTDB
+   indexes every field automatically and offers no opaque option at all; Datalevin's
+   nippy escape hatch explicitly gives up range queries.)
+
+   Good value types: an RDF literal, a geo point, money, a tensor with a defined
+   comparison. They all sort.
+
    What a custom value type supplies:
 
      :pred            (fn [v] boolean)           — value validation

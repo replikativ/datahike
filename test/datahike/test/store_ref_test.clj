@@ -160,6 +160,60 @@
       (d/release conn))
     (d/delete-database c)))
 
+(deftest external-blobs-mark-without-sweep
+  ;; The EXTERNAL deployment: the bytes never enter the konserve store at all. A
+  ;; browser PUTs them to s3://bucket/tenant/{id}/blobs/{uuid} with a presigned URL
+  ;; and a content-type — they never transit the JVM, which is the entire point.
+  ;;
+  ;; Datahike cannot delete from there and does not pretend to. It owns the HARD
+  ;; half — which ids are still named, including from retained history and other
+  ;; branches — and hands that set to the application, which owns the easy half.
+  (let [c (cfg "external")]
+    (d/delete-database c)
+    (d/create-database c)
+    (let [conn  (d/connect c)
+          _     (d/transact conn schema)
+          store (:store @conn)
+          ;; a blob id for bytes that live SOMEWHERE ELSE — nothing is written here
+          external (h/uuid (.getBytes "lives in s3://bucket/tenant/x/blobs/…" "UTF-8"))]
+      (d/transact conn [{:issue/title "has an external attachment"
+                         :issue/attachment external}])
+      (testing "the mark reports it, though its bytes are not in this store"
+        (is (contains? (<?? S (gc/reachable-store-refs @conn)) external))
+        (is (not (contains? (keys-of store) external))
+            "precondition: nothing was written to the konserve store"))
+      (testing "and a collection is a harmless no-op for it"
+        ;; whitelisting a key the store does not have does nothing
+        (is (not (contains? (set (<?? S (gc/gc-storage! @conn))) external))))
+      (testing "retracting the datom drops it from the live set — that is the sweep signal"
+        (let [eid (d/q '[:find ?e . :where [?e :issue/title "has an external attachment"]] @conn)]
+          (d/transact conn [[:db/retractEntity eid]]))
+        (is (not (contains? (<?? S (gc/reachable-store-refs @conn)) external))
+            "the application now knows it may delete the object from its own store"))
+      (d/release conn))
+    (d/delete-database c)))
+
+(deftest retained-history-keeps-blobs-live
+  ;; Retention is not a special case — a store-ref named only by history is still
+  ;; live, exactly as an index node would be. This matters because the point of
+  ;; keeping history is being able to read it, and a retracted attachment you can
+  ;; no longer fetch is not history.
+  (let [c (assoc (cfg "history") :keep-history? true :commit-graph? false)]
+    (d/delete-database c)
+    (d/create-database c)
+    (let [conn (d/connect c)]
+      (d/transact conn schema)
+      (let [blob (put-blob! conn (.getBytes "still readable as-of" "UTF-8")
+                            {:issue/title "historic"})
+            eid  (d/q '[:find ?e . :where [?e :issue/title "historic"]] @conn)]
+        (d/transact conn [[:db/retractEntity eid]])
+        (is (contains? (<?? S (gc/reachable-store-refs @conn)) blob)
+            "retracted, but :keep-history? keeps the datom — so the blob is still live")
+        (is (not (contains? (set (<?? S (gc/gc-storage! @conn))) blob))
+            "and the sweep leaves it alone"))
+      (d/release conn))
+    (d/delete-database c)))
+
 (deftest unreferenced-blob-is-not-kept
   (testing "writing bytes into the store does NOT make them live — only a datom does"
     (let [c (cfg "orphan")]

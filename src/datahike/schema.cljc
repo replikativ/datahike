@@ -63,16 +63,27 @@
   (fn [k] (or (contains? builtin-value-types k)
               (vt/registered? k))))
 
-;; :db.type/store-ref — a UUID that NAMES AN OBJECT in this database's konserve
-;; store (a blob written with k/bassoc, an out-of-line document written with
-;; k/assoc — datahike does not care which; that is `k/bget` vs `k/get`, your
-;; business). The ONE thing the type adds over :db.type/uuid is that the garbage
-;; collector marks it, so the object it names is kept alive.
+;; :db.type/store-ref — a UUID that NAMES AN OBJECT: a blob, an out-of-line
+;; payload. The ONE thing the type adds over :db.type/uuid is that the garbage
+;; collector MARKS it, so the object it names is known to be live.
+;;
+;; It deliberately does NOT say where the bytes are. They may be in this database's
+;; konserve store (then `gc-storage!` spares and reclaims them for you), or in a raw
+;; S3 prefix a browser uploads to with a presigned URL (then `reachable-store-refs`
+;; gives you the live set and you sweep it yourself). Same type, same mark, two
+;; deployments — see `datahike.gc/reachable-store-refs`.
 ;;
 ;; Registered THROUGH the value-types seam rather than special-cased in the
 ;; collector: it is the seam's first client, and the smallest possible one. A
-;; UUID's predicate, ordering and codecs already exist, so the whole type is its
+;; UUID's predicate, ordering and codecs already exist, so the whole type IS its
 ;; GC contract.
+;;
+;; NOT for structured data. A store-ref is for bytes with no queryable structure —
+;; a PDF, an image, model weights. If you would ever want to filter or join on
+;; something INSIDE the value, it is a document, not a blob: transact it as datoms
+;; (`datahike.experimental.unstructured`) or index it with a secondary index. Datoms
+;; are already sparse, so you never had to declare your fields — blobbing structured
+;; data buys no flexibility you did not already have, and costs you the indices.
 ;;
 ;; NB the (s/def ...) is NOT redundant with the :pred above. `value-valid?`
 ;; validates a datom's value with `(s/valid? value-type v)` — a lookup in the

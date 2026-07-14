@@ -87,10 +87,11 @@
           (let [head-cid (<? S (k/get-in store [branch :meta :datahike/commit-id]))]
             (loop [[to-check & r] [branch]
                    visited        #{}
-                   reachable      #{branch head-cid}]
+                   reachable      #{branch head-cid}
+                   refs           #{}]
               (if to-check
                 (if (visited to-check) ;; skip
-                  (recur r visited reachable)
+                  (recur r visited reachable refs)
                   (if-let [record (<? S (k/get store to-check))]
                     (let [{:keys                         [eavt-key avet-key aevt-key
                                                           temporal-eavt-key temporal-avet-key temporal-aevt-key
@@ -144,16 +145,24 @@
                             ;; writing/stored->db). Falling through to nil here would
                             ;; silently mark NO store-refs and sweep live objects.
                             schema (or (:schema schema-meta) (:schema record))
-                            refs (if schema
-                                   (store-refs store config schema
-                                               (:ident-ref-map schema-meta) aevt' taevt')
-                                   #{})
+                            ;; Kept SEPARATE from the node addresses, not folded in.
+                            ;; A store-ref names an object; it does NOT say where the
+                            ;; bytes live. If they are in this konserve store, the
+                            ;; sweep protects and reclaims them (gc-storage! unions
+                            ;; these in). If they are somewhere else — a raw S3 prefix
+                            ;; the browser uploads to directly, a CDN — the sweep here
+                            ;; can do nothing with them, but `reachable-store-refs`
+                            ;; hands the set to the application, which knows how to
+                            ;; delete from wherever it put them.
+                            record-refs (if schema
+                                          (store-refs store config schema
+                                                      (:ident-ref-map schema-meta) aevt' taevt')
+                                          #{})
                             new-reachable (cond-> (set/union reachable #{to-check}
                                                              (when schema-meta-key #{schema-meta-key})
                                                              (-mark (bind eavt-key eavt-root))
                                                              (-mark aevt')
-                                                             (-mark (bind avet-key avet-root))
-                                                             refs)
+                                                             (-mark (bind avet-key avet-root)))
                                             (:keep-history? config)
                                             (set/union (-mark (bind temporal-eavt-key temporal-eavt-root))
                                                        (-mark taevt')
@@ -162,14 +171,15 @@
                                             (set/union sec-reachable))]
                         (recur (concat r (when in-range? parents))
                                (conj visited to-check)
-                               new-reachable)))
+                               new-reachable
+                               (set/union refs record-refs))))
                     ;; Record absent: already swept by an earlier pass with a
                     ;; narrower window, or the store runs :commit-graph? false
                     ;; and never persisted it. Lineage ends here — nothing to
                     ;; mark. (Without this guard the nil destructure NPEs at
                     ;; get-time.)
-                    (recur r (conj visited to-check) reachable)))
-                reachable)))))
+                    (recur r (conj visited to-check) reachable refs)))
+                {:reachable reachable :store-refs refs})))))
 
 (defn gc-storage!
   "Invokes garbage collection on the database by whitelisting currently known branches.
@@ -229,15 +239,64 @@
                  ;; shared across branches: the schema is content-addressed, so
                  ;; every commit that did not change it names the SAME object
                  schema-cache (atom {})
-                 reachable (->> branches
-                                (map #(reachable-in-branch store % remove-before config schema-cache))
-                                async/merge
-                                (<<? S)
-                                (apply set/union))
-                 reachable (conj reachable :branches)]
+                 walked (->> branches
+                             (map #(reachable-in-branch store % remove-before config schema-cache))
+                             async/merge
+                             (<<? S))
+                 ;; Store-refs are unioned into the whitelist here. For an object that
+                 ;; lives in THIS store that means the sweep spares it (and reclaims it
+                 ;; once no datom names it). For an object that lives elsewhere it is a
+                 ;; harmless no-op — whitelisting a key the store does not have does
+                 ;; nothing — and `reachable-store-refs` is how the application gets at
+                 ;; the same set to sweep wherever it actually put the bytes.
+                 reachable (-> (apply set/union (map :reachable walked))
+                               (set/union (apply set/union (map :store-refs walked)))
+                               (conj :branches))]
              (log/trace :datahike/gc-reachable {:reachable-count (count reachable)
                                                 :cutoff cutoff})
              (<? S (sweep! store reachable cutoff))))))
+
+(defn reachable-store-refs
+  "The set of `:db.type/store-ref` values the database still names — its live blob
+   ids — across ALL branches, honouring `remove-before` and `:keep-history?`.
+
+   THE MARK, WITHOUT THE SWEEP. A store-ref names an object; it does not say where
+   the bytes live, and that is deliberate:
+
+     - IN THIS KONSERVE STORE — `gc-storage!` already spares and reclaims them.
+       Portable across every backend, and `delete-database` erases them with the
+       database. But konserve frames a binary value as [header][meta][payload], so
+       the bytes are not raw at that key: reads and writes must go through
+       `k/bget`/`k/bassoc`, i.e. through your process. Fine for small payloads,
+       wrong for a 50 MB upload.
+
+     - ANYWHERE ELSE — a raw S3 prefix the browser PUTs to with a presigned URL and
+       a content-type, a CDN, another bucket. The bytes never transit your JVM,
+       which is the whole point. Datahike cannot delete from there and does not
+       pretend to: it hands you the live set, and you sweep.
+
+   That is the entire contract for external blobs — datahike owns the hard half (what
+   is still referenced, including from retained history and other branches); you own
+   the easy half (list your prefix, delete what is not in this set):
+
+     (let [live (<?? S (gc/reachable-store-refs @conn))]
+       (doseq [obj (list-objects bucket (str \"tenant/\" tid \"/blobs/\"))]
+         (when-not (live (blob-id obj))
+           (delete-object bucket obj))))
+
+   Retention comes for free: pass `remove-before` and objects named only by commits
+   older than it drop out of the set, exactly as index nodes do."
+  ([db] (reachable-store-refs db (#?(:clj Date. :cljs js/Date.) 0)))
+  ([db remove-before]
+   (go-try S
+           (let [{:keys [config store]} db
+                 branches (<? S (k/get store :branches))
+                 schema-cache (atom {})
+                 walked (->> branches
+                             (map #(reachable-in-branch store % remove-before config schema-cache))
+                             async/merge
+                             (<<? S))]
+             (apply set/union (map :store-refs walked))))))
 
 (defn start-background-gc!
   "Runs `gc-storage!` on `conn`'s database periodically in the background and
