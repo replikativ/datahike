@@ -105,12 +105,16 @@
   makes GC collect MORE. The safe point is a SWEEP-side bound (how recently written
   an object may be and still be judged) and makes it collect LESS.
 
-  SINGLE-PROCESS REQUIREMENT. The safe point is process-local. Run the collector in
-  the SAME process as the writers — which is where `d/gc-storage` already runs, as a
-  writer op. A collector in a second process (a cron sidecar, a maintenance job)
-  cannot see the writer's in-flight sequences and WILL delete a live commit's
-  objects, silently and only under load. Datahike cannot detect this for you: a
-  second process gets a `:self` writer by default and looks identical to the first."
+  RUN IT WHERE THE WRITERS ARE. This follows from datahike's writer model, not from
+  anything specific to GC: ALL WRITERS FOR A DATABASE RUN IN ONE JVM — they coordinate
+  in memory, not through the store — and writer-side maintenance runs with them.
+  `d/gc-storage` is a writer op, so it is already in the right place; the note is here
+  because \"collect from a cron sidecar\" is a tempting shape and it is outside the
+  model. Such a collector cannot observe the writer's in-flight sequences, and datahike
+  cannot warn you: a second process gets a `:self` writer by default and looks like a
+  writer too. (Cross-process writers are outside the model for a more basic reason as
+  well — there is no head fencing yet, so they can lose each other's commits regardless
+  of GC. See issue #878.) Readers are unconstrained."
   ([db] (gc-storage! db (#?(:clj Date. :cljs js/Date.) 0)))
   ([db remove-before]
    (go-try S
@@ -155,9 +159,9 @@
 
    It runs CONCURRENTLY with the writer, and is safe to do so because the sweep
    stops at the store's SAFE POINT rather than at `now`: an in-flight commit's
-   objects are written after that point and are spared (see `gc-storage!`). This
-   requires the writers to be in THIS process — see the single-process requirement
-   on `gc-storage!`.
+   objects are written after that point and are spared (see `gc-storage!`). Like all
+   writer-side maintenance, it belongs in the process the writers run in — which is
+   datahike's writer model, not a GC-specific rule (`gc-storage!`).
 
    Options:
      :interval-ms       — cycle period (default 300000 = 5 min).

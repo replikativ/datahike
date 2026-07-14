@@ -38,7 +38,19 @@ GC whitelists all current branches and marks snapshots as reachable based on a g
 
 Running without a date removes **only deleted branches**—all snapshots on active branches are preserved. This is safe to run anytime and reclaims storage from old experimental branches.
 
-**Note:** Returns a `core.async` channel. Use `<??` to block, or run without it for background execution. GC requires no coordination and won't slow down transactions or reads.
+**Note:** Returns a `core.async` channel. Use `<??` to block, or run without it for background execution. GC never blocks transactions or reads.
+
+## Where to run GC
+
+**Run GC in the process that writes.** `d/gc-storage` is a writer operation and already runs there, so in the normal case you get this for free — but it is worth stating, because "collect from a cron job during the quiet hours" is a tempting shape and it is the wrong one.
+
+This follows from Datahike's writer model rather than from anything about GC:
+
+> **All writers for a database run in one JVM.** A connection owns its branch head and serializes commits through it. Different branches of the same database may each have their own writer, but they belong in the same process — a database's writers coordinate in memory, not through the store. **Readers are unconstrained**: any number of them, in any number of processes, anywhere.
+
+The collector belongs on the writers' side of that line because it has to know what they are *currently* writing. A commit writes every value the new head references and only *then* flips the head — so for the duration of that sequence, those objects exist in the store and nothing yet names them. A collector in the same process knows a commit is in flight and leaves them alone. A collector in another process cannot know, and Datahike cannot tell you it doesn't: a second process looks like a writer too.
+
+(Cross-process writers are outside the model for a more basic reason as well — there is no head fencing yet, so two writers on a branch can lose each other's commits regardless of GC. See [#878](https://github.com/replikativ/datahike/issues/878).)
 
 ## Grace Periods for Distributed Readers
 

@@ -79,7 +79,7 @@ Datahike provides pluggable storage through [konserve](https://github.com/replik
 
 All distributed backends support **Distributed Index Space (DIS)**: multiple reader processes can directly access shared storage without database connections, enabling massive read scalability.
 
-**Important**: Datahike uses a single-writer model. Multiple readers can access indices concurrently, but only one writer process should transact at a time. This is the same model used by Datomic, Datalevin, and XTDB.
+**Important**: Datahike uses a single-writer model — the same one used by Datomic, Datalevin and XTDB. Multiple readers can access indices concurrently, but **all writers for a database live in one JVM**: a connection owns its branch head and serializes commits through it, and a database's writers (one per branch) coordinate in memory rather than through the store. Maintenance that runs on the writers' side — notably [garbage collection](./gc.md#where-to-run-gc) — belongs in that process too. Readers are unconstrained. To write from elsewhere, point those processes at a writer endpoint (see [Distributed](./distributed.md)) rather than opening a second writer on the store.
 
 ### JDBC Backend
 

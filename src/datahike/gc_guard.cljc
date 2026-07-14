@@ -33,10 +33,12 @@
    are unreachable, i.e. garbage, and a later cycle collects them. Correct by
    construction.
 
-   LIMIT: this is in-process state. A writer in ANOTHER process is invisible to
-   a collector here, and no in-process mechanism can change that — it is the same
-   gap as the missing cross-process writer fencing (issue #878). Run the collector
-   where the writer is."
+   SCOPE: this is in-process state, which matches datahike's writer model — ALL
+   WRITERS FOR A DATABASE RUN IN ONE JVM, coordinating in memory rather than through
+   the store, and writer-side maintenance runs with them. A writer in another process
+   is outside that model (and outside it for a more basic reason than GC: without head
+   fencing, two writers on a branch can lose each other's commits — issue #878).
+   Readers are unconstrained."
   #?(:clj (:import [java.util Date])))
 
 (defn- now [] #?(:clj (Date.) :cljs (js/Date.)))
