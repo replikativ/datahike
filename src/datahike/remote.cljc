@@ -1,8 +1,7 @@
 (ns datahike.remote
   "Literals that can function as lightweight remote pointers to connections and
   dbs."
-  (:require [datahike.value-types :as vt]
-            [cognitect.transit :as transit]
+  (:require [cognitect.transit :as transit]
             [jsonista.core :as j]
             [jsonista.tagged :as jt]
             [clojure.edn :as edn]
@@ -161,24 +160,6 @@
                             "datahike/SinceDB"      (transit/read-handler remote-since-db)
                             "datahike/AsOfDB"       (transit/read-handler remote-as-of-db)
                             "datahike/Entity"       (transit/read-handler remote-entity)})
-
-;; Custom value types (datahike.value-types) must round-trip over the wire too, not
-;; only through the durable store. The registry holds plain fns; wrap them as
-;; transit handlers here. Computed per call — a type may be registered after this
-;; namespace loads.
-
-(defn all-transit-write-handlers []
-  (merge transit-write-handlers
-         (into {} (map (fn [[cls [tag rep-fn]]] [cls (transit/write-handler tag rep-fn)]))
-               (vt/transit-write-handlers))))
-
-(defn all-transit-read-handlers []
-  (merge transit-read-handlers
-         (into {} (map (fn [[tag parse-fn]] [tag (transit/read-handler parse-fn)]))
-               (vt/transit-read-handlers))))
-
-(defn all-edn-readers []
-  (merge edn-readers (vt/edn-readers)))
 
 (declare json-mapper)
 

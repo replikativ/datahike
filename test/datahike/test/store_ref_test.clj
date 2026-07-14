@@ -6,11 +6,12 @@
    The rule under test throughout: THE DATABASE IS THE ROOT SET. An object in the
    store lives iff a datom points at it; anything else is garbage by definition."
   (:require [clojure.test :refer [deftest is testing]]
+            [clojure.spec.alpha :as s]
+            [datahike.schema :as ds]
             [datahike.api :as d]
             [datahike.gc :as gc]
             [datahike.blob :as blob]
             [datahike.gc-guard :as guard]
-            [datahike.value-types :as vt]
             [hasch.core :as h]
             [konserve.core :as k]
             [superv.async :refer [<?? S]]))
@@ -50,12 +51,17 @@
       (d/transact conn [(assoc attrs :issue/attachment key)]))
     key))
 
-(deftest store-ref-is-a-registered-value-type
-  (testing "the type is registered through the value-types seam, and declares its GC contract"
-    (is (vt/registered? :db.type/store-ref))
-    (is (contains? (vt/key-bearing-types) :db.type/store-ref)
-        "GC must know this type can name storage")
-    (is (= #{:a} ((vt/reachable-keys-fn :db.type/store-ref) :a nil)))))
+(deftest store-ref-is-a-builtin-value-type
+  ;; Defined exactly like every other builtin: an s/def, membership in the enum, a
+  ;; system-schema entity (so :attribute-refs? can point at it). No registry, no
+  ;; extension seam — the ONE thing it adds over :db.type/uuid is that GC marks it.
+  (testing "it is a builtin, and the collector knows it names storage"
+    (is (contains? ds/builtin-value-types :db.type/store-ref))
+    (is (contains? ds/key-bearing-value-types :db.type/store-ref)
+        "GC must know this type names an object")
+    (is (s/valid? :db.type/store-ref (java.util.UUID/randomUUID)))
+    (is (not (s/valid? :db.type/store-ref "a-string"))
+        "uuid only — an attribute mixing uuids and strings would have no AVET order")))
 
 (deftest referenced-blob-survives-gc
   (let [c (cfg "keep")]

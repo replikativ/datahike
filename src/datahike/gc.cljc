@@ -6,7 +6,6 @@
             [datahike.index.interface :refer [-mark -seed-root! -slice with-storage]]
             [datahike.index.secondary :as sec]
             [datahike.schema :as schema]
-            [datahike.value-types :as vt]
             [konserve.core :as k]
             [konserve.gc :refer [sweep!]]
             [replikativ.logging :as log]
@@ -24,23 +23,23 @@
   (.getTime ^Date d))
 
 (defn- attr-store-refs
-  "Konserve keys named by the VALUES of `attr` in the AEVT index `aevt`.
+  "The object ids named by the VALUES of `attr` in the AEVT index `aevt`. For a
+   key-bearing value type THE VALUE IS THE KEY, so this is just the attribute's
+   values.
 
    Slices exactly the attribute's range, so the cost is O(its datoms), not O(the
    database)."
-  [aevt attr rk-fn store]
-  (transduce (map (fn [d] (rk-fn (:v d) store)))
-             (completing set/union)
-             #{}
-             (-slice aevt
-                     (dd/datom c/e0 attr nil c/tx0)
-                     (dd/datom c/emax attr nil c/txmax)
-                     :aevt)))
+  [aevt attr]
+  (into #{}
+        (map :v)
+        (-slice aevt
+                (dd/datom c/e0 attr nil c/tx0)
+                (dd/datom c/emax attr nil c/txmax)
+                :aevt)))
 
 (defn- store-refs
-  "Konserve keys that this record's datom VALUES name — the objects a
-   `:db.type/store-ref` (or any custom type declaring `:reachable-keys`) keeps
-   alive.
+  "The object ids this record's datom VALUES name — what a `:db.type/store-ref`
+   keeps alive (`datahike.schema/key-bearing-value-types`).
 
    THE MARK DOES NOT SEE THESE OTHERWISE. It walks the index TREES and collects
    node addresses; it never looks inside a datom's value. So an object named only
@@ -51,35 +50,26 @@
    type — which is every database that does not use the feature — this returns
    immediately, having sliced nothing.
 
-   Under `:keep-history?` the TEMPORAL index is scanned too: a retracted
-   store-ref datom is still readable `as-of` an earlier tx, so the object it names
-   must outlive the retraction. (Note `:db/noHistory` attributes are NOT retained
-   there, so a store-ref on one loses its object on retraction — do not combine
-   them.)"
-  [store config schema ident-ref-map aevt taevt]
-  ;; FAIL CLOSED. `assert-registered!` runs at connect against the HEAD schema; the
-  ;; mark walks HISTORICAL records, whose schemas may name a type this peer has no
-  ;; impl for. Marking such a record without the impl would silently contribute
-  ;; nothing for it — and the sweep would then delete objects it still names. Refuse
-  ;; to collect instead.
-  (vt/assert-registered! schema schema/builtin-value-types)
-  (let [key-bearing (vt/key-bearing-types)
-        attrs       (into []
-                          (keep (fn [[ident attr-def]]
-                                  (when-let [rk (and (contains? key-bearing (:db/valueType attr-def))
-                                                     (vt/reachable-keys-fn (:db/valueType attr-def)))]
-                                    ;; With :attribute-refs? the datoms hold the attribute's
-                                    ;; EID, not its ident — slice by what is actually stored.
-                                    [(if (:attribute-refs? config)
-                                       (get ident-ref-map ident)
-                                       ident)
-                                     rk])))
-                          schema)]
+   Under `:keep-history?` the TEMPORAL index is scanned too: a retracted store-ref
+   datom is still readable `as-of` an earlier tx, so the object it names must
+   outlive the retraction. (`:db/noHistory` attributes are NOT retained there, which
+   is why `schema/key-bearing-misuse` refuses to combine the two.)"
+  [config schema ident-ref-map aevt taevt]
+  (let [attrs (into []
+                    (keep (fn [[ident attr-def]]
+                            (when (contains? schema/key-bearing-value-types
+                                             (:db/valueType attr-def))
+                              ;; With :attribute-refs? the datoms hold the attribute's
+                              ;; EID, not its ident — slice by what is actually stored.
+                              (if (:attribute-refs? config)
+                                (get ident-ref-map ident)
+                                ident))))
+                    schema)]
     (if (empty? attrs)
       #{}
-      (reduce (fn [acc [attr rk]]
-                (cond-> (set/union acc (attr-store-refs aevt attr rk store))
-                  taevt (set/union (attr-store-refs taevt attr rk store))))
+      (reduce (fn [acc attr]
+                (cond-> (set/union acc (attr-store-refs aevt attr))
+                  taevt (set/union (attr-store-refs taevt attr))))
               #{} attrs))))
 
 (defn- reachable-in-branch [store branch after-date config schema-cache]
@@ -155,7 +145,7 @@
                             ;; hands the set to the application, which knows how to
                             ;; delete from wherever it put them.
                             record-refs (if schema
-                                          (store-refs store config schema
+                                          (store-refs config schema
                                                       (:ident-ref-map schema-meta) aevt' taevt')
                                           #{})
                             new-reachable (cond-> (set/union reachable #{to-check}

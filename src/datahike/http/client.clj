@@ -38,17 +38,17 @@
             (let [msg  (ex-message e)
                   data (ex-data e)
                   new-data
-                  (update data :body #(edn/read-string {:readers (remote/all-edn-readers)} %))]
+                  (update data :body #(edn/read-string {:readers remote/edn-readers} %))]
               (throw (ex-info msg new-data)))))
         response            (:body response)]
     (log/trace :datahike/http-response {:response response})
-    (edn/read-string {:readers (remote/all-edn-readers)} response)))
+    (edn/read-string {:readers remote/edn-readers} response)))
 
 (defn request-transit
   ([method end-point remote-peer data]
    (request-transit method end-point remote-peer data
-                    (remote/all-transit-read-handlers)
-                    (remote/all-transit-write-handlers)))
+                    remote/transit-read-handlers
+                    remote/transit-write-handlers))
   ([method end-point remote-peer data read-handlers write-handlers]
    (let [{:keys [url token max-output-buffer-size]}
          remote-peer

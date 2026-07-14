@@ -1,7 +1,6 @@
 (ns ^:no-doc datahike.schema
   (:require [clojure.spec.alpha :as s]
-            [datahike.datom]
-            [datahike.value-types :as vt])
+            [datahike.datom])
   #?(:clj (:import [datahike.datom Datom])))
 
 (s/def :db.type/id #?(:clj #(or (= (class %) java.lang.Long) string?)
@@ -56,46 +55,38 @@
     :db.type/valueType
     :db.type/unique})
 
-;; A valid `:db/valueType` is a builtin OR a registered custom type
-;; (datahike.value-types) — the seam that lets a value type be declared without
-;; editing this enum.
-(s/def :db.type/value
-  (fn [k] (or (contains? builtin-value-types k)
-              (vt/registered? k))))
+(s/def :db.type/value builtin-value-types)
 
-;; :db.type/store-ref — a UUID that NAMES AN OBJECT: a blob, an out-of-line
-;; payload. The ONE thing the type adds over :db.type/uuid is that the garbage
-;; collector MARKS it, so the object it names is known to be live.
+;; :db.type/store-ref — a UUID that NAMES AN OBJECT: a blob, an out-of-line payload.
+;; The ONE thing it adds over :db.type/uuid is that the garbage collector MARKS it,
+;; so the object it names is known to be live (`key-bearing-value-types` below).
 ;;
 ;; It deliberately does NOT say where the bytes are. They may be in this database's
-;; konserve store (then `gc-storage!` spares and reclaims them for you), or in a raw
-;; S3 prefix a browser uploads to with a presigned URL (then `reachable-store-refs`
-;; gives you the live set and you sweep it yourself). Same type, same mark, two
-;; deployments — see `datahike.gc/reachable-store-refs`.
+;; konserve store — then `gc-storage!` spares and reclaims them for you — or in a raw
+;; S3 prefix a browser uploads to with a presigned URL, in which case
+;; `datahike.gc/reachable-store-refs` hands you the live set and you sweep it. Same
+;; type, same mark, two deployments.
 ;;
-;; Registered THROUGH the value-types seam rather than special-cased in the
-;; collector: it is the seam's first client, and the smallest possible one. A
-;; UUID's predicate, ordering and codecs already exist, so the whole type IS its
-;; GC contract.
+;; The id must PIN THE CONTENT (`datahike.blob/blob-id`). A store-ref is dereferenced
+;; when you read it — including `as-of` an old transaction — so a mutable pointer
+;; would hand an old read whatever is behind it NOW. See doc/store-refs.md.
 ;;
-;; NOT for structured data. A store-ref is for bytes with no queryable structure —
-;; a PDF, an image, model weights. If you would ever want to filter or join on
-;; something INSIDE the value, it is a document, not a blob: transact it as datoms
+;; NOT for structured data. A store-ref is for bytes with no queryable structure — a
+;; PDF, an image, model weights. If you would ever filter or join on something INSIDE
+;; the value it is a document, not a blob: transact it as datoms
 ;; (`datahike.experimental.unstructured`) or index it with a secondary index. Datoms
 ;; are already sparse, so you never had to declare your fields — blobbing structured
 ;; data buys no flexibility you did not already have, and costs you the indices.
-;;
-;; NB the (s/def ...) is NOT redundant with the :pred above. `value-valid?`
-;; validates a datom's value with `(s/valid? value-type v)` — a lookup in the
-;; CLOJURE.SPEC registry, not a call to the impl-map's :pred. Without this line,
-;; the first transact against a store-ref attribute throws "Unable to resolve
-;; spec".
 (s/def :db.type/store-ref uuid?)
 
-(vt/register! :db.type/store-ref
-              {:pred uuid?
-               :describe "a UUID naming an object in this database's store"
-               :reachable-keys (fn [v _store] #{v})})
+(def key-bearing-value-types
+  "Value types whose values NAME AN OBJECT in a store, so the collector must mark
+   them or the sweep deletes objects a datom still references.
+
+   The GC mark scans the datoms of attributes declared with one of these — and ONLY
+   those, so a database that uses none pays nothing (`datahike.gc/store-refs`). For
+   every type here the VALUE IS THE KEY; nothing more elaborate has been needed."
+  #{:db.type/store-ref})
 
 ;; TODO: add bytes
 
@@ -301,7 +292,7 @@
   ;; s/describe would print the predicate's SOURCE instead of the alternatives.
   ;; Rebuild the enum, now including whatever is registered.
   (if (= schema-type :db.type/value)
-    (into (sorted-set) (concat builtin-value-types (keys @vt/registry)))
+    (into (sorted-set) builtin-value-types)
     (s/describe schema-type)))
 
 (defn key-bearing-misuse
@@ -323,8 +314,7 @@
    reach the retracted datom, but the object it names has been collected — a
    dangling reference in history."
   [{:keys [db/valueType db/tupleType db/tupleTypes db/noHistory] :as _entity}]
-  (let [key-bearing? (fn [t] (and t (or (= t :db.type/store-ref)
-                                        (some-> (vt/reachable-keys-fn t) some?))))
+  (let [key-bearing? (fn [t] (contains? key-bearing-value-types t))
         nested       (cond-> (set tupleTypes)
                        tupleType (conj tupleType))]
     (cond
