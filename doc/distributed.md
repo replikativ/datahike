@@ -39,6 +39,8 @@ These capabilities are valuable even in centralized production environments: dif
 
 Datahike uses a **single-writer, multiple-reader** model—the same architectural choice as Datomic, Datalevin, and XTDB. While multiple readers can access indices concurrently via DIS, write operations are serialized through a single writer process to ensure strong consistency and linearizable transactions.
 
+Concretely: **all writers for a database run in one JVM.** A connection owns its branch head and serializes commits through it. Different branches may each have their own writer, but they belong in the same process — a database's writers coordinate in memory, not through the store — and writer-side maintenance such as [garbage collection](./gc.md#where-to-run-gc) runs there with them. Readers are unconstrained: any number, in any number of processes. To write from another process, give it a writer endpoint (below) rather than a second writer on the store.
+
 To provide distributed write access, you configure a writer endpoint (HTTP server or Kabel WebSocket). The writer:
 - Serializes all transactions for strong consistency guarantees
 - Publishes new index snapshots to the shared storage backend
