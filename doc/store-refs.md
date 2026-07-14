@@ -32,10 +32,10 @@ the trade-off between them is real.
 ### In the database's own konserve store
 
 ```clojure
-(let [key (hasch.core/uuid bytes)]
+(let [id (blob/blob-id bytes)]                   ;; content hash — see below
   (guard/with-unreferenced-writes store-id       ;; see "the write window" below
-    (k/bassoc store key bytes {:sync? true})
-    (d/transact conn [{:issue/title "crash" :issue/attachment key}])))
+    (k/bassoc store id bytes {:sync? true})
+    (d/transact conn [{:issue/title "crash" :issue/attachment id}])))
 ```
 
 - ✅ **GC reclaims it for you.** `d/gc-storage` spares it while referenced and deletes
@@ -113,16 +113,68 @@ uniqueness and indexing. So storing a document as an opaque value buys you **no
 flexibility you did not already have** — it only costs you the indices, and the
 indices are why the data is here.
 
-## Content addressing
+## The id is content. The name is a datom.
 
-Use [hasch](https://github.com/replikativ/hasch) for the key, as `:db.secondary/only`
-already does internally. Then:
+A store-ref is a **UUID**, and the id must **pin the content**:
 
-- **the same bytes are the same key** — re-uploading is idempotent, and two entities
-  referencing identical content share one object;
-- **the object is immutable**, so a torn write leaves a collectable orphan, never a
-  dangling pointer — the same property the whole storage model rests on.
+```clojure
+(require '[datahike.blob :as blob])
 
-A random uuid works too, but it means the object is a *mutable cell*, and mutable cells
-are precisely what datahike otherwise does not have (the branch head is the only one).
-Use one only when you mean it.
+(let [id (blob/blob-id bytes)]      ;; hasch content hash
+  …)
+```
+
+### Why it cannot be a mutable pointer
+
+A store-ref is dereferenced when you read it — **including when you read it `as-of` an
+old transaction.** If the id is a mutable pointer, that old read hands you the
+reference, you fetch it, and you get whatever is behind it **now** rather than what was
+there **then**. The database's central promise silently stops holding for that
+attribute, and nothing tells you.
+
+A content hash makes that impossible: **the reference *is* the content**, so
+dereferencing an old reference necessarily yields the old bytes. It's the same reason
+index nodes are content-addressed and the branch head is the *only* mutable cell in the
+store — a blob behind a mutable name would be a **second mutable cell**, and one
+datahike can neither see nor protect.
+
+> **The requirement is write-once. Content addressing is how you guarantee it.**
+
+A random uuid is *permitted* — sometimes you genuinely cannot hash the bytes (a
+streaming upload you never buffer, a third-party id). It costs you dedup and idempotent
+re-upload, and time travel then holds only *for as long as you never rewrite that
+object*. Content addressing removes the "for as long as".
+
+### Why it cannot be a path — and where the path goes
+
+Paths move. Objects at a path get overwritten. A path as the *id* means a rename breaks
+every historical reference.
+
+**This is the git model:** blobs are addressed by content; *trees* map names to hashes.
+The name is not the identity. Do the same:
+
+```clojure
+{:blob/id           #uuid "6a55…"                  ;; :db.type/store-ref  — content hash. Identity.
+ :blob/path         "tenant/acme/2026/invoice.pdf" ;; :db.type/string, :db/index true — location.
+ :blob/content-type "application/pdf"
+ :blob/size         182344}
+```
+
+You lose nothing and gain everything:
+
+- **the path still sorts and seeks** — with `:db/index true` it's in AVET, so
+  `"tenant/acme/2026/"` is a range scan, not a filter;
+- **a rename touches one datom**; the object doesn't move and every historical reference
+  still resolves;
+- **a foreign id you don't control** (a Cloudinary `public_id`, someone else's S3 key)
+  is just another string attribute — the UUID stays datahike's handle;
+- **the metadata is queryable**, because it's datoms.
+
+### Why the id is a UUID and not a string
+
+Mechanical, not stylistic: datahike's index order is the value's `compareTo`
+(`datahike.datom/compare-value` ends in `(compare v1 v2)`), and
+`(compare #uuid "…" "a-string")` throws `ClassCastException`. An attribute holding both
+would have no well-defined AVET order. So the *reference* is a UUID, and anything
+string-shaped — paths, foreign ids, names — lives in its own attribute, where it sorts
+properly.

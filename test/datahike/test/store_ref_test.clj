@@ -8,6 +8,7 @@
   (:require [clojure.test :refer [deftest is testing]]
             [datahike.api :as d]
             [datahike.gc :as gc]
+            [datahike.blob :as blob]
             [datahike.gc-guard :as guard]
             [datahike.value-types :as vt]
             [hasch.core :as h]
@@ -43,7 +44,7 @@
   [conn bytes attrs]
   (let [store (:store @conn)
         sid   (:id (:store (:config @conn)))
-        key   (h/uuid bytes)]
+        key   (blob/blob-id bytes)]
     (guard/with-unreferenced-writes sid
       (<?? S (k/bassoc store key bytes {:sync? false}))
       (d/transact conn [(assoc attrs :issue/attachment key)]))
@@ -211,6 +212,45 @@
             "retracted, but :keep-history? keeps the datom — so the blob is still live")
         (is (not (contains? (set (<?? S (gc/gc-storage! @conn))) blob))
             "and the sweep leaves it alone"))
+      (d/release conn))
+    (d/delete-database c)))
+
+(deftest content-addressing-dedups-and-survives-rename
+  ;; The two things a content id buys, and the reason a PATH must never be the id.
+  ;;
+  ;; The git model: blobs are addressed by CONTENT; trees map NAMES to hashes. So the
+  ;; name lives in its own datom, where it also sorts and seeks — you lose nothing.
+  (let [c (cfg "content")]
+    (d/delete-database c)
+    (d/create-database c)
+    (let [conn (d/connect c)]
+      (d/transact conn [{:db/ident :blob/id :db/valueType :db.type/store-ref
+                         :db/cardinality :db.cardinality/one :db/unique :db.unique/identity}
+                        {:db/ident :blob/path :db/valueType :db.type/string
+                         :db/cardinality :db.cardinality/one :db/index true}])
+      (let [bytes-1 (.getBytes "the invoice" "UTF-8")
+            bytes-2 (.getBytes "the invoice" "UTF-8")]  ;; distinct arrays, same content
+        (testing "the same bytes are the same id — two uploads, one object"
+          (is (not (identical? bytes-1 bytes-2)))
+          (is (= (blob/blob-id bytes-1) (blob/blob-id bytes-2))
+              "content-addressed: re-uploading is idempotent and identical content dedups"))
+
+        (let [id (blob/blob-id bytes-1)]
+          (<?? S (k/bassoc (:store @conn) id bytes-1 {:sync? false}))
+          (d/transact conn [{:blob/id id :blob/path "tenant/acme/2026/invoice.pdf"}])
+
+          (testing "the path sorts and seeks — that is what you wanted a string for"
+            (is (= ["tenant/acme/2026/invoice.pdf"]
+                   (mapv :v (d/datoms @conn :avet :blob/path)))
+                "indexed, so a prefix like \"tenant/acme/2026/\" is a range scan"))
+
+          (testing "a rename touches ONE datom — the object does not move"
+            (let [e (d/q '[:find ?e . :where [?e :blob/id]] @conn)]
+              (d/transact conn [{:db/id e :blob/path "archive/2026/invoice.pdf"}]))
+            (is (= id (d/q '[:find ?b . :where [?e :blob/id ?b]] @conn))
+                "the id is unchanged — every historical reference still resolves")
+            (is (contains? (keys-of (:store @conn)) id)
+                "and the bytes are still at the same key"))))
       (d/release conn))
     (d/delete-database c)))
 
