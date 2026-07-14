@@ -11,6 +11,7 @@
                      [clojure.set]
                      [datahike.api :as d]
                      [datahike.gc :as gc]
+                     [datahike.gc-guard :as guard]
                      [datahike.versioning :as v]
                      [datahike.writing :as dw]
                      [datahike.test.async :refer [deftest-async]]
@@ -20,11 +21,13 @@
      :cljs (:require [cljs.test :refer [is testing] :include-macros true]
                      [datahike.api :as d]
                      [datahike.gc :as gc]
+                     [datahike.gc-guard :as guard]
                      [datahike.test.async :refer-macros [deftest-async]]
                      ;; register the :file backend on Node (the smoke test needs a
                      ;; FLUSHING store — GC's mark walk requires stored index nodes,
                      ;; so :memory, which keeps the tree inline, does not apply).
                      [konserve.node-filestore]
+                     [konserve.core :as k]
                      [cljs.nodejs :as nodejs]
                      [clojure.core.async :as a :refer [<!] :refer-macros [go]])))
 
@@ -82,6 +85,104 @@
         (<! (a/timeout 60)))  ;; let any in-flight cycle finish before teardown
       (is (= n (d/q '[:find (count ?e) . :where [?e :id _]] @conn))
           "data intact after background collection cycles"))
+    (d/release conn)
+    #?(:clj (d/delete-database cfg) :cljs (<! (d/delete-database cfg)))))
+
+;; ---------------------------------------------------------------------------
+;; The safe point, CROSS-PLATFORM (JVM + Node). The corruption tests below are
+;; JVM-only — they gate a mid-flush commit with real threads — so these cover the
+;; same guarantee on cljs, where the bug is equally reachable (gc/writing are
+;; .cljc, node's file writes are async, and go-blocks interleave on the event
+;; loop). They gate NOTHING and redefine NOTHING: var redefinition would not
+;; survive :advanced optimization on the node build, and a test that silently
+;; stopped gating would pass vacuously.
+;; ---------------------------------------------------------------------------
+
+(deftest-async guard-spares-unreferenced-writes
+  ;; The safe point's contract, stated directly: an object written while a write
+  ;; sequence is OPEN is spared even though nothing references it; once the
+  ;; sequence CLOSES it is ordinary garbage. That is exactly what makes a commit
+  ;; mid-flush safe — and it is also the contract a user's out-of-band store write
+  ;; relies on (a blob written before the transaction that names it).
+  (let [id   #?(:clj (java.util.UUID/randomUUID) :cljs (random-uuid))
+        cfg  {:store {:backend :file :path (tmp-path id) :id id}
+              :schema-flexibility :write :keep-history? false
+              ;; :commit-graph? false is LOAD-BEARING — with the graph on, every
+              ;; commit record stays reachable and the sweep collects nothing, so
+              ;; both assertions below would hold vacuously.
+              :commit-graph? false}
+        _    #?(:clj  (do (when (d/database-exists? cfg) (d/delete-database cfg))
+                          (d/create-database cfg))
+                :cljs (do (when (<! (d/database-exists? cfg)) (<! (d/delete-database cfg)))
+                          (<! (d/create-database cfg))))
+        conn #?(:clj  (d/connect cfg)
+                :cljs (<! (d/connect cfg {:sync? false})))
+        n    20]
+    (<! (d/transact! conn schema))
+    ;; churn, so the sweep has real garbage it IS allowed to take
+    (loop [i 0]
+      (when (< i (* 3 n))
+        (<! (d/transact! conn {:tx-data [{:id (long (mod i n)) :score (long i)}]}))
+        (recur (inc i))))
+    (let [store (:store @conn)
+          sid   (:id (:store (:config @conn)))
+          probe :datahike.test/unreferenced-probe]
+      (testing "an object written inside an open sequence is spared"
+        (let [token (guard/writing! sid)]
+          (<! (k/assoc store probe {:written "while the sequence is open"}))
+          (let [swept (set (<! (gc/gc-storage! @conn)))]
+            (is (pos? (count swept))
+                "precondition: the cycle swept real garbage (not a vacuous pass)")
+            (is (not (contains? swept probe))
+                "the safe point spared an object that nothing references"))
+          (guard/done! sid token)))
+      (testing "once the sequence closes, the same object is collectable"
+        (let [swept (set (<! (gc/gc-storage! @conn)))]
+          (is (contains? swept probe)
+              "a closed sequence's unreferenced object is ordinary garbage"))))
+    (d/release conn)
+    #?(:clj (d/delete-database cfg) :cljs (<! (d/delete-database cfg)))))
+
+(deftest-async commit-holds-the-guard
+  ;; The integration half: it is not enough that the safe point WORKS — commit!
+  ;; must actually hold it across every object it writes, or the mechanism above
+  ;; protects nothing in practice.
+  ;;
+  ;; Probed with a konserve write hook rather than a redefined var: hooks fire on
+  ;; the real write path and survive :advanced optimization on node.
+  ;;
+  ;; Asserted with `in-flight?`, not with timestamps: `safe-point` returns `now`
+  ;; both when nothing is in flight and when a sequence opened in the same
+  ;; millisecond, so a clock comparison could not tell a held guard from a
+  ;; missing one on a fast store.
+  (let [id   #?(:clj (java.util.UUID/randomUUID) :cljs (random-uuid))
+        cfg  {:store {:backend :file :path (tmp-path id) :id id}
+              :schema-flexibility :write :keep-history? false}
+        _    #?(:clj  (do (when (d/database-exists? cfg) (d/delete-database cfg))
+                          (d/create-database cfg))
+                :cljs (do (when (<! (d/database-exists? cfg)) (<! (d/delete-database cfg)))
+                          (<! (d/create-database cfg))))
+        conn #?(:clj  (d/connect cfg)
+                :cljs (<! (d/connect cfg {:sync? false})))]
+    (<! (d/transact! conn schema))
+    (let [store    (:store @conn)
+          sid      (:id (:store (:config @conn)))
+          observed (atom [])]
+      (is (not (guard/in-flight? sid)) "no sequence is open before the commit")
+      (k/add-write-hook! store ::probe
+                         (fn [msg]                       ;; hook-fn takes ONE arg
+                           (swap! observed conj {:key (:key msg)
+                                                 :api-op (:api-op msg)
+                                                 :guarded? (guard/in-flight? sid)})))
+      (<! (d/transact! conn {:tx-data [{:id 1 :score 42}]}))
+      (k/remove-write-hook! store ::probe)
+      (is (seq @observed)
+          "precondition: the commit actually wrote to the store")
+      (is (every? :guarded? @observed)
+          (str "every write a commit makes must happen with the guard OPEN; unguarded: "
+               (pr-str (map :key (remove :guarded? @observed)))))
+      (is (not (guard/in-flight? sid))
+          "and the guard is released once the head has landed"))
     (d/release conn)
     #?(:clj (d/delete-database cfg) :cljs (<! (d/delete-database cfg)))))
 

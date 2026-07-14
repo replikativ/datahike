@@ -40,7 +40,7 @@
   #?(:clj (:import [java.util Date])))
 
 (defn- now [] #?(:clj (Date.) :cljs (js/Date.)))
-(defn- ms [^Date d] #?(:clj (.getTime d) :cljs (.getTime d)))
+(defn- ms [d] #?(:clj (.getTime ^Date d) :cljs (.getTime d)))
 
 ;; store-id -> {token start-instant}. Keyed by the store's :id (from the store
 ;; config) rather than the store object: separate connections to the same
@@ -48,11 +48,15 @@
 ;; one must see a sequence in flight on another.
 (defonce ^:private in-flight (atom {}))
 
+;; Tokens are counter values, not fresh objects: a token is a MAP KEY, and a bare
+;; `(js/Object.)` implements neither IHash nor IEquiv in cljs, so it cannot be one.
+(defonce ^:private token-seq (atom 0))
+
 (defn writing!
   "Open an unreferenced-write sequence on `store-id`. Returns a token to close it
    with. Call BEFORE the first value is written."
   [store-id]
-  (let [token #?(:clj (Object.) :cljs (js/Object.))]
+  (let [token (swap! token-seq inc)]
     (swap! in-flight assoc-in [store-id token] (now))
     token))
 
@@ -66,6 +70,15 @@
                          (dissoc m' store-id)
                          m'))))
   nil)
+
+(defn in-flight?
+  "Is an unreferenced-write sequence currently open on `store-id`?
+
+   `safe-point` cannot answer this: it returns `now` both when nothing is in
+   flight AND when a sequence opened within the same millisecond, so a test that
+   compares timestamps cannot tell a held guard from a missing one. This can."
+  [store-id]
+  (boolean (seq (get @in-flight store-id))))
 
 (defn safe-point
   "The instant before which every object written to `store-id` is either
