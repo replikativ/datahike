@@ -1,8 +1,12 @@
 (ns datahike.gc
   (:require [clojure.set :as set]
+            [datahike.constants :as c]
+            [datahike.datom :as dd]
             [datahike.gc-guard :as guard]
-            [datahike.index.interface :refer [-mark -seed-root! with-storage]]
+            [datahike.index.interface :refer [-mark -seed-root! -slice with-storage]]
             [datahike.index.secondary :as sec]
+            [datahike.schema :as schema]
+            [datahike.value-types :as vt]
             [konserve.core :as k]
             [konserve.gc :refer [sweep!]]
             [replikativ.logging :as log]
@@ -19,7 +23,66 @@
 (defn get-time [d]
   (.getTime ^Date d))
 
-(defn- reachable-in-branch [store branch after-date config]
+(defn- attr-store-refs
+  "Konserve keys named by the VALUES of `attr` in the AEVT index `aevt`.
+
+   Slices exactly the attribute's range, so the cost is O(its datoms), not O(the
+   database)."
+  [aevt attr rk-fn store]
+  (transduce (map (fn [d] (rk-fn (:v d) store)))
+             (completing set/union)
+             #{}
+             (-slice aevt
+                     (dd/datom c/e0 attr nil c/tx0)
+                     (dd/datom c/emax attr nil c/txmax)
+                     :aevt)))
+
+(defn- store-refs
+  "Konserve keys that this record's datom VALUES name — the objects a
+   `:db.type/store-ref` (or any custom type declaring `:reachable-keys`) keeps
+   alive.
+
+   THE MARK DOES NOT SEE THESE OTHERWISE. It walks the index TREES and collects
+   node addresses; it never looks inside a datom's value. So an object named only
+   by a value is unreachable from the mark's point of view, and the sweep deletes
+   it. That is the whole reason this exists.
+
+   ZERO COST WHEN UNUSED: if the schema declares no attribute of a key-bearing
+   type — which is every database that does not use the feature — this returns
+   immediately, having sliced nothing.
+
+   Under `:keep-history?` the TEMPORAL index is scanned too: a retracted
+   store-ref datom is still readable `as-of` an earlier tx, so the object it names
+   must outlive the retraction. (Note `:db/noHistory` attributes are NOT retained
+   there, so a store-ref on one loses its object on retraction — do not combine
+   them.)"
+  [store config schema ident-ref-map aevt taevt]
+  ;; FAIL CLOSED. `assert-registered!` runs at connect against the HEAD schema; the
+  ;; mark walks HISTORICAL records, whose schemas may name a type this peer has no
+  ;; impl for. Marking such a record without the impl would silently contribute
+  ;; nothing for it — and the sweep would then delete objects it still names. Refuse
+  ;; to collect instead.
+  (vt/assert-registered! schema schema/builtin-value-types)
+  (let [key-bearing (vt/key-bearing-types)
+        attrs       (into []
+                          (keep (fn [[ident attr-def]]
+                                  (when-let [rk (and (contains? key-bearing (:db/valueType attr-def))
+                                                     (vt/reachable-keys-fn (:db/valueType attr-def)))]
+                                    ;; With :attribute-refs? the datoms hold the attribute's
+                                    ;; EID, not its ident — slice by what is actually stored.
+                                    [(if (:attribute-refs? config)
+                                       (get ident-ref-map ident)
+                                       ident)
+                                     rk])))
+                          schema)]
+    (if (empty? attrs)
+      #{}
+      (reduce (fn [acc [attr rk]]
+                (cond-> (set/union acc (attr-store-refs aevt attr rk store))
+                  taevt (set/union (attr-store-refs taevt attr rk store))))
+              #{} attrs))))
+
+(defn- reachable-in-branch [store branch after-date config schema-cache]
   (go-try S
           (let [head-cid (<? S (k/get-in store [branch :meta :datahike/commit-id]))]
             (loop [[to-check & r] [branch]
@@ -55,18 +118,46 @@
                           ;; index, which may be shared through the store's
                           ;; cache (mirrors stored->db) — so walk-addresses
                           ;; uses it and only its children are fetched.
-                            mark (fn [idx root]
-                                   (-mark (cond-> (with-storage (:index config) idx (:storage store))
-                                            root (-seed-root! root))))
+                          ;;
+                          ;; `bind` returns that copy so the SAME seeded instance
+                          ;; serves both -mark (walk the tree) and -slice (read the
+                          ;; datoms, for store-refs) — seeding a second one would
+                          ;; duplicate the work and re-open the shared-record hazard
+                          ;; above.
+                            bind (fn [idx root]
+                                   (cond-> (with-storage (:index config) idx (:storage store))
+                                     root (-seed-root! root)))
+                            aevt'  (bind aevt-key aevt-root)
+                            taevt' (when (:keep-history? config)
+                                     (bind temporal-aevt-key temporal-aevt-root))
+                            ;; The schema names which attributes can hold store-refs.
+                            ;; It is content-addressed and rarely changes, so memoize
+                            ;; it across the whole collection rather than re-reading
+                            ;; it for every commit in the window.
+                            schema-meta (when schema-meta-key
+                                          (if-let [cached (get @schema-cache schema-meta-key)]
+                                            cached
+                                            (let [sm (<? S (k/get store schema-meta-key))]
+                                              (swap! schema-cache assoc schema-meta-key sm)
+                                              sm)))
+                            ;; Older records kept the schema inline (mirrors
+                            ;; writing/stored->db). Falling through to nil here would
+                            ;; silently mark NO store-refs and sweep live objects.
+                            schema (or (:schema schema-meta) (:schema record))
+                            refs (if schema
+                                   (store-refs store config schema
+                                               (:ident-ref-map schema-meta) aevt' taevt')
+                                   #{})
                             new-reachable (cond-> (set/union reachable #{to-check}
                                                              (when schema-meta-key #{schema-meta-key})
-                                                             (mark eavt-key eavt-root)
-                                                             (mark aevt-key aevt-root)
-                                                             (mark avet-key avet-root))
+                                                             (-mark (bind eavt-key eavt-root))
+                                                             (-mark aevt')
+                                                             (-mark (bind avet-key avet-root))
+                                                             refs)
                                             (:keep-history? config)
-                                            (set/union (mark temporal-eavt-key temporal-eavt-root)
-                                                       (mark temporal-aevt-key temporal-aevt-root)
-                                                       (mark temporal-avet-key temporal-avet-root))
+                                            (set/union (-mark (bind temporal-eavt-key temporal-eavt-root))
+                                                       (-mark taevt')
+                                                       (-mark (bind temporal-avet-key temporal-avet-root)))
                                             sec-reachable
                                             (set/union sec-reachable))]
                         (recur (concat r (when in-range? parents))
@@ -135,8 +226,11 @@
                  _ (sc/clear-write-cache (:store config)) ; Clear the schema write cache for this store
                  branches (<? S (k/get store :branches))
                  _ (log/trace :datahike/gc-retain-branches {:branches branches})
+                 ;; shared across branches: the schema is content-addressed, so
+                 ;; every commit that did not change it names the SAME object
+                 schema-cache (atom {})
                  reachable (->> branches
-                                (map #(reachable-in-branch store % remove-before config))
+                                (map #(reachable-in-branch store % remove-before config schema-cache))
                                 async/merge
                                 (<<? S)
                                 (apply set/union))

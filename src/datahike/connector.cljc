@@ -2,7 +2,9 @@
   (:require [datahike.connections :refer [get-connection add-connection! delete-connection!
                                           *connections*]]
             [datahike.readers]
+            [datahike.schema :as dschema]
             [datahike.store :as ds]
+            [datahike.value-types :as vt]
             [datahike.writing :as dsi]
             [datahike.config :as dc]
             [datahike.tools :as dt #?(:clj :refer :cljs :refer-macros) [meta-data]]
@@ -286,7 +288,14 @@
                          _ (version-check stored-db)
                          _ (when-not (:allow-unsafe-config config)
                              (ensure-stored-config-consistency config (:config stored-db)))
-                         conn      (conn-from-db (dsi/stored->db (assoc stored-db :config config) store))]
+                         conn      (conn-from-db (dsi/stored->db (assoc stored-db :config config) store))
+                         ;; Fail loudly if the schema declares a custom :db/valueType whose impl
+                         ;; is not registered here. Turns a deep, late deserialization crash into
+                         ;; an early, actionable error — AND is a GC safety property: a peer that
+                         ;; cannot interpret a value type cannot connect, so it can never collect
+                         ;; away the objects that type names (datahike.value-types).
+                         _ (vt/assert-registered! (:schema @(:wrapped-atom conn))
+                                                  dschema/builtin-value-types)]
                      (swap! (:wrapped-atom conn) assoc :writer
                             (w/create-writer (:writer config) conn))
                      ;; Recovery: backfill secondary indices that are :building

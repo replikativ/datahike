@@ -1,5 +1,6 @@
 (ns ^:no-doc datahike.index.persistent-set
   (:require [clojure.string]
+            [datahike.value-types :as vt]
             [org.replikativ.persistent-sorted-set :as psset]
             #?(:cljs [org.replikativ.persistent-sorted-set.btset :refer [BTSet]])
             #?(:cljs [org.replikativ.persistent-sorted-set.branch :as branch :refer [Branch]])
@@ -560,8 +561,12 @@
                                    ;; falls back to default-bf. New writes use the pss/ tags.
                                    {"datahike.index.PersistentSortedSet"        root-rh
                                     "datahike.index.PersistentSortedSet.Leaf"   (get node-rh pss-fress/leaf-tag)
-                                    "datahike.index.PersistentSortedSet.Branch" (get node-rh pss-fress/branch-tag)})
-            write-handlers* (merge pss-fress/write-handlers pss-fress/root-write-handlers datom-write-handler)
+                                    "datahike.index.PersistentSortedSet.Branch" (get node-rh pss-fress/branch-tag)}
+                                   ;; custom value types (datahike.value-types) — a registered
+                                   ;; type's values must round-trip through the durable store
+                                   (vt/fressian-read-handlers))
+            write-handlers* (merge pss-fress/write-handlers pss-fress/root-write-handlers datom-write-handler
+                                   (vt/fressian-write-handlers))
             store   (k/assoc-serializers store {:FressianSerializer (fressian-serializer read-handlers* write-handlers*)})
             storage (or (:storage store) (create-storage store config))]
         (reset! storage-cell storage)

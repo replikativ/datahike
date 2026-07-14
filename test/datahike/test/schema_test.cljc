@@ -92,15 +92,20 @@
                             (d/transact conn [{:db/ident :phone :db/cardinality :db.cardinality/many}]))))
 
     (testing "insert schema with incorrect value type"
+      ;; The enum is now SORTED and includes any registered custom value type
+      ;; (datahike.value-types) — `:db.type/value` became an open predicate, so
+      ;; `describe-type` rebuilds the legal set rather than printing the
+      ;; predicate's source. Sorted, so the message is deterministic.
       (is (thrown-with-msg? Throwable
                             (re-pattern (str "Bad entity value " :string " at \\[:db/add 3 :db/valueType :string\\], "
                                              "value does not match schema definition. "
                                              "Must be conform to: "
-                                             "#\\{:db.type/number :db.type/unique :db.type/instant :db.type/cardinality "
-                                             ":db.type/tuple :db.type/boolean :db.type/bytes :db.type/uuid :db.type/value "
-                                             ":db.type/string :db.type/keyword :db.type/ref :db.type/bigdec "
-                                             ":db.type.install/attribute :db.type/float :db.type/bigint :db.type/double "
-                                             ":db.type/long :db.type/valueType :db.type/symbol\\}"))
+                                             "#\\{:db.type/bigdec :db.type/bigint :db.type/boolean :db.type/bytes "
+                                             ":db.type/cardinality :db.type/double :db.type/float :db.type/instant "
+                                             ":db.type/keyword :db.type/long :db.type/number :db.type/ref "
+                                             ":db.type/store-ref :db.type/string :db.type/symbol :db.type/tuple "
+                                             ":db.type/unique :db.type/uuid :db.type/value :db.type/valueType "
+                                             ":db.type.install/attribute\\}"))
                             (d/transact conn [{:db/ident       :phone
                                                :db/cardinality :db.cardinality/one
                                                :db/valueType   :string}]))))

@@ -117,6 +117,9 @@
               [:db/ident :dh.ref/value 536870912 true]
               [:db/ident :dh.ref/temporal 536870912 true]
               [:db/ident :dh.ref/type 536870912 true]
+              ;; :db.type/store-ref — a builtin value type needs a system entity so
+              ;; that :db/valueType (a REF under :attribute-refs?) can resolve to it
+              [:db/ident :db.type/store-ref 536870912 true]
               [:db/valueType 29 536870912 true]
               [:db/doc "Cross-db reference: target database (store :id)" 536870912 true]
               [:db/doc "Cross-db reference: unique attribute of the target lookup ref" 536870912 true]

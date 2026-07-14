@@ -826,6 +826,10 @@
                (ds/is-system-keyword? (:db/ident entity)))
       (log/raise "Using namespace 'db' for attribute identifiers is not allowed"
                  {:error :transact/schema :entity entity}))
+    ;; Reject shapes that would let GC delete an object a datom still names.
+    ;; Rejected, not documented: both failure modes are silent data loss.
+    (when-let [why (ds/key-bearing-misuse entity)]
+      (log/raise why {:error :transact/schema :entity entity}))
     (if-let [attr-name (get-in db [:schema new-eid])]
       (when-let [invalid-updates (ds/find-invalid-schema-updates entity (get-in db [:schema attr-name]))]
         (when-not (empty? invalid-updates)
