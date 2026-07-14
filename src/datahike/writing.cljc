@@ -2,6 +2,7 @@
   "Manage all state changes and access to state of durable store."
   (:require [datahike.connections :refer [delete-connection! *connections*]]
             [datahike.db :as db]
+            [datahike.gc-guard :as guard]
             [datahike.db.transaction :as dbtx]
             [datahike.db.utils :as dbu]
             [datahike.db.interface :as dbi]
@@ -405,8 +406,17 @@
                 ;; Throwable handler: callbacks get the error and the writer shuts
                 ;; down loudly. Commit ordering is unaffected (the HEAD flip never
                 ;; happened when we land here).
-                (try
-                  (let [{:keys [store config]} db
+                ;;
+                ;; GC GUARD: everything from here until the head flips is written
+                ;; UNREFERENCED — the head still names the previous snapshot — so a
+                ;; concurrent collector would call it garbage and sweep it. Opened
+                ;; BEFORE db->stored because a secondary index's -sec-flush (stratum)
+                ;; writes konserve keys from inside it. Closed in the finally: an
+                ;; aborted commit leaves orphans, which are genuinely collectable.
+                (let [gc-store-id (:id (:store (:config db)))
+                      gc-token    (guard/writing! gc-store-id)]
+                  (try
+                    (let [{:keys [store config]} db
                         ;; Head-cid cache: for an ORDINARY commit (no explicit
                         ;; parents) the writer's own head cid is already in
                         ;; memory — stamped by the previous commit!, or by
@@ -423,39 +433,39 @@
                         ;; transaction loop chains applied dbs whose meta
                         ;; predates recent commits (the old storage read was,
                         ;; in effect, the cross-loop synchronization point).
-                        known-heads   (if (and (nil? parents) known-head-cid)
-                                        {(get config :branch) known-head-cid}
-                                        {})
-                        parents       (or parents #{(get config :branch)})
-                        parents       (branch-heads-as-commits store parents known-heads)
+                          known-heads   (if (and (nil? parents) known-head-cid)
+                                          {(get config :branch) known-head-cid}
+                                          {})
+                          parents       (or parents #{(get config :branch)})
+                          parents       (branch-heads-as-commits store parents known-heads)
                       ;; Stamp parents BEFORE flushing so they're in the
                       ;; stored form the cid will be derived from.
-                        db            (assoc-in db [:meta :datahike/parents] parents)
+                          db            (assoc-in db [:meta :datahike/parents] parents)
                       ;; Flush first → cid sees post-flush storage
                       ;; addresses (true merkle leaves under crypto-hash?).
-                        [schema-meta-kv-to-write db-to-store-pre]
-                        (db->stored db true)
-                        cid           (create-commit-id db db-to-store-pre)
-                        db            (assoc-in db [:meta :datahike/commit-id] cid)
-                        db-to-store   (assoc-in db-to-store-pre
-                                                [:meta :datahike/commit-id] cid)
+                          [schema-meta-kv-to-write db-to-store-pre]
+                          (db->stored db true)
+                          cid           (create-commit-id db db-to-store-pre)
+                          db            (assoc-in db [:meta :datahike/commit-id] cid)
+                          db-to-store   (assoc-in db-to-store-pre
+                                                  [:meta :datahike/commit-id] cid)
                       ;; Root fusion: roots are inlined in db-to-store, so drop
                       ;; them from the separate-object writes.
-                        fused-addrs   (fused-root-addresses config db-to-store)
-                        pending-kvs   (cond->> (get-and-clear-pending-kvs! store)
-                                        (seq fused-addrs)
-                                        (remove (fn [[k _]] (contains? fused-addrs k))))
+                          fused-addrs   (fused-root-addresses config db-to-store)
+                          pending-kvs   (cond->> (get-and-clear-pending-kvs! store)
+                                          (seq fused-addrs)
+                                          (remove (fn [[k _]] (contains? fused-addrs k))))
                         ;; Commit graph (opt-out): the immutable cid record is
                         ;; the provenance chain (audit, ancestry, ?commit=
                         ;; refs). With :commit-graph? false only the branch
                         ;; head is written — the cid is still computed and
                         ;; stamped in :meta, so identity, sync dedup and the
                         ;; writer's head-cid threading are unaffected.
-                        commit-graph? (get config :commit-graph? true)]
+                          commit-graph? (get config :commit-graph? true)]
 
-                    (if (multi-key-capable? store)
-                      (let [[meta-key meta-val] schema-meta-kv-to-write
-                            branch-key (:branch config)
+                      (if (multi-key-capable? store)
+                        (let [[meta-key meta-val] schema-meta-kv-to-write
+                              branch-key (:branch config)
                             ;; ORDERED batch. konserve applies a [k v] seq in sequence order,
                             ;; so state the SAME causal discipline the non-atomic path below
                             ;; spells out ("make sure all pointed to values are written before
@@ -473,46 +483,55 @@
                             ;; It also means a sync subscriber relaying this batch applies it
                             ;; in the order we committed it, instead of guessing an order back
                             ;; from the shape of the keys.
-                            writes (cond-> (vec pending-kvs)
-                                     schema-meta-kv-to-write (conj [meta-key meta-val])
-                                     commit-graph?           (conj [cid db-to-store])
-                                     true                    (conj [branch-key db-to-store]))
+                              writes (cond-> (vec pending-kvs)
+                                       schema-meta-kv-to-write (conj [meta-key meta-val])
+                                       commit-graph?           (conj [cid db-to-store])
+                                       true                    (conj [branch-key db-to-store]))
                             ;; nodes + schema-meta (uuid) + commit (cid) are content-addressed →
                             ;; immutable; the branch-head pointer stays mutable (unmarked).
-                            metas  (into {}
-                                         (comp (map first)
-                                               (remove #(= % branch-key))
-                                               (map (fn [k] [k {:immutable? true}])))
-                                         writes)]
-                        (<?- (k/multi-assoc store writes metas {:sync? sync?})))
+                              metas  (into {}
+                                           (comp (map first)
+                                                 (remove #(= % branch-key))
+                                                 (map (fn [k] [k {:immutable? true}])))
+                                           writes)]
+                          (<?- (k/multi-assoc store writes metas {:sync? sync?})))
                     ;; Then write schema-meta, commit-log, branch
-                      (let [[meta-key meta-val] schema-meta-kv-to-write
-                            schema-meta-written (when schema-meta-kv-to-write
+                        (let [[meta-key meta-val] schema-meta-kv-to-write
+                              schema-meta-written (when schema-meta-kv-to-write
                                                 ;; schema-meta-key = (uuid schema-meta) → content-addressed → immutable
-                                                  (k/assoc store meta-key meta-val {:immutable? true} {:sync? sync?}))
+                                                    (k/assoc store meta-key meta-val {:immutable? true} {:sync? sync?}))
 
                           ;; Make sure all pointed to values are written before the commit log and branch
-                            _ (when schema-meta-kv-to-write (<?- schema-meta-written))
-                            _ (<?- (write-pending-kvs! store pending-kvs sync?))
+                              _ (when schema-meta-kv-to-write (<?- schema-meta-written))
+                              _ (<?- (write-pending-kvs! store pending-kvs sync?))
 
                           ;; the commit is content-addressed by cid → immutable; the branch head is mutable
-                            commit-log-written (when commit-graph?
-                                                 (k/assoc store cid db-to-store {:immutable? true} {:sync? sync?}))
-                            branch-written     (k/assoc store (:branch config) db-to-store {:sync? sync?})]
-                        (when-not sync?
-                          (when commit-log-written (<?- commit-log-written))
-                          (<?- branch-written))))
+                              commit-log-written (when commit-graph?
+                                                   (k/assoc store cid db-to-store {:immutable? true} {:sync? sync?}))
+                            ;; AWAIT the commit record before ISSUING the head write.
+                            ;; Under :sync? false both k/assoc calls return ops that are
+                            ;; ALREADY RUNNING, so binding them side by side lets the
+                            ;; mutable head land before the immutable record it names —
+                            ;; a crash in between truncates branch-history. (Under
+                            ;; :sync? true k/assoc blocks, so the order already holds.)
+                              _                  (when (and commit-log-written (not sync?))
+                                                   (<?- commit-log-written))
+                              branch-written     (k/assoc store (:branch config) db-to-store {:sync? sync?})]
+                          (when-not sync?
+                            (<?- branch-written))))
 
                   ;; Online GC: delete freed addresses after writes are committed
-                    (when (get-in config [:online-gc :enabled?])
-                      (<?- (online-gc/online-gc! store (assoc (:online-gc config) :sync? false))))
+                      (when (get-in config [:online-gc :enabled?])
+                        (<?- (online-gc/online-gc! store (assoc (:online-gc config) :sync? false))))
 
-                    db)
-                  (catch #?(:clj Error :cljs :default) e
-                    #?(:clj  (throw (ex-info "Fatal error during commit."
-                                             {:type :fatal-commit-error}
-                                             e))
-                       :cljs (throw e))))))))
+                      db)
+                    (catch #?(:clj Error :cljs :default) e
+                      #?(:clj  (throw (ex-info "Fatal error during commit."
+                                               {:type :fatal-commit-error}
+                                               e))
+                         :cljs (throw e)))
+                    (finally
+                      (guard/done! gc-store-id gc-token))))))))
 
 (defn complete-db-update [old tx-report]
   (let [{:keys [writer]} old
@@ -618,23 +637,33 @@
                    :temporal-avet-key (detach temporal-avet')}))
          cid (create-commit-id db pre-cid-stored)
          meta (assoc meta :datahike/commit-id cid)
-         db-to-store (assoc pre-cid-stored :meta meta)]
-     ;;we just created the first data base in this store, so the write cache is empty
-     ;; schema-meta-key = (uuid schema-meta) → content-addressed, immutable
-     (<?- (k/assoc store schema-meta-key schema-meta {:immutable? true} opts))
-     (sc/add-to-write-cache (:store config) schema-meta-key)
-     (when-not (sc/cache-has? schema-meta-key)
-       (sc/cache-miss schema-meta-key schema-meta))
+         db-to-store (assoc pre-cid-stored :meta meta)
+         ;; GC guard: same values-then-pointer sequence as commit!. A brand-new
+         ;; store cannot be collected (no :branches key yet), but a store being
+         ;; RE-created after delete-database can still have a background collector
+         ;; running against it from a previous connection.
+         gc-token (guard/writing! (:id store-config))]
+     (try
+       ;;we just created the first data base in this store, so the write cache is empty
+       ;; schema-meta-key = (uuid schema-meta) → content-addressed, immutable
+       (<?- (k/assoc store schema-meta-key schema-meta {:immutable? true} opts))
+       (sc/add-to-write-cache (:store config) schema-meta-key)
+       (when-not (sc/cache-has? schema-meta-key)
+         (sc/cache-miss schema-meta-key schema-meta))
 
-     ;; Process pending KVs from index flushes synchronously
-     (let [pending-kvs (get-and-clear-pending-kvs! store)]
-       (<?- (write-pending-kvs! store pending-kvs false)))
+       ;; Process pending KVs from index flushes synchronously
+       (let [pending-kvs (get-and-clear-pending-kvs! store)]
+         (<?- (write-pending-kvs! store pending-kvs false)))
 
-     (<?- (k/assoc store :branches #{:db} opts))           ; mutable: branch set
-     (<?- (k/assoc store cid db-to-store {:immutable? true} opts)) ; content-addressed commit
-     (<?- (k/assoc store :db db-to-store opts))             ; mutable: branch head
-     (ks/release-store store-config store)
-     config)))
+       (<?- (k/assoc store cid db-to-store {:immutable? true} opts)) ; content-addressed commit
+       (<?- (k/assoc store :db db-to-store opts))             ; mutable: branch head
+       ;; :branches names :db, so it is a POINTER and must be written LAST — a
+       ;; collector that reads it before the head exists marks nothing for :db.
+       (<?- (k/assoc store :branches #{:db} opts))           ; mutable: branch set
+       (ks/release-store store-config store)
+       config
+       (finally
+         (guard/done! (:id store-config) gc-token))))))
 
 (defn -delete-database* [config]
   (go-try-

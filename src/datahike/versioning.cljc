@@ -3,6 +3,7 @@
    All operations support both synchronous (CLJ default) and asynchronous modes."
   (:require [konserve.core :as k]
             [datahike.connections :refer [delete-connection!]]
+            [datahike.gc-guard :as guard]
             [datahike.store :refer [store-identity]]
             [datahike.writing :refer [stored->db db->stored stored-db?
                                       commit! create-commit-id get-and-clear-pending-kvs!
@@ -101,45 +102,54 @@
    (let [opts (select-keys opts [:sync?])]
      (async+sync (:sync? opts) *default-sync-translation*
                  (go-try-
-                  (let [store (:store @conn)
-                        existing-branches (<?- (k/get store :branches nil opts))
-                        _ (when (and existing-branches (existing-branches new-branch))
-                            (log/raise "Branch already exists." {:type :branch-already-exists
-                                                                 :new-branch new-branch}))
-                        stored-db (<?- (k/get store from nil opts))]
-                    (when-not (stored-db? stored-db)
-                      (throw (ex-info (if (false? (get (:config @conn) :commit-graph? true))
-                                        "From does not point to an existing branch, and this store was created with :commit-graph? false — commit records are not persisted, so branching from a commit-id is unavailable; branch from a branch keyword instead."
-                                        "From does not point to an existing branch or commit.")
-                                      {:type :from-branch-does-not-point-to-existing-branch-or-commit
-                                       :from from
-                                       :commit-graph? (get (:config @conn) :commit-graph? true)})))
+                  ;; GC GUARD: a secondary index's -sec-flush writes konserve keys, and
+                  ;; the new branch's head record is written before `:branches` names it
+                  ;; — until then NOTHING points at either, so a concurrent collector
+                  ;; would sweep them (GC's whitelist comes from `:branches`).
+                  (let [gc-sid   (:id (:store (:config @conn)))
+                        gc-token (guard/writing! gc-sid)]
+                    (try
+                      (let [store (:store @conn)
+                            existing-branches (<?- (k/get store :branches nil opts))
+                            _ (when (and existing-branches (existing-branches new-branch))
+                                (log/raise "Branch already exists." {:type :branch-already-exists
+                                                                     :new-branch new-branch}))
+                            stored-db (<?- (k/get store from nil opts))]
+                        (when-not (stored-db? stored-db)
+                          (throw (ex-info (if (false? (get (:config @conn) :commit-graph? true))
+                                            "From does not point to an existing branch, and this store was created with :commit-graph? false — commit records are not persisted, so branching from a commit-id is unavailable; branch from a branch keyword instead."
+                                            "From does not point to an existing branch or commit.")
+                                          {:type :from-branch-does-not-point-to-existing-branch-or-commit
+                                           :from from
+                                           :commit-graph? (get (:config @conn) :commit-graph? true)})))
                   ;; Branch secondary indices via their native CoW support.
                   ;; Prefer live indices from the connection (they hold the write lock).
-                    (let [sec-keys (:secondary-index-keys stored-db)
-                          live-indices (:secondary-indices @conn)
-                          from-branch (or (when (keyword? from) from) :db)
-                          branched-sec-keys
-                          #?(:clj
-                             (when (or (seq sec-keys) (seq live-indices))
-                               (reduce-kv
-                                (fn [acc idx-ident idx]
-                                  (if (satisfies? sec/IVersionedSecondaryIndex idx)
-                                    (let [branched (sec/-sec-branch idx store from-branch new-branch)
-                                          key-map (sec/-sec-flush branched store new-branch)]
-                                      (when (instance? java.io.Closeable branched)
-                                        (.close ^java.io.Closeable branched))
-                                      (assoc acc idx-ident key-map))
-                                    (if-let [key-map (get sec-keys idx-ident)]
-                                      (assoc acc idx-ident
-                                             (sec/branch-from-key-map key-map store from-branch new-branch))
-                                      acc)))
-                                {} (or live-indices {})))
-                             :cljs nil)
-                          updated-db (cond-> (assoc-in stored-db [:config :branch] new-branch)
-                                       (seq branched-sec-keys) (assoc :secondary-index-keys branched-sec-keys))]
-                      (<?- (k/assoc store new-branch updated-db opts))
-                      (<?- (k/update store :branches #(conj (set %) new-branch) opts)))))))))
+                        (let [sec-keys (:secondary-index-keys stored-db)
+                              live-indices (:secondary-indices @conn)
+                              from-branch (or (when (keyword? from) from) :db)
+                              branched-sec-keys
+                              #?(:clj
+                                 (when (or (seq sec-keys) (seq live-indices))
+                                   (reduce-kv
+                                    (fn [acc idx-ident idx]
+                                      (if (satisfies? sec/IVersionedSecondaryIndex idx)
+                                        (let [branched (sec/-sec-branch idx store from-branch new-branch)
+                                              key-map (sec/-sec-flush branched store new-branch)]
+                                          (when (instance? java.io.Closeable branched)
+                                            (.close ^java.io.Closeable branched))
+                                          (assoc acc idx-ident key-map))
+                                        (if-let [key-map (get sec-keys idx-ident)]
+                                          (assoc acc idx-ident
+                                                 (sec/branch-from-key-map key-map store from-branch new-branch))
+                                          acc)))
+                                    {} (or live-indices {})))
+                                 :cljs nil)
+                              updated-db (cond-> (assoc-in stored-db [:config :branch] new-branch)
+                                           (seq branched-sec-keys) (assoc :secondary-index-keys branched-sec-keys))]
+                          (<?- (k/assoc store new-branch updated-db opts))
+                      ;; :branches is the POINTER — written last (barrier invariant)
+                          (<?- (k/update store :branches #(conj (set %) new-branch) opts))))
+                      (finally (guard/done! gc-sid gc-token)))))))))
 
 (defn delete-branch!
   "Removes this branch from set of known branches. The branch will still be
@@ -176,41 +186,58 @@
          sync? (:sync? opts)]
      (async+sync sync? *default-sync-translation*
                  (go-try-
-                  (let [store (:store db)
+                  ;; GC GUARD: same values-then-pointer sequence as commit!, but this
+                  ;; runs on the CALLER's thread and needs no writer at all — which is
+                  ;; exactly why the guard lives in the store rather than in the writer.
+                  (let [gc-sid   (:id (:store (:config db)))
+                        gc-token (guard/writing! gc-sid)]
+                    (try
+                      (let [store (:store db)
                         ;; Flush first, then compute the audit-grade cid
                         ;; from the post-flush stored form (true merkle
                         ;; root). Same pattern as datahike.writing/commit!.
-                        db-with-parents (-> db
-                                            (assoc-in [:config :branch] branch)
-                                            (assoc-in [:meta :datahike/parents] parents))
-                        [schema-meta-kv-to-write pre-cid-store]
-                        (db->stored db-with-parents true)
-                        cid (create-commit-id db-with-parents pre-cid-store)
-                        db-to-store (assoc-in pre-cid-store
-                                              [:meta :datahike/commit-id] cid)
-                        pending-kvs (get-and-clear-pending-kvs! store)
+                            db-with-parents (-> db
+                                                (assoc-in [:config :branch] branch)
+                                                (assoc-in [:meta :datahike/parents] parents))
+                            [schema-meta-kv-to-write pre-cid-store]
+                            (db->stored db-with-parents true)
+                            cid (create-commit-id db-with-parents pre-cid-store)
+                            db-to-store (assoc-in pre-cid-store
+                                                  [:meta :datahike/commit-id] cid)
+                            pending-kvs (get-and-clear-pending-kvs! store)
                         ;; Same opt-out as datahike.writing/commit!: no
                         ;; commit-graph store → no separate cid record.
-                        commit-graph? (get (:config db) :commit-graph? true)]
+                            commit-graph? (get (:config db) :commit-graph? true)]
 
-                  ;; Update the set of known branches
-                    (<?- (k/update store :branches #(conj (set %) branch) opts))
+                  ;; Write all data. The branch head is a MUTABLE pointer and goes LAST,
+                  ;; after every value it names — the barrier invariant, as in commit!.
+                        (if (multi-key-capable? store)
+                      ;; ORDERED vec, not a map: konserve applies a [k v] seq in sequence
+                      ;; order, and a map batch makes NO ordering promise (konserve.core/
+                      ;; multi-assoc). The batch is atomic here, so this is not about torn
+                      ;; writes — it is so a konserve-sync subscriber RELAYS the batch in
+                      ;; the order it was committed, instead of possibly landing the head
+                      ;; on a replica before the nodes it references. Mirrors commit!.
+                          (let [writes (cond-> (vec pending-kvs)
+                                         schema-meta-kv-to-write (conj [(first schema-meta-kv-to-write)
+                                                                        (second schema-meta-kv-to-write)])
+                                         commit-graph?           (conj [cid db-to-store])
+                                         true                    (conj [branch db-to-store]))]
+                            (<?- (k/multi-assoc store writes opts)))
+                          (do
+                            (<?- (write-pending-kvs! store pending-kvs sync?))
+                            (when schema-meta-kv-to-write
+                              (<?- (k/assoc store (first schema-meta-kv-to-write) (second schema-meta-kv-to-write) opts)))
+                            (when commit-graph?
+                              (<?- (k/assoc store cid db-to-store opts)))
+                            (<?- (k/assoc store branch db-to-store opts))))
 
-                  ;; Write all data
-                    (if (multi-key-capable? store)
-                      (let [writes-map (cond-> (into {} pending-kvs)
-                                         schema-meta-kv-to-write (assoc (first schema-meta-kv-to-write) (second schema-meta-kv-to-write))
-                                         commit-graph?           (assoc cid db-to-store)
-                                         true                    (assoc branch db-to-store))]
-                        (<?- (k/multi-assoc store writes-map opts)))
-                      (do
-                        (<?- (write-pending-kvs! store pending-kvs sync?))
-                        (when schema-meta-kv-to-write
-                          (<?- (k/assoc store (first schema-meta-kv-to-write) (second schema-meta-kv-to-write) opts)))
-                        (when commit-graph?
-                          (<?- (k/assoc store cid db-to-store opts)))
-                        (<?- (k/assoc store branch db-to-store opts))))
-                    nil))))))
+                  ;; PUBLISH LAST. `:branches` is what GC's whitelist is built from
+                  ;; (datahike.gc/gc-storage!), so naming a branch whose head does not
+                  ;; exist yet makes the mark contribute NOTHING for it.
+                        (<?- (k/update store :branches #(conj (set %) branch) opts))
+                        nil)
+                      (finally (guard/done! gc-sid gc-token)))))))))
 
 (defn commit-id
   "Retrieve the commit-id for this db."
