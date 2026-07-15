@@ -75,6 +75,48 @@ This means you can model one-to-many relationships naturally:
 ;; => ["clojure" "database" "datalog" "awesome"]
 ```
 
+## Identity of nested objects
+
+By default every nested map becomes its **own** entity, so two occurrences of the
+same object are two entities — there is no sharing:
+
+```clojure
+(du/transact-unstructured conn {:name "Alice" :home {:city "NYC" :zip "10001"}})
+(du/transact-unstructured conn {:name "Bob"   :home {:city "NYC" :zip "10001"}})
+;; => TWO :home entities, though the addresses are identical.
+```
+
+Pass `{:identity :content}` to give each nested map a **content id** — a recursive
+`hasch` hash of the subtree, stored under a `:db.unique/identity` attribute — so
+structurally identical objects collapse to **one shared entity**:
+
+```clojure
+(du/transact-unstructured conn {:name "Alice" :home {:city "NYC" :zip "10001"}}
+                          {:identity :content})
+(du/transact-unstructured conn {:name "Bob"   :home {:city "NYC" :zip "10001"}}
+                          {:identity :content})
+;; => ONE address entity, referenced by both Alice and Bob.
+```
+
+Sharing is **recursive** (Merkle): a shared grand-child is one entity even when its
+parents differ. It is also **immutable by construction** — change the content and the
+id changes, so you can never alias-and-mutate someone else's value object.
+
+**When to use it.** Content identity gives *value* semantics, and it merges
+*coincidentally* identical maps. That is correct for value objects (an address, a geo
+point, money) and wrong for *entities* that merely happen to share every field — but
+JSON can't tell the two apart, so it is a deliberate choice. For **record** semantics,
+give the map a natural key instead: declare an attribute `:db.unique/identity` and
+datahike's ordinary upsert dedups it under either mode, no content id needed.
+
+```clojure
+;; a record identified by its email — upserts to one entity, no content id
+(d/transact conn [{:db/ident :user/email :db/valueType :db.type/string
+                   :db/unique :db.unique/identity :db/cardinality :db.cardinality/one}])
+(du/transact-unstructured conn {:user/email "a@x" :user/name "Alice"})
+(du/transact-unstructured conn {:user/email "a@x" :user/name "Alice B."})  ;; same entity
+```
+
 ## Advanced Usage
 
 ### Working with the Schema Directly
