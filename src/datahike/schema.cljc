@@ -286,11 +286,9 @@
   (s/valid? ::schema schema))
 
 (defn describe-type [schema-type]
-  ;; `:db.type/value` used to be a set spec, so s/describe rendered the enum of
-  ;; legal value types — which is what the "Bad entity value ..." error shows the
-  ;; user. Opening it up to registered custom types made it a predicate, and
-  ;; s/describe would print the predicate's SOURCE instead of the alternatives.
-  ;; Rebuild the enum, now including whatever is registered.
+  ;; The "Bad entity value ..." error shows the user the enumeration of legal value
+  ;; types. `:db.type/value` is now defined by reference to `builtin-value-types`, so
+  ;; `s/describe` renders that var rather than the alternatives — build the enum here.
   (if (= schema-type :db.type/value)
     (into (sorted-set) builtin-value-types)
     (s/describe schema-type)))
@@ -298,16 +296,15 @@
 (defn key-bearing-misuse
   "Reasons this schema entity would let the collector delete live data, or nil.
 
-   A key-bearing value type (`:db.type/store-ref`, or a custom type declaring
-   `:reachable-keys`) NAMES an object in the store. The collector keeps such an
-   object alive by scanning the datoms of attributes declared with that type. Two
-   shapes defeat that scan, both silently — so they are rejected rather than
-   documented:
+   A key-bearing value type (`:db.type/store-ref`) NAMES an object in the store. The
+   collector keeps such an object alive by scanning the datoms of attributes declared
+   with that type. Two shapes defeat that scan, both silently — so they are rejected
+   rather than documented:
 
    TUPLES. A `:db/tupleType` / `:db/tupleTypes` value is a vector on a
-   `:db.type/tuple` attribute. The attribute's OWN valueType is the builtin tuple,
-   so the registry is never consulted and the keys nested inside the vector are
-   invisible to the mark: the objects get swept while the datom still names them.
+   `:db.type/tuple` attribute. The attribute's OWN valueType is the builtin tuple, so
+   the mark scans by valueType and the keys nested inside the vector are invisible to
+   it: the objects get swept while the datom still names them.
 
    :db/noHistory. Retracted values of a `:db/noHistory` attribute are not retained
    in the temporal indices. Under `:keep-history? true` an `as-of` read can still
