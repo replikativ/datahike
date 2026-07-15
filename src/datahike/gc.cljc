@@ -255,10 +255,12 @@
 
      - IN THIS KONSERVE STORE — `gc-storage!` already spares and reclaims them.
        Portable across every backend, and `delete-database` erases them with the
-       database. But konserve frames a binary value as [header][meta][payload], so
-       the bytes are not raw at that key: reads and writes must go through
-       `k/bget`/`k/bassoc`, i.e. through your process. Fine for small payloads,
-       wrong for a 50 MB upload.
+       database. konserve frames a binary value as [header][meta][payload], so the
+       bytes are not raw at that key: reads and writes go through `k/bget`/`k/bassoc`.
+       Streamable (e.g. `:file`), so heap stays flat even for large files — but the
+       bytes proxy through your JVM (client → server → store) and you forgo S3-native
+       range, resumable multipart, and CDN. Fine at moderate size; S3-direct is the
+       only thing that scales.
 
      - ANYWHERE ELSE — a raw S3 prefix the browser PUTs to with a presigned URL and
        a content-type, a CDN, another bucket. The bytes never transit your JVM,

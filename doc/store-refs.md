@@ -43,10 +43,13 @@ the trade-off between them is real.
 - ✅ **`delete-database` erases it** with the database. One store, one lifetime.
 - ✅ **Portable** — works on every konserve backend, so the local `:file` setup behaves
   exactly like S3.
-- ❌ **Bytes transit your process.** konserve frames a binary value as
-  `[header][meta][payload]`, so the object at that key is *not* raw. Reads and writes
-  must go through `k/bget` / `k/bassoc`. Fine for a 50 KB thumbnail. **Wrong for a
-  50 MB upload.**
+- ⚠️ **Reads/writes go through `k/bget` / `k/bassoc`.** konserve frames a binary value
+  as `[header][meta][payload]`, so the object at that key is *not* raw — a few header
+  bytes, then your payload. Cheap, and streamable (e.g. `:file`), so heap stays flat
+  even for large files.
+- ⚠️ **But the bytes proxy through your JVM.** An extra hop `client → server → store`,
+  and you forgo S3-native range requests, resumable multipart, and CDN. Fine at
+  moderate size; **S3-direct is the only thing that scales.**
 
 ### Anywhere else — a raw object store, a CDN
 
