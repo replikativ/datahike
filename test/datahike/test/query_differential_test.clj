@@ -10,9 +10,9 @@
    shape covered. Enumerated shapes live in query-shape-corpus-test; this
    namespace explores the composition space around them.
 
-   CI budget: a FIXED seed and small case count keep this deterministic and
-   cheap (~100 queries, each run twice against one small shared db — a few
-   seconds). To fuzz more deeply out-of-band, raise the count locally, e.g.:
+   CI budget: a FIXED seed keeps this deterministic; 1000 cases run in ~13s
+   (the JVM/db setup dominates — marginal cost is ~5ms per case). To fuzz
+   more deeply out-of-band, raise the count locally, e.g.:
      DATAHIKE_DIFF_CASES=5000 clojure -M:test --focus datahike.test.query-differential-test
    A failure prints the offending query; with the fixed seed it reproduces
    deterministically, and test.check shrinks it to a minimal spec."
@@ -25,7 +25,11 @@
    [datahike.query :as q]))
 
 (def ^:private num-cases
-  (or (some-> (System/getenv "DATAHIKE_DIFF_CASES") parse-long) 100))
+  ;; 1000, not 100: the fixed JVM/db setup dominates the cost (100 cases
+  ;; ≈ 8.7s, 1000 ≈ 13.4s — ~5ms marginal per case once warm), and every
+  ;; distinct divergence the 30k-seed hunts found surfaced within the first
+  ;; ~2600 seeds — 1000 covers most of the discovery zone for +5s of CI.
+  (or (some-> (System/getenv "DATAHIKE_DIFF_CASES") parse-long) 1000))
 
 ;; One shared db for all cases — content exercises card-one/card-many, refs,
 ;; missing attributes (for get-else), keyword values (for or-branches) and a
