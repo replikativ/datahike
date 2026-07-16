@@ -26,7 +26,9 @@
             [is.simm.distributed-scope :as ds]
             [datahike.kabel.tx-broadcast :as tx-broadcast]
             [konserve-sync.core :as sync]
-            [konserve-sync.walkers.datahike :as dh-walker]
+            ;; datahike's own walker — follows :db.type/store-ref values so referenced
+            ;; blobs replicate, unlike konserve-sync's index-only walker.
+            [datahike.kabel.walker :as dh-walker]
             [kabel.peer :as peer]
             #?(:clj [superv.async :refer [go-try S <?]]
                :cljs [superv.async :refer [<?] :refer-macros [go-try]])
@@ -320,7 +322,7 @@
      any branch locally; `:trunk` / a branch keyword / a coll scopes the
      initial node sync to those branches (lean replica of the active branch —
      out-of-scope branches must be fetched on demand). See
-     `konserve-sync.walkers.datahike/datahike-walk-fn`."
+     `datahike.kabel.walker/datahike-walk-fn`."
   ([store-id conn peer]
    (register-store-for-remote-access! store-id conn peer nil))
   ([store-id conn peer {:keys [branches]}]

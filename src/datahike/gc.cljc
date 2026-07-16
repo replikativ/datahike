@@ -1,5 +1,6 @@
 (ns datahike.gc
   (:require [clojure.set :as set]
+            [datahike.config :as dc]
             [datahike.constants :as c]
             [datahike.datom :as dd]
             [datahike.gc-guard :as guard]
@@ -289,6 +290,53 @@
                              async/merge
                              (<<? S))]
              (apply set/union (map :store-refs walked))))))
+
+(defn record-store-refs
+  "The store-ref blob keys named by the datom VALUES in a SINGLE stored-db record —
+   its AEVT, plus temporal AEVT when history is retained. This is the `store-refs`
+   slice `gc-storage!` runs, exposed for one branch head.
+
+   WHY IT IS PUBLIC. A reachability walker — the garbage collector here, and
+   `konserve-sync`'s replication walker equally — discovers keys by walking the index
+   TREES; it never looks inside a datom's value. So a blob named only by a
+   `:db.type/store-ref` value is invisible to it: the collector would sweep it (fixed
+   by `store-refs`), and the sync walker would never SHIP it — a subscriber ends up
+   with a live datom pointing at an object that never replicated. The datahike sync
+   walker unions this in per branch head to close that gap, exactly as the mark does.
+
+   PER-RECORD, not per-history: it returns the refs in THIS head's index — precisely
+   the set a walker ships for that head (under `:keep-history?` the temporal index
+   already carries the retained ones). `reachable-store-refs` is the other shape — it
+   walks the commit graph for GC retention. Don't confuse them: sync wants this one.
+
+   Needs only the store and the record — no connection. The record carries its own
+   `:config` (`:index`, `:attribute-refs?`), so nothing is inferred: under
+   `:attribute-refs?` the datoms hold attribute EIDs and the slice keys off the
+   `:ident-ref-map` accordingly. Schema comes from the record's `:schema-meta-key`
+   (falling back to an inline `:schema`); the temporal index is sliced when the record
+   retains one. `index-type` overrides the record's index if given."
+  ([store stored-db] (record-store-refs store stored-db nil))
+  ([store stored-db index-type]
+   (go-try S
+           (let [rec-config    (:config stored-db)
+                 index-type    (or index-type (:index rec-config) dc/*default-index*)
+                 schema-meta   (when-let [k (:schema-meta-key stored-db)]
+                                 (<? S (k/get store k)))
+                 schema        (or (:schema schema-meta) (:schema stored-db))
+                 ident-ref-map (:ident-ref-map schema-meta)
+                 config        {:index index-type
+                                :attribute-refs? (:attribute-refs? rec-config)}
+                 storage       (:storage store)
+                 bind          (fn [idx root]
+                                 (cond-> (with-storage index-type idx storage)
+                                   root (-seed-root! root)))
+                 aevt          (bind (:aevt-key stored-db) (:aevt-root stored-db))
+                 taevt         (when (:temporal-aevt-key stored-db)
+                                 (bind (:temporal-aevt-key stored-db)
+                                       (:temporal-aevt-root stored-db)))]
+             (if schema
+               (store-refs config schema ident-ref-map aevt taevt)
+               #{})))))
 
 (defn start-background-gc!
   "Runs `gc-storage!` on `conn`'s database periodically in the background and

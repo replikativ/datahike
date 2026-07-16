@@ -317,6 +317,24 @@
               "and the bytes are still at the same key"))))
     (<! (cleanup conn cfg))))
 
+(deftest-async record-store-refs-slices-one-head
+  ;; The per-record primitive the konserve-sync walker unions in: the store-refs a
+  ;; single branch HEAD names. Same blind spot as GC — a blob named only by a datom
+  ;; value is invisible to a walk of the index trees — so the sync walker must add
+  ;; exactly this, or a subscriber gets a live datom pointing at an unreplicated blob.
+  (let [cfg  (base-cfg (rand-uuid) nil)
+        conn (<! (fresh-conn cfg))
+        store (:store @conn)]
+    (<! (d/transact! conn schema))
+    (let [blob (<! (put-blob! conn (str->bytes "walked payload") {:issue/title "sync me"}))]
+      (is (contains? (<! (gc/record-store-refs store (<! (k/get store :db {:sync? false})))) blob)
+          "the head's store-refs include a referenced blob — what a walker must ship")
+      (let [eid (d/q '[:find ?e . :where [?e :issue/title "sync me"]] @conn)]
+        (<! (d/transact! conn [[:db/retractEntity eid]])))
+      (is (not (contains? (<! (gc/record-store-refs store (<! (k/get store :db {:sync? false})))) blob))
+          "retracted (no history) — the head no longer names it, nothing to ship"))
+    (<! (cleanup conn cfg))))
+
 (deftest-async unreferenced-blob-is-not-kept
   (testing "writing bytes into the store does NOT make them live — only a datom does"
     (let [cfg   (base-cfg (rand-uuid) nil)

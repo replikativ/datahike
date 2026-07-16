@@ -28,7 +28,7 @@
             [konserve.core :as k]
             [datahike.versioning :refer [branch! branch-as-db]]
             [konserve-sync.core :as sync]
-            [konserve-sync.walkers.datahike :as dh-walker]
+            [datahike.kabel.walker :as dh-walker]
             [is.simm.distributed-scope :as ds]
             [superv.async :refer [<?? S]]
             [clojure.core.async :refer [alts!! timeout <!!]]))
