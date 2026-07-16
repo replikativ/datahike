@@ -58,64 +58,122 @@
 
 (def ^:private gen-spec
   (gen/hash-map
-   :score?   gen/boolean                                     ;; add [?e :score ?s]
-   :tag?     gen/boolean                                     ;; add [?e :tag ?t]
-   :friend?  gen/boolean                                     ;; add [?e :friend ?f] [?f :name ?fn]
-   :modifier (gen/elements [:none :pred-lt :pred-gt :fn-upper
-                            :get-else :not-tag :or-tag :fn-chain])
-   :pred-const (gen/choose 0 35)
-   :find     (gen/elements [:e :e+primary :e+modifier :primary+modifier])))
+   :score?    gen/boolean                                    ;; add [?e :score ?s]
+   :tag?      gen/boolean                                    ;; add [?e :tag ?t]
+   :friend?   gen/boolean                                    ;; add [?e :friend ?f] [?f :name ?fn]
+   ;; 0-3 stacked modifiers — combinations are where ordering/pipeline
+   ;; interactions live (a single-modifier grammar found three bugs; the
+   ;; composition space is the next stratum)
+   :modifiers (gen/vector-distinct
+               (gen/elements [:pred-lt :pred-gt :fn-upper :fn-chain
+                              :get-else :get-else-long :missing-nick
+                              :not-tag :not-join-nick :or-tag :or-and
+                              :pred-two-vars])
+               {:min-elements 0 :max-elements 3})
+   :pred-const (gen/choose -5 40)
+   ;; deterministic clause permutation — both engines must tolerate ANY
+   ;; user-written clause order
+   :shuffle-seed (gen/choose 0 1000)
+   :shuffle?  gen/boolean
+   :temporal  (gen/frequency [[6 (gen/return :none)]
+                              [2 (gen/return :as-of)]
+                              [1 (gen/return :history)]])
+   :in-coll?  gen/boolean                                    ;; bind ?e via :in [?e ...]
+   :find      (gen/elements [:e :e+primary :e+modifier :primary+modifier
+                             :coll-primary :agg-count :agg-min :agg-count-primary])))
 
 (defn- build-query
-  "Assemble a valid query from a spec. Returns [query-vector]."
-  [{:keys [score? tag? friend? modifier pred-const find]}]
+  "Assemble a valid query + extra args from a spec. Returns [query args]."
+  [{:keys [score? tag? friend? modifiers pred-const shuffle-seed shuffle?
+           in-coll? find]}]
   (let [patterns (cond-> '[[?e :name ?n]]
                    score? (conj '[?e :score ?s])
                    tag? (conj '[?e :tag ?t])
                    friend? (conj '[?e :friend ?f] '[?f :name ?fn]))
-        ;; modifiers that need ?s degrade to :fn-upper when score? is absent
-        modifier (if (and (#{:pred-lt :pred-gt} modifier) (not score?))
-                   :fn-upper
-                   modifier)
-        [mod-clauses mod-var]
-        (case modifier
-          :none      [[] nil]
-          :pred-lt   [[(list 'vector (list '< '?s pred-const))] nil]
-          :pred-gt   [[(list 'vector (list '> '?s pred-const))] nil]
-          :fn-upper  [['[(clojure.string/upper-case ?n) ?u]] '?u]
-          :get-else  [['[(get-else $ ?e :nick "none") ?v]] '?v]
-          :not-tag   [['(not [?e :tag :red])] nil]
-          :or-tag    [['(or [?e :tag :red] [?e :tag :blue])] nil]
-          :fn-chain  [['[(clojure.string/upper-case ?n) ?u]
-                       '[(clojure.string/lower-case ?u) ?l]] '?l])
-        ;; predicate clauses were built as (vector (...)) markers — realize them
-        mod-clauses (mapv (fn [c] (if (and (seq? c) (= 'vector (first c)))
-                                    [(second c)]
-                                    c))
-                          mod-clauses)
+        ;; modifiers that need ?s degrade when score? is absent
+        modifiers (mapv (fn [m] (if (and (#{:pred-lt :pred-gt :pred-two-vars} m)
+                                         (not score?))
+                                  :fn-upper m))
+                        (distinct modifiers))
+        mod->clauses
+        (fn [m]
+          (case m
+            :pred-lt       [[[(list '< '?s pred-const)]] nil]
+            :pred-gt       [[[(list '> '?s pred-const)]] nil]
+            :pred-two-vars [['[(< ?s 100)] '[(not= ?s 11)]] nil]
+            :fn-upper      [['[(clojure.string/upper-case ?n) ?u]] '?u]
+            :fn-chain      [['[(clojure.string/upper-case ?n) ?u]
+                             '[(clojure.string/lower-case ?u) ?l]] '?l]
+            :get-else      [['[(get-else $ ?e :nick "none") ?v]] '?v]
+            :get-else-long [['[(get-else $ ?e :score 0) ?gs]] '?gs]
+            :missing-nick  [['[(missing? $ ?e :nick)]] nil]
+            :not-tag       [['(not [?e :tag :red])] nil]
+            :not-join-nick [['(not-join [?e] [?e :nick _])] nil]
+            :or-tag        [['(or [?e :tag :red] [?e :tag :blue])] nil]
+            :or-and        [['(or (and [?e :tag :red] [?e :score ?s2])
+                                  [?e :nick "al"])] nil]))
+        expanded (mapv mod->clauses modifiers)
+        mod-clauses (into [] (mapcat first) expanded)
+        mod-var (some second expanded)
+        clauses (into patterns mod-clauses)
+        clauses (if shuffle?
+                  ;; seeded deterministic permutation
+                  (let [rng (java.util.Random. (long shuffle-seed))
+                        idxs (loop [order (vec (range (count clauses))) i (dec (count clauses))]
+                               (if (pos? i)
+                                 (let [j (.nextInt rng (inc i))]
+                                   (recur (assoc order i (order j) j (order i)) (dec i)))
+                                 order))]
+                    (mapv clauses idxs))
+                  clauses)
         primary (cond score? '?s tag? '?t friend? '?fn :else '?n)
-        find-vars (distinct
-                   (case find
-                     :e ['?e]
-                     :e+primary ['?e primary]
-                     :e+modifier ['?e (or mod-var primary)]
-                     :primary+modifier [primary (or mod-var '?n)]))]
-    (vec (concat [:find] find-vars [:where] patterns mod-clauses))))
+        find-part (case find
+                    :e ['?e]
+                    :e+primary (vec (distinct ['?e primary]))
+                    :e+modifier (vec (distinct ['?e (or mod-var primary)]))
+                    :primary+modifier (vec (distinct [primary (or mod-var '?n)]))
+                    :coll-primary [[primary '...]]
+                    :agg-count [(list 'count '?e)]
+                    :agg-min ['?e (list 'min (if score? '?s '?n))]
+                    :agg-count-primary [primary (list 'count '?e)])
+        in-part (when in-coll? '[$ [?e ...]])
+        args (when in-coll? [[100 101 102 103 104 105]])]
+    [(vec (concat [:find] find-part
+                  (when in-part (cons :in in-part))
+                  [:where] clauses))
+     args]))
 
-(defn- run-engine [disable? query db]
+(defn- normalize
+  "Order-insensitive, duplicate-preserving comparison form: collection finds
+   ([?x ...]) and aggregate rels may come back in engine-specific order."
+  [r]
+  (cond
+    (set? r) (into #{} (map (fn [t] (if (sequential? t) (vec t) t))) r)
+    (sequential? r) (frequencies r)
+    :else r))
+
+(defn- run-engine [disable? query db args]
   (try
     (binding [q/*disable-planner* disable?]
-      (d/q query db))
+      (normalize (apply d/q query db args)))
     (catch Exception _ ::raised)))
+
+(defn- wrap-db [db temporal]
+  (case temporal
+    :none db
+    :as-of (d/as-of db (:max-tx db))
+    :history (d/history db)))
 
 (defspec base-and-planner-agree-on-generated-queries
   {:num-tests num-cases :seed 1721160000042}
   (prop/for-all [spec gen-spec]
-                (let [query (build-query spec)
-                      base (run-engine true query @test-db)
-                      planner (run-engine false query @test-db)]
+                (let [[query args] (build-query spec)
+                      db (wrap-db @test-db (:temporal spec))
+                      base (run-engine true query db args)
+                      planner (run-engine false query db args)]
                   (is (= base planner)
                       (str "engines diverge on " (pr-str query)
+                           " args " (pr-str args) " temporal " (:temporal spec)
                            "\n  base:    " (pr-str base)
                            "\n  planner: " (pr-str planner)))
                   (= base planner))))

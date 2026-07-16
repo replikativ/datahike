@@ -4492,37 +4492,57 @@
                                            :find-idx _fi})))
                                     find-elements))
 
-                  ;; Extract typed columns from Object[] tuples
-                  ;; Detect types from first tuple, then extract into typed arrays
-                     first-tuple ^objects (.get ^java.util.ArrayList result-list 0)
+                  ;; Datalog aggregation operates on the DEDUPLICATED projection
+                  ;; of the find tuple space (no :with here — the columnar path
+                  ;; is gated on its absence). The wide tuples from the fused
+                  ;; scan carry every group var — a card-many merge or a joined
+                  ;; helper var multiplies rows that are identical once
+                  ;; projected to [group-vars ∪ agg-vars], so aggregating the
+                  ;; wide rows over-counted ((count ?e) returned the row count)
+                  ;; and skewed sums/averages. Project + dedup first, exactly
+                  ;; like the relation engine's collect→set→aggregate.
+                     needed-idxs (vec (distinct (concat (map :col-idx group-cols)
+                                                        (keep :col-idx agg-cols))))
+                     projected (java.util.LinkedHashSet.)
+                     _ (dotimes [i n]
+                         (let [^objects wide (.get ^java.util.ArrayList result-list i)]
+                           (.add projected (mapv (fn [idx] (aget wide idx)) needed-idxs))))
+                     rows (vec projected)
+                     n' (count rows)
+                     idx->pos (into {} (map-indexed (fn [pos idx] [idx pos]) needed-idxs))
+
+                  ;; Extract typed columns from the deduplicated projection.
+                  ;; Detect types from the first row, then extract into typed arrays.
+                     first-row (nth rows 0)
 
                      extract-column
                      (fn [col-idx]
-                       (let [sample (aget first-tuple col-idx)]
+                       (let [pos (int (get idx->pos col-idx))
+                             sample (nth first-row pos)]
                          (cond
                            (instance? Long sample)
-                           (let [arr (long-array n)]
-                             (dotimes [i n]
-                               (aset arr i (long (aget ^objects (.get ^java.util.ArrayList result-list i) col-idx))))
+                           (let [arr (long-array n')]
+                             (dotimes [i n']
+                               (aset arr i (long (nth (nth rows i) pos))))
                              arr)
 
                            (instance? Double sample)
-                           (let [arr (double-array n)]
-                             (dotimes [i n]
-                               (aset arr i (double (aget ^objects (.get ^java.util.ArrayList result-list i) col-idx))))
+                           (let [arr (double-array n')]
+                             (dotimes [i n']
+                               (aset arr i (double (nth (nth rows i) pos))))
                              arr)
 
                            (instance? String sample)
-                           (let [arr ^"[Ljava.lang.String;" (make-array String n)]
-                             (dotimes [i n]
-                               (aset arr i ^String (aget ^objects (.get ^java.util.ArrayList result-list i) col-idx)))
+                           (let [arr ^"[Ljava.lang.String;" (make-array String n')]
+                             (dotimes [i n']
+                               (aset arr i ^String (nth (nth rows i) pos)))
                              arr)
 
                            :else
                         ;; Generic object array for other types (keywords, etc.)
-                           (let [arr (object-array n)]
-                             (dotimes [i n]
-                               (aset arr i (aget ^objects (.get ^java.util.ArrayList result-list i) col-idx)))
+                           (let [arr (object-array n')]
+                             (dotimes [i n']
+                               (aset arr i (nth (nth rows i) pos)))
                              arr))))
 
                   ;; Build column map for the aggregate engine
@@ -4541,7 +4561,23 @@
                                        (if col-key
                                          [agg-op col-key]
                                          [agg-op])) ;; e.g. [:count] with no column
-                                     agg-cols)]
+                                     agg-cols)
+                  ;; VALUE aggregates (min/max/sum/avg/…) are only handed to the
+                  ;; columnar engine over NUMERIC columns: over an object/string
+                  ;; column it returns argmin-style ROW INDICES, which the old
+                  ;; code passed through as values ([:find ?e (min ?n)] returned
+                  ;; 0,1,2… instead of names). Everything else falls through
+                  ;; (return nil) to the relation path, which is correct for
+                  ;; any comparable type. :count/:count-distinct are type-safe.
+                     numeric-array? (fn [col]
+                                      (let [c (.getName (class col))]
+                                        (or (= c "[J") (= c "[D"))))
+                     type-safe? (every? (fn [{:keys [agg-op col-key]}]
+                                          (or (nil? col-key)
+                                              (#{:count :count-distinct} agg-op)
+                                              (numeric-array? (get column-map col-key))))
+                                        agg-cols)]
 
               ;; Call the external aggregate engine
-                 (aggregate-fn column-map group-keys agg-specs)))))))))
+                 (when type-safe?
+                   (aggregate-fn column-map group-keys agg-specs))))))))))

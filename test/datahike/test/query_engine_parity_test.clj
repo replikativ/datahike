@@ -157,6 +157,61 @@
       (is (= 2 (count (planner projected db)))
           "no duplicate tuples inside the result set"))))
 
+(defn- multiset
+  "Aggregate results come back as vectors whose group order is engine-specific;
+   compare them as multisets."
+  [r]
+  (if (sequential? r) (frequencies (map vec r)) r))
+
+(deftest sorted-merge-card-many-driver-parity
+  (testing "a card-many attribute promoted to DRIVING scan by clause order
+            keeps all its values (sorted-merge advanced per entity and emitted
+            only the first value; found by the generative differential test
+            under clause-order permutation)"
+    (let [conn (fresh-conn)
+          _ (d/transact conn [{:db/ident :name :db/valueType :db.type/string :db/cardinality :db.cardinality/one}
+                              {:db/ident :nick :db/valueType :db.type/string :db/cardinality :db.cardinality/one}
+                              {:db/ident :score :db/valueType :db.type/long :db/cardinality :db.cardinality/one}
+                              {:db/ident :tag :db/valueType :db.type/keyword :db/cardinality :db.cardinality/many}
+                              {:db/ident :friend :db/valueType :db.type/ref :db/cardinality :db.cardinality/one}])
+          _ (d/transact conn [{:db/id 100 :name "alice" :nick "al" :score 10 :tag [:red :blue] :friend 101}
+                              {:db/id 101 :name "bob" :score 20 :tag [:blue]}
+                              {:db/id 102 :name "carol" :nick "cc" :score 30 :friend 100}
+                              {:db/id 103 :name "dave" :tag [:red]}
+                              {:db/id 104 :name "eve" :score 20 :friend 103}
+                              {:db/id 105 :name "frank" :nick "f" :tag [:green :red] :score 5}])
+          db (d/db conn)
+          ;; the fn/pred clause FIRST is what promotes [?e :tag ?t] to driver
+          queries ['[:find ?e ?t :where [(some? ?n)] [?e :tag ?t] [?e :name ?n]]
+                   '[:find ?e ?t :where [(clojure.string/upper-case ?n) ?u] [?e :tag ?t] [?e :name ?n]]
+                   '[:find ?t ?u :where [(clojure.string/upper-case ?n) ?u] [?e :tag ?t] [?e :name ?n]]]]
+      (doseq [query queries]
+        (is (= (base query db) (planner query db))
+            (str "planner must not truncate card-many driving scans: " (pr-str query)))))))
+
+(deftest columnar-aggregate-parity
+  (testing "the columnar aggregate path deduplicates the projected tuple space
+            and never returns argmin row indices (both found by the generative
+            differential test)"
+    (let [conn (fresh-conn)
+          _ (d/transact conn [{:db/ident :name :db/valueType :db.type/string :db/cardinality :db.cardinality/one}
+                              {:db/ident :score :db/valueType :db.type/long :db/cardinality :db.cardinality/one}
+                              {:db/ident :tag :db/valueType :db.type/keyword :db/cardinality :db.cardinality/many}])
+          _ (d/transact conn [{:db/id 100 :name "alice" :score 10 :tag [:red :blue]}
+                              {:db/id 101 :name "bob" :score 25 :tag [:blue]}
+                              {:db/id 103 :name "dave" :tag [:red]}
+                              {:db/id 105 :name "frank" :score 5 :tag [:green :red]}])
+          db (d/db conn)]
+      (doseq [query ['[:find (count ?e) :where [?e :name ?n] [?e :tag ?t]]
+                     '[:find (count ?e) :where [?e :name ?n] (not [?e :tag :red])]
+                     '[:find ?s (count ?e) :where [?e :name ?n] [?e :score ?s] [?e :tag ?t]]
+                     ;; string min: the columnar engine returned ROW INDICES —
+                     ;; now falls through to the (correct) relation path
+                     '[:find ?e (min ?n) :where [?e :name ?n]]
+                     '[:find ?s (sum ?s) :where [?e :score ?s] [?e :tag ?t]]]]
+        (is (= (multiset (base query db)) (multiset (planner query db)))
+            (str "aggregate divergence on " (pr-str query)))))))
+
 (deftest replan-seed-does-not-leak-literal-vars
   (testing "replan orders a consumer of the real ?p after ?p's producer, even
             when an executed nested-q op mentions ?p inside its query literal"

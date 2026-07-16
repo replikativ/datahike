@@ -627,9 +627,17 @@
                                            (let [sv (get clause 2)]
                                              (and (some? sv) (not (analyze/free-var? sv)))))))
                         :cljs false)
+        ;; The DRIVING scan must be card-one for the sorted merge: it advances
+        ;; per entity, so a card-many driver ([?e :tag ?t] promoted to driver
+        ;; by clause order) emitted only the FIRST value per entity — found by
+        ;; the generative differential test under clause-order permutation.
+        ;; A card-many driver routes to per-cursor merge, whose outer loop
+        ;; runs once per scan DATOM.
+        scan-card-one? (get-in scan-op [:schema-info :card-one?] true)
         use-sorted-scan? #?(:clj (and use-cursors?
                                       (pos? n-merges)
                                       scan-attr-ground?
+                                      scan-card-one?
                                       (not has-card-many?)
                                       (not has-anti?)
                                       (not has-optional?))
