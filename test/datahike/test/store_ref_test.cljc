@@ -231,6 +231,19 @@
                                         :db/valueType :db.type/store-ref
                                         :db/noHistory true
                                         :db/cardinality :db.cardinality/one}])))))
+    (testing ":db/noHistory added to a LIVE store-ref in a SEPARATE tx is rejected too
+              — the guard is on the resulting shape, not only the all-in-one form, so
+              a partial update and a raw [:db/add] (neither restating :db/valueType)
+              can't sneak it past"
+      (<! (d/transact! conn [{:db/ident :issue/thumb
+                              :db/valueType :db.type/store-ref
+                              :db/cardinality :db.cardinality/one}]))
+      (is (re-find #"noHistory cannot be combined"
+                   (<! (tx-error conn [{:db/id [:db/ident :issue/thumb] :db/noHistory true}])))
+          "partial entity-map update")
+      (is (re-find #"noHistory cannot be combined"
+                   (<! (tx-error conn [[:db/add [:db/ident :issue/thumb] :db/noHistory true]])))
+          "raw :db/add datom"))
     (<! (cleanup conn cfg))))
 
 (deftest-async external-blobs-mark-without-sweep

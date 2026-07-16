@@ -100,24 +100,39 @@
     (when (and attribute-refs? (contains? (dbi/-system-entities db) e))
       (log/raise "System schema entity cannot be changed"
                  {:error :transact/schema :entity-id e}))
-    (if (= a-ident :db/ident)
-      (if (schema v-ident)
-        (log/raise (str "Schema with attribute " v-ident " already exists")
-                   {:error :transact/schema :attribute v-ident})
-        (-> (assoc-in db [:schema v-ident] (merge (or (schema e) {}) (hash-map a-ident v-ident)))
-            (assoc-in [:schema e] v-ident)
-            (assoc-in [:ident-ref-map v-ident] e)
-            (assoc-in [:ref-ident-map e] v-ident)))
-      (if-let [schema-entry (schema e)]
-        (if (schema schema-entry)
-          (update-in db [:schema schema-entry a-ident] (fn [old]
-                                                         (if (ds/entity-spec-attr? a-ident)
-                                                           (if old
-                                                             (conj old v-ident)
-                                                             [v-ident])
-                                                           v-ident)))
-          (assoc-in db [:schema e a-ident] v-ident))
-        (assoc-in db [:schema e] (hash-map a-ident v-ident))))))
+    (let [new-db (if (= a-ident :db/ident)
+                   (if (schema v-ident)
+                     (log/raise (str "Schema with attribute " v-ident " already exists")
+                                {:error :transact/schema :attribute v-ident})
+                     (-> (assoc-in db [:schema v-ident] (merge (or (schema e) {}) (hash-map a-ident v-ident)))
+                         (assoc-in [:schema e] v-ident)
+                         (assoc-in [:ident-ref-map v-ident] e)
+                         (assoc-in [:ref-ident-map e] v-ident)))
+                   (if-let [schema-entry (schema e)]
+                     (if (schema schema-entry)
+                       (update-in db [:schema schema-entry a-ident] (fn [old]
+                                                                      (if (ds/entity-spec-attr? a-ident)
+                                                                        (if old
+                                                                          (conj old v-ident)
+                                                                          [v-ident])
+                                                                        v-ident)))
+                       (assoc-in db [:schema e a-ident] v-ident))
+                     (assoc-in db [:schema e] (hash-map a-ident v-ident))))]
+      ;; A schema mutation must not produce a shape that lets GC delete a
+      ;; still-referenced object — a :db.type/store-ref inside a tuple, or under
+      ;; :db/noHistory (schema/key-bearing-misuse). check-schema-update rejects the
+      ;; all-in-one declaration, but this is the universal chokepoint every schema
+      ;; datom flows through, so it also catches the shape being COMPLETED by a
+      ;; separate op — an entity-map partial update or a raw
+      ;; `[:db/add e :db/noHistory true]`, neither of which restates :db/valueType.
+      ;; Checked on the RESULTING entry, so whichever datom lands last is the one
+      ;; that trips it, regardless of order.
+      (when (not= a-ident :db/ident)
+        (let [entry (get-in new-db [:schema (get-in new-db [:schema e])])]
+          (when (map? entry)
+            (when-let [why (ds/key-bearing-misuse entry)]
+              (log/raise why {:error :transact/schema :entity-id e :attribute a-ident})))))
+      new-db)))
 
 (defn update-rschema [db]
   (assoc db :rschema (dbu/rschema (:schema db))))
