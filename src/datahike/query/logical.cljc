@@ -174,6 +174,18 @@
                     ;; eids, and the index lookup returns 0 datoms (datoms are
                     ;; stored with eid attributes in this mode).
                     (let [args (:args ci)
+                          ;; get-else's first arg names the SOURCE. Carry a
+                          ;; named source ($data) onto the LOptionalScan so the
+                          ;; lowered op resolves the right db and the executor's
+                          ;; synthetic fn-clause names a resolvable source —
+                          ;; dropping it ran the scan against the default db and
+                          ;; (via the '$-hardcoded reconstruction) silently lost
+                          ;; the left-outer semantics for named-source queries
+                          ;; (issue #884).
+                          src (let [s (first args)]
+                                (when (and (symbol? s) (not= '$ s)
+                                           (= \$ (first (name s))))
+                                  s))
                           e-var (second args)
                           raw-attr (nth args 2)
                           attr (if (and (keyword? raw-attr)
@@ -200,7 +212,7 @@
                                         [e-var attr bind-var]  ;; synthetic clause
                                         scan-vars
                                         e-var attr bind-var nil ;; e a v tx
-                                        nil                     ;; source
+                                        src                     ;; source (nil = default $)
                                         default-val             ;; default value
                                         bind-var)               ;; binding var
                                        idx)))

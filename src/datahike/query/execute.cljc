@@ -4168,22 +4168,50 @@
 
               ;; Single pattern scan
                 :pattern-scan
-                (if (and op-db (not (dbu/db? op-db)))
+                (if (:optional? op)
+                ;; Standalone optional scan (get-else whose e-var isn't shared
+                ;; with a groupable scan — e.g. e bound by an :in binding, or a
+                ;; NAMED-source query where source mismatch prevents fusing).
+                ;; The plain scan path is an inner join: it would emit only
+                ;; entities HAVING the attribute and silently drop the ones
+                ;; the default is FOR (issue #884). Route through bind-by-fn
+                ;; for left-outer-with-default, naming the op's actual source —
+                ;; a named source ($data) resolves via :sources; the previous
+                ;; '$-hardcoded reconstruction did not.
+                  (let [[e-var attr bind-var] (:clause op)
+                        default-val (:default-value op)
+                        ;; re-wrap seq defaults (quote-unwrapped at IR
+                        ;; construction) so -call-fn round-trips.
+                        default-arg (if (seq? default-val) (list 'quote default-val) default-val)
+                        src (or (:source op) '$)
+                        fn-clause [(list 'get-else src e-var attr default-arg) bind-var]
+                        ctx' (binding [rel/*implicit-source* op-db]
+                               (bind-by-fn-strict ctx fn-clause))
+                        ;; lookup via bind-by-fn doesn't honor :pushdown-preds;
+                        ;; re-apply them as post-filters (cf. the temporal
+                        ;; fallback below).
+                        ctx' (binding [rel/*implicit-source* op-db]
+                               (reduce (fn [c pred-clause]
+                                         (#?(:clj legacy/filter-by-pred :cljs (rel/get-legacy-fn :filter-by-pred))
+                                          c pred-clause))
+                                       ctx' (filter some? (mapv :pred-clause (:pushdown-preds op)))))]
+                    (recur ctx' plan (inc idx)))
+                  (if (and op-db (not (dbu/db? op-db)))
                 ;; Non-db source (e.g. collection $b) — use legacy lookup
                 ;; lookup-pattern-coll takes [source orig-pattern resolved-pattern];
                 ;; passing clause twice — no resolution needed in fallback.
-                  (let [new-rel (#?(:clj legacy/lookup-pattern-coll :cljs (rel/get-legacy-fn :lookup-pattern-coll)) op-db (:clause op) (:clause op))
-                        ctx' (binding [rel/*implicit-source* op-db
-                                       rel/*lookup-attrs* (lookup-attrs-for-clauses op-db (:clause op) nil)]
-                               (update ctx :rels rel/collapse-rels new-rel))]
-                    (recur ctx' plan (inc idx)))
-                  (if (not (pss-instance? (:eavt op-db)))
-                    (let [ti (temporal-info op-db)
-                          scan-attr (second (:clause op))]
-                      (if (and (some? ti)
-                               (pss-instance? (:eavt (:origin-db ti)))
-                               (not (:optional? op))
-                               (some? scan-attr) (not (symbol? scan-attr)))
+                    (let [new-rel (#?(:clj legacy/lookup-pattern-coll :cljs (rel/get-legacy-fn :lookup-pattern-coll)) op-db (:clause op) (:clause op))
+                          ctx' (binding [rel/*implicit-source* op-db
+                                         rel/*lookup-attrs* (lookup-attrs-for-clauses op-db (:clause op) nil)]
+                                 (update ctx :rels rel/collapse-rels new-rel))]
+                      (recur ctx' plan (inc idx)))
+                    (if (not (pss-instance? (:eavt op-db)))
+                      (let [ti (temporal-info op-db)
+                            scan-attr (second (:clause op))]
+                        (if (and (some? ti)
+                                 (pss-instance? (:eavt (:origin-db ti)))
+                                 (not (:optional? op))
+                                 (some? scan-attr) (not (symbol? scan-attr)))
                     ;; Temporal DB with a PSS-backed origin and a concrete-attr,
                     ;; non-optional pattern: stay on the FUSED seek path (per bound
                     ;; entity/value temporal index seeks via execute-group-direct +
@@ -4192,75 +4220,63 @@
                     ;; and full-scans the attribute every call (catastrophic inside
                     ;; a recursive-rule fixpoint). Optional (get-else) and
                     ;; variable-attribute patterns stay on legacy below.
-                        (let [[ctx' _] (execute-temporal-group-rel op-db op ctx ti)]
-                          (recur ctx' plan (inc idx)))
+                          (let [[ctx' _] (execute-temporal-group-rel op-db op ctx ti)]
+                            (recur ctx' plan (inc idx)))
                   ;; Temporal/non-standard DB — use legacy lookup with search context.
                   ;; lookup-batch-search takes [source context orig-pattern resolved-pattern];
                   ;; passing clause twice — no resolution needed in fallback.
-                  ;; If this op is a standalone LOptionalScan-derived pattern-scan
-                  ;; (get-else where the entity isn't shared with another scan in
-                  ;; the same scope, e.g. `?e` only appears inside OR branches),
-                  ;; the legacy lookup-batch-search would inner-join and drop
-                  ;; entities lacking the attribute. Route through bind-by-fn for
-                  ;; left-outer-with-default semantics, matching the legacy
-                  ;; engine's behavior for [(get-else …) ?v].
-                        (let [ctx' (binding [rel/*implicit-source* op-db]
-                                     (if (:optional? op)
-                                       (let [[e-var attr bind-var] (:clause op)
-                                             default-val (:default-value op)
-                                             ;; re-wrap seq defaults — see the optional-merge
-                                             ;; site above.
-                                             default-arg (if (seq? default-val) (list 'quote default-val) default-val)
-                                             fn-clause [(list 'get-else '$ e-var attr default-arg) bind-var]]
-                                         (bind-by-fn-strict ctx fn-clause))
-                                       (#?(:clj legacy/lookup-batch-search :cljs (rel/get-legacy-fn :lookup-batch-search)) op-db ctx (:clause op) (:clause op))))
+                  ;; (Standalone optional scans never reach here — they are
+                  ;; routed through bind-by-fn at the top of the :pattern-scan
+                  ;; case, which also names the op's actual source.)
+                          (let [ctx' (binding [rel/*implicit-source* op-db]
+                                       (#?(:clj legacy/lookup-batch-search :cljs (rel/get-legacy-fn :lookup-batch-search)) op-db ctx (:clause op) (:clause op)))
                         ;; Re-apply pushed-down predicates as a post-filter.
                         ;; lookup-batch-search doesn't honor :pushdown-preds and
                         ;; the planner has already consumed the clause-level
                         ;; predicate (:consumed-preds), so without this filter
                         ;; the predicate is silently dropped. Symmetric with
                         ;; the entity-group branch above.
-                              ctx' (binding [rel/*implicit-source* op-db]
-                                     (reduce (fn [c pred-clause]
-                                               (#?(:clj legacy/filter-by-pred :cljs (rel/get-legacy-fn :filter-by-pred))
-                                                c pred-clause))
-                                             ctx' (filter some? (mapv :pred-clause (:pushdown-preds op)))))]
-                          (recur ctx' plan (inc idx)))))
+                                ctx' (binding [rel/*implicit-source* op-db]
+                                       (reduce (fn [c pred-clause]
+                                                 (#?(:clj legacy/filter-by-pred :cljs (rel/get-legacy-fn :filter-by-pred))
+                                                  c pred-clause))
+                                               ctx' (filter some? (mapv :pred-clause (:pushdown-preds op)))))]
+                            (recur ctx' plan (inc idx)))))
                 ;; DB source — use fused scan or single pattern scan
-                    (let [;; Check if next ops form an ad-hoc fusable group
-                          all-ops (:ops plan)
-                          e-var (first (:clause op))
-                          op-source (:source op)
-                          fusable (when (and (= :scan (:join-method op)) (empty? (:rels ctx)))
-                                    (loop [j (inc idx) fused []]
-                                      (if (>= j (count all-ops))
-                                        fused
-                                        (let [next-op (nth all-ops j)]
-                                          (if (and (= :pattern-scan (:op next-op))
-                                                   (= :lookup (:join-method next-op))
-                                                   (= e-var (first (:clause next-op)))
+                      (let [;; Check if next ops form an ad-hoc fusable group
+                            all-ops (:ops plan)
+                            e-var (first (:clause op))
+                            op-source (:source op)
+                            fusable (when (and (= :scan (:join-method op)) (empty? (:rels ctx)))
+                                      (loop [j (inc idx) fused []]
+                                        (if (>= j (count all-ops))
+                                          fused
+                                          (let [next-op (nth all-ops j)]
+                                            (if (and (= :pattern-scan (:op next-op))
+                                                     (= :lookup (:join-method next-op))
+                                                     (= e-var (first (:clause next-op)))
                                                ;; Only fuse ops on the same source
-                                                   (= op-source (:source next-op)))
-                                            (recur (inc j) (conj fused next-op))
-                                            fused)))))]
-                      (if (seq fusable)
-                        (let [[ctx' consumed] (execute-fused-scan-rel op-db op fusable ctx)
-                              actual-card (ctx-total-tuples ctx')
-                              plan' (if (and (> (- (count (:ops plan)) (+ idx consumed)) 1)
-                                             (should-replan? actual-card estimated-card))
-                                      (replan-fn plan (+ idx (dec consumed)) actual-card op-db)
-                                      plan)]
-                          (recur ctx' plan' (long (+ idx consumed))))
-                        (let [new-rel (execute-pattern-scan op-db op (:cancel ctx) (:rels ctx))
-                              ctx' (binding [rel/*implicit-source* op-db
-                                             rel/*lookup-attrs* (lookup-attrs-for-clauses op-db (:clause op) nil)]
-                                     (update ctx :rels rel/collapse-rels new-rel))
-                              actual-card (count (:tuples new-rel))
-                              plan' (if (and (> (- (count (:ops plan)) idx) 2)
-                                             (should-replan? actual-card estimated-card))
-                                      (replan-fn plan idx actual-card op-db)
-                                      plan)]
-                          (recur ctx' plan' (inc idx)))))))
+                                                     (= op-source (:source next-op)))
+                                              (recur (inc j) (conj fused next-op))
+                                              fused)))))]
+                        (if (seq fusable)
+                          (let [[ctx' consumed] (execute-fused-scan-rel op-db op fusable ctx)
+                                actual-card (ctx-total-tuples ctx')
+                                plan' (if (and (> (- (count (:ops plan)) (+ idx consumed)) 1)
+                                               (should-replan? actual-card estimated-card))
+                                        (replan-fn plan (+ idx (dec consumed)) actual-card op-db)
+                                        plan)]
+                            (recur ctx' plan' (long (+ idx consumed))))
+                          (let [new-rel (execute-pattern-scan op-db op (:cancel ctx) (:rels ctx))
+                                ctx' (binding [rel/*implicit-source* op-db
+                                               rel/*lookup-attrs* (lookup-attrs-for-clauses op-db (:clause op) nil)]
+                                       (update ctx :rels rel/collapse-rels new-rel))
+                                actual-card (count (:tuples new-rel))
+                                plan' (if (and (> (- (count (:ops plan)) idx) 2)
+                                               (should-replan? actual-card estimated-card))
+                                        (replan-fn plan idx actual-card op-db)
+                                        plan)]
+                            (recur ctx' plan' (inc idx))))))))
 
                 :predicate
                 (recur (#?(:clj legacy/filter-by-pred

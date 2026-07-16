@@ -92,6 +92,36 @@
       (is (= (base query db) (planner query db))
           "planner must plant the unwrapped constant, not the (quote …) literal"))))
 
+(deftest get-else-named-source-parity
+  (testing "get-else over a NAMED source keeps left-outer semantics (issue #884)"
+    ;; Pre-fix: the source mismatch prevented the optional scan from fusing
+    ;; with the $data name-scan; it then ran standalone on the plain scan path
+    ;; (an inner join) and silently dropped the entity the default is FOR.
+    ;; LOptionalScan now carries the source (the scans fuse again), and a
+    ;; genuinely standalone optional scan routes through bind-by-fn naming
+    ;; the op's actual source instead of a hardcoded '$.
+    (let [conn (fresh-conn)
+          _    (d/transact conn [{:db/ident :name :db/valueType :db.type/string
+                                  :db/cardinality :db.cardinality/one}
+                                 {:db/ident :nick :db/valueType :db.type/string
+                                  :db/cardinality :db.cardinality/one}])
+          _    (d/transact conn [{:db/id 100 :name "alice" :nick "al"}
+                                 {:db/id 101 :name "bob"}])
+          db   (d/db conn)
+          named '[:find ?e ?v :in $data :where
+                  [$data ?e :name ?n]
+                  [(get-else $data ?e :nick "none") ?v]]
+          ;; standalone shape: e-var comes from a collection binding, so the
+          ;; optional scan has no scan to fuse with on ANY source
+          standalone '[:find ?e ?v :in $ [?e ...] :where
+                       [(get-else $ ?e :nick "none") ?v]]]
+      (is (= #{[100 "al"] [101 "none"]} (base named db)))
+      (is (= (base named db) (planner named db))
+          "planner must not drop the defaulted row on a named source (BUG: returned only the entity that has :nick)")
+      (is (= #{[100 "al"] [101 "none"]} (base standalone db [100 101])))
+      (is (= (base standalone db [100 101]) (planner standalone db [100 101]))
+          "standalone optional scan keeps left-outer semantics"))))
+
 (deftest replan-seed-does-not-leak-literal-vars
   (testing "replan orders a consumer of the real ?p after ?p's producer, even
             when an executed nested-q op mentions ?p inside its query literal"
