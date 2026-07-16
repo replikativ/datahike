@@ -26,6 +26,12 @@
             [datahike.test.query-rules-test]
             ;; Background GC (start-background-gc! / gc-storage!) — portable smoke.
             [datahike.test.background-gc-test]
+            ;; :db.type/store-ref — blob GC contract, content-addressing, external
+            ;; blobs (mark-without-sweep). Exercises with-unreferenced-writes on cljs.
+            [datahike.test.store-ref-test]
+            ;; konserve-sync reachability walker — follows store-ref values so a
+            ;; referenced blob replicates (a browser subscriber walks the same way).
+            [datahike.kabel.walker-test]
             ;; Portable graph algorithms.
             [datahike.test.experimental.graph-util-test]
             [datahike.test.experimental.graph-test]
@@ -692,6 +698,8 @@
                'datahike.test.query-aggregates-test
                'datahike.test.query-rules-test
                'datahike.test.background-gc-test
+               'datahike.test.store-ref-test
+               'datahike.kabel.walker-test
                'datahike.test.experimental.graph-util-test
                'datahike.test.experimental.graph-test
                'datahike.test.experimental.anomaly-test

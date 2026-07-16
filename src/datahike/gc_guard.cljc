@@ -39,7 +39,10 @@
    is outside that model (and outside it for a more basic reason than GC: without head
    fencing, two writers on a branch can lose each other's commits — issue #878).
    Readers are unconstrained."
-  #?(:clj (:import [java.util Date])))
+  #?(:clj (:import [java.util Date]))
+  ;; Self-require the macro namespace so `with-unreferenced-writes` is available to
+  ;; ClojureScript consumers that `:refer` it (the `datahike.test.async` pattern).
+  #?(:cljs (:require-macros [datahike.gc-guard])))
 
 (defn- now [] #?(:clj (Date.) :cljs (js/Date.)))
 (defn- ms [d] #?(:clj (.getTime ^Date d) :cljs (.getTime d)))

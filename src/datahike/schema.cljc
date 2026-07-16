@@ -32,7 +32,7 @@
 (s/def :db.type/uuid uuid?)
 (s/def :db.type/tuple vector?)
 
-(s/def :db.type/value
+(def builtin-value-types
   #{:db.type/bigdec
     :db.type/bigint
     :db.type/boolean
@@ -47,12 +47,46 @@
     :db.type/string
     :db.type/symbol
     :db.type/uuid
+    :db.type/store-ref
     :db.type/value
     :db.type/tuple
     :db.type/cardinality
     :db.type.install/attribute
     :db.type/valueType
     :db.type/unique})
+
+(s/def :db.type/value builtin-value-types)
+
+;; :db.type/store-ref — a UUID that NAMES AN OBJECT: a blob, an out-of-line payload.
+;; The ONE thing it adds over :db.type/uuid is that the garbage collector MARKS it,
+;; so the object it names is known to be live (`key-bearing-value-types` below).
+;;
+;; It deliberately does NOT say where the bytes are. They may be in this database's
+;; konserve store — then `gc-storage!` spares and reclaims them for you — or in a raw
+;; S3 prefix a browser uploads to with a presigned URL, in which case
+;; `datahike.gc/reachable-store-refs` hands you the live set and you sweep it. Same
+;; type, same mark, two deployments.
+;;
+;; The id must PIN THE CONTENT (`datahike.blob/blob-id`). A store-ref is dereferenced
+;; when you read it — including `as-of` an old transaction — so a mutable pointer
+;; would hand an old read whatever is behind it NOW. See doc/store-refs.md.
+;;
+;; NOT for structured data. A store-ref is for bytes with no queryable structure — a
+;; PDF, an image, model weights. If you would ever filter or join on something INSIDE
+;; the value it is a document, not a blob: transact it as datoms
+;; (`datahike.experimental.unstructured`) or index it with a secondary index. Datoms
+;; are already sparse, so you never had to declare your fields — blobbing structured
+;; data buys no flexibility you did not already have, and costs you the indices.
+(s/def :db.type/store-ref uuid?)
+
+(def key-bearing-value-types
+  "Value types whose values NAME AN OBJECT in a store, so the collector must mark
+   them or the sweep deletes objects a datom still references.
+
+   The GC mark scans the datoms of attributes declared with one of these — and ONLY
+   those, so a database that uses none pays nothing (`datahike.gc/store-refs`). For
+   every type here the VALUE IS THE KEY; nothing more elaborate has been needed."
+  #{:db.type/store-ref})
 
 ;; TODO: add bytes
 
@@ -252,7 +286,47 @@
   (s/valid? ::schema schema))
 
 (defn describe-type [schema-type]
-  (s/describe schema-type))
+  ;; The "Bad entity value ..." error shows the user the enumeration of legal value
+  ;; types. `:db.type/value` is now defined by reference to `builtin-value-types`, so
+  ;; `s/describe` renders that var rather than the alternatives — build the enum here.
+  (if (= schema-type :db.type/value)
+    (into (sorted-set) builtin-value-types)
+    (s/describe schema-type)))
+
+(defn key-bearing-misuse
+  "Reasons this schema entity would let the collector delete live data, or nil.
+
+   A key-bearing value type (`:db.type/store-ref`) NAMES an object in the store. The
+   collector keeps such an object alive by scanning the datoms of attributes declared
+   with that type. Two shapes defeat that scan, both silently — so they are rejected
+   rather than documented:
+
+   TUPLES. A `:db/tupleType` / `:db/tupleTypes` value is a vector on a
+   `:db.type/tuple` attribute. The attribute's OWN valueType is the builtin tuple, so
+   the mark scans by valueType and the keys nested inside the vector are invisible to
+   it: the objects get swept while the datom still names them.
+
+   :db/noHistory. Retracted values of a `:db/noHistory` attribute are not retained
+   in the temporal indices. Under `:keep-history? true` an `as-of` read can still
+   reach the retracted datom, but the object it names has been collected — a
+   dangling reference in history."
+  [{:keys [db/valueType db/tupleType db/tupleTypes db/noHistory] :as _entity}]
+  (let [key-bearing? (fn [t] (contains? key-bearing-value-types t))
+        nested       (cond-> (set tupleTypes)
+                       tupleType (conj tupleType))]
+    (cond
+      (some key-bearing? nested)
+      (str "a tuple cannot hold " (pr-str (first (filter key-bearing? nested)))
+           ": the collector marks store-naming values by attribute valueType, and a"
+           " tuple's valueType is :db.type/tuple — the keys inside it would be"
+           " invisible to the mark and their objects would be swept while still"
+           " referenced. Give the reference its own attribute.")
+
+      (and noHistory (key-bearing? valueType))
+      (str ":db/noHistory cannot be combined with " (pr-str valueType)
+           ": retracted values are not retained in the temporal indices, so under"
+           " :keep-history? the object a retracted reference names would be"
+           " collected while an as-of read can still reach the datom naming it."))))
 
 (defn find-invalid-schema-updates [entity attr-schema]
   (reduce-kv

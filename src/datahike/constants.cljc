@@ -189,7 +189,14 @@
     :db/ident :dh.ref/type
     :db/valueType :db.type/keyword
     :db/cardinality :db.cardinality/one
-    :db/doc "Cross-db reference: link predicate (application vocabulary)"}])
+    :db/doc "Cross-db reference: link predicate (application vocabulary)"}
+   ;; Under :attribute-refs? a :db/valueType is a REF to the entity naming the
+   ;; type, so a builtin value type must have a stable system entity id — without
+   ;; one, `[:db/add <attr> :db/valueType :db.type/store-ref]` resolves to nil and
+   ;; the schema transaction is rejected. APPENDED (never inserted): the ids of
+   ;; existing system entities are on disk in every attribute-refs database.
+   {:db/id 52
+    :db/ident :db.type/store-ref}])
 
 (def ^:const system-entities
   "Holds the entity IDs of system attributes"

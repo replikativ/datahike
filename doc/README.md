@@ -18,6 +18,7 @@ Essential concepts for working with Datahike:
 - **[Time Variance](./time_variance.md)** - Time-travel queries (as-of, history, since), audit trails, and GDPR-compliant purging
 - **[Storage Backends](./storage-backends.md)** - Choosing the right backend for your needs (file, memory, PostgreSQL, etc.)
 - **[Garbage Collection](./gc.md)** - Reclaim storage by removing old database snapshots
+- **[Blobs and out-of-line values](./store-refs.md)** - `:db.type/store-ref` for objects you fetch, not query, kept alive by the collector (experimental)
 - **[Entity Spec](./entity_spec.md)** - Entity API and specifications
 - **[Logging and Error Handling](./logging_and_error_handling.md)** - Debugging and error management
 
