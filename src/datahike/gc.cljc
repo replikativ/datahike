@@ -132,9 +132,12 @@
                                             (let [sm (<? S (k/get store schema-meta-key))]
                                               (swap! schema-cache assoc schema-meta-key sm)
                                               sm)))
-                            ;; Older records kept the schema inline (mirrors
-                            ;; writing/stored->db). Falling through to nil here would
-                            ;; silently mark NO store-refs and sweep live objects.
+                            ;; Mirror stored->db's schema fallback so gc reads the
+                            ;; schema exactly as the db reconstructs it. This does NOT
+                            ;; guard store-refs: `(:schema record)` is non-nil only for
+                            ;; old inline-schema databases, which predate
+                            ;; :db.type/store-ref and so declare no key-bearing
+                            ;; attribute (store-refs → #{} regardless).
                             schema (or (:schema schema-meta) (:schema record))
                             ;; Kept SEPARATE from the node addresses, not folded in.
                             ;; A store-ref names an object; it does NOT say where the
