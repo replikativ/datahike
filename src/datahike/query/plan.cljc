@@ -1377,8 +1377,12 @@
 
       :else [#{} :none])
 
+    ;; Inputs come from args-free-vars for BOTH predicate and function ops:
+    ;; (:vars op) is the fully-recursive clause walk, which surfaces vars
+    ;; mentioned inside data literals (nested subquery vectors) as phantom
+    ;; inputs that no producer can ever bind — see args-free-vars.
     :predicate
-    [(set (:vars op)) :all]
+    [(args-free-vars (:args op)) :all]
 
     :function
     [(args-free-vars (:args op)) :all]
@@ -1606,7 +1610,16 @@
            (let [scored (map (fn [op] [op (op-cost op bound-vars var-cards)]) remaining)
                  executable (filter #(< (second %) max-cost) scored)
                  best (first (sort-by second (if (seq executable) executable scored)))
-                 [chosen-op _] best]
+                 [chosen-op chosen-cost] best]
+             ;; Emitting an op whose required vars aren't bound: for a top-level
+             ;; plan this means the query is unresolvable and execution will
+             ;; raise (bind-by-fn-strict); for a nested sub-plan the outer ctx
+             ;; may still provide the vars at runtime, so this is debug, not an
+             ;; error. See the #814/#815 history in execute/bind-by-fn-strict.
+             (when (>= (long chosen-cost) max-cost)
+               (log/debug "order-plan-ops: emitting op with unbound required vars"
+                          {:op (:op chosen-op) :clause (:clause chosen-op)
+                           :bound-vars bound-vars}))
              (recur (disj remaining chosen-op)
                     (into bound-vars (op-available-vars chosen-op))
                     (merge-with min var-cards (op-output-cards chosen-op))
@@ -1669,7 +1682,14 @@
                    ;; No more groups, remaining ops still unready — force the
                    ;; cheapest so we make progress (preserves prior behaviour).
                    :force     (let [scored (map (fn [op] [op (op-cost op bound-vars var-cards)]) remaining)
-                                    [chosen-op _] (first (sort-by second scored))]
+                                    [chosen-op chosen-cost] (first (sort-by second scored))]
+                                ;; Same unbound-required-vars situation as the
+                                ;; no-groups greedy fallback above — debug here,
+                                ;; authoritative raise at execute time.
+                                (when (>= (long chosen-cost) max-cost)
+                                  (log/debug "order-plan-ops: forcing op with unbound required vars"
+                                             {:op (:op chosen-op) :clause (:clause chosen-op)
+                                              :bound-vars bound-vars}))
                                 (recur nil
                                        (disj remaining chosen-op)
                                        (into bound-vars (op-available-vars chosen-op))
@@ -1774,7 +1794,12 @@
   [plan executed-idx actual-card db]
   (let [remaining-ops (subvec (vec (:ops plan)) (inc executed-idx))
         executed-ops (subvec (vec (:ops plan)) 0 (inc executed-idx))
-        bound-vars (into #{} (mapcat :vars) executed-ops)
+        ;; Produced vars, NOT the recursive (mapcat :vars): a function op's
+        ;; :vars includes vars merely MENTIONED in its args (e.g. the
+        ;; lexically-scoped ?p inside a nested subquery literal), which would
+        ;; mark the outer ?p bound before its real producer runs — the same
+        ;; scope leak fixed in op-available-vars / order-plan-ops.
+        bound-vars (into #{} (mapcat op-produced-vars) executed-ops)
         re-estimated (mapv (fn [op]
                              (if (= :pattern-scan (:op op))
                                (let [new-est (estimate/estimate-pattern

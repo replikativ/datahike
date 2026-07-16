@@ -2166,6 +2166,28 @@
             f))
         ops))
 
+(defn- bind-by-fn-strict
+  "Delegate a function clause to the legacy engine's bind-by-fn, raising when
+   it returns nil.
+
+   nil is bind-by-fn's retry-later signal: the legacy interpreter's main loop
+   (tools/resolve-clauses) re-queues the clause and raises \"Cannot resolve
+   any more clauses\" once no clause can make progress. The planner executes
+   its plan in a single linear pass with no retry queue, so a nil here means
+   the clause's input vars are unbound and can never become bound — the query
+   is unresolvable. Continuing instead of raising has produced two distinct
+   silent-wrong-results bugs: #814's `(or next-ctx ctx)` guard silently
+   DROPPED the clause, and #815's removal of that guard (on the false premise
+   that ordering guarantees runnability — order-plan-ops' fallback branches
+   emit unrunnable ops by design) let nil WIPE the whole context. Raising the
+   same error as the base engine keeps the two engines in agreement on
+   unresolvable queries and turns any future ordering bug into a loud error
+   instead of wrong data."
+  [ctx clause]
+  (or (#?(:clj legacy/bind-by-fn :cljs (rel/get-legacy-fn :bind-by-fn)) ctx clause)
+      (log/raise "Cannot resolve any more clauses"
+                 {:error :query/where :clauses [clause]})))
+
 (defn- post-filter-preds
   "Filter result-list in-place by evaluating predicate ops.
    var-index maps var-sym → position in the wide tuple Object[].
@@ -3762,7 +3784,7 @@
                  ;; Store EntityBitSet for downstream entity-group scan optimization
                  (update :entity-filters (fnil assoc {}) entity-var result-bs)))
            ;; No index found — fall back to regular function execution
-           (#?(:clj legacy/bind-by-fn :cljs (rel/get-legacy-fn :bind-by-fn)) ctx (:clause op)))
+           (bind-by-fn-strict ctx (:clause op)))
 
          ;; Retrieval: EntityBitSet + extra columns (score, distance)
          :retrieval
@@ -3784,7 +3806,7 @@
                                    results))
                  rel (rel/->Relation attrs tuples)]
              (update ctx :rels rel/collapse-rels rel))
-           (#?(:clj legacy/bind-by-fn :cljs (rel/get-legacy-fn :bind-by-fn)) ctx (:clause op)))
+           (bind-by-fn-strict ctx (:clause op)))
 
          ;; Solver: extract input, call function, merge output
          :solver
@@ -4096,7 +4118,7 @@
                                            (let [[e-var attr bind-var] (:clause opt-merge)
                                                  default-val (:default-value opt-merge)
                                                  fn-clause [(list 'get-else '$ e-var attr default-val) bind-var]]
-                                             (#?(:clj legacy/bind-by-fn :cljs (rel/get-legacy-fn :bind-by-fn)) c fn-clause)))
+                                             (bind-by-fn-strict c fn-clause)))
                                          ctx' optional-merge-ops))
                       ;; Apply anti-merges: look up each anti clause and subtract its matches
                           ctx' (binding [rel/*implicit-source* op-db]
@@ -4175,7 +4197,7 @@
                                        (let [[e-var attr bind-var] (:clause op)
                                              default-val (:default-value op)
                                              fn-clause [(list 'get-else '$ e-var attr default-val) bind-var]]
-                                         (#?(:clj legacy/bind-by-fn :cljs (rel/get-legacy-fn :bind-by-fn)) ctx fn-clause))
+                                         (bind-by-fn-strict ctx fn-clause))
                                        (#?(:clj legacy/lookup-batch-search :cljs (rel/get-legacy-fn :lookup-batch-search)) op-db ctx (:clause op) (:clause op))))
                         ;; Re-apply pushed-down predicates as a post-filter.
                         ;; lookup-batch-search doesn't honor :pushdown-preds and
@@ -4232,9 +4254,7 @@
                        plan (inc idx))
 
                 :function
-                (let [run-fn (fn [c o] (#?(:clj legacy/bind-by-fn
-                                           :cljs (rel/get-legacy-fn :bind-by-fn))
-                                        c (:clause o)))
+                (let [run-fn (fn [c o] (bind-by-fn-strict c (:clause o)))
                       in-vars (set (plan/args-free-vars (:args op)))
                       rest-ops (subvec (:ops plan) (inc idx))
                     ;; Only probe when it can pay off: the function is expensive
@@ -4312,8 +4332,12 @@
                 (recur (#?(:clj execute-external-engine
                            :cljs (fn [_ _ c] c)) op-db op ctx) plan (inc idx))
 
-              ;; Unknown op — skip
-                (recur ctx plan (inc idx))))))))))
+              ;; Unknown op — a plan/IR bug. Raise instead of skipping: silently
+              ;; advancing past an op drops that clause's constraint from the
+              ;; result (same silent-degradation class as the #814/#815 guard
+              ;; history — see bind-by-fn-strict).
+                (log/raise "Unknown plan operation"
+                           {:error :query/plan :op (:op op) :clause (:clause op)})))))))))
 
 ;; ---------------------------------------------------------------------------
 ;; Columnar aggregate execution (JVM only)
