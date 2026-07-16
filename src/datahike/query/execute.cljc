@@ -1033,26 +1033,26 @@
                                      (doseq [^Datom d mslice]
                                        (when (merge-datom-match? d eid ra vg? vgv check-v? check-tx? scan-d)
                                          (aset merge-datoms mi d)
-                                         (process-merges (inc mi)))))))
-                               (let [probe (datom eid ra vgv tx0)
-                                     ^Datom d (if merge-cursors
-                                                (.seekGE ^PersistentSortedSet$ForwardCursor
-                                                 (aget merge-cursors mi) probe)
-                                                (.lookupGE ^PersistentSortedSet eavt-pss probe))
-                                     found? (and d (merge-datom-match? d eid ra vg? vgv check-v? check-tx? scan-d))]
-                                 (if anti?
-                                   (when (not found?)
-                                     (process-merges (inc mi)))
-                                   (cond
-                                     found?
-                                     (do (aset merge-datoms mi d)
-                                         (process-merges (inc mi)))
+                                         (process-merges (inc mi))))))
+                                 (let [probe (datom eid ra vgv tx0)
+                                       ^Datom d (if merge-cursors
+                                                  (.seekGE ^PersistentSortedSet$ForwardCursor
+                                                   (aget merge-cursors mi) probe)
+                                                  (.lookupGE ^PersistentSortedSet eavt-pss probe))
+                                       found? (and d (merge-datom-match? d eid ra vg? vgv check-v? check-tx? scan-d))]
+                                   (if anti?
+                                     (when (not found?)
+                                       (process-merges (inc mi)))
+                                     (cond
+                                       found?
+                                       (do (aset merge-datoms mi d)
+                                           (process-merges (inc mi)))
                                      ;; Optional merge (get-else): synthetic
                                      ;; default-valued datom on miss.
-                                     (and merge-optional (aget merge-optional mi))
-                                     (do (aset merge-datoms mi
-                                               (datom eid ra (aget merge-defaults mi) tx0))
-                                         (process-merges (inc mi)))))))))]
+                                       (and merge-optional (aget merge-optional mi))
+                                       (do (aset merge-datoms mi
+                                                 (datom eid ra (aget merge-defaults mi) tx0))
+                                           (process-merges (inc mi))))))))))]
                    (process-merges 0)))))))
        :cljs
        (doseq [scan-d slice
@@ -4495,54 +4495,84 @@
                   ;; Datalog aggregation operates on the DEDUPLICATED projection
                   ;; of the find tuple space (no :with here — the columnar path
                   ;; is gated on its absence). The wide tuples from the fused
-                  ;; scan carry every group var — a card-many merge or a joined
-                  ;; helper var multiplies rows that are identical once
-                  ;; projected to [group-vars ∪ agg-vars], so aggregating the
-                  ;; wide rows over-counted ((count ?e) returned the row count)
-                  ;; and skewed sums/averages. Project + dedup first, exactly
-                  ;; like the relation engine's collect→set→aggregate.
+                  ;; scan carry every group var — a card-many value var or the
+                  ;; entity var projected away multiplies rows that are
+                  ;; identical once projected to [group-vars ∪ agg-vars], so
+                  ;; aggregating the wide rows over-counted ((count ?e)
+                  ;; returned the row count) and skewed sums/averages.
+                  ;;
+                  ;; PERF: dedup costs a projection + hash per row, so the
+                  ;; common benchmark shapes (entity var and all card-many
+                  ;; value vars inside the projection → duplicates impossible)
+                  ;; keep the original straight array→typed-array extraction.
                      needed-idxs (vec (distinct (concat (map :col-idx group-cols)
                                                         (keep :col-idx agg-cols))))
-                     projected (java.util.LinkedHashSet.)
-                     _ (dotimes [i n]
-                         (let [^objects wide (.get ^java.util.ArrayList result-list i)]
-                           (.add projected (mapv (fn [idx] (aget wide idx)) needed-idxs))))
-                     rows (vec projected)
-                     n' (count rows)
-                     idx->pos (into {} (map-indexed (fn [pos idx] [idx pos]) needed-idxs))
+                     projected-vars (into #{} (concat (map :var group-cols)
+                                                      (keep :var agg-cols)))
+                     scan-clause (:clause scan-op)
+                     card-many-vals (into []
+                                          (keep (fn [op]
+                                                  (when-not (get-in op [:schema-info :card-one?] true)
+                                                    (let [v (nth (:clause op) 2 nil)]
+                                                      (when (and (symbol? v) (analyze/free-var? v)) v)))))
+                                          (cons scan-op merge-ops))
+                     dupes-impossible? (and (contains? projected-vars (first scan-clause))
+                                            (every? projected-vars card-many-vals))
+                     ;; Slow path only: projected row arrays, deduped by content
+                     ;; (Arrays/asList views hash/compare by content, no copy).
+                     ^java.util.ArrayList rows
+                     (when-not dupes-impossible?
+                       (let [seen (java.util.HashSet.)
+                             acc (java.util.ArrayList.)
+                             k (count needed-idxs)]
+                         (dotimes [i n]
+                           (let [^objects wide (.get ^java.util.ArrayList result-list i)
+                                 proj (object-array k)]
+                             (dotimes [j k]
+                               (aset proj j (aget wide (int (nth needed-idxs j)))))
+                             (when (.add seen (java.util.Arrays/asList proj))
+                               (.add acc proj))))
+                         acc))
+                     n' (if dupes-impossible? n (.size rows))
+                     idx->pos (if dupes-impossible?
+                                (into {} (map (fn [idx] [idx idx])) needed-idxs)
+                                (into {} (map-indexed (fn [pos idx] [idx pos]) needed-idxs)))
+                     row-at (if dupes-impossible?
+                              (fn ^objects [i] (.get ^java.util.ArrayList result-list i))
+                              (fn ^objects [i] (.get rows i)))
 
-                  ;; Extract typed columns from the deduplicated projection.
-                  ;; Detect types from the first row, then extract into typed arrays.
-                     first-row (nth rows 0)
+                  ;; Extract typed columns from the (possibly deduplicated)
+                  ;; rows. Detect types from the first row.
+                     first-row ^objects (row-at 0)
 
                      extract-column
                      (fn [col-idx]
                        (let [pos (int (get idx->pos col-idx))
-                             sample (nth first-row pos)]
+                             sample (aget first-row pos)]
                          (cond
                            (instance? Long sample)
                            (let [arr (long-array n')]
                              (dotimes [i n']
-                               (aset arr i (long (nth (nth rows i) pos))))
+                               (aset arr i (long (aget ^objects (row-at i) pos))))
                              arr)
 
                            (instance? Double sample)
                            (let [arr (double-array n')]
                              (dotimes [i n']
-                               (aset arr i (double (nth (nth rows i) pos))))
+                               (aset arr i (double (aget ^objects (row-at i) pos))))
                              arr)
 
                            (instance? String sample)
                            (let [arr ^"[Ljava.lang.String;" (make-array String n')]
                              (dotimes [i n']
-                               (aset arr i ^String (nth (nth rows i) pos)))
+                               (aset arr i ^String (aget ^objects (row-at i) pos)))
                              arr)
 
                            :else
                         ;; Generic object array for other types (keywords, etc.)
                            (let [arr (object-array n')]
                              (dotimes [i n']
-                               (aset arr i (nth (nth rows i) pos)))
+                               (aset arr i (aget ^objects (row-at i) pos)))
                              arr))))
 
                   ;; Build column map for the aggregate engine
