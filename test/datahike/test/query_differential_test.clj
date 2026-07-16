@@ -56,6 +56,39 @@
 ;; query by a pure builder — inapplicable choices degrade gracefully instead
 ;; of producing unbound-var queries, so every case tests real behavior.
 
+(defonce ^:private test-db2
+  (delay
+    (let [cfg {:store {:backend :memory :id (random-uuid)}
+               :schema-flexibility :write}]
+      (d/create-database cfg)
+      (let [conn (d/connect cfg)]
+        (d/transact conn [{:db/ident :name :db/valueType :db.type/string :db/cardinality :db.cardinality/one}
+                          {:db/ident :score :db/valueType :db.type/long :db/cardinality :db.cardinality/one}])
+        ;; overlapping entity ids with db1, PARTIAL coverage (103/104 absent)
+        ;; and different values — cross-db joins must discriminate sources
+        (d/transact conn [{:db/id 100 :name "alice-2" :score 1}
+                          {:db/id 101 :name "bob-2"}
+                          {:db/id 102 :name "carol-2" :score 3}
+                          {:db/id 105 :name "frank-2" :score 5}])
+        (d/db conn)))))
+
+(def ^:private rule-sets
+  {:plain     '[[(named ?e ?n) [?e :name ?n]]]
+   :fn-body   '[[(upper-name ?e ?ru) [?e :name ?rn] [(clojure.string/upper-case ?rn) ?ru]]]
+   :recursive '[[(reach ?a ?b) [?a :friend ?b]]
+                [(reach ?a ?b) [?a :friend ?x] (reach ?x ?b)]]
+   :mutual    '[[(ehop ?a ?b) [?a :friend ?b]]
+                [(ehop ?a ?b) [?a :friend ?x] (ohop ?x ?b)]
+                [(ohop ?a ?b) [?a :friend ?x] (ehop ?x ?b)]]
+   :with-not  '[[(unred ?e) [?e :name ?rn] (not [?e :tag :red])]]})
+
+(def ^:private rule-clause
+  {:plain     '(named ?e ?rn2)
+   :fn-body   '(upper-name ?e ?ru)
+   :recursive '(reach ?e ?r)
+   :mutual    '(ehop ?e ?r)
+   :with-not  '(unred ?e)})
+
 (def ^:private gen-spec
   (gen/hash-map
    :score?    gen/boolean                                    ;; add [?e :score ?s]
@@ -79,17 +112,34 @@
                               [2 (gen/return :as-of)]
                               [1 (gen/return :history)]])
    :in-coll?  gen/boolean                                    ;; bind ?e via :in [?e ...]
+   ;; rules: a rule clause added to the body, rule set passed via :in %
+   :rules     (gen/frequency [[5 (gen/return :none)]
+                              [1 (gen/return :plain)]
+                              [1 (gen/return :fn-body)]
+                              [1 (gen/return :recursive)]
+                              [1 (gen/return :mutual)]
+                              [1 (gen/return :with-not)]])
+   ;; multi-source: a $2 clause joining ?e across databases
+   :multi     (gen/frequency [[4 (gen/return :none)]
+                              [1 (gen/return :join-name)]
+                              [1 (gen/return :join-score)]])
+   :use2?     gen/boolean                                    ;; prefer a $2/rule var as primary
    :find      (gen/elements [:e :e+primary :e+modifier :primary+modifier
                              :coll-primary :agg-count :agg-min :agg-count-primary])))
 
 (defn- build-query
   "Assemble a valid query + extra args from a spec. Returns [query args]."
   [{:keys [score? tag? friend? modifiers pred-const shuffle-seed shuffle?
-           in-coll? find]}]
-  (let [patterns (cond-> '[[?e :name ?n]]
+           in-coll? rules multi use2? find]}]
+  (let [;; :recursive/:mutual rule clauses walk :friend — force the pattern in
+        friend? (or friend? (#{:recursive :mutual} rules))
+        patterns (cond-> '[[?e :name ?n]]
                    score? (conj '[?e :score ?s])
                    tag? (conj '[?e :tag ?t])
-                   friend? (conj '[?e :friend ?f] '[?f :name ?fn]))
+                   friend? (conj '[?e :friend ?f] '[?f :name ?fn])
+                   (not= :none rules) (conj (get rule-clause rules))
+                   (= :join-name multi) (conj '[$2 ?e :name ?n2])
+                   (= :join-score multi) (conj '[$2 ?e :score ?s2]))
         ;; modifiers that need ?s degrade when score? is absent
         modifiers (mapv (fn [m] (if (and (#{:pred-lt :pred-gt :pred-two-vars} m)
                                          (not score?))
@@ -126,7 +176,13 @@
                                  order))]
                     (mapv clauses idxs))
                   clauses)
-        primary (cond score? '?s tag? '?t friend? '?fn :else '?n)
+        primary (cond
+                  (and use2? (= :join-name multi)) '?n2
+                  (and use2? (= :join-score multi)) '?s2
+                  (and use2? (= :fn-body rules)) '?ru
+                  (and use2? (#{:recursive :mutual} rules)) '?r
+                  (and use2? (= :plain rules)) '?rn2
+                  score? '?s tag? '?t friend? '?fn :else '?n)
         find-part (case find
                     :e ['?e]
                     :e+primary (vec (distinct ['?e primary]))
@@ -136,8 +192,15 @@
                     :agg-count [(list 'count '?e)]
                     :agg-min ['?e (list 'min (if score? '?s '?n))]
                     :agg-count-primary [primary (list 'count '?e)])
-        in-part (when in-coll? '[$ [?e ...]])
-        args (when in-coll? [[100 101 102 103 104 105]])]
+        ;; :in order must match arg order: $ [$2] [%] [coll]
+        in-part (when (or in-coll? (not= :none rules) (not= :none multi))
+                  (vec (concat '[$]
+                               (when (not= :none multi) '[$2])
+                               (when (not= :none rules) '[%])
+                               (when in-coll? '[[?e ...]]))))
+        args (vec (concat (when (not= :none multi) [::db2])
+                          (when (not= :none rules) [(get rule-sets rules)])
+                          (when in-coll? [[100 101 102 103 104 105]])))]
     [(vec (concat [:find] find-part
                   (when in-part (cons :in in-part))
                   [:where] clauses))
@@ -155,7 +218,8 @@
 (defn- run-engine [disable? query db args]
   (try
     (binding [q/*disable-planner* disable?]
-      (normalize (apply d/q query db args)))
+      (normalize (apply d/q query db
+                        (map (fn [a] (if (= ::db2 a) @test-db2 a)) args))))
     (catch Exception _ ::raised)))
 
 (defn- wrap-db [db temporal]
