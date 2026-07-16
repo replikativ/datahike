@@ -627,9 +627,17 @@
                                            (let [sv (get clause 2)]
                                              (and (some? sv) (not (analyze/free-var? sv)))))))
                         :cljs false)
+        ;; The DRIVING scan must be card-one for the sorted merge: it advances
+        ;; per entity, so a card-many driver ([?e :tag ?t] promoted to driver
+        ;; by clause order) emitted only the FIRST value per entity — found by
+        ;; the generative differential test under clause-order permutation.
+        ;; A card-many driver routes to per-cursor merge, whose outer loop
+        ;; runs once per scan DATOM.
+        scan-card-one? (get-in scan-op [:schema-info :card-one?] true)
         use-sorted-scan? #?(:clj (and use-cursors?
                                       (pos? n-merges)
                                       scan-attr-ground?
+                                      scan-card-one?
                                       (not has-card-many?)
                                       (not has-anti?)
                                       (not has-optional?))
@@ -637,8 +645,15 @@
         attr-refs? (:attribute-refs? (dbi/-config db))
         fused-path (cond
                      (zero? n-merges) :scan-only
-                     has-optional?    :per-cursor-merge
+                     ;; card-many takes precedence: per-cursor-merge does a
+                     ;; single lookupGE per merge (card-ONE semantics), so a
+                     ;; group mixing a card-many merge with an optional
+                     ;; (get-else) merge silently truncated the card-many
+                     ;; attribute to its first value. card-many-merge handles
+                     ;; mixed card-one/card-many per merge and now also emits
+                     ;; optional defaults on card-one misses.
                      has-card-many?   :card-many-merge
+                     has-optional?    :per-cursor-merge
                      use-sorted-scan? :sorted-merge
                      :else            :per-cursor-merge)
         steps (cond-> [(ir/->PIndexScan index clause scan-attr-ground?)
@@ -654,22 +669,37 @@
     (ir/->PPipeline (vec steps) fused-path use-cursors? (boolean attr-refs?))))
 
 (defn args-free-vars
-  "Walk an :args list recursively, collecting every free variable that
-   appears anywhere inside. Mirrors `analyze/extract-vars`, which is
-   already the recursive contract for `:vars` on every clause type.
+  "Walk an :args list, collecting every free variable that is an INPUT of
+   the function op — i.e. that the runtime will resolve against the outer
+   scope. That contract is set by the executors (-call-fn / bind-by-fn /
+   post-apply-fns): they substitute top-level ?var symbols only; every
+   collection arg is passed verbatim as a constant.
 
-   Why recurse: SQL translators (and any other producer of nested
-   boolean / arithmetic expressions) emit clauses like
-       [(and (= ?x ?p) (some? ?y)) ?out]
-   The :args here are seq forms, not symbols. A flat top-level
-   `(filter free-var?)` returns #{}, so the planner thinks the op has
-   no inputs and orders it before its producers — leaving the legacy
-   bind-by-fn path to fail with nil ctx until the next iteration.
-   The legacy engine is fine with nested expressions because it walks
-   them at runtime via `interpret-form`; the planner just has to
-   recognise the same shape during ordering."
+   Two consequences for the walk:
+
+   - Recurse into SEQ (list) forms. SQL translators (and any other
+     producer of nested boolean / arithmetic expressions) emit clauses
+     like [(and (= ?x ?p) (some? ?y)) ?out] whose :args are seq forms.
+     A flat top-level `(filter free-var?)` returns #{}, so the planner
+     would think the op has no inputs and order it before its producers
+     (#814).
+
+   - Do NOT recurse into non-seq collections (vectors, maps, sets):
+     they are data literals. The canonical case is a nested subquery,
+     [(datahike.api/q [:find ?p :in $x :where …] $a) ?v] — the ?vars
+     inside the query literal are lexically scoped to the subquery, not
+     references to the outer scope. Extracting them (as the previous
+     `analyze/extract-vars` walk did) marked the op as requiring vars
+     that no producer can ever bind, so ordering emitted the whole
+     function chain in arbitrary order and execution silently dropped
+     it — the nested-q/count bug."
   [args]
-  (into #{} (mapcat analyze/extract-vars) args))
+  (letfn [(walk [form]
+            (cond
+              (analyze/free-var? form) #{form}
+              (seq? form) (into #{} (mapcat walk) form)
+              :else #{}))]
+    (into #{} (mapcat walk) args)))
 
 (defn- external-engine-spec-vars
   "Collect implicit input vars from a stratum-style external-engine
@@ -1362,8 +1392,12 @@
 
       :else [#{} :none])
 
+    ;; Inputs come from args-free-vars for BOTH predicate and function ops:
+    ;; (:vars op) is the fully-recursive clause walk, which surfaces vars
+    ;; mentioned inside data literals (nested subquery vectors) as phantom
+    ;; inputs that no producer can ever bind — see args-free-vars.
     :predicate
-    [(set (:vars op)) :all]
+    [(args-free-vars (:args op)) :all]
 
     :function
     [(args-free-vars (:args op)) :all]
@@ -1510,6 +1544,21 @@
                 (dissoc op :requires-bound))))
           ops)))
 
+(defn- op-available-vars
+  "Vars that become bound once `op` has run — its produced (output) vars.
+   Used by order-plan-ops to thread the bound-vars accumulator.
+
+   NOT (:vars op): that is the recursive var walk of the whole clause, which
+   for a :function op includes vars that are only MENTIONED, not bound — the
+   canonical case is a nested subquery literal, [(datahike.api/q [:find ?p
+   :in $x :where …] $) ?v], whose lexically-scoped ?p would otherwise be
+   marked bound in the outer scope. A later clause using its own ?p then
+   looked ready before its real producer ran, was emitted too early, and was
+   silently dropped at execute time (bind-by-fn returns nil on unbound
+   inputs and the planner has no retry pass) — yielding wrong results."
+  [op]
+  (op-produced-vars op))
+
 (defn order-plan-ops
   "Order plan operations using DP for entity-group ordering and greedy
    interleaving for dependency-constrained ops (predicates, functions, etc.).
@@ -1576,9 +1625,18 @@
            (let [scored (map (fn [op] [op (op-cost op bound-vars var-cards)]) remaining)
                  executable (filter #(< (second %) max-cost) scored)
                  best (first (sort-by second (if (seq executable) executable scored)))
-                 [chosen-op _] best]
+                 [chosen-op chosen-cost] best]
+             ;; Emitting an op whose required vars aren't bound: for a top-level
+             ;; plan this means the query is unresolvable and execution will
+             ;; raise (bind-by-fn-strict); for a nested sub-plan the outer ctx
+             ;; may still provide the vars at runtime, so this is debug, not an
+             ;; error. See the #814/#815 history in execute/bind-by-fn-strict.
+             (when (>= (long chosen-cost) max-cost)
+               (log/debug "order-plan-ops: emitting op with unbound required vars"
+                          {:op (:op chosen-op) :clause (:clause chosen-op)
+                           :bound-vars bound-vars}))
              (recur (disj remaining chosen-op)
-                    (into bound-vars (:vars chosen-op))
+                    (into bound-vars (op-available-vars chosen-op))
                     (merge-with min var-cards (op-output-cards chosen-op))
                     (conj ordered chosen-op)))))
       ;; DP-order groups, then greedily interleave non-group ops
@@ -1628,21 +1686,28 @@
                  (case choice
                    :group     (recur (next group-q)
                                      remaining
-                                     (into bound-vars (:vars next-g))
+                                     (into bound-vars (op-available-vars next-g))
                                      (merge-with min var-cards (op-output-cards next-g))
                                      (conj result next-g))
                    :non-group (recur group-q
                                      (disj remaining best-ng)
-                                     (into bound-vars (:vars best-ng))
+                                     (into bound-vars (op-available-vars best-ng))
                                      (merge-with min var-cards (op-output-cards best-ng))
                                      (conj result best-ng))
                    ;; No more groups, remaining ops still unready — force the
                    ;; cheapest so we make progress (preserves prior behaviour).
                    :force     (let [scored (map (fn [op] [op (op-cost op bound-vars var-cards)]) remaining)
-                                    [chosen-op _] (first (sort-by second scored))]
+                                    [chosen-op chosen-cost] (first (sort-by second scored))]
+                                ;; Same unbound-required-vars situation as the
+                                ;; no-groups greedy fallback above — debug here,
+                                ;; authoritative raise at execute time.
+                                (when (>= (long chosen-cost) max-cost)
+                                  (log/debug "order-plan-ops: forcing op with unbound required vars"
+                                             {:op (:op chosen-op) :clause (:clause chosen-op)
+                                              :bound-vars bound-vars}))
                                 (recur nil
                                        (disj remaining chosen-op)
-                                       (into bound-vars (:vars chosen-op))
+                                       (into bound-vars (op-available-vars chosen-op))
                                        (merge-with min var-cards (op-output-cards chosen-op))
                                        (conj result chosen-op)))))))))))))
 
@@ -1744,7 +1809,12 @@
   [plan executed-idx actual-card db]
   (let [remaining-ops (subvec (vec (:ops plan)) (inc executed-idx))
         executed-ops (subvec (vec (:ops plan)) 0 (inc executed-idx))
-        bound-vars (into #{} (mapcat :vars) executed-ops)
+        ;; Produced vars, NOT the recursive (mapcat :vars): a function op's
+        ;; :vars includes vars merely MENTIONED in its args (e.g. the
+        ;; lexically-scoped ?p inside a nested subquery literal), which would
+        ;; mark the outer ?p bound before its real producer runs — the same
+        ;; scope leak fixed in op-available-vars / order-plan-ops.
+        bound-vars (into #{} (mapcat op-produced-vars) executed-ops)
         re-estimated (mapv (fn [op]
                              (if (= :pattern-scan (:op op))
                                (let [new-est (estimate/estimate-pattern

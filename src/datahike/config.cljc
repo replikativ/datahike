@@ -20,7 +20,16 @@
 (def ^:dynamic *default-schema-flexibility* :write)
 (def ^:dynamic *default-keep-history?* true)
 (def ^:dynamic *default-attribute-refs?* false)
-(def ^:dynamic *default-search-cache-size* 10000)
+;; 0 = disabled. The per-snapshot datom search cache (db.search/memoize-for)
+;; was silently dead from #503 (Nov 2022, key rename) until 2026-07; in the
+;; meantime the default path grew faster layers (PSS in-memory indexes, store
+;; cache, whole-query result cache) that make it a net LOSS on the default
+;; memory/PSS setup (~40% slower repeated entity access: LRU bookkeeping costs
+;; more than the lookup). It still pays on lazy-loading stores (~15% faster on
+;; :file). Disabled by default — matching the long-standing effective behavior
+;; — and opt-in via :search-cache-size / DATAHIKE_SEARCH_CACHE_SIZE for
+;; konserve-backed workloads with hot repeated point lookups.
+(def ^:dynamic *default-search-cache-size* 0)
 (def ^:dynamic *default-store-cache-size* 1000)
 (def ^:dynamic *default-crypto-hash?* false)
 (def ^:dynamic *default-store* :memory)                           ;; store-less = in-memory?
@@ -93,7 +102,8 @@
                  (case backend
                    :memory {:id (or id
                                     (when (or host path)
-                                      #?(:clj (java.util.UUID/nameUUIDFromBytes (.getBytes (str (or host path)) "UTF-8"))
+                                      #?(:clj (java.util.UUID/nameUUIDFromBytes
+                                               (.getBytes ^String (str (or host path)) "UTF-8"))
                                          :cljs (uuid (str (or host path))))))}
                    :pg {:username username
                         :password password
@@ -104,12 +114,14 @@
                    :level {:path path
                            :id (or id
                                    (when path
-                                     #?(:clj (java.util.UUID/nameUUIDFromBytes (.getBytes path "UTF-8"))
+                                     #?(:clj (java.util.UUID/nameUUIDFromBytes
+                                              (.getBytes ^String (str path) "UTF-8"))
                                         :cljs (uuid path))))}
                    :file {:path path
                           :id (or id
                                   (when path
-                                    #?(:clj (java.util.UUID/nameUUIDFromBytes (.getBytes path "UTF-8"))
+                                    #?(:clj (java.util.UUID/nameUUIDFromBytes
+                                             (.getBytes ^String (str path) "UTF-8"))
                                        :cljs (uuid path))))}))
    :index index
    :index-config (di/default-index-config index)

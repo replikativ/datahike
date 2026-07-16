@@ -75,7 +75,8 @@ prefix of another then it comes first."
   [x]
   #?(:cljs (.decode (js/TextDecoder. "utf8") x)
      :clj
-     (let [n (alength x)
+     (let [^bytes x x
+           n (alength x)
            dst (char-array n)]
        (dotimes [i n]
          (aset dst i (char (aget x i))))

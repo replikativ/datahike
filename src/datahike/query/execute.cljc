@@ -979,7 +979,13 @@
 (defn- execute-card-many-merge
   "Path 2: Card-many recursive cross-product merge.
    merge-ctx is [merge-attrs merge-v-ground merge-v-vals merge-anti
-                 merge-card-many merge-check-scan-v merge-check-scan-tx merge-cursors]."
+                 merge-card-many merge-check-scan-v merge-check-scan-tx merge-cursors
+                 merge-optional merge-defaults].
+   Optional (get-else) merges are always card-one (single-valued) and emit a
+   synthetic default-valued datom on miss — a group mixing card-many merges
+   with an optional merge is routed HERE (see plan/build-pipeline), because
+   per-cursor-merge's single lookupGE would truncate the card-many attribute
+   to its first value."
   [db eavt-pss slice ground-filter strict-filter
    probe-set probe-datom-field
    collect-set collect-datom-field collect-merge-idx
@@ -993,6 +999,8 @@
         ^objects merge-check-scan-v (aget ^objects merge-ctx 5)
         ^objects merge-check-scan-tx (aget ^objects merge-ctx 6)
         ^objects merge-cursors (aget ^objects merge-ctx 7)
+        ^objects merge-optional (when (> (alength ^objects merge-ctx) 8) (aget ^objects merge-ctx 8))
+        ^objects merge-defaults (when (> (alength ^objects merge-ctx) 9) (aget ^objects merge-ctx 9))
         ^objects merge-datoms merge-datoms
         ^ints find-source find-source
         ^objects const-vals const-vals]
@@ -1025,19 +1033,26 @@
                                      (doseq [^Datom d mslice]
                                        (when (merge-datom-match? d eid ra vg? vgv check-v? check-tx? scan-d)
                                          (aset merge-datoms mi d)
-                                         (process-merges (inc mi)))))))
-                               (let [probe (datom eid ra vgv tx0)
-                                     ^Datom d (if merge-cursors
-                                                (.seekGE ^PersistentSortedSet$ForwardCursor
-                                                 (aget merge-cursors mi) probe)
-                                                (.lookupGE ^PersistentSortedSet eavt-pss probe))
-                                     found? (and d (merge-datom-match? d eid ra vg? vgv check-v? check-tx? scan-d))]
-                                 (if anti?
-                                   (when (not found?)
-                                     (process-merges (inc mi)))
-                                   (when found?
-                                     (aset merge-datoms mi d)
-                                     (process-merges (inc mi))))))))]
+                                         (process-merges (inc mi))))))
+                                 (let [probe (datom eid ra vgv tx0)
+                                       ^Datom d (if merge-cursors
+                                                  (.seekGE ^PersistentSortedSet$ForwardCursor
+                                                   (aget merge-cursors mi) probe)
+                                                  (.lookupGE ^PersistentSortedSet eavt-pss probe))
+                                       found? (and d (merge-datom-match? d eid ra vg? vgv check-v? check-tx? scan-d))]
+                                   (if anti?
+                                     (when (not found?)
+                                       (process-merges (inc mi)))
+                                     (cond
+                                       found?
+                                       (do (aset merge-datoms mi d)
+                                           (process-merges (inc mi)))
+                                     ;; Optional merge (get-else): synthetic
+                                     ;; default-valued datom on miss.
+                                       (and merge-optional (aget merge-optional mi))
+                                       (do (aset merge-datoms mi
+                                                 (datom eid ra (aget merge-defaults mi) tx0))
+                                           (process-merges (inc mi))))))))))]
                    (process-merges 0)))))))
        :cljs
        (doseq [scan-d slice
@@ -1073,9 +1088,16 @@
                                (if anti?
                                  (when (not found?)
                                    (process-merges (inc mi)))
-                                 (when found?
-                                   (aset merge-datoms mi d)
-                                   (process-merges (inc mi)))))))))]
+                                 (cond
+                                   found?
+                                   (do (aset merge-datoms mi d)
+                                       (process-merges (inc mi)))
+                                   ;; Optional merge (get-else): synthetic
+                                   ;; default-valued datom on miss.
+                                   (and merge-optional (aget merge-optional mi))
+                                   (do (aset merge-datoms mi
+                                             (datom eid ra (aget merge-defaults mi) tx0))
+                                       (process-merges (inc mi))))))))))]
                (process-merges 0))))))))
 
 #?(:clj
@@ -1966,7 +1988,8 @@
                                         cursors))
                                :cljs nil)
               merge-ctx (object-array [merge-attrs merge-v-ground merge-v-vals merge-anti
-                                       merge-card-many merge-check-scan-v merge-check-scan-tx merge-cursors])]
+                                       merge-card-many merge-check-scan-v merge-check-scan-tx merge-cursors
+                                       merge-optional merge-defaults])]
           (execute-card-many-merge db eavt-pss slice ground-filter strict-filter
                                    probe-set probe-datom-field
                                    collect-set collect-datom-field collect-merge-idx
@@ -2080,8 +2103,9 @@
     (or (some #{var-sym} scan-clause)
         (some (fn [mc] (some #{var-sym} mc)) merge-clauses))))
 
-(defn- can-direct-fuse?
+(defn can-direct-fuse?
   "Check if a plan can use the direct-to-HashSet execution path.
+   Public: query/explain mirrors the execution dispatch with it.
    Delegates structural checks (op types, post-op eligibility, source exclusion)
    to plan/structurally-fusable?, then adds runtime-specific checks:
    - ALL find-vars resolvable from groups, function outputs, or consts
@@ -2094,9 +2118,14 @@
          ;; Find-var coverage: groups + function outputs + consts
      (let [group-vars (into #{} (mapcat :vars) groups)
            fn-ops (filterv #(= :function (:op %)) ops)
+           ;; Output vars come from the binding form ONLY. (:vars op) minus
+           ;; input args would also count vars merely MENTIONED in an arg —
+           ;; e.g. the lexically-scoped ?p inside a nested subquery literal
+           ;; [(q [:find ?p …] $) ?v] — wrongly satisfying find-var coverage
+           ;; for a var this plan never binds.
            fn-output-vars (into #{} (mapcat (fn [op]
-                                              (let [input-vars (into #{} (filter analyze/free-var?) (:args op))]
-                                                (remove input-vars (:vars op)))))
+                                              (filter analyze/free-var?
+                                                      (analyze/extract-vars (:binding op)))))
                                 fn-ops)
            all-available-vars (into group-vars fn-output-vars)]
        (every? #(or (and consts (contains? consts %))
@@ -2161,6 +2190,28 @@
             f))
         ops))
 
+(defn- bind-by-fn-strict
+  "Delegate a function clause to the legacy engine's bind-by-fn, raising when
+   it returns nil.
+
+   nil is bind-by-fn's retry-later signal: the legacy interpreter's main loop
+   (tools/resolve-clauses) re-queues the clause and raises \"Cannot resolve
+   any more clauses\" once no clause can make progress. The planner executes
+   its plan in a single linear pass with no retry queue, so a nil here means
+   the clause's input vars are unbound and can never become bound — the query
+   is unresolvable. Continuing instead of raising has produced two distinct
+   silent-wrong-results bugs: #814's `(or next-ctx ctx)` guard silently
+   DROPPED the clause, and #815's removal of that guard (on the false premise
+   that ordering guarantees runnability — order-plan-ops' fallback branches
+   emit unrunnable ops by design) let nil WIPE the whole context. Raising the
+   same error as the base engine keeps the two engines in agreement on
+   unresolvable queries and turns any future ordering bug into a loud error
+   instead of wrong data."
+  [ctx clause]
+  (or (#?(:clj legacy/bind-by-fn :cljs (rel/get-legacy-fn :bind-by-fn)) ctx clause)
+      (log/raise "Cannot resolve any more clauses"
+                 {:error :query/where :clauses [clause]})))
+
 (defn- post-filter-preds
   "Filter result-list in-place by evaluating predicate ops.
    var-index maps var-sym → position in the wide tuple Object[].
@@ -2180,9 +2231,12 @@
                         (let [f (nth resolved pi)
                               args (:args (nth pred-ops pi))
                               argv (mapv (fn [a]
-                                           (if (and (symbol? a) (analyze/free-var? a))
+                                           (cond
+                                             (and (symbol? a) (analyze/free-var? a))
                                              (aget tuple (int (get var-index a)))
-                                             a))
+                                             ;; (quote x) → constant x, matching -call-fn
+                                             (analyze/quote-form? a) (second a)
+                                             :else a))
                                          args)]
                           (if (try (apply f argv)
                                    #?(:clj (catch ClassCastException _ false))
@@ -2287,9 +2341,12 @@
            (if (< read-i n)
              (let [^objects tuple (result-list-get result-list read-i)
                    argv (mapv (fn [a]
-                                (if (and (symbol? a) (analyze/free-var? a))
+                                (cond
+                                  (and (symbol? a) (analyze/free-var? a))
                                   (aget tuple (int (get vi a)))
-                                  a))
+                                  ;; (quote x) → constant x, matching -call-fn
+                                  (analyze/quote-form? a) (second a)
+                                  :else a))
                               args)
                    val (apply f argv)]
                (if (some? val)
@@ -2770,11 +2827,22 @@
         ;; Convert result-list → final result with appropriate dedup strategy
         (let [has-card-many-dupes?
               (some (fn [g]
-                      (let [mops (entity-group-merge-ops g)]
+                      (let [scan-op (entity-group-scan-op g)
+                            mops (entity-group-merge-ops g)]
                         (or (some (fn [op] (not (get-in op [:schema-info :card-one?] true))) mops)
                             ;; Entity var not in find-vars → different entities can produce same tuple
-                            (let [e-var (first (:clause (entity-group-scan-op g)))]
-                              (not (some #{e-var} find-vars))))))
+                            (let [e-var (first (:clause scan-op))]
+                              (not (some #{e-var} find-vars)))
+                            ;; DRIVING scan on a card-many attribute whose value
+                            ;; var is projected away → one tuple per value with
+                            ;; identical projection. (Found by the generative
+                            ;; differential test: [?e :tag ?t] chosen as the
+                            ;; driving scan with :find [?e] emitted duplicate
+                            ;; [e] tuples into the no-dedup QueryResult path.)
+                            (let [v-var (nth (:clause scan-op) 2 nil)]
+                              (and (not (get-in scan-op [:schema-info :card-one?] true))
+                                   (symbol? v-var) (analyze/free-var? v-var)
+                                   (not (some #{v-var} find-vars)))))))
                     groups)
               is-historical? (= :historical (when temporal (:type temporal)))
               dedup-strategy (cond
@@ -3757,7 +3825,7 @@
                  ;; Store EntityBitSet for downstream entity-group scan optimization
                  (update :entity-filters (fnil assoc {}) entity-var result-bs)))
            ;; No index found — fall back to regular function execution
-           (#?(:clj legacy/bind-by-fn :cljs (rel/get-legacy-fn :bind-by-fn)) ctx (:clause op)))
+           (bind-by-fn-strict ctx (:clause op)))
 
          ;; Retrieval: EntityBitSet + extra columns (score, distance)
          :retrieval
@@ -3779,7 +3847,7 @@
                                    results))
                  rel (rel/->Relation attrs tuples)]
              (update ctx :rels rel/collapse-rels rel))
-           (#?(:clj legacy/bind-by-fn :cljs (rel/get-legacy-fn :bind-by-fn)) ctx (:clause op)))
+           (bind-by-fn-strict ctx (:clause op)))
 
          ;; Solver: extract input, call function, merge output
          :solver
@@ -4090,8 +4158,13 @@
                                  (reduce (fn [c opt-merge]
                                            (let [[e-var attr bind-var] (:clause opt-merge)
                                                  default-val (:default-value opt-merge)
-                                                 fn-clause [(list 'get-else '$ e-var attr default-val) bind-var]]
-                                             (#?(:clj legacy/bind-by-fn :cljs (rel/get-legacy-fn :bind-by-fn)) c fn-clause)))
+                                                 ;; seq defaults were quote-unwrapped at IR
+                                                 ;; construction (logical/LOptionalScan); re-wrap
+                                                 ;; so -call-fn round-trips and check-fn-args
+                                                 ;; accepts the synthetic clause.
+                                                 default-arg (if (seq? default-val) (list 'quote default-val) default-val)
+                                                 fn-clause [(list 'get-else '$ e-var attr default-arg) bind-var]]
+                                             (bind-by-fn-strict c fn-clause)))
                                          ctx' optional-merge-ops))
                       ;; Apply anti-merges: look up each anti clause and subtract its matches
                           ctx' (binding [rel/*implicit-source* op-db]
@@ -4129,22 +4202,50 @@
 
               ;; Single pattern scan
                 :pattern-scan
-                (if (and op-db (not (dbu/db? op-db)))
+                (if (:optional? op)
+                ;; Standalone optional scan (get-else whose e-var isn't shared
+                ;; with a groupable scan — e.g. e bound by an :in binding, or a
+                ;; NAMED-source query where source mismatch prevents fusing).
+                ;; The plain scan path is an inner join: it would emit only
+                ;; entities HAVING the attribute and silently drop the ones
+                ;; the default is FOR (issue #884). Route through bind-by-fn
+                ;; for left-outer-with-default, naming the op's actual source —
+                ;; a named source ($data) resolves via :sources; the previous
+                ;; '$-hardcoded reconstruction did not.
+                  (let [[e-var attr bind-var] (:clause op)
+                        default-val (:default-value op)
+                        ;; re-wrap seq defaults (quote-unwrapped at IR
+                        ;; construction) so -call-fn round-trips.
+                        default-arg (if (seq? default-val) (list 'quote default-val) default-val)
+                        src (or (:source op) '$)
+                        fn-clause [(list 'get-else src e-var attr default-arg) bind-var]
+                        ctx' (binding [rel/*implicit-source* op-db]
+                               (bind-by-fn-strict ctx fn-clause))
+                        ;; lookup via bind-by-fn doesn't honor :pushdown-preds;
+                        ;; re-apply them as post-filters (cf. the temporal
+                        ;; fallback below).
+                        ctx' (binding [rel/*implicit-source* op-db]
+                               (reduce (fn [c pred-clause]
+                                         (#?(:clj legacy/filter-by-pred :cljs (rel/get-legacy-fn :filter-by-pred))
+                                          c pred-clause))
+                                       ctx' (filter some? (mapv :pred-clause (:pushdown-preds op)))))]
+                    (recur ctx' plan (inc idx)))
+                  (if (and op-db (not (dbu/db? op-db)))
                 ;; Non-db source (e.g. collection $b) — use legacy lookup
                 ;; lookup-pattern-coll takes [source orig-pattern resolved-pattern];
                 ;; passing clause twice — no resolution needed in fallback.
-                  (let [new-rel (#?(:clj legacy/lookup-pattern-coll :cljs (rel/get-legacy-fn :lookup-pattern-coll)) op-db (:clause op) (:clause op))
-                        ctx' (binding [rel/*implicit-source* op-db
-                                       rel/*lookup-attrs* (lookup-attrs-for-clauses op-db (:clause op) nil)]
-                               (update ctx :rels rel/collapse-rels new-rel))]
-                    (recur ctx' plan (inc idx)))
-                  (if (not (pss-instance? (:eavt op-db)))
-                    (let [ti (temporal-info op-db)
-                          scan-attr (second (:clause op))]
-                      (if (and (some? ti)
-                               (pss-instance? (:eavt (:origin-db ti)))
-                               (not (:optional? op))
-                               (some? scan-attr) (not (symbol? scan-attr)))
+                    (let [new-rel (#?(:clj legacy/lookup-pattern-coll :cljs (rel/get-legacy-fn :lookup-pattern-coll)) op-db (:clause op) (:clause op))
+                          ctx' (binding [rel/*implicit-source* op-db
+                                         rel/*lookup-attrs* (lookup-attrs-for-clauses op-db (:clause op) nil)]
+                                 (update ctx :rels rel/collapse-rels new-rel))]
+                      (recur ctx' plan (inc idx)))
+                    (if (not (pss-instance? (:eavt op-db)))
+                      (let [ti (temporal-info op-db)
+                            scan-attr (second (:clause op))]
+                        (if (and (some? ti)
+                                 (pss-instance? (:eavt (:origin-db ti)))
+                                 (not (:optional? op))
+                                 (some? scan-attr) (not (symbol? scan-attr)))
                     ;; Temporal DB with a PSS-backed origin and a concrete-attr,
                     ;; non-optional pattern: stay on the FUSED seek path (per bound
                     ;; entity/value temporal index seeks via execute-group-direct +
@@ -4153,72 +4254,63 @@
                     ;; and full-scans the attribute every call (catastrophic inside
                     ;; a recursive-rule fixpoint). Optional (get-else) and
                     ;; variable-attribute patterns stay on legacy below.
-                        (let [[ctx' _] (execute-temporal-group-rel op-db op ctx ti)]
-                          (recur ctx' plan (inc idx)))
+                          (let [[ctx' _] (execute-temporal-group-rel op-db op ctx ti)]
+                            (recur ctx' plan (inc idx)))
                   ;; Temporal/non-standard DB — use legacy lookup with search context.
                   ;; lookup-batch-search takes [source context orig-pattern resolved-pattern];
                   ;; passing clause twice — no resolution needed in fallback.
-                  ;; If this op is a standalone LOptionalScan-derived pattern-scan
-                  ;; (get-else where the entity isn't shared with another scan in
-                  ;; the same scope, e.g. `?e` only appears inside OR branches),
-                  ;; the legacy lookup-batch-search would inner-join and drop
-                  ;; entities lacking the attribute. Route through bind-by-fn for
-                  ;; left-outer-with-default semantics, matching the legacy
-                  ;; engine's behavior for [(get-else …) ?v].
-                        (let [ctx' (binding [rel/*implicit-source* op-db]
-                                     (if (:optional? op)
-                                       (let [[e-var attr bind-var] (:clause op)
-                                             default-val (:default-value op)
-                                             fn-clause [(list 'get-else '$ e-var attr default-val) bind-var]]
-                                         (#?(:clj legacy/bind-by-fn :cljs (rel/get-legacy-fn :bind-by-fn)) ctx fn-clause))
-                                       (#?(:clj legacy/lookup-batch-search :cljs (rel/get-legacy-fn :lookup-batch-search)) op-db ctx (:clause op) (:clause op))))
+                  ;; (Standalone optional scans never reach here — they are
+                  ;; routed through bind-by-fn at the top of the :pattern-scan
+                  ;; case, which also names the op's actual source.)
+                          (let [ctx' (binding [rel/*implicit-source* op-db]
+                                       (#?(:clj legacy/lookup-batch-search :cljs (rel/get-legacy-fn :lookup-batch-search)) op-db ctx (:clause op) (:clause op)))
                         ;; Re-apply pushed-down predicates as a post-filter.
                         ;; lookup-batch-search doesn't honor :pushdown-preds and
                         ;; the planner has already consumed the clause-level
                         ;; predicate (:consumed-preds), so without this filter
                         ;; the predicate is silently dropped. Symmetric with
                         ;; the entity-group branch above.
-                              ctx' (binding [rel/*implicit-source* op-db]
-                                     (reduce (fn [c pred-clause]
-                                               (#?(:clj legacy/filter-by-pred :cljs (rel/get-legacy-fn :filter-by-pred))
-                                                c pred-clause))
-                                             ctx' (filter some? (mapv :pred-clause (:pushdown-preds op)))))]
-                          (recur ctx' plan (inc idx)))))
+                                ctx' (binding [rel/*implicit-source* op-db]
+                                       (reduce (fn [c pred-clause]
+                                                 (#?(:clj legacy/filter-by-pred :cljs (rel/get-legacy-fn :filter-by-pred))
+                                                  c pred-clause))
+                                               ctx' (filter some? (mapv :pred-clause (:pushdown-preds op)))))]
+                            (recur ctx' plan (inc idx)))))
                 ;; DB source — use fused scan or single pattern scan
-                    (let [;; Check if next ops form an ad-hoc fusable group
-                          all-ops (:ops plan)
-                          e-var (first (:clause op))
-                          op-source (:source op)
-                          fusable (when (and (= :scan (:join-method op)) (empty? (:rels ctx)))
-                                    (loop [j (inc idx) fused []]
-                                      (if (>= j (count all-ops))
-                                        fused
-                                        (let [next-op (nth all-ops j)]
-                                          (if (and (= :pattern-scan (:op next-op))
-                                                   (= :lookup (:join-method next-op))
-                                                   (= e-var (first (:clause next-op)))
+                      (let [;; Check if next ops form an ad-hoc fusable group
+                            all-ops (:ops plan)
+                            e-var (first (:clause op))
+                            op-source (:source op)
+                            fusable (when (and (= :scan (:join-method op)) (empty? (:rels ctx)))
+                                      (loop [j (inc idx) fused []]
+                                        (if (>= j (count all-ops))
+                                          fused
+                                          (let [next-op (nth all-ops j)]
+                                            (if (and (= :pattern-scan (:op next-op))
+                                                     (= :lookup (:join-method next-op))
+                                                     (= e-var (first (:clause next-op)))
                                                ;; Only fuse ops on the same source
-                                                   (= op-source (:source next-op)))
-                                            (recur (inc j) (conj fused next-op))
-                                            fused)))))]
-                      (if (seq fusable)
-                        (let [[ctx' consumed] (execute-fused-scan-rel op-db op fusable ctx)
-                              actual-card (ctx-total-tuples ctx')
-                              plan' (if (and (> (- (count (:ops plan)) (+ idx consumed)) 1)
-                                             (should-replan? actual-card estimated-card))
-                                      (replan-fn plan (+ idx (dec consumed)) actual-card op-db)
-                                      plan)]
-                          (recur ctx' plan' (long (+ idx consumed))))
-                        (let [new-rel (execute-pattern-scan op-db op (:cancel ctx) (:rels ctx))
-                              ctx' (binding [rel/*implicit-source* op-db
-                                             rel/*lookup-attrs* (lookup-attrs-for-clauses op-db (:clause op) nil)]
-                                     (update ctx :rels rel/collapse-rels new-rel))
-                              actual-card (count (:tuples new-rel))
-                              plan' (if (and (> (- (count (:ops plan)) idx) 2)
-                                             (should-replan? actual-card estimated-card))
-                                      (replan-fn plan idx actual-card op-db)
-                                      plan)]
-                          (recur ctx' plan' (inc idx)))))))
+                                                     (= op-source (:source next-op)))
+                                              (recur (inc j) (conj fused next-op))
+                                              fused)))))]
+                        (if (seq fusable)
+                          (let [[ctx' consumed] (execute-fused-scan-rel op-db op fusable ctx)
+                                actual-card (ctx-total-tuples ctx')
+                                plan' (if (and (> (- (count (:ops plan)) (+ idx consumed)) 1)
+                                               (should-replan? actual-card estimated-card))
+                                        (replan-fn plan (+ idx (dec consumed)) actual-card op-db)
+                                        plan)]
+                            (recur ctx' plan' (long (+ idx consumed))))
+                          (let [new-rel (execute-pattern-scan op-db op (:cancel ctx) (:rels ctx))
+                                ctx' (binding [rel/*implicit-source* op-db
+                                               rel/*lookup-attrs* (lookup-attrs-for-clauses op-db (:clause op) nil)]
+                                       (update ctx :rels rel/collapse-rels new-rel))
+                                actual-card (count (:tuples new-rel))
+                                plan' (if (and (> (- (count (:ops plan)) idx) 2)
+                                               (should-replan? actual-card estimated-card))
+                                        (replan-fn plan idx actual-card op-db)
+                                        plan)]
+                            (recur ctx' plan' (inc idx))))))))
 
                 :predicate
                 (recur (#?(:clj legacy/filter-by-pred
@@ -4227,9 +4319,7 @@
                        plan (inc idx))
 
                 :function
-                (let [run-fn (fn [c o] (#?(:clj legacy/bind-by-fn
-                                           :cljs (rel/get-legacy-fn :bind-by-fn))
-                                        c (:clause o)))
+                (let [run-fn (fn [c o] (bind-by-fn-strict c (:clause o)))
                       in-vars (set (plan/args-free-vars (:args op)))
                       rest-ops (subvec (:ops plan) (inc idx))
                     ;; Only probe when it can pay off: the function is expensive
@@ -4307,8 +4397,12 @@
                 (recur (#?(:clj execute-external-engine
                            :cljs (fn [_ _ c] c)) op-db op ctx) plan (inc idx))
 
-              ;; Unknown op — skip
-                (recur ctx plan (inc idx))))))))))
+              ;; Unknown op — a plan/IR bug. Raise instead of skipping: silently
+              ;; advancing past an op drops that clause's constraint from the
+              ;; result (same silent-degradation class as the #814/#815 guard
+              ;; history — see bind-by-fn-strict).
+                (log/raise "Unknown plan operation"
+                           {:error :query/plan :op (:op op) :clause (:clause op)})))))))))
 
 ;; ---------------------------------------------------------------------------
 ;; Columnar aggregate execution (JVM only)
@@ -4398,37 +4492,87 @@
                                            :find-idx _fi})))
                                     find-elements))
 
-                  ;; Extract typed columns from Object[] tuples
-                  ;; Detect types from first tuple, then extract into typed arrays
-                     first-tuple ^objects (.get ^java.util.ArrayList result-list 0)
+                  ;; Datalog aggregation operates on the DEDUPLICATED projection
+                  ;; of the find tuple space (no :with here — the columnar path
+                  ;; is gated on its absence). The wide tuples from the fused
+                  ;; scan carry every group var — a card-many value var or the
+                  ;; entity var projected away multiplies rows that are
+                  ;; identical once projected to [group-vars ∪ agg-vars], so
+                  ;; aggregating the wide rows over-counted ((count ?e)
+                  ;; returned the row count) and skewed sums/averages.
+                  ;;
+                  ;; PERF: dedup costs a projection + hash per row, so the
+                  ;; common benchmark shapes (entity var and all card-many
+                  ;; value vars inside the projection → duplicates impossible)
+                  ;; keep the original straight array→typed-array extraction.
+                     needed-idxs (vec (distinct (concat (map :col-idx group-cols)
+                                                        (keep :col-idx agg-cols))))
+                     projected-vars (into #{} (concat (map :var group-cols)
+                                                      (keep :var agg-cols)))
+                     scan-clause (:clause scan-op)
+                     card-many-vals (into []
+                                          (keep (fn [op]
+                                                  (when-not (get-in op [:schema-info :card-one?] true)
+                                                    (let [v (nth (:clause op) 2 nil)]
+                                                      (when (and (symbol? v) (analyze/free-var? v)) v)))))
+                                          (cons scan-op merge-ops))
+                     dupes-impossible? (and (contains? projected-vars (first scan-clause))
+                                            (every? projected-vars card-many-vals))
+                     ;; Slow path only: projected row arrays, deduped by content
+                     ;; (Arrays/asList views hash/compare by content, no copy).
+                     ^java.util.ArrayList rows
+                     (when-not dupes-impossible?
+                       (let [seen (java.util.HashSet.)
+                             acc (java.util.ArrayList.)
+                             k (count needed-idxs)]
+                         (dotimes [i n]
+                           (let [^objects wide (.get ^java.util.ArrayList result-list i)
+                                 proj (object-array k)]
+                             (dotimes [j k]
+                               (aset proj j (aget wide (int (nth needed-idxs j)))))
+                             (when (.add seen (java.util.Arrays/asList proj))
+                               (.add acc proj))))
+                         acc))
+                     n' (if dupes-impossible? n (.size rows))
+                     idx->pos (if dupes-impossible?
+                                (into {} (map (fn [idx] [idx idx])) needed-idxs)
+                                (into {} (map-indexed (fn [pos idx] [idx pos]) needed-idxs)))
+                     row-at (if dupes-impossible?
+                              (fn ^objects [i] (.get ^java.util.ArrayList result-list i))
+                              (fn ^objects [i] (.get rows i)))
+
+                  ;; Extract typed columns from the (possibly deduplicated)
+                  ;; rows. Detect types from the first row.
+                     first-row ^objects (row-at 0)
 
                      extract-column
                      (fn [col-idx]
-                       (let [sample (aget first-tuple col-idx)]
+                       (let [pos (int (get idx->pos col-idx))
+                             sample (aget first-row pos)]
                          (cond
                            (instance? Long sample)
-                           (let [arr (long-array n)]
-                             (dotimes [i n]
-                               (aset arr i (long (aget ^objects (.get ^java.util.ArrayList result-list i) col-idx))))
+                           (let [arr (long-array n')]
+                             (dotimes [i n']
+                               (aset arr i (long (aget ^objects (row-at i) pos))))
                              arr)
 
                            (instance? Double sample)
-                           (let [arr (double-array n)]
-                             (dotimes [i n]
-                               (aset arr i (double (aget ^objects (.get ^java.util.ArrayList result-list i) col-idx))))
+                           (let [arr (double-array n')]
+                             (dotimes [i n']
+                               (aset arr i (double (aget ^objects (row-at i) pos))))
                              arr)
 
                            (instance? String sample)
-                           (let [arr ^"[Ljava.lang.String;" (make-array String n)]
-                             (dotimes [i n]
-                               (aset arr i ^String (aget ^objects (.get ^java.util.ArrayList result-list i) col-idx)))
+                           (let [arr ^"[Ljava.lang.String;" (make-array String n')]
+                             (dotimes [i n']
+                               (aset arr i ^String (aget ^objects (row-at i) pos)))
                              arr)
 
                            :else
                         ;; Generic object array for other types (keywords, etc.)
-                           (let [arr (object-array n)]
-                             (dotimes [i n]
-                               (aset arr i (aget ^objects (.get ^java.util.ArrayList result-list i) col-idx)))
+                           (let [arr (object-array n')]
+                             (dotimes [i n']
+                               (aset arr i (aget ^objects (row-at i) pos)))
                              arr))))
 
                   ;; Build column map for the aggregate engine
@@ -4447,7 +4591,23 @@
                                        (if col-key
                                          [agg-op col-key]
                                          [agg-op])) ;; e.g. [:count] with no column
-                                     agg-cols)]
+                                     agg-cols)
+                  ;; VALUE aggregates (min/max/sum/avg/…) are only handed to the
+                  ;; columnar engine over NUMERIC columns: over an object/string
+                  ;; column it returns argmin-style ROW INDICES, which the old
+                  ;; code passed through as values ([:find ?e (min ?n)] returned
+                  ;; 0,1,2… instead of names). Everything else falls through
+                  ;; (return nil) to the relation path, which is correct for
+                  ;; any comparable type. :count/:count-distinct are type-safe.
+                     numeric-array? (fn [col]
+                                      (let [c (.getName (class col))]
+                                        (or (= c "[J") (= c "[D"))))
+                     type-safe? (every? (fn [{:keys [agg-op col-key]}]
+                                          (or (nil? col-key)
+                                              (#{:count :count-distinct} agg-op)
+                                              (numeric-array? (get column-map col-key))))
+                                        agg-cols)]
 
               ;; Call the external aggregate engine
-                 (aggregate-fn column-map group-keys agg-specs)))))))))
+                 (when type-safe?
+                   (aggregate-fn column-map group-keys agg-specs))))))))))

@@ -363,6 +363,152 @@
    {}
    (dissoc entity :db/id)))
 
+(def attr-defining-keys
+  "Schema keys that make an entry define an ATTRIBUTE (as opposed to an enum
+   ident, a doc-only entity, or an entity-spec). An entry carrying any of
+   these must be complete (:db/valueType + :db/cardinality) under
+   :schema-flexibility :write."
+  #{:db/valueType :db/cardinality :db/unique :db/index :db/noHistory
+    :db/tupleAttrs :db/tupleType :db/tupleTypes :db/isComponent})
+
+(def ^:private always-allowed-schema-keys
+  "Schema-entry keys whose change never needs a transition rule or data scan."
+  #{:db/doc :db/isComponent :db/noHistory :db/ident
+    :db.entity/attrs :db.entity/preds :db.secondary/building-since-tx})
+
+(defn assess-schema-transition
+  "Assess a schema entry TRANSITION on the RESULTING state: `old-entry` is the
+   entry before the transaction, `new-entry` after it (nil = entry removed).
+   Pure and data-independent — the caller performs the returned data checks
+   against the database.
+
+   This is the state-based successor of `find-invalid-schema-updates`, which
+   compares a transacted DELTA against the pre-tx schema and therefore only
+   guards the entity-map transaction path in the order the datoms happen to
+   arrive. Assessing old→new resulting entries at the end of the transaction
+   loop covers raw datom vectors, partial updates, retracts and adversarial
+   datom order uniformly (the same chokepoint discipline as
+   `key-bearing-misuse` in update-schema and the cross-tx vt-window guard).
+
+   Returns {:invalid {key [old new]}     ;; unconditional violations
+            :data-checks #{...}}         ;; checks the caller runs against data:
+     :attr-used?       — reject when the attribute has current or history
+                         datoms (valueType change, tuple-def change, entry
+                         removal, :db/index enablement)
+     :single-valued?   — reject when some entity has >1 current value
+                         (cardinality many→one)"
+  [old-entry new-entry write-flexibility?]
+  (let [old (or old-entry {})
+        new (or new-entry {})
+        changed? (fn [k] (not= (get old k) (get new k)))
+        ;; A brand-new entry is a DECLARATION, not a transition: the existing
+        ;; create-time semantics (validate-schema, implicit defaults, tuple
+        ;; nil-filling for undeclared refs, unique on card-many) stay as they
+        ;; are, and datoms co-transacted with the declaration are written
+        ;; under it. Transition rules and data checks apply only when the
+        ;; entry existed before the transaction.
+        transition? (some? old-entry)
+        invalid
+        (cond-> {}
+          ;; Completeness (:write): an attribute-defining entry must carry
+          ;; valueType and cardinality once the transaction settles.
+          (and write-flexibility?
+               (some? new-entry)
+               (some #(contains? new %) attr-defining-keys)
+               (not (and (:db/valueType new) (:db/cardinality new))))
+          (assoc :db/valueType-and-cardinality-required
+                 [(select-keys old [:db/valueType :db/cardinality])
+                  (select-keys new [:db/valueType :db/cardinality])])
+
+          ;; one→many under a unique constraint
+          (and transition?
+               (changed? :db/cardinality)
+               (= (:db/cardinality new) :db.cardinality/many)
+               (#{:db.unique/value :db.unique/identity} (:db/unique new)))
+          (assoc :db/cardinality [(:db/cardinality old) (:db/cardinality new)])
+
+          ;; ADDING unique to a cardinality-many attribute. Changing an
+          ;; existing unique (identity↔value) is allowed regardless of
+          ;; cardinality — the long-standing contract (see schema-test
+          ;; "Allow to update :db/unique only if it already exists"). An
+          ;; absent cardinality is implicitly one under :schema-flexibility
+          ;; :read.
+          (and transition?
+               (some? new-entry)
+               (:db/unique new)
+               (not (:db/unique old))
+               (some? (:db/cardinality new))
+               (not= :db.cardinality/one (:db/cardinality new)))
+          (assoc :db/unique [(:db/unique old) (:db/unique new)])
+
+          ;; secondary-index status: monotonic transitions only
+          (and (changed? :db.secondary/status)
+               (contains? old :db.secondary/status)
+               (not (contains? (get {:building #{:ready :disabled}
+                                     :ready    #{:disabled}}
+                                    (:db.secondary/status old))
+                               (:db.secondary/status new))))
+          (assoc :db.secondary/status
+                 [(:db.secondary/status old) (:db.secondary/status new)])
+
+          ;; any other db-namespaced key change is rejected (mirrors
+          ;; find-invalid-schema-updates' strict default)
+          transition?
+          (merge (into {}
+                       (keep (fn [k]
+                               (when (and (keyword? k)
+                                          (re-matches #"db(\..*)?" (or (namespace k) ""))
+                                          (not (contains? always-allowed-schema-keys k))
+                                          (not (contains? attr-defining-keys k))
+                                          (not (#{:db.secondary/status} k))
+                                          (changed? k))
+                                 [k [(get old k) (get new k)]])))
+                       (into #{} (concat (keys old) (keys new))))))
+        data-checks
+        (cond-> #{}
+          ;; entry removed while the attribute may still have datoms
+          (and transition? (nil? new-entry))
+          (conj :attr-used?)
+
+          ;; valueType CHANGE poisons existing (incl. history) datoms with
+          ;; mixed types — comparators and predicates silently misbehave
+          (and transition? (some? new-entry)
+               (:db/valueType old) (changed? :db/valueType))
+          (conj :attr-used?)
+
+          ;; tuple definition change invalidates existing tuple values
+          (and transition? (some? new-entry)
+               (some (fn [k] (and (contains? old k) (changed? k)))
+                     [:db/tupleAttrs :db/tupleType :db/tupleTypes]))
+          (conj :attr-used?)
+
+          ;; enabling :db/index retroactively — AVET was not populated for
+          ;; existing datoms, so the index path would return incomplete results
+          (and transition? (some? new-entry) (changed? :db/index) (:db/index new))
+          (conj :attr-used?)
+
+          ;; many→one with entities holding multiple values leaves state that
+          ;; q/pull/entity disagree on (entity crashes). Data-checked (not
+          ;; :attr-used?) because card-one enforcement reads EAVT, which
+          ;; covers pre-existing datoms.
+          (and (some? new-entry)
+               (changed? :db/cardinality)
+               (= (:db/cardinality old) :db.cardinality/many)
+               (= (:db/cardinality new) :db.cardinality/one))
+          (conj :single-valued?)
+
+          ;; unique added retroactively is UNENFORCEABLE against existing
+          ;; data: validate-datom checks uniqueness via AVET, and datoms
+          ;; inserted before the attribute was unique/indexed are not in
+          ;; AVET — duplicates of old values would be silently accepted.
+          ;; Like :db/index enablement, requires an unused attribute (until
+          ;; an index-backfill migration exists).
+          (and transition? (some? new-entry)
+               (:db/unique new) (not (:db/unique old)))
+          (conj :attr-used?))]
+    {:invalid invalid
+     :data-checks data-checks}))
+
 (defn is-system-keyword? [value]
   (and (or (keyword? value) (string? value))
        (if-let [ns (namespace (keyword value))]
