@@ -1,5 +1,6 @@
 (ns ^:no-doc datahike.index.persistent-set
   (:require [clojure.string]
+            [konserve.utils :as ku]
             [org.replikativ.persistent-sorted-set :as psset]
             #?(:cljs [org.replikativ.persistent-sorted-set.btset :refer [BTSet]])
             #?(:cljs [org.replikativ.persistent-sorted-set.branch :as branch :refer [Branch]])
@@ -443,7 +444,9 @@
         node)))
   (markFreed [_ address]
     (when address
-      (let [now #?(:clj (java.util.Date.) :cljs (js/Date.))]
+      ;; Monotonic stamp (konserve's write clock) — compared against
+      ;; online-GC's grace cutoff, which reads the same source.
+      (let [now (ku/now)]
         (log/trace :datahike/index-freed {:address address})
         (swap! freed-set conj address)
         (swap! freed-addresses conj [address now]))))

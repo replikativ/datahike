@@ -1,5 +1,6 @@
 (ns datahike.gc
   (:require [clojure.set :as set]
+            [konserve.utils :as ku]
             [datahike.config :as dc]
             [datahike.constants :as c]
             [datahike.datom :as dd]
@@ -215,7 +216,12 @@
    (go-try S
            (let [{:keys [config store]} db
                  store-id (:id (:store config))
-                 now #?(:clj (Date.) :cljs (js/Date.))
+                 ;; Cutoff from konserve's monotonic write clock — the SAME
+                 ;; source that stamps :last-write. Strictly increasing, so a
+                 ;; cutoff acquired after a write is strictly greater than the
+                 ;; write's stamp (no same-ms ties), and a wall-clock retreat
+                 ;; cannot classify an in-flight commit's objects as old.
+                 now (ku/now)
                  ;; Capture `now` BEFORE reading the guard: a sequence that opened
                  ;; and closed between the two reads has landed its pointer, and the
                  ;; mark (which runs after) sees it. Reading the guard first would
@@ -376,8 +382,7 @@
          (when-not (= ch stop-ch)
            (let [remove-before (if history-window-ms
                                  (#?(:clj Date. :cljs js/Date.)
-                                  (- #?(:clj (System/currentTimeMillis)
-                                        :cljs (.getTime (js/Date.)))
+                                  (- (long (ku/monotonic-now-ms))
                                      (long history-window-ms)))
                                  (#?(:clj Date. :cljs js/Date.) 0))
                  res (async/<! (gc-storage! @conn remove-before))]
