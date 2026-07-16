@@ -979,7 +979,13 @@
 (defn- execute-card-many-merge
   "Path 2: Card-many recursive cross-product merge.
    merge-ctx is [merge-attrs merge-v-ground merge-v-vals merge-anti
-                 merge-card-many merge-check-scan-v merge-check-scan-tx merge-cursors]."
+                 merge-card-many merge-check-scan-v merge-check-scan-tx merge-cursors
+                 merge-optional merge-defaults].
+   Optional (get-else) merges are always card-one (single-valued) and emit a
+   synthetic default-valued datom on miss — a group mixing card-many merges
+   with an optional merge is routed HERE (see plan/build-pipeline), because
+   per-cursor-merge's single lookupGE would truncate the card-many attribute
+   to its first value."
   [db eavt-pss slice ground-filter strict-filter
    probe-set probe-datom-field
    collect-set collect-datom-field collect-merge-idx
@@ -993,6 +999,8 @@
         ^objects merge-check-scan-v (aget ^objects merge-ctx 5)
         ^objects merge-check-scan-tx (aget ^objects merge-ctx 6)
         ^objects merge-cursors (aget ^objects merge-ctx 7)
+        ^objects merge-optional (when (> (alength ^objects merge-ctx) 8) (aget ^objects merge-ctx 8))
+        ^objects merge-defaults (when (> (alength ^objects merge-ctx) 9) (aget ^objects merge-ctx 9))
         ^objects merge-datoms merge-datoms
         ^ints find-source find-source
         ^objects const-vals const-vals]
@@ -1035,9 +1043,16 @@
                                  (if anti?
                                    (when (not found?)
                                      (process-merges (inc mi)))
-                                   (when found?
-                                     (aset merge-datoms mi d)
-                                     (process-merges (inc mi))))))))]
+                                   (cond
+                                     found?
+                                     (do (aset merge-datoms mi d)
+                                         (process-merges (inc mi)))
+                                     ;; Optional merge (get-else): synthetic
+                                     ;; default-valued datom on miss.
+                                     (and merge-optional (aget merge-optional mi))
+                                     (do (aset merge-datoms mi
+                                               (datom eid ra (aget merge-defaults mi) tx0))
+                                         (process-merges (inc mi)))))))))]
                    (process-merges 0)))))))
        :cljs
        (doseq [scan-d slice
@@ -1073,9 +1088,16 @@
                                (if anti?
                                  (when (not found?)
                                    (process-merges (inc mi)))
-                                 (when found?
-                                   (aset merge-datoms mi d)
-                                   (process-merges (inc mi)))))))))]
+                                 (cond
+                                   found?
+                                   (do (aset merge-datoms mi d)
+                                       (process-merges (inc mi)))
+                                   ;; Optional merge (get-else): synthetic
+                                   ;; default-valued datom on miss.
+                                   (and merge-optional (aget merge-optional mi))
+                                   (do (aset merge-datoms mi
+                                             (datom eid ra (aget merge-defaults mi) tx0))
+                                       (process-merges (inc mi))))))))))]
                (process-merges 0))))))))
 
 #?(:clj
@@ -1966,7 +1988,8 @@
                                         cursors))
                                :cljs nil)
               merge-ctx (object-array [merge-attrs merge-v-ground merge-v-vals merge-anti
-                                       merge-card-many merge-check-scan-v merge-check-scan-tx merge-cursors])]
+                                       merge-card-many merge-check-scan-v merge-check-scan-tx merge-cursors
+                                       merge-optional merge-defaults])]
           (execute-card-many-merge db eavt-pss slice ground-filter strict-filter
                                    probe-set probe-datom-field
                                    collect-set collect-datom-field collect-merge-idx
@@ -2804,11 +2827,22 @@
         ;; Convert result-list → final result with appropriate dedup strategy
         (let [has-card-many-dupes?
               (some (fn [g]
-                      (let [mops (entity-group-merge-ops g)]
+                      (let [scan-op (entity-group-scan-op g)
+                            mops (entity-group-merge-ops g)]
                         (or (some (fn [op] (not (get-in op [:schema-info :card-one?] true))) mops)
                             ;; Entity var not in find-vars → different entities can produce same tuple
-                            (let [e-var (first (:clause (entity-group-scan-op g)))]
-                              (not (some #{e-var} find-vars))))))
+                            (let [e-var (first (:clause scan-op))]
+                              (not (some #{e-var} find-vars)))
+                            ;; DRIVING scan on a card-many attribute whose value
+                            ;; var is projected away → one tuple per value with
+                            ;; identical projection. (Found by the generative
+                            ;; differential test: [?e :tag ?t] chosen as the
+                            ;; driving scan with :find [?e] emitted duplicate
+                            ;; [e] tuples into the no-dedup QueryResult path.)
+                            (let [v-var (nth (:clause scan-op) 2 nil)]
+                              (and (not (get-in scan-op [:schema-info :card-one?] true))
+                                   (symbol? v-var) (analyze/free-var? v-var)
+                                   (not (some #{v-var} find-vars)))))))
                     groups)
               is-historical? (= :historical (when temporal (:type temporal)))
               dedup-strategy (cond

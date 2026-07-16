@@ -122,6 +122,41 @@
       (is (= (base standalone db [100 101]) (planner standalone db [100 101]))
           "standalone optional scan keeps left-outer semantics"))))
 
+(deftest card-many-merge-with-get-else-parity
+  (testing "a card-many attribute in the same group as get-else keeps ALL its
+            values, and projecting the card-many var away doesn't leave
+            duplicate tuples (both found by the generative differential test;
+            both pre-existing)"
+    ;; Bug 1: per-cursor-merge (selected whenever a group had an optional
+    ;; merge) does a single lookupGE per merge — card-ONE semantics — so the
+    ;; card-many :tag merge silently yielded only its first value. Mixed
+    ;; groups now route to card-many-merge, which learned optional defaults.
+    ;; Bug 2: with [?e :tag ?t] as the DRIVING scan and ?t projected away,
+    ;; has-card-many-dupes? missed the duplicate projections and took the
+    ;; no-dedup QueryResult path → a "set" containing [e] twice.
+    (let [conn (fresh-conn)
+          _    (d/transact conn [{:db/ident :name :db/valueType :db.type/string
+                                  :db/cardinality :db.cardinality/one}
+                                 {:db/ident :nick :db/valueType :db.type/string
+                                  :db/cardinality :db.cardinality/one}
+                                 {:db/ident :tag :db/valueType :db.type/keyword
+                                  :db/cardinality :db.cardinality/many}])
+          _    (d/transact conn [{:db/id 100 :name "alice" :nick "al" :tag [:red :blue]}
+                                 {:db/id 101 :name "bob" :tag [:blue]}])
+          db   (d/db conn)
+          values '[:find ?e ?t :where [?e :name ?n] [?e :tag ?t]
+                   [(get-else $ ?e :nick "none") ?v]]
+          projected '[:find ?e :where [?e :name ?n] [?e :tag ?t]
+                      [(get-else $ ?e :nick "none") ?v]]]
+      (is (= #{[100 :red] [100 :blue] [101 :blue]} (base values db)))
+      (is (= (base values db) (planner values db))
+          "planner must keep every card-many value (BUG: lost [100 :red])")
+      (is (= #{[100] [101]} (base projected db)))
+      (is (= (base projected db) (planner projected db))
+          "planner must dedup projected tuples (BUG: returned [100] twice)")
+      (is (= 2 (count (planner projected db)))
+          "no duplicate tuples inside the result set"))))
+
 (deftest replan-seed-does-not-leak-literal-vars
   (testing "replan orders a consumer of the real ?p after ?p's producer, even
             when an executed nested-q op mentions ?p inside its query literal"

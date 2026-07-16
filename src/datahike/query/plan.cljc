@@ -637,8 +637,15 @@
         attr-refs? (:attribute-refs? (dbi/-config db))
         fused-path (cond
                      (zero? n-merges) :scan-only
-                     has-optional?    :per-cursor-merge
+                     ;; card-many takes precedence: per-cursor-merge does a
+                     ;; single lookupGE per merge (card-ONE semantics), so a
+                     ;; group mixing a card-many merge with an optional
+                     ;; (get-else) merge silently truncated the card-many
+                     ;; attribute to its first value. card-many-merge handles
+                     ;; mixed card-one/card-many per merge and now also emits
+                     ;; optional defaults on card-one misses.
                      has-card-many?   :card-many-merge
+                     has-optional?    :per-cursor-merge
                      use-sorted-scan? :sorted-merge
                      :else            :per-cursor-merge)
         steps (cond-> [(ir/->PIndexScan index clause scan-attr-ground?)
