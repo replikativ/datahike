@@ -9,7 +9,7 @@
    [datahike.db.search :as dbs]
    [datahike.db.utils :as dbu]
    [datahike.bitemporal.platform :as bp]
-   [datahike.constants :refer [tx0]]
+   [datahike.constants :refer [tx0 e0 emax txmax]]
    [datahike.tools :refer [get-date date->epoch-ms]]
    [replikativ.logging :as log]
    [datahike.schema :as ds]
@@ -1121,6 +1121,118 @@
                         :db.valid/from vf
                         :db.valid/to vt})))))))
 
+(defn- schema-attr-current-datoms
+  "Current datoms of schema attribute `ident` on (possibly transient) db.
+   Direct :aevt slice — bypasses the search cache so mid-transaction state
+   never lands in it."
+  [db ident]
+  (let [attr-refs? (:attribute-refs? (dbi/-config db))
+        a (if attr-refs? (get (:ident-ref-map db) ident ident) ident)]
+    (di/-slice (:aevt db)
+               (datom e0 a nil tx0)
+               (datom emax a nil txmax)
+               :aevt)))
+
+(defn- schema-attr-history-datoms
+  [db ident]
+  (when (dbi/-keep-history? db)
+    (let [attr-refs? (:attribute-refs? (dbi/-config db))
+          a (if attr-refs? (get (:ident-ref-map db) ident ident) ident)]
+      (di/-slice (:temporal-aevt db)
+                 (datom e0 a nil tx0)
+                 (datom emax a nil txmax)
+                 :aevt))))
+
+(defn- multi-valued-entity
+  "First entity holding more than one current value of `ident`, or nil.
+   :aevt order sorts by (a, e), so duplicates are adjacent."
+  [db ident]
+  (loop [[^Datom d & ds] (seq (schema-attr-current-datoms db ident)) prev-e nil]
+    (when d
+      (if (= (.-e d) prev-e)
+        (.-e d)
+        (recur ds (.-e d))))))
+
+(defn- validate-schema-changes!
+  "End-of-transaction schema validation on the RESULTING state.
+
+   Compares every changed schema entry of db-after against db-before via
+   ds/assess-schema-transition and runs the data checks it requests. Runs at
+   the same deferred chokepoint as validate-cross-tx-vt-windows!, so it is
+   uniform across the entity-map path, raw datom vectors, retracts, partial
+   updates and any datom order — check-schema-update (entity-map path only)
+   remains as an early, friendlier error for the common case, but this is the
+   guard that actually holds. Costs nothing when the transaction touched no
+   schema (identical? short-circuit).
+
+   Data-backed rules (previously not checked anywhere; used = datoms
+   existed before this transaction):
+   - :db/valueType change / tuple-def change / entry removal / :db/index
+     enablement / :db/unique addition — only while the attribute has NO
+     pre-existing current or history datoms.
+   - cardinality many→one — only while no entity holds >1 value.
+   - :db/unique addition — only while the attribute is unused (retroactive
+     uniqueness is unenforceable: pre-existing datoms are absent from AVET,
+     which validate-datom consults).
+   - composite :db/tupleAttrs must not reference attributes defined as
+     cardinality-many or as tuples (undeclared references are supported —
+     their slots stay nil)."
+  [{:keys [db-before db-after] :as _report}]
+  (let [old-schema (dbi/-schema db-before)
+        new-schema (dbi/-schema db-after)]
+    (when-not (identical? old-schema new-schema)
+      (let [write? (= :write (:schema-flexibility (dbi/-config db-after)))
+            idents (into #{}
+                         (filter keyword?)
+                         (concat (keys old-schema) (keys new-schema)))]
+        (doseq [ident idents]
+          (let [old-entry (let [e (get old-schema ident)] (when (map? e) e))
+                new-entry (let [e (get new-schema ident)] (when (map? e) e))]
+            (when (and (or old-entry new-entry)
+                       (not= old-entry new-entry))
+              (let [{:keys [invalid data-checks]}
+                    (ds/assess-schema-transition old-entry new-entry write?)]
+                (when (seq invalid)
+                  (log/raise (str "Invalid schema state for " ident " after transaction")
+                             {:error :transact/schema :attribute ident
+                              :invalid-updates invalid}))
+                ;; "Used" means datoms existed BEFORE this transaction:
+                ;; datoms co-transacted with the schema change are written
+                ;; under the new definition and are consistent with it.
+                (when (and (contains? data-checks :attr-used?)
+                           (or (seq (schema-attr-current-datoms db-before ident))
+                               (seq (schema-attr-history-datoms db-before ident))))
+                  (log/raise (str "Schema change on " ident " requires the attribute to be unused,"
+                                  " but it has existing (or history) datoms. Migrate the data to a"
+                                  " new attribute instead.")
+                             {:error :transact/schema :attribute ident
+                              :old old-entry :new new-entry}))
+                (when (contains? data-checks :single-valued?)
+                  (when-let [e (multi-valued-entity db-after ident)]
+                    (log/raise (str "Cannot narrow " ident " to :db.cardinality/one: entity " e
+                                    " holds more than one value.")
+                               {:error :transact/schema :attribute ident :entity-id e})))
+                ;; Composite tuple definitions: an UNDECLARED referenced
+                ;; attribute is supported (its slot stays nil until declared
+                ;; and asserted), but a reference to an attribute DEFINED as
+                ;; cardinality-many or as a tuple itself can never index
+                ;; soundly.
+                (when-let [tuple-attrs (and new-entry
+                                            (not= (:db/tupleAttrs old-entry)
+                                                  (:db/tupleAttrs new-entry))
+                                            (:db/tupleAttrs new-entry))]
+                  (doseq [ta tuple-attrs]
+                    (let [entry (get new-schema ta)]
+                      (when (map? entry)
+                        (when (= :db.cardinality/many (:db/cardinality entry))
+                          (log/raise (str ":db/tupleAttrs of " ident " references " ta
+                                          ", which must not have :db.cardinality/many.")
+                                     {:error :transact/schema :attribute ident :tuple-attr ta}))
+                        (when (= :db.type/tuple (:db/valueType entry))
+                          (log/raise (str ":db/tupleAttrs of " ident " references " ta
+                                          ", which is itself a tuple attribute.")
+                                     {:error :transact/schema :attribute ident :tuple-attr ta}))))))))))))))
+
 (defn transact-tx-data [{:keys [db-before] :as initial-report} initial-es]
   (when-not (or (nil? initial-es)
                 (sequential? initial-es))
@@ -1167,6 +1279,10 @@
             ;; the report exits, matching the ::queued-tuples cleanup
             ;; discipline.
             (validate-cross-tx-vt-windows! report)
+            ;; Deferred schema validation on the RESULTING state — covers
+            ;; raw datom vectors, retracts and any datom order uniformly
+            ;; (check-schema-update only sees the entity-map path).
+            (validate-schema-changes! report)
             (-> report
                 (dissoc ::pending-vt-validation)
                 (assoc-in [:tempids :db/current-tx] (current-tx report))
