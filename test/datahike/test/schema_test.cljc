@@ -92,10 +92,10 @@
                             (d/transact conn [{:db/ident :phone :db/cardinality :db.cardinality/many}]))))
 
     (testing "insert schema with incorrect value type"
-      ;; The enum is now SORTED and includes any registered custom value type
-      ;; (datahike.value-types) — `:db.type/value` became an open predicate, so
-      ;; `describe-type` rebuilds the legal set rather than printing the
-      ;; predicate's source. Sorted, so the message is deterministic.
+      ;; `:db.type/value` is defined by reference to the `builtin-value-types` var
+      ;; (a fixed set), so `s/describe` would render that var rather than the
+      ;; alternatives — `describe-type` rebuilds the enum, sorted, so the message is
+      ;; the deterministic full set of legal value types.
       (is (thrown-with-msg? Throwable
                             (re-pattern (str "Bad entity value " :string " at \\[:db/add 3 :db/valueType :string\\], "
                                              "value does not match schema definition. "

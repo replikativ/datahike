@@ -27,7 +27,7 @@
                      [datahike.api :as d]
                      [datahike.gc :as gc]
                      [datahike.blob :as blob]
-                     [datahike.gc-guard :as guard :refer [with-unreferenced-writes]]
+                     [datahike.gc-guard :as guard :refer-macros [with-unreferenced-writes]]
                      [datahike.test.async :refer-macros [deftest-async]]
                      ;; register the :file backend on Node — GC's mark walk needs a
                      ;; flushing store (a store-ref names an object that lives there).
