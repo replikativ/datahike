@@ -1053,7 +1053,10 @@
             (if-some [source (get sources arg)]
               (da/aset static-args i source)
               (da/aset tuples-args i (get attrs arg))))
-          (da/aset static-args i arg))))
+          ;; (quote x) args unwrap to their constant — the only seq form
+          ;; allowed by analyze/check-fn-args. All other non-symbol args
+          ;; pass verbatim (vectors/maps/sets are data literals).
+          (da/aset static-args i (if (analyze/quote-form? arg) (second arg) arg)))))
     (fn [tuple]
       ;; TODO raise if not all args are bound
       (dotimes [i len]
@@ -1099,6 +1102,7 @@
 
 (defn filter-by-pred [context clause]
   (let [[[f & args]] clause
+        _ (analyze/check-fn-args clause args)
         pred (or (get built-ins f)
                  (get clj-core-built-ins f)
                  (context-resolve-val context f)
@@ -1121,6 +1125,7 @@
 
 (defn bind-by-fn [context clause]
   (let [[[f & args] out] clause
+        _ (analyze/check-fn-args clause args)
         binding (dpi/parse-binding out)
         fun (or (get built-ins f)
                 (get clj-core-built-ins f)

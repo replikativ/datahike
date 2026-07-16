@@ -2207,9 +2207,12 @@
                         (let [f (nth resolved pi)
                               args (:args (nth pred-ops pi))
                               argv (mapv (fn [a]
-                                           (if (and (symbol? a) (analyze/free-var? a))
+                                           (cond
+                                             (and (symbol? a) (analyze/free-var? a))
                                              (aget tuple (int (get var-index a)))
-                                             a))
+                                             ;; (quote x) → constant x, matching -call-fn
+                                             (analyze/quote-form? a) (second a)
+                                             :else a))
                                          args)]
                           (if (try (apply f argv)
                                    #?(:clj (catch ClassCastException _ false))
@@ -2314,9 +2317,12 @@
            (if (< read-i n)
              (let [^objects tuple (result-list-get result-list read-i)
                    argv (mapv (fn [a]
-                                (if (and (symbol? a) (analyze/free-var? a))
+                                (cond
+                                  (and (symbol? a) (analyze/free-var? a))
                                   (aget tuple (int (get vi a)))
-                                  a))
+                                  ;; (quote x) → constant x, matching -call-fn
+                                  (analyze/quote-form? a) (second a)
+                                  :else a))
                               args)
                    val (apply f argv)]
                (if (some? val)

@@ -25,6 +25,36 @@
     (sequential? form) (into #{} (mapcat extract-vars) form)
     :else #{}))
 
+(defn quote-form?
+  "A (quote x) form — the one seq shape allowed as a function/predicate
+   argument. The arg resolvers unwrap it to its constant."
+  [x]
+  (and (seq? x) (= 'quote (first x)) (= 2 (count x))))
+
+(defn nested-expr-arg?
+  "A seq (list) argument to a function/predicate clause, other than (quote x).
+
+   The runtime resolves fn/pred args FLAT — only top-level ?var symbols are
+   substituted (-call-fn / bind-by-fn / post-apply-fns) — so a nested form
+   like (= ?x 1) is passed to the function as a LITERAL LIST. It is never
+   evaluated: `[(and (= ?x 999) (some? ?x)) ?out]` binds ?out to the truthy
+   list `(some? ?x)` regardless of ?x. Such clauses always compute garbage
+   silently, so they are rejected at clause processing time. Write the
+   sub-expression as its own clause instead:
+     [(= ?x ?p) ?m1] [(some? ?y) ?m2] [(and ?m1 ?m2) ?out]"
+  [arg]
+  (and (seq? arg) (not (quote-form? arg))))
+
+(defn check-fn-args
+  "Raise when any function/predicate argument is a nested expression form.
+   See nested-expr-arg? for why these are always an error."
+  [clause args]
+  (when-some [bad (some #(when (nested-expr-arg? %) %) args)]
+    (throw (ex-info (str "Nested expression forms are not supported as function/predicate "
+                         "arguments — bind the sub-expression to a variable in its own "
+                         "clause, e.g. [(= ?x ?p) ?m] instead of nesting (= ?x ?p).")
+                    {:error :query/where :form clause :arg bad}))))
+
 ;; ---------------------------------------------------------------------------
 ;; Clause classification
 
@@ -43,23 +73,25 @@
          (= 1 (count clause))
          (sequential? (first clause))
          (symbol? (ffirst clause)))
-    {:type :predicate
-     :clause clause
-     :fn-sym (ffirst clause)
-     :args (rest (first clause))
-     :vars (extract-vars (first clause))}
+    (do (check-fn-args clause (rest (first clause)))
+        {:type :predicate
+         :clause clause
+         :fn-sym (ffirst clause)
+         :args (rest (first clause))
+         :vars (extract-vars (first clause))})
 
     ;; [[fn ?x ?y] ?result] — function binding
     (and (sequential? clause)
          (= 2 (count clause))
          (sequential? (first clause))
          (symbol? (ffirst clause)))
-    {:type :function
-     :clause clause
-     :fn-sym (ffirst clause)
-     :args (rest (first clause))
-     :binding (second clause)
-     :vars (extract-vars clause)}
+    (do (check-fn-args clause (rest (first clause)))
+        {:type :function
+         :clause clause
+         :fn-sym (ffirst clause)
+         :args (rest (first clause))
+         :binding (second clause)
+         :vars (extract-vars clause)})
 
     ;; (or ...)
     (and (sequential? clause)
