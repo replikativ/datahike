@@ -16,14 +16,36 @@
 
 (def db-caches (cw/lru-cache-factory {} :threshold (:datahike-max-db-caches env 5)))
 
-(defn memoize-for [db key f]
-  (if (or (zero? (or (:cache-size (:config db)) 0))
-          (zero? (:hash db))) ;; empty db
-    (f)
-    (let [db-cache (cw/lookup-or-miss db-caches
-                                      (:hash db)
-                                      (fn [_] (lru-datom-cache-factory {} :threshold (:cache-size (:config db)))))]
-      (cw/lookup-or-miss db-cache key (fn [_] (f))))))
+(defn- db-snapshot-key
+  "Identity of a DB snapshot for the search cache. The additive :hash alone
+   is collision-prone and is shared across stores and branches; scoping the
+   key to store + branch + snapshot counters means two databases can never
+   share cached datoms (cf. execute's date-tx-id-cache, which established
+   this key shape)."
+  [db]
+  (let [config (:config db)]
+    [(:store config) (:branch config) (:hash db) (:max-tx db) (:max-eid db)]))
+
+(defn memoize-for
+  "Per-DB-snapshot memoization of index searches, sized by the
+   `:search-cache-size` config value (0 disables).
+
+   History: introduced in 2021 gated on `:cache-size`; #503 (Nov 2022)
+   renamed the config key to `:search-cache-size` without updating this
+   reader, so the cache was silently dead for three years — the knob stayed
+   spec'd, documented and env-configurable while `(:cache-size config)` was
+   always nil. Gate and threshold now read the real config key; a test in
+   datahike.test.search-cache-test pins the wiring so a rename cannot
+   silently kill it again."
+  [db key f]
+  (let [cache-size (long (or (:search-cache-size (:config db)) 0))]
+    (if (or (zero? cache-size)
+            (zero? (:hash db))) ;; empty db
+      (f)
+      (let [db-cache (cw/lookup-or-miss db-caches
+                                        (db-snapshot-key db)
+                                        (fn [_] (lru-datom-cache-factory {} :threshold cache-size)))]
+        (cw/lookup-or-miss db-cache key (fn [_] (f)))))))
 
 (defn validate-pattern
   "Checks if database pattern is valid"

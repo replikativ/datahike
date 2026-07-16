@@ -2080,8 +2080,9 @@
     (or (some #{var-sym} scan-clause)
         (some (fn [mc] (some #{var-sym} mc)) merge-clauses))))
 
-(defn- can-direct-fuse?
+(defn can-direct-fuse?
   "Check if a plan can use the direct-to-HashSet execution path.
+   Public: query/explain mirrors the execution dispatch with it.
    Delegates structural checks (op types, post-op eligibility, source exclusion)
    to plan/structurally-fusable?, then adds runtime-specific checks:
    - ALL find-vars resolvable from groups, function outputs, or consts

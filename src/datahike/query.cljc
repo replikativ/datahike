@@ -3031,11 +3031,20 @@
       (and limit (pos? limit)) (take limit)
       true vec)))
 
+(declare planner-eligible-db? planner-origin-db connected-components)
+
 (defn explain
   "Returns a human-readable string explaining the query plan.
-   Takes the same arguments as `q`. Shows index selection, scan/merge ordering,
-   recursive rule structure (SCC, base cases, clause versions), and estimated
-   cardinalities.
+   Takes the same arguments as `q`. Shows the execution path the dispatcher
+   would take (legacy / cartesian-split / direct / columnar-aggregate /
+   relation), index selection, scan/merge ordering, recursive rule structure,
+   and estimated cardinalities.
+
+   The plan shown is the SAME cached plan execution uses (get-or-create-plan),
+   and the database source is resolved exactly like execution: `$` if present,
+   else the first planner-eligible source. Caveats explain cannot see:
+   a warm query result cache returns without executing at all, and the
+   columnar/secondary-index paths depend on a runtime probe.
 
    Usage:
      (explain '[:find ?e2 :in $ ?e1 % :where (follow ?e1 ?e2)]
@@ -3048,34 +3057,66 @@
            {:keys [qfind qin]} (memoized-parse-query query)
            context-in (-> (Context. [] {} built-in-rules {} default-settings nil)
                           (resolve-ins qin args))
-           db (get (:sources context-in) '$)
-           ;; Temporal wrappers (HistoricalDB/AsOfDB/SinceDB) carry no own
-           ;; :eavt/:avet indexes, so the planner's cardinality estimation
-           ;; (-count on the index) would NPE. Plan against the origin DB's
-           ;; indexes, mirroring how execute-plan uses (planner-origin-db ...).
-           plan-db (cond
-                     (nil? db) db
-                     (instance? DB db) db
-                     :else (let [o (dbi/-origin db)]
-                             (if (instance? DB o) o db)))
-           bound-vars (context-bound-vars context-in)
-           clauses (if db
-                     (substitute-consts-with-lookup-refs db (:where query) (:consts context-in))
-                     (:where query))
-           rules (not-empty (:rules context-in))
-           plan (create-plan-via-ir plan-db clauses bound-vars rules (in-card-seed qin))
+           ;; SAME source resolution as raw-q*: `$` if present, else the first
+           ;; planner-eligible db source. (Previously hardcoded '$, which
+           ;; NPE'd for queries whose only source is named, e.g. :in $data.)
+           db (let [sources (:sources context-in)]
+                (or (get sources '$)
+                    (some (fn [[_k v]] (when (and (dbu/db? v) (planner-eligible-db? v)) v))
+                          sources)))
+           use-planner? (and (some? db) (dbu/db? db) (planner-eligible-db? db)
+                             (some? (planner-origin-db db)))
            find-vars (mapv #(.-symbol ^Variable %) (filter #(instance? Variable %) (dpip/find-elements qfind)))
-           header (str "=== Query Plan ===\n"
-                       "find: " (pr-str find-vars) "\n"
-                       "bound: " (pr-str bound-vars) "\n"
-                       (when rules
-                         (str "rules: " (pr-str (vec (keys rules))) "\n"))
-                       (when-let [c (:consts context-in)]
-                         (when (seq c)
-                           (str "consts: " (pr-str c) "\n")))
-                       "engine: planned\n"
-                       "---\n")]
-       (str header (format-plan-ops (:ops plan) 0) "\n"))
+           bound-vars (context-bound-vars context-in)
+           rules (not-empty (:rules context-in))
+           header (fn [engine path]
+                    (str "=== Query Plan ===\n"
+                         "find: " (pr-str find-vars) "\n"
+                         "bound: " (pr-str bound-vars) "\n"
+                         (when rules
+                           (str "rules: " (pr-str (vec (keys rules))) "\n"))
+                         (when-let [c (:consts context-in)]
+                           (when (seq c)
+                             (str "consts: " (pr-str c) "\n")))
+                         "engine: " engine "\n"
+                         (when path (str "path: " path "\n"))
+                         "---\n"))]
+       (if-not use-planner?
+         (str (header "legacy (relational)" nil)
+              (cond
+                (nil? db) "no planner-eligible database source — clauses resolve via the relational fixpoint loop\n"
+                (nil? (planner-origin-db db)) "nested temporal wrapper (e.g. (history (as-of …))) — planner not applicable\n"
+                :else "database not planner-eligible\n"))
+         (let [;; Temporal wrappers (HistoricalDB/AsOfDB/SinceDB) carry no own
+               ;; :eavt/:avet indexes; plan against the origin, mirroring
+               ;; execute-plan's (planner-origin-db …).
+               plan-db (planner-origin-db db)
+               clauses (substitute-consts-with-lookup-refs db (:where query) (:consts context-in))
+               ;; The SAME cached plan execution will use — create-plan-via-ir
+               ;; here could diverge from a previously cached plan.
+               plan (get-or-create-plan plan-db clauses bound-vars rules (in-card-seed qin))
+               find-elements (dpip/find-elements qfind)
+               has-aggs? (some #(instance? Aggregate %) find-elements)
+               has-pull? (some #(instance? Pull %) find-elements)
+               find-rel? (instance? FindRel qfind)
+               no-in-rels? (empty? (:rels context-in))
+               split? (and find-rel? (not (:with query)) (not has-aggs?) (not has-pull?)
+                           (> (count (:components (connected-components
+                                                   (:where query)
+                                                   (set (keys (:consts context-in)))
+                                                   find-vars)))
+                              1))
+               direct? (and find-rel? (not (:with query)) (not has-aggs?) (not has-pull?)
+                            no-in-rels?
+                            (let [cdf (requiring-resolve 'datahike.query.execute/can-direct-fuse?)]
+                              (boolean (cdf plan find-vars (:consts context-in)))))
+               columnar? (and has-aggs? find-rel? (not (:with query)) (not has-pull?) no-in-rels?)
+               path (cond
+                      split?    "cartesian-split — disjoint components run as sub-queries and merge"
+                      direct?   "direct — fused scans write straight to the result set"
+                      columnar? "columnar-aggregate if a secondary/columnar engine accepts (runtime probe); else relation"
+                      :else     "relation — execute-plan over relations")]
+           (str (header "planned" path) (format-plan-ops (:ops plan) 0) "\n"))))
      :cljs (throw (ex-info "explain is not supported in ClojureScript" {}))))
 
 ;; ---------------------------------------------------------------------------
