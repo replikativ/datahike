@@ -180,7 +180,16 @@
                                         (:attribute-refs? (dbi/-config db)))
                                  (dbi/-ref-for db raw-attr)
                                  raw-attr)
-                          default-val (nth args 3)
+                          ;; (quote x) defaults unwrap to their constant here —
+                          ;; matching -call-fn's arg resolution on the legacy
+                          ;; path — because the fused merge paths plant
+                          ;; :default-value into tuples VERBATIM. Without this
+                          ;; the engines diverge: base returns x, planner the
+                          ;; literal (quote x) list. The bind-by-fn fallback
+                          ;; sites re-wrap seq defaults in (quote …) when they
+                          ;; reconstruct the fn-clause.
+                          default-val (let [d (nth args 3)]
+                                        (if (analyze/quote-form? d) (second d) d))
                           bind-var (:binding ci)
                           scan-vars (cond-> #{bind-var}
                                       (and (symbol? e-var)

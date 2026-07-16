@@ -70,6 +70,28 @@
       (is (raised-cannot-resolve? #(base query db)))
       (is (raised-cannot-resolve? #(planner query db))))))
 
+(deftest get-else-quoted-default-parity
+  (testing "a (quote x) get-else default unwraps to its constant on BOTH engines"
+    ;; The base path unwraps quote args in -call-fn; the planner's fused
+    ;; optional-merge paths plant :default-value into tuples VERBATIM, so the
+    ;; unwrap must happen at LOptionalScan construction (logical.cljc) — found
+    ;; by adversarial review: base returned (:a :b) while the planner returned
+    ;; the literal (quote (:a :b)).
+    (let [conn (fresh-conn)
+          _    (d/transact conn [{:db/ident :name :db/valueType :db.type/string
+                                  :db/cardinality :db.cardinality/one}
+                                 {:db/ident :nick :db/valueType :db.type/string
+                                  :db/cardinality :db.cardinality/one}])
+          _    (d/transact conn [{:db/id 100 :name "alice" :nick "al"}
+                                 {:db/id 101 :name "bob"}])
+          db   (d/db conn)
+          query '[:find ?e ?v :in $ :where
+                  [?e :name ?n]
+                  [(get-else $ ?e :nick (quote (:a :b))) ?v]]]
+      (is (= #{[100 "al"] [101 '(:a :b)]} (base query db)))
+      (is (= (base query db) (planner query db))
+          "planner must plant the unwrapped constant, not the (quote …) literal"))))
+
 (deftest replan-seed-does-not-leak-literal-vars
   (testing "replan orders a consumer of the real ?p after ?p's producer, even
             when an executed nested-q op mentions ?p inside its query literal"

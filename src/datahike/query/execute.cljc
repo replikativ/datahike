@@ -4124,7 +4124,12 @@
                                  (reduce (fn [c opt-merge]
                                            (let [[e-var attr bind-var] (:clause opt-merge)
                                                  default-val (:default-value opt-merge)
-                                                 fn-clause [(list 'get-else '$ e-var attr default-val) bind-var]]
+                                                 ;; seq defaults were quote-unwrapped at IR
+                                                 ;; construction (logical/LOptionalScan); re-wrap
+                                                 ;; so -call-fn round-trips and check-fn-args
+                                                 ;; accepts the synthetic clause.
+                                                 default-arg (if (seq? default-val) (list 'quote default-val) default-val)
+                                                 fn-clause [(list 'get-else '$ e-var attr default-arg) bind-var]]
                                              (bind-by-fn-strict c fn-clause)))
                                          ctx' optional-merge-ops))
                       ;; Apply anti-merges: look up each anti clause and subtract its matches
@@ -4203,7 +4208,10 @@
                                      (if (:optional? op)
                                        (let [[e-var attr bind-var] (:clause op)
                                              default-val (:default-value op)
-                                             fn-clause [(list 'get-else '$ e-var attr default-val) bind-var]]
+                                             ;; re-wrap seq defaults — see the optional-merge
+                                             ;; site above.
+                                             default-arg (if (seq? default-val) (list 'quote default-val) default-val)
+                                             fn-clause [(list 'get-else '$ e-var attr default-arg) bind-var]]
                                          (bind-by-fn-strict ctx fn-clause))
                                        (#?(:clj legacy/lookup-batch-search :cljs (rel/get-legacy-fn :lookup-batch-search)) op-db ctx (:clause op) (:clause op))))
                         ;; Re-apply pushed-down predicates as a post-filter.
