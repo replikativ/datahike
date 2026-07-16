@@ -2094,9 +2094,14 @@
          ;; Find-var coverage: groups + function outputs + consts
      (let [group-vars (into #{} (mapcat :vars) groups)
            fn-ops (filterv #(= :function (:op %)) ops)
+           ;; Output vars come from the binding form ONLY. (:vars op) minus
+           ;; input args would also count vars merely MENTIONED in an arg —
+           ;; e.g. the lexically-scoped ?p inside a nested subquery literal
+           ;; [(q [:find ?p …] $) ?v] — wrongly satisfying find-var coverage
+           ;; for a var this plan never binds.
            fn-output-vars (into #{} (mapcat (fn [op]
-                                              (let [input-vars (into #{} (filter analyze/free-var?) (:args op))]
-                                                (remove input-vars (:vars op)))))
+                                              (filter analyze/free-var?
+                                                      (analyze/extract-vars (:binding op)))))
                                 fn-ops)
            all-available-vars (into group-vars fn-output-vars)]
        (every? #(or (and consts (contains? consts %))

@@ -654,22 +654,37 @@
     (ir/->PPipeline (vec steps) fused-path use-cursors? (boolean attr-refs?))))
 
 (defn args-free-vars
-  "Walk an :args list recursively, collecting every free variable that
-   appears anywhere inside. Mirrors `analyze/extract-vars`, which is
-   already the recursive contract for `:vars` on every clause type.
+  "Walk an :args list, collecting every free variable that is an INPUT of
+   the function op — i.e. that the runtime will resolve against the outer
+   scope. That contract is set by the executors (-call-fn / bind-by-fn /
+   post-apply-fns): they substitute top-level ?var symbols only; every
+   collection arg is passed verbatim as a constant.
 
-   Why recurse: SQL translators (and any other producer of nested
-   boolean / arithmetic expressions) emit clauses like
-       [(and (= ?x ?p) (some? ?y)) ?out]
-   The :args here are seq forms, not symbols. A flat top-level
-   `(filter free-var?)` returns #{}, so the planner thinks the op has
-   no inputs and orders it before its producers — leaving the legacy
-   bind-by-fn path to fail with nil ctx until the next iteration.
-   The legacy engine is fine with nested expressions because it walks
-   them at runtime via `interpret-form`; the planner just has to
-   recognise the same shape during ordering."
+   Two consequences for the walk:
+
+   - Recurse into SEQ (list) forms. SQL translators (and any other
+     producer of nested boolean / arithmetic expressions) emit clauses
+     like [(and (= ?x ?p) (some? ?y)) ?out] whose :args are seq forms.
+     A flat top-level `(filter free-var?)` returns #{}, so the planner
+     would think the op has no inputs and order it before its producers
+     (#814).
+
+   - Do NOT recurse into non-seq collections (vectors, maps, sets):
+     they are data literals. The canonical case is a nested subquery,
+     [(datahike.api/q [:find ?p :in $x :where …] $a) ?v] — the ?vars
+     inside the query literal are lexically scoped to the subquery, not
+     references to the outer scope. Extracting them (as the previous
+     `analyze/extract-vars` walk did) marked the op as requiring vars
+     that no producer can ever bind, so ordering emitted the whole
+     function chain in arbitrary order and execution silently dropped
+     it — the nested-q/count bug."
   [args]
-  (into #{} (mapcat analyze/extract-vars) args))
+  (letfn [(walk [form]
+            (cond
+              (analyze/free-var? form) #{form}
+              (seq? form) (into #{} (mapcat walk) form)
+              :else #{}))]
+    (into #{} (mapcat walk) args)))
 
 (defn- external-engine-spec-vars
   "Collect implicit input vars from a stratum-style external-engine
@@ -1510,6 +1525,21 @@
                 (dissoc op :requires-bound))))
           ops)))
 
+(defn- op-available-vars
+  "Vars that become bound once `op` has run — its produced (output) vars.
+   Used by order-plan-ops to thread the bound-vars accumulator.
+
+   NOT (:vars op): that is the recursive var walk of the whole clause, which
+   for a :function op includes vars that are only MENTIONED, not bound — the
+   canonical case is a nested subquery literal, [(datahike.api/q [:find ?p
+   :in $x :where …] $) ?v], whose lexically-scoped ?p would otherwise be
+   marked bound in the outer scope. A later clause using its own ?p then
+   looked ready before its real producer ran, was emitted too early, and was
+   silently dropped at execute time (bind-by-fn returns nil on unbound
+   inputs and the planner has no retry pass) — yielding wrong results."
+  [op]
+  (op-produced-vars op))
+
 (defn order-plan-ops
   "Order plan operations using DP for entity-group ordering and greedy
    interleaving for dependency-constrained ops (predicates, functions, etc.).
@@ -1578,7 +1608,7 @@
                  best (first (sort-by second (if (seq executable) executable scored)))
                  [chosen-op _] best]
              (recur (disj remaining chosen-op)
-                    (into bound-vars (:vars chosen-op))
+                    (into bound-vars (op-available-vars chosen-op))
                     (merge-with min var-cards (op-output-cards chosen-op))
                     (conj ordered chosen-op)))))
       ;; DP-order groups, then greedily interleave non-group ops
@@ -1628,12 +1658,12 @@
                  (case choice
                    :group     (recur (next group-q)
                                      remaining
-                                     (into bound-vars (:vars next-g))
+                                     (into bound-vars (op-available-vars next-g))
                                      (merge-with min var-cards (op-output-cards next-g))
                                      (conj result next-g))
                    :non-group (recur group-q
                                      (disj remaining best-ng)
-                                     (into bound-vars (:vars best-ng))
+                                     (into bound-vars (op-available-vars best-ng))
                                      (merge-with min var-cards (op-output-cards best-ng))
                                      (conj result best-ng))
                    ;; No more groups, remaining ops still unready — force the
@@ -1642,7 +1672,7 @@
                                     [chosen-op _] (first (sort-by second scored))]
                                 (recur nil
                                        (disj remaining chosen-op)
-                                       (into bound-vars (:vars chosen-op))
+                                       (into bound-vars (op-available-vars chosen-op))
                                        (merge-with min var-cards (op-output-cards chosen-op))
                                        (conj result chosen-op)))))))))))))
 
