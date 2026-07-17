@@ -16,6 +16,7 @@
             [datahike.test.query-shape-corpus-test]
             [datahike.test.model.rng-splitmix-test]
             [datahike.test.query-differential-test]
+            [datahike.test.cold-async-store-test]
             [datahike.test.cljs-tiered-storage-test]
             [datahike.test.cljs-pattern-scan-test]
             [datahike.test.optimistic-test]
@@ -696,6 +697,7 @@
                'datahike.test.query-shape-corpus-test
                'datahike.test.model.rng-splitmix-test
                'datahike.test.query-differential-test
+               'datahike.test.cold-async-store-test
                'datahike.test.cljs-tiered-storage-test
                'datahike.test.cljs-pattern-scan-test
                'datahike.test.optimistic-test
