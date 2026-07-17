@@ -289,3 +289,77 @@
       (is (= #{[100]} (d/q '[:find ?s :where [_ :score ?s]] (d/db conn))))
 
       (d/release conn))))
+;; ---------------------------------------------------------------------------
+;; Content identity (:identity :content) — structural sharing of nested objects.
+
+#?(:clj
+   (deftest test-content-identity-shares-value-objects
+     (testing "identical nested objects collapse to ONE shared entity"
+       (let [cfg  {:store {:backend :memory :id (java.util.UUID/randomUUID)}
+                   :schema-flexibility :read}
+             _    (d/create-database cfg)
+             conn (d/connect cfg)]
+         ;; two people with the SAME address, in one document
+         (du/transact-unstructured
+          conn {:name "Alice" :home {:city "NYC" :zip "10001"}
+                :work {:city "NYC" :zip "10001"}}
+          {:identity :content})
+         (is (= 1 (count (d/q '[:find ?a :where [?a :city "NYC"] [?a :zip "10001"]] @conn)))
+             "the address value object is stored once")
+         ;; a second document referencing the same address — shares across txs
+         (du/transact-unstructured
+          conn {:name "Bob" :home {:city "NYC" :zip "10001"}}
+          {:identity :content})
+         (is (= 1 (count (d/q '[:find ?a :where [?a :city "NYC"] [?a :zip "10001"]] @conn)))
+             ":unstructured/id upsert dedups the address across transactions")
+         (d/release conn)))))
+
+#?(:clj
+   (deftest test-content-identity-distinct-content-not-merged
+     (testing "content that differs stays distinct — no false merge"
+       (let [cfg  {:store {:backend :memory :id (java.util.UUID/randomUUID)}
+                   :schema-flexibility :read}
+             _    (d/create-database cfg)
+             conn (d/connect cfg)]
+         (du/transact-unstructured
+          conn {:name "P" :a {:city "NYC"} :b {:city "LA"}}
+          {:identity :content})
+         (is (= 2 (count (d/q '[:find ?e :where [?e :city _]] @conn)))
+             "two different addresses → two entities")
+         (d/release conn)))))
+
+#?(:clj
+   (deftest test-content-identity-merkle-nested-sharing
+     (testing "sharing is recursive — a shared grandchild is one entity (Merkle)"
+       (let [cfg  {:store {:backend :memory :id (java.util.UUID/randomUUID)}
+                   :schema-flexibility :read}
+             _    (d/create-database cfg)
+             conn (d/connect cfg)]
+         ;; two different parents, each wrapping the SAME inner object
+         (du/transact-unstructured
+          conn {:name "root"
+                :left  {:label "L" :inner {:v 1 :w 2}}
+                :right {:label "R" :inner {:v 1 :w 2}}}
+          {:identity :content})
+         (is (= 1 (count (d/q '[:find ?i :where [?i :v 1] [?i :w 2]] @conn)))
+             "the shared inner object is one entity though its parents differ")
+         (is (= 2 (count (d/q '[:find ?p :where [?p :label _]] @conn)))
+             "the two distinct wrappers stay distinct")
+         (d/release conn)))))
+
+#?(:clj
+   (deftest test-default-identity-unchanged
+     (testing ":fresh (default) still makes every nested map its own entity"
+       (let [res (du/process-unstructured-data {:name "x" :addr {:city "NYC"}})]
+         (is (= -1 (:db/id (first (:tx-data res)))) "fresh negative tempids as before")
+         (is (not-any? #(contains? % :unstructured/id) (:tx-data res))
+             "no content-id attribute is added in the default mode"))
+       (let [cfg  {:store {:backend :memory :id (java.util.UUID/randomUUID)}
+                   :schema-flexibility :read}
+             _    (d/create-database cfg)
+             conn (d/connect cfg)]
+         (du/transact-unstructured conn {:name "A" :addr {:city "NYC"}})
+         (du/transact-unstructured conn {:name "B" :addr {:city "NYC"}})
+         (is (= 2 (count (d/q '[:find ?a :where [?a :city "NYC"]] @conn)))
+             "without content identity, identical addresses are two entities")
+         (d/release conn)))))
