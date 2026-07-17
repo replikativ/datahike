@@ -6,7 +6,6 @@
             #?(:cljs [org.replikativ.persistent-sorted-set.leaf :refer [Leaf]])
             #?(:cljs [org.replikativ.persistent-sorted-set.impl.storage :refer [IStorage]])
             #?(:cljs [is.simm.partial-cps.async :refer-macros [async]])
-            [datahike.sync-capability :as dsc]
             #?(:cljs [clojure.core.async :as async])
             [org.replikativ.persistent-sorted-set.arrays :as arrays]
             #?@(:clj  [[clojure.core.cache :as cache]
@@ -465,24 +464,38 @@
         #?(:clj (admit! (k/get store address nil {:sync? true}))
            :cljs
            (if (false? (:sync? opts))
-             ;; Async arm, cache miss. Opportunistic sync-first: when the store
-             ;; can serve synchronous reads (memory; tiered with a sync
-             ;; frontend — probed empirically, see store/sync-read-capable?)
-             ;; the read completes inline and the computation stays on the
-             ;; synchronous trampoline. Only genuinely async-only stores pay
-             ;; the channel hop — where real IO dominates anyway.
-             (if (dsc/sync-read-capable? store)
-               (async (admit! (k/get store address nil {:sync? true})))
-               (fn [resolve reject]
-                 ((chan->async-expr (k/get store address nil {:sync? false}))
-                  (fn [node]
-                    (try (resolve (admit! node))
-                         (catch :default e (reject e))))
-                  reject)))
-             ;; Sync arm on an async-only store fails inside konserve with its
-             ;; own assertion; the query-level dispatch gate gives the clean
-             ;; upfront error before execution reaches this depth.
-             (admit! (k/get store address nil {:sync? true})))))))
+             ;; Async arm, cache miss. Sync-capability is a property of EACH
+             ;; READ, not of the store: a tiered store serves its warm memory
+             ;; frontend synchronously and only a frontend MISS needs the
+             ;; async backend (browser deployments sync their working set up
+             ;; front — CI proved a store-level classification wrong). So try
+             ;; the synchronous read first — a hit stays on the partial-cps
+             ;; trampoline — and fall back to the channel-adapted async read
+             ;; only when the store throws, where real IO dominates the hop.
+             (let [sync-result (try
+                                 {:node (k/get store address nil {:sync? true})}
+                                 (catch :default _ nil))]
+               (if sync-result
+                 (async (admit! (:node sync-result)))
+                 (fn [resolve reject]
+                   ((chan->async-expr (k/get store address nil {:sync? false}))
+                    (fn [node]
+                      (try (resolve (admit! node))
+                           (catch :default e (reject e))))
+                    reject))))
+             ;; Sync arm: a read the store cannot serve synchronously (async-
+             ;; only backend, or a tiered frontend miss) is the honest runtime
+             ;; boundary of the synchronous API — surface it as an actionable
+             ;; error instead of konserve's internal assertion.
+             (try
+               (admit! (k/get store address nil {:sync? true}))
+               (catch :default e
+                 (if (= :node-not-found (:type (ex-data e)))
+                   (throw e)
+                   (throw (ex-info "This read requires asynchronous store access; the synchronous API cannot serve it. Use the async query API, or ensure the data is synced into a synchronous tier (memory frontend) first."
+                                   {:error :storage/sync-read-unavailable
+                                    :address address
+                                    :cause-message #?(:cljs (.-message e) :clj (ex-message e))}))))))))))
   (markFreed [_ address]
     (when address
       (let [now #?(:clj (java.util.Date.) :cljs (js/Date.))]
