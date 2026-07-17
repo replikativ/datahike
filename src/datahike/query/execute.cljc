@@ -2247,7 +2247,8 @@
                           (if (try (apply f argv)
                                    #?(:clj (catch ClassCastException _ false))
                                    #?(:clj (catch IllegalArgumentException _ false)
-                                      :cljs (catch :default _ false)))
+                                      :cljs (catch :default e
+                                              (if (dt/rethrowable? e) (throw e) false))))
                             (recur (inc pi))
                             false))))]
           (if pass?

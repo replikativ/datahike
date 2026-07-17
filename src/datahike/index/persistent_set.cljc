@@ -189,8 +189,10 @@
   (-slice
     ([^PersistentSortedSet pset from to index-type]
      ;; cljs: decorate seek-time storage faults with the slice's logical
-     ;; range so the fault-retry machinery can prefetch the whole range.
-     ;; (Mid-iteration faults are decorated at the consuming loops.)
+     ;; range — the sync API's actionable error names what needs warming,
+     ;; and an optional prefetcher can warm the whole range. (Mid-iteration
+     ;; faults will be decorated at the consuming loops when those become
+     ;; chunk-shaped.)
      #?(:clj (psset/slice pset from to (slice-comparator-constructor index-type from to))
         :cljs (try (psset/slice pset from to (slice-comparator-constructor index-type from to))
                    (catch :default e
@@ -228,8 +230,15 @@
                                     {:error :storage/async-unsupported})))
                   (.lookup pset key cmp))
         :cljs (psset/lookup pset key cmp opts))))
-  (-count-slice [^PersistentSortedSet pset from to cmp]
-    (psset/count-slice pset from to cmp))
+  (-count-slice
+    ([^PersistentSortedSet pset from to cmp]
+     (psset/count-slice pset from to cmp))
+    ([^PersistentSortedSet pset from to cmp opts]
+     #?(:clj  (do (when (false? (:sync? opts))
+                    (throw (ex-info "async index access is not supported on the JVM (use virtual threads)"
+                                    {:error :storage/async-unsupported})))
+                  (psset/count-slice pset from to cmp))
+        :cljs (psset/count-slice pset from to cmp opts))))
   (-has-subtree-counts? [^PersistentSortedSet pset]
     #?(:clj  (psset/has-subtree-counts? pset)
        :cljs true))
@@ -237,8 +246,15 @@
     (identity pset))
   (-seq [^PersistentSortedSet pset]
     (seq pset))
-  (-count [^PersistentSortedSet pset]
-    (count pset))
+  (-count
+    ([^PersistentSortedSet pset]
+     (count pset))
+    ([^PersistentSortedSet pset opts]
+     #?(:clj  (do (when (false? (:sync? opts))
+                    (throw (ex-info "async index access is not supported on the JVM (use virtual threads)"
+                                    {:error :storage/async-unsupported})))
+                  (count pset))
+        :cljs (psset/count pset opts))))
   (-insert [^PersistentSortedSet pset datom index-type _op-count]
     (insert pset datom index-type))
   (-temporal-insert [^PersistentSortedSet pset datom index-type _op-count]

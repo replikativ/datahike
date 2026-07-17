@@ -331,12 +331,22 @@
   [e]
   (= :storage/sync-read-unavailable (:error (ex-data e))))
 
+(defn rethrowable?
+  "Must e escape a broad catch on the query path? True for the storage
+   seam's cold-read fault and for cancellation — swallowing either turns a
+   repairable/intentional abort into a silently wrong (and cached) result
+   or a query that cannot be cancelled."
+  [e]
+  (or (storage-fault? e)
+      (= :datahike/canceled (:type (ex-data e)))))
+
 (defn rethrow-decorated
   "Rethrow a storage fault decorated with the read's logical context
    (index/range or probe key), preserving the original as the cause. The
-   fault-and-retry machinery prefetches the WHOLE decorated range, so one
-   fault repairs a slice instead of a single node. Non-fault throwables
-   pass through unchanged."
+   decoration makes the sync API's cold-read error actionable (which slice
+   over which index needs warming) and lets an optional prefetcher warm a
+   WHOLE range instead of a single node. Non-fault throwables pass
+   through unchanged."
   [e ctx]
   (if (storage-fault? e)
     (throw (ex-info #?(:clj (.getMessage ^Throwable e) :cljs (ex-message e))

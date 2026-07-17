@@ -5,7 +5,7 @@
 (defprotocol IIndex
   (-all [index] "Returns a sequence of all datoms in the index")
   (-seq [index] "Returns a sequence of all datoms in the index")
-  (-count [index] "Returns the number of datoms in the index")
+  (-count [index] [index opts] "Returns the number of datoms in the index. Opts arity as in -slice.")
   (-insert [index datom index-type op-count] "Inserts a datom into the index")
   (-temporal-insert [index datom index-type op-count] "Inserts a datom in a history index")
   (-upsert [index datom index-type op-count old-datom] "Inserts or updates a datom into the index")
@@ -14,7 +14,7 @@
   (-slice [index from to index-type] [index from to index-type opts] "Returns a slice of the index. The opts arity threads storage options through (konserve convention): `{:sync? false}` returns an async expression (partial-cps) yielding the traversal instead of the traversal itself — cljs only; index types without async support must throw on `{:sync? false}` rather than ignore it.")
   (-rslice [index from to index-type] [index from to index-type opts] "Returns a REVERSE slice of the index: a lazy backwards iterator over datoms d with to <= d <= from, starting at `from` and descending. Mirrors persistent-sorted-set's rslice argument order (from = upper bound). Opts arity as in -slice.")
   (-lookup [index key cmp] [index key cmp opts] "Look up a single key with custom comparator. Returns the stored element or nil. Opts arity as in -slice.")
-  (-count-slice [index from to cmp] "O(log n) count of elements in [from, to] range using the given comparator.")
+  (-count-slice [index from to cmp] [index from to cmp opts] "O(log n) count of elements in [from, to] range using the given comparator. Opts arity as in -slice.")
   (-has-subtree-counts? [index] "Returns true if count-slice is O(log n). False means counts are missing and count-slice would degrade to O(n).")
   (-flush [index backend] "Saves the changes to the index to the given konserve backend")
   (-transient [index] "Returns a transient version of the index")

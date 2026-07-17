@@ -127,8 +127,14 @@
     (all-datoms eavt-tree :eavt))
   (-seq [eavt-tree]
     (datom-seq eavt-tree :eavt))
-  (-count [eavt-tree]
-    (datom-count eavt-tree :eavt))
+  (-count
+    ([eavt-tree]
+     (datom-count eavt-tree :eavt))
+    ([eavt-tree opts]
+     (when (false? (:sync? opts))
+       (throw (ex-info "hitchhiker-tree index is synchronous-only"
+                       {:error :storage/async-unsupported})))
+     (datom-count eavt-tree :eavt)))
   (-insert [tree datom index-type op-count]
     (insert tree datom index-type op-count))
   (-temporal-insert [tree datom index-type op-count]
@@ -174,8 +180,14 @@
     (all-datoms eavt-tree :eavt))
   (-seq [eavt-tree]
     (datom-seq eavt-tree :eavt))
-  (-count [eavt-tree]
-    (datom-count eavt-tree :eavt))
+  (-count
+    ([eavt-tree]
+     (datom-count eavt-tree :eavt))
+    ([eavt-tree opts]
+     (when (false? (:sync? opts))
+       (throw (ex-info "hitchhiker-tree index is synchronous-only"
+                       {:error :storage/async-unsupported})))
+     (datom-count eavt-tree :eavt)))
   (-insert [tree datom index-type op-count]
     (insert tree datom index-type op-count))
   (-temporal-insert [index datom index-type op-count]

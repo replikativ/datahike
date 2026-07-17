@@ -7,6 +7,7 @@
    [datahike.db.interface :as dbi]
    [datahike.db.utils :as dbu]
    [datahike.index.interface :as di]
+   [datahike.tools :as dt]
    [datahike.query.analyze :as analyze]
    [replikativ.logging :as log]))
 
@@ -395,6 +396,7 @@
                                        (let [v (extract-fn d)]
                                          (try (cmp-fn v const-val)
                                               (catch #?(:clj Exception :cljs :default) e
+                                                (when (dt/rethrowable? e) (throw e))
                                                 (log/debug :datahike/selectivity-sample-failed "selectivity sample comparison failed"
                                                            {:value v :const const-val :error #?(:clj (.getMessage ^Exception e) :cljs (str e))})
                                                 false))))
@@ -402,6 +404,9 @@
               rate (/ (double passing) n-sampled)]
           (min 1.0 (max 0.01 rate)))))
     (catch #?(:clj Exception :cljs :default) e
+      ;; a cold-store fault must NOT degrade into a heuristic estimate — the
+      ;; degraded plan would be cached under a warmth-independent key
+      (when (dt/rethrowable? e) (throw e))
       (log/debug :datahike/selectivity-heuristic "predicate selectivity sampling failed, using heuristic"
                  {:pred-op pred-op :error #?(:clj (.getMessage ^Exception e) :cljs (str e))})
       (estimate-predicate-selectivity-heuristic pred-op))))

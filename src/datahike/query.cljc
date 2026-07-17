@@ -1044,9 +1044,13 @@
         new-rel (if pred
                   (let [tuple-pred (-call-fn context production pred args)
                         safe-pred (fn [tuple]
+                                    ;; absorbs user-pred TYPE errors only — a
+                                    ;; storage fault or cancellation must escape
+                                    ;; (dropped tuples would be cached as truth)
                                     (try (tuple-pred tuple)
                                          #?(:clj (catch ClassCastException _ false)
-                                            :cljs (catch :default _ false))
+                                            :cljs (catch :default e
+                                                    (if (dt/rethrowable? e) (throw e) false)))
                                          #?(:clj (catch IllegalArgumentException _ false))))]
                     (update production :tuples #(filter safe-pred %)))
                   (assoc production :tuples []))]
@@ -1626,7 +1630,8 @@
                 ~(mapv (fn [index i] `(~replacer ~index (nth ~tuple ~i)))
                        pinds
                        (range))
-                (catch ~ex-sym# e# nil))))))))
+                (catch ~ex-sym# e#
+                  (if (datahike.tools/rethrowable? e#) (throw e#) nil)))))))))
 
 (def vec-lookup-ref-replacer (make-vec-lookup-ref-replacer 5))
 
@@ -3308,6 +3313,7 @@
                          col-agg-adapter (resolve-stratum-fn 'columnar-aggregate-from-maps)]
                      (col-agg-adapter result-maps group-keys stratum-aggs find-elements))))))))
        (catch Exception e
+         (when (dt/rethrowable? e) (throw e))
          (log/warn "secondary-idx-agg not applicable:" (.getMessage e) (pr-str (type e)))
          nil))))
 
@@ -3330,6 +3336,7 @@
                                  (col-agg-fn column-map group-keys agg-specs find-elements))
                                cancel))))))
        (catch Exception e
+         (when (dt/rethrowable? e) (throw e))
          (log/debug "columnar-aggregate not applicable:" (.getMessage e))
          nil))))
 
@@ -3674,6 +3681,10 @@
         fused-rel (when (empty? (:rels context-in))
                     (try (exec-direct-rel plan db (:cancel context-in))
                          (catch #?(:clj Exception :cljs :default) e
+                           ;; storage faults / cancellation must escape — a
+                           ;; silent fallback would re-execute (and mask the
+                           ;; fault from the async machinery)
+                           (when (dt/rethrowable? e) (throw e))
                            (log/debug "fused-scan-rel not applicable:" #?(:clj (.getMessage ^Exception e) :cljs (str e)))
                            nil)))
         context-out (if fused-rel
@@ -3722,11 +3733,12 @@
       (post-process-result deduped context-in context-out query qfind find-elements
                            result-arity order-spec offset limit stats? qreturnmaps))))
 
-(defn- raw-q* [{:keys [query args offset limit order-by stats? count-fns? settings cancel] :as _query-map}]
-  (let [t0 (when *profile?* #?(:clj (System/nanoTime) :cljs (* 1000 (.getTime (js/Date.)))))
+(defn- raw-q* [{:keys [query args offset limit order-by stats? count-fns? settings cancel
+                       disable-planner? profile?] :as _query-map}]
+  (let [t0 (when profile? #?(:clj (System/nanoTime) :cljs (* 1000 (.getTime (js/Date.)))))
         settings (merge default-settings settings)
         {:keys [qfind qwith qreturnmaps qin]} (memoized-parse-query query)
-        t1 (when *profile?* #?(:clj (System/nanoTime) :cljs (* 1000 (.getTime (js/Date.)))))
+        t1 (when profile? #?(:clj (System/nanoTime) :cljs (* 1000 (.getTime (js/Date.)))))
         context-in (-> (if stats?
                          (StatContext. [] {} built-in-rules {} [] settings cancel)
                          (Context. [] {} built-in-rules {} settings cancel))
@@ -3735,7 +3747,7 @@
                        ;; into the threaded context :fn-counts; surfaced as result
                        ;; metadata. (Extra defrecord keys persist via the extmap.)
                        (cond-> count-fns? (assoc :count-fns? true)))
-        t2 (when *profile?* #?(:clj (System/nanoTime) :cljs (* 1000 (.getTime (js/Date.)))))
+        t2 (when profile? #?(:clj (System/nanoTime) :cljs (* 1000 (.getTime (js/Date.)))))
 
         all-vars      (concat (dpi/find-vars qfind) (map :symbol qwith))
         find-elements (dpip/find-elements qfind)
@@ -3749,7 +3761,7 @@
                          (some (fn [[_k v]] (when (and (dbu/db? v) (planner-eligible-db? v)) v))
                                sources)))
         multi-source? (> (count (:sources context-in)) 1)
-        use-planner? (and (not *disable-planner*)
+        use-planner? (and (not disable-planner?)
                           (not stats?)
                           (some? primary-db)
                           (dbu/db? primary-db)
@@ -3877,7 +3889,7 @@
                                     plan db qfind find-elements context-in query stats? qreturnmaps)]
               (let [result (apply-result-transforms direct-result order-spec offset limit qreturnmaps)]
                 #?(:clj
-                   (when *profile?*
+                   (when profile?
                      (let [t3 (System/nanoTime)]
                        (println (format "parse=%.3f resolve=%.3f direct=%.3f total=%.3f ms"
                                         (/ (- t1 t0) 1e6) (/ (- t2 t1) 1e6) (/ (- t3 t2) 1e6)
@@ -3885,7 +3897,7 @@
                 result)
 
             ;; 2. Columnar aggregate (secondary index or PSS scan)
-              (let [ta (when *profile?* #?(:clj (System/nanoTime) :cljs 0))
+              (let [ta (when profile? #?(:clj (System/nanoTime) :cljs 0))
                     has-aggs? (some #(instance? Aggregate %) find-elements)
                     columnar-eligible? (and has-aggs?
                                             (instance? FindRel qfind)
@@ -3893,18 +3905,18 @@
                                             (not (some #(instance? Pull %) find-elements))
                                             (empty? (:rels context-in))
                                             (not lookup-ref-reverse-map))
-                    tb (when *profile?* #?(:clj (System/nanoTime) :cljs 0))
+                    tb (when profile? #?(:clj (System/nanoTime) :cljs 0))
                     columnar-result
                     (when columnar-eligible?
                       #?(:clj (or (try-secondary-index-aggregate db plan find-elements)
                                   (try-columnar-aggregate plan db find-elements (:cancel context-in)))
                          :cljs nil))
-                    tc (when *profile?* #?(:clj (System/nanoTime) :cljs 0))]
+                    tc (when profile? #?(:clj (System/nanoTime) :cljs 0))]
                 (if columnar-result
                   (let [result (-post-process qfind columnar-result)
                         result (apply-result-transforms result order-spec offset limit qreturnmaps)]
                     #?(:clj
-                       (when *profile?*
+                       (when profile?
                          (let [t3 (System/nanoTime)]
                            (println (format "parse=%.3f resolve=%.3f plan=%.3f elig=%.3f sec-idx=%.3f post=%.3f total=%.3f ms"
                                             (/ (- t1 t0) 1e6) (/ (- t2 t1) 1e6) (/ (- ta t2) 1e6)
@@ -3918,7 +3930,7 @@
                                 result-arity lookup-ref-reverse-map order-spec offset limit
                                 stats? qreturnmaps)]
                     #?(:clj
-                       (when *profile?*
+                       (when profile?
                          (let [t3 (System/nanoTime)]
                            (println (format "parse=%.3f resolve=%.3f relation=%.3f total=%.3f ms"
                                             (/ (- t1 t0) 1e6) (/ (- t2 t1) 1e6) (/ (- t3 t2) 1e6)
@@ -3929,7 +3941,7 @@
           (let [result (execute-legacy context-in query qfind find-elements all-vars result-arity
                                        order-spec offset limit stats? qreturnmaps)]
             #?(:clj
-               (when *profile?*
+               (when profile?
                  (let [t3 (System/nanoTime)]
                    (println (format "parse=%.3f resolve=%.3f legacy=%.3f total=%.3f ms"
                                     (/ (- t1 t0) 1e6) (/ (- t2 t1) 1e6) (/ (- t3 t2) 1e6)
@@ -3944,8 +3956,8 @@
       Note: the nested when/when-let forms correctly propagate the result — each
       returns nil when its condition is false, or the body's last expression when true.
       The innermost when-let binds the result and returns (-post-process qfind result)."
-     [{:keys [query args offset limit order-by stats?]}]
-     (when (and (not *disable-planner*)
+     [{:keys [query args offset limit order-by stats? disable-planner?]}]
+     (when (and (not disable-planner?)
                 (not stats?)
                 (not order-by)
                 (not offset)
@@ -3973,7 +3985,14 @@
                          (-post-process qfind result)))))))))))))
 
 (defn raw-q [{:keys [query args stats? count-fns? offset limit order-by] :as query-map}]
-  (let [uncached (fn []
+  (let [;; snapshot the dynamic controls ONCE at query entry: partial-cps
+        ;; conveys no bindings across suspension on cljs, so the executable
+        ;; values travel in the query-map, not in the binding frame
+        query-map (assoc query-map
+                         :disable-planner? *disable-planner*
+                         :profile? *profile?*)
+        disable-planner? (:disable-planner? query-map)
+        uncached (fn []
                    #?(:clj (or (try-secondary-index-aggregate-fast query-map)
                                (raw-q* query-map))
                       :cljs (raw-q* query-map)))]
@@ -3993,7 +4012,7 @@
                 ;; Clojure, so they'd share a result-cache entry and return the
                 ;; first-cached scale. Keep them distinct.
                 cache-key (scale-sensitive-key
-                           [query non-db-args offset limit order-by *disable-planner*])
+                           [query non-db-args offset limit order-by disable-planner?])
                 entry (result-cache-get db cache-key)]
             (if entry
               (:result entry)

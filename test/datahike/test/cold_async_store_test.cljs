@@ -4,7 +4,7 @@
    two contracted behaviors of the seam on a COLD read (empty node LRU):
    - the sync arm surfaces the actionable :storage/sync-read-unavailable
      error, decorated at the -slice boundary with the slice's logical
-     [index from to] (the fault-retry machinery prefetches whole ranges);
+     [index from to] (names what an optional prefetcher would warm);
    - the async arm ({:sync? false}) falls back to the channel adapter,
      admits the node into the LRU, and yields the same datoms the store
      held — after which the LRU is WARM and sync reads work again.
