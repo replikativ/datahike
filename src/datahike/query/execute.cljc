@@ -6,6 +6,7 @@
    [datahike.constants :refer [e0 tx0 emax txmax]]
    [datahike.datom :as datom :refer [datom]]
    [datahike.db.interface :as dbi]
+   [datahike.tools :as dt]
    [datahike.db.utils :as dbu]
    [datahike.index.interface :as di]
    [datahike.query.analyze :as analyze]
@@ -80,10 +81,15 @@
      :cljs (instance? BTSet x)))
 
 (defn- pss-lookup-ge
-  "Cross-platform lookupGE: first element >= key."
+  "Cross-platform lookupGE: first element >= key.
+   The cljs arm is a per-datom point-read choke point: a cold read through
+   an async-only store surfaces here, so decorate the fault with the probe
+   key (the fault-retry loop can then fetch precisely)."
   [pss key]
   #?(:clj  (.lookupGE ^PersistentSortedSet pss key)
-     :cljs (btset/lookup-ge pss key nil {:sync? true})))
+     :cljs (try (btset/lookup-ge pss key nil {:sync? true})
+                (catch :default e
+                  (dt/rethrow-decorated e {:probe key})))))
 
 (defn- make-result-list
   "Create a mutable list for collecting results."

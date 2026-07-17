@@ -186,17 +186,48 @@
 
 (extend-type #?(:clj PersistentSortedSet :cljs BTSet)
   IIndex
-  (-slice [^PersistentSortedSet pset from to index-type]
-    (psset/slice pset from to (slice-comparator-constructor index-type from to)))
-  (-rslice [^PersistentSortedSet pset from to index-type]
-    ;; rslice iterates DESCENDING from `from` down to `to` (from = upper
-    ;; bound). Lazy: only the seek path + consumed range restore nodes.
-    ;; The generated comparator inspects nil components of both bounds
-    ;; symmetrically, so the same constructor serves both directions.
-    (psset/rslice pset from to (slice-comparator-constructor index-type from to)))
-  (-lookup [^PersistentSortedSet pset key cmp]
-    #?(:clj  (.lookup pset key cmp)
-       :cljs (psset/lookup pset key cmp)))
+  (-slice
+    ([^PersistentSortedSet pset from to index-type]
+     ;; cljs: decorate seek-time storage faults with the slice's logical
+     ;; range so the fault-retry machinery can prefetch the whole range.
+     ;; (Mid-iteration faults are decorated at the consuming loops.)
+     #?(:clj (psset/slice pset from to (slice-comparator-constructor index-type from to))
+        :cljs (try (psset/slice pset from to (slice-comparator-constructor index-type from to))
+                   (catch :default e
+                     (dt/rethrow-decorated e {:index index-type :from from :to to})))))
+    ([^PersistentSortedSet pset from to index-type opts]
+     #?(:clj  (do (when (false? (:sync? opts))
+                    (throw (ex-info "async index access is not supported on the JVM (use virtual threads)"
+                                    {:error :storage/async-unsupported})))
+                  (psset/slice pset from to (slice-comparator-constructor index-type from to)))
+        :cljs (if (false? (:sync? opts))
+                (psset/slice pset from to (slice-comparator-constructor index-type from to) opts)
+                (try (psset/slice pset from to (slice-comparator-constructor index-type from to) opts)
+                     (catch :default e
+                       (dt/rethrow-decorated e {:index index-type :from from :to to})))))))
+  (-rslice
+    ([^PersistentSortedSet pset from to index-type]
+     ;; rslice iterates DESCENDING from `from` down to `to` (from = upper
+     ;; bound). Lazy: only the seek path + consumed range restore nodes.
+     ;; The generated comparator inspects nil components of both bounds
+     ;; symmetrically, so the same constructor serves both directions.
+     (psset/rslice pset from to (slice-comparator-constructor index-type from to)))
+    ([^PersistentSortedSet pset from to index-type opts]
+     #?(:clj  (do (when (false? (:sync? opts))
+                    (throw (ex-info "async index access is not supported on the JVM (use virtual threads)"
+                                    {:error :storage/async-unsupported})))
+                  (psset/rslice pset from to (slice-comparator-constructor index-type from to)))
+        :cljs (psset/rslice pset from to (slice-comparator-constructor index-type from to) opts))))
+  (-lookup
+    ([^PersistentSortedSet pset key cmp]
+     #?(:clj  (.lookup pset key cmp)
+        :cljs (psset/lookup pset key cmp)))
+    ([^PersistentSortedSet pset key cmp opts]
+     #?(:clj  (do (when (false? (:sync? opts))
+                    (throw (ex-info "async index access is not supported on the JVM (use virtual threads)"
+                                    {:error :storage/async-unsupported})))
+                  (.lookup pset key cmp))
+        :cljs (psset/lookup pset key cmp opts))))
   (-count-slice [^PersistentSortedSet pset from to cmp]
     (psset/count-slice pset from to cmp))
   (-has-subtree-counts? [^PersistentSortedSet pset]

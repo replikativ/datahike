@@ -16,7 +16,9 @@
         ;; published NodeState — a pipelining writer's copies can never observe a torn settle;
         ;; 0.4.137 projects diff-buf diffs onto a COPY of the restored node, so tree versions
         ;; sharing a durable anchor through the node cache can't clobber each other's reads
-        org.replikativ/persistent-sorted-set        {:mvn/version "0.4.137"}
+        ;; VALIDATION PHASE: local PSS with the chunked-async seam (PSS #20,
+        ;; feat/chunked-async-seq). Revert to a released :mvn/version before merge.
+        org.replikativ/persistent-sorted-set        {:local/root "../persistent-sorted-set"}
         is.simm/partial-cps                         {:mvn/version "0.1.59"}
         environ/environ                             {:mvn/version "1.2.0"}
         nrepl/bencode                               {:mvn/version "1.2.0"}

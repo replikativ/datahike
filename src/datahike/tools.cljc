@@ -322,3 +322,24 @@
         :else (cons
                b (lazy-seq
                   (merge-distinct-sorted-seqs cmp seq-a (rest seq-b))))))))
+
+(defn storage-fault?
+  "Is e the storage seam's cold-sync-read error? (CachedStorage's sync arm
+   throws it when a read genuinely requires asynchronous store access.)
+   Broad catch sites on the query path MUST rethrow these — swallowing one
+   turns a repairable fault into a silently wrong (and cached) result."
+  [e]
+  (= :storage/sync-read-unavailable (:error (ex-data e))))
+
+(defn rethrow-decorated
+  "Rethrow a storage fault decorated with the read's logical context
+   (index/range or probe key), preserving the original as the cause. The
+   fault-and-retry machinery prefetches the WHOLE decorated range, so one
+   fault repairs a slice instead of a single node. Non-fault throwables
+   pass through unchanged."
+  [e ctx]
+  (if (storage-fault? e)
+    (throw (ex-info #?(:clj (.getMessage ^Throwable e) :cljs (ex-message e))
+                    (merge (ex-data e) ctx)
+                    e))
+    (throw e)))
