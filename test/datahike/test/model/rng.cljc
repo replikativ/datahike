@@ -80,3 +80,50 @@
               vj (v j)]
           (recur (dec i) (assoc v i vj j vi)))
         v))))
+
+;; ---------------------------------------------------------------------------
+;; splitmix64 — cross-platform DETERMINISTIC PRNG: the same seed yields the
+;; SAME sequence on the JVM (unchecked longs) and JS (BigInt), so seeded
+;; generative tests (the query differential) reproduce identically on both
+;; platforms. The platform-diverging `create` above (SplittableRandom / LCG)
+;; is kept for the model suite, which never needed cross-platform repro.
+
+#?(:clj
+   (defn- sm-mix ^long [^long z0]
+     (let [z (unchecked-multiply (bit-xor z0 (unsigned-bit-shift-right z0 30))
+                                 -4658895280553007687)          ;; 0xBF58476D1CE4E5B9
+           z (unchecked-multiply (bit-xor z (unsigned-bit-shift-right z 27))
+                                 -7723592293110705685)]          ;; 0x94D049BB133111EB
+       (bit-xor z (unsigned-bit-shift-right z 31)))))
+
+#?(:cljs
+   (defn- sm-mix [z0]
+     (let [m (js* "0xFFFFFFFFFFFFFFFFn")
+           z (js* "((~{} ^ (~{} >> 30n)) * 0xBF58476D1CE4E5B9n) & ~{}" z0 z0 m)
+           z (js* "((~{} ^ (~{} >> 27n)) * 0x94D049BB133111EBn) & ~{}" z z m)]
+       (js* "~{} ^ (~{} >> 31n)" z z))))
+
+(defn create-splitmix
+  "Deterministic cross-platform PRNG (splitmix64). Same seed → same
+   next-int/next-boolean/next-double sequence on JVM and JS. next-long
+   returns the platform's native 64-bit value (long / BigInt) — use it for
+   seeding forks, not for cross-platform comparison."
+  [seed]
+  (let [state (atom #?(:clj (long seed)
+                       :cljs (js* "BigInt(~{}) & 0xFFFFFFFFFFFFFFFFn" seed)))
+        step! (fn []
+                (sm-mix (swap! state
+                               #?(:clj (fn [^long s] (unchecked-add s -7046029254386353131)) ;; 0x9E3779B97F4A7C15
+                                  :cljs (fn [s] (js* "(~{} + 0x9E3779B97F4A7C15n) & 0xFFFFFFFFFFFFFFFFn" s))))))]
+    (reify PRNG
+      (next-long [_] (step!))
+      (next-int [_ bound]
+        #?(:clj (long (Long/remainderUnsigned (long (step!)) (long bound)))
+           :cljs (js/Number (js* "~{} % BigInt(~{})" (step!) bound))))
+      (next-boolean [_]
+        #?(:clj (zero? (bit-and (long (step!)) 1))
+           :cljs (zero? (js/Number (js* "~{} & 1n" (step!))))))
+      (next-double [_]
+        #?(:clj (/ (double (unsigned-bit-shift-right (long (step!)) 11)) 9007199254740992.0)
+           :cljs (/ (js/Number (js* "~{} >> 11n" (step!))) 9007199254740992.0)))
+      (fork [this] (create-splitmix (next-long this))))))

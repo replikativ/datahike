@@ -13,6 +13,9 @@
             ;; covers them too.
             [datahike.test.index-test]
             [datahike.test.index-opts-test]
+            [datahike.test.query-shape-corpus-test]
+            [datahike.test.model.rng-splitmix-test]
+            [datahike.test.query-differential-test]
             [datahike.test.cljs-tiered-storage-test]
             [datahike.test.cljs-pattern-scan-test]
             [datahike.test.optimistic-test]
@@ -690,6 +693,9 @@
   (t/run-tests 'datahike.test.nodejs-test
                'datahike.test.index-test
                'datahike.test.index-opts-test
+               'datahike.test.query-shape-corpus-test
+               'datahike.test.model.rng-splitmix-test
+               'datahike.test.query-differential-test
                'datahike.test.cljs-tiered-storage-test
                'datahike.test.cljs-pattern-scan-test
                'datahike.test.optimistic-test

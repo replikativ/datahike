@@ -3,7 +3,7 @@
   (:require
    [#?(:cljs cljs.reader :clj clojure.edn) :as edn]
    [clojure.set :as set]
-   #?(:clj [clojure.string :as str])
+   [clojure.string :as str]
    [clojure.walk :as walk]
    [datahike.datom :as datom]
    [datahike.db.interface :as dbi]
@@ -557,7 +557,24 @@
                 'tuple vector, 'untuple identity
                 'q q
                 'datahike.query/q q
-                #'datahike.query/q q})
+                #'datahike.query/q q
+                ;; Namespaced fns the cljs engine cannot resolve dynamically
+                ;; (resolve-sym is JVM-only): portable clojure.string built-ins
+                ;; keyed by full symbol, exactly like 'datahike.query/q above.
+                ;; On the JVM these shadow resolve-sym with the same vars —
+                ;; behavior-neutral.
+                'clojure.string/upper-case str/upper-case
+                'clojure.string/lower-case str/lower-case
+                'clojure.string/capitalize str/capitalize
+                'clojure.string/starts-with? str/starts-with?
+                'clojure.string/ends-with? str/ends-with?
+                'clojure.string/includes? str/includes?
+                'clojure.string/blank? str/blank?
+                'clojure.string/join str/join
+                'clojure.string/split str/split
+                'clojure.string/trim str/trim
+                'clojure.string/replace str/replace
+                'datahike.api/q q})
 
 (def clj-core-built-ins
   #?(:clj

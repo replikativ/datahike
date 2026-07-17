@@ -11,23 +11,21 @@
    its minimal repro belongs either here or (with an explanatory docstring) in
    query-engine-parity-test."
   (:require
-   [clojure.test :refer [deftest is testing]]
+   #?(:cljs [cljs.test :as t :refer-macros [is deftest testing]]
+      :clj  [clojure.test :refer [deftest is testing]])
    [datahike.api :as d]
-   [datahike.query :as q]))
+   [datahike.db :as ddb]
+   [datahike.query :as q]
+   [datahike.test.core-test]))
 
 (def ^:private db
+  ;; Store-less in-memory db: planner-eligible, runs on both platforms
+  ;; synchronously; keep-history? so the temporal shapes below work.
   (delay
-    (let [cfg {:store {:backend :memory :id (random-uuid)}
-               :schema-flexibility :write}]
-      (d/create-database cfg)
-      (let [conn (d/connect cfg)]
-        (d/transact conn [{:db/ident :name :db/valueType :db.type/string :db/cardinality :db.cardinality/one}
-                          {:db/ident :nick :db/valueType :db.type/string :db/cardinality :db.cardinality/one}
-                          {:db/ident :age :db/valueType :db.type/long :db/cardinality :db.cardinality/one}
-                          {:db/ident :tag :db/valueType :db.type/keyword :db/cardinality :db.cardinality/many}])
-        (d/transact conn [{:db/id 100 :name "alice" :nick "al" :age 30 :tag [:red :blue]}
-                          {:db/id 101 :name "bob" :age 40 :tag [:blue]}])
-        (d/db conn)))))
+    (d/db-with (ddb/empty-db {:tag {:db/cardinality :db.cardinality/many}}
+                             {:keep-history? true})
+               [{:db/id 100 :name "alice" :nick "al" :age 30 :tag [:red :blue]}
+                {:db/id 101 :name "bob" :age 40 :tag [:blue]}])))
 
 (def ^:private rules
   '[[(named ?e ?n) [?e :name ?n]]
@@ -71,7 +69,7 @@
         run (fn [disable?]
               (try (binding [q/*disable-planner* disable?]
                      (apply d/q query @db args))
-                   (catch Exception _ ::raised)))]
+                   (catch #?(:clj Exception :cljs :default) _ ::raised)))]
     [(run true) (run false)]))
 
 (deftest corpus-shapes-agree-across-engines
@@ -90,6 +88,6 @@
                    '[:find ?n ?u :where [?e :name ?n] [(clojure.string/upper-case ?n) ?u]]]]
       (doseq [query queries]
         (let [run (fn [disable? d*] (try (binding [q/*disable-planner* disable?] (d/q query d*))
-                                         (catch Exception _ ::raised)))]
+                                         (catch #?(:clj Exception :cljs :default) _ ::raised)))]
           (is (= (run true asof) (run false asof))
               (str "as-of divergence on " (pr-str query))))))))

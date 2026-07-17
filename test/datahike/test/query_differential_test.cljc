@@ -17,43 +17,49 @@
    A failure prints the offending query; with the fixed seed it reproduces
    deterministically, and test.check shrinks it to a minimal spec."
   (:require
-   [clojure.test :refer [is]]
-   [clojure.test.check.clojure-test :refer [defspec]]
+   #?(:cljs [cljs.test :refer-macros [is]]
+      :clj  [clojure.test :refer [is]])
+   [clojure.test.check.clojure-test :refer [defspec] #?@(:cljs [:include-macros true])]
    [clojure.test.check.generators :as gen]
    [clojure.test.check.properties :as prop]
    [datahike.api :as d]
-   [datahike.query :as q]))
+   [datahike.db :as ddb]
+   [datahike.query :as q]
+   [datahike.test.model.rng :as rng]))
 
 (def ^:private num-cases
-  ;; 3000: the fixed JVM/db setup dominates the cost (100 cases ≈ 8.7s,
+  ;; 3000 on the JVM: the fixed setup dominates the cost (100 cases ≈ 8.7s,
   ;; 3000 ≈ 23s — ~5ms marginal per case once warm), and every distinct
   ;; divergence the 30k-seed hunts found surfaced within the first ~2600
   ;; seeds — 3000 encloses the observed discovery zone with margin.
-  (or (some-> (System/getenv "DATAHIKE_DIFF_CASES") parse-long) 3000))
+  ;; 300 on JS: same fixed seed (a strict prefix of the JVM run — splitmix64
+  ;; makes the case stream identical across platforms), sized for the node
+  ;; CI budget; raise via DATAHIKE_DIFF_CASES for deeper local runs.
+  (or (some-> #?(:clj (System/getenv "DATAHIKE_DIFF_CASES")
+                 :cljs (when (exists? js/process)
+                         (aget (.-env js/process) "DATAHIKE_DIFF_CASES")))
+              parse-long)
+      #?(:clj 3000 :cljs 300)))
 
 ;; One shared db for all cases — content exercises card-one/card-many, refs,
 ;; missing attributes (for get-else), keyword values (for or-branches) and a
 ;; retraction (so history exists and index structure isn't pristine).
 (defonce ^:private test-db
+  ;; Store-less in-memory db (planner-eligible, cross-platform, synchronous):
+  ;; typed schema via empty-db's schema map, history via :keep-history? and
+  ;; chained db-with (retract + re-add) so temporal wrappers see real history.
   (delay
-    (let [cfg {:store {:backend :memory :id (random-uuid)}
-               :schema-flexibility :write}]
-      (d/create-database cfg)
-      (let [conn (d/connect cfg)]
-        (d/transact conn [{:db/ident :name :db/valueType :db.type/string :db/cardinality :db.cardinality/one}
-                          {:db/ident :nick :db/valueType :db.type/string :db/cardinality :db.cardinality/one}
-                          {:db/ident :score :db/valueType :db.type/long :db/cardinality :db.cardinality/one}
-                          {:db/ident :tag :db/valueType :db.type/keyword :db/cardinality :db.cardinality/many}
-                          {:db/ident :friend :db/valueType :db.type/ref :db/cardinality :db.cardinality/one}])
-        (d/transact conn [{:db/id 100 :name "alice" :nick "al" :score 10 :tag [:red :blue] :friend 101}
-                          {:db/id 101 :name "bob" :score 20 :tag [:blue]}
-                          {:db/id 102 :name "carol" :nick "cc" :score 30 :friend 100}
-                          {:db/id 103 :name "dave" :tag [:red]}
-                          {:db/id 104 :name "eve" :score 20 :friend 103}
-                          {:db/id 105 :name "frank" :nick "f" :tag [:green :red] :score 5}])
-        (d/transact conn [[:db/retract 101 :score 20]])
-        (d/transact conn [[:db/add 101 :score 25]])
-        (d/db conn)))))
+    (-> (ddb/empty-db {:tag {:db/cardinality :db.cardinality/many}
+                       :friend {:db/valueType :db.type/ref}}
+                      {:keep-history? true})
+        (d/db-with [{:db/id 100 :name "alice" :nick "al" :score 10 :tag [:red :blue] :friend 101}
+                    {:db/id 101 :name "bob" :score 20 :tag [:blue]}
+                    {:db/id 102 :name "carol" :nick "cc" :score 30 :friend 100}
+                    {:db/id 103 :name "dave" :tag [:red]}
+                    {:db/id 104 :name "eve" :score 20 :friend 103}
+                    {:db/id 105 :name "frank" :nick "f" :tag [:green :red] :score 5}])
+        (d/db-with [[:db/retract 101 :score 20]])
+        (d/db-with [[:db/add 101 :score 25]]))))
 
 ;; ---------------------------------------------------------------------------
 ;; Query specs: independent generator choices assembled into an always-valid
@@ -62,19 +68,13 @@
 
 (defonce ^:private test-db2
   (delay
-    (let [cfg {:store {:backend :memory :id (random-uuid)}
-               :schema-flexibility :write}]
-      (d/create-database cfg)
-      (let [conn (d/connect cfg)]
-        (d/transact conn [{:db/ident :name :db/valueType :db.type/string :db/cardinality :db.cardinality/one}
-                          {:db/ident :score :db/valueType :db.type/long :db/cardinality :db.cardinality/one}])
-        ;; overlapping entity ids with db1, PARTIAL coverage (103/104 absent)
-        ;; and different values — cross-db joins must discriminate sources
-        (d/transact conn [{:db/id 100 :name "alice-2" :score 1}
-                          {:db/id 101 :name "bob-2"}
-                          {:db/id 102 :name "carol-2" :score 3}
-                          {:db/id 105 :name "frank-2" :score 5}])
-        (d/db conn)))))
+    ;; overlapping entity ids with db1, PARTIAL coverage (103/104 absent)
+    ;; and different values — cross-db joins must discriminate sources
+    (d/db-with (ddb/empty-db)
+               [{:db/id 100 :name "alice-2" :score 1}
+                {:db/id 101 :name "bob-2"}
+                {:db/id 102 :name "carol-2" :score 3}
+                {:db/id 105 :name "frank-2" :score 5}])))
 
 (def ^:private rule-sets
   {:plain     '[[(named ?e ?n) [?e :name ?n]]]
@@ -177,14 +177,9 @@
         mod-var (some second expanded)
         clauses (into patterns mod-clauses)
         clauses (if shuffle?
-                  ;; seeded deterministic permutation
-                  (let [rng (java.util.Random. (long shuffle-seed))
-                        idxs (loop [order (vec (range (count clauses))) i (dec (count clauses))]
-                               (if (pos? i)
-                                 (let [j (.nextInt rng (inc i))]
-                                   (recur (assoc order i (order j) j (order i)) (dec i)))
-                                 order))]
-                    (mapv clauses idxs))
+                  ;; seeded deterministic permutation — splitmix64 so the
+                  ;; permutation is IDENTICAL on JVM and JS for a given seed
+                  (rng/shuffle-rng (rng/create-splitmix shuffle-seed) clauses)
                   clauses)
         primary (cond
                   (and use2? (= :join-name multi)) '?n2
@@ -233,7 +228,7 @@
     (binding [q/*disable-planner* disable?]
       (normalize (apply d/q query db
                         (map (fn [a] (if (= ::db2 a) @test-db2 a)) args))))
-    (catch Exception _ ::raised)))
+    (catch #?(:clj Exception :cljs :default) _ ::raised)))
 
 (defn- wrap-db [db temporal]
   (case temporal
