@@ -39,12 +39,19 @@
    is outside that model (and outside it for a more basic reason than GC: without head
    fencing, two writers on a branch can lose each other's commits — issue #878).
    Readers are unconstrained."
+  (:require [konserve.utils :as ku])
   #?(:clj (:import [java.util Date]))
   ;; Self-require the macro namespace so `with-unreferenced-writes` is available to
   ;; ClojureScript consumers that `:refer` it (the `datahike.test.async` pattern).
   #?(:cljs (:require-macros [datahike.gc-guard])))
 
-(defn- now [] #?(:clj (Date.) :cljs (js/Date.)))
+(defn- now
+  "Monotonic stamp from konserve's write clock. MUST be the same source that
+   stamps :last-write (konserve.utils/now): the sweep spares an object iff
+   last-write >= safe-point, and that comparison is only meaningful when both
+   sides come from one strictly-monotonic clock — a raw (Date.) here let an
+   NTP step-back stamp a live object BEFORE the safe-point that guards it."
+  [] (ku/now))
 (defn- ms [d] #?(:clj (.getTime ^Date d) :cljs (.getTime d)))
 
 ;; store-id -> {token start-instant}. Keyed by the store's :id (from the store

@@ -20,7 +20,7 @@
      (def stop-ch (start-background-gc! store {...opts...}))
      ;; Later: (async/close! stop-ch)"
   (:require [konserve.core :as k]
-            [konserve.utils :refer [multi-key-capable?]]
+            [konserve.utils :as ku :refer [multi-key-capable?]]
             #?@(:clj  [[clojure.core.cache.wrapped :as wrapped]]
                 :cljs [[cljs.cache.wrapped :as wrapped]])
             [replikativ.logging :as log]
@@ -46,7 +46,9 @@
   [store grace-period-ms]
   (let [freed-atom (-> store :storage :freed-addresses)
         freed-set-atom (-> store :storage :freed-set)
-        now #?(:clj (Date.) :cljs (js/Date.))
+        ;; Same monotonic source as the freed-address stamps (markFreed) —
+        ;; grace-period comparisons need both sides on one clock.
+        now (ku/now)
         cutoff-time (- (get-time now) grace-period-ms)]
     (if freed-atom
       (let [result (atom nil)]

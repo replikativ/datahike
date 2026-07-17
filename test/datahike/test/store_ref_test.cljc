@@ -357,13 +357,13 @@
       (let [bytes  (str->bytes "nobody points at me")
             orphan (blob/blob-id bytes)]
         (<! (k/bassoc store orphan bytes {:sync? false}))
-        ;; The sweep spares any object whose last-write is NOT strictly before the
-        ;; collection cutoff (min of `now` and the store's safe point) — konserve's
-        ;; `(<= cutoff last-write)`. Writing the orphan and collecting in the SAME
-        ;; wall-clock millisecond (a fast box) would spare it and the assertion below
-        ;; would see an empty sweep. Let a beat pass: a real collection never runs in
-        ;; the same instant as the write it reclaims.
-        (<! (a/timeout 20))
+        ;; Write stamps and the collection cutoff share konserve's monotone
+        ;; clock (utils/now) — but the clock is deliberately NON-strict
+        ;; (max(wall, prev); a +1-per-stamp clock would outrun physical time
+        ;; under load), so a cutoff acquired in the same millisecond as the
+        ;; orphan's write TIES with it and the sweep spares ties (fail-safe).
+        ;; Let a beat pass so wall time advances past the orphan's stamp.
+        (<! (a/timeout 10))
         (let [swept (set (<! (gc/gc-storage! @conn)))]
           (is (contains? swept orphan)
               "the database is the root set: an object nothing references is garbage")))
