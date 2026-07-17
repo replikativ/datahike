@@ -26,6 +26,7 @@
    [datahike.query.relation :as rel]
    [datahike.query.plan :as plan]
    [datahike.query.analyze :as analyze]
+   [datahike.sync-capability :as dsc]
    #?(:clj [datahike.query.logical :as logical])
    #?(:clj [datahike.query.lower :as lower])
    #?(:cljs [datahike.db :refer [DB AsOfDB SinceDB HistoricalDB]])
@@ -4042,6 +4043,28 @@
                          (-post-process qfind result)))))))))))))
 
 (defn raw-q [{:keys [query args stats? count-fns? offset limit order-by] :as query-map}]
+  ;; cljs sync dispatch gate: this is the SYNCHRONOUS query API, and a store
+  ;; that cannot serve synchronous reads (IndexedDB, remote backends — probed
+  ;; empirically, see datahike.sync-capability) would otherwise fail deep
+  ;; inside index-node loading with a konserve assertion. Fail upfront with an
+  ;; actionable error instead. Deliberately gated on the STORE's capability,
+  ;; not on cache temperature: a query that only sometimes completes
+  ;; synchronously (when the node LRU happens to be warm) is the flaky
+  ;; behavior we do not want to encourage — use the async API for such stores.
+  #?(:cljs
+     (doseq [arg args]
+       ;; only concrete DBs and temporal wrappers carry a store; FilteredDB's
+       ;; ILookup throws, so resolve through the type, not keyword lookup
+       (let [store (cond
+                     (instance? DB arg) (:store arg)
+                     (or (instance? AsOfDB arg)
+                         (instance? SinceDB arg)
+                         (instance? HistoricalDB arg))
+                     (:store (dbi/-origin arg))
+                     :else nil)]
+         (when (and store (not (dsc/sync-read-capable? store)))
+           (log/raise "This database's store requires asynchronous access; the synchronous q API cannot serve it. Use the async query API, or a store with a synchronous tier (memory, or a tiered store with a memory frontend)."
+                      {:error :query/sync-on-async-store})))))
   (let [uncached (fn []
                    #?(:clj (or (try-secondary-index-aggregate-fast query-map)
                                (raw-q* query-map))

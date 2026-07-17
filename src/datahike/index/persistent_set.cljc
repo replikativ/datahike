@@ -5,6 +5,9 @@
             #?(:cljs [org.replikativ.persistent-sorted-set.branch :as branch :refer [Branch]])
             #?(:cljs [org.replikativ.persistent-sorted-set.leaf :refer [Leaf]])
             #?(:cljs [org.replikativ.persistent-sorted-set.impl.storage :refer [IStorage]])
+            #?(:cljs [is.simm.partial-cps.async :refer-macros [async]])
+            [datahike.sync-capability :as dsc]
+            #?(:cljs [clojure.core.async :as async])
             [org.replikativ.persistent-sorted-set.arrays :as arrays]
             #?@(:clj  [[clojure.core.cache :as cache]
                        [clojure.core.cache.wrapped :as wrapped]]
@@ -405,6 +408,17 @@
             addr
             (recur)))))))
 
+#?(:cljs
+   (defn- chan->async-expr
+     "Adapt a konserve async-op channel to a partial-cps async expression.
+      konserve delivers errors as values on the channel (js/Error instances)."
+     [ch]
+     (fn [resolve reject]
+       (async/take! ch (fn [v]
+                         (if (instance? js/Error v)
+                           (reject v)
+                           (resolve v)))))))
+
 (defrecord CachedStorage [store config cache stats pending-writes freed-addresses freed-set freelist cost-center-fn]
   IStorage
   (store [_ node #?(:cljs opts)]
@@ -432,15 +446,43 @@
     (@cost-center-fn :restore)
     (log/trace :datahike/index-read {:address address})
     (if-let [cached (wrapped/lookup cache address)]
-      cached
-      (let [node (k/get store address nil {:sync? true})]
-        (when (nil? node)
-          (log/raise "Node not found in storage." {:type :node-not-found
-                                                   :address address
-                                                   :store store}))
-        (swap! stats update :reads inc)
-        (wrapped/miss cache address node)
-        node)))
+      ;; Cache hit: the async arm wraps the realized node in an immediately-
+      ;; resolving async expression — partial-cps trampolines it on the calling
+      ;; stack, so all-warm async computations complete SYNCHRONOUSLY (the
+      ;; property the cljs sync-q-over-async-engine contract rests on).
+      #?(:clj cached
+         :cljs (if (false? (:sync? opts))
+                 (async cached)
+                 cached))
+      (letfn [(admit! [node]
+                (when (nil? node)
+                  (log/raise "Node not found in storage." {:type :node-not-found
+                                                           :address address
+                                                           :store store}))
+                (swap! stats update :reads inc)
+                (wrapped/miss cache address node)
+                node)]
+        #?(:clj (admit! (k/get store address nil {:sync? true}))
+           :cljs
+           (if (false? (:sync? opts))
+             ;; Async arm, cache miss. Opportunistic sync-first: when the store
+             ;; can serve synchronous reads (memory; tiered with a sync
+             ;; frontend — probed empirically, see store/sync-read-capable?)
+             ;; the read completes inline and the computation stays on the
+             ;; synchronous trampoline. Only genuinely async-only stores pay
+             ;; the channel hop — where real IO dominates anyway.
+             (if (dsc/sync-read-capable? store)
+               (async (admit! (k/get store address nil {:sync? true})))
+               (fn [resolve reject]
+                 ((chan->async-expr (k/get store address nil {:sync? false}))
+                  (fn [node]
+                    (try (resolve (admit! node))
+                         (catch :default e (reject e))))
+                  reject)))
+             ;; Sync arm on an async-only store fails inside konserve with its
+             ;; own assertion; the query-level dispatch gate gives the clean
+             ;; upfront error before execution reaches this depth.
+             (admit! (k/get store address nil {:sync? true})))))))
   (markFreed [_ address]
     (when address
       (let [now #?(:clj (java.util.Date.) :cljs (js/Date.))]
