@@ -12,8 +12,15 @@
    The trigger is the JOIN that comes *after* the predicate (see the two
    `-ok` controls): with no trailing join, or with the join placed *before*
    the `[?p :code ?c]` pattern (so `?p` is bound first), both engines agree.
-   It appears the planner reorders the trailing join ahead of the code
-   pattern and, in doing so, mis-binds the predicate's input var.
+   Diagnosed cause: the plan itself is correct (the predicate is attached to
+   the `[?p :code ?c]` scan), but the fused direct path hoisted it into
+   post-processing — which indexes tuples by the union of all group vars —
+   while sending that scan down the collect-only producer path, which
+   contributes no columns. The predicate then read the consumer's tuple
+   layout, resolving `?c` to a join entity id (a Long). With a numeric
+   predicate the same mis-wiring is silent (see the numeric variant below).
+   Fixed by materializing a producer's tuples whenever post-ops need its
+   columns (probe-map path), so attached predicates filter real values.
 
    Data-minimal — three datoms suffice. Surfaced by kontor's per-country tax
    provider tests, which match statute-parameter codes with a datalog
@@ -76,3 +83,31 @@
                   [(.startsWith ^String ?c "X")]]]
       (is (= #{[5]} (base query db)))
       (is (= (base query db) (planner query db))))))
+
+(defn- fresh-db-numeric
+  "Like fresh-db but :code is a long — a mis-wired predicate slot then compares
+   Long against Long and produces WRONG RESULTS silently instead of throwing."
+  []
+  (let [cfg {:store {:backend :memory :id (random-uuid)}
+             :schema-flexibility :write}]
+    (d/create-database cfg)
+    (let [conn (d/connect cfg)]
+      (d/transact conn [{:db/ident :ncode  :db/valueType :db.type/long :db/cardinality :db.cardinality/one}
+                        {:db/ident :parent :db/valueType :db.type/ref  :db/cardinality :db.cardinality/one}])
+      ;; eid 3 :ncode 100, eid 4 :ncode 7, eid 5 :parent -> 3, eid 6 :parent -> 4
+      (d/transact conn [{:db/id -1 :ncode 100} {:db/id -2 :ncode 7}
+                        {:parent -1} {:parent -2}])
+      (d/db conn))))
+
+(deftest numeric-pred-silent-variant
+  (testing "same slot mis-wiring with a numeric predicate: silently wrong, not thrown"
+    (let [db    (fresh-db-numeric)
+          query '[:find ?b
+                  :where
+                  [?p :ncode ?n]
+                  [(< 50 ?n)]
+                  [?b :parent ?p]]]
+      (is (= #{[5]} (base query db))
+          "only the parent of the ncode-100 entity passes the predicate")
+      (is (= (base query db) (planner query db))
+          "planner must equal base engine (mis-wired slot reads ?p/?b — Longs — so nothing throws)"))))

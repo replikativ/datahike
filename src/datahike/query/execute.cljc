@@ -2644,9 +2644,18 @@
                                                     (not (group-provides-var? c-g fv))))
                                              find-vars))
                                      downstream-consumers))
+                          ;; A producer must also materialize when post-ops are
+                          ;; in play: its attached preds were hoisted into
+                          ;; pred-ops (extra-preds above), and post-filtering /
+                          ;; projection index tuples by all-group-vars — which
+                          ;; only the probe-map combination produces. The
+                          ;; collect-only path contributes no producer columns,
+                          ;; so a hoisted predicate would read a foreign slot
+                          ;; out of the consumer-shaped tuples (e.g. a string
+                          ;; var resolving to the join entity id).
                           use-new-path?
                           (or producer-has-find-vars?
-                              (> (count unique-probes) 1))]
+                              (and has-post-ops? (seq downstream-consumers)))]
 
                       (cond
                         ;; MULTI-CONSUMER PATH: a single producer has two-or-more
@@ -2753,9 +2762,10 @@
                                  (into consumed-cgi (map :consumer-gi) downstream-consumers)))
 
                         ;; SINGLE-CONSUMER NEW PATH: producer has find-vars not
-                        ;; in the (single) consumer — keep producer tuples by
+                        ;; in the (single) consumer, or post-ops need the
+                        ;; producer's columns — keep producer tuples by
                         ;; building a probe-map for value propagation.
-                        producer-has-find-vars?
+                        use-new-path?
                         (let [p-all-vars (vec (or (:output-vars g) (:vars g)))
                               p-attached (:attached-preds g)]
                           (execute-group-direct db scan-op merge-ops p-all-vars consts
