@@ -128,8 +128,14 @@
                               [1 (gen/return :join-name)]
                               [1 (gen/return :join-score)]])
    :use2?     gen/boolean                                    ;; prefer a $2/rule var as primary
+   ;; :consumer-only projects ONLY the friend-join group's var (?fn): with a
+   ;; predicate on ?s that leaves the producer group with an attached pred and
+   ;; zero find-vars — the collect-only producer shape whose hoisted-predicate
+   ;; slot mis-wiring #887 fixed. No other find variant can produce it, because
+   ;; whenever ?s exists it dominates `primary`.
    :find      (gen/elements [:e :e+primary :e+modifier :primary+modifier
-                             :coll-primary :agg-count :agg-min :agg-count-primary])))
+                             :coll-primary :agg-count :agg-min :agg-count-primary
+                             :consumer-only])))
 
 (defn- build-query
   "Assemble a valid query + extra args from a spec. Returns [query args]."
@@ -195,7 +201,10 @@
                     :coll-primary [[primary '...]]
                     :agg-count [(list 'count '?e)]
                     :agg-min ['?e (list 'min (if score? '?s '?n))]
-                    :agg-count-primary [primary (list 'count '?e)])
+                    :agg-count-primary [primary (list 'count '?e)]
+                    ;; only the consumer group's var; degrades to [?n] without
+                    ;; the friend join (single group — no producer/consumer split)
+                    :consumer-only [(if friend? '?fn '?n)])
         ;; :in order must match arg order: $ [$2] [%] [coll]
         in-part (when (or in-coll? (not= :none rules) (not= :none multi))
                   (vec (concat '[$]
