@@ -357,11 +357,13 @@
       (let [bytes  (str->bytes "nobody points at me")
             orphan (blob/blob-id bytes)]
         (<! (k/bassoc store orphan bytes {:sync? false}))
-        ;; No settling delay needed: write stamps and the collection cutoff come
-        ;; from konserve's strictly-monotonic clock (utils/now), so a cutoff
-        ;; acquired after this write is strictly greater than the orphan's
-        ;; last-write — the historical same-millisecond flake (sweep spares on
-        ;; `(<= cutoff last-write)` ties) is structurally impossible.
+        ;; Write stamps and the collection cutoff share konserve's monotone
+        ;; clock (utils/now) — but the clock is deliberately NON-strict
+        ;; (max(wall, prev); a +1-per-stamp clock would outrun physical time
+        ;; under load), so a cutoff acquired in the same millisecond as the
+        ;; orphan's write TIES with it and the sweep spares ties (fail-safe).
+        ;; Let a beat pass so wall time advances past the orphan's stamp.
+        (<! (a/timeout 10))
         (let [swept (set (<! (gc/gc-storage! @conn)))]
           (is (contains? swept orphan)
               "the database is the root set: an object nothing references is garbage")))
