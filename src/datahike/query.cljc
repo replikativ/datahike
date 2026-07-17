@@ -848,93 +848,15 @@
 (defn resolve-ins [context bindings values]
   (reduce resolve-in context (zipmap bindings values)))
 
-;; Dynamic vars *lookup-attrs* and *implicit-source* are defined in datahike.query.relation
-;; Use rel/*lookup-attrs* and rel/*implicit-source* directly.
+;; Join environment: {:source db :lookup-attrs #{..}} threaded explicitly
+;; (formerly the dynamic vars rel/*implicit-source* / rel/*lookup-attrs*,
+;; whose per-tuple reads inside getter-fn closures cannot survive a
+;; partial-cps suspension on cljs). The relational algebra lives in
+;; datahike.query.relation; `:join-source` on the context mirrors exactly
+;; the old *implicit-source* binding discipline.
 
-(defn getter-fn [attrs attr]
-  (let [idx (attrs attr)]
-    (if (contains? rel/*lookup-attrs* attr)
-      (fn [tuple]
-        (let [eid (get tuple idx)]
-          (cond
-            (number? eid) eid                               ;; quick path to avoid fn call
-            (sequential? eid) (dbu/entid rel/*implicit-source* eid)
-            (da/array? eid) (dbu/entid rel/*implicit-source* eid)
-            :else eid)))
-      (fn [tuple]
-        (get tuple idx)))))
-
-(defn tuple-key-fn [getters]
-  (if (== (count getters) 1)
-    (first getters)
-    (let [getters (to-array getters)]
-      (fn [tuple]
-        (list* #?(:cljs (.map getters #(% tuple))
-                  :clj (to-array (map #(% tuple) getters))))))))
-
-(defn hash-attrs [key-fn tuples]
-  ;; Equivalent to group-by except that it uses a list instead of a vector.
-  (loop [tuples tuples
-         hash-table (transient {})]
-    (if-some [tuple (first tuples)]
-      (let [key (key-fn tuple)]
-        (recur (next tuples)
-               (assoc! hash-table key (conj (get hash-table key '()) tuple))))
-      (persistent! hash-table))))
-
-(defn hash-join [rel1 rel2]
-  (let [tuples1      (:tuples rel1)
-        tuples2      (:tuples rel2)
-        attrs1       (:attrs rel1)
-        attrs2       (:attrs rel2)
-        common-attrs (vec (intersect-keys (:attrs rel1) (:attrs rel2)))
-        common-gtrs1 (map #(getter-fn attrs1 %) common-attrs)
-        common-gtrs2 (map #(getter-fn attrs2 %) common-attrs)
-        keep-attrs1  (keys attrs1)
-        keep-attrs2  (vec (set/difference (set (keys attrs2)) (set (keys attrs1))))
-        keep-idxs1   (to-array (map attrs1 keep-attrs1))
-        keep-idxs2   (to-array (map attrs2 keep-attrs2))
-        key-fn1      (tuple-key-fn common-gtrs1)
-        key-fn2      (tuple-key-fn common-gtrs2)]
-    (if (< (count tuples1) (count tuples2))
-      (let [hash       (hash-attrs key-fn1 tuples1)
-            new-tuples (->>
-                        (reduce (fn [acc tuple2]
-                                  (let [key (key-fn2 tuple2)]
-                                    (if-some [tuples1 (get hash key)]
-                                      (reduce (fn [acc tuple1]
-                                                (conj! acc (join-tuples tuple1 keep-idxs1 tuple2 keep-idxs2)))
-                                              acc tuples1)
-                                      acc)))
-                                (transient []) tuples2)
-                        (persistent!))]
-        (rel/->Relation (zipmap (concat keep-attrs1 keep-attrs2) (range))
-                        new-tuples))
-      (let [hash       (hash-attrs key-fn2 tuples2)
-            new-tuples (->>
-                        (reduce (fn [acc tuple1]
-                                  (let [key (key-fn1 tuple1)]
-                                    (if-some [tuples2 (get hash key)]
-                                      (reduce (fn [acc tuple2]
-                                                (conj! acc (join-tuples tuple1 keep-idxs1 tuple2 keep-idxs2)))
-                                              acc tuples2)
-                                      acc)))
-                                (transient []) tuples1)
-                        (persistent!))]
-        (rel/->Relation (zipmap (concat keep-attrs1 keep-attrs2) (range))
-                        new-tuples)))))
-
-(defn subtract-rel [a b]
-  (let [{attrs-a :attrs, tuples-a :tuples} a
-        {attrs-b :attrs, tuples-b :tuples} b
-        attrs (intersect-keys attrs-a attrs-b)
-        getters-b (map #(getter-fn attrs-b %) attrs)
-        key-fn-b (tuple-key-fn getters-b)
-        hash (hash-attrs key-fn-b tuples-b)
-        getters-a (map #(getter-fn attrs-a %) attrs)
-        key-fn-a (tuple-key-fn getters-a)]
-    (assoc a
-           :tuples (filterv #(nil? (hash (key-fn-a %))) tuples-a))))
+(defn- join-env [context]
+  {:source (:join-source context)})
 
 (defn var-mapping [pattern indices]
   (->> (map vector pattern indices)
@@ -1027,16 +949,6 @@
   (let [attr->idx (var-mapping orig-pattern (range))
         data (filter #(matches-pattern? pattern %) coll)]
     (rel/->Relation attr->idx (mapv to-array data))))            ;; FIXME to-array
-
-(defn collapse-rels [rels new-rel]
-  (loop [rels rels
-         new-rel new-rel
-         acc []]
-    (if-some [rel (first rels)]
-      (if (not-empty (intersect-keys (:attrs new-rel) (:attrs rel)))
-        (recur (next rels) (hash-join rel new-rel) acc)
-        (recur (next rels) new-rel (conj acc rel)))
-      (conj acc new-rel))))
 
 (defn- rel-with-attr [context sym]
   (some #(when (contains? (:attrs %) sym) %) (:rels context)))
@@ -1189,16 +1101,17 @@
                                   {}
                                   (:attrs new-rel))]
         (if (empty? (:tuples new-rel))
-          (update context :rels collapse-rels new-rel)
+          (update context :rels rel/collapse-rels new-rel (join-env context))
           (-> context ;; filter output binding
-              (update :rels collapse-rels
+              (update :rels rel/collapse-rels
                       (update new-rel
                               :tuples
                               #(filter (fn [tuple]
                                          (every? (fn [[ind c]]
                                                    (= c (get tuple ind)))
                                                  idx->const))
-                                       %)))))))))
+                                       %))
+                      (join-env context))))))))
 
 ;;; RULES
 
@@ -1340,7 +1253,7 @@
                               (next stack))
                              rel
                              new-stats))))))))
-        (cond-> (update context :rels collapse-rels rel)
+        (cond-> (update context :rels rel/collapse-rels rel (join-env context))
           stats? (assoc :tmp-stats {:type :rule
                                     :branches tmp-stats}))))))
 
@@ -1461,16 +1374,6 @@
 
 (defn resolve-context [context clauses]
   (dt/resolve-clauses resolve-clause context clauses))
-
-(defn tuple-var-mapper [rel]
-  (let [attrs (:attrs rel)
-        key-fn-pairs (into []
-                           (map (juxt identity (partial getter-fn attrs)))
-                           (keys attrs))]
-    (fn [tuple]
-      (into {}
-            (map (fn [[k f]] [k (f tuple)]))
-            key-fn-pairs))))
 
 (def rel-product-unit (rel/->Relation {} [[]]))
 
@@ -2085,7 +1988,7 @@
                              :clj [(.-e ^Datom d) a0 v0 (.-tx ^Datom d) true])]))
                  [])
         new-rel (rel/->Relation var-map tuples)]
-    (cond-> (update context :rels collapse-rels new-rel)
+    (cond-> (update context :rels rel/collapse-rels new-rel (join-env context))
       (:stats context) (assoc :tmp-stats {:type :lookup}))))
 
 (defn lookup-batch-search [source context orig-pattern pattern1]
@@ -2115,12 +2018,12 @@
                     new-rel)
                   (lookup-pattern-coll source pattern1 orig-pattern))]
 
-    ;; This binding is needed for `collapse-rels` to work, and more specifically,
-    ;; `hash-join` to work, that in turn depends on `getter-fn`.
-    (binding [rel/*lookup-attrs* (if (satisfies? dbi/IDB source)
-                                   (dynamic-lookup-attrs source pattern1)
-                                   rel/*lookup-attrs*)]
-      (cond-> (update context :rels collapse-rels new-rel)
+    ;; The env is needed for `collapse-rels` / `hash-join` / `getter-fn`:
+    ;; lookup-attrs enables lookup-ref eid resolution on the join columns.
+    (let [env {:source (:join-source context)
+               :lookup-attrs (when (satisfies? dbi/IDB source)
+                               (dynamic-lookup-attrs source pattern1))}]
+      (cond-> (update context :rels rel/collapse-rels new-rel env)
         (:stats context) (assoc :tmp-stats {:type :lookup})))))
 
 (defn -resolve-clause*
@@ -2142,16 +2045,21 @@
      (bind-by-fn context clause)
 
      [source? '*] ;; source + anything
-     (let [[source-sym & rest] clause]
-       (binding [rel/*implicit-source* (get (:sources context) source-sym)]
-         (-resolve-clause context rest clause)))
+     (let [[source-sym & rest] clause
+           ;; :join-source mirrors the old *implicit-source* BINDING: scoped to
+           ;; this clause only — restore on the escaping context, else later
+           ;; plain patterns would resolve against this clause's source.
+           ctx' (-resolve-clause (assoc context :join-source (get (:sources context) source-sym))
+                                 rest clause)]
+       (cond-> ctx' (map? ctx') (assoc :join-source (:join-source context))))
 
      '[or *] ;; (or ...)
      (let [[_ & branches] clause
            context' (assoc context :stats [])
            contexts (mapv #(resolve-clause context' %) branches)
+           env (join-env context)
            sum-rel (->> contexts
-                        (map #(reduce hash-join (:rels %)))
+                        (map #(reduce (fn [a b] (rel/hash-join a b env)) (:rels %)))
                         (reduce sum-rel))]
        (cond-> (assoc context :rels [sum-rel])
          (:stats context) (assoc :tmp-stats {:type :or
@@ -2173,10 +2081,11 @@
                               (resolve-clause %)
                               (limit-context vars))
                          branches)
+           env (join-env context)
            sum-rel (->> contexts
-                        (map #(reduce hash-join (:rels %)))
+                        (map #(reduce (fn [a b] (rel/hash-join a b env)) (:rels %)))
                         (reduce sum-rel))]
-       (cond-> (update context :rels collapse-rels sum-rel)
+       (cond-> (update context :rels rel/collapse-rels sum-rel env)
          (:stats context) (assoc :tmp-stats {:type :or-join
                                              :branches (mapv #(-> % :stats first) contexts)})))
 
@@ -2196,13 +2105,14 @@
      (let [[_ & clauses] clause
            negation-vars (collect-vars clauses)]
        (when (some-bound? context negation-vars)
-         (let [join-rel (reduce hash-join (:rels context))
+         (let [env (join-env context)
+               join-rel (reduce (fn [a b] (rel/hash-join a b env)) (:rels context))
                negation-context (-> context
                                     (assoc :rels [join-rel])
                                     (assoc :stats [])
                                     (resolve-context clauses))
-               negation-join-rel (reduce hash-join (:rels negation-context))
-               negation (subtract-rel join-rel negation-join-rel)]
+               negation-join-rel (reduce (fn [a b] (rel/hash-join a b env)) (:rels negation-context))
+               negation (rel/subtract-rel join-rel negation-join-rel env)]
            (cond-> (assoc context :rels [negation])
              (:stats context) (assoc :tmp-stats {:type :not
                                                  :branches (:stats negation-context)})))))
@@ -2210,21 +2120,22 @@
      '[not-join [*] *] ;; (not-join [vars] ...)
      (let [[_ vars & clauses] clause]
        (when (all-bound? context vars)
-         (let [join-rel (reduce hash-join (:rels context))
+         (let [env (join-env context)
+               join-rel (reduce (fn [a b] (rel/hash-join a b env)) (:rels context))
                negation-context (-> context
                                     (assoc :rels [join-rel])
                                     (assoc :stats [])
                                     (limit-context vars)
                                     (resolve-context clauses)
                                     (limit-context vars))
-               negation-join-rel (reduce hash-join (:rels negation-context))
-               negation (subtract-rel join-rel negation-join-rel)]
+               negation-join-rel (reduce (fn [a b] (rel/hash-join a b env)) (:rels negation-context))
+               negation (rel/subtract-rel join-rel negation-join-rel env)]
            (cond-> (assoc context :rels [negation])
              (:stats context) (assoc :tmp-stats {:type :not
                                                  :branches (:stats negation-context)})))))
 
      '[*] ;; pattern
-     (let [source rel/*implicit-source*
+     (let [source (:join-source context)
            pattern0 (replace (:consts context) clause)
            pattern1 (resolve-pattern-lookup-refs source pattern0)
            lt (fast-lookup-type source pattern1)]
@@ -2243,15 +2154,18 @@
 (defn resolve-clause [context clause]
   (if (rule? context clause)
     (if (source? (first clause))
-      (binding [rel/*implicit-source* (get (:sources context) (first clause))]
-        (resolve-clause context (next clause)))
+      (let [ctx' (resolve-clause (assoc context :join-source (get (:sources context) (first clause)))
+                                 (next clause))]
+        ;; binding-scope semantics: restore the enclosing source on escape
+        (cond-> ctx' (map? ctx') (assoc :join-source (:join-source context))))
       (dqs/update-ctx-with-stats context clause
                                  (fn [context] (solve-rule context clause))))
     (-resolve-clause context clause)))
 
 (defn -q [context clauses]
-  (binding [rel/*implicit-source* (get (:sources context) '$)]
-    (dt/resolve-clauses resolve-clause context clauses)))
+  (dt/resolve-clauses resolve-clause
+                      (assoc context :join-source (get (:sources context) '$))
+                      clauses))
 
 (defn -collect
   ([context symbols]
@@ -3763,7 +3677,7 @@
                            (log/debug "fused-scan-rel not applicable:" #?(:clj (.getMessage ^Exception e) :cljs (str e)))
                            nil)))
         context-out (if fused-rel
-                      (update context-in :rels collapse-rels fused-rel)
+                      (update context-in :rels rel/collapse-rels fused-rel (join-env context-in))
                       (#?(:clj (requiring-resolve 'datahike.query.execute/execute-plan)
                           :cljs execute/execute-plan) plan context-in db))
         resultset (collect context-out all-vars)

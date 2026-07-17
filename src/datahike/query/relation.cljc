@@ -42,26 +42,27 @@
 ;; ---------------------------------------------------------------------------
 ;; Dynamic vars
 
-(def ^{:dynamic true
-       :doc "List of symbols in current pattern that might potentially be resolved to refs"}
-  *lookup-attrs* nil)
-
-(def ^{:dynamic true
-       :doc "Default pattern source. Lookup refs, patterns, rules will be resolved with it"}
-  *implicit-source* nil)
+;; Join environment: previously carried by the dynamic vars *lookup-attrs*
+;; and *implicit-source*, read PER TUPLE inside getter-fn closures. Dynamic
+;; bindings are not conveyed across partial-cps suspensions on cljs
+;; (bound-fn is identity there), so an await between a `binding` and the
+;; tuple loop would silently read the wrong source — only on cold data.
+;; The environment is now EXPLICIT: {:source db :lookup-attrs #{...}},
+;; threaded from the query context. nil entries preserve the unbound-var
+;; semantics (no lookup-ref resolution).
 
 ;; ---------------------------------------------------------------------------
 ;; Tuple operations
 
-(defn getter-fn [attrs attr]
+(defn getter-fn [attrs attr {:keys [source lookup-attrs]}]
   (let [idx (attrs attr)]
-    (if (contains? *lookup-attrs* attr)
+    (if (contains? lookup-attrs attr)
       (fn [tuple]
         (let [eid (get tuple idx)]
           (cond
             (number? eid) eid                               ;; quick path to avoid fn call
-            (sequential? eid) (dbu/entid *implicit-source* eid)
-            (da/array? eid) (dbu/entid *implicit-source* eid)
+            (sequential? eid) (dbu/entid source eid)
+            (da/array? eid) (dbu/entid source eid)
             :else eid)))
       (fn [tuple]
         (get tuple idx)))))
@@ -100,14 +101,14 @@
 ;; ---------------------------------------------------------------------------
 ;; Relational algebra
 
-(defn hash-join [rel1 rel2]
+(defn hash-join [rel1 rel2 env]
   (let [tuples1      (:tuples rel1)
         tuples2      (:tuples rel2)
         attrs1       (:attrs rel1)
         attrs2       (:attrs rel2)
         common-attrs (vec (intersect-keys (:attrs rel1) (:attrs rel2)))
-        common-gtrs1 (map #(getter-fn attrs1 %) common-attrs)
-        common-gtrs2 (map #(getter-fn attrs2 %) common-attrs)
+        common-gtrs1 (map #(getter-fn attrs1 % env) common-attrs)
+        common-gtrs2 (map #(getter-fn attrs2 % env) common-attrs)
         keep-attrs1  (keys attrs1)
         keep-attrs2  (vec (set/difference (set (keys attrs2)) (set (keys attrs1))))
         keep-idxs1   (to-array (map attrs1 keep-attrs1))
@@ -174,25 +175,25 @@
             (sum-rel a)
             (sum-rel b))))))
 
-(defn subtract-rel [a b]
+(defn subtract-rel [a b env]
   (let [{attrs-a :attrs, tuples-a :tuples} a
         {attrs-b :attrs, tuples-b :tuples} b
         attrs (intersect-keys attrs-a attrs-b)
-        getters-b (map #(getter-fn attrs-b %) attrs)
+        getters-b (map #(getter-fn attrs-b % env) attrs)
         key-fn-b (tuple-key-fn getters-b)
         hash (hash-attrs key-fn-b tuples-b)
-        getters-a (map #(getter-fn attrs-a %) attrs)
+        getters-a (map #(getter-fn attrs-a % env) attrs)
         key-fn-a (tuple-key-fn getters-a)]
     (assoc a
            :tuples (filterv #(nil? (hash (key-fn-a %))) tuples-a))))
 
-(defn collapse-rels [rels new-rel]
+(defn collapse-rels [rels new-rel env]
   (loop [rels rels
          new-rel new-rel
          acc []]
     (if-some [rel (first rels)]
       (if (not-empty (intersect-keys (:attrs new-rel) (:attrs rel)))
-        (recur (next rels) (hash-join rel new-rel) acc)
+        (recur (next rels) (hash-join rel new-rel env) acc)
         (recur (next rels) new-rel (conj acc rel)))
       (conj acc new-rel))))
 

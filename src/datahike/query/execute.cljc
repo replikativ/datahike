@@ -2270,7 +2270,8 @@
           ;; Execute the NOT-JOIN's sub-plan via the Relation engine
           neg-ctx (execute-plan sub-plan {:rels [] :sources {}} db)
           neg-rel (when (and neg-ctx (seq (:rels neg-ctx)))
-                    (reduce rel/hash-join (:rels neg-ctx)))]
+                    (reduce (fn [a b] (rel/hash-join a b {:source (:join-source neg-ctx)}))
+                            (:rels neg-ctx)))]
       (when (and neg-rel (pos? (count (:tuples neg-rel))))
         ;; Build exclusion set from the negation result
         (let [neg-attrs (:attrs neg-rel)
@@ -2952,7 +2953,7 @@
 
 (defn- lookup-attrs-for-clauses
   "Compute the set of variable symbols that may hold lookup refs,
-   for binding rel/*lookup-attrs* during collapse-rels in multi-source queries.
+   as the join env's :lookup-attrs during collapse-rels in multi-source queries.
    Includes entity and tx position vars (always entity-id typed) and
    ref-typed value position vars."
   [db clause merge-ops]
@@ -3040,7 +3041,7 @@
                               :cljs false))]
     (if empty-filter?
       (let [out-rel (rel/->Relation out-attrs [])
-            merged (rel/collapse-rels (:rels context) out-rel)]
+            merged (rel/collapse-rels (:rels context) out-rel {:source (:join-source context)})]
         [(-> context (assoc :rels merged) (assoc :unique-results? true))
          (inc (count merge-ops))])
       (let [;; SIP retrieval: drive the scan from the currently-bound context
@@ -3124,12 +3125,12 @@
                       filtered-datoms))]
         (let [out-rel (rel/->Relation out-attrs #?(:clj (vec (.toArray ^java.util.ArrayList acc))
                                                    :cljs (vec acc)))
-              ;; Bind *implicit-source* and *lookup-attrs* so that hash-join inside
-              ;; collapse-rels can resolve lookup refs in input relations against
-              ;; the correct source db (critical for multi-source queries).
-              merged (binding [rel/*implicit-source* db
-                               rel/*lookup-attrs* (lookup-attrs-for-clauses db clause merge-ops)]
-                       (rel/collapse-rels (:rels context) out-rel))]
+              ;; Env so that hash-join inside collapse-rels can resolve lookup
+              ;; refs in input relations against the correct source db
+              ;; (critical for multi-source queries).
+              merged (rel/collapse-rels (:rels context) out-rel
+                                        {:source db
+                                         :lookup-attrs (lookup-attrs-for-clauses db clause merge-ops)})]
           [(-> context
                (assoc :rels merged)
                (assoc :unique-results? true))
@@ -3180,9 +3181,9 @@
     (let [attrs   (into {} (map-indexed (fn [i v] [v i]) find-vars))
           out-rel (rel/->Relation attrs #?(:clj  (vec (.toArray ^java.util.ArrayList result-list))
                                            :cljs (vec result-list)))
-          merged  (binding [rel/*implicit-source* db
-                            rel/*lookup-attrs* (lookup-attrs-for-clauses db scan-clause merge-ops)]
-                    (rel/collapse-rels (:rels context) out-rel))]
+          merged  (rel/collapse-rels (:rels context) out-rel
+                                     {:source db
+                                      :lookup-attrs (lookup-attrs-for-clauses db scan-clause merge-ops)})]
       [(-> context (assoc :rels merged) (assoc :unique-results? true))
        (inc (count merge-ops))])))
 
@@ -3195,14 +3196,15 @@
                             (let [branch-ctx (assoc ctx :rels (:rels ctx))
                                   result-ctx (execute-plan sub-plan branch-ctx db)]
                               (when result-ctx
-                                (let [joined (reduce rel/hash-join (:rels result-ctx))]
+                                (let [joined (reduce (fn [a b] (rel/hash-join a b {:source (:join-source ctx)}))
+                                                     (:rels result-ctx))]
                                   ;; Project to OR's visible vars — critical for rules where
                                   ;; branches introduce auto-generated temp vars
                                   (rel/limit-rel joined or-vars)))))
                           (:branches op))
         valid (filterv some? branch-rels)
         union (when (seq valid) (reduce rel/sum-rel valid))]
-    (if union (update ctx :rels rel/collapse-rels union) ctx)))
+    (if union (update ctx :rels rel/collapse-rels union {:source (:join-source ctx)}) ctx)))
 
 (defn- execute-or-join [db op ctx]
   (let [join-vars (:join-vars op)
@@ -3210,34 +3212,39 @@
         branch-rels (mapv (fn [sub-plan]
                             (let [result-ctx (execute-plan sub-plan limited-ctx db)]
                               (when result-ctx
-                                (let [joined (reduce rel/hash-join (:rels result-ctx))]
+                                (let [joined (reduce (fn [a b] (rel/hash-join a b {:source (:join-source ctx)}))
+                                                     (:rels result-ctx))]
                                   (rel/limit-rel joined join-vars)))))
                           (:branches op))
         valid (filterv some? branch-rels)
         union (when (seq valid) (reduce rel/sum-rel valid))]
-    (if union (update ctx :rels rel/collapse-rels union) ctx)))
+    (if union (update ctx :rels rel/collapse-rels union {:source (:join-source ctx)}) ctx)))
 
 (defn- execute-not [db op ctx]
   (if (empty? (:rels ctx))
     ctx
-    (let [join-rel (reduce rel/hash-join (:rels ctx))
+    (let [env {:source (:join-source ctx)}
+          jf (fn [a b] (rel/hash-join a b env))
+          join-rel (reduce jf (:rels ctx))
           neg-ctx (execute-plan (:sub-plan op) (assoc ctx :rels [join-rel]) db)
           neg-join (when (and neg-ctx (seq (:rels neg-ctx)))
-                     (reduce rel/hash-join (:rels neg-ctx)))
-          result (if neg-join (rel/subtract-rel join-rel neg-join) join-rel)]
+                     (reduce jf (:rels neg-ctx)))
+          result (if neg-join (rel/subtract-rel join-rel neg-join env) join-rel)]
       (assoc ctx :rels [result]))))
 
 (defn- execute-not-join [db op ctx]
   (if (empty? (:rels ctx))
     ctx
     (let [join-vars (:join-vars op)
-          join-rel (reduce rel/hash-join (:rels ctx))
+          env {:source (:join-source ctx)}
+          jf (fn [a b] (rel/hash-join a b env))
+          join-rel (reduce jf (:rels ctx))
           limited-ctx (rel/limit-context (assoc ctx :rels [join-rel]) join-vars)
           neg-ctx (execute-plan (:sub-plan op) limited-ctx db)
           neg-ctx (when neg-ctx (rel/limit-context neg-ctx join-vars))
           neg-join (when (and neg-ctx (seq (:rels neg-ctx)))
-                     (reduce rel/hash-join (:rels neg-ctx)))
-          result (if neg-join (rel/subtract-rel join-rel neg-join) join-rel)]
+                     (reduce jf (:rels neg-ctx)))
+          result (if neg-join (rel/subtract-rel join-rel neg-join env) join-rel)]
       (assoc ctx :rels [result]))))
 
 ;; ---------------------------------------------------------------------------
@@ -3299,7 +3306,8 @@
               (keep (fn [plan]
                       (let [result-ctx (execute-plan plan ctx db)]
                         (when (and result-ctx (seq (:rels result-ctx)))
-                          (let [joined (reduce rel/hash-join (:rels result-ctx))]
+                          (let [joined (reduce (fn [a b] (rel/hash-join a b {:source (:join-source ctx)}))
+                                               (:rels result-ctx))]
                             (rel/limit-rel joined output-vars))))))
               plans)]
     (if (seq branch-rels)
@@ -3352,7 +3360,7 @@
                                                (.push result arr))))
                                  (vec result)))
         demand-rel (rel/->Relation {demand-var 0} demand-tuples)]
-    (update ctx :rels rel/collapse-rels demand-rel)))
+    (update ctx :rels rel/collapse-rels demand-rel {:source (:join-source ctx)})))
 
 (defn- delta-driven-expand
   "For the recursive clause [?x :attr ?t] (follows-DELTA ?t ?y):
@@ -3502,8 +3510,10 @@
     (if (nil? scc-rule-plans)
       ;; No pre-built plans — fall back to legacy
       (let [clause (:clause op)]
-        (binding [rel/*implicit-source* (get (:sources ctx) '$)]
-          (#?(:clj legacy/solve-rule :cljs (rel/get-legacy-fn :solve-rule)) ctx clause)))
+        (let [ctx' (#?(:clj legacy/solve-rule :cljs (rel/get-legacy-fn :solve-rule))
+                    (assoc ctx :join-source (get (:sources ctx) '$)) clause)]
+          ;; binding-scope semantics: restore on escape
+          (cond-> ctx' (map? ctx') (assoc :join-source (:join-source ctx)))))
       ;; Semi-naive fixpoint over ALL SCC rules
       ;; Uses mutable HashSet for deduplication (avoids PersistentVector allocation)
       (let [;; Magic set detection — only for single-rule SCCs with binary head vars
@@ -3755,7 +3765,7 @@
                        :cljs (.push result arr)))))
               #?(:clj (vec result) :cljs (vec result)))
             final-rel (rel/->Relation (zipmap output-vars (range)) projected-tuples)]
-        (update ctx :rels rel/collapse-rels final-rel)))))
+        (update ctx :rels rel/collapse-rels final-rel {:source (:join-source ctx)})))))
 
 ;; ---------------------------------------------------------------------------
 ;; ---------------------------------------------------------------------------
@@ -3837,7 +3847,7 @@
                       {entity-var 0}
                       (set tuples))]
              (-> ctx
-                 (update :rels rel/collapse-rels rel)
+                 (update :rels rel/collapse-rels rel {:source (:join-source ctx)})
                  ;; Store EntityBitSet for downstream entity-group scan optimization
                  (update :entity-filters (fnil assoc {}) entity-var result-bs)))
            ;; No index found — fall back to regular function execution
@@ -3862,7 +3872,7 @@
                                            binding-vars))
                                    results))
                  rel (rel/->Relation attrs tuples)]
-             (update ctx :rels rel/collapse-rels rel))
+             (update ctx :rels rel/collapse-rels rel {:source (:join-source ctx)}))
            (bind-by-fn-strict ctx (:clause op)))
 
          ;; Solver: extract input, call function, merge output
@@ -3923,7 +3933,7 @@
                                                     binding-vars))
                                             results))
                    rel (rel/->Relation result-attrs result-tuples)]
-               (update ctx :rels rel/collapse-rels rel))
+               (update ctx :rels rel/collapse-rels rel {:source (:join-source ctx)}))
              ;; Can't resolve — error, don't silently fall back
              (throw (ex-info (str "Cannot resolve external engine function: " fn-sym)
                              {:fn-sym fn-sym :clause (:clause op)}))))))))
@@ -4141,9 +4151,8 @@
                       ;; Run scan with full ctx so upstream constants/constraints
                       ;; (e.g. const-bound safe-vars, lookup-refs in v) feed into
                       ;; the scan's substitution.
-                          ctx-after-scan (binding [rel/*implicit-source* op-db]
-                                           (#?(:clj legacy/lookup-batch-search :cljs (rel/get-legacy-fn :lookup-batch-search))
-                                            op-db ctx scan-clause scan-clause))
+                          ctx-after-scan (#?(:clj legacy/lookup-batch-search :cljs (rel/get-legacy-fn :lookup-batch-search))
+                                          op-db (assoc ctx :join-source op-db) scan-clause scan-clause)
                       ;; For each merge clause, trim ctx to rels connected to the
                       ;; scan entity-var. Independent upstream rels (no shared var
                       ;; with scan-derived rels) would otherwise cause
@@ -4155,44 +4164,42 @@
                       ;; equivalent to cartesian-then-filter, but avoids the
                       ;; quadratic substitution.
                           contains-scan-evar? (fn [r] (contains? (set (keys (:attrs r))) scan-evar))
-                          ctx' (binding [rel/*implicit-source* op-db]
-                                 (reduce (fn [c clause]
-                                           (let [{scan-rels true other-rels false}
-                                                 (group-by contains-scan-evar? (:rels c))
-                                                 trimmed-ctx (assoc c :rels (vec scan-rels))
-                                                 after-merge (#?(:clj legacy/lookup-batch-search :cljs (rel/get-legacy-fn :lookup-batch-search))
-                                                              op-db trimmed-ctx clause clause)
-                                                 final-rels (reduce rel/collapse-rels
-                                                                    (:rels after-merge)
-                                                                    (or other-rels []))]
-                                             (assoc c :rels final-rels)))
-                                         ctx-after-scan regular-merge-clauses))
+                          ctx' (reduce (fn [c clause]
+                                         (let [{scan-rels true other-rels false}
+                                               (group-by contains-scan-evar? (:rels c))
+                                               trimmed-ctx (assoc c :rels (vec scan-rels))
+                                               after-merge (#?(:clj legacy/lookup-batch-search :cljs (rel/get-legacy-fn :lookup-batch-search))
+                                                            op-db trimmed-ctx clause clause)
+                                               final-rels (reduce (fn [rs r] (rel/collapse-rels rs r {:source op-db}))
+                                                                  (:rels after-merge)
+                                                                  (or other-rels []))]
+                                           (assoc c :rels final-rels)))
+                                       (assoc ctx-after-scan :join-source op-db) regular-merge-clauses)
                       ;; Optional merges via per-row bind-by-fn(get-else). Synthetic
                       ;; clause is [e-var attr bind-var] (attr already resolved to eid
                       ;; in :attribute-refs? mode by logical.cljc).
-                          ctx' (binding [rel/*implicit-source* op-db]
-                                 (reduce (fn [c opt-merge]
-                                           (let [[e-var attr bind-var] (:clause opt-merge)
-                                                 default-val (:default-value opt-merge)
+                          ctx' (reduce (fn [c opt-merge]
+                                         (let [[e-var attr bind-var] (:clause opt-merge)
+                                               default-val (:default-value opt-merge)
                                                  ;; seq defaults were quote-unwrapped at IR
                                                  ;; construction (logical/LOptionalScan); re-wrap
                                                  ;; so -call-fn round-trips and check-fn-args
                                                  ;; accepts the synthetic clause.
-                                                 default-arg (if (seq? default-val) (list 'quote default-val) default-val)
-                                                 fn-clause [(list 'get-else '$ e-var attr default-arg) bind-var]]
-                                             (bind-by-fn-strict c fn-clause)))
-                                         ctx' optional-merge-ops))
+                                               default-arg (if (seq? default-val) (list 'quote default-val) default-val)
+                                               fn-clause [(list 'get-else '$ e-var attr default-arg) bind-var]]
+                                           (bind-by-fn-strict c fn-clause)))
+                                       ctx' optional-merge-ops)
                       ;; Apply anti-merges: look up each anti clause and subtract its matches
-                          ctx' (binding [rel/*implicit-source* op-db]
-                                 (reduce (fn [c anti-clause]
-                                           (let [join-rel (reduce rel/hash-join (:rels c))
-                                                 neg-ctx (#?(:clj legacy/lookup-batch-search :cljs (rel/get-legacy-fn :lookup-batch-search))
-                                                          op-db (assoc c :rels [join-rel]) anti-clause anti-clause)
-                                                 neg-join (when (and neg-ctx (seq (:rels neg-ctx)))
-                                                            (reduce rel/hash-join (:rels neg-ctx)))
-                                                 result (if neg-join (rel/subtract-rel join-rel neg-join) join-rel)]
-                                             (assoc c :rels [result])))
-                                         ctx' anti-clauses))
+                          ctx' (reduce (fn [c anti-clause]
+                                         (let [jf (fn [a b] (rel/hash-join a b {:source op-db}))
+                                               join-rel (reduce jf (:rels c))
+                                               neg-ctx (#?(:clj legacy/lookup-batch-search :cljs (rel/get-legacy-fn :lookup-batch-search))
+                                                        op-db (assoc c :rels [join-rel]) anti-clause anti-clause)
+                                               neg-join (when (and neg-ctx (seq (:rels neg-ctx)))
+                                                          (reduce jf (:rels neg-ctx)))
+                                               result (if neg-join (rel/subtract-rel join-rel neg-join {:source op-db}) join-rel)]
+                                           (assoc c :rels [result])))
+                                       ctx' anti-clauses)
                       ;; Apply pushed-down predicates as post-filters. The
                       ;; planner records each push-down predicate's original
                       ;; clause in the scan-op's :pushdown-preds list and adds
@@ -4209,12 +4216,13 @@
                           pushdown-pred-clauses
                           (concat (mapv :pred-clause (:pushdown-preds (:scan-op op)))
                                   (mapcat #(mapv :pred-clause (:pushdown-preds %)) all-merge-ops))
-                          ctx' (binding [rel/*implicit-source* op-db]
-                                 (reduce (fn [c pred-clause]
-                                           (#?(:clj legacy/filter-by-pred :cljs (rel/get-legacy-fn :filter-by-pred))
-                                            c pred-clause))
-                                         ctx' (filter some? pushdown-pred-clauses)))]
-                      (recur ctx' plan (inc idx)))))
+                          ctx' (reduce (fn [c pred-clause]
+                                         (#?(:clj legacy/filter-by-pred :cljs (rel/get-legacy-fn :filter-by-pred))
+                                          c pred-clause))
+                                       ctx' (filter some? pushdown-pred-clauses))]
+                      ;; :join-source was assoc'd for this op's legacy calls;
+                      ;; restore binding-scope semantics before the next op.
+                      (recur (assoc ctx' :join-source (:join-source ctx)) plan (inc idx)))))
 
               ;; Single pattern scan
                 :pattern-scan
@@ -4235,25 +4243,23 @@
                         default-arg (if (seq? default-val) (list 'quote default-val) default-val)
                         src (or (:source op) '$)
                         fn-clause [(list 'get-else src e-var attr default-arg) bind-var]
-                        ctx' (binding [rel/*implicit-source* op-db]
-                               (bind-by-fn-strict ctx fn-clause))
+                        ctx' (bind-by-fn-strict (assoc ctx :join-source op-db) fn-clause)
                         ;; lookup via bind-by-fn doesn't honor :pushdown-preds;
                         ;; re-apply them as post-filters (cf. the temporal
                         ;; fallback below).
-                        ctx' (binding [rel/*implicit-source* op-db]
-                               (reduce (fn [c pred-clause]
-                                         (#?(:clj legacy/filter-by-pred :cljs (rel/get-legacy-fn :filter-by-pred))
-                                          c pred-clause))
-                                       ctx' (filter some? (mapv :pred-clause (:pushdown-preds op)))))]
-                    (recur ctx' plan (inc idx)))
+                        ctx' (reduce (fn [c pred-clause]
+                                       (#?(:clj legacy/filter-by-pred :cljs (rel/get-legacy-fn :filter-by-pred))
+                                        c pred-clause))
+                                     ctx' (filter some? (mapv :pred-clause (:pushdown-preds op))))]
+                    (recur (assoc ctx' :join-source (:join-source ctx)) plan (inc idx)))
                   (if (and op-db (not (dbu/db? op-db)))
                 ;; Non-db source (e.g. collection $b) — use legacy lookup
                 ;; lookup-pattern-coll takes [source orig-pattern resolved-pattern];
                 ;; passing clause twice — no resolution needed in fallback.
                     (let [new-rel (#?(:clj legacy/lookup-pattern-coll :cljs (rel/get-legacy-fn :lookup-pattern-coll)) op-db (:clause op) (:clause op))
-                          ctx' (binding [rel/*implicit-source* op-db
-                                         rel/*lookup-attrs* (lookup-attrs-for-clauses op-db (:clause op) nil)]
-                                 (update ctx :rels rel/collapse-rels new-rel))]
+                          ctx' (update ctx :rels rel/collapse-rels new-rel
+                                       {:source op-db
+                                        :lookup-attrs (lookup-attrs-for-clauses op-db (:clause op) nil)})]
                       (recur ctx' plan (inc idx)))
                     (if (not (pss-instance? (:eavt op-db)))
                       (let [ti (temporal-info op-db)
@@ -4278,20 +4284,19 @@
                   ;; (Standalone optional scans never reach here — they are
                   ;; routed through bind-by-fn at the top of the :pattern-scan
                   ;; case, which also names the op's actual source.)
-                          (let [ctx' (binding [rel/*implicit-source* op-db]
-                                       (#?(:clj legacy/lookup-batch-search :cljs (rel/get-legacy-fn :lookup-batch-search)) op-db ctx (:clause op) (:clause op)))
+                          (let [ctx' (#?(:clj legacy/lookup-batch-search :cljs (rel/get-legacy-fn :lookup-batch-search))
+                                      op-db (assoc ctx :join-source op-db) (:clause op) (:clause op))
                         ;; Re-apply pushed-down predicates as a post-filter.
                         ;; lookup-batch-search doesn't honor :pushdown-preds and
                         ;; the planner has already consumed the clause-level
                         ;; predicate (:consumed-preds), so without this filter
                         ;; the predicate is silently dropped. Symmetric with
                         ;; the entity-group branch above.
-                                ctx' (binding [rel/*implicit-source* op-db]
-                                       (reduce (fn [c pred-clause]
-                                                 (#?(:clj legacy/filter-by-pred :cljs (rel/get-legacy-fn :filter-by-pred))
-                                                  c pred-clause))
-                                               ctx' (filter some? (mapv :pred-clause (:pushdown-preds op)))))]
-                            (recur ctx' plan (inc idx)))))
+                                ctx' (reduce (fn [c pred-clause]
+                                               (#?(:clj legacy/filter-by-pred :cljs (rel/get-legacy-fn :filter-by-pred))
+                                                c pred-clause))
+                                             ctx' (filter some? (mapv :pred-clause (:pushdown-preds op))))]
+                            (recur (assoc ctx' :join-source (:join-source ctx)) plan (inc idx)))))
                 ;; DB source — use fused scan or single pattern scan
                       (let [;; Check if next ops form an ad-hoc fusable group
                             all-ops (:ops plan)
@@ -4318,9 +4323,9 @@
                                         plan)]
                             (recur ctx' plan' (long (+ idx consumed))))
                           (let [new-rel (execute-pattern-scan op-db op (:cancel ctx) (:rels ctx))
-                                ctx' (binding [rel/*implicit-source* op-db
-                                               rel/*lookup-attrs* (lookup-attrs-for-clauses op-db (:clause op) nil)]
-                                       (update ctx :rels rel/collapse-rels new-rel))
+                                ctx' (update ctx :rels rel/collapse-rels new-rel
+                                             {:source op-db
+                                              :lookup-attrs (lookup-attrs-for-clauses op-db (:clause op) nil)})
                                 actual-card (count (:tuples new-rel))
                                 plan' (if (and (> (- (count (:ops plan)) idx) 2)
                                                (should-replan? actual-card estimated-card))
@@ -4402,7 +4407,7 @@
                                                          (map vector acc-vars call-args))]
                                      (rel/->Relation new-attrs (:tuples acc-rel))))]
                   (recur (if mapped-rel
-                           (update ctx :rels rel/collapse-rels mapped-rel)
+                           (update ctx :rels rel/collapse-rels mapped-rel {:source (:join-source ctx)})
                            ctx)
                          plan (inc idx)))
 
