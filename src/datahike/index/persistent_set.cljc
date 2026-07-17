@@ -6,6 +6,8 @@
             #?(:cljs [org.replikativ.persistent-sorted-set.branch :as branch :refer [Branch]])
             #?(:cljs [org.replikativ.persistent-sorted-set.leaf :refer [Leaf]])
             #?(:cljs [org.replikativ.persistent-sorted-set.impl.storage :refer [IStorage]])
+            #?(:cljs [is.simm.partial-cps.async :refer-macros [async]])
+            #?(:cljs [clojure.core.async :as async])
             [org.replikativ.persistent-sorted-set.arrays :as arrays]
             #?@(:clj  [[clojure.core.cache :as cache]
                        [clojure.core.cache.wrapped :as wrapped]]
@@ -406,6 +408,17 @@
             addr
             (recur)))))))
 
+#?(:cljs
+   (defn- chan->async-expr
+     "Adapt a konserve async-op channel to a partial-cps async expression.
+      konserve delivers errors as values on the channel (js/Error instances)."
+     [ch]
+     (fn [resolve reject]
+       (async/take! ch (fn [v]
+                         (if (instance? js/Error v)
+                           (reject v)
+                           (resolve v)))))))
+
 (defrecord CachedStorage [store config cache stats pending-writes freed-addresses freed-set freelist cost-center-fn]
   IStorage
   (store [_ node #?(:cljs opts)]
@@ -433,15 +446,57 @@
     (@cost-center-fn :restore)
     (log/trace :datahike/index-read {:address address})
     (if-let [cached (wrapped/lookup cache address)]
-      cached
-      (let [node (k/get store address nil {:sync? true})]
-        (when (nil? node)
-          (log/raise "Node not found in storage." {:type :node-not-found
-                                                   :address address
-                                                   :store store}))
-        (swap! stats update :reads inc)
-        (wrapped/miss cache address node)
-        node)))
+      ;; Cache hit: the async arm wraps the realized node in an immediately-
+      ;; resolving async expression — partial-cps trampolines it on the calling
+      ;; stack, so all-warm async computations complete SYNCHRONOUSLY (the
+      ;; property the cljs sync-q-over-async-engine contract rests on).
+      #?(:clj cached
+         :cljs (if (false? (:sync? opts))
+                 (async cached)
+                 cached))
+      (letfn [(admit! [node]
+                (when (nil? node)
+                  (log/raise "Node not found in storage." {:type :node-not-found
+                                                           :address address
+                                                           :store store}))
+                (swap! stats update :reads inc)
+                (wrapped/miss cache address node)
+                node)]
+        #?(:clj (admit! (k/get store address nil {:sync? true}))
+           :cljs
+           (if (false? (:sync? opts))
+             ;; Async arm, cache miss. Sync-capability is a property of EACH
+             ;; READ, not of the store: a tiered store serves its warm memory
+             ;; frontend synchronously and only a frontend MISS needs the
+             ;; async backend (browser deployments sync their working set up
+             ;; front — CI proved a store-level classification wrong). So try
+             ;; the synchronous read first — a hit stays on the partial-cps
+             ;; trampoline — and fall back to the channel-adapted async read
+             ;; only when the store throws, where real IO dominates the hop.
+             (let [sync-result (try
+                                 {:node (k/get store address nil {:sync? true})}
+                                 (catch :default _ nil))]
+               (if sync-result
+                 (async (admit! (:node sync-result)))
+                 (fn [resolve reject]
+                   ((chan->async-expr (k/get store address nil {:sync? false}))
+                    (fn [node]
+                      (try (resolve (admit! node))
+                           (catch :default e (reject e))))
+                    reject))))
+             ;; Sync arm: a read the store cannot serve synchronously (async-
+             ;; only backend, or a tiered frontend miss) is the honest runtime
+             ;; boundary of the synchronous API — surface it as an actionable
+             ;; error instead of konserve's internal assertion.
+             (try
+               (admit! (k/get store address nil {:sync? true}))
+               (catch :default e
+                 (if (= :node-not-found (:type (ex-data e)))
+                   (throw e)
+                   (throw (ex-info "This read requires asynchronous store access; the synchronous API cannot serve it. Use the async query API, or ensure the data is synced into a synchronous tier (memory frontend) first."
+                                   {:error :storage/sync-read-unavailable
+                                    :address address
+                                    :cause-message #?(:cljs (.-message e) :clj (ex-message e))}))))))))))
   (markFreed [_ address]
     (when address
       ;; Monotonic stamp (konserve's write clock) — compared against

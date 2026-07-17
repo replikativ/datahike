@@ -17,6 +17,7 @@
         ;; 0.4.137 projects diff-buf diffs onto a COPY of the restored node, so tree versions
         ;; sharing a durable anchor through the node cache can't clobber each other's reads
         org.replikativ/persistent-sorted-set        {:mvn/version "0.4.137"}
+        is.simm/partial-cps                         {:mvn/version "0.1.59"}
         environ/environ                             {:mvn/version "1.2.0"}
         nrepl/bencode                               {:mvn/version "1.2.0"}
         org.replikativ/logging                      {:mvn/version "0.1.3"}
