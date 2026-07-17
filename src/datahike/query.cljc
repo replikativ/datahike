@@ -3644,7 +3644,7 @@
           (comp (if offset (drop offset) identity)
                 (if (and limit (pos? limit)) (take limit) identity)))
     stats?                                        (#(-> context-out
-                                                        (dissoc :rels :sources :settings :cancel)
+                                                        (dissoc :rels :sources :settings :cancel :join-source)
                                                         (update :rules
                                                                 (fn [rs]
                                                                   ;; Subtract built-ins; stats only show user-supplied rules.
