@@ -3196,6 +3196,9 @@
                                                                   has-tx-var? (conj 0))]))))))))]
                     (when levels
                       (let [^ints idxs (int-array n-merges)]
+                        ;; explicit zero-fill: cljs int-array of a SIZE yields an
+                        ;; undefined-filled JS array (JVM zero-fills)
+                        (dotimes [mi n-merges] (aset idxs mi 0))
                         (loop []
                           (result-list-add acc
                                            (persistent!
