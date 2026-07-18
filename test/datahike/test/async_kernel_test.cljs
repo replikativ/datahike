@@ -515,25 +515,19 @@
                ["lookup-ref add + cas"
                 [[:db/add [:wa-email "b@x"] :wa-score 22]
                  [:db/cas 1 :wa-score 1 5]]]
-               ;; best-effort: removal REBALANCING loads sibling nodes that no
-               ;; static prefetch can derive — a clean pre-commit fault is an
-               ;; acceptable outcome here (retries converge: every successful
-               ;; load stays cached). Wrong data is never acceptable.
-               ["retractEntity with component cascade [best-effort]"
-                [[:db/retractEntity [:wa-email "b@x"]]]
-                :best-effort]]]
-    (doseq [[label tx-data flag] cases]
-      (let [best-effort? (= :best-effort flag)
-            sync-r (report-norm (d/with db {:tx-data tx-data}))
+               ;; STRICT since the dual transaction spine: removal rebalancing's
+               ;; sibling loads are awaited reads — cascades stream cold like
+               ;; everything else (this case was best-effort under the old
+               ;; static-warming design, which could not derive sibling nodes)
+               ["retractEntity with component cascade"
+                [[:db/retractEntity [:wa-email "b@x"]]]]]]
+    (doseq [[label tx-data] cases]
+      (let [sync-r (report-norm (d/with db {:tx-data tx-data}))
             cold (am/cold-db db handle)
             {:keys [result error]} (<! (run (d/with cold {:tx-data tx-data :sync? false})))]
-        (if (and best-effort? error)
-          (is (= :storage/sync-read-unavailable (:error (ex-data error)))
-              (str label ": only the clean storage fault is acceptable, got "
-                   (some-> error ex-message)))
-          (do (is (nil? error) (str label " errored: " (some-> error ex-message)))
-              (when result
-                (is (= sync-r (report-norm result)) (str label ": cold ≡ sync")))))))))
+        (is (nil? error) (str label " errored: " (some-> error ex-message)))
+        (when result
+          (is (= sync-r (report-norm result)) (str label ": cold ≡ sync")))))))
 
 (deftest-async q-async-date-as-of-cold
   ;; Date-based as-of/since wrappers are normalized to numeric time-points by

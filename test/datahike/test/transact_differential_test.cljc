@@ -79,7 +79,15 @@
     (gen/return [[:db/retractEntity [:td-email "b@x"]]])
     (gen/fmap (fn [t] [[:db/add 2 :td-tags (str "t" t)]])
               (gen/choose 0 9))
-    (gen/return [[:db/retract 2 :td-tags "x"]])]))
+    (gen/return [[:db/retract 2 :td-tags "x"]])
+    ;; mid-tx-created lookup ref: the entity is created by the FIRST op and
+    ;; addressed by lookup ref in the SECOND — resolvable only against the
+    ;; evolving transient (the old prefetch value-cache design would have
+    ;; served a stale probed-absent entry; the dual spine reads the
+    ;; transient directly)
+    (gen/fmap (fn [v] [{:td-email "c@x" :td-name "newbie"}
+                       [:db/add [:td-email "c@x"] :td-score v]])
+              (gen/choose 900 999))]))
 
 (def ^:private gen-tx
   ;; 1-3 op groups concatenated — cross-op interactions inside one
@@ -116,11 +124,13 @@
       The dual transaction spine over async tree ops should take this to
       num-cases minus the raising transactions."
      ;; History: 129 on the prefetch/warming implementation (24 clean
-     ;; faults = the rebalancing residue static warming cannot reach).
-     ;; 153 = the dual transaction spine over async tree writes — every
-     ;; non-raising transaction completes cold; the 47 raisers raise
-     ;; identically in both modes. 153 is the ceiling for this stream.
-     153))
+     ;; faults = the rebalancing residue static warming cannot reach);
+     ;; 153 when the dual transaction spine landed (every non-raising
+     ;; transaction completes cold); 163 after the mid-tx-created
+     ;; lookup-ref case joined the grammar (a shape the old value-cache
+     ;; design would have diverged on — the spine reads the evolving
+     ;; transient directly). covered + raisers = num-cases: the ceiling.
+     163))
 
 #?(:cljs
    (defn- seeded-tx-seq [n seed]
