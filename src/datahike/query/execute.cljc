@@ -1282,6 +1282,198 @@
           (db/post-process-datoms datoms idb ctx))))))
 
 #?(:cljs
+   (defn prefetch-tx-reads-step
+     "Async-only: await the index reads a transaction will issue, derived
+      from tx-data against db-BEFORE. Two effects:
+      - returns {:entid-cache {form → eid-or-nil}} for dt/*entid-cache*
+        (lookup refs / idents / ref values — the value-cache is CORRECT:
+        within-tx additions land in hot nodes and the cache falls through
+        on absent keys);
+      - WARMS the shared node cache for the transient-sensitive reads
+        ([a v] unique/upsert checks, [e a] current-value/cas, [e] entity
+        retraction incl. an iterative component cascade, the txInstant
+        allocator read). Values of these probes are deliberately NOT
+        cached: the sync core re-reads the evolving transient, hitting
+        warm db-before subtrees or hot within-tx nodes. Correctness never
+        depends on residency — an evicted node faults the transaction
+        CLEANLY before commit (:storage/sync-read-unavailable, retryable);
+        it can never produce wrong data. Arbitrary tx functions stay
+        sync-documented.
+      KNOWN LIMIT: tree REBALANCING on removal loads sibling nodes that no
+      static key derivation can predict — retraction-heavy transactions on
+      cold trees are best-effort (clean fault; retries converge because
+      every successful node load stays cached). The full solution is an
+      async-capable tree write API — future work with the async writer."
+     [db tx-data]
+     (async
+      (let [eid-form? (fn [x]
+                        (or (keyword? x)
+                            (and (vector? x) (= 2 (count x)) (keyword? (first x))
+                                 (some? (second x))
+                                 (dbu/is-attr? db (first x) :db/unique))))
+            eid-num? (fn [x] (and (number? x) (pos? x)))
+            unique? (fn [a] (and (keyword? a) (dbu/is-attr? db a :db/unique)))
+            ref-attr? (fn [a] (and (keyword? a) (dbu/ref? db a)))
+            txInstant-attr (if (:attribute-refs? (dbi/-config db))
+                             (dbi/-ref-for db :db/txInstant)
+                             :db/txInstant)
+            ;; -- pure walk of tx-data ------------------------------------
+            ;; adds = [e-or-form-or-nil a v] for every derivable assertion —
+            ;; nil e means a fresh tempid entity (its insertion collapses to
+            ;; the rightmost max-eid boundary path)
+            acc (reduce
+                 (fn [{:keys [forms avs eas es adds] :as acc} op]
+                   (cond
+                     (map? op)
+                     (let [e (:db/id op)
+                           e' (cond (eid-num? e) e (eid-form? e) e :else nil)]
+                       (reduce-kv
+                        (fn [a k v]
+                          (if (or (not (keyword? k)) (= :db/id k))
+                            a
+                            (let [vs (if (and (coll? v) (not (map? v))
+                                              (dbu/multival? db k))
+                                       v [v])]
+                              (reduce (fn [a v]
+                                        (cond-> (update a :adds conj [e' k v])
+                                          (unique? k)
+                                          (update :avs conj [k v])
+                                          (and (ref-attr? k) (eid-form? v))
+                                          (update :forms conj v)
+                                          (eid-num? e)
+                                          (update :eas conj [e k])))
+                                      a vs))))
+                        (cond-> acc (eid-form? e) (update :forms conj e))
+                        op))
+
+                     (sequential? op)
+                     (let [[f e a v nv] op]
+                       (case f
+                         :db/add
+                         (cond-> (update acc :adds conj [(cond (eid-num? e) e (eid-form? e) e :else nil) a v])
+                           (eid-form? e) (update :forms conj e)
+                           (eid-num? e) (update :eas conj [e a])
+                           (unique? a) (update :avs conj [a v])
+                           (and (ref-attr? a) (eid-form? v)) (update :forms conj v))
+                         :db/retract
+                         (cond-> acc
+                           (eid-form? e) (update :forms conj e)
+                           (eid-num? e) (update :eas conj [e a]))
+                         (:db/retractEntity :db.fn/retractEntity :db/retractAttribute :db.fn/retractAttribute)
+                         (cond-> acc
+                           (eid-form? e) (update :forms conj e)
+                           (eid-num? e) (update :es conj e))
+                         (:db/cas :db.fn/cas)
+                         (cond-> acc
+                           (eid-form? e) (update :forms conj e)
+                           (eid-num? e) (update :eas conj [e a])
+                           (eid-form? v) (update :forms conj v)
+                           (eid-form? nv) (update :forms conj nv))
+                         acc))
+                     :else acc))
+                 {:forms #{} :avs #{} :eas #{} :es #{} :adds #{}}
+                 tx-data)
+            ;; -- phase 1: eid-form value probes --------------------------
+            forms (vec (:forms acc))
+            form-eids (when (seq forms)
+                        (pca/await
+                         (pca/all (mapv (fn [f]
+                                          (if (keyword? f)
+                                            (avet-first-eid-step db [:db/ident f])
+                                            (avet-first-eid-step db (vec f))))
+                                        forms))))
+            entid-cache (when form-eids (zipmap forms form-eids))
+            resolved (fn [x] (if (eid-num? x) x (get entid-cache x)))
+            ;; -- phase 2: warm the transient-sensitive READS and every
+            ;; derivable INSERTION path. Writes traverse root->leaf at the
+            ;; datom's slot in eavt/aevt/avet — and, with :keep-history?,
+            ;; in the temporal twins — so each is point-probed (lookupGE
+            ;; warms exactly that path). Tempid entities and the tx entity
+            ;; insert along the rightmost max-eid / max-tx boundary paths.
+            idb (index-origin db)
+            keep-history? (dbi/-keep-history? db)
+            warm-point (fn [index-key index-type cs]
+                         (async
+                          (when-some [idx (get idb index-key)]
+                            (pca/await
+                             (lookup-ge-step idx (dbu/components->pattern idb index-type cs e0 tx0) false))
+                            nil)))
+            warm-slot (fn [index-type cs]
+                        (let [tk (keyword (str "temporal-" (name index-type)))]
+                          (cond-> [(warm-point index-type index-type cs)]
+                            keep-history? (conj (warm-point tk index-type cs)))))
+            new-eid (inc (long (:max-eid db)))
+            new-tx (inc (long (:max-tx db)))
+            ea-probes (into (mapv (fn [[e a]] [(resolved e) a]) (:eas acc))
+                            [[(:max-tx db) txInstant-attr]])
+            insertion-probes
+            (into []
+                  (mapcat (fn [[e a v]]
+                            (let [e (or (resolved e) new-eid)]
+                              (concat (warm-slot :eavt [e a v])
+                                      (warm-slot :aevt [a e v])
+                                      (warm-slot :avet [a v e])))))
+                  (:adds acc))
+            _ (pca/await
+               (pca/all (-> []
+                            (into (map (fn [[a v]] (datoms-step db :avet [a v] false)))
+                                  (:avs acc))
+                            (into (comp (filter (fn [[e _]] (some? e)))
+                                        (mapcat (fn [[e a]]
+                                                  ;; read probe + (with history) the temporal
+                                                  ;; slot a retraction of [e a] would move to
+                                                  (cons (datoms-step db :eavt [e a] false)
+                                                        (when keep-history?
+                                                          [(warm-point :temporal-eavt :eavt [e a])])))))
+                                  ea-probes)
+                            (into insertion-probes)
+                            (into (warm-slot :eavt [new-tx txInstant-attr])))))
+            ;; -- phase 3: entity reads + reverse-ref reads + iterative
+            ;; component cascade (retract-entity reads [e] plus [a e] avet
+            ;; for every ref attribute)
+            ref-attrs (vec (dbi/-attrs-by db :db.type/ref))
+            _ (loop [pending (vec (keep resolved (:es acc)))
+                     seen #{}]
+                (when (seq pending)
+                  (let [fresh (remove seen pending)
+                        results (pca/await
+                                 (pca/all (-> []
+                                              (into (map (fn [e] (datoms-step db :eavt [e] false))) fresh)
+                                              (into (comp (mapcat (fn [e] (mapv (fn [a] [a e]) ref-attrs)))
+                                                          (map (fn [av] (datoms-step db :avet av false))))
+                                                    fresh)
+                                              ;; retracted datoms move into the temporal indexes
+                                              ;; at the entity's position
+                                              (into (comp (filter (fn [_] keep-history?))
+                                                          (map (fn [e] (warm-point :temporal-eavt :eavt [e]))))
+                                                    fresh))))
+                        ;; every datom found (the entity's own + reverse refs
+                        ;; pointing at it) will be REMOVED — removal traverses
+                        ;; its slot in eavt/aevt/avet (+ temporal twins), so
+                        ;; warm each slot path
+                        slices (filter sequential? results)
+                        _ (pca/await
+                           (pca/all (into []
+                                          (comp cat
+                                                (mapcat (fn [^Datom d]
+                                                          (let [e (.-e d) a (.-a d) v (.-v d)]
+                                                            (concat (warm-slot :eavt [e a v])
+                                                                    (warm-slot :aevt [a e v])
+                                                                    (warm-slot :avet [a v e]))))))
+                                          slices)))
+                        next-targets
+                        (into []
+                              (comp cat
+                                    (filter (fn [^Datom d]
+                                              (and (dbu/ref? db (.-a d))
+                                                   (dbu/component? db (.-a d)))))
+                                    (map (fn [^Datom d] (.-v d)))
+                                    (filter number?))
+                              results)]
+                    (recur next-targets (into seen fresh)))))]
+        {:entid-cache entid-cache}))))
+
+#?(:cljs
    (defn- search-first-datom-step
      "Async point search for a ground [e translated-attr] pattern honoring
       the db's temporal search context. Yields the first visible datom or

@@ -486,6 +486,55 @@
         (is (nil? error) (str "concurrent q errored: " (some-> error ex-message)))
         (is (= sync-r result) "concurrent cold ≡ sync")))))
 
+(deftest-async with-async-cold
+  ;; d/with {:sync? false}: the transaction's derivable reads are awaited
+  ;; against db-before (entid cache + node warming), then the unchanged sync
+  ;; core runs — plain asserts, upserts (incl. within-tx double upsert),
+  ;; lookup-ref ops, cas and retractEntity, all on a COLD store
+  (let [db (-> (ddb/empty-db {:wa-email {:db/unique :db.unique/identity}
+                              :wa-friend {:db/valueType :db.type/ref
+                                          :db/isComponent true}})
+               (d/db-with (into [{:db/id 1 :wa-email "a@x" :wa-score 1}
+                                 {:db/id 2 :wa-email "b@x" :wa-score 2 :wa-friend 3}
+                                 {:db/id 3 :wa-name "comp"}]
+                                (mapv (fn [i] {:db/id (+ 10 i) :wa-name (str "n" i)})
+                                      (range 300)))))
+        handle (am/flush-db! db)
+        run (fn [expr]
+              (let [ch (a/promise-chan)]
+                (expr (fn [v] (a/put! ch {:result v}))
+                      (fn [e] (a/put! ch {:error e})))
+                ch))
+        report-norm (fn [r] {:tx-data (mapv (fn [d] [(:e d) (:a d) (:v d) (:added d)])
+                                            (:tx-data r))
+                             :tempids (:tempids r)})
+        cases [["plain asserts" [{:db/id -1 :wa-name "new"} {:db/id -2 :wa-score 9}]]
+               ["upsert + double upsert same [a v]"
+                [{:wa-email "a@x" :wa-score 100}
+                 {:wa-email "a@x" :wa-name "renamed"}]]
+               ["lookup-ref add + cas"
+                [[:db/add [:wa-email "b@x"] :wa-score 22]
+                 [:db/cas 1 :wa-score 1 5]]]
+               ;; best-effort: removal REBALANCING loads sibling nodes that no
+               ;; static prefetch can derive — a clean pre-commit fault is an
+               ;; acceptable outcome here (retries converge: every successful
+               ;; load stays cached). Wrong data is never acceptable.
+               ["retractEntity with component cascade [best-effort]"
+                [[:db/retractEntity [:wa-email "b@x"]]]
+                :best-effort]]]
+    (doseq [[label tx-data flag] cases]
+      (let [best-effort? (= :best-effort flag)
+            sync-r (report-norm (d/with db {:tx-data tx-data}))
+            cold (am/cold-db db handle)
+            {:keys [result error]} (<! (run (d/with cold {:tx-data tx-data :sync? false})))]
+        (if (and best-effort? error)
+          (is (= :storage/sync-read-unavailable (:error (ex-data error)))
+              (str label ": only the clean storage fault is acceptable, got "
+                   (some-> error ex-message)))
+          (do (is (nil? error) (str label " errored: " (some-> error ex-message)))
+              (when result
+                (is (= sync-r (report-norm result)) (str label ": cold ≡ sync")))))))))
+
 (deftest-async q-async-date-as-of-cold
   ;; Date-based as-of/since wrappers are normalized to numeric time-points by
   ;; one awaited txInstant scan, then ride the pure txpred path cold.

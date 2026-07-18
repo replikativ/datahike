@@ -117,10 +117,14 @@
    [:sync? {:optional true} :boolean]])
 
 (def SWithArgs
-  "Arguments for 'with' operation."
+  "Arguments for 'with' operation. :sync? false (ClojureScript only) runs
+   the transaction's index reads asynchronously (prefetch against
+   db-before) and returns a partial-cps async expression yielding the
+   tx-report."
   [:map
    [:tx-data STransactions]
-   [:tx-meta {:optional true} STxMeta]])
+   [:tx-meta {:optional true} STxMeta]
+   [:sync? {:optional true} :boolean]])
 
 (def SIndexLookupArgs
   "Index lookup arguments."

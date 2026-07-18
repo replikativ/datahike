@@ -17,6 +17,7 @@
             [datahike.db.transaction :as dbt]
             [datahike.impl.entity :as de]
             #?(:cljs [datahike.query.execute :as ex])
+            #?(:cljs [is.simm.partial-cps.async :as pca :refer-macros [async]])
             [datahike.versioning :as dv]
             [datahike.bitemporal.predicate :as bp.pred]
             [replikativ.logging :as log]
@@ -138,7 +139,20 @@
   ([db arg-map]
    (let [tx-data (if (:tx-data arg-map) (:tx-data arg-map) arg-map)
          tx-meta (if (:tx-meta arg-map) (:tx-meta arg-map) nil)]
-     (with db tx-data tx-meta)))
+     (if (and (map? arg-map) (false? (:sync? arg-map)))
+       ;; async mode (ClojureScript): await the transaction's derivable index
+       ;; reads against db-before (entid value-cache + node warming), then run
+       ;; the unchanged synchronous transaction core. Correctness never depends
+       ;; on node residency — a cold read that slips through fails the
+       ;; transaction cleanly BEFORE commit (retryable), never wrong data.
+       ;; Arbitrary tx functions remain synchronous (documented).
+       #?(:clj (throw (ex-info ":sync? false is ClojureScript-only — JVM reads are synchronous"
+                               {:error :storage/async-unsupported}))
+          :cljs (pca/async
+                 (let [{:keys [entid-cache]} (pca/await (ex/prefetch-tx-reads-step db tx-data))]
+                   (binding [dt/*entid-cache* entid-cache]
+                     (with db tx-data tx-meta)))))
+       (with db tx-data tx-meta))))
   ([db tx-data tx-meta]
    (if (dcore/is-filtered db)
      (log/raise "Filtered DB cannot be modified" {:error :transaction/filtered})

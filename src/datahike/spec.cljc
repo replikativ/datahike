@@ -77,7 +77,8 @@
    {:name ::with-args
     :keys-default ds/opt
     :spec {:tx-data STransactions
-           :tx-meta STxMeta}}))
+           :tx-meta STxMeta
+           (ds/opt :sync?) boolean?}}))
 
 (def SIndexRangeArgs
   (ds/spec
