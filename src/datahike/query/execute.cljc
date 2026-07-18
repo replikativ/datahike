@@ -910,6 +910,46 @@
                 td))
             slice))))
 
+#?(:cljs
+   (defn- temporal-merge-slice-step
+     "Dual-mode temporal-merge-slice: realizes the current (+ temporal)
+      slices — awaits in async mode — then runs the SAME pure merge pipeline
+      (distinct-datoms / post-process-datoms / maybe-post-process) over the
+      realized vectors. FilteredDB predicates inside maybe-post-process stay
+      synchronous (documented: predicates are sync-only)."
+     [origin-db from-d to-d temporal-type temporal-tx-filter db sync?]
+     (async+sync sync?
+                 (let [current (pca/await (realize-slice (:eavt origin-db) from-d to-d :eavt nil sync?))]
+                   (case temporal-type
+                     :historical
+                     (let [tv (pca/await (realize-slice (:temporal-eavt origin-db) from-d to-d :eavt nil sync?))]
+                       (into [] (maybe-post-process (dbu/distinct-datoms origin-db :eavt current tv) db origin-db)))
+
+                     (:as-of :since)
+                     (let [tv (pca/await (realize-slice (:temporal-eavt origin-db) from-d to-d :eavt nil sync?))
+                           ctx (dbi/-search-context db)]
+                       (into [] (db/post-process-datoms (dbu/distinct-datoms origin-db :eavt current tv)
+                                                        origin-db ctx)))
+
+                     ;; regular DB
+                     (into [] (maybe-post-process current db origin-db)))))))
+
+#?(:cljs
+   (defn- visible-eavt-datom-step
+     "Dual-mode visible-eavt-datom (as-of card-one fallback)."
+     [origin-db db temporal-type temporal-eavt
+      eid ra vg? vgv check-v? check-tx? scan-d temporal-tx-filter added-filter sync?]
+     (async+sync sync?
+                 (when temporal-eavt
+                   (let [from-d (datom eid ra (when vg? vgv) tx0)
+                         to-d (datom eid ra (when vg? vgv) txmax)
+                         slice (pca/await (temporal-merge-slice-step origin-db from-d to-d temporal-type temporal-tx-filter db sync?))]
+                     (some (fn [^Datom td]
+                             (when (temporal-merge-datom-match? td eid ra vg? vgv check-v? check-tx? scan-d
+                                                                temporal-tx-filter added-filter)
+                               td))
+                           slice))))))
+
 (defn- build-scan-slice
   "Build the scan slice for execute-group-direct / execute-fused-scan-rel.
    For temporal DBs, merges current + temporal indexes.
@@ -966,8 +1006,13 @@
      (if sync?
        (when s
          (when-let [sq (seq s)]
-           (let [ch (chunk-first sq)]
-             [(.-arr ch) (.-off ch) (.-end ch) (chunk-next sq)])))
+           (if (chunked-seq? sq)
+             ;; PSS Iter / cljs ArrayChunk: [arr off end] fields
+             (let [ch (chunk-first sq)]
+               [(.-arr ch) (.-off ch) (.-end ch) (chunk-next sq)])
+             ;; generic seqs (e.g. temporal merged slices, filtered seqs):
+             ;; element-wise pseudo-chunks — matches the old doseq behavior
+             [(array (first sq)) 0 1 (next sq)])))
        (if (nil? s)
          (async nil)
          (btset/achunk-next s)))))
@@ -1670,7 +1715,7 @@
                                  probe-set probe-datom-field
                                  collect-set collect-datom-field collect-merge-idx
                                  merge-datoms n-find find-source const-vals
-                                 result-list max-n n-merges temporal-ctx cancel)))
+                                 result-list max-n n-merges temporal-ctx cancel true)))
 
 (defn- execute-temporal-merge-slow
   "Temporal path 2: merge with card-many/card-one, anti-merge, cursor cache.
@@ -1679,7 +1724,7 @@
    probe-set probe-datom-field
    collect-set collect-datom-field collect-merge-idx
    merge-datoms n-find find-source const-vals
-   result-list max-n n-merges temporal-ctx cancel]
+   result-list max-n n-merges temporal-ctx cancel sync?]
   (let [^objects merge-attrs (aget ^objects temporal-ctx 0)
         ^objects merge-v-ground (aget ^objects temporal-ctx 1)
         ^objects merge-v-vals (aget ^objects temporal-ctx 2)
@@ -1855,83 +1900,95 @@
                                      (do (aset idxs mi 0) (recur (dec mi)))))))
                          (recur))))))))))
        :cljs
-       (doseq [scan-d slice
-               :while (or (neg? max-n) (< (result-list-size result-list) max-n))]
-         (check-cancel! cancel)
-         (when (and (scan-filter-temporal scan-d ground-filter strict-filter probe-set probe-datom-field temporal-tx-filter)
-                    (or (nil? scan-added-val) (= (datom/datom-added scan-d) scan-added-val)))
-           (let [eid (.-e ^Datom scan-d)
-                 ;; PHASE 1 — realize per-level match lists (see the :clj arm).
-                 levels
-                 (loop [mi 0 acc []]
-                   (if (>= mi n-merges)
-                     acc
-                     (let [anti? (aget merge-anti mi)
-                           ra (aget merge-attrs mi)
-                           vg? (aget merge-v-ground mi)
-                           vgv (aget merge-v-vals mi)
-                           card-many? (aget merge-card-many mi)
-                           added-filter (aget merge-added-filter mi)]
-                       (if card-many?
-                         (let [from-d (datom eid ra (when vg? vgv) tx0)
-                               to-d (datom eid ra (when vg? vgv) txmax)
-                               temporal-only? (aget merge-temporal-only mi)
-                               mslice (if temporal-only?
-                                        (di/-slice temporal-eavt-pss from-d to-d :eavt)
-                                        (temporal-merge-slice origin-db from-d to-d temporal-type temporal-tx-filter db))
-                               check-v? (aget merge-check-scan-v mi)
-                               check-tx? (aget merge-check-scan-tx mi)
-                               matches (into []
-                                             (filter (fn [^Datom d]
-                                                       (temporal-merge-datom-match? d eid ra vg? vgv check-v? check-tx? scan-d temporal-tx-filter added-filter)))
-                                             mslice)]
-                           (if anti?
-                             (when (empty? matches) (recur (inc mi) (conj acc nil)))
-                             (cond
-                               (seq matches) (recur (inc mi) (conj acc matches))
-                               ;; Optional merge (get-else): default when no version
-                               ;; matched (:historical forces card-many).
-                               (and merge-optional (aget merge-optional mi))
-                               (recur (inc mi) (conj acc [(datom eid ra (aget merge-defaults mi) tx0)]))
-                               :else nil)))
-                         (let [probe (datom eid ra vgv tx0)
-                               ^Datom d (pss-lookup-ge eavt-pss probe)
-                               check-v? (aget merge-check-scan-v mi)
-                               check-tx? (aget merge-check-scan-tx mi)
-                               found-d (or (when (and d (temporal-merge-datom-match? d eid ra vg? vgv check-v? check-tx? scan-d temporal-tx-filter added-filter))
-                                             d)
-                                           (when (= temporal-type :as-of)
-                                             (visible-eavt-datom origin-db db temporal-type (:temporal-eavt origin-db)
-                                                                 eid ra vg? vgv check-v? check-tx? scan-d
-                                                                 temporal-tx-filter added-filter)))]
-                           (if anti?
-                             (when (not found-d) (recur (inc mi) (conj acc nil)))
-                             (cond
-                               found-d (recur (inc mi) (conj acc [found-d]))
-                               ;; Optional merge: synthetic default datom on miss
-                               (and merge-optional (aget merge-optional mi))
-                               (recur (inc mi) (conj acc [(datom eid ra (aget merge-defaults mi) tx0)]))
-                               :else nil)))))))]
-             ;; PHASE 2 — odometer, deepest level fastest.
-             (when levels
-               (let [idxs (make-array n-merges)]
-                 (dotimes [mi n-merges] (aset idxs mi 0))
-                 (loop []
-                   (dotimes [mi n-merges]
-                     (when-some [lv (nth levels mi)]
-                       (aset merge-datoms mi (nth lv (aget idxs mi)))))
-                   (emit-tuple scan-d collect-set collect-datom-field collect-merge-idx merge-datoms
-                               n-find find-source const-vals result-list)
-                   (when (loop [mi (dec n-merges)]
-                           (if (neg? mi)
-                             false
-                             (let [lv (nth levels mi)
-                                   n (if (nil? lv) 1 (count lv))
-                                   i (inc (aget idxs mi))]
-                               (if (< i n)
-                                 (do (aset idxs mi i) true)
-                                 (do (aset idxs mi 0) (recur (dec mi)))))))
-                     (recur)))))))))))
+       ;; ONE dual body (async+sync supplies the async wrapper — do not nest).
+       (async+sync sync?
+                   (loop [sc slice]
+                     (when-some [sstep (pca/await (chunk-step sc sync?))]
+                       (let [skeys (nth sstep 0)
+                             sstart (nth sstep 1)
+                             send (nth sstep 2)
+                             snxt (nth sstep 3)]
+                         (loop [si sstart]
+                           (when (and (< si send)
+                                      (or (neg? max-n) (< (result-list-size result-list) max-n)))
+                             (check-cancel! cancel)
+                             (let [scan-d (aget skeys si)]
+                               (when (and (scan-filter-temporal scan-d ground-filter strict-filter probe-set probe-datom-field temporal-tx-filter)
+                                          (or (nil? scan-added-val) (= (datom/datom-added scan-d) scan-added-val)))
+                                 (let [eid (.-e ^Datom scan-d)
+                                       ;; PHASE 1 — realize per-level match lists (see the :clj arm).
+                                       levels
+                                       (loop [mi 0 acc []]
+                                         (if (>= mi n-merges)
+                                           acc
+                                           (let [anti? (aget merge-anti mi)
+                                                 ra (aget merge-attrs mi)
+                                                 vg? (aget merge-v-ground mi)
+                                                 vgv (aget merge-v-vals mi)
+                                                 card-many? (aget merge-card-many mi)
+                                                 added-filter (aget merge-added-filter mi)]
+                                             (if card-many?
+                                               (let [from-d (datom eid ra (when vg? vgv) tx0)
+                                                     to-d (datom eid ra (when vg? vgv) txmax)
+                                                     temporal-only? (aget merge-temporal-only mi)
+                                                     check-v? (aget merge-check-scan-v mi)
+                                                     check-tx? (aget merge-check-scan-tx mi)
+                                                     match? (fn [^Datom d]
+                                                              (temporal-merge-datom-match? d eid ra vg? vgv check-v? check-tx? scan-d temporal-tx-filter added-filter))
+                                                     matches (if temporal-only?
+                                                               (pca/await (realize-slice temporal-eavt-pss from-d to-d :eavt match? sync?))
+                                                               (into [] (filter match?)
+                                                                     (pca/await (temporal-merge-slice-step origin-db from-d to-d temporal-type temporal-tx-filter db sync?))))]
+                                                 (if anti?
+                                                   (when (empty? matches) (recur (inc mi) (conj acc nil)))
+                                                   (cond
+                                                     (seq matches) (recur (inc mi) (conj acc matches))
+                                                     ;; Optional merge (get-else): default when no version
+                                                     ;; matched (:historical forces card-many).
+                                                     (and merge-optional (aget merge-optional mi))
+                                                     (recur (inc mi) (conj acc [(datom eid ra (aget merge-defaults mi) tx0)]))
+                                                     :else nil)))
+                                               (let [probe (datom eid ra vgv tx0)
+                                                     ^Datom d (pca/await (lookup-ge-step eavt-pss probe sync?))
+                                                     check-v? (aget merge-check-scan-v mi)
+                                                     check-tx? (aget merge-check-scan-tx mi)
+                                                     found-d (or (when (and d (temporal-merge-datom-match? d eid ra vg? vgv check-v? check-tx? scan-d temporal-tx-filter added-filter))
+                                                                   d)
+                                                                 (when (= temporal-type :as-of)
+                                                                   (pca/await (visible-eavt-datom-step origin-db db temporal-type (:temporal-eavt origin-db)
+                                                                                                       eid ra vg? vgv check-v? check-tx? scan-d
+                                                                                                       temporal-tx-filter added-filter sync?))))]
+                                                 (if anti?
+                                                   (when (not found-d) (recur (inc mi) (conj acc nil)))
+                                                   (cond
+                                                     found-d (recur (inc mi) (conj acc [found-d]))
+                                                     ;; Optional merge: synthetic default datom on miss
+                                                     (and merge-optional (aget merge-optional mi))
+                                                     (recur (inc mi) (conj acc [(datom eid ra (aget merge-defaults mi) tx0)]))
+                                                     :else nil)))))))]
+                                   ;; PHASE 2 — odometer, deepest level fastest.
+                                   (when levels
+                                     (let [idxs (make-array n-merges)]
+                                       (dotimes [mi n-merges] (aset idxs mi 0))
+                                       (loop []
+                                         (dotimes [mi n-merges]
+                                           (when-some [lv (nth levels mi)]
+                                             (aset merge-datoms mi (nth lv (aget idxs mi)))))
+                                         (emit-tuple scan-d collect-set collect-datom-field collect-merge-idx merge-datoms
+                                                     n-find find-source const-vals result-list)
+                                         (when (loop [mi (dec n-merges)]
+                                                 (if (neg? mi)
+                                                   false
+                                                   (let [lv (nth levels mi)
+                                                         n (if (nil? lv) 1 (count lv))
+                                                         i (inc (aget idxs mi))]
+                                                     (if (< i n)
+                                                       (do (aset idxs mi i) true)
+                                                       (do (aset idxs mi 0) (recur (dec mi)))))))
+                                           (recur)))))))
+                               (recur (inc si)))))
+                         (when (or (neg? max-n) (< (result-list-size result-list) max-n))
+                           (recur snxt)))))))))
 
 ;; ---------------------------------------------------------------------------
 ;; Dispatcher — setup + dispatch to the appropriate path function.
