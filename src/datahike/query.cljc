@@ -2318,20 +2318,35 @@
   (-post-process [_ tuples]
     (first tuples)))
 
-(defn- pull [find-elements context resultset]
-  (let [resolved (for [find find-elements]
-                   (when (instance? Pull find)
-                     [(-context-resolve (:source find) context)
-                      (dpp/parse-pull
-                       (-context-resolve (:pattern find) context))]))]
-    (for [tuple resultset]
-      (mapv (fn [env el]
-              (if env
-                (let [[src spec] env]
-                  (dpa/pull-spec src spec [el] false))
-                el))
-            resolved
-            tuple))))
+(defn- pull
+  "Materialize Pull find elements over the result tuples.
+   cljs dual: sync? false yields an async expression; the per-entity
+   pull-spec walks are awaited (eager loops — the lazy seqs of the sync
+   shape would hide the reads from the CPS transform)."
+  ([find-elements context resultset] (pull find-elements context resultset true))
+  ([find-elements context resultset sync?]
+   (async+sync sync?
+   (let [resolved (mapv (fn [find]
+                          (when (instance? Pull find)
+                            [(-context-resolve (:source find) context)
+                             (dpp/parse-pull
+                              (-context-resolve (:pattern find) context))]))
+                        find-elements)]
+     (loop [ts (seq resultset) acc []]
+       (if ts
+         (let [tuple (first ts)
+               row (loop [i 0 racc []]
+                     (if (< i (count resolved))
+                       (let [env (nth resolved i)
+                             el (nth tuple i)
+                             v (if env
+                                 (let [[src spec] env]
+                                   (pca/await (dpa/pull-spec src spec [el] false sync?)))
+                                 el)]
+                         (recur (inc i) (conj racc v)))
+                       racc))]
+           (recur (next ts) (conj acc row)))
+         acc))))))
 
 (def ^:private query-cache (volatile! (datahike.lru/lru lru-cache-size)))
 
@@ -3715,13 +3730,23 @@
 (defn- post-process-result
   "Shared post-processing pipeline for both planned-relation and legacy paths.
    Applies :with truncation, aggregation, pull, post-process, return-maps,
-   ordering, offset/limit, and stats wrapping."
-  [deduped context-in context-out query qfind find-elements
-   result-arity order-spec offset limit stats? qreturnmaps]
-  (cond->> deduped
-    (:with query)                                 (mapv #(subvec % 0 result-arity))
-    (some #(instance? Aggregate %) find-elements) (aggregate find-elements context-in)
-    (some #(instance? Pull %) find-elements)      (pull find-elements context-in)
+   ordering, offset/limit, and stats wrapping.
+   cljs dual: sync? false yields an async expression — the pull step's index
+   walks are awaited; everything else is pure."
+  ([deduped context-in context-out query qfind find-elements
+    result-arity order-spec offset limit stats? qreturnmaps]
+   (post-process-result deduped context-in context-out query qfind find-elements
+                        result-arity order-spec offset limit stats? qreturnmaps true))
+  ([deduped context-in context-out query qfind find-elements
+    result-arity order-spec offset limit stats? qreturnmaps sync?]
+   (async+sync sync?
+   (let [pre (cond->> deduped
+               (:with query)                                 (mapv #(subvec % 0 result-arity))
+               (some #(instance? Aggregate %) find-elements) (aggregate find-elements context-in))
+         pulled (if (some #(instance? Pull %) find-elements)
+                  (pca/await (pull find-elements context-in pre sync?))
+                  pre)]
+  (cond->> pulled
     true                                          (-post-process qfind)
     qreturnmaps                                   (convert-to-return-maps qreturnmaps)
     order-spec                                    (#(apply-order-by % order-spec offset limit))
@@ -3735,7 +3760,7 @@
                                                                 (fn [rs]
                                                                   ;; Subtract built-ins; stats only show user-supplied rules.
                                                                   (apply dissoc rs (keys built-in-rules))))
-                                                        (assoc :ret % :query query)))))
+                                                        (assoc :ret % :query query))))))))
 
 (defn- with-fn-counts
   "Surface the engine-collected {fn-sym → invocations} map (accumulated in the
@@ -3809,8 +3834,9 @@
                       deduped))
                   deduped)]
     (with-fn-counts context-out
-      (post-process-result deduped context-in context-out query qfind find-elements
-                           result-arity order-spec offset limit stats? qreturnmaps)))))
+      (pca/await
+       (post-process-result deduped context-in context-out query qfind find-elements
+                            result-arity order-spec offset limit stats? qreturnmaps sync?))))))
 
 (defn- execute-legacy
   "Legacy engine path: -q → collect → dedup → aggregate/pull."

@@ -353,6 +353,29 @@
         (is (nil? (:error out)) (str label ": cold errored: " (some-> (:error out) ex-message)))
         (is (= expected (:result out)) (str label ": cold ≡ sync"))))))
 
+(deftest-async q-async-pull-cold
+  ;; pull find elements walk the index via the dual pull-api chain: nested
+  ;; subpatterns, wildcard, and recursion all stream cold
+  (let [db (-> (ddb/empty-db {:pl-friend {:db/valueType :db.type/ref}})
+               (d/db-with [{:db/id 1 :pl-name "a" :pl-friend 2}
+                           {:db/id 2 :pl-name "b" :pl-friend 3}
+                           {:db/id 3 :pl-name "c"}]))
+        handle (am/flush-db! db)
+        queries ['[:find (pull ?e [:pl-name {:pl-friend [:pl-name]}])
+                   :where [?e :pl-name "a"]]
+                 '[:find (pull ?e [*]) :where [?e :pl-name ?n]]
+                 '[:find (pull ?e [:pl-name {:pl-friend ...}])
+                   :where [?e :pl-name "a"]]]]
+    (doseq [query queries]
+      (let [sync-r (binding [q/*query-result-cache?* false] (d/q query db))
+            cold (am/cold-db db handle)
+            out (<! (am/run-query-in-mode :async-cold query cold))]
+        (is (nil? (:fault out))
+            (str (pr-str query) " cold faulted: " (some-> (:fault out) ex-message)))
+        (is (nil? (:error out))
+            (str (pr-str query) " cold errored: " (some-> (:error out) ex-message)))
+        (is (= sync-r (:result out)) (str (pr-str query) " cold ≡ sync"))))))
+
 (deftest-async q-async-date-as-of-cold
   ;; Date-based as-of/since wrappers are normalized to numeric time-points by
   ;; one awaited txInstant scan, then ride the pure txpred path cold.

@@ -2,6 +2,9 @@
   (:require
    [datahike.db.utils :as dbu]
    [datahike.db.interface :as dbi]
+   [datahike.tools :as dt]
+   [is.simm.partial-cps.async :as pca :refer [async async+sync]]
+   #?(:cljs [datahike.query.execute :as ex])
    [datalog.parser.pull :as dpp #?@(:cljs [:refer [PullSpec]])])
   #?(:clj
      (:import
@@ -181,11 +184,16 @@
            (conj frames)))))
 
 (defn pull-attr
-  "Retrieve datoms for given entity id and specification from database"
-  [db spec eid frames]
-  (let [[attr-key opts] spec]
+  "Retrieve datoms for given entity id and specification from database.
+   cljs dual: sync? false yields an async expression — the one index read
+   goes through the datoms-step dual seam; frame manipulation is pure."
+  ([db spec eid frames] (pull-attr db spec eid frames true))
+  ([db spec eid frames sync?]
+   (async+sync sync?
+   (let [[attr-key opts] spec]
     (if (= :db/id attr-key)
-      (if (not-empty (dbi/datoms db :eavt [eid]))
+      (if (not-empty #?(:clj (dbi/datoms db :eavt [eid])
+                        :cljs (pca/await (ex/datoms-step db :eavt [eid] sync?))))
         (conj (rest frames)
               (update (first frames) :kvps assoc! :db/id eid))
         frames)
@@ -198,10 +206,12 @@
             results  (if (nil? a)
                        []
                        (if forward?
-                         (dbi/datoms db :eavt [eid a])
-                         (dbi/datoms db :avet [a eid])))]
+                         #?(:clj (dbi/datoms db :eavt [eid a])
+                            :cljs (pca/await (ex/datoms-step db :eavt [eid a] sync?)))
+                         #?(:clj (dbi/datoms db :avet [a eid])
+                            :cljs (pca/await (ex/datoms-step db :avet [a eid] sync?)))))]
         (pull-attr-datoms db attr-key attr eid forward?
-                          results opts frames)))))
+                          results opts frames)))))))
 
 (def ^:private filter-reverse-attrs
   (filter (fn [[k v]] (not= k (:attr v)))))
@@ -251,11 +261,14 @@
       (expand-result frames (:kvps frame)))))
 
 (defn pull-wildcard-expand
-  [db frame frames eid pattern]
-  (let [datoms (group-by (fn [d] (if (:attribute-refs? (dbi/-config db))
+  ([db frame frames eid pattern] (pull-wildcard-expand db frame frames eid pattern true))
+  ([db frame frames eid pattern sync?]
+   (async+sync sync?
+   (let [datoms (group-by (fn [d] (if (:attribute-refs? (dbi/-config db))
                                    (dbi/ident-for db (.-a ^Datom d) :error-on-missing)
                                    (.-a ^Datom d)))
-                         (dbi/datoms db :eavt [eid]))
+                         #?(:clj (dbi/datoms db :eavt [eid])
+                            :cljs (pca/await (ex/datoms-step db :eavt [eid] sync?))))
         {:keys [attr recursion]} frame
         rec (cond-> recursion
               (some? attr) (push-recursion attr eid))]
@@ -263,55 +276,89 @@
           :eid eid :pattern pattern :datoms (seq datoms)
           :recursion rec}
          (conj frames frame)
-         (pull-expand-frame db))))
+         (pull-expand-frame db))))))
 
 (defn pull-wildcard
-  [db frame frames]
-  (let [{:keys [eid pattern]} frame]
+  ([db frame frames] (pull-wildcard db frame frames true))
+  ([db frame frames sync?]
+   (async+sync sync?
+   (let [{:keys [eid pattern]} frame]
     (or (pull-seen-eid frame frames eid)
-        (pull-wildcard-expand db frame frames eid pattern))))
+        (pca/await (pull-wildcard-expand db frame frames eid pattern sync?)))))))
 
 (defn pull-pattern-frame
-  [db [frame & frames]]
-  (if-let [eids (seq (:eids frame))]
-    (if (:wildcard? frame)
-      (pull-wildcard db
-                     (assoc frame
-                            :specs []
-                            :eid (first eids)
-                            :wildcard? false)
-                     frames)
-      (if-let [specs (seq (:specs frame))]
-        (let [spec       (first specs)
-              new-frames (conj frames (assoc frame :specs (rest specs)))]
-          (pull-attr db spec (first eids) new-frames))
-        (->> frame :kvps persistent! not-empty
-             (reset-frame frame (rest eids))
-             (conj frames)
-             (recur db))))
-    (conj frames (assoc frame :state :done))))
+  ([db frames*] (pull-pattern-frame db frames* true))
+  ([db frames* sync?]
+   ;; explicit loop (not fn-recur): the pull-attr / pull-wildcard calls are
+   ;; awaited in async mode
+   (async+sync sync?
+   (loop [[frame & frames] frames*]
+     (if-let [eids (seq (:eids frame))]
+       (if (:wildcard? frame)
+         (pca/await (pull-wildcard db
+                                   (assoc frame
+                                          :specs []
+                                          :eid (first eids)
+                                          :wildcard? false)
+                                   frames
+                                   sync?))
+         (if-let [specs (seq (:specs frame))]
+           (let [spec       (first specs)
+                 new-frames (conj frames (assoc frame :specs (rest specs)))]
+             (pca/await (pull-attr db spec (first eids) new-frames sync?)))
+           (recur (conj frames
+                        (reset-frame frame (rest eids)
+                                     (->> frame :kvps persistent! not-empty))))))
+       (conj frames (assoc frame :state :done)))))))
 
 (defn pull-pattern
-  [db frames]
-  (case (:state (first frames))
-    :expand     (recur db (pull-expand-frame db frames))
-    :expand-rev (recur db (pull-expand-reverse-frame db frames))
-    :pattern    (recur db (pull-pattern-frame db frames))
-    :recursion  (recur db (pull-recursion-frame db frames))
-    :done       (let [[f & remaining] frames
-                      result (cond-> (persistent! (:results f))
-                               (not (:multi? f)) first)]
-                  (if (seq remaining)
-                    (->> (cond-> (first remaining)
-                           result (update :kvps assoc! (:attr f) result))
-                         (conj (rest remaining))
-                         (recur db))
-                    result))))
+  ([db frames] (pull-pattern db frames true))
+  ([db frames* sync?]
+   (async+sync sync?
+   (loop [frames frames*]
+     (case (:state (first frames))
+       :expand     (recur (pull-expand-frame db frames))
+       :expand-rev (recur (pull-expand-reverse-frame db frames))
+       :pattern    (let [fs (pca/await (pull-pattern-frame db frames sync?))]
+                     (recur fs))
+       :recursion  (recur (pull-recursion-frame db frames))
+       :done       (let [[f & remaining] frames
+                         result (cond-> (persistent! (:results f))
+                                  (not (:multi? f)) first)]
+                     (if (seq remaining)
+                       (recur (conj (rest remaining)
+                                    (cond-> (first remaining)
+                                      result (update :kvps assoc! (:attr f) result))))
+                       result)))))))
 
 (defn pull-spec
-  [db pattern eids multi?]
-  (let [eids (into [] (map #(dbu/entid-strict db %)) eids)]
-    (pull-pattern db (list (initial-frame pattern eids multi?)))))
+  ([db pattern eids multi?] (pull-spec db pattern eids multi? true))
+  ([db pattern eids multi? sync?]
+   (async+sync sync?
+   (let [eids #?(:clj (into [] (map #(dbu/entid-strict db %)) eids)
+                 :cljs
+                 (if sync?
+                   (into [] (map #(dbu/entid-strict db %)) eids)
+                   ;; async: probe non-numeric eid forms (lookup refs, idents)
+                   ;; up front, then resolve synchronously against the cache
+                   (let [cands (vec (distinct (remove number? eids)))
+                         probes (mapv (fn [f]
+                                        (cond
+                                          (and (vector? f) (= 2 (count f))
+                                               (keyword? (first f)) (some? (second f))
+                                               (dbu/is-attr? db (first f) :db/unique))
+                                          (ex/avet-first-eid-step db (vec f))
+                                          (keyword? f)
+                                          (ex/avet-first-eid-step db [:db/ident f])
+                                          :else (async nil)))
+                                      cands)
+                         eids-r (when (seq cands) (pca/await (pca/all probes)))
+                         cache (when eids-r
+                                 (zipmap (map (fn [f] (if (sequential? f) (vec f) f)) cands)
+                                         eids-r))]
+                     (binding [dt/*entid-cache* cache]
+                       (into [] (map #(dbu/entid-strict db %)) eids)))))]
+     (pca/await (pull-pattern db (list (initial-frame pattern eids multi?)) sync?))))))
 
 (defn pull
   ([db {:keys [selector eid]}]
