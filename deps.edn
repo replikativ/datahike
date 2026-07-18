@@ -19,7 +19,10 @@
         ;; VALIDATION PHASE: local PSS with the chunked-async seam (PSS #20,
         ;; feat/chunked-async-seq). Revert to a released :mvn/version before merge.
         org.replikativ/persistent-sorted-set        {:local/root "../persistent-sorted-set"}
-        is.simm/partial-cps                         {:mvn/version "0.1.59"}
+        ;; VALIDATION PHASE: local partial-cps with the dual-mode foundation
+        ;; (async+sync, async-expr?, all — PR simm-is/partial-cps#4).
+        ;; Revert to a released :mvn/version before merge.
+        is.simm/partial-cps                         {:local/root "../partial-cps"}
         environ/environ                             {:mvn/version "1.2.0"}
         nrepl/bencode                               {:mvn/version "1.2.0"}
         org.replikativ/logging                      {:mvn/version "0.1.3"}

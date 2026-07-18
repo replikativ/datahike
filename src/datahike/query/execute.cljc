@@ -17,6 +17,7 @@
    #?(:clj [datahike.query :as legacy])
    #?(:cljs [org.replikativ.persistent-sorted-set :as psset])
    #?(:cljs [org.replikativ.persistent-sorted-set.btset :as btset :refer [BTSet]])
+   #?(:cljs [is.simm.partial-cps.async :as pca :refer-macros [async async+sync]])
    [datahike.db :as db #?@(:cljs [:refer [AsOfDB SinceDB HistoricalDB FilteredDB]])]
    [replikativ.logging :as log])
   #?(:cljs (:require-macros [datahike.query.execute :refer [scan-filter scan-filter-temporal emit-tuple check-cancel!]]))
@@ -953,15 +954,37 @@
 ;; Path functions — each small enough for JIT C2/Graal compilation.
 ;; The macros scan-filter and emit-tuple expand inline within each path.
 
-(defn- execute-scan-only
+#?(:cljs
+   (defn- chunk-step
+     "One traversal step at CHUNK granularity, dual-mode. sync? true: s is a
+      PSS Iter (IChunkedSeq) or nil — returns [keys-array start end next-iter]
+      or nil, synchronously. sync? false: s is a PSS AsyncSeq or nil — returns
+      an async expression yielding the same shape (achunk-next: one await per
+      LEAF; the inner loop over keys stays synchronous — the measured-parity
+      consumption shape)."
+     [s sync?]
+     (if sync?
+       (when s
+         (when-let [sq (seq s)]
+           (let [ch (chunk-first sq)]
+             [(.-arr ch) (.-off ch) (.-end ch) (chunk-next sq)])))
+       (if (nil? s)
+         (async nil)
+         (btset/achunk-next s)))))
+
+(defn execute-scan-only
   "Path 1: Scan without merges (e.g. Q1). Smallest possible loop.
    `cancel` is an IDeref (typically Volatile) or nil; checked per iteration
-   via the nil-guarded `check-cancel!` macro."
+   via the nil-guarded `check-cancel!` macro.
+   cljs: ONE dual-mode body — `sync?` true consumes a chunked Iter on the
+   calling stack (returns nil); false consumes a PSS AsyncSeq and returns a
+   partial-cps async expression the caller drives (resolving synchronously
+   when every node is warm). The JVM arm is literal and ignores sync?."
   [slice ground-filter strict-filter
    probe-set probe-datom-field
    collect-set collect-datom-field collect-merge-idx
    merge-datoms n-find find-source const-vals
-   result-list max-n cancel]
+   result-list max-n cancel sync?]
   (let [^objects merge-datoms merge-datoms
         ^ints find-source find-source
         ^objects const-vals const-vals]
@@ -975,12 +998,27 @@
                (emit-tuple scan-d collect-set collect-datom-field collect-merge-idx merge-datoms
                            n-find find-source const-vals result-list)))))
        :cljs
-       (doseq [scan-d slice
-               :while (or (neg? max-n) (< (result-list-size result-list) max-n))]
-         (check-cancel! cancel)
-         (when (scan-filter scan-d ground-filter strict-filter probe-set probe-datom-field)
-           (emit-tuple scan-d collect-set collect-datom-field collect-merge-idx merge-datoms
-                       n-find find-source const-vals result-list))))))
+       ;; ONE dual body: async+sync itself supplies the (async …) wrapper for
+       ;; the sync?=false arm — do NOT nest another (async …) inside, or the
+       ;; expr resolves to an unrun inner expression.
+       (async+sync sync?
+                   (loop [s slice]
+                     (when-some [step (pca/await (chunk-step s sync?))]
+                       (let [keys (nth step 0)
+                             start (nth step 1)
+                             end (nth step 2)
+                             nxt (nth step 3)]
+                         (loop [i start]
+                           (when (and (< i end)
+                                      (or (neg? max-n) (< (result-list-size result-list) max-n)))
+                             (check-cancel! cancel)
+                             (let [scan-d (aget keys i)]
+                               (when (scan-filter scan-d ground-filter strict-filter probe-set probe-datom-field)
+                                 (emit-tuple scan-d collect-set collect-datom-field collect-merge-idx merge-datoms
+                                             n-find find-source const-vals result-list)))
+                             (recur (inc i))))
+                         (when (or (neg? max-n) (< (result-list-size result-list) max-n))
+                           (recur nxt)))))))))
 
 (defn- execute-card-many-merge
   "Path 2: Card-many recursive cross-product merge.
@@ -2048,7 +2086,7 @@
                            probe-set probe-datom-field
                            collect-set collect-datom-field collect-merge-idx
                            merge-datoms n-find find-source const-vals
-                           result-list max-n cancel)
+                           result-list max-n cancel true)
 
         :card-many-merge
         (let [merge-cursors #?(:clj (when use-cursors?
