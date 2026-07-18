@@ -127,7 +127,7 @@
   (let [;; Remove runtime parameters and creation-time parameters. Value-size
         ;; caps are creation-time defaults the connect config may lack (or hold a
         ;; different explicit value for — stored wins), so exclude them here.
-        cap-keys (keys dc/default-value-caps)
+        cap-keys (cons :value-caps (keys dc/default-value-caps))
         config (apply dissoc config :name :search-cache-size :store-cache-size cap-keys)
         stored-config (apply dissoc stored-config :initial-tx :name :search-cache-size :store-cache-size cap-keys)
         stored-config (merge {:writer dc/self-writer} stored-config)
@@ -229,7 +229,7 @@
   ;; only in the stored config and are ignored for normalization too.
   (apply dissoc cfg :writer :store :store-cache-size :search-cache-size
          :index-config :fuse-index-roots? :commit-graph?
-         (keys dc/default-value-caps)))
+         (cons :value-caps (keys dc/default-value-caps))))
 
 (defn -connect-impl* [config opts]
   (async+sync (:sync? opts) *default-sync-translation*

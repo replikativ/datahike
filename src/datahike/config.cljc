@@ -191,22 +191,40 @@
    :index-config (di/default-index-config *default-index*)})
 
 (def default-value-caps
-  "Datomic-parity default value-size caps, injected into a database's config at
-   creation. `:max-string-length` bounds `:db.type/string` values (chars);
-   `:max-bytes-length` bounds `:db.type/bytes` values (bytes); string slots
-   inside a `:db.type/tuple` are bounded by `:max-tuple-string-length`. A `0`
-   disables a cap; absent (existing databases) means unbounded."
+  "The Datomic-parity value-size caps that the `:value-caps :default` preset
+   expands to: `:max-string-length` bounds `:db.type/string` values (chars),
+   `:max-bytes-length` bounds `:db.type/bytes` values (bytes), and string slots
+   inside a `:db.type/tuple` are bounded by `:max-tuple-string-length`. Value-size
+   caps are OPT-IN (a `0` disables an individual cap; an unconfigured database is
+   left unbounded — see `apply-default-value-caps`). This map is also the
+   canonical set of value-size config KEYS."
   {:max-string-length 4096
    :max-bytes-length 4096
    :max-tuple-string-length 256})
 
-(defn apply-default-value-caps
-  "Fill in any value-size caps the caller did not specify with the Datomic-parity
-   defaults. A user-supplied key (including `0` = disabled) always wins. Applied
-   only at `create-database`, so existing databases whose stored config predates
-   the feature keep no caps (= unbounded)."
+(defn value-caps-configured?
+  "True iff the caller made an EXPLICIT value-size choice — any `:max-*-length`
+   key (incl. `0` = disabled) or the `:value-caps` preset selector. Used to warn
+   once at create when neither is present (the database is then left unbounded)."
   [config]
-  (merge default-value-caps config))
+  (or (contains? config :value-caps)
+      (boolean (some #(contains? config %) (keys default-value-caps)))))
+
+(defn apply-default-value-caps
+  "Resolve the value-size cap config at `create-database`. Caps are OPT-IN:
+
+     - `:value-caps :default` expands to `default-value-caps` (an explicit
+       `:max-*-length` key still wins over the preset);
+     - otherwise the config passes through UNCHANGED — an unconfigured database
+       is left unbounded (a warning at the create call site nudges the choice).
+
+   The `:value-caps` selector is create-time-only and is dropped from the
+   persisted config."
+  [config]
+  (-> (if (= :default (:value-caps config))
+        (merge default-value-caps config)          ; explicit :max-*-length wins
+        config)
+      (dissoc :value-caps)))
 
 (defn remove-nils
   "Thanks to https://stackoverflow.com/a/34221816"

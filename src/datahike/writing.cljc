@@ -581,11 +581,18 @@
 (defn -create-database* [config deprecated-config]
   (go-try-
    (let [opts {:sync? false}
-         ;; Inject the default value-size caps at create only, so they persist
-         ;; into this DB's stored config. Existing DBs (whose stored config
-         ;; predates the feature) never get them → unbounded.
-         {:keys [keep-history?] :as config} (dc/apply-default-value-caps
-                                             (dc/load-config config deprecated-config))
+         ;; Value-size caps are OPT-IN. Resolve the `:value-caps :default` preset
+         ;; and drop the selector at create only; an unconfigured database is left
+         ;; unbounded. Warn once so the choice is conscious rather than silent.
+         loaded-config (dc/load-config config deprecated-config)
+         _ (when-not (dc/value-caps-configured? loaded-config)
+             (log/warn :datahike/value-caps-unset
+                       (str "No value-size caps set — large :db.type/string / :db.type/bytes "
+                            "values can bloat the index and hit backend limits. Pass "
+                            ":value-caps :default for the 4096/4096/256 defaults (or set "
+                            ":max-string-length etc. explicitly) to bound them, or "
+                            ":max-string-length 0 to stay unbounded and silence this.")))
+         {:keys [keep-history?] :as config} (dc/apply-default-value-caps loaded-config)
          store-config (:store config)
          store (ds/add-cache-and-handlers (<?- (ks/create-store store-config opts)) config)
          stored-db (<?- (k/get store :db nil opts))

@@ -53,13 +53,17 @@
               :else :no-error)))))
 
 (defn- fresh-conn
-  "Channel yielding a fresh in-memory keep-history? connection."
-  [flex]
-  (let [cfg {:store {:backend :memory :id (random-uuid)}
-             :schema-flexibility flex :keep-history? true}]
-    (async/go
-      #?(:clj  (do (d/create-database cfg) (d/connect cfg))
-         :cljs (do (<! (d/create-database cfg)) (<! (d/connect cfg {:sync? false})))))))
+  "Channel yielding a fresh in-memory keep-history? connection. `extra` is merged
+   into the config — value-size caps are opt-in, so enforcement tests pass
+   `{:value-caps :default}`."
+  ([flex] (fresh-conn flex nil))
+  ([flex extra]
+   (let [cfg (merge {:store {:backend :memory :id (random-uuid)}
+                     :schema-flexibility flex :keep-history? true}
+                    extra)]
+     (async/go
+       #?(:clj  (do (d/create-database cfg) (d/connect cfg))
+          :cljs (do (<! (d/create-database cfg)) (<! (d/connect cfg {:sync? false}))))))))
 
 (defn- decl
   "Under :write, complete a schema entity with string type + cardinality; under
@@ -152,18 +156,25 @@
                                 :db/cardinality :db.cardinality/one}]))
     (is (= :ok (tx-err (<! (d/transact! conn [{:n 123456789}])))))))
 
-(deftest-async default-string-cap-write-only
-  ;; New :write DBs get the 4096 default; :read (no declared types) does not.
-  (let [wconn (<! (fresh-conn :write))
-        rconn (<! (fresh-conn :read))]
+(deftest-async unbounded-without-value-caps
+  ;; Caps are OPT-IN: a database created without :value-caps is unbounded.
+  (let [conn (<! (fresh-conn :write))]
+    (sa/<?- (d/transact! conn [{:db/ident :s :db/valueType :db.type/string
+                                :db/cardinality :db.cardinality/one}]))
+    (is (= :ok (tx-err (<! (d/transact! conn [{:s (rep 9000 \x)}])))) "no caps → unbounded")))
+
+(deftest-async default-preset-string-cap-write-only
+  ;; :value-caps :default applies the 4096 default under :write; :read does not.
+  (let [wconn (<! (fresh-conn :write {:value-caps :default}))
+        rconn (<! (fresh-conn :read {:value-caps :default}))]
     (sa/<?- (d/transact! wconn [{:db/ident :s :db/valueType :db.type/string
                                  :db/cardinality :db.cardinality/one}]))
     (is (= :transact/max-length (tx-err (<! (d/transact! wconn [{:s (rep 5000 \x)}])))))
     (is (= :ok (tx-err (<! (d/transact! wconn [{:s (rep 4096 \x)}])))))
-    (is (= :ok (tx-err (<! (d/transact! rconn [{:s (rep 5000 \x)}])))) ":read has no default")))
+    (is (= :ok (tx-err (<! (d/transact! rconn [{:s (rep 5000 \x)}])))) ":read default is gated off")))
 
 (deftest-async explicit-maxlength-overrides-default
-  (let [conn (<! (fresh-conn :write))]
+  (let [conn (<! (fresh-conn :write {:value-caps :default}))]
     (sa/<?- (d/transact! conn [{:db/ident :bigcap :db/valueType :db.type/string
                                 :db/cardinality :db.cardinality/one :db/maxLength 8192}
                                {:db/ident :nocap :db/valueType :db.type/string
@@ -172,7 +183,7 @@
     (is (= :ok (tx-err (<! (d/transact! conn [{:nocap (rep 9000 \x)}])))) "disabled")))
 
 (deftest-async tuple-string-slot-cap
-  (let [conn (<! (fresh-conn :write))]
+  (let [conn (<! (fresh-conn :write {:value-caps :default}))]
     (sa/<?- (d/transact! conn [{:db/ident :tup :db/valueType :db.type/tuple
                                 :db/tupleTypes [:db.type/string :db.type/long]
                                 :db/cardinality :db.cardinality/one}]))
@@ -181,7 +192,7 @@
 
 (deftest-async system-string-attr-exempt-from-default
   ;; :db/doc is a system string attribute — the default must not cap it.
-  (let [conn (<! (fresh-conn :write))]
+  (let [conn (<! (fresh-conn :write {:value-caps :default}))]
     (sa/<?- (d/transact! conn [{:db/ident :s :db/valueType :db.type/string
                                 :db/cardinality :db.cardinality/one}]))
     (is (= :ok (tx-err (<! (d/transact! conn [{:db/ident :s :db/doc (rep 9000 \x)}])))))))
@@ -199,12 +210,15 @@
                 (let [err (:error (ex-data x)) c (.getCause x)]
                   (cond err err c (recur c) :else :no-error-key))))))
 
-     (defn- with-conn* [flex f]
-       (let [cfg {:store {:backend :memory :id (random-uuid)}
-                  :schema-flexibility flex :keep-history? true}]
-         (d/create-database cfg)
-         (let [conn (d/connect cfg)]
-           (try (f conn) (finally (d/release conn) (d/delete-database cfg))))))
+     (defn- with-conn*
+       ([flex f] (with-conn* flex nil f))
+       ([flex extra f]
+        (let [cfg (merge {:store {:backend :memory :id (random-uuid)}
+                          :schema-flexibility flex :keep-history? true}
+                         extra)]
+          (d/create-database cfg)
+          (let [conn (d/connect cfg)]
+            (try (f conn) (finally (d/release conn) (d/delete-database cfg)))))))
 
      ;; a var predicate resolved by fully-qualified symbol — clj-only, since
      ;; cljs has no `requiring-resolve`.
@@ -220,12 +234,22 @@
            (is (= :transact/attr-pred (tx-error #(d/transact conn [{:code "abc"}])))))))
 
      (deftest default-bytes-cap
-       (with-conn* :write
+       (with-conn* :write {:value-caps :default}
          (fn [conn]
            (d/transact conn [{:db/ident :b :db/valueType :db.type/bytes
                               :db/cardinality :db.cardinality/one}])
            (is (= :transact/max-length (tx-error #(d/transact conn [{:b (byte-array 5000)}]))))
            (is (= :ok (tx-error #(d/transact conn [{:b (byte-array 4096)}])))))))
+
+     (deftest explicit-maxlength-on-bytes
+       ;; :db/maxLength bounds a :db.type/bytes value's BYTE length — the per-attr
+       ;; cap applies always (no config value-caps needed), like it does for strings.
+       (with-conn* :write
+         (fn [conn]
+           (d/transact conn [{:db/ident :blob :db/valueType :db.type/bytes
+                              :db/cardinality :db.cardinality/one :db/maxLength 8}])
+           (is (= :ok (tx-error #(d/transact conn [{:blob (byte-array 8)}]))))
+           (is (= :transact/max-length (tx-error #(d/transact conn [{:blob (byte-array 9)}])))))))
 
      (deftest existing-db-unbounded
        ;; A DB created without the caps (predating the feature) stays unbounded.

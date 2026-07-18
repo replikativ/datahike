@@ -19,8 +19,11 @@
 (defonce ^:private registry (atom {}))
 
 (defn register-attr-pred!
-  "Register predicate fn `f` under key `k` (a keyword or symbol) so that a
-   schema `:db.attr/preds [k]` resolves to `f`. Returns `k`."
+  "Register predicate fn `f` under key `k` so a schema `:db.attr/preds [k]`
+   resolves to `f`. Returns `k`. `:db.attr/preds` is `:db.type/symbol`, so for a
+   SCHEMA reference `k` must be a SYMBOL (e.g. `'app/valid-sku`) — that is the
+   only shape usable as a schema value. A keyword key resolves from the registry
+   too, but cannot be placed in `:db.attr/preds`; prefer symbols."
   [k f]
   (assert (ifn? f) "attribute predicate must be a function")
   (swap! registry assoc k f)

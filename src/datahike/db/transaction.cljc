@@ -729,11 +729,12 @@
    retract), gated on the O(1) `:db.attr/constrained` rschema set so
    unconstrained attributes pay nothing:
 
-   - Value-size caps for `:db.type/string` (chars) / `:db.type/bytes` (bytes):
-     an explicit `:db/maxLength` wins; otherwise, under `:write` and for a
-     user attribute, the per-database default (`:max-string-length` /
-     `:max-bytes-length` config) applies. `:db.secondary/only` values (stored
-     out-of-line) are exempt. Raises `:transact/max-length`.
+   - Value-size caps: an explicit `:db/maxLength` bounds the value's length —
+     chars for a `:db.type/string`, bytes for a `:db.type/bytes` — and wins over
+     the per-database default; otherwise, under `:write` and for a user
+     attribute, the per-database `:max-string-length` / `:max-bytes-length`
+     applies. `:db.secondary/only` values (stored out-of-line) are exempt.
+     Raises `:transact/max-length`.
    - `:db.attr/preds` value predicates. Raises `:transact/attr-pred`
      (`:transact/attr-pred-unresolved` when a named predicate can't be resolved)."
   [db a-ident v ctx]
@@ -754,7 +755,8 @@
                         :length (count v) :limit eff :unit :chars :context ctx})))
 
         (arr/bytes? v)
-        (when-let [eff (when default? (:max-bytes-length config))]
+        (when-let [eff (or (:db/maxLength attr)
+                           (when default? (:max-bytes-length config)))]
           (when (and (pos? eff) (> (arr/byte-count v) eff))
             (log/raise "Byte value for " a-ident " exceeds max length " eff " bytes (was " (arr/byte-count v) ")"
                        {:error :transact/max-length :attribute a-ident
