@@ -3853,6 +3853,23 @@
                     order-spec    (when (and order-by (instance? FindRel qfind))
                                     (parse-order-by order-by find-elements))
 
+        ;; async: rewrite Date-based as-of/since wrappers to numeric time-points
+        ;; (one awaited txInstant scan each) so temporal filtering stays on the
+        ;; pure txpred path instead of the per-tx txInstant reads that fault cold
+                    context-in #?(:clj context-in
+                                  :cljs (if sync?
+                                          context-in
+                                          (let [srcs (:sources context-in)
+                                                srcs' (loop [ks (seq (keys srcs)) m srcs]
+                                                        (if ks
+                                                          (let [k (first ks)
+                                                                v (get m k)
+                                                                v' (pca/await (execute/normalize-date-wrappers-step v))]
+                                                            (recur (next ks) (if (identical? v v') m (assoc m k v'))))
+                                                          m))]
+                                            (if (identical? srcs' srcs)
+                                              context-in
+                                              (assoc context-in :sources srcs')))))
         ;; Find the primary db for planning: $ if available, else first eligible source
                     primary-db (let [sources (:sources context-in)]
                                  (or (get sources '$)
@@ -3864,6 +3881,15 @@
                                       (some? primary-db)
                                       (dbu/db? primary-db)
                                       (planner-eligible-db? primary-db))
+        ;; async: prefetch lookup-ref / ident resolution so the (unchanged)
+        ;; substitution code below runs read-free against dt/*entid-cache*.
+        ;; The cache VALUE may live across awaits; the BINDINGS below are
+        ;; sync-scoped only.
+                    entid-cache #?(:clj nil
+                                   :cljs (when (and (false? sync?) use-planner? (not multi-source?))
+                                           (pca/await (execute/prefetch-entids-step
+                                                       primary-db (:rels context-in)
+                                                       (:consts context-in) (:where query)))))
                     [context-in lookup-ref-reverse-map]
                     (if use-planner?
           ;; For multi-source, don't pre-resolve lookup refs in :in bindings —
@@ -3871,7 +3897,11 @@
           ;; lookup-batch-search handles per-source resolution at match time.
                       (if multi-source?
                         [context-in nil]
-                        (resolve-lookup-ref-bindings primary-db context-in))
+                        #?(:clj (resolve-lookup-ref-bindings primary-db context-in)
+                           :cljs (if entid-cache
+                                   (binding [dt/*entid-cache* entid-cache]
+                                     (resolve-lookup-ref-bindings primary-db context-in))
+                                   (resolve-lookup-ref-bindings primary-db context-in))))
                       [context-in nil])]
 
                 (if (and limit (zero? limit))
@@ -3979,8 +4009,14 @@
               ;; Use the actual db (not origin) for lookup-ref resolution — temporal
               ;; DBs (history) can resolve retracted entities that origin-db can't.
               ;; For multi-source, pass sources so each clause resolves against its source db.
-                            clauses (substitute-consts-with-lookup-refs db (:where query) (:consts context-in)
-                                                                        (when multi-source? (:sources context-in)))
+                            clauses #?(:clj (substitute-consts-with-lookup-refs db (:where query) (:consts context-in)
+                                                                                (when multi-source? (:sources context-in)))
+                                       :cljs (if entid-cache
+                                               (binding [dt/*entid-cache* entid-cache]
+                                                 (substitute-consts-with-lookup-refs db (:where query) (:consts context-in)
+                                                                                     (when multi-source? (:sources context-in))))
+                                               (substitute-consts-with-lookup-refs db (:where query) (:consts context-in)
+                                                                                   (when multi-source? (:sources context-in)))))
                             rules (not-empty (:rules context-in))
                             plan (pca/await (get-or-create-plan-step
                                              plan-db clauses bound-vars rules (in-card-seed qin) sync?))]

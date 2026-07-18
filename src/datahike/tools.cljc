@@ -323,6 +323,16 @@
                b (lazy-seq
                   (merge-distinct-sorted-seqs cmp seq-a (rest seq-b))))))))
 
+(def ^:dynamic *entid-cache*
+  "Async-mode prefetch cache for entity-id resolution (dbu/entid):
+   {lookup-ref-or-ident-keyword → eid-or-nil}. Keys are the ORIGINAL eid
+   forms ([:unique-attr value] vectors, :db/ident keywords); a present key
+   with a nil value means probed-and-absent. Populated by the async query
+   spine before lookup-ref substitution runs; bound only around
+   synchronous code. nil (default) = resolve via the index, as always on
+   the JVM."
+  nil)
+
 (def ^:dynamic *db-fn-cache*
   "Async-mode prefetch cache for the db-reading query builtins (get-else /
    get-some / missing?): {[e translated-attr] → first-visible-datom or

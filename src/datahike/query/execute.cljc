@@ -1131,24 +1131,42 @@
                        (persistent! acc)))))))
 
 #?(:cljs
+   (defn datoms-step
+     "Dual dbi/datoms for ground component patterns. sync? true delegates to
+      dbi/datoms (the wrapper's -search-context applies). sync? false yields
+      an async expression realizing the SAME datoms: the pattern's slices on
+      the wrapper's origin plus the contextual post-processing — pure for
+      numeric time-points (txpred); a Date-based wrapper still falls into
+      the txInstant filter, whose cold reads fault as before. Dbs without
+      direct index fields (e.g. FilteredDB) fall back to the sync read,
+      which faults cold with decoration."
+     [db index-type cs sync?]
+     (if sync?
+       (dbi/datoms db index-type cs)
+       (let [idb (loop [d db] (if (satisfies? dbi/IHistory d) (recur (dbi/-origin d)) d))]
+         (if (nil? (get idb index-type))
+           (async (dbi/datoms db index-type cs))
+           (async
+            (let [ctx (dbi/-search-context db)
+                  from (dbu/components->pattern idb index-type cs e0 tx0)
+                  to (dbu/components->pattern idb index-type cs emax txmax)
+                  cur (pca/await (realize-slice (get idb index-type) from to index-type nil false))
+                  datoms (if (dbi/context-temporal? ctx)
+                           (let [tidx (get idb (keyword (str "temporal-" (name index-type))))
+                                 tmp (pca/await (realize-slice tidx from to index-type nil false))]
+                             (db/post-process-datoms (dbu/distinct-datoms idb index-type cur tmp) idb ctx))
+                           (db/post-process-datoms cur idb ctx))]
+              datoms)))))))
+
+#?(:cljs
    (defn- search-first-datom-step
      "Async point search for a ground [e translated-attr] pattern honoring
-      the db's temporal search context. Post-processing is pure for numeric
-      time-points (txpred); a Date-based wrapper still falls into the
-      txInstant filter, whose cold reads fault as before. Yields the first
-      visible datom or :datahike.tools/absent."
+      the db's temporal search context. Yields the first visible datom or
+      :datahike.tools/absent."
      [db e ta]
      (async
-      (let [ctx (dbi/-search-context db)
-            idb (loop [d db] (if (satisfies? dbi/IHistory d) (recur (dbi/-origin d)) d))
-            from (dbu/components->pattern idb :eavt [e ta] e0 tx0)
-            to (dbu/components->pattern idb :eavt [e ta] emax txmax)
-            cur (pca/await (realize-slice (:eavt idb) from to :eavt nil false))
-            datoms (if (dbi/context-temporal? ctx)
-                     (let [tmp (pca/await (realize-slice (:temporal-eavt idb) from to :eavt nil false))]
-                       (db/post-process-datoms (dbu/distinct-datoms idb :eavt cur tmp) idb ctx))
-                     (db/post-process-datoms cur idb ctx))]
-        (or (first datoms) :datahike.tools/absent)))))
+      (or (first (pca/await (datoms-step db :eavt [e ta] false)))
+          :datahike.tools/absent))))
 
 #?(:cljs
    (defn- prefetch-db-fn-step
@@ -1187,6 +1205,122 @@
                 results (pca/await (pca/all (mapv (fn [[ev ta]] (search-first-datom-step fdb ev ta))
                                                   pairs)))]
             (zipmap pairs results)))))))
+
+#?(:cljs
+   (defn avet-first-eid-step
+     "Async mirror of entid's read: (-> (dbi/datoms db :avet cs) first :e),
+      honoring the wrapper's search context (dbi/datoms resolves through
+      -search-context, so lookup refs on temporal dbs filter temporally)."
+     [db cs]
+     (async
+      (some-> ^Datom (first (pca/await (datoms-step db :avet cs false))) (.-e)))))
+
+#?(:cljs
+   (defn prefetch-entids-step
+     "Async-only prefetch for lookup-ref / ident resolution (dbu/entid).
+      Gathers candidate eid forms — [unique-attr value] 2-vectors anywhere
+      in the :in relations, scalar consts, and where-clauses, plus ident
+      keywords in pattern entity position — probes each via
+      avet-first-eid-step, and returns the {original-form → eid-or-nil}
+      map for dt/*entid-cache*. Best-effort: anything it misses resolves
+      through the index as before (faulting cold)."
+     [db rels consts clauses]
+     (async
+      (let [unique-ref? (fn [x]
+                          (and (vector? x) (= 2 (count x)) (keyword? (first x))
+                               (some? (second x))
+                               (dbu/is-attr? db (first x) :db/unique)))
+            tuple-get (fn [t i] (if (array? t) (aget t i) (nth t i)))
+            from-rels (for [r rels
+                            :let [idxs (vals (:attrs r))]
+                            t (:tuples r)
+                            i idxs
+                            :let [v (tuple-get t i)]
+                            :when (and (sequential? v) (unique-ref? (vec v)))]
+                        (vec v))
+            from-consts (for [v (vals consts)
+                              :when (and (sequential? v) (unique-ref? (vec v)))]
+                          (vec v))
+            ;; every [kw val] literal in the clause tree (over-approximation —
+            ;; the unique-attr guard keeps false positives rare and harmless)
+            from-clauses (for [form (tree-seq sequential? seq clauses)
+                               :when (and (vector? form) (unique-ref? form))]
+                           form)
+            ;; ident keywords in pattern entity position
+            ident-es (for [form (tree-seq sequential? seq clauses)
+                           :when (and (vector? form) (keyword? (first form))
+                                      (not (unique-ref? form)))]
+                       (first form))
+            refs (vec (distinct (concat from-rels from-consts from-clauses)))
+            idents (vec (distinct ident-es))]
+        (when (or (seq refs) (seq idents))
+          (let [ref-eids (pca/await (pca/all (mapv (fn [r] (avet-first-eid-step db r)) refs)))
+                ident-eids (pca/await (pca/all (mapv (fn [k] (avet-first-eid-step db [:db/ident k])) idents)))]
+            (merge (zipmap refs ref-eids)
+                   (zipmap idents ident-eids))))))))
+
+#?(:cljs
+   (defn resolve-date-tx-step
+     "Async mirror of resolve-date-to-tx-id*: max numeric tx whose
+      :db/txInstant <= date, scanning the origin's aevt + temporal-aevt."
+     [origin-db date]
+     (async
+      (let [txInstant-attr (if (:attribute-refs? (dbi/-config origin-db))
+                             (dbi/-ref-for origin-db :db/txInstant)
+                             :db/txInstant)
+            from (dbu/components->pattern origin-db :aevt [txInstant-attr] e0 tx0)
+            to (dbu/components->pattern origin-db :aevt [txInstant-attr] emax txmax)
+            cur (pca/await (realize-slice (:aevt origin-db) from to :aevt nil false))
+            tmp (pca/await (realize-slice (:temporal-aevt origin-db) from to :aevt nil false))
+            all-instants (dbu/distinct-datoms origin-db :aevt cur tmp)
+            matching (filter (fn [^Datom d] (<= (.getTime (.-v d)) (.getTime date)))
+                             all-instants)]
+        (if (seq matching)
+          (long (.-e ^Datom (last matching)))
+          (long tx0))))))
+
+#?(:cljs
+   (defn normalize-date-wrappers-step
+     "Async-only: rewrite every as-of/since wrapper (possibly nested) whose
+      time-point is a js/Date into the equivalent NUMERIC-time-point wrapper,
+      resolving each date with one awaited txInstant scan. Numeric wrappers
+      ride the pure txpred path end-to-end; Date wrappers would fall into
+      the txInstant-datom filter whose per-tx reads fault cold. Returns the
+      normalized db (identity when nothing to rewrite)."
+     [db]
+     (async
+      (cond
+        (instance? AsOfDB db)
+        (let [origin (pca/await (normalize-date-wrappers-step (dbi/-origin db)))
+              tp (dbi/-time-point db)
+              tp' (if (instance? js/Date tp)
+                    (pca/await (resolve-date-tx-step
+                                (loop [d origin] (if (satisfies? dbi/IHistory d) (recur (dbi/-origin d)) d))
+                                tp))
+                    tp)]
+          (if (and (identical? origin (dbi/-origin db)) (identical? tp' tp))
+            db
+            (AsOfDB. origin tp')))
+
+        (instance? SinceDB db)
+        (let [origin (pca/await (normalize-date-wrappers-step (dbi/-origin db)))
+              tp (dbi/-time-point db)
+              tp' (if (instance? js/Date tp)
+                    (pca/await (resolve-date-tx-step
+                                (loop [d origin] (if (satisfies? dbi/IHistory d) (recur (dbi/-origin d)) d))
+                                tp))
+                    tp)]
+          (if (and (identical? origin (dbi/-origin db)) (identical? tp' tp))
+            db
+            (SinceDB. origin tp')))
+
+        (instance? HistoricalDB db)
+        (let [origin (pca/await (normalize-date-wrappers-step (dbi/-origin db)))]
+          (if (identical? origin (dbi/-origin db))
+            db
+            (HistoricalDB. origin)))
+
+        :else db))))
 
 (defn execute-scan-only
   "Path 1: Scan without merges (e.g. Q1). Smallest possible loop.

@@ -7,8 +7,8 @@
    [datahike.db.interface :as dbi]
    [datahike.index :as di]
    [datahike.schema :as ds]
-   [datahike.tools :refer [merge-distinct-sorted-seqs
-                           distinct-sorted-seq?]]
+   [datahike.tools :as dt :refer [merge-distinct-sorted-seqs
+                                  distinct-sorted-seq?]]
    [replikativ.logging :as log])
   #?(:cljs (:require-macros [datahike.datom :refer [datom]]))
   #?(:clj (:import [datahike.datom Datom])))
@@ -126,12 +126,20 @@
          (nil? value)
          nil
          :else
-         (-> (dbi/datoms db :avet eid) first :e)))
+         ;; async prefetch cache (cljs only): a present key means the avet
+         ;; probe already ran — nil value = probed-and-absent
+         #?(:clj (-> (dbi/datoms db :avet eid) first :e)
+            :cljs (if-some [hit (when dt/*entid-cache* (find dt/*entid-cache* (vec eid)))]
+                    (val hit)
+                    (-> (dbi/datoms db :avet eid) first :e)))))
 
      #?@(:cljs [(array? eid) (recur db (array-seq eid) error-code)])
 
      (keyword? eid)
-     (-> (dbi/datoms db :avet [:db/ident eid]) first :e)
+     #?(:clj (-> (dbi/datoms db :avet [:db/ident eid]) first :e)
+        :cljs (if-some [hit (when dt/*entid-cache* (find dt/*entid-cache* eid))]
+                (val hit)
+                (-> (dbi/datoms db :avet [:db/ident eid]) first :e)))
 
      :else
      (or error-code

@@ -12,11 +12,13 @@
             [datahike.api :as d]
             [datahike.constants :refer [e0 tx0 emax txmax]]
             [datahike.datom :as dd]
+            [datahike.db :as ddb]
             [datahike.index.interface :as di]
             [datahike.index.persistent-set :as dip]
             [datahike.query :as q]
             [datahike.query.execute :as ex]
             [datahike.test.async :refer-macros [deftest-async]]
+            [datahike.test.async-mode :as am]
             [konserve.core :as k]
             [konserve.protocols :as kp]
             [org.replikativ.persistent-sorted-set :as psset]))
@@ -323,3 +325,58 @@
       (is (pos? (count warm)))
       (is (= warm result)
           "first-ever query, cold store, zero warmup: q-async ≡ warm sync"))))
+
+(deftest-async q-async-lookup-refs-cold
+  ;; lookup refs in :in bindings and clause positions resolve via the entid
+  ;; prefetch (dt/*entid-cache*) instead of synchronous avet probes
+  (let [db (-> (ddb/empty-db {:lr-email {:db/unique :db.unique/identity}
+                              :lr-friend {:db/valueType :db.type/ref}})
+               (d/db-with [{:db/id 1 :lr-email "a@x" :lr-score 1}
+                           {:db/id 2 :lr-email "b@x" :lr-score 2 :lr-friend 1}]))
+        handle (am/flush-db! db)
+        q-in '[:find ?s . :in $ ?e :where [?e :lr-score ?s]]
+        q-clause '[:find ?s . :where [[:lr-email "b@x"] :lr-score ?s]]
+        q-coll '[:find ?e ?s :in $ [?e ...] :where [?e :lr-score ?s]]
+        sync-in (binding [q/*query-result-cache?* false] (d/q q-in db [:lr-email "a@x"]))
+        sync-clause (binding [q/*query-result-cache?* false] (d/q q-clause db))
+        sync-coll (binding [q/*query-result-cache?* false]
+                    (d/q q-coll db [[:lr-email "a@x"] [:lr-email "b@x"]]))]
+    (is (= 1 sync-in))
+    (is (= 2 sync-clause))
+    (doseq [[label query args expected]
+            [["scalar :in lookup ref" q-in [[:lr-email "a@x"]] sync-in]
+             ["clause-position lookup ref" q-clause [] sync-clause]
+             ["collection :in lookup refs" q-coll [[[:lr-email "a@x"] [:lr-email "b@x"]]] sync-coll]]]
+      (let [cold (am/cold-db db handle)
+            out (<! (apply am/run-query-in-mode :async-cold query cold args))]
+        (is (nil? (:fault out)) (str label ": cold faulted: " (some-> (:fault out) ex-message)))
+        (is (nil? (:error out)) (str label ": cold errored: " (some-> (:error out) ex-message)))
+        (is (= expected (:result out)) (str label ": cold ≡ sync"))))))
+
+(deftest-async q-async-date-as-of-cold
+  ;; Date-based as-of/since wrappers are normalized to numeric time-points by
+  ;; one awaited txInstant scan, then ride the pure txpred path cold.
+  ;; (A real connection — store-less db-with does not stamp :db/txInstant.)
+  (let [cfg {:store {:backend :memory :id (random-uuid)}
+             :schema-flexibility :read :keep-history? true}
+        _ (<! (d/create-database cfg))
+        conn (<! (d/connect cfg {:sync? false}))
+        _ (<! (d/transact! conn [{:db/id 1 :da-name "one"}]))
+        _ (<! (d/transact! conn [{:db/id 2 :da-name "two"}]))
+        db @conn
+        handle (am/flush-db! db)
+        instants (sort-by #(.getTime %) (d/q '[:find [?t ...] :where [?tx :db/txInstant ?t]] db))
+        cuts [(first instants)
+              (js/Date. (+ (.getTime (last instants)) 10000))]
+        query '[:find ?n :where [?e :da-name ?n]]]
+    (is (seq instants))
+    (doseq [cut cuts]
+      (let [warm-asof (d/as-of db cut)
+            sync-r (binding [q/*query-result-cache?* false] (d/q query warm-asof))
+            cold-asof (d/as-of (am/cold-db db handle) cut)
+            warm-out (<! (am/run-query-in-mode :async-warm query warm-asof))
+            cold-out (<! (am/run-query-in-mode :async-cold query cold-asof))]
+        (is (= sync-r (:result warm-out)) (str "warm async ≡ sync at " cut))
+        (is (nil? (:fault cold-out)) (str "date as-of cold faulted at " cut ": "
+                                          (some-> (:fault cold-out) ex-message)))
+        (is (= sync-r (:result cold-out)) (str "date as-of cold ≡ sync at " cut))))))
