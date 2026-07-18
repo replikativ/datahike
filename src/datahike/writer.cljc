@@ -3,6 +3,7 @@
             [replikativ.logging :as log]
             [datahike.core]
             [datahike.writing :as w]
+            [datahike.tx-preds :as txp]
             [datahike.gc :as gc]
             [datahike.tools :as dt :refer [throwable-promise get-time-ms]]
             [clojure.core.async :refer [chan close! promise-chan put! go go-loop <! >! poll! buffer timeout]]
@@ -167,16 +168,28 @@
                         (recur (<?- commit-queue)
                                (get-in @connection [:meta :datahike/commit-id])))))))))]))
 
+(defn- with-tx-pred
+  "Wrap a report-producing write-fn so a store-level tx-pred (if registered)
+   runs on the fully-resolved report before it is enqueued for commit. The
+   tx-pred throws an Exception (NOT an Error/AssertionError) to abort — the
+   transaction loop's Exception path then rejects the tx, delivers the error to
+   the caller, and never enqueues a commit (nothing persists, chain unchanged).
+   Ungoverned stores pay a single map lookup. EXPERIMENTAL/internal seam."
+  [write-fn]
+  (fn [old & args]
+    (txp/check-report (apply write-fn old args))))
+
 ;; public API to internal mapping
-(def default-write-fn-map {'transact!     w/transact!
-                           'load-entities w/load-entities
-                           ;; async operations that run in background
+(def default-write-fn-map {'transact!     (with-tx-pred w/transact!)
+                           'load-entities (with-tx-pred w/load-entities)
+                           ;; async operations that run in background — NOT report
+                           ;; producers, must not be wrapped (they return channels)
                            'gc-storage!   gc/gc-storage!
                            ;; secondary index backfill (async, runs in background)
                            #?@(:clj ['build-secondary-index! w/build-secondary-index!
                                      'install-secondary-index! w/install-secondary-index!])
                            ;; merge with multi-parent commit tracking
-                           'merge! w/merge-writer!})
+                           'merge! (with-tx-pred w/merge-writer!)})
 
 (defmulti create-writer
   (fn [writer-config _]
