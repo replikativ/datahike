@@ -6,7 +6,7 @@
    [datahike.db :as db #?@(:cljs [:refer [FilteredDB]])]
    [datahike.db.interface :as dbi]
    [datahike.db.transaction :as dbt]
-            #?(:cljs [is.simm.partial-cps.async :as pca :refer-macros [async]])
+   #?(:cljs [is.simm.partial-cps.async :as pca :refer-macros [async]])
    [datahike.db.utils :as dbu]
    [datahike.impl.entity :as de]
    [datahike.pull-api :as dp]

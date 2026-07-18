@@ -144,8 +144,12 @@
    partial-cps async expression — invoke it with (expr resolve reject), or
    await it inside an async block. Warm stores resolve on the calling stack
    (the trampoline's sync-completion property); cold async-only stores
-   stream the fused direct paths; other shapes surface the decorated
-   :storage/sync-read-unavailable fault until the relation path converts."
+   stream EVERY read — planning included, across all find specs, rules,
+   wrapper stacks (temporal, filtered, nested) and pull. Remaining sync
+   islands (query-stats, collection-only sources, db-reading filter
+   predicates, tx functions) surface the decorated
+   :storage/sync-read-unavailable fault cleanly. Equivalent to the public
+   arg-map form (q {:query .. :args .. :sync? false})."
   [query & inputs]
   (raw-q-async (normalize-q-input query inputs)))
 
@@ -2335,27 +2339,27 @@
   ([find-elements context resultset] (pull find-elements context resultset true))
   ([find-elements context resultset sync?]
    (async+sync sync?
-   (let [resolved (mapv (fn [find]
-                          (when (instance? Pull find)
-                            [(-context-resolve (:source find) context)
-                             (dpp/parse-pull
-                              (-context-resolve (:pattern find) context))]))
-                        find-elements)]
-     (loop [ts (seq resultset) acc []]
-       (if ts
-         (let [tuple (first ts)
-               row (loop [i 0 racc []]
-                     (if (< i (count resolved))
-                       (let [env (nth resolved i)
-                             el (nth tuple i)
-                             v (if env
-                                 (let [[src spec] env]
-                                   (pca/await (dpa/pull-spec src spec [el] false sync?)))
-                                 el)]
-                         (recur (inc i) (conj racc v)))
-                       racc))]
-           (recur (next ts) (conj acc row)))
-         acc))))))
+               (let [resolved (mapv (fn [find]
+                                      (when (instance? Pull find)
+                                        [(-context-resolve (:source find) context)
+                                         (dpp/parse-pull
+                                          (-context-resolve (:pattern find) context))]))
+                                    find-elements)]
+                 (loop [ts (seq resultset) acc []]
+                   (if ts
+                     (let [tuple (first ts)
+                           row (loop [i 0 racc []]
+                                 (if (< i (count resolved))
+                                   (let [env (nth resolved i)
+                                         el (nth tuple i)
+                                         v (if env
+                                             (let [[src spec] env]
+                                               (pca/await (dpa/pull-spec src spec [el] false sync?)))
+                                             el)]
+                                     (recur (inc i) (conj racc v)))
+                                   racc))]
+                       (recur (next ts) (conj acc row)))
+                     acc))))))
 
 (def ^:private query-cache (volatile! (datahike.lru/lru lru-cache-size)))
 
@@ -3756,27 +3760,27 @@
   ([deduped context-in context-out query qfind find-elements
     result-arity order-spec offset limit stats? qreturnmaps sync?]
    (async+sync sync?
-   (let [pre (cond->> deduped
-               (:with query)                                 (mapv #(subvec % 0 result-arity))
-               (some #(instance? Aggregate %) find-elements) (aggregate find-elements context-in))
-         pulled (if (some #(instance? Pull %) find-elements)
-                  (pca/await (pull find-elements context-in pre sync?))
-                  pre)]
-  (cond->> pulled
-    true                                          (-post-process qfind)
-    qreturnmaps                                   (convert-to-return-maps qreturnmaps)
-    order-spec                                    (#(apply-order-by % order-spec offset limit))
-    (and (not order-spec) (or offset (and limit (pos? limit))))
-    (into #{}
-          (comp (if offset (drop offset) identity)
-                (if (and limit (pos? limit)) (take limit) identity)))
-    stats?                                        (#(-> context-out
-                                                        (dissoc :rels :sources :settings :cancel :join-source)
-                                                        (update :rules
-                                                                (fn [rs]
+               (let [pre (cond->> deduped
+                           (:with query)                                 (mapv #(subvec % 0 result-arity))
+                           (some #(instance? Aggregate %) find-elements) (aggregate find-elements context-in))
+                     pulled (if (some #(instance? Pull %) find-elements)
+                              (pca/await (pull find-elements context-in pre sync?))
+                              pre)]
+                 (cond->> pulled
+                   true                                          (-post-process qfind)
+                   qreturnmaps                                   (convert-to-return-maps qreturnmaps)
+                   order-spec                                    (#(apply-order-by % order-spec offset limit))
+                   (and (not order-spec) (or offset (and limit (pos? limit))))
+                   (into #{}
+                         (comp (if offset (drop offset) identity)
+                               (if (and limit (pos? limit)) (take limit) identity)))
+                   stats?                                        (#(-> context-out
+                                                                       (dissoc :rels :sources :settings :cancel :join-source)
+                                                                       (update :rules
+                                                                               (fn [rs]
                                                                   ;; Subtract built-ins; stats only show user-supplied rules.
-                                                                  (apply dissoc rs (keys built-in-rules))))
-                                                        (assoc :ret % :query query))))))))
+                                                                                 (apply dissoc rs (keys built-in-rules))))
+                                                                       (assoc :ret % :query query))))))))
 
 (defn- with-fn-counts
   "Surface the engine-collected {fn-sym → invocations} map (accumulated in the
@@ -3796,8 +3800,8 @@
   ;; ONE dual body — only the direct-rel probe is awaited; the execute-plan
   ;; fallback stays synchronous until B2 (its cold reads fault, by design).
   (async+sync sync?
-  (let [exec-direct-rel #?(:clj (requiring-resolve 'datahike.query.execute/execute-plan-direct-rel)
-                           :cljs execute/execute-plan-direct-rel)
+              (let [exec-direct-rel #?(:clj (requiring-resolve 'datahike.query.execute/execute-plan-direct-rel)
+                                       :cljs execute/execute-plan-direct-rel)
         ;; Only take the direct-rel fast path when there are NO input relations.
         ;; That path executes the plan from scratch and `collapse-rels`-joins the
         ;; result with the :in rels AFTERWARD, which defeats sideways-information-
@@ -3808,54 +3812,54 @@
         ;; (jobtech batched lookups: 43ms -> 0.26ms at small batch sizes). This
         ;; mirrors the `(empty? (:rels context-in))` gate already in
         ;; execute-planned-direct.
-        fused-rel (when (and (empty? (:rels context-in))
+                    fused-rel (when (and (empty? (:rels context-in))
                              ;; fused direct-rel reads raw indexes — a FilteredDB
                              ;; must go through execute-plan's contextual reads
-                             (not (instance? FilteredDB db)))
-                    (try (pca/await (exec-direct-rel plan db (:cancel context-in) sync?))
-                         (catch #?(:clj Exception :cljs :default) e
+                                         (not (instance? FilteredDB db)))
+                                (try (pca/await (exec-direct-rel plan db (:cancel context-in) sync?))
+                                     (catch #?(:clj Exception :cljs :default) e
                            ;; storage faults / cancellation must escape — a
                            ;; silent fallback would re-execute (and mask the
                            ;; fault from the async machinery)
-                           (when (dt/rethrowable? e) (throw e))
-                           (log/debug "fused-scan-rel not applicable:" #?(:clj (.getMessage ^Exception e) :cljs (str e)))
-                           nil)))
-        context-out (if fused-rel
-                      (update context-in :rels rel/collapse-rels fused-rel (join-env context-in))
-                      (pca/await
-                       (#?(:clj (requiring-resolve 'datahike.query.execute/execute-plan)
-                           :cljs execute/execute-plan) plan context-in db sync?)))
-        resultset (collect context-out all-vars)
-        deduped (if (and (not order-spec)
-                         (:unique-results? context-out)
-                         (not offset)
-                         (or (nil? limit) (neg? limit)))
-                  (set resultset)
-                  (into #{} resultset))
-        deduped (if lookup-ref-reverse-map
-                  (let [var-vec (vec all-vars)
-                        idx-maps (keep-indexed
-                                  (fn [i v]
-                                    (when-let [rm (get lookup-ref-reverse-map v)]
-                                      [i rm]))
-                                  var-vec)]
-                    (if (seq idx-maps)
-                      (into #{}
-                            (map (fn [tuple]
-                                   (reduce (fn [t [idx rm]]
-                                             (let [eid (nth t idx)]
-                                               (if-let [orig (get rm eid)]
-                                                 (assoc t idx orig)
-                                                 t)))
-                                           tuple
-                                           idx-maps)))
-                            deduped)
-                      deduped))
-                  deduped)]
-    (with-fn-counts context-out
-      (pca/await
-       (post-process-result deduped context-in context-out query qfind find-elements
-                            result-arity order-spec offset limit stats? qreturnmaps sync?))))))
+                                       (when (dt/rethrowable? e) (throw e))
+                                       (log/debug "fused-scan-rel not applicable:" #?(:clj (.getMessage ^Exception e) :cljs (str e)))
+                                       nil)))
+                    context-out (if fused-rel
+                                  (update context-in :rels rel/collapse-rels fused-rel (join-env context-in))
+                                  (pca/await
+                                   (#?(:clj (requiring-resolve 'datahike.query.execute/execute-plan)
+                                       :cljs execute/execute-plan) plan context-in db sync?)))
+                    resultset (collect context-out all-vars)
+                    deduped (if (and (not order-spec)
+                                     (:unique-results? context-out)
+                                     (not offset)
+                                     (or (nil? limit) (neg? limit)))
+                              (set resultset)
+                              (into #{} resultset))
+                    deduped (if lookup-ref-reverse-map
+                              (let [var-vec (vec all-vars)
+                                    idx-maps (keep-indexed
+                                              (fn [i v]
+                                                (when-let [rm (get lookup-ref-reverse-map v)]
+                                                  [i rm]))
+                                              var-vec)]
+                                (if (seq idx-maps)
+                                  (into #{}
+                                        (map (fn [tuple]
+                                               (reduce (fn [t [idx rm]]
+                                                         (let [eid (nth t idx)]
+                                                           (if-let [orig (get rm eid)]
+                                                             (assoc t idx orig)
+                                                             t)))
+                                                       tuple
+                                                       idx-maps)))
+                                        deduped)
+                                  deduped))
+                              deduped)]
+                (with-fn-counts context-out
+                  (pca/await
+                   (post-process-result deduped context-in context-out query qfind find-elements
+                                        result-arity order-spec offset limit stats? qreturnmaps sync?))))))
 
 (defn- execute-legacy
   "Legacy engine path: -q → collect → dedup → aggregate/pull."

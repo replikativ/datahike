@@ -58,11 +58,11 @@
   ([db datom] (validate-datom db datom true))
   ([db ^Datom datom sync?]
    (async+sync sync?
-   (when (and (datom-added datom)
-              (dbu/is-attr? db (.-a datom) :db/unique))
-     (when-let [found (not-empty (pca/await (datoms-read-step db :avet [(.-a datom) (.-v datom)] sync?)))]
-       (log/raise "Cannot add " datom " because of unique constraint: " found
-                  {:error :transact/unique :attribute (.-a datom) :datom datom}))))))
+               (when (and (datom-added datom)
+                          (dbu/is-attr? db (.-a datom) :db/unique))
+                 (when-let [found (not-empty (pca/await (datoms-read-step db :avet [(.-a datom) (.-v datom)] sync?)))]
+                   (log/raise "Cannot add " datom " because of unique constraint: " found
+                              {:error :transact/unique :attribute (.-a datom) :datom datom}))))))
 
 (defn- validate-val [v [_ _ a _ _ :as at] {:keys [config schema ref-ident-map] :as db}]
   (when (nil? v)
@@ -425,50 +425,50 @@
   ;; ONE dual body — the cond-> chains became explicit let-threading in the
   ;; EXACT original order (sync-arm parity is a textual diff); each index
   ;; write awaits the dual tree walk in async mode.
-  (async+sync sync?
-  (do
-  (pca/await (validate-datom db datom sync?))
-  (let [{a-ident :ident} (dbu/attr-info db (.-a datom) :error-on-missing)
-        indexing? (dbu/indexing? db a-ident)
-        schema? (or (ds/schema-attr? a-ident) (ds/entity-spec-attr? a-ident)
-                    (ds/secondary-index-attr? a-ident))
-        keep-history? (and (dbi/-keep-history? db) (not (dbu/no-history? db a-ident)))
-        op-count (:op-count db)
-        has-secondary? (seq (get-in db [:rschema :db.secondary/index a-ident]))
-        secondary-only? (dbu/secondary-only? db a-ident)
+   (async+sync sync?
+               (do
+                 (pca/await (validate-datom db datom sync?))
+                 (let [{a-ident :ident} (dbu/attr-info db (.-a datom) :error-on-missing)
+                       indexing? (dbu/indexing? db a-ident)
+                       schema? (or (ds/schema-attr? a-ident) (ds/entity-spec-attr? a-ident)
+                                   (ds/secondary-index-attr? a-ident))
+                       keep-history? (and (dbi/-keep-history? db) (not (dbu/no-history? db a-ident)))
+                       op-count (:op-count db)
+                       has-secondary? (seq (get-in db [:rschema :db.secondary/index a-ident]))
+                       secondary-only? (dbu/secondary-only? db a-ident)
         ;; primary indexes hold the content hash for :db.secondary/only attrs;
         ;; the full value goes only to the secondary index (`datom` below).
-        prim ^Datom (project-primary secondary-only? datom)
-        opts {:sync? sync?}]
-    (when (and secondary-only? (datom-added datom) (not has-secondary?))
-      (log/raise "Attribute " a-ident " is :db.secondary/only but no secondary index covers it — its value would be lost"
-                 {:error :transact/secondary-only-uncovered :attribute a-ident :datom datom}))
-    (if (datom-added datom)
-      (let [db (assoc db :eavt (pca/await (di/-insert (:eavt db) prim :eavt op-count opts)))
-            db (assoc db :aevt (pca/await (di/-insert (:aevt db) prim :aevt op-count opts)))
-            db (if indexing? (assoc db :avet (pca/await (di/-insert (:avet db) prim :avet op-count opts))) db)
-            db (if has-secondary? (update-secondary-indices db a-ident datom true) db)
-            db (advance-max-eid db (.-e datom))
-            db (update db :hash + (hash prim))
-            db (if schema? (-> db (update-schema datom) update-rschema) db)]
-        (update db :op-count inc))
+                       prim ^Datom (project-primary secondary-only? datom)
+                       opts {:sync? sync?}]
+                   (when (and secondary-only? (datom-added datom) (not has-secondary?))
+                     (log/raise "Attribute " a-ident " is :db.secondary/only but no secondary index covers it — its value would be lost"
+                                {:error :transact/secondary-only-uncovered :attribute a-ident :datom datom}))
+                   (if (datom-added datom)
+                     (let [db (assoc db :eavt (pca/await (di/-insert (:eavt db) prim :eavt op-count opts)))
+                           db (assoc db :aevt (pca/await (di/-insert (:aevt db) prim :aevt op-count opts)))
+                           db (if indexing? (assoc db :avet (pca/await (di/-insert (:avet db) prim :avet op-count opts))) db)
+                           db (if has-secondary? (update-secondary-indices db a-ident datom true) db)
+                           db (advance-max-eid db (.-e datom))
+                           db (update db :hash + (hash prim))
+                           db (if schema? (-> db (update-schema datom) update-rschema) db)]
+                       (update db :op-count inc))
 
-      (if-some [removing ^Datom (first (pca/await (search-step db [(.-e prim) (.-a prim) (.-v prim)] sync?)))]
-        (let [db (assoc db :eavt (pca/await (di/-remove (:eavt db) removing :eavt op-count opts)))
-              db (assoc db :aevt (pca/await (di/-remove (:aevt db) removing :aevt op-count opts)))
-              db (if indexing? (assoc db :avet (pca/await (di/-remove (:avet db) removing :avet op-count opts))) db)
-              db (if has-secondary? (update-secondary-indices db a-ident datom false) db)
-              db (update db :hash - (hash removing))
-              db (if schema? (-> db (remove-schema datom) update-rschema) db)
-              db (if keep-history? (assoc db :temporal-eavt (pca/await (di/-temporal-insert (:temporal-eavt db) removing :eavt op-count opts))) db)
-              db (if keep-history? (assoc db :temporal-eavt (pca/await (di/-temporal-insert (:temporal-eavt db) prim :eavt (inc op-count) opts))) db)
-              db (if keep-history? (assoc db :temporal-aevt (pca/await (di/-temporal-insert (:temporal-aevt db) removing :aevt op-count opts))) db)
-              db (if keep-history? (assoc db :temporal-aevt (pca/await (di/-temporal-insert (:temporal-aevt db) prim :aevt (inc op-count) opts))) db)
-              db (if keep-history? (update db :hash + (hash prim)) db)
-              db (if (and keep-history? indexing?) (assoc db :temporal-avet (pca/await (di/-temporal-insert (:temporal-avet db) removing :avet op-count opts))) db)
-              db (if (and keep-history? indexing?) (assoc db :temporal-avet (pca/await (di/-temporal-insert (:temporal-avet db) prim :avet (inc op-count) opts))) db)]
-          (update db :op-count + (if (or keep-history? indexing?) 2 1)))
-        db)))))))
+                     (if-some [removing ^Datom (first (pca/await (search-step db [(.-e prim) (.-a prim) (.-v prim)] sync?)))]
+                       (let [db (assoc db :eavt (pca/await (di/-remove (:eavt db) removing :eavt op-count opts)))
+                             db (assoc db :aevt (pca/await (di/-remove (:aevt db) removing :aevt op-count opts)))
+                             db (if indexing? (assoc db :avet (pca/await (di/-remove (:avet db) removing :avet op-count opts))) db)
+                             db (if has-secondary? (update-secondary-indices db a-ident datom false) db)
+                             db (update db :hash - (hash removing))
+                             db (if schema? (-> db (remove-schema datom) update-rschema) db)
+                             db (if keep-history? (assoc db :temporal-eavt (pca/await (di/-temporal-insert (:temporal-eavt db) removing :eavt op-count opts))) db)
+                             db (if keep-history? (assoc db :temporal-eavt (pca/await (di/-temporal-insert (:temporal-eavt db) prim :eavt (inc op-count) opts))) db)
+                             db (if keep-history? (assoc db :temporal-aevt (pca/await (di/-temporal-insert (:temporal-aevt db) removing :aevt op-count opts))) db)
+                             db (if keep-history? (assoc db :temporal-aevt (pca/await (di/-temporal-insert (:temporal-aevt db) prim :aevt (inc op-count) opts))) db)
+                             db (if keep-history? (update db :hash + (hash prim)) db)
+                             db (if (and keep-history? indexing?) (assoc db :temporal-avet (pca/await (di/-temporal-insert (:temporal-avet db) removing :avet op-count opts))) db)
+                             db (if (and keep-history? indexing?) (assoc db :temporal-avet (pca/await (di/-temporal-insert (:temporal-avet db) prim :avet (inc op-count) opts))) db)]
+                         (update db :op-count + (if (or keep-history? indexing?) 2 1)))
+                       db)))))))
 
 (defn- with-temporal-datom [db ^Datom datom]
   (let [{a-ident :ident} (dbu/attr-info db (.-a datom) :error-on-missing)
@@ -499,11 +499,11 @@
   ([queue tuple idx db e v] (queue-tuple queue tuple idx db e v true))
   ([queue tuple idx db e v sync?]
    (async+sync sync?
-   (let [tuple-value  (or (get queue tuple)
-                          (:v (first (pca/await (datoms-read-step db :eavt [e tuple] sync?))))
-                          (vec (repeat (-> db (dbi/-schema) (get tuple) :db/tupleAttrs count) nil)))
-         tuple-value' (assoc tuple-value idx v)]
-     (assoc queue tuple tuple-value')))))
+               (let [tuple-value  (or (get queue tuple)
+                                      (:v (first (pca/await (datoms-read-step db :eavt [e tuple] sync?))))
+                                      (vec (repeat (-> db (dbi/-schema) (get tuple) :db/tupleAttrs count) nil)))
+                     tuple-value' (assoc tuple-value idx v)]
+                 (assoc queue tuple tuple-value')))))
 
 (defn- queue-tuples
   "Assuming the attribute we are concerned with is :a and its associated value is 'a',
@@ -512,107 +512,107 @@
   ([queue tuples db e v sync?]
    ;; explicit loop — the per-tuple read awaits in async mode
    (async+sync sync?
-   (loop [q queue kvs (seq tuples)]
-     (if kvs
-       (let [[tuple idx] (first kvs)]
-         (recur (pca/await (queue-tuple q tuple idx db e v sync?)) (next kvs)))
-       q)))))
+               (loop [q queue kvs (seq tuples)]
+                 (if kvs
+                   (let [[tuple idx] (first kvs)]
+                     (recur (pca/await (queue-tuple q tuple idx db e v sync?)) (next kvs)))
+                   q)))))
 
 (defn validate-datom-upsert
   ([db datom] (validate-datom-upsert db datom true))
   ([db ^Datom datom sync?]
    (async+sync sync?
-   (when (dbu/is-attr? db (.-a datom) :db/unique)
-     (when-let [old (first (pca/await (datoms-read-step db :avet [(.-a datom) (.-v datom)] sync?)))]
-       (when-not (= (.-e datom) (.-e ^Datom old))
-         (log/raise "Cannot add " datom " because of unique constraint: " old
-                    {:error     :transact/unique
-                     :attribute (.-a datom)
-                     :datom     datom})))))))
+               (when (dbu/is-attr? db (.-a datom) :db/unique)
+                 (when-let [old (first (pca/await (datoms-read-step db :avet [(.-a datom) (.-v datom)] sync?)))]
+                   (when-not (= (.-e datom) (.-e ^Datom old))
+                     (log/raise "Cannot add " datom " because of unique constraint: " old
+                                {:error     :transact/unique
+                                 :attribute (.-a datom)
+                                 :datom     datom})))))))
 
 (defn- with-datom-upsert
   ([db datom] (with-datom-upsert db datom true))
   ([db ^Datom datom sync?]
-  (async+sync sync?
-  (do
-  (pca/await (validate-datom-upsert db datom sync?))
-  (let [indexing?     (dbu/indexing? db (.-a datom))
-        {a-ident :ident} (dbu/attr-info db (.-a datom) :error-on-missing)
-        schema?       (or (ds/schema-attr? a-ident)
-                          (ds/secondary-index-attr? a-ident))
-        keep-history? (and (dbi/-keep-history? db) (not (dbu/no-history? db a-ident))
-                           (not= :db/txInstant a-ident))
-        op-count      (:op-count db)
-        old-datom (first #?(:clj (di/-slice (:eavt db)
-                                            (dd/datom (.-e datom) (.-a datom) nil (.-tx datom))
-                                            (dd/datom (.-e datom) (.-a datom) nil (.-tx datom))
-                                            :eavt)
+   (async+sync sync?
+               (do
+                 (pca/await (validate-datom-upsert db datom sync?))
+                 (let [indexing?     (dbu/indexing? db (.-a datom))
+                       {a-ident :ident} (dbu/attr-info db (.-a datom) :error-on-missing)
+                       schema?       (or (ds/schema-attr? a-ident)
+                                         (ds/secondary-index-attr? a-ident))
+                       keep-history? (and (dbi/-keep-history? db) (not (dbu/no-history? db a-ident))
+                                          (not= :db/txInstant a-ident))
+                       op-count      (:op-count db)
+                       old-datom (first #?(:clj (di/-slice (:eavt db)
+                                                           (dd/datom (.-e datom) (.-a datom) nil (.-tx datom))
+                                                           (dd/datom (.-e datom) (.-a datom) nil (.-tx datom))
+                                                           :eavt)
                             ;; async: REALIZE the point slice — an awaited raw
                             ;; -slice yields an AsyncSeq, which must never be
                             ;; consumed with synchronous seq ops
-                            :cljs (if sync?
-                                    (di/-slice (:eavt db)
-                                               (dd/datom (.-e datom) (.-a datom) nil (.-tx datom))
-                                               (dd/datom (.-e datom) (.-a datom) nil (.-tx datom))
-                                               :eavt)
-                                    (pca/await
-                                     (dbs/arealize-slice (:eavt db)
-                                                         (dd/datom (.-e datom) (.-a datom) nil (.-tx datom))
-                                                         (dd/datom (.-e datom) (.-a datom) nil (.-tx datom))
-                                                         :eavt nil)))))
-        has-secondary? (seq (get-in db [:rschema :db.secondary/index a-ident]))
-        secondary-only? (dbu/secondary-only? db a-ident)
+                                           :cljs (if sync?
+                                                   (di/-slice (:eavt db)
+                                                              (dd/datom (.-e datom) (.-a datom) nil (.-tx datom))
+                                                              (dd/datom (.-e datom) (.-a datom) nil (.-tx datom))
+                                                              :eavt)
+                                                   (pca/await
+                                                    (dbs/arealize-slice (:eavt db)
+                                                                        (dd/datom (.-e datom) (.-a datom) nil (.-tx datom))
+                                                                        (dd/datom (.-e datom) (.-a datom) nil (.-tx datom))
+                                                                        :eavt nil)))))
+                       has-secondary? (seq (get-in db [:rschema :db.secondary/index a-ident]))
+                       secondary-only? (dbu/secondary-only? db a-ident)
         ;; primary indexes hold the content hash for :db.secondary/only attrs;
         ;; the full value goes only to the secondary index (`datom` below).
-        prim ^Datom (project-primary secondary-only? datom)
-        opts {:sync? sync?}]
-    (when (and secondary-only? (not has-secondary?))
-      (log/raise "Attribute " a-ident " is :db.secondary/only but no secondary index covers it — its value would be lost"
-                 {:error :transact/secondary-only-uncovered :attribute a-ident :datom datom}))
+                       prim ^Datom (project-primary secondary-only? datom)
+                       opts {:sync? sync?}]
+                   (when (and secondary-only? (not has-secondary?))
+                     (log/raise "Attribute " a-ident " is :db.secondary/only but no secondary index covers it — its value would be lost"
+                                {:error :transact/secondary-only-uncovered :attribute a-ident :datom datom}))
     ;; cond-> became let-threading in the EXACT original order (see with-datom)
-    (let [db (if schema?
+                   (let [db (if schema?
                ;; Optimistic removal of the schema entry (because we don't know whether it is already present or not)
-               (try
-                 (-> db (remove-schema datom) update-rschema)
-                 (catch ExceptionInfo _e
-                   db))
-               db)
-          db (if keep-history? (assoc db :temporal-eavt (pca/await (di/-temporal-upsert (:temporal-eavt db) prim :eavt op-count old-datom opts))) db)
-          db (assoc db :eavt (pca/await (di/-upsert (:eavt db) prim :eavt op-count old-datom opts)))
-          db (if keep-history? (assoc db :temporal-aevt (pca/await (di/-temporal-upsert (:temporal-aevt db) prim :aevt op-count old-datom opts))) db)
-          db (assoc db :aevt (pca/await (di/-upsert (:aevt db) prim :aevt op-count old-datom opts)))
-          db (if (and keep-history? indexing?) (assoc db :temporal-avet (pca/await (di/-temporal-upsert (:temporal-avet db) prim :avet op-count old-datom opts))) db)
-          db (if indexing? (assoc db :avet (pca/await (di/-upsert (:avet db) prim :avet op-count old-datom opts))) db)
+                              (try
+                                (-> db (remove-schema datom) update-rschema)
+                                (catch ExceptionInfo _e
+                                  db))
+                              db)
+                         db (if keep-history? (assoc db :temporal-eavt (pca/await (di/-temporal-upsert (:temporal-eavt db) prim :eavt op-count old-datom opts))) db)
+                         db (assoc db :eavt (pca/await (di/-upsert (:eavt db) prim :eavt op-count old-datom opts)))
+                         db (if keep-history? (assoc db :temporal-aevt (pca/await (di/-temporal-upsert (:temporal-aevt db) prim :aevt op-count old-datom opts))) db)
+                         db (assoc db :aevt (pca/await (di/-upsert (:aevt db) prim :aevt op-count old-datom opts)))
+                         db (if (and keep-history? indexing?) (assoc db :temporal-avet (pca/await (di/-temporal-upsert (:temporal-avet db) prim :avet op-count old-datom opts))) db)
+                         db (if indexing? (assoc db :avet (pca/await (di/-upsert (:avet db) prim :avet op-count old-datom opts))) db)
           ;; Secondary indices: retract old, assert new (full value)
-          db (if (and has-secondary? old-datom) (update-secondary-indices db a-ident old-datom false) db)
-          db (if has-secondary? (update-secondary-indices db a-ident datom true) db)
-          db (update db :op-count inc)
-          db (advance-max-eid db (.-e datom))
-          db (update db :hash + (hash prim))
-          db (if schema? (-> db (update-schema datom) update-rschema) db)]
-      db))))))
+                         db (if (and has-secondary? old-datom) (update-secondary-indices db a-ident old-datom false) db)
+                         db (if has-secondary? (update-secondary-indices db a-ident datom true) db)
+                         db (update db :op-count inc)
+                         db (advance-max-eid db (.-e datom))
+                         db (update db :hash + (hash prim))
+                         db (if schema? (-> db (update-schema datom) update-rschema) db)]
+                     db))))))
 
 (defn- transact-report
   ([report datom] (transact-report report datom false))
   ([report datom upsert?] (transact-report report datom upsert? true))
   ([report datom upsert? sync?]
    (async+sync sync?
-   (let [db      (:db-after report)
-         a       (:a datom)
-         db'     (if upsert?
-                   (pca/await (with-datom-upsert db datom sync?))
-                   (pca/await (with-datom db datom sync?)))
-         report' (-> report
-                     (assoc :db-after db')
-                     (update-in [:tx-data] conj datom))]
-     (if (dbu/tuple-source? db a)
-       (let [e      (:e datom)
-             v      (if (datom-added datom) (:v datom) nil)
-             queue  (or (-> report' ::queued-tuples (get e)) {})
-             tuples (get (dbi/-attrs-by db :db/attrTuples) a)
-             queue' (pca/await (queue-tuples queue tuples db e v sync?))]
-         (update report' ::queued-tuples assoc e queue'))
-       report')))))
+               (let [db      (:db-after report)
+                     a       (:a datom)
+                     db'     (if upsert?
+                               (pca/await (with-datom-upsert db datom sync?))
+                               (pca/await (with-datom db datom sync?)))
+                     report' (-> report
+                                 (assoc :db-after db')
+                                 (update-in [:tx-data] conj datom))]
+                 (if (dbu/tuple-source? db a)
+                   (let [e      (:e datom)
+                         v      (if (datom-added datom) (:v datom) nil)
+                         queue  (or (-> report' ::queued-tuples (get e)) {})
+                         tuples (get (dbi/-attrs-by db :db/attrTuples) a)
+                         queue' (pca/await (queue-tuples queue tuples db e v sync?))]
+                     (update report' ::queued-tuples assoc e queue'))
+                   report')))))
 
 (defn- check-upsert-conflict [entity acc]
   (let [[e a v] acc
@@ -633,90 +633,90 @@
   ([db entity tempids sync?]
   ;; the reduce-kv / reduce / inner mapv folds became explicit loops — the
   ;; per-attribute avet probes and ref-entid resolutions await in async mode
-  (async+sync sync?
-  (when-let [unique-idents (not-empty (dbi/-attrs-by db :db.unique/identity))]
-    (let [unique-tuple-idents (clojure.set/intersection
-                               (dbi/-attrs-by db :db.type/tuple)
-                               unique-idents)
-          found-eav
-          (loop [acc nil kvs (seq entity)]                              ;; acc = [e a v]
-            (if (nil? kvs)
-              acc
-              (let [[a-ident v-original] (first kvs)]
-                (if-not (contains? unique-idents a-ident)
-                  (recur acc (next kvs))
-                  (let [a (if (:attribute-refs? (dbi/-config db))
-                            (dbi/-ref-for db a-ident)
-                            a-ident)
-                        tempid-val (and (dbu/ref? db a-ident) (tempid? v-original))
-                        v (if tempid-val
-                            (tempids v-original)
-                            v-original)
-                        e (when v
-                            (validate-val v [nil nil a v nil] db)
-                            (:e (first (pca/await (datoms-read-step db :avet [a v] sync?)))))]
-                    (recur
-                     (if (some? e)
-                       (cond
-                         (nil? acc) [e a v]                    ;; first upsert
-                         (= (get acc 0) e) acc                 ;; second+ upsert, but does not conflict
-                         :else
-                         (let [[_e _a _v] acc]
-                           (log/raise "Conflicting upserts: " [_a _v] " resolves to " _e
-                                      ", but " [a v] " resolves to " e
-                                      {:error :transact/upsert
-                                       :entity entity
-                                       :assertion [e a v]
-                                       :conflict [_e _a _v]})))
-                       acc)                                   ;; upsert attr, but resolves to nothing
-                     (next kvs)))))))
+   (async+sync sync?
+               (when-let [unique-idents (not-empty (dbi/-attrs-by db :db.unique/identity))]
+                 (let [unique-tuple-idents (clojure.set/intersection
+                                            (dbi/-attrs-by db :db.type/tuple)
+                                            unique-idents)
+                       found-eav
+                       (loop [acc nil kvs (seq entity)]                              ;; acc = [e a v]
+                         (if (nil? kvs)
+                           acc
+                           (let [[a-ident v-original] (first kvs)]
+                             (if-not (contains? unique-idents a-ident)
+                               (recur acc (next kvs))
+                               (let [a (if (:attribute-refs? (dbi/-config db))
+                                         (dbi/-ref-for db a-ident)
+                                         a-ident)
+                                     tempid-val (and (dbu/ref? db a-ident) (tempid? v-original))
+                                     v (if tempid-val
+                                         (tempids v-original)
+                                         v-original)
+                                     e (when v
+                                         (validate-val v [nil nil a v nil] db)
+                                         (:e (first (pca/await (datoms-read-step db :avet [a v] sync?)))))]
+                                 (recur
+                                  (if (some? e)
+                                    (cond
+                                      (nil? acc) [e a v]                    ;; first upsert
+                                      (= (get acc 0) e) acc                 ;; second+ upsert, but does not conflict
+                                      :else
+                                      (let [[_e _a _v] acc]
+                                        (log/raise "Conflicting upserts: " [_a _v] " resolves to " _e
+                                                   ", but " [a v] " resolves to " e
+                                                   {:error :transact/upsert
+                                                    :entity entity
+                                                    :assertion [e a v]
+                                                    :conflict [_e _a _v]})))
+                                    acc)                                   ;; upsert attr, but resolves to nothing
+                                  (next kvs)))))))
 
-          found-eav-including-composite-tuples
-          (loop [acc found-eav ts (seq unique-tuple-idents)]
-            (if (nil? ts)
-              acc
-              (let [a-tuple (first ts)
-                    tuple-attrs             (get-in (dbi/-schema db) [a-tuple :db/tupleAttrs])
-                    contains-tuple-attrs?   (clojure.set/subset?
-                                             (set tuple-attrs)
-                                             (set (keys entity)))
-                    tuple-contains-tempids? (and contains-tuple-attrs?
-                                                 (some (fn [a] (and (dbu/ref? db a)
-                                                                    (tempid? (get entity a))))
-                                                       tuple-attrs))
-                    v-tuple                 (when (and contains-tuple-attrs?
-                                                       (not tuple-contains-tempids?))
-                                              (loop [vs [] as (seq tuple-attrs)]
-                                                (if (nil? as)
-                                                  vs
-                                                  (let [a (first as)
-                                                        v (get entity a)]
-                                                    (validate-val v [nil nil a v nil] db)
-                                                    (recur (conj vs (if (dbu/ref? db a)
-                                                                      (pca/await (entid-strict-step db v sync?))
-                                                                      v))
-                                                           (next as))))))
-                    e (when (and contains-tuple-attrs?
-                                 (not tuple-contains-tempids?))
-                        (:e (first (pca/await (datoms-read-step db :avet [a-tuple v-tuple] sync?)))))]
-                (recur
-                 (if e
-                   (cond
-                     (nil? acc) [e a-tuple v-tuple]        ;; first upsert
-                     (= (get acc 0) e) acc                 ;; second+ upsert, but does not conflict
-                     :else
-                     (let [[_e _a _v] acc]
-                       (log/raise "Conflicting upserts: " [_a _v] " resolves to " _e
-                                  ", but " [a-tuple v-tuple] " resolves to " e
-                                  {:error :transact/upsert
-                                   :entity entity
-                                   :assertion [e a-tuple v-tuple]
-                                   :conflict [_e _a _v]})))
-                   acc)                                   ;; upsert attr, but resolves to nothing
-                 (next ts)))))]
-      (->> found-eav-including-composite-tuples
-           (check-upsert-conflict entity)
-           first))))))                                         ;; getting eid from acc
+                       found-eav-including-composite-tuples
+                       (loop [acc found-eav ts (seq unique-tuple-idents)]
+                         (if (nil? ts)
+                           acc
+                           (let [a-tuple (first ts)
+                                 tuple-attrs             (get-in (dbi/-schema db) [a-tuple :db/tupleAttrs])
+                                 contains-tuple-attrs?   (clojure.set/subset?
+                                                          (set tuple-attrs)
+                                                          (set (keys entity)))
+                                 tuple-contains-tempids? (and contains-tuple-attrs?
+                                                              (some (fn [a] (and (dbu/ref? db a)
+                                                                                 (tempid? (get entity a))))
+                                                                    tuple-attrs))
+                                 v-tuple                 (when (and contains-tuple-attrs?
+                                                                    (not tuple-contains-tempids?))
+                                                           (loop [vs [] as (seq tuple-attrs)]
+                                                             (if (nil? as)
+                                                               vs
+                                                               (let [a (first as)
+                                                                     v (get entity a)]
+                                                                 (validate-val v [nil nil a v nil] db)
+                                                                 (recur (conj vs (if (dbu/ref? db a)
+                                                                                   (pca/await (entid-strict-step db v sync?))
+                                                                                   v))
+                                                                        (next as))))))
+                                 e (when (and contains-tuple-attrs?
+                                              (not tuple-contains-tempids?))
+                                     (:e (first (pca/await (datoms-read-step db :avet [a-tuple v-tuple] sync?)))))]
+                             (recur
+                              (if e
+                                (cond
+                                  (nil? acc) [e a-tuple v-tuple]        ;; first upsert
+                                  (= (get acc 0) e) acc                 ;; second+ upsert, but does not conflict
+                                  :else
+                                  (let [[_e _a _v] acc]
+                                    (log/raise "Conflicting upserts: " [_a _v] " resolves to " _e
+                                               ", but " [a-tuple v-tuple] " resolves to " e
+                                               {:error :transact/upsert
+                                                :entity entity
+                                                :assertion [e a-tuple v-tuple]
+                                                :conflict [_e _a _v]})))
+                                acc)                                   ;; upsert attr, but resolves to nothing
+                              (next ts)))))]
+                   (->> found-eav-including-composite-tuples
+                        (check-upsert-conflict entity)
+                        first))))))                                         ;; getting eid from acc
 
 ;; multivals/reverse can be specified as coll or as a single value, trying to guess
 (defn- maybe-wrap-multival [db a-ident vs]
@@ -790,17 +790,17 @@
 (defn- transact-add
   ([report ent] (transact-add report ent true))
   ([{:keys [db-after] :as report} [_ e a v tx :as ent] sync?]
-  (async+sync sync?
-  (let [a (dbu/normalize-and-validate-attr a ent db-after)
-        _ (validate-val v ent db-after)
-        attribute-refs? (:attribute-refs? (dbi/-config db-after))
-        tx (or tx (current-tx report))
-        db db-after
-        e (pca/await (entid-strict-step db e sync?))
-        a-ident (if attribute-refs? (dbi/ident-for db a :error-on-missing) a)
-        v (if (dbu/ref? db a-ident) (pca/await (entid-strict-step db v sync?)) v)
-        new-datom (datom e a v tx)
-        upsert? (not (dbu/multival? db a))
+   (async+sync sync?
+               (let [a (dbu/normalize-and-validate-attr a ent db-after)
+                     _ (validate-val v ent db-after)
+                     attribute-refs? (:attribute-refs? (dbi/-config db-after))
+                     tx (or tx (current-tx report))
+                     db db-after
+                     e (pca/await (entid-strict-step db e sync?))
+                     a-ident (if attribute-refs? (dbi/ident-for db a :error-on-missing) a)
+                     v (if (dbu/ref? db a-ident) (pca/await (entid-strict-step db v sync?)) v)
+                     new-datom (datom e a v tx)
+                     upsert? (not (dbu/multival? db a))
         ;; Cross-tx vf<vt guard: when a :db.valid/from or :db.valid/to
         ;; is written onto a PRIOR tx-entity, queue that tx-eid for
         ;; end-of-loop validation. Pattern mirrors ::queued-tuples
@@ -810,12 +810,12 @@
         ;; state, not the half-way state. Retracts can only broaden
         ;; the window so they're skipped — a retract+add in the same
         ;; tx is caught by the add side.
-        report (cond-> report
-                 (and (vt-meta-attr? a-ident)
-                      (>= ^long e ^long tx0)
-                      (not= e (current-tx report)))
-                 (update ::pending-vt-validation (fnil conj #{}) e))]
-    (pca/await (transact-report report new-datom upsert? sync?))))))
+                     report (cond-> report
+                              (and (vt-meta-attr? a-ident)
+                                   (>= ^long e ^long tx0)
+                                   (not= e (current-tx report)))
+                              (update ::pending-vt-validation (fnil conj #{}) e))]
+                 (pca/await (transact-report report new-datom upsert? sync?))))))
 
 (defn- transact-retract-datom
   ([report] report)
@@ -891,25 +891,25 @@
   ([report sync?]
    ;; explicit loops — the per-tuple current-value read awaits in async mode
    (async+sync sync?
-   (let [db (:db-after report)]
-     (loop [entities [] eids (seq (::queued-tuples report))]
-       (if (nil? eids)
-         entities
-         (let [[eid tuples+values] (first eids)
-               entities
-               (loop [entities entities tvs (seq tuples+values)]
-                 (if (nil? tvs)
-                   entities
-                   (let [[tuple value] (first tvs)
-                         value   (if (every? nil? value) nil value)
-                         current (:v (first (pca/await (datoms-read-step db :eavt [eid tuple] sync?))))]
-                     (recur (cond
-                              (= value current) entities
+               (let [db (:db-after report)]
+                 (loop [entities [] eids (seq (::queued-tuples report))]
+                   (if (nil? eids)
+                     entities
+                     (let [[eid tuples+values] (first eids)
+                           entities
+                           (loop [entities entities tvs (seq tuples+values)]
+                             (if (nil? tvs)
+                               entities
+                               (let [[tuple value] (first tvs)
+                                     value   (if (every? nil? value) nil value)
+                                     current (:v (first (pca/await (datoms-read-step db :eavt [eid tuple] sync?))))]
+                                 (recur (cond
+                                          (= value current) entities
                 ;; adds ::internal to meta-data to mean that these datoms were generated internally.
-                              (nil? value)      (conj entities ^::internal [:db/retract eid tuple current])
-                              :else             (conj entities ^::internal [:db/add eid tuple value]))
-                            (next tvs)))))]
-           (recur entities (next eids)))))))))
+                                          (nil? value)      (conj entities ^::internal [:db/retract eid tuple current])
+                                          :else             (conj entities ^::internal [:db/add eid tuple value]))
+                                        (next tvs)))))]
+                       (recur entities (next eids)))))))))
 
 (defn flush-tx-meta
   "Generates add-operations for transaction meta data."
@@ -961,89 +961,89 @@
 (defn entity-map->op-vec
   ([db report entity] (entity-map->op-vec db report entity true))
   ([db {:keys [tempids] :as report} entity sync?]
-  (async+sync sync?
-  (let [old-eid (:db/id entity)
-        tx? (tx-id? old-eid) ;; :db/current-tx / "datomic.tx"
-        resolved-eid (cond tx?                   (current-tx report)
-                           (sequential? old-eid) (pca/await (entid-strict-step db old-eid sync?))
-                           (keyword? old-eid)    (pca/await (entid-strict-step db [:db/ident old-eid] sync?))
-                           :else                 old-eid)
-        updated-entity (assoc entity :db/id resolved-eid)
-        updated-report (cond-> report
-                         tx? (allocate-eid old-eid resolved-eid))
-        resolved-tempid (tempids resolved-eid)
-        upserted-eid (pca/await (upsert-eid db updated-entity tempids sync?))]
-    (if (and (some? upserted-eid)
-             resolved-tempid
-             (not= upserted-eid resolved-tempid))
-      {:retry? true :old-eid resolved-eid :upserted-eid upserted-eid}
-      (let [new-eid (cond
-                      (some? upserted-eid)   upserted-eid
-                      (nil? resolved-eid)    (next-eid db)
-                      (tempid? resolved-eid) (or resolved-tempid (next-eid db))
-                      (number? resolved-eid) resolved-eid
-                      :else (log/raise "Expected number, string, keyword or lookup ref for :db/id, got " old-eid
-                                       {:error :entity-id/syntax, :entity updated-entity}))
-            new-entity (assoc updated-entity :db/id new-eid)]
-        (check-schema-update db updated-entity new-eid)
-        {:new-report (allocate-eid updated-report resolved-eid new-eid)
-         :new-entities (explode db new-entity)}))))))
+   (async+sync sync?
+               (let [old-eid (:db/id entity)
+                     tx? (tx-id? old-eid) ;; :db/current-tx / "datomic.tx"
+                     resolved-eid (cond tx?                   (current-tx report)
+                                        (sequential? old-eid) (pca/await (entid-strict-step db old-eid sync?))
+                                        (keyword? old-eid)    (pca/await (entid-strict-step db [:db/ident old-eid] sync?))
+                                        :else                 old-eid)
+                     updated-entity (assoc entity :db/id resolved-eid)
+                     updated-report (cond-> report
+                                      tx? (allocate-eid old-eid resolved-eid))
+                     resolved-tempid (tempids resolved-eid)
+                     upserted-eid (pca/await (upsert-eid db updated-entity tempids sync?))]
+                 (if (and (some? upserted-eid)
+                          resolved-tempid
+                          (not= upserted-eid resolved-tempid))
+                   {:retry? true :old-eid resolved-eid :upserted-eid upserted-eid}
+                   (let [new-eid (cond
+                                   (some? upserted-eid)   upserted-eid
+                                   (nil? resolved-eid)    (next-eid db)
+                                   (tempid? resolved-eid) (or resolved-tempid (next-eid db))
+                                   (number? resolved-eid) resolved-eid
+                                   :else (log/raise "Expected number, string, keyword or lookup ref for :db/id, got " old-eid
+                                                    {:error :entity-id/syntax, :entity updated-entity}))
+                         new-entity (assoc updated-entity :db/id new-eid)]
+                     (check-schema-update db updated-entity new-eid)
+                     {:new-report (allocate-eid updated-report resolved-eid new-eid)
+                      :new-entities (explode db new-entity)}))))))
 
 (defn compare-and-swap
   ([db report op-vec] (compare-and-swap db report op-vec true))
   ([db report op-vec sync?]
-  (async+sync sync?
-  (let [[_ e a ov nv] op-vec
-        e (pca/await (entid-strict-step db e sync?))
-        _ (dbu/validate-attr a op-vec db)
-        nv (if (dbu/ref? db a) (pca/await (entid-strict-step db nv sync?)) nv)
-        datoms (pca/await (search-step db [e a] sync?))]
-    (if (nil? ov)
-      (if (empty? datoms)
-        [(pca/await (transact-add report [:db/add e a nv] sync?)) []]
-        (log/raise ":db.fn/cas failed on datom [" e " " a " " (if (dbu/multival? db a) (map :v datoms) (:v (first datoms))) "], expected nil"
-                   {:error :transact/cas, :old (if (dbu/multival? db a) datoms (first datoms)), :expected ov, :new nv}))
-      (let [ov (if (dbu/ref? db a) (pca/await (entid-strict-step db ov sync?)) ov)]
-        (validate-val nv op-vec db)
-        (if (dbu/multival? db a)
-          (if (some (fn [^Datom d] (= (.-v d) ov)) datoms)
-            [(pca/await (transact-add report [:db/add e a nv] sync?)) []]
-            (log/raise ":db.fn/cas failed on datom [" e " " a " " (map :v datoms) "], expected " ov
-                       {:error :transact/cas, :old datoms, :expected ov, :new nv}))
-          (let [v (:v (first datoms))]
-            (if (= v ov)
-              [(pca/await (transact-add report [:db/add e a nv] sync?)) []]
-              (log/raise ":db.fn/cas failed on datom [" e " " a " " v "], expected " ov
-                         {:error :transact/cas, :old (first datoms), :expected ov, :new nv}))))))))))
+   (async+sync sync?
+               (let [[_ e a ov nv] op-vec
+                     e (pca/await (entid-strict-step db e sync?))
+                     _ (dbu/validate-attr a op-vec db)
+                     nv (if (dbu/ref? db a) (pca/await (entid-strict-step db nv sync?)) nv)
+                     datoms (pca/await (search-step db [e a] sync?))]
+                 (if (nil? ov)
+                   (if (empty? datoms)
+                     [(pca/await (transact-add report [:db/add e a nv] sync?)) []]
+                     (log/raise ":db.fn/cas failed on datom [" e " " a " " (if (dbu/multival? db a) (map :v datoms) (:v (first datoms))) "], expected nil"
+                                {:error :transact/cas, :old (if (dbu/multival? db a) datoms (first datoms)), :expected ov, :new nv}))
+                   (let [ov (if (dbu/ref? db a) (pca/await (entid-strict-step db ov sync?)) ov)]
+                     (validate-val nv op-vec db)
+                     (if (dbu/multival? db a)
+                       (if (some (fn [^Datom d] (= (.-v d) ov)) datoms)
+                         [(pca/await (transact-add report [:db/add e a nv] sync?)) []]
+                         (log/raise ":db.fn/cas failed on datom [" e " " a " " (map :v datoms) "], expected " ov
+                                    {:error :transact/cas, :old datoms, :expected ov, :new nv}))
+                       (let [v (:v (first datoms))]
+                         (if (= v ov)
+                           [(pca/await (transact-add report [:db/add e a nv] sync?)) []]
+                           (log/raise ":db.fn/cas failed on datom [" e " " a " " v "], expected " ov
+                                      {:error :transact/cas, :old (first datoms), :expected ov, :new nv}))))))))))
 
 (defn retract-entity
   ([db report op-vec] (retract-entity db report op-vec true))
   ([db report op-vec sync?]
-  (async+sync sync?
-  (let [[_ e] op-vec
-        e (pca/await (entid-step db e sync?))]
-    (if e
-      (let [e-datoms (vec (pca/await (search-step db [e] sync?)))
-            v-datoms (loop [acc [] attrs (seq (dbi/-attrs-by db :db.type/ref))]
-                       (if (nil? attrs)
-                         acc
-                         (let [attr (first attrs)
+   (async+sync sync?
+               (let [[_ e] op-vec
+                     e (pca/await (entid-step db e sync?))]
+                 (if e
+                   (let [e-datoms (vec (pca/await (search-step db [e] sync?)))
+                         v-datoms (loop [acc [] attrs (seq (dbi/-attrs-by db :db.type/ref))]
+                                    (if (nil? attrs)
+                                      acc
+                                      (let [attr (first attrs)
                                      ;; TODO: Consider using
                                      ;; (or (dbi/-ref-for db attr) attr)
                                      ;; once warning has been removed from
                                      ;; the -ref-for implementation in datahike.db.
-                               a (if (dbu/attr-has-ref? db attr)
-                                   (dbi/-ref-for db attr)
-                                   attr)]
-                           (recur (into acc (pca/await (search-step db [nil a e] sync?)))
-                                  (next attrs)))))
-            report' (loop [r report ds (seq (concat e-datoms v-datoms))]
-                      (if (nil? ds)
-                        r
-                        (recur (pca/await (transact-retract-datom r (first ds) false sync?))
-                               (next ds))))]
-        [report' (retract-components db e-datoms)])
-      [report []])))))
+                                            a (if (dbu/attr-has-ref? db attr)
+                                                (dbi/-ref-for db attr)
+                                                attr)]
+                                        (recur (into acc (pca/await (search-step db [nil a e] sync?)))
+                                               (next attrs)))))
+                         report' (loop [r report ds (seq (concat e-datoms v-datoms))]
+                                   (if (nil? ds)
+                                     r
+                                     (recur (pca/await (transact-retract-datom r (first ds) false sync?))
+                                            (next ds))))]
+                     [report' (retract-components db e-datoms)])
+                   [report []])))))
 
 (defn check-tuple [db op-vec]
   (let [[_ _ a v] op-vec
@@ -1088,136 +1088,136 @@
   ;; ONE dual body. Purge ops (HistoricalDB reads) and tx-function BODIES
   ;; stay synchronous — documented: their cold reads fault cleanly before
   ;; commit; non-temporal purges raise deterministically.
-  (async+sync sync?
-  (let [[op e a v] op-vec]
-    (case op
+   (async+sync sync?
+               (let [[op e a v] op-vec]
+                 (case op
 
-      :db/add [(pca/await (transact-add report op-vec sync?)) []]
+                   :db/add [(pca/await (transact-add report op-vec sync?)) []]
 
-      :db/retract (let [e (pca/await (entid-step db e sync?))]
-                    (if (some? e)
-                      (let [a (dbu/normalize-and-validate-attr a op-vec db)
-                            pattern (if (nil? v)
-                                      [e a]
-                                      (let [v (if (dbu/ref? db a) (pca/await (entid-strict-step db v sync?)) v)]
-                                        (validate-val v op-vec db)
+                   :db/retract (let [e (pca/await (entid-step db e sync?))]
+                                 (if (some? e)
+                                   (let [a (dbu/normalize-and-validate-attr a op-vec db)
+                                         pattern (if (nil? v)
+                                                   [e a]
+                                                   (let [v (if (dbu/ref? db a) (pca/await (entid-strict-step db v sync?)) v)]
+                                                     (validate-val v op-vec db)
                                         ;; :db.secondary/only stores the content hash in the
                                         ;; primary indexes, so search by hash to find the datom.
-                                        [e a (if (dbu/secondary-only? db a) (secondary-only-hash v) v)]))
-                            datoms (vec (pca/await (search-step db pattern sync?)))
-                            report' (loop [r report ds (seq datoms)]
-                                      (if (nil? ds)
-                                        r
-                                        (recur (pca/await (transact-retract-datom r (first ds) false sync?))
-                                               (next ds))))]
-                        [report' []])
-                      [report []]))
+                                                     [e a (if (dbu/secondary-only? db a) (secondary-only-hash v) v)]))
+                                         datoms (vec (pca/await (search-step db pattern sync?)))
+                                         report' (loop [r report ds (seq datoms)]
+                                                   (if (nil? ds)
+                                                     r
+                                                     (recur (pca/await (transact-retract-datom r (first ds) false sync?))
+                                                            (next ds))))]
+                                     [report' []])
+                                   [report []]))
 
-      :db.fn/retractAttribute (let [e (pca/await (entid-step db e sync?))]
-                                (if (some? e)
-                                  (let [a (dbu/normalize-and-validate-attr a op-vec db)
-                                        datoms (vec (pca/await (search-step db [e a] sync?)))
-                                        report' (loop [r report ds (seq datoms)]
-                                                  (if (nil? ds)
-                                                    r
-                                                    (recur (pca/await (transact-retract-datom r (first ds) false sync?))
-                                                           (next ds))))]
-                                    [report' (retract-components db datoms)])
-                                  [report []]))
+                   :db.fn/retractAttribute (let [e (pca/await (entid-step db e sync?))]
+                                             (if (some? e)
+                                               (let [a (dbu/normalize-and-validate-attr a op-vec db)
+                                                     datoms (vec (pca/await (search-step db [e a] sync?)))
+                                                     report' (loop [r report ds (seq datoms)]
+                                                               (if (nil? ds)
+                                                                 r
+                                                                 (recur (pca/await (transact-retract-datom r (first ds) false sync?))
+                                                                        (next ds))))]
+                                                 [report' (retract-components db datoms)])
+                                               [report []]))
 
-      :db.fn/retractEntity (pca/await (retract-entity db report op-vec sync?))
+                   :db.fn/retractEntity (pca/await (retract-entity db report op-vec sync?))
 
-      :db/retractEntity (pca/await (retract-entity db report op-vec sync?))
+                   :db/retractEntity (pca/await (retract-entity db report op-vec sync?))
 
-      :db/purge (if (dbi/-keep-history? db)
-                  (let [history (HistoricalDB. db)]
-                    (if-some [e (dbu/entid history e)]
-                      (let [v (if (dbu/ref? history a) (dbu/entid-strict history v) v)
-                            old-datoms (dbi/search history [e a v])]
-                        [(reduce transact-purge-datom report old-datoms) []])
-                      (log/raise "Can't find entity with ID " e " to be purged"
-                                 {:error :transact/purge, :operation op, :tx-data op-vec})))
-                  (log/raise "Purge is only available in temporal databases."
-                             {:error :transact/purge :operation op :tx-data op-vec}))
+                   :db/purge (if (dbi/-keep-history? db)
+                               (let [history (HistoricalDB. db)]
+                                 (if-some [e (dbu/entid history e)]
+                                   (let [v (if (dbu/ref? history a) (dbu/entid-strict history v) v)
+                                         old-datoms (dbi/search history [e a v])]
+                                     [(reduce transact-purge-datom report old-datoms) []])
+                                   (log/raise "Can't find entity with ID " e " to be purged"
+                                              {:error :transact/purge, :operation op, :tx-data op-vec})))
+                               (log/raise "Purge is only available in temporal databases."
+                                          {:error :transact/purge :operation op :tx-data op-vec}))
 
-      :db.purge/attribute (if (dbi/-keep-history? db)
-                            (let [history (HistoricalDB. db)]
-                              (if-let [e (dbu/entid history e)]
-                                (let [datoms (vec (dbi/search history [e a]))]
-                                  [(reduce transact-purge-datom report datoms)
-                                   (purge-components history datoms)])
-                                (log/raise "Can't find entity with ID " e " to be purged"
-                                           {:error :transact/purge, :operation op, :tx-data op-vec})))
-                            (log/raise "Purge attribute is only available in temporal databases."
-                                       {:error :transact/purge :operation op :tx-data op-vec}))
+                   :db.purge/attribute (if (dbi/-keep-history? db)
+                                         (let [history (HistoricalDB. db)]
+                                           (if-let [e (dbu/entid history e)]
+                                             (let [datoms (vec (dbi/search history [e a]))]
+                                               [(reduce transact-purge-datom report datoms)
+                                                (purge-components history datoms)])
+                                             (log/raise "Can't find entity with ID " e " to be purged"
+                                                        {:error :transact/purge, :operation op, :tx-data op-vec})))
+                                         (log/raise "Purge attribute is only available in temporal databases."
+                                                    {:error :transact/purge :operation op :tx-data op-vec}))
 
-      :db.purge/entity (if (dbi/-keep-history? db)
-                         (let [history (HistoricalDB. db)]
-                           (if-let [e (dbu/entid history e)]
-                             (let [e-datoms (vec (dbi/search history [e]))
-                                   v-datoms (vec (mapcat (fn [a] (dbi/search history [nil a e]))
-                                                         (dbi/-attrs-by history :db.type/ref)))]
-                               [(reduce transact-purge-datom report (concat e-datoms v-datoms))
-                                (purge-components history e-datoms)])
-                             (log/raise "Can't find entity with ID " e " to be purged"
-                                        {:error :transact/purge, :operation op, :tx-data op-vec})))
-                         (log/raise "Purge entity is only available in temporal databases."
-                                    {:error :transact/purge :operation op :tx-data op-vec}))
+                   :db.purge/entity (if (dbi/-keep-history? db)
+                                      (let [history (HistoricalDB. db)]
+                                        (if-let [e (dbu/entid history e)]
+                                          (let [e-datoms (vec (dbi/search history [e]))
+                                                v-datoms (vec (mapcat (fn [a] (dbi/search history [nil a e]))
+                                                                      (dbi/-attrs-by history :db.type/ref)))]
+                                            [(reduce transact-purge-datom report (concat e-datoms v-datoms))
+                                             (purge-components history e-datoms)])
+                                          (log/raise "Can't find entity with ID " e " to be purged"
+                                                     {:error :transact/purge, :operation op, :tx-data op-vec})))
+                                      (log/raise "Purge entity is only available in temporal databases."
+                                                 {:error :transact/purge :operation op :tx-data op-vec}))
 
-      :db.history.purge/before (if (dbi/-keep-history? db)
-                                 (let [history (HistoricalDB. db)
-                                       into-sorted-set #(apply sorted-set-by dd/cmp-datoms-eavt-quick %)
-                                       e-datoms (-> (clojure.set/difference
-                                                     (into-sorted-set (dbs/search-temporal-indices db nil))
-                                                     (into-sorted-set (dbs/search-current-indices db nil)))
-                                                    (filter-before e db)
-                                                    vec)]
-                                   [(reduce transact-purge-datom report e-datoms)
-                                    (purge-components history e-datoms)])
-                                 (log/raise "Purge entity is only available in temporal databases."
-                                            {:error :transact/purge :operation op :tx-data op-vec}))
+                   :db.history.purge/before (if (dbi/-keep-history? db)
+                                              (let [history (HistoricalDB. db)
+                                                    into-sorted-set #(apply sorted-set-by dd/cmp-datoms-eavt-quick %)
+                                                    e-datoms (-> (clojure.set/difference
+                                                                  (into-sorted-set (dbs/search-temporal-indices db nil))
+                                                                  (into-sorted-set (dbs/search-current-indices db nil)))
+                                                                 (filter-before e db)
+                                                                 vec)]
+                                                [(reduce transact-purge-datom report e-datoms)
+                                                 (purge-components history e-datoms)])
+                                              (log/raise "Purge entity is only available in temporal databases."
+                                                         {:error :transact/purge :operation op :tx-data op-vec}))
 
-      :db.ensure/attrs (let [{:keys [tx-data]} report
-                             asserting-datoms (filter (fn [^Datom d] (= e (.-e d))) tx-data)
-                             asserting-attributes (map (fn [^Datom d] (.-a d)) asserting-datoms)
-                             diff (clojure.set/difference (set v) (set asserting-attributes))]
-                         (if (empty? diff)
-                           [report []]
-                           (log/raise "Entity " e " missing attributes " diff " of spec " a
-                                      {:error :transact/ensure :operation op :tx-data op-vec
-                                       :asserting-datoms asserting-datoms})))
+                   :db.ensure/attrs (let [{:keys [tx-data]} report
+                                          asserting-datoms (filter (fn [^Datom d] (= e (.-e d))) tx-data)
+                                          asserting-attributes (map (fn [^Datom d] (.-a d)) asserting-datoms)
+                                          diff (clojure.set/difference (set v) (set asserting-attributes))]
+                                      (if (empty? diff)
+                                        [report []]
+                                        (log/raise "Entity " e " missing attributes " diff " of spec " a
+                                                   {:error :transact/ensure :operation op :tx-data op-vec
+                                                    :asserting-datoms asserting-datoms})))
 
-      :db.ensure/preds (let [{:keys [db-after]} report
-                             preds (assert-preds db-after op-vec)]
-                         (if-not (empty? preds)
-                           (log/raise "Entity " e " failed predicates " preds " of spec " a
-                                      {:error :transact/ensure :operation op :tx-data op-vec})
-                           [report []]))
+                   :db.ensure/preds (let [{:keys [db-after]} report
+                                          preds (assert-preds db-after op-vec)]
+                                      (if-not (empty? preds)
+                                        (log/raise "Entity " e " failed predicates " preds " of spec " a
+                                                   {:error :transact/ensure :operation op :tx-data op-vec})
+                                        [report []]))
 
-      :db.fn/cas (pca/await (compare-and-swap db report op-vec sync?))
+                   :db.fn/cas (pca/await (compare-and-swap db report op-vec sync?))
 
-      :db/cas (pca/await (compare-and-swap db report op-vec sync?))
+                   :db/cas (pca/await (compare-and-swap db report op-vec sync?))
 
-      :db.fn/call (let [[_ f & args] op-vec]
+                   :db.fn/call (let [[_ f & args] op-vec]
                     ;; tx-function BODY runs synchronously (documented)
-                    [report (apply f db args)])
+                                 [report (apply f db args)])
 
-      (if (and (keyword? op)
-               (not (builtin-op? op)))
-        (let [ident (pca/await (entid-step db op sync?))]
-         (if (some? ident)
-          (let [fun (-> (pca/await (search-step db [ident :db/fn] sync?)) first :v)
-                args (next op-vec)]
-            (if (fn? fun)
-              [report (apply fun db args)]
-              (log/raise "Entity " op " expected to have :db/fn attribute with fn? value"
-                         {:error :transact/syntax, :operation :db.fn/call, :tx-data op-vec})))
-          (log/raise "Can’t find entity for transaction fn " op
-                     {:error :transact/syntax, :operation :db.fn/call, :tx-data op-vec})))
-        (log/raise (str "Unknown operation at " op-vec ", expected " (str/join "," builtin-op?)
-                        " or an ident corresponding to an installed transaction function"
-                        " (e.g. {:db/ident <keyword> :db/fn <Ifn>}, usage of :db/ident requires {:db/unique :db.unique/identity} in schema)")
-                   {:error :transact/syntax, :operation op, :tx-data op-vec})))))))
+                   (if (and (keyword? op)
+                            (not (builtin-op? op)))
+                     (let [ident (pca/await (entid-step db op sync?))]
+                       (if (some? ident)
+                         (let [fun (-> (pca/await (search-step db [ident :db/fn] sync?)) first :v)
+                               args (next op-vec)]
+                           (if (fn? fun)
+                             [report (apply fun db args)]
+                             (log/raise "Entity " op " expected to have :db/fn attribute with fn? value"
+                                        {:error :transact/syntax, :operation :db.fn/call, :tx-data op-vec})))
+                         (log/raise "Can’t find entity for transaction fn " op
+                                    {:error :transact/syntax, :operation :db.fn/call, :tx-data op-vec})))
+                     (log/raise (str "Unknown operation at " op-vec ", expected " (str/join "," builtin-op?)
+                                     " or an ident corresponding to an installed transaction function"
+                                     " (e.g. {:db/ident <keyword> :db/fn <Ifn>}, usage of :db/ident requires {:db/unique :db.unique/identity} in schema)")
+                                {:error :transact/syntax, :operation op, :tx-data op-vec})))))))
 
 (defn- validate-cross-tx-vt-windows!
   "Cross-tx vf<vt guard. For each prior tx-entity that received a
@@ -1368,140 +1368,140 @@
 (defn transact-tx-data
   ([initial-report initial-es] (transact-tx-data initial-report initial-es true))
   ([{:keys [db-before] :as initial-report} initial-es sync?]
-  (async+sync sync?
-  (do
-  (when-not (or (nil? initial-es)
-                (sequential? initial-es))
-    (log/raise "Bad transaction data " initial-es ", expected sequential collection"
-               {:error :transact/syntax, :tx-data initial-es}))
-  (let [has-tuples? (seq (dbi/-attrs-by (:db-after initial-report) :db.type/tuple))
-        initial-es' (if has-tuples?
-                      (interleave initial-es (repeat ::flush-tuples))
-                      initial-es)
+   (async+sync sync?
+               (do
+                 (when-not (or (nil? initial-es)
+                               (sequential? initial-es))
+                   (log/raise "Bad transaction data " initial-es ", expected sequential collection"
+                              {:error :transact/syntax, :tx-data initial-es}))
+                 (let [has-tuples? (seq (dbi/-attrs-by (:db-after initial-report) :db.type/tuple))
+                       initial-es' (if has-tuples?
+                                     (interleave initial-es (repeat ::flush-tuples))
+                                     initial-es)
         ;; The txInstant allocator reads [max-tx :db/txInstant] and is
         ;; ^:dynamic (clock-pinning contract), so it cannot itself await.
         ;; db-BEFORE is immutable, so awaiting the same point read first and
         ;; letting the allocator re-read it synchronously is correct by
         ;; construction — the ONE surviving warm site of the old prefetch
         ;; design.
-        _ #?(:clj nil
-             :cljs (when-not sync?
-                     (pca/await
-                      (dbs/datoms-components-step
-                       db-before :eavt
-                       [(:max-tx db-before)
-                        (if (:attribute-refs? (dbi/-config db-before))
-                          (dbi/-ref-for db-before :db/txInstant)
-                          :db/txInstant)]))))
-        initial-report (update initial-report :tx-meta
-                               #(merge {:db/txInstant (next-tx-instant db-before)} %))
+                       _ #?(:clj nil
+                            :cljs (when-not sync?
+                                    (pca/await
+                                     (dbs/datoms-components-step
+                                      db-before :eavt
+                                      [(:max-tx db-before)
+                                       (if (:attribute-refs? (dbi/-config db-before))
+                                         (dbi/-ref-for db-before :db/txInstant)
+                                         :db/txInstant)]))))
+                       initial-report (update initial-report :tx-meta
+                                              #(merge {:db/txInstant (next-tx-instant db-before)} %))
         ;; Reject zero-width or reverse valid-time windows. A tx
         ;; with `:db.valid/from >= :db.valid/to` would produce a
         ;; tx-entity that no `d/valid-at` query can ever match
         ;; (the AVET predicate is `vf <= at < vt`, unsatisfiable
         ;; when from >= to) — a silent data-quality bug. Throw at
         ;; the transactor so it surfaces immediately.
-        _ (let [tm (:tx-meta initial-report)
-                vf (:db.valid/from tm)
-                vt (:db.valid/to tm)]
-            (when (and vf vt (not (bp/date-before? vf vt)))
-              (log/raise (str "Invalid valid-time window: :db.valid/from "
-                              "must be strictly before :db.valid/to "
-                              "(got from=" vf ", to=" vt ")")
-                         {:error :transact/invalid-valid-times
-                          :db.valid/from vf
-                          :db.valid/to vt})))
-        meta-entities (flush-tx-meta initial-report)]
-    (loop [report (update initial-report :db-after transient)
-           es (if (dbi/-keep-history? db-before)
-                (concat meta-entities
-                        initial-es')
-                initial-es')]
-      (let [[entity & entities] es
-            {:keys [tempids db-after]} report
-            db db-after]
-        (cond
-          (empty? es)
-          (do
+                       _ (let [tm (:tx-meta initial-report)
+                               vf (:db.valid/from tm)
+                               vt (:db.valid/to tm)]
+                           (when (and vf vt (not (bp/date-before? vf vt)))
+                             (log/raise (str "Invalid valid-time window: :db.valid/from "
+                                             "must be strictly before :db.valid/to "
+                                             "(got from=" vf ", to=" vt ")")
+                                        {:error :transact/invalid-valid-times
+                                         :db.valid/from vf
+                                         :db.valid/to vt})))
+                       meta-entities (flush-tx-meta initial-report)]
+                   (loop [report (update initial-report :db-after transient)
+                          es (if (dbi/-keep-history? db-before)
+                               (concat meta-entities
+                                       initial-es')
+                               initial-es')]
+                     (let [[entity & entities] es
+                           {:keys [tempids db-after]} report
+                           db db-after]
+                       (cond
+                         (empty? es)
+                         (do
             ;; Cross-tx vf<vt validation: any prior tx-entity touched
             ;; by this commit's vt-meta writes is checked against the
             ;; final combined state. Throws on invalid window. The
             ;; ::pending-vt-validation bookkeeping is stripped before
             ;; the report exits, matching the ::queued-tuples cleanup
             ;; discipline.
-            (validate-cross-tx-vt-windows! report)
+                           (validate-cross-tx-vt-windows! report)
             ;; Deferred schema validation on the RESULTING state — covers
             ;; raw datom vectors, retracts and any datom order uniformly
             ;; (check-schema-update only sees the entity-map path).
-            (validate-schema-changes! report)
-            (-> report
-                (dissoc ::pending-vt-validation)
-                (assoc-in [:tempids :db/current-tx] (current-tx report))
-                (update-in [:db-after :max-tx] inc)
-                (update :db-after persistent!)
-                (update :db-after finalize-secondary-indices)))
+                           (validate-schema-changes! report)
+                           (-> report
+                               (dissoc ::pending-vt-validation)
+                               (assoc-in [:tempids :db/current-tx] (current-tx report))
+                               (update-in [:db-after :max-tx] inc)
+                               (update :db-after persistent!)
+                               (update :db-after finalize-secondary-indices)))
 
-          (nil? entity)
-          (recur report entities)
+                         (nil? entity)
+                         (recur report entities)
 
-          (= ::flush-tuples entity)
-          (if (contains? report ::queued-tuples)
-            (let [fts (pca/await (flush-tuples report sync?))]
-              (recur
-               (dissoc report ::queued-tuples)
-               (concat fts entities)))
-            (recur report entities))
+                         (= ::flush-tuples entity)
+                         (if (contains? report ::queued-tuples)
+                           (let [fts (pca/await (flush-tuples report sync?))]
+                             (recur
+                              (dissoc report ::queued-tuples)
+                              (concat fts entities)))
+                           (recur report entities))
 
-          (map? entity)
-          (let [{:keys [new-report new-entities retry? old-eid upserted-eid]} (pca/await (entity-map->op-vec db report entity sync?))]
-            (if retry?
-              (pca/await (retry-with-tempid initial-report report initial-es old-eid upserted-eid sync?))
-              (recur new-report (concat new-entities entities))))
+                         (map? entity)
+                         (let [{:keys [new-report new-entities retry? old-eid upserted-eid]} (pca/await (entity-map->op-vec db report entity sync?))]
+                           (if retry?
+                             (pca/await (retry-with-tempid initial-report report initial-es old-eid upserted-eid sync?))
+                             (recur new-report (concat new-entities entities))))
 
-          (sequential? entity)
-          (let [[op e a v] entity]
-            (when (dbu/tuple? db a)
-              (check-tuple db entity))
-            (cond
+                         (sequential? entity)
+                         (let [[op e a v] entity]
+                           (when (dbu/tuple? db a)
+                             (check-tuple db entity))
+                           (cond
 
-              (tx-id? e)
-              (recur (allocate-eid report e (current-tx report)) (cons [op (current-tx report) a v] entities))
+                             (tx-id? e)
+                             (recur (allocate-eid report e (current-tx report)) (cons [op (current-tx report) a v] entities))
 
-              (and (dbu/ref? db a) (tx-id? v))
-              (recur (allocate-eid report v (current-tx report)) (cons [op e a (current-tx report)] entities))
+                             (and (dbu/ref? db a) (tx-id? v))
+                             (recur (allocate-eid report v (current-tx report)) (cons [op e a (current-tx report)] entities))
 
-              (tempid? e)
-              (if (not= op :db/add)
-                (log/raise "Can't use tempid in '" entity "'. Tempids are allowed in :db/add only"
-                           {:error :transact/syntax, :op entity})
-                (let [upserted-eid (when (dbu/is-attr? db a :db.unique/identity)
-                                     (:e (first (pca/await (datoms-read-step db :avet [a v] sync?)))))
-                      allocated-eid (get tempids e)]
-                  (if (and upserted-eid allocated-eid (not= upserted-eid allocated-eid))
-                    (retry-with-tempid initial-report report initial-es e upserted-eid)
-                    (let [eid (or upserted-eid allocated-eid (next-eid db))]
-                      (recur (allocate-eid report e eid) (cons [op eid a v] entities))))))
+                             (tempid? e)
+                             (if (not= op :db/add)
+                               (log/raise "Can't use tempid in '" entity "'. Tempids are allowed in :db/add only"
+                                          {:error :transact/syntax, :op entity})
+                               (let [upserted-eid (when (dbu/is-attr? db a :db.unique/identity)
+                                                    (:e (first (pca/await (datoms-read-step db :avet [a v] sync?)))))
+                                     allocated-eid (get tempids e)]
+                                 (if (and upserted-eid allocated-eid (not= upserted-eid allocated-eid))
+                                   (retry-with-tempid initial-report report initial-es e upserted-eid)
+                                   (let [eid (or upserted-eid allocated-eid (next-eid db))]
+                                     (recur (allocate-eid report e eid) (cons [op eid a v] entities))))))
 
-              (and (dbu/ref? db a) (tempid? v))
-              (if-let [vid (get tempids v)]
-                (recur report (cons [op e a vid] entities))
-                (recur (allocate-eid report v (next-eid db)) es))
+                             (and (dbu/ref? db a) (tempid? v))
+                             (if-let [vid (get tempids v)]
+                               (recur report (cons [op e a vid] entities))
+                               (recur (allocate-eid report v (next-eid db)) es))
 
-              :else
-              (let [[new-report new-entities] (pca/await (apply-db-op db report entity sync?))]
-                (recur new-report (concat new-entities entities)))))
+                             :else
+                             (let [[new-report new-entities] (pca/await (apply-db-op db report entity sync?))]
+                               (recur new-report (concat new-entities entities)))))
 
-          (datom? entity)
-          (let [[e a v tx added] entity]
-            (if added
-              (let [r (pca/await (transact-add report [:db/add e a v tx] sync?))]
-                (recur r entities))
-              (let [r (pca/await (transact-retract-datom report entity true sync?))]
-                (recur r entities))))
+                         (datom? entity)
+                         (let [[e a v tx added] entity]
+                           (if added
+                             (let [r (pca/await (transact-add report [:db/add e a v tx] sync?))]
+                               (recur r entities))
+                             (let [r (pca/await (transact-retract-datom report entity true sync?))]
+                               (recur r entities))))
 
-          :else
-          (log/raise "Bad entity type at " entity ", expected map or vector"
-                     {:error :transact/syntax, :tx-data entity})))))))))
+                         :else
+                         (log/raise "Bad entity type at " entity ", expected map or vector"
+                                    {:error :transact/syntax, :tx-data entity})))))))))
 
 (defn transact-entities-directly [initial-report initial-es]
   (loop [report (update initial-report :db-after transient)
