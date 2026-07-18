@@ -25,7 +25,12 @@
    [datahike.api :as d]
    [datahike.db :as ddb]
    [datahike.query :as q]
-   [datahike.test.model.rng :as rng]))
+   [datahike.test.model.rng :as rng]
+   #?@(:cljs [[clojure.core.async :as a :refer [<!] :refer-macros [go]]
+              [clojure.test.check.random :as tc-random]
+              [clojure.test.check.rose-tree :as rose]
+              [datahike.test.async :refer-macros [deftest-async]]
+              [datahike.test.async-mode :as am]])))
 
 (def ^:private num-cases
   ;; 3000 on the JVM: the fixed setup dominates the cost (100 cases ≈ 8.7s,
@@ -249,3 +254,92 @@
                            "\n  base:    " (pr-str base)
                            "\n  planner: " (pr-str planner)))
                   (= base planner))))
+
+;; ---------------------------------------------------------------------------
+;; Three-mode axis (cljs): every defspec case replayed as sync / async-warm /
+;; async-cold. The COVERAGE RATCHET below is the systematic instrument for
+;; the async conversion work: it must be bumped (exactly) whenever a
+;; conversion lands — regressions and improvements both fail the build.
+
+#?(:cljs
+   (defn- seeded-case-seq
+     "The IDENTICAL case stream the defspec runs: mirrors
+      clojure.test.check/quick-check's iteration (per-trial rng split,
+      sizes cycling 0..199)."
+     [n seed]
+     (loop [i 0 rng (tc-random/make-random seed) size 0 acc []]
+       (if (== i n)
+         acc
+         (let [[r1 r2] (tc-random/split rng)]
+           (recur (inc i) r2 (mod (inc size) 200)
+                  (conj acc (rose/root (gen/call-gen gen-spec r1 size)))))))))
+
+#?(:cljs
+   (def ^:private expected-cold-covered
+     "Exact number of the num-cases replayed cases that COMPLETE (rather
+      than fault) under :async-cold. Bump on every conversion that widens
+      cold coverage; a drop names a regressed seam (see the histogram)."
+     7))
+
+#?(:cljs
+   (defn- spec-dimensions [spec]
+     {:modifiers (vec (:modifiers spec))
+      :temporal (:temporal spec)
+      :multi (:multi spec)
+      :rules (:rules spec)
+      :in-coll? (:in-coll? spec)
+      :find (:find spec)}))
+
+#?(:cljs
+   (deftest-async three-mode-axis
+     (let [flush-handle (am/flush-db! @test-db)
+           cases (seeded-case-seq num-cases 1721160000042)
+           outcomes
+           (loop [idx 0 [spec & more] cases acc []]
+             (if (nil? spec)
+               acc
+               (let [[query args] (build-query spec)
+                     rargs (mapv (fn [x] (if (= ::db2 x) @test-db2 x)) args)
+                     warm-db (wrap-db @test-db (:temporal spec))
+                     cold-base (am/cold-db @test-db flush-handle)
+                     cold-db (wrap-db cold-base (:temporal spec))
+                     sync-out (<! (apply am/run-query-in-mode :sync query warm-db rargs))
+                     warm-out (<! (apply am/run-query-in-mode :async-warm query warm-db rargs))
+                     cold-out (<! (apply am/run-query-in-mode :async-cold query cold-db rargs))
+                     nrm #(some-> % :result normalize)
+                     outcome
+                     (cond
+                       ;; queries that legitimately RAISE (parser/semantic
+                       ;; errors) must raise in every mode — that is the
+                       ;; agreement, mirroring the defspec's ::raised
+                       (:error sync-out)
+                       (if (and (:error warm-out)
+                                (or (:error cold-out) (:fault cold-out)))
+                         :raises
+                         :raise-diverged)
+                       (:error warm-out) :warm-error
+                       (not= (nrm sync-out) (nrm warm-out)) :warm-diverged
+                       (not (:sync-completed? warm-out)) :warm-parked
+                       (:error cold-out) :cold-error
+                       (:fault cold-out) :cold-faulted
+                       (not= (nrm sync-out) (nrm cold-out)) :cold-diverged
+                       :else :cold-covered)]
+                 (when (#{:raise-diverged :warm-error :warm-diverged :warm-parked
+                          :cold-error :cold-diverged} outcome)
+                   (is false
+                       (str outcome " on case " idx ": " (pr-str query)
+                            "\n  spec: " (pr-str (spec-dimensions spec))
+                            "\n  sync: " (pr-str (nrm sync-out))
+                            "\n  warm: " (pr-str (or (nrm warm-out) (:error warm-out)))
+                            "\n  cold: " (pr-str (or (nrm cold-out) (:fault cold-out) (:error cold-out))))))
+                 (recur (inc idx) more (conj acc {:idx idx :spec spec :outcome outcome})))))
+           covered (count (filter #(= :cold-covered (:outcome %)) outcomes))]
+       (when-not (= expected-cold-covered covered)
+         (let [faulted (filter #(= :cold-faulted (:outcome %)) outcomes)
+               histogram (frequencies (map (comp spec-dimensions :spec) faulted))]
+           (is (= expected-cold-covered covered)
+               (str "cold-coverage ratchet: " covered "/" (count outcomes)
+                    " covered (expected " expected-cold-covered ").\n"
+                    "faulted-dimension histogram:\n"
+                    (with-out-str (doseq [[dims n] (sort-by (comp - val) histogram)]
+                                    (println "  " n "×" (pr-str dims)))))))))))

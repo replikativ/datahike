@@ -112,6 +112,8 @@
           (merge (select-keys query-input extra-ks)))
         auto-inject-built-in-rules)))
 
+(declare raw-q* *profile?*)
+
 (defn q [query & inputs]
   (raw-q (normalize-q-input query inputs)))
 

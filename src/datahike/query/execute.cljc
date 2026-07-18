@@ -910,6 +910,8 @@
                 td))
             slice))))
 
+#?(:cljs (declare chunk-step realize-slice lookup-ge-step))
+
 #?(:cljs
    (defn- temporal-merge-slice-step
      "Dual-mode temporal-merge-slice: realizes the current (+ temporal)
@@ -1621,7 +1623,7 @@
    probe-set probe-datom-field
    collect-set collect-datom-field collect-merge-idx
    merge-datoms n-find find-source const-vals
-   result-list max-n temporal-tx-filter scan-added-val cancel]
+   result-list max-n temporal-tx-filter scan-added-val cancel sync?]
   (let [^objects merge-datoms merge-datoms
         ^ints find-source find-source
         ^objects const-vals const-vals]
@@ -1636,13 +1638,26 @@
                (emit-tuple scan-d collect-set collect-datom-field collect-merge-idx merge-datoms
                            n-find find-source const-vals result-list)))))
        :cljs
-       (doseq [scan-d slice
-               :while (or (neg? max-n) (< (result-list-size result-list) max-n))]
-         (check-cancel! cancel)
-         (when (and (scan-filter-temporal scan-d ground-filter strict-filter probe-set probe-datom-field temporal-tx-filter)
-                    (or (nil? scan-added-val) (= (datom/datom-added scan-d) scan-added-val)))
-           (emit-tuple scan-d collect-set collect-datom-field collect-merge-idx merge-datoms
-                       n-find find-source const-vals result-list))))))
+       ;; ONE dual body (async+sync supplies the async wrapper — do not nest).
+       (async+sync sync?
+                   (loop [sc slice]
+                     (when-some [sstep (pca/await (chunk-step sc sync?))]
+                       (let [skeys (nth sstep 0)
+                             sstart (nth sstep 1)
+                             send (nth sstep 2)
+                             snxt (nth sstep 3)]
+                         (loop [si sstart]
+                           (when (and (< si send)
+                                      (or (neg? max-n) (< (result-list-size result-list) max-n)))
+                             (check-cancel! cancel)
+                             (let [scan-d (aget skeys si)]
+                               (when (and (scan-filter-temporal scan-d ground-filter strict-filter probe-set probe-datom-field temporal-tx-filter)
+                                          (or (nil? scan-added-val) (= (datom/datom-added scan-d) scan-added-val)))
+                                 (emit-tuple scan-d collect-set collect-datom-field collect-merge-idx merge-datoms
+                                             n-find find-source const-vals result-list)))
+                             (recur (inc si))))
+                         (when (or (neg? max-n) (< (result-list-size result-list) max-n))
+                           (recur snxt)))))))))
 
 (defn- fast-eligible?
   "True iff a temporal merge is the exact shape the cursor fast path handles:
@@ -2249,7 +2264,7 @@
                                                       probe-set probe-datom-field
                                                       collect-set collect-datom-field collect-merge-idx
                                                       merge-datoms n-find find-source const-vals
-                                                      result-list max-n temporal-tx-filter scan-added-val cancel)
+                                                      result-list max-n temporal-tx-filter scan-added-val cancel sync?)
                           (execute-temporal-merge db eavt-pss slice ground-filter strict-filter
                                                   probe-set probe-datom-field
                                                   collect-set collect-datom-field collect-merge-idx
@@ -2342,8 +2357,15 @@
                                                       cancel sync?))))]
 
 ;; sync mode fills result-list in place; async mode awaits the
-      ;; kernel's async expression, then yields the filled result-list
-                  (if sync? result-list (do (pca/await dispatch-result) result-list))))))
+      ;; kernel's async expression, then yields the filled result-list.
+      ;; A kernel that is not yet dual returns nil after running
+      ;; synchronously (correct on warm stores; its sync reads fault
+      ;; decorated on cold) — the marker guard is the composition rule.
+                  (if sync?
+                    result-list
+                    (do (when (pca/async-expr? dispatch-result)
+                          (pca/await dispatch-result))
+                        result-list))))))
 
 ;; Direct-to-output execution (main fast path)
 
