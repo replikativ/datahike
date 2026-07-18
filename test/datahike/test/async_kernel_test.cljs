@@ -42,7 +42,7 @@
           _ (<! (d/create-database cfg))
           conn (<! (d/connect cfg {:sync? false}))]
       (<! (d/transact! conn (mapv (fn [i] {:db/id (inc i) :name (str "n" i)})
-                                  (range 400))))
+                                  (range 1200))))
       conn)))
 
 (defn- cold-restored
@@ -81,7 +81,7 @@
         [from to] (full-range)
         sync-tuples (run-kernel! (di/-slice eavt from to :eavt) true)]
     (testing "sync baseline emits the transacted datoms"
-      (is (>= (count sync-tuples) 400)))
+      (is (>= (count sync-tuples) 1200)))
     (testing "async over the WARM set: resolves on the calling stack, identical tuples"
       (let [aslice (atom ::pending)
             _ ((di/-slice eavt from to :eavt {:sync? false})
@@ -106,3 +106,90 @@
             (is (nil? error) (str "cold async kernel failed: " error))
             (is (= sync-tuples (mapv vec result-list))
                 "cold-streamed tuples equal the warm sync baseline")))))))
+
+(defn- drive!
+  "Run a kernel invocation fn (given sync?) in async mode against warm and
+   cold slices; returns {:warm tuples :cold tuples} via the channel."
+  [warm-eavt cold-eavt invoke!]
+  (go
+    (let [[from to] (full-range)
+          resolve-slice (fn [idx]
+                          (let [ch (a/promise-chan)]
+                            ((di/-slice idx from to :eavt {:sync? false})
+                             (fn [v] (a/put! ch {:slice v})) (fn [e] (a/put! ch {:error e})))
+                            ch))
+          run (fn [aslice]
+                (let [ch (a/promise-chan)
+                      {:keys [expr result-list]} (invoke! aslice false)]
+                  (expr (fn [_] (a/put! ch {:tuples (mapv vec result-list)}))
+                        (fn [e] (a/put! ch {:error e})))
+                  ch))
+          warm (<! (run (:slice (<! (resolve-slice warm-eavt)))))
+          cold (<! (run (:slice (<! (resolve-slice cold-eavt)))))]
+      {:warm warm :cold cold})))
+
+(deftest-async card-many-kernel-dual-mode
+  (let [conn (<! (fresh-conn))
+        db @conn
+        _ (<! (d/transact! conn (mapv (fn [i] {:db/id (inc i) :tag (str "t" i)}) (range 1200))))
+        db @conn
+        eavt (:eavt db)
+        eavt-pss eavt
+        merge-ctx (to-array [(to-array [:tag])      ;; merge-attrs
+                             (to-array [false])     ;; v-ground
+                             (to-array [nil])       ;; v-vals
+                             (to-array [false])     ;; anti
+                             (to-array [true])      ;; card-many
+                             (to-array [false])     ;; check-scan-v
+                             (to-array [false])     ;; check-scan-tx
+                             (to-array [nil])       ;; cursors
+                             (to-array [false])     ;; optional
+                             (to-array [nil])])     ;; defaults
+        invoke! (fn [slice sync?]
+                  (let [result-list #js []
+                        r (ex/execute-card-many-merge
+                           db eavt-pss slice
+                           (fn [^js d] (= :name (.-a d))) nil   ;; ground-filter: scan only :name datoms
+                           nil 0 nil 0 -1
+                           (make-array 1) 2 (int-array [-1 0]) (make-array 2)
+                           result-list -1 1 merge-ctx nil sync?)]
+                    {:expr r :result-list result-list}))
+        sync-tuples (let [{:keys [result-list]} (invoke! (di/-slice eavt (first (full-range)) (second (full-range)) :eavt) true)]
+                      (mapv vec result-list))
+        cold (cold-restored (:store db) eavt)
+        {:keys [warm cold]} (<! (drive! eavt cold invoke!))]
+    (is (= 1200 (count sync-tuples)) "each :name datom merges its entity's :tag")
+    (is (= sync-tuples (:tuples warm)) "warm async card-many ≡ sync")
+    (is (= sync-tuples (:tuples cold)) "cold async card-many ≡ sync")))
+
+(deftest-async per-cursor-kernel-dual-mode
+  (let [conn (<! (fresh-conn))
+        db @conn
+        _ (<! (d/transact! conn (mapv (fn [i] {:db/id (inc i) :tag (str "t" i)}) (range 1200))))
+        db @conn
+        eavt (:eavt db)
+        merge-ctx (to-array [(to-array [:tag])      ;; merge-attrs
+                             (to-array [false])     ;; v-ground
+                             (to-array [nil])       ;; v-vals
+                             (to-array [false])     ;; anti
+                             (to-array [nil])       ;; cursors
+                             (to-array [false])     ;; check-scan-v
+                             (to-array [false])     ;; check-scan-tx
+                             (to-array [false])     ;; optional
+                             (to-array [nil])])     ;; defaults
+        invoke! (fn [slice sync?]
+                  (let [result-list #js []
+                        r (ex/execute-per-cursor-merge
+                           eavt slice
+                           (fn [^js d] (= :name (.-a d))) nil
+                           nil 0 nil 0 -1
+                           (make-array 1) 2 (int-array [-1 0]) (make-array 2)
+                           result-list -1 1 merge-ctx nil sync?)]
+                    {:expr r :result-list result-list}))
+        sync-tuples (let [{:keys [result-list]} (invoke! (di/-slice eavt (first (full-range)) (second (full-range)) :eavt) true)]
+                      (mapv vec result-list))
+        cold (cold-restored (:store db) eavt)
+        {:keys [warm cold]} (<! (drive! eavt cold invoke!))]
+    (is (= 1200 (count sync-tuples)))
+    (is (= sync-tuples (:tuples warm)) "warm async per-cursor ≡ sync")
+    (is (= sync-tuples (:tuples cold)) "cold async per-cursor ≡ sync")))

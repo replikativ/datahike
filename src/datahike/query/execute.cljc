@@ -972,6 +972,41 @@
          (async nil)
          (btset/achunk-next s)))))
 
+#?(:cljs
+   (defn- lookup-ge-step
+     "Dual-mode lookupGE point probe. sync? true → the datom (or nil),
+      synchronously, faults decorated with the probe; false → an async
+      expression yielding it (warm resolves on the calling stack)."
+     [pss key sync?]
+     (if sync?
+       (try (btset/lookup-ge pss key nil {:sync? true})
+            (catch :default e
+              (dt/rethrow-decorated e {:probe key})))
+       (btset/lookup-ge pss key nil {:sync? false}))))
+
+#?(:cljs
+   (defn- realize-slice
+     "Dual-mode slice realization into a vector (pred nil = keep all;
+      applied synchronously per datom — no awaits inside it). sync? true →
+      the vector; false → an async expression yielding it, consuming the
+      slice chunk-wise (one await per leaf)."
+     [index from-d to-d index-type pred sync?]
+     (async+sync sync?
+                 (let [s0 (pca/await (di/-slice index from-d to-d index-type {:sync? sync?}))]
+                   (loop [s s0 acc (transient [])]
+                     (if-some [step (pca/await (chunk-step s sync?))]
+                       (let [keys (nth step 0)
+                             start (nth step 1)
+                             end (nth step 2)
+                             nxt (nth step 3)]
+                         (recur nxt
+                                (loop [i start a acc]
+                                  (if (< i end)
+                                    (let [d (aget keys i)]
+                                      (recur (inc i) (if (or (nil? pred) (pred d)) (conj! a d) a)))
+                                    a))))
+                       (persistent! acc)))))))
+
 (defn execute-scan-only
   "Path 1: Scan without merges (e.g. Q1). Smallest possible loop.
    `cancel` is an IDeref (typically Volatile) or nil; checked per iteration
@@ -1020,7 +1055,7 @@
                          (when (or (neg? max-n) (< (result-list-size result-list) max-n))
                            (recur nxt)))))))))
 
-(defn- execute-card-many-merge
+(defn execute-card-many-merge
   "Path 2: Card-many recursive cross-product merge.
    merge-ctx is [merge-attrs merge-v-ground merge-v-vals merge-anti
                  merge-card-many merge-check-scan-v merge-check-scan-tx merge-cursors
@@ -1034,7 +1069,7 @@
    probe-set probe-datom-field
    collect-set collect-datom-field collect-merge-idx
    merge-datoms n-find find-source const-vals
-   result-list max-n n-merges merge-ctx cancel]
+   result-list max-n n-merges merge-ctx cancel sync?]
   (let [^objects merge-attrs (aget ^objects merge-ctx 0)
         ^objects merge-v-ground (aget ^objects merge-ctx 1)
         ^objects merge-v-vals (aget ^objects merge-ctx 2)
@@ -1124,68 +1159,81 @@
                                      (do (aset idxs mi 0) (recur (dec mi)))))))
                          (recur))))))))))
        :cljs
-       (doseq [scan-d slice
-               :while (or (neg? max-n) (< (result-list-size result-list) max-n))]
-         (check-cancel! cancel)
-         (when (scan-filter scan-d ground-filter strict-filter probe-set probe-datom-field)
-           (let [eid (.-e ^Datom scan-d)
-                 ;; PHASE 1 — realize per-level match lists (see the :clj arm's
-                 ;; comment: levels are independent; first-order shape so the
-                 ;; async arm can await the slice/probe per level).
-                 levels
-                 (loop [mi 0 acc []]
-                   (if (>= mi n-merges)
-                     acc
-                     (let [anti? (aget merge-anti mi)
-                           ra (aget merge-attrs mi)
-                           vg? (aget merge-v-ground mi)
-                           vgv (aget merge-v-vals mi)
-                           card-many? (aget merge-card-many mi)
-                           check-v? (aget merge-check-scan-v mi)
-                           check-tx? (aget merge-check-scan-tx mi)]
-                       (if card-many?
-                         (let [from-d (datom eid ra (when vg? vgv) tx0)
-                               to-d (datom eid ra (when vg? vgv) txmax)
-                               mslice (di/-slice (:eavt db) from-d to-d :eavt)
-                               matches (into []
-                                             (filter (fn [^Datom d]
-                                                       (merge-datom-match? d eid ra vg? vgv check-v? check-tx? scan-d)))
-                                             mslice)]
-                           (if anti?
-                             (when (empty? matches) (recur (inc mi) (conj acc nil)))
-                             (when (seq matches) (recur (inc mi) (conj acc matches)))))
-                         (let [probe (datom eid ra vgv tx0)
-                               ^Datom d (pss-lookup-ge eavt-pss probe)
-                               found? (and d (merge-datom-match? d eid ra vg? vgv check-v? check-tx? scan-d))]
-                           (if anti?
-                             (when (not found?) (recur (inc mi) (conj acc nil)))
-                             (cond
-                               found? (recur (inc mi) (conj acc [d]))
-                               ;; Optional merge (get-else): synthetic
-                               ;; default-valued datom on miss.
-                               (and merge-optional (aget merge-optional mi))
-                               (recur (inc mi) (conj acc [(datom eid ra (aget merge-defaults mi) tx0)]))
-                               :else nil)))))))]
-             ;; PHASE 2 — odometer, deepest level fastest.
-             (when levels
-               (let [idxs (make-array n-merges)]
-                 (dotimes [mi n-merges] (aset idxs mi 0))
-                 (loop []
-                   (dotimes [mi n-merges]
-                     (when-some [lv (nth levels mi)]
-                       (aset merge-datoms mi (nth lv (aget idxs mi)))))
-                   (emit-tuple scan-d collect-set collect-datom-field collect-merge-idx merge-datoms
-                               n-find find-source const-vals result-list)
-                   (when (loop [mi (dec n-merges)]
-                           (if (neg? mi)
-                             false
-                             (let [lv (nth levels mi)
-                                   n (if (nil? lv) 1 (count lv))
-                                   i (inc (aget idxs mi))]
-                               (if (< i n)
-                                 (do (aset idxs mi i) true)
-                                 (do (aset idxs mi 0) (recur (dec mi)))))))
-                     (recur)))))))))))
+       ;; ONE dual body (async+sync supplies the async wrapper — do not nest).
+       (async+sync sync?
+                   (loop [sc slice]
+                     (when-some [sstep (pca/await (chunk-step sc sync?))]
+                       (let [skeys (nth sstep 0)
+                             sstart (nth sstep 1)
+                             send (nth sstep 2)
+                             snxt (nth sstep 3)]
+                         (loop [si sstart]
+                           (when (and (< si send)
+                                      (or (neg? max-n) (< (result-list-size result-list) max-n)))
+                             (check-cancel! cancel)
+                             (let [scan-d (aget skeys si)]
+                               (when (scan-filter scan-d ground-filter strict-filter probe-set probe-datom-field)
+                                 (let [eid (.-e ^Datom scan-d)
+                                       ;; PHASE 1 — realize per-level match lists (levels are
+                                       ;; independent; awaits sit at slice/probe granularity,
+                                       ;; match predicates run synchronously inside).
+                                       levels
+                                       (loop [mi 0 acc []]
+                                         (if (>= mi n-merges)
+                                           acc
+                                           (let [anti? (aget merge-anti mi)
+                                                 ra (aget merge-attrs mi)
+                                                 vg? (aget merge-v-ground mi)
+                                                 vgv (aget merge-v-vals mi)
+                                                 card-many? (aget merge-card-many mi)
+                                                 check-v? (aget merge-check-scan-v mi)
+                                                 check-tx? (aget merge-check-scan-tx mi)]
+                                             (if card-many?
+                                               (let [from-d (datom eid ra (when vg? vgv) tx0)
+                                                     to-d (datom eid ra (when vg? vgv) txmax)
+                                                     matches (pca/await
+                                                              (realize-slice (:eavt db) from-d to-d :eavt
+                                                                             (fn [^Datom d]
+                                                                               (merge-datom-match? d eid ra vg? vgv check-v? check-tx? scan-d))
+                                                                             sync?))]
+                                                 (if anti?
+                                                   (when (empty? matches) (recur (inc mi) (conj acc nil)))
+                                                   (when (seq matches) (recur (inc mi) (conj acc matches)))))
+                                               (let [probe (datom eid ra vgv tx0)
+                                                     ^Datom d (pca/await (lookup-ge-step eavt-pss probe sync?))
+                                                     found? (and d (merge-datom-match? d eid ra vg? vgv check-v? check-tx? scan-d))]
+                                                 (if anti?
+                                                   (when (not found?) (recur (inc mi) (conj acc nil)))
+                                                   (cond
+                                                     found? (recur (inc mi) (conj acc [d]))
+                                                     ;; Optional merge (get-else): synthetic
+                                                     ;; default-valued datom on miss.
+                                                     (and merge-optional (aget merge-optional mi))
+                                                     (recur (inc mi) (conj acc [(datom eid ra (aget merge-defaults mi) tx0)]))
+                                                     :else nil)))))))]
+                                   ;; PHASE 2 — odometer, deepest level fastest.
+                                   (when levels
+                                     (let [idxs (make-array n-merges)]
+                                       (dotimes [mi n-merges] (aset idxs mi 0))
+                                       (loop []
+                                         (dotimes [mi n-merges]
+                                           (when-some [lv (nth levels mi)]
+                                             (aset merge-datoms mi (nth lv (aget idxs mi)))))
+                                         (emit-tuple scan-d collect-set collect-datom-field collect-merge-idx merge-datoms
+                                                     n-find find-source const-vals result-list)
+                                         (when (loop [mi (dec n-merges)]
+                                                 (if (neg? mi)
+                                                   false
+                                                   (let [lv (nth levels mi)
+                                                         n (if (nil? lv) 1 (count lv))
+                                                         i (inc (aget idxs mi))]
+                                                     (if (< i n)
+                                                       (do (aset idxs mi i) true)
+                                                       (do (aset idxs mi 0) (recur (dec mi)))))))
+                                           (recur)))))))
+                               (recur (inc si)))))
+                         (when (or (neg? max-n) (< (result-list-size result-list) max-n))
+                           (recur snxt)))))))))
 
 #?(:clj
    (defmacro ^:private sorted-merge-inner-loop
@@ -1286,7 +1334,7 @@
                     (zero? (compare cur-a target-a))
                     (neg? (compare cur-a target-a))))))))))))
 
-(defn- execute-per-cursor-merge
+(defn execute-per-cursor-merge
   "Path 4: Per-cursor or lookupGE merge (fallback for anti-merges, non-sorted).
    merge-ctx is [merge-attrs merge-v-ground merge-v-vals merge-anti merge-cursors
                  merge-check-scan-v merge-check-scan-tx merge-optional merge-defaults]."
@@ -1294,7 +1342,7 @@
    probe-set probe-datom-field
    collect-set collect-datom-field collect-merge-idx
    merge-datoms n-find find-source const-vals
-   result-list max-n n-merges merge-ctx cancel]
+   result-list max-n n-merges merge-ctx cancel sync?]
   (let [^objects merge-attrs (aget ^objects merge-ctx 0)
         ^objects merge-v-ground (aget ^objects merge-ctx 1)
         ^objects merge-v-vals (aget ^objects merge-ctx 2)
@@ -1350,40 +1398,53 @@
                    (emit-tuple scan-d collect-set collect-datom-field collect-merge-idx merge-datoms
                                n-find find-source const-vals result-list)))))))
        :cljs
-       (doseq [scan-d slice
-               :while (or (neg? max-n) (< (result-list-size result-list) max-n))]
-         (check-cancel! cancel)
-         (when (scan-filter scan-d ground-filter strict-filter probe-set probe-datom-field)
-           (let [eid (.-e ^Datom scan-d)
-                 ok? (loop [mi (int 0) ok? true]
-                       (if (or (not ok?) (>= mi n-merges))
-                         ok?
-                         (let [anti? (aget merge-anti mi)
-                               ra (aget merge-attrs mi)
-                               vg? (aget merge-v-ground mi)
-                               vgv (aget merge-v-vals mi)
-                               probe (datom eid ra vgv tx0)
-                               ^Datom d (pss-lookup-ge eavt-pss probe)
-                               found? (and d
-                                           (== (.-e d) eid)
-                                           (= (.-a d) ra)
-                                           (or (not vg?) (val-eq? (.-v d) vgv))
-                                           (or (not (aget merge-check-scan-v mi)) (val-eq? (.-v d) (.-v scan-d)))
-                                           (or (not (aget merge-check-scan-tx mi)) (= (datom/datom-tx d) (datom/datom-tx scan-d))))]
-                           (if anti?
-                             (recur (inc mi) (not found?))
-                             (if found?
-                               (do (aset merge-datoms mi d)
-                                   (recur (inc mi) true))
-                               ;; Not found: check optional
-                               (if (and merge-optional (aget merge-optional mi))
-                                 (do (aset merge-datoms mi
-                                           (datom eid ra (aget merge-defaults mi) tx0))
-                                     (recur (inc mi) true))
-                                 (recur (inc mi) false)))))))]
-             (when ok?
-               (emit-tuple scan-d collect-set collect-datom-field collect-merge-idx merge-datoms
-                           n-find find-source const-vals result-list))))))))
+       ;; ONE dual body (async+sync supplies the async wrapper — do not nest).
+       (async+sync sync?
+                   (loop [sc slice]
+                     (when-some [sstep (pca/await (chunk-step sc sync?))]
+                       (let [skeys (nth sstep 0)
+                             sstart (nth sstep 1)
+                             send (nth sstep 2)
+                             snxt (nth sstep 3)]
+                         (loop [si sstart]
+                           (when (and (< si send)
+                                      (or (neg? max-n) (< (result-list-size result-list) max-n)))
+                             (check-cancel! cancel)
+                             (let [scan-d (aget skeys si)]
+                               (when (scan-filter scan-d ground-filter strict-filter probe-set probe-datom-field)
+                                 (let [eid (.-e ^Datom scan-d)
+                                       ok? (loop [mi (int 0) ok? true]
+                                             (if (or (not ok?) (>= mi n-merges))
+                                               ok?
+                                               (let [anti? (aget merge-anti mi)
+                                                     ra (aget merge-attrs mi)
+                                                     vg? (aget merge-v-ground mi)
+                                                     vgv (aget merge-v-vals mi)
+                                                     probe (datom eid ra vgv tx0)
+                                                     ^Datom d (pca/await (lookup-ge-step eavt-pss probe sync?))
+                                                     found? (and d
+                                                                 (== (.-e d) eid)
+                                                                 (= (.-a d) ra)
+                                                                 (or (not vg?) (val-eq? (.-v d) vgv))
+                                                                 (or (not (aget merge-check-scan-v mi)) (val-eq? (.-v d) (.-v scan-d)))
+                                                                 (or (not (aget merge-check-scan-tx mi)) (= (datom/datom-tx d) (datom/datom-tx scan-d))))]
+                                                 (if anti?
+                                                   (recur (inc mi) (not found?))
+                                                   (if found?
+                                                     (do (aset merge-datoms mi d)
+                                                         (recur (inc mi) true))
+                                                     ;; Not found: check optional
+                                                     (if (and merge-optional (aget merge-optional mi))
+                                                       (do (aset merge-datoms mi
+                                                                 (datom eid ra (aget merge-defaults mi) tx0))
+                                                           (recur (inc mi) true))
+                                                       (recur (inc mi) false)))))))]
+                                   (when ok?
+                                     (emit-tuple scan-d collect-set collect-datom-field collect-merge-idx merge-datoms
+                                                 n-find find-source const-vals result-list)))))
+                             (recur (inc si))))
+                         (when (or (neg? max-n) (< (result-list-size result-list) max-n))
+                           (recur snxt)))))))))
 
 ;; ---------------------------------------------------------------------------
 ;; Shared dispatcher helpers (cold path — called once per query group).
@@ -2105,7 +2166,7 @@
                                    probe-set probe-datom-field
                                    collect-set collect-datom-field collect-merge-idx
                                    merge-datoms n-find find-source const-vals
-                                   result-list max-n n-merges merge-ctx cancel))
+                                   result-list max-n n-merges merge-ctx cancel true))
 
         :sorted-merge
         #?(:clj
@@ -2153,7 +2214,7 @@
                                     (object-array [merge-attrs merge-v-ground merge-v-vals merge-anti merge-cursors
                                                    merge-check-scan-v merge-check-scan-tx
                                                    merge-optional merge-defaults])
-                                    cancel))))
+                                    cancel true))))
 
     result-list))
 
