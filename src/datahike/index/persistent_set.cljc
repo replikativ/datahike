@@ -6,7 +6,7 @@
             #?(:cljs [org.replikativ.persistent-sorted-set.branch :as branch :refer [Branch]])
             #?(:cljs [org.replikativ.persistent-sorted-set.leaf :refer [Leaf]])
             #?(:cljs [org.replikativ.persistent-sorted-set.impl.storage :refer [IStorage]])
-            #?(:cljs [is.simm.partial-cps.async :refer-macros [async]])
+            #?(:cljs [is.simm.partial-cps.async :as pca :refer-macros [async]])
             #?(:cljs [clojure.core.async :as async])
             [org.replikativ.persistent-sorted-set.arrays :as arrays]
             #?@(:clj  [[clojure.core.cache :as cache]
@@ -130,29 +130,93 @@
 
 (def slice-comparator-constructor (generate-slice-comparator-constructor))
 
-(defn remove-datom [pset ^Datom datom index-type]
-  (psset/disj pset datom (index-type->cmp-quick index-type false)))
+(defn- jvm-no-async! [opts]
+  #?(:clj (when (false? (:sync? opts))
+            (throw (ex-info "async index access is not supported on the JVM (use virtual threads)"
+                            {:error :storage/async-unsupported})))
+     :cljs nil))
 
-(defn insert [pset ^Datom datom index-type]
-  ;; Use lookup with prefix comparator - O(log n) with zero allocations
-  ;; Prefix comparator checks only (e,a,v) to find if ANY datom exists with same triple
-  (if #?(:clj (.lookup ^PersistentSortedSet pset datom (dd/index-type->cmp-prefix index-type))
-         :cljs (psset/lookup pset datom (dd/index-type->cmp-prefix index-type)))
-    pset
-    (psset/conj pset datom (index-type->cmp-quick index-type))))
+(defn remove-datom
+  ([pset ^Datom datom index-type]
+   (psset/disj pset datom (index-type->cmp-quick index-type false)))
+  ([pset ^Datom datom index-type opts]
+   (jvm-no-async! opts)
+   #?(:clj  (remove-datom pset datom index-type)
+      :cljs (if (false? (:sync? opts))
+              ;; the PSS write walk is dual end-to-end: descent, leaf edit and
+              ;; the merge/borrow SIBLING loads all await node restores
+              (psset/disj pset datom (index-type->cmp-quick index-type false) opts)
+              (remove-datom pset datom index-type)))))
 
-(defn temporal-insert [pset ^Datom datom index-type]
-  (psset/conj pset datom (index-type->cmp-quick index-type false)))
+(defn insert
+  ([pset ^Datom datom index-type]
+   ;; Use lookup with prefix comparator - O(log n) with zero allocations
+   ;; Prefix comparator checks only (e,a,v) to find if ANY datom exists with same triple
+   (if #?(:clj (.lookup ^PersistentSortedSet pset datom (dd/index-type->cmp-prefix index-type))
+          :cljs (psset/lookup pset datom (dd/index-type->cmp-prefix index-type)))
+     pset
+     (psset/conj pset datom (index-type->cmp-quick index-type))))
+  ([pset ^Datom datom index-type opts]
+   (jvm-no-async! opts)
+   #?(:clj  (insert pset datom index-type)
+      :cljs (if (false? (:sync? opts))
+              (async
+               (if (pca/await (psset/lookup pset datom (dd/index-type->cmp-prefix index-type) opts))
+                 pset
+                 (pca/await (psset/conj pset datom (index-type->cmp-quick index-type) opts))))
+              (insert pset datom index-type)))))
 
-(defn upsert [pset ^Datom datom index-type old-datom]
-  (if old-datom
-    (if (= index-type :avet)
-      (-> pset
-          (psset/disj old-datom (index-type->cmp-quick index-type))
-          (psset/conj datom (index-type->cmp-quick index-type)))
-      #?(:clj (.replace ^PersistentSortedSet pset old-datom datom (dd/index-type->cmp-replace index-type))
-         :cljs (psset/replace pset old-datom datom (dd/index-type->cmp-replace index-type))))
-    (psset/conj pset datom (index-type->cmp-quick index-type))))
+(defn temporal-insert
+  ([pset ^Datom datom index-type]
+   (psset/conj pset datom (index-type->cmp-quick index-type false)))
+  ([pset ^Datom datom index-type opts]
+   (jvm-no-async! opts)
+   #?(:clj  (temporal-insert pset datom index-type)
+      :cljs (if (false? (:sync? opts))
+              (psset/conj pset datom (index-type->cmp-quick index-type false) opts)
+              (temporal-insert pset datom index-type)))))
+
+(defn upsert
+  ([pset ^Datom datom index-type old-datom]
+   (if old-datom
+     (if (= index-type :avet)
+       (-> pset
+           (psset/disj old-datom (index-type->cmp-quick index-type))
+           (psset/conj datom (index-type->cmp-quick index-type)))
+       #?(:clj (.replace ^PersistentSortedSet pset old-datom datom (dd/index-type->cmp-replace index-type))
+          :cljs (psset/replace pset old-datom datom (dd/index-type->cmp-replace index-type))))
+     (psset/conj pset datom (index-type->cmp-quick index-type))))
+  ([pset ^Datom datom index-type old-datom opts]
+   (jvm-no-async! opts)
+   #?(:clj  (upsert pset datom index-type old-datom)
+      :cljs (if (false? (:sync? opts))
+              (async
+               (if old-datom
+                 (if (= index-type :avet)
+                   (let [p (pca/await (psset/disj pset old-datom (index-type->cmp-quick index-type) opts))]
+                     (pca/await (psset/conj p datom (index-type->cmp-quick index-type) opts)))
+                   (pca/await (psset/replace pset old-datom datom (dd/index-type->cmp-replace index-type) opts)))
+                 (pca/await (psset/conj pset datom (index-type->cmp-quick index-type) opts))))
+              (upsert pset datom index-type old-datom)))))
+
+(defn temporal-upsert-async
+  "Async arm of temporal-upsert (cljs): up to two awaited conjs."
+  #?(:clj [_ _ _ _ _] :cljs [pset ^Datom datom index-type old-val opts])
+  #?(:clj (throw (ex-info "async index access is not supported on the JVM (use virtual threads)"
+                          {:error :storage/async-unsupported}))
+     :cljs (async
+            (let [{:keys [e a v tx added]} datom
+                  cmp (index-type->cmp-quick index-type false)]
+              (if added
+                (if old-val
+                  (if (= v old-val)
+                    pset
+                    (let [p (pca/await (psset/conj pset (dd/datom e a old-val tx false) cmp opts))]
+                      (pca/await (psset/conj p datom cmp opts))))
+                  (pca/await (psset/conj pset datom cmp opts)))
+                (if old-val
+                  (pca/await (psset/conj pset (dd/datom e a old-val tx false) cmp opts))
+                  pset))))))
 
 (defn temporal-upsert [pset ^Datom datom index-type {old-val :v}]
   (let [{:keys [e a v tx added]} datom]
@@ -257,14 +321,32 @@
         :cljs (psset/count pset opts))))
   (-insert [^PersistentSortedSet pset datom index-type _op-count]
     (insert pset datom index-type))
+  (-insert [^PersistentSortedSet pset datom index-type _op-count opts]
+    (insert pset datom index-type opts))
   (-temporal-insert [^PersistentSortedSet pset datom index-type _op-count]
     (psset/conj pset datom (index-type->cmp-quick index-type)))
+  (-temporal-insert [^PersistentSortedSet pset datom index-type _op-count opts]
+    (jvm-no-async! opts)
+    #?(:clj  (psset/conj pset datom (index-type->cmp-quick index-type))
+       :cljs (if (false? (:sync? opts))
+               (psset/conj pset datom (index-type->cmp-quick index-type) opts)
+               (psset/conj pset datom (index-type->cmp-quick index-type)))))
   (-upsert [^PersistentSortedSet pset datom index-type _op-count old-datom]
     (upsert pset datom index-type old-datom))
+  (-upsert [^PersistentSortedSet pset datom index-type _op-count old-datom opts]
+    (upsert pset datom index-type old-datom opts))
   (-temporal-upsert [^PersistentSortedSet pset datom index-type _op-count old-val]
     (temporal-upsert pset datom index-type old-val))
+  (-temporal-upsert [^PersistentSortedSet pset datom index-type _op-count old-val opts]
+    (jvm-no-async! opts)
+    #?(:clj  (temporal-upsert pset datom index-type old-val)
+       :cljs (if (false? (:sync? opts))
+               (temporal-upsert-async pset datom index-type (:v old-val) opts)
+               (temporal-upsert pset datom index-type old-val))))
   (-remove [^PersistentSortedSet pset datom index-type _op-count]
     (remove-datom pset datom index-type))
+  (-remove [^PersistentSortedSet pset datom index-type _op-count opts]
+    (remove-datom pset datom index-type opts))
   (-flush [^PersistentSortedSet pset _]
     (psset/store pset)
     pset)
