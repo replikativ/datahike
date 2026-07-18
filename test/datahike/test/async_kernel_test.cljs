@@ -293,3 +293,33 @@
         (is (= warm @r) "warm q-async completed synchronously with the sync result")))
     (testing "after the async pass the SAME cold store serves sync q (LRU warmed)"
       (is (= warm (binding [q/*query-result-cache?* false] (d/q query cold-db)))))))
+
+(deftest-async q-async-zero-warmup
+  ;; THE contract: the FIRST query ever — planning included — runs against a
+  ;; store with zero synchronous read capability, no prior warm run, no plan
+  ;; cache entry (unique attribute names guarantee a fresh plan-cache key).
+  (let [cfg {:store {:backend :memory :id (random-uuid)}
+             :schema-flexibility :read :keep-history? false}
+        _ (<! (d/create-database cfg))
+        conn (<! (d/connect cfg {:sync? false}))
+        _ (<! (d/transact! conn (mapv (fn [i] {:db/id (inc i)
+                                               :zw-name (str "n" i)
+                                               :zw-friend (inc (mod (* 7 i) 1200))})
+                                      (range 600))))
+        db @conn
+        query '[:find ?b :where [?p :zw-name ?n] [?b :zw-friend ?p]]
+        cold-db (-> db
+                    (assoc :eavt (cold-restored (:store db) (:eavt db)))
+                    (assoc :aevt (cold-restored (:store db) (:aevt db)))
+                    (assoc :avet (cold-restored (:store db) (:avet db))))
+        ch (a/promise-chan)]
+    ;; cold q-async FIRST — nothing has ever touched these indices
+    ((q/q-async query cold-db)
+     (fn [v] (a/put! ch {:result v}))
+     (fn [e] (a/put! ch {:error e})))
+    (let [{:keys [result error]} (<! ch)
+          warm (binding [q/*query-result-cache?* false] (d/q query db))]
+      (is (nil? error) (str "zero-warmup q-async failed: " error))
+      (is (pos? (count warm)))
+      (is (= warm result)
+          "first-ever query, cold store, zero warmup: q-async ≡ warm sync"))))

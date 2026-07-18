@@ -5,6 +5,7 @@
    [clojure.set :as set]
    [clojure.string :as str]
    [is.simm.partial-cps.async :as pca :refer [async async+sync]]
+   [datahike.query.estimate :as estimate]
    [clojure.walk :as walk]
    [datahike.datom :as datom]
    [datahike.db.interface :as dbi]
@@ -2902,6 +2903,36 @@
         (vswap! plan-cache assoc cache-key plan)
         plan))))
 
+(defn get-or-create-plan-step
+  "Dual-mode plan acquisition. sync? true delegates to get-or-create-plan
+   (the only JVM mode). sync? false (cljs) makes PLANNING itself work with
+   zero warmup on a cold async-only store: on a plan-cache miss it runs a
+   RECORD pass (estimator reads log their requests and return fallbacks;
+   that plan is discarded and never cached), fetches every recorded read
+   concurrently, then builds the real plan purely against the memo."
+  [db clauses bound-vars rules in-cards sync?]
+  #?(:clj
+     (do (when (false? sync?)
+           (throw (ex-info "async planning is not supported on the JVM"
+                           {:error :storage/async-unsupported})))
+         (get-or-create-plan db clauses bound-vars rules in-cards))
+     :cljs
+     (if sync?
+       (get-or-create-plan db clauses bound-vars rules in-cards)
+       (async
+        (let [schema-hash (hash (dbi/-schema db))
+              cache-key (scale-sensitive-key [clauses bound-vars (when rules rules)
+                                              (not-empty in-cards) schema-hash])]
+          (if-some [cached (get @plan-cache cache-key nil)]
+            cached
+            (let [memo (atom {:recording? true :values {} :requests {}})
+                  mdb (assoc db estimate/memo-key memo)
+                  _ (create-plan-via-ir mdb clauses bound-vars rules in-cards)
+                  _ (pca/await (estimate/fetch-estimate-requests-step memo))
+                  plan (create-plan-via-ir mdb clauses bound-vars rules in-cards)]
+              (vswap! plan-cache assoc cache-key plan)
+              plan)))))))
+
 (def ^:dynamic *profile?* false)
 
 (defn- parse-order-by
@@ -3917,7 +3948,8 @@
                             clauses (substitute-consts-with-lookup-refs db (:where query) (:consts context-in)
                                                                         (when multi-source? (:sources context-in)))
                             rules (not-empty (:rules context-in))
-                            plan (get-or-create-plan plan-db clauses bound-vars rules (in-card-seed qin))]
+                            plan (pca/await (get-or-create-plan-step
+                                             plan-db clauses bound-vars rules (in-card-seed qin) sync?))]
 
           ;; Try paths in order of preference:
           ;; 1. Direct HashSet (non-aggregate simple queries)

@@ -8,6 +8,8 @@
    [datahike.db.utils :as dbu]
    [datahike.index.interface :as di]
    [datahike.tools :as dt]
+   [is.simm.partial-cps.async :as pca :refer [async]]
+   #?(:cljs [org.replikativ.persistent-sorted-set.btset :as btset])
    [datahike.query.analyze :as analyze]
    [replikativ.logging :as log]))
 
@@ -32,6 +34,96 @@
 
 ;; ---------------------------------------------------------------------------
 ;; Heuristic fallback estimation (no subtree counts available)
+
+(def memo-key
+  "When present on the db value, estimator storage reads consult this memo
+   (an atom of {:recording? bool :values {k v} :requests {k descriptor}}):
+   value hit → pure; recording miss → log the request, return a fallback
+   (the plan built from fallbacks is DISCARDED); otherwise → plain sync read
+   (the JVM / warm path, unchanged). This is what makes query PLANNING work
+   with zero warmup on cold async-only stores: a record pass enumerates the
+   exact reads, they are fetched concurrently, and the real plan runs pure."
+  :datahike.query.estimate/memo)
+
+(defn- memo-count-slice [db index-kw from to cmp fallback]
+  (let [memo (get db memo-key)]
+    (if (nil? memo)
+      (di/-count-slice (get db index-kw) from to cmp)
+      (let [k [:count-slice index-kw from to]
+            {:keys [values recording?]} @memo]
+        (if-some [v (get values k)]
+          v
+          (if recording?
+            (do (swap! memo update :requests assoc k
+                       {:op :count-slice :index (get db index-kw) :from from :to to :cmp cmp})
+                fallback)
+            (di/-count-slice (get db index-kw) from to cmp)))))))
+
+(defn- memo-count-index [db index-kw fallback]
+  (let [memo (get db memo-key)]
+    (if (nil? memo)
+      (di/-count (get db index-kw))
+      (let [k [:count index-kw]
+            {:keys [values recording?]} @memo]
+        (if-some [v (get values k)]
+          v
+          (if recording?
+            (do (swap! memo update :requests assoc k {:op :count :index (get db index-kw)})
+                fallback)
+            (di/-count (get db index-kw))))))))
+
+(defn- memo-sample
+  "First-n datoms of a slice as a vector ([] fallback while recording)."
+  [db index-kw from to itype n]
+  (let [memo (get db memo-key)]
+    (if (nil? memo)
+      (into [] (take n) (di/-slice (get db index-kw) from to itype))
+      (let [k [:sample index-kw from to n]
+            {:keys [values recording?]} @memo]
+        (if-some [v (get values k)]
+          v
+          (if recording?
+            (do (swap! memo update :requests assoc k
+                       {:op :sample :index (get db index-kw) :from from :to to :itype itype :n n})
+                [])
+            (into [] (take n) (di/-slice (get db index-kw) from to itype))))))))
+
+#?(:cljs
+   (defn fetch-estimate-requests-step
+     "Asynchronously execute every recorded estimator read (concurrently via
+      pca/all), fill :values, and flip :recording? off. Returns an async
+      expression yielding the memo."
+     [memo]
+     (async
+      (let [reqs (vec (:requests @memo))
+            exprs (mapv (fn [[k {:keys [op index from to cmp itype n]}]]
+                          (case op
+                            :count-slice
+                            (async [k (pca/await (di/-count-slice index from to cmp {:sync? false}))])
+                            :count
+                            (async [k (pca/await (di/-count index {:sync? false}))])
+                            :sample
+                            (async [k (let [s0 (pca/await (di/-slice index from to itype {:sync? false}))]
+                                        (loop [s s0 acc []]
+                                          (if (or (nil? s) (>= (count acc) n))
+                                            acc
+                                            (let [step (pca/await (btset/achunk-next s))]
+                                              (if (nil? step)
+                                                acc
+                                                (let [keys (nth step 0) start (nth step 1)
+                                                      end (nth step 2) nxt (nth step 3)]
+                                                  (recur nxt
+                                                         (loop [i start a acc]
+                                                           (if (and (< i end) (< (count a) n))
+                                                             (recur (inc i) (conj a (aget keys i)))
+                                                             a)))))))))])))
+                        reqs)
+            kvs (pca/await (pca/all exprs))]
+        (swap! memo (fn [m] (-> m
+                                (update :values into kvs)
+                                (assoc :recording? false)
+                                (assoc :requests {}))))
+        memo))))
 
 (defn- estimate-pattern-heuristic
   "Heuristic cardinality estimation for indices without precomputed subtree counts.
@@ -93,10 +185,10 @@
       (and e-ground? a-ground? (not v-ground?))
       (if (:card-one? schema-info)
         1
-        (di/-count-slice (:eavt db)
-                         (datom (long e) resolved-a nil tx0)
-                         (datom (long e) resolved-a nil txmax)
-                         (datom/index-type->cmp-replace :eavt)))
+        (memo-count-slice db :eavt
+                          (datom (long e) resolved-a nil tx0)
+                          (datom (long e) resolved-a nil txmax)
+                          (datom/index-type->cmp-replace :eavt) 4))
 
       ;; [e a v] — exact point, 0 or 1
       (and e-ground? a-ground? v-ground?)
@@ -105,52 +197,49 @@
       ;; [?e a v] — count on AVET if indexed, otherwise sample from AEVT
       (and (not e-ground?) a-ground? v-ground?)
       (if (:indexed? schema-info)
-        (di/-count-slice (:avet db)
-                         (datom e0 resolved-a v tx0)
-                         (datom emax resolved-a v txmax)
-                         datom/cmp-datoms-av-only)
+        (memo-count-slice db :avet
+                          (datom e0 resolved-a v tx0)
+                          (datom emax resolved-a v txmax)
+                          datom/cmp-datoms-av-only 100)
         ;; Without AVET, sample datoms from the attribute slice to estimate
         ;; what fraction have this value. More accurate than fixed 10% heuristic.
-        (let [attr-count (di/-count-slice (:aevt db)
-                                          (datom e0 resolved-a nil tx0)
-                                          (datom emax resolved-a nil txmax)
-                                          cmp-attr-only)]
+        (let [attr-count (memo-count-slice db :aevt
+                                           (datom e0 resolved-a nil tx0)
+                                           (datom emax resolved-a nil txmax)
+                                           cmp-attr-only 1000)
+              ;; one sample request serves both regimes: when the attribute
+              ;; fits in sample-size the sample IS the whole slice (exact),
+              ;; otherwise it extrapolates — keeping the recorded request set
+              ;; identical between the record pass and the real pass
+              datoms (memo-sample db :aevt
+                                  (datom e0 resolved-a nil tx0)
+                                  (datom emax resolved-a nil txmax) :aevt sample-size)
+              matching (count (filter #(= (.-v ^datahike.datom.Datom %) v) datoms))]
           (if (<= attr-count sample-size)
-            ;; Small enough to count exactly via sampling the whole slice
-            (let [datoms (di/-slice (:aevt db)
-                                    (datom e0 resolved-a nil tx0)
-                                    (datom emax resolved-a nil txmax) :aevt)
-                  matching (count (filter #(= (.-v ^datahike.datom.Datom %) v) datoms))]
-              (max 1 matching))
-            ;; Sample first N datoms and extrapolate
-            (let [datoms (into [] (take sample-size)
-                               (di/-slice (:aevt db)
-                                          (datom e0 resolved-a nil tx0)
-                                          (datom emax resolved-a nil txmax) :aevt))
-                  n-sampled (count datoms)]
+            (max 1 matching)
+            (let [n-sampled (count datoms)]
               (if (zero? n-sampled)
                 (max 1 (quot attr-count 10))
-                (let [matching (count (filter #(= (.-v ^datahike.datom.Datom %) v) datoms))
-                      rate (/ (double matching) n-sampled)]
+                (let [rate (/ (double matching) n-sampled)]
                   (max 1 (long (* attr-count (max 0.01 rate))))))))))
 
       ;; [?e a ?v] — all datoms for attribute
       (and (not e-ground?) a-ground? (not v-ground?))
-      (di/-count-slice (:aevt db)
-                       (datom e0 resolved-a nil tx0)
-                       (datom emax resolved-a nil txmax)
-                       cmp-attr-only)
+      (memo-count-slice db :aevt
+                        (datom e0 resolved-a nil tx0)
+                        (datom emax resolved-a nil txmax)
+                        cmp-attr-only 1000)
 
       ;; [e ?a ?v] — all datoms for entity
       (and e-ground? (not a-ground?) (not v-ground?))
-      (di/-count-slice (:eavt db)
-                       (datom (long e) nil nil tx0)
-                       (datom (long e) nil nil txmax)
-                       cmp-entity-only)
+      (memo-count-slice db :eavt
+                        (datom (long e) nil nil tx0)
+                        (datom (long e) nil nil txmax)
+                        cmp-entity-only 10)
 
       ;; [?e ?a ?v] — full scan (worst case)
       :else
-      (di/-count (:eavt db)))))
+      (memo-count-index db :eavt 10000))))
 
 (defn estimate-pattern
   "Estimate the cardinality (number of matching datoms) for a pattern clause.
@@ -184,36 +273,31 @@
       (let [resolved-a (if (and (:attribute-refs? (dbi/-config db)) (keyword? a))
                          (dbi/-ref-for db a)
                          a)
-            attr-count (di/-count-slice (:aevt db)
-                                        (datom e0 resolved-a nil tx0)
-                                        (datom emax resolved-a nil txmax)
-                                        cmp-attr-only)]
+            attr-count (memo-count-slice db :aevt
+                                         (datom e0 resolved-a nil tx0)
+                                         (datom emax resolved-a nil txmax)
+                                         cmp-attr-only 1000)]
         (cond
           (zero? attr-count) 1
           (:unique? schema-info) attr-count
           :else
           (let [;; Prefer AVET (already sorted by value) — distinct values appear in runs
-                index-key (if (:indexed? schema-info) :avet :aevt)
-                index (get db index-key)]
-            (if (or (not index) (<= attr-count sample-size))
-              ;; Small enough to count exactly via the full slice
-              (let [datoms (di/-slice (or index (:aevt db))
-                                      (datom e0 resolved-a nil tx0)
-                                      (datom emax resolved-a nil txmax)
-                                      (or index-key :aevt))]
-                (max 1 (count (into #{} (map (fn [^datahike.datom.Datom d] (.-v d))) datoms))))
-              ;; Sample first N datoms; count distinct, extrapolate.
-              (let [datoms (into [] (take sample-size)
-                                 (di/-slice index
-                                            (datom e0 resolved-a nil tx0)
-                                            (datom emax resolved-a nil txmax)
-                                            index-key))
-                    n-sampled (count datoms)
-                    n-distinct (count (into #{} (map (fn [^datahike.datom.Datom d] (.-v d))) datoms))]
-                (if (zero? n-sampled)
-                  attr-count
-                  (max 1 (long (* attr-count
-                                  (/ (double n-distinct) (double n-sampled))))))))))))))
+                index-key (if (and (:indexed? schema-info) (some? (:avet db))) :avet :aevt)
+                ;; single sample request serves both regimes (see
+                ;; estimate-pattern-counted): a slice that fits in sample-size
+                ;; is covered entirely by the sample — exact count
+                datoms (memo-sample db index-key
+                                    (datom e0 resolved-a nil tx0)
+                                    (datom emax resolved-a nil txmax)
+                                    index-key sample-size)
+                n-sampled (count datoms)
+                n-distinct (count (into #{} (map (fn [^datahike.datom.Datom d] (.-v d))) datoms))]
+            (if (<= attr-count sample-size)
+              (max 1 n-distinct)
+              (if (zero? n-sampled)
+                attr-count
+                (max 1 (long (* attr-count
+                                (/ (double n-distinct) (double n-sampled)))))))))))))
 
 ;; ---------------------------------------------------------------------------
 ;; Bound-aware pattern cardinality estimation
@@ -368,7 +452,7 @@
           ;; Sample first N datoms from the slice. For randomly distributed
           ;; attribute values this gives representative selectivity estimates.
           ;; Cost: ~64 datom reads = ~3µs (negligible vs execution).
-          datoms (into [] (take sample-size) (di/-slice index from-d to-d index-type))
+          datoms (memo-sample db index-key from-d to-d index-type sample-size)
           n-sampled (count datoms)]
       (if (zero? n-sampled)
         (estimate-predicate-selectivity-heuristic pred-op)
@@ -447,5 +531,4 @@
    NOTE: counts total datoms, not distinct entities. This overestimates
    for entities with many attributes but is acceptable for merge ordering."
   [db]
-  (let [eavt (:eavt db)]
-    (max 1 (di/-count eavt))))
+  (max 1 (memo-count-index db :eavt 10000)))
