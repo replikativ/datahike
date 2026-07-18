@@ -14,6 +14,7 @@
             [datahike.datom :as dd]
             [datahike.index.interface :as di]
             [datahike.index.persistent-set :as dip]
+            [datahike.query :as q]
             [datahike.query.execute :as ex]
             [datahike.test.async :refer-macros [deftest-async]]
             [konserve.core :as k]
@@ -193,3 +194,36 @@
     (is (= 1200 (count sync-tuples)))
     (is (= sync-tuples (:tuples warm)) "warm async per-cursor ≡ sync")
     (is (= sync-tuples (:tuples cold)) "cold async per-cursor ≡ sync")))
+
+(deftest-async group-direct-async-dispatch
+  (let [conn (<! (fresh-conn))
+        db @conn
+        [from to] (full-range)
+        ;; a REAL planner op for [?e :name ?n]
+        plan (q/get-or-create-plan db '[[?e :name ?n]] #{} {} nil)
+        op (first (:ops plan))
+        _ (is (= :pattern-scan (:op op)) "planner produced a pattern scan")
+        run-gd (fn [gd-db sync? slice-override]
+                 (let [result-list #js []
+                       r (ex/execute-group-direct gd-db op [] '[?e ?n] nil
+                                                  result-list nil 0 nil 0 -1 nil
+                                                  :pipeline (:pipeline op)
+                                                  :sync? sync?
+                                                  :slice-override slice-override)]
+                   {:expr r :result-list result-list}))
+        sync-tuples (mapv vec (:result-list (run-gd db true nil)))
+        cold-eavt (cold-restored (:store db) (:eavt db))
+        cold-db (assoc db :eavt cold-eavt)
+        done (a/promise-chan)]
+    (is (= 1200 (count sync-tuples)) "sync dispatch baseline")
+    ;; async: acquire the scan slice via the dual acquisition, then dispatch
+    ((ex/build-scan-slice-step cold-db cold-eavt from to :eavt nil cold-db nil false)
+     (fn [aslice]
+       (let [{:keys [expr result-list]} (run-gd cold-db false aslice)]
+         (expr (fn [_] (a/put! done {:tuples (mapv vec result-list)}))
+               (fn [e] (a/put! done {:error e})))))
+     (fn [e] (a/put! done {:error e})))
+    (let [{:keys [tuples error]} (<! done)]
+      (is (nil? error) (str "async dispatch failed: " error))
+      (is (= sync-tuples tuples)
+          "cold async dispatch through execute-group-direct ≡ warm sync"))))

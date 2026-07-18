@@ -2853,7 +2853,7 @@
                    :else       v))]
          (walk x)))))
 
-(defn- get-or-create-plan
+(defn get-or-create-plan
   "Get a cached query plan or create a new one. Plans are cached by
    [clauses bound-vars rules-keys in-cards schema-hash] since the plan structure
    (index selection, merge ordering) depends on query shape and schema,

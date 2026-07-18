@@ -990,6 +990,54 @@
         ;; default: regular slice — still apply xform-after if set
         (maybe-post-process (di/-slice db-index from-datom to-datom index) db origin-db)))))
 
+#?(:cljs
+   (defn build-scan-slice-step
+     "Dual-mode build-scan-slice. sync? true delegates to build-scan-slice
+      unchanged. sync? false returns an async expression yielding either a
+      PSS AsyncSeq (plain regular-DB scans — streamed chunk-wise) or a
+      REALIZED vector (temporal merges / post-processed paths — the same
+      pure pipelines over awaited slice realizations; chunk-step's async arm
+      serves realized colls through immediately-resolving pseudo-chunks)."
+     [db db-index from-datom to-datom index temporal origin-db resolved-a sync?]
+     (if sync?
+       (build-scan-slice db db-index from-datom to-datom index temporal origin-db resolved-a)
+       (async+sync sync?
+                   (if-not temporal
+                     ;; regular DB: plain streamed slice unless a wrapper
+                     ;; post-processes (FilteredDB xform) — then realize+apply
+                     (let [ctx (dbi/-search-context db)]
+                       (if (or (:xform-after ctx) (:timepred ctx))
+                         (into [] (maybe-post-process
+                                   (pca/await (realize-slice db-index from-datom to-datom index nil sync?))
+                                   db origin-db))
+                         (pca/await (di/-slice db-index from-datom to-datom index {:sync? sync?}))))
+                     (let [temporal-type (:type temporal)
+                           as-of-at-max-tx? (and (= temporal-type :as-of)
+                                                 (= (long (:time-point temporal))
+                                                    (long (:max-tx origin-db))))
+                           temporal-index-key (keyword (str "temporal-" (name index)))]
+                       (case temporal-type
+                         :historical
+                         (let [cur (pca/await (realize-slice db-index from-datom to-datom index nil sync?))
+                               tv (pca/await (realize-slice (get origin-db temporal-index-key) from-datom to-datom index nil sync?))]
+                           (into [] (maybe-post-process (dbu/distinct-datoms origin-db index cur tv) db origin-db)))
+
+                         (:as-of :since)
+                         (if as-of-at-max-tx?
+                           (into [] (maybe-post-process
+                                     (pca/await (realize-slice db-index from-datom to-datom index nil sync?))
+                                     db origin-db))
+                           (let [cur (pca/await (realize-slice db-index from-datom to-datom index nil sync?))
+                                 tv (pca/await (realize-slice (get origin-db temporal-index-key) from-datom to-datom index nil sync?))
+                                 ctx (dbi/-search-context db)]
+                             (into [] (db/post-process-datoms (dbu/distinct-datoms origin-db index cur tv)
+                                                              origin-db ctx))))
+
+                         ;; default
+                         (into [] (maybe-post-process
+                                   (pca/await (realize-slice db-index from-datom to-datom index nil sync?))
+                                   db origin-db)))))))))
+
 ;; ---------------------------------------------------------------------------
 ;; Path functions — each small enough for JIT C2/Graal compilation.
 ;; The macros scan-filter and emit-tuple expand inline within each path.
@@ -1013,9 +1061,13 @@
              ;; generic seqs (e.g. temporal merged slices, filtered seqs):
              ;; element-wise pseudo-chunks — matches the old doseq behavior
              [(array (first sq)) 0 1 (next sq)])))
-       (if (nil? s)
-         (async nil)
-         (btset/achunk-next s)))))
+       (cond
+         (nil? s) (async nil)
+         ;; realized colls (temporal merged vectors, filtered seqs) — serve
+         ;; sync pseudo-chunks through an immediately-resolving async expr
+         (not (instance? btset/AsyncSeq s))
+         (let [step (chunk-step s true)] (async step))
+         :else (btset/achunk-next s)))))
 
 #?(:cljs
    (defn- lookup-ge-step
@@ -1703,7 +1755,7 @@
    probe-set probe-datom-field
    collect-set collect-datom-field collect-merge-idx
    merge-datoms n-find find-source const-vals
-   result-list max-n n-merges temporal-ctx cancel]
+   result-list max-n n-merges temporal-ctx cancel sync?]
   (if #?(:clj (fast-eligible? n-merges temporal-ctx probe-set) :cljs false)
     #?(:clj (execute-temporal-merge-fast eavt-pss slice ground-filter strict-filter
                                          probe-set probe-datom-field
@@ -1715,7 +1767,7 @@
                                  probe-set probe-datom-field
                                  collect-set collect-datom-field collect-merge-idx
                                  merge-datoms n-find find-source const-vals
-                                 result-list max-n n-merges temporal-ctx cancel true)))
+                                 result-list max-n n-merges temporal-ctx cancel sync?)))
 
 (defn- execute-temporal-merge-slow
   "Temporal path 2: merge with card-many/card-one, anti-merge, cursor cache.
@@ -2005,7 +2057,8 @@
    probe-set probe-datom-field
    collect-set collect-datom-field collect-merge-idx
    max-results
-   & {:keys [scan-estimate pipeline temporal cancel]}]
+   & {:keys [scan-estimate pipeline temporal cancel sync? slice-override]
+      :or {sync? true}}]
   (let [{:keys [clause index pushdown-preds]} scan-op
         [e a v tx] clause
         ;; For temporal queries, resolve against the unwrapped origin-db
@@ -2166,114 +2219,118 @@
                         (if (= pf 2) (:avet index-db) (:eavt index-db))
                         resolved-a probe-set pf))
                      :cljs nil))
-                (if temporal
-                  (build-scan-slice db db-index from-datom to-datom index
-                                    temporal index-db resolved-a)
-                  (di/-slice db-index from-datom to-datom index)))
+                (or slice-override
+                    (if temporal
+                      (build-scan-slice db db-index from-datom to-datom index
+                                        temporal index-db resolved-a)
+                      (di/-slice db-index from-datom to-datom index))))
         ;; When probe-driven, filtering is baked into the seeks — nil out probe-set
         probe-set (if use-probe-driven? nil probe-set)
         max-n (int (or max-results -1))]
 
-    (if temporal
+    (let [dispatch-result
+          (if temporal
       ;; Temporal dispatch: scan-only or general temporal merge
-      (if (zero? n-merges)
-        (execute-temporal-scan-only slice ground-filter strict-filter
-                                    probe-set probe-datom-field
-                                    collect-set collect-datom-field collect-merge-idx
-                                    merge-datoms n-find find-source const-vals
-                                    result-list max-n temporal-tx-filter scan-added-val cancel)
-        (execute-temporal-merge db eavt-pss slice ground-filter strict-filter
-                                probe-set probe-datom-field
-                                collect-set collect-datom-field collect-merge-idx
-                                merge-datoms n-find find-source const-vals
-                                result-list max-n n-merges
-                                (object-array [merge-attrs merge-v-ground merge-v-vals merge-anti
-                                               merge-card-many merge-added-filter
-                                               merge-check-scan-v merge-check-scan-tx
-                                               merge-temporal-only merge-cursor-cache
-                                               temporal-eavt-pss temporal-cursors
-                                               temporal-type temporal-tx-filter
-                                               scan-added-val origin-db
-                                               merge-optional merge-defaults])
-                                cancel))
+            (if (zero? n-merges)
+              (execute-temporal-scan-only slice ground-filter strict-filter
+                                          probe-set probe-datom-field
+                                          collect-set collect-datom-field collect-merge-idx
+                                          merge-datoms n-find find-source const-vals
+                                          result-list max-n temporal-tx-filter scan-added-val cancel)
+              (execute-temporal-merge db eavt-pss slice ground-filter strict-filter
+                                      probe-set probe-datom-field
+                                      collect-set collect-datom-field collect-merge-idx
+                                      merge-datoms n-find find-source const-vals
+                                      result-list max-n n-merges
+                                      (object-array [merge-attrs merge-v-ground merge-v-vals merge-anti
+                                                     merge-card-many merge-added-filter
+                                                     merge-check-scan-v merge-check-scan-tx
+                                                     merge-temporal-only merge-cursor-cache
+                                                     temporal-eavt-pss temporal-cursors
+                                                     temporal-type temporal-tx-filter
+                                                     scan-added-val origin-db
+                                                     merge-optional merge-defaults])
+                                      cancel sync?))
 
       ;; Non-temporal dispatch via fused-path keyword
-      (case fused-path
-        :scan-only
-        (execute-scan-only slice ground-filter strict-filter
-                           probe-set probe-datom-field
-                           collect-set collect-datom-field collect-merge-idx
-                           merge-datoms n-find find-source const-vals
-                           result-list max-n cancel true)
+            (case fused-path
+              :scan-only
+              (execute-scan-only slice ground-filter strict-filter
+                                 probe-set probe-datom-field
+                                 collect-set collect-datom-field collect-merge-idx
+                                 merge-datoms n-find find-source const-vals
+                                 result-list max-n cancel sync?)
 
-        :card-many-merge
-        (let [merge-cursors #?(:clj (when use-cursors?
-                                      (let [cursors (object-array n-merges)]
-                                        (dotimes [i n-merges]
-                                          (aset cursors i
-                                                (if (aget merge-v-ground i)
-                                                  (.forwardCursor ^PersistentSortedSet eavt-pss)
-                                                  (.forwardCursor ^PersistentSortedSet eavt-pss ^java.util.Comparator fast-cmp-ea))))
-                                        cursors))
-                               :cljs nil)
-              merge-ctx (object-array [merge-attrs merge-v-ground merge-v-vals merge-anti
-                                       merge-card-many merge-check-scan-v merge-check-scan-tx merge-cursors
-                                       merge-optional merge-defaults])]
-          (execute-card-many-merge db eavt-pss slice ground-filter strict-filter
-                                   probe-set probe-datom-field
-                                   collect-set collect-datom-field collect-merge-idx
-                                   merge-datoms n-find find-source const-vals
-                                   result-list max-n n-merges merge-ctx cancel true))
+              :card-many-merge
+              (let [merge-cursors #?(:clj (when use-cursors?
+                                            (let [cursors (object-array n-merges)]
+                                              (dotimes [i n-merges]
+                                                (aset cursors i
+                                                      (if (aget merge-v-ground i)
+                                                        (.forwardCursor ^PersistentSortedSet eavt-pss)
+                                                        (.forwardCursor ^PersistentSortedSet eavt-pss ^java.util.Comparator fast-cmp-ea))))
+                                              cursors))
+                                     :cljs nil)
+                    merge-ctx (object-array [merge-attrs merge-v-ground merge-v-vals merge-anti
+                                             merge-card-many merge-check-scan-v merge-check-scan-tx merge-cursors
+                                             merge-optional merge-defaults])]
+                (execute-card-many-merge db eavt-pss slice ground-filter strict-filter
+                                         probe-set probe-datom-field
+                                         collect-set collect-datom-field collect-merge-idx
+                                         merge-datoms n-find find-source const-vals
+                                         result-list max-n n-merges merge-ctx cancel sync?))
 
-        :sorted-merge
-        #?(:clj
-           (let [sorted-order (let [indexed (mapv (fn [i] [(aget merge-attrs i) i]) (range n-merges))
-                                    sorted (sort-by first compare indexed)]
-                                (int-array (mapv second sorted)))
-                 sorted-attrs-long (when attr-refs?
-                                     (let [arr (long-array n-merges)]
-                                       (dotimes [si n-merges]
-                                         (aset arr si (long (aget merge-attrs (aget sorted-order si)))))
-                                       arr))
-                 sorted-attrs-obj (when (not attr-refs?)
-                                    (let [arr (object-array n-merges)]
-                                      (dotimes [si n-merges]
-                                        (aset arr si (aget merge-attrs (aget sorted-order si))))
-                                      arr))
-                 sorted-cursor (.forwardCursor ^PersistentSortedSet eavt-pss ^java.util.Comparator fast-cmp-ea)]
-             (execute-sorted-merge slice ground-filter strict-filter
-                                   probe-set probe-datom-field
-                                   collect-set collect-datom-field collect-merge-idx
-                                   merge-datoms n-find find-source const-vals
-                                   result-list max-n n-merges attr-refs?
-                                   (object-array [sorted-cursor sorted-order
-                                                  sorted-attrs-long sorted-attrs-obj
-                                                  merge-v-ground merge-v-vals
-                                                  merge-check-scan-v merge-check-scan-tx])
-                                   cancel))
-           :cljs nil)
+              :sorted-merge
+              #?(:clj
+                 (let [sorted-order (let [indexed (mapv (fn [i] [(aget merge-attrs i) i]) (range n-merges))
+                                          sorted (sort-by first compare indexed)]
+                                      (int-array (mapv second sorted)))
+                       sorted-attrs-long (when attr-refs?
+                                           (let [arr (long-array n-merges)]
+                                             (dotimes [si n-merges]
+                                               (aset arr si (long (aget merge-attrs (aget sorted-order si)))))
+                                             arr))
+                       sorted-attrs-obj (when (not attr-refs?)
+                                          (let [arr (object-array n-merges)]
+                                            (dotimes [si n-merges]
+                                              (aset arr si (aget merge-attrs (aget sorted-order si))))
+                                            arr))
+                       sorted-cursor (.forwardCursor ^PersistentSortedSet eavt-pss ^java.util.Comparator fast-cmp-ea)]
+                   (execute-sorted-merge slice ground-filter strict-filter
+                                         probe-set probe-datom-field
+                                         collect-set collect-datom-field collect-merge-idx
+                                         merge-datoms n-find find-source const-vals
+                                         result-list max-n n-merges attr-refs?
+                                         (object-array [sorted-cursor sorted-order
+                                                        sorted-attrs-long sorted-attrs-obj
+                                                        merge-v-ground merge-v-vals
+                                                        merge-check-scan-v merge-check-scan-tx])
+                                         cancel))
+                 :cljs nil)
 
-        :per-cursor-merge
-        (let [merge-cursors #?(:clj (when use-cursors?
-                                      (let [cursors (object-array n-merges)]
-                                        (dotimes [i n-merges]
-                                          (aset cursors i
-                                                (if (aget merge-v-ground i)
-                                                  (.forwardCursor ^PersistentSortedSet eavt-pss)
-                                                  (.forwardCursor ^PersistentSortedSet eavt-pss ^java.util.Comparator fast-cmp-ea))))
-                                        cursors))
-                               :cljs nil)]
-          (execute-per-cursor-merge eavt-pss slice ground-filter strict-filter
-                                    probe-set probe-datom-field
-                                    collect-set collect-datom-field collect-merge-idx
-                                    merge-datoms n-find find-source const-vals
-                                    result-list max-n n-merges
-                                    (object-array [merge-attrs merge-v-ground merge-v-vals merge-anti merge-cursors
-                                                   merge-check-scan-v merge-check-scan-tx
-                                                   merge-optional merge-defaults])
-                                    cancel true))))
+              :per-cursor-merge
+              (let [merge-cursors #?(:clj (when use-cursors?
+                                            (let [cursors (object-array n-merges)]
+                                              (dotimes [i n-merges]
+                                                (aset cursors i
+                                                      (if (aget merge-v-ground i)
+                                                        (.forwardCursor ^PersistentSortedSet eavt-pss)
+                                                        (.forwardCursor ^PersistentSortedSet eavt-pss ^java.util.Comparator fast-cmp-ea))))
+                                              cursors))
+                                     :cljs nil)]
+                (execute-per-cursor-merge eavt-pss slice ground-filter strict-filter
+                                          probe-set probe-datom-field
+                                          collect-set collect-datom-field collect-merge-idx
+                                          merge-datoms n-find find-source const-vals
+                                          result-list max-n n-merges
+                                          (object-array [merge-attrs merge-v-ground merge-v-vals merge-anti merge-cursors
+                                                         merge-check-scan-v merge-check-scan-tx
+                                                         merge-optional merge-defaults])
+                                          cancel sync?))))]
 
-    result-list))
+;; sync mode fills result-list in place; async mode returns the
+      ;; kernel's async expression for the caller to drive
+      (if sync? result-list dispatch-result))))
 
 ;; Direct-to-output execution (main fast path)
 
