@@ -294,11 +294,10 @@
       than fault) under :async-cold. Bump on every conversion that widens
       cold coverage; a drop names a regressed seam (see the histogram).
       Re-baselined at 248 when the :filtered axis + the :or-and fix changed
-      the case stream: every one of the 40 remaining faults is a
-      :filtered? true case (their per-clause scans stay sync until the
-      fused kernels apply the filter predicate — F2); the rest are
-      legitimately-raising queries."
-     248))
+      the case stream. At 279 every remaining fault is a FILTERED-over-
+      TEMPORAL case (that composition stays on the legacy per-clause reads);
+      the rest are legitimately-raising queries."
+     279))
 
 #?(:cljs
    (defn- spec-dimensions [spec]

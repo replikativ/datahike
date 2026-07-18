@@ -81,6 +81,20 @@
   #?(:clj  (instance? PersistentSortedSet x)
      :cljs (instance? BTSet x)))
 
+(defn- unfiltered-db
+  "Unwrap ONE FilteredDB layer (identity otherwise). Index fields must never
+   be read off the wrapper — (:eavt filtered-db) THROWS on both platforms."
+  [db]
+  (if (instance? FilteredDB db)
+    (.-unfiltered-db ^FilteredDB db)
+    db))
+
+(defn- filter-pred
+  "The FilteredDB per-datom visibility predicate, or nil."
+  [db]
+  (when (instance? FilteredDB db)
+    (.-pred ^FilteredDB db)))
+
 (defn- pss-lookup-ge
   "Cross-platform lookupGE: first element >= key.
    The cljs arm is a per-datom point-read choke point: a cold read through
@@ -566,7 +580,9 @@
   ([db op cancel rels sync?]
    ;; ONE dual body — only the scan retrieval is awaited; tuple building is pure.
    (async+sync sync?
-   (let [{:keys [clause index pushdown-preds]} op
+   (let [fpred (filter-pred db)
+        db (unfiltered-db db)
+        {:keys [clause index pushdown-preds]} op
         pushdown-bounds (when (seq pushdown-preds) (plan/pushdown-to-bounds pushdown-preds))
         datoms (pca/await (scan-datoms db clause index pushdown-preds rels (:estimated-card op) sync?))
         var-map (rel/var-mapping clause (range))
@@ -577,7 +593,8 @@
                           (when pushdown-var
                             (build-strict-filter strict (get scan-var-map pushdown-var)))))
         tuples (into []
-                     (comp (if ground-filter (filter ground-filter) identity)
+                     (comp (if fpred (filter fpred) identity)
+                           (if ground-filter (filter ground-filter) identity)
                            (if strict-filter (filter strict-filter) identity)
                            (map (fn [^Datom d]
                                   (check-cancel! cancel)
@@ -3540,7 +3557,13 @@
    (execute-fused-scan-rel db scan-op merge-ops context true))
   ([db scan-op merge-ops context sync?]
    (async+sync sync?
-   (let [cancel (:cancel context)
+   (let [;; FilteredDB: read the unfiltered indexes, apply the visibility
+         ;; predicate to every scan datom AND every merge datom (a filtered
+         ;; merge datom counts as absent: anti-merges pass, optional merges
+         ;; take their default)
+         fpred (filter-pred db)
+         db (unfiltered-db db)
+         cancel (:cancel context)
         {:keys [clause index pushdown-preds]} scan-op
         [e a v tx] clause
         resolved-a (when (and (some? a) (not (symbol? a))) (resolve-attr db a))
@@ -3618,6 +3641,7 @@
                                       (scan-datoms db clause index pushdown-preds
                                                    (:rels context) (:estimated-card scan-op)
                                                    sync?))
+                              fpred (filter fpred)
                               ground-filter (filter ground-filter)
                               strict-filter (filter strict-filter))
 
@@ -3671,7 +3695,8 @@
                                                :cljs (pca/await (realize-slice (:eavt db) from-d to-d :eavt nil sync?)))
                                       contribs (into []
                                                      (comp (filter (fn [^Datom d]
-                                                                     (merge-datom-match? d eid ra vg? vgv check-v? check-tx? scan-d)))
+                                                                     (and (or (nil? fpred) (fpred d))
+                                                                          (merge-datom-match? d eid ra vg? vgv check-v? check-tx? scan-d))))
                                                            (map (fn [^Datom d]
                                                                   (cond-> []
                                                                     has-v-var? (conj (.-v d))
@@ -3683,7 +3708,9 @@
                                 ;; Card-one: single lookupGE
                                 (let [^Datom d #?(:clj (pss-lookup-ge eavt-pss (datom eid ra vgv tx0))
                                                   :cljs (pca/await (lookup-ge-step eavt-pss (datom eid ra vgv tx0) sync?)))
-                                      found? (and d (merge-datom-match? d eid ra vg? vgv check-v? check-tx? scan-d))
+                                      found? (and d
+                                                  (or (nil? fpred) (fpred d))
+                                                  (merge-datom-match? d eid ra vg? vgv check-v? check-tx? scan-d))
                                       merge-op (nth merge-ops mi)
                                       optional? (:optional? merge-op)]
                                   (cond
@@ -4788,10 +4815,14 @@
                                   plan)]
                       (recur ctx' plan' (inc idx)))
 
-                    (and (not filtered?) (pss-instance? (:eavt op-db)))
+                    ;; plain OR filtered-over-plain (temporal wrappers never reach
+                    ;; here: their unwrapped (:eavt) is nil, and (:eavt op-db) is
+                    ;; never read off a FilteredDB — it throws)
+                    (pss-instance? (:eavt (unfiltered-db op-db)))
                     (let [[ctx' consumed] (pca/await (execute-fused-scan-rel op-db (:scan-op op) (:merge-ops op) ctx sync?))
                           actual-card (ctx-total-tuples ctx')
                           plan' (if (and sync?
+                                         (not filtered?) ;; replan estimates read raw op-db indexes
                                          (> (- (count (:ops plan)) idx) 2)
                                          (should-replan? actual-card estimated-card))
                                   (replan-fn plan idx actual-card op-db)
@@ -4936,7 +4967,7 @@
                                        {:source op-db
                                         :lookup-attrs (lookup-attrs-for-clauses op-db (:clause op) nil)})]
                       (recur ctx' plan (inc idx)))
-                    (if (or filtered? (not (pss-instance? (:eavt op-db))))
+                    (if (not (pss-instance? (:eavt (unfiltered-db op-db))))
                       (let [ti (temporal-info op-db)
                             scan-attr (second (:clause op))]
                         (if (and (not filtered?)
@@ -4994,6 +5025,7 @@
                           (let [[ctx' consumed] (pca/await (execute-fused-scan-rel op-db op fusable ctx sync?))
                                 actual-card (ctx-total-tuples ctx')
                                 plan' (if (and sync?
+                                               (not filtered?)
                                                (> (- (count (:ops plan)) (+ idx consumed)) 1)
                                                (should-replan? actual-card estimated-card))
                                         (replan-fn plan (+ idx (dec consumed)) actual-card op-db)
@@ -5005,6 +5037,7 @@
                                               :lookup-attrs (lookup-attrs-for-clauses op-db (:clause op) nil)})
                                 actual-card (count (:tuples new-rel))
                                 plan' (if (and sync?
+                                               (not filtered?)
                                                (> (- (count (:ops plan)) idx) 2)
                                                (should-replan? actual-card estimated-card))
                                         (replan-fn plan idx actual-card op-db)
