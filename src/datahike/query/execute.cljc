@@ -3590,62 +3590,84 @@
 ;; ---------------------------------------------------------------------------
 ;; OR / NOT execution (Relation-based fallback)
 
-(defn- execute-or [db op ctx]
-  (let [or-vars (:vars op)
-        branch-rels (mapv (fn [sub-plan]
-                            (let [branch-ctx (assoc ctx :rels (:rels ctx))
-                                  result-ctx (execute-plan sub-plan branch-ctx db)]
-                              (when result-ctx
-                                (let [joined (reduce (fn [a b] (rel/hash-join a b {:source (:join-source ctx)}))
-                                                     (:rels result-ctx))]
-                                  ;; Project to OR's visible vars — critical for rules where
-                                  ;; branches introduce auto-generated temp vars
-                                  (rel/limit-rel joined or-vars)))))
-                          (:branches op))
+;; The four or/not executors are one-body duals: their sub-plan
+;; execute-plan calls are awaited, so branch iteration is an explicit
+;; loop (a mapv fn body would be an illegal await boundary).
+
+(defn- execute-or
+  ([db op ctx] (execute-or db op ctx true))
+  ([db op ctx sync?]
+   (async+sync sync?
+   (let [or-vars (:vars op)
+        branch-rels (loop [bs (seq (:branches op)) acc []]
+                      (if bs
+                        (let [sub-plan (first bs)
+                              branch-ctx (assoc ctx :rels (:rels ctx))
+                              result-ctx (pca/await (execute-plan sub-plan branch-ctx db sync?))
+                              r (when result-ctx
+                                  (let [joined (reduce (fn [a b] (rel/hash-join a b {:source (:join-source ctx)}))
+                                                       (:rels result-ctx))]
+                                    ;; Project to OR's visible vars — critical for rules where
+                                    ;; branches introduce auto-generated temp vars
+                                    (rel/limit-rel joined or-vars)))]
+                          (recur (next bs) (conj acc r)))
+                        acc))
         valid (filterv some? branch-rels)
         union (when (seq valid) (reduce rel/sum-rel valid))]
-    (if union (update ctx :rels rel/collapse-rels union {:source (:join-source ctx)}) ctx)))
+    (if union (update ctx :rels rel/collapse-rels union {:source (:join-source ctx)}) ctx)))))
 
-(defn- execute-or-join [db op ctx]
-  (let [join-vars (:join-vars op)
+(defn- execute-or-join
+  ([db op ctx] (execute-or-join db op ctx true))
+  ([db op ctx sync?]
+   (async+sync sync?
+   (let [join-vars (:join-vars op)
         limited-ctx (rel/limit-context ctx join-vars)
-        branch-rels (mapv (fn [sub-plan]
-                            (let [result-ctx (execute-plan sub-plan limited-ctx db)]
-                              (when result-ctx
-                                (let [joined (reduce (fn [a b] (rel/hash-join a b {:source (:join-source ctx)}))
-                                                     (:rels result-ctx))]
-                                  (rel/limit-rel joined join-vars)))))
-                          (:branches op))
+        branch-rels (loop [bs (seq (:branches op)) acc []]
+                      (if bs
+                        (let [sub-plan (first bs)
+                              result-ctx (pca/await (execute-plan sub-plan limited-ctx db sync?))
+                              r (when result-ctx
+                                  (let [joined (reduce (fn [a b] (rel/hash-join a b {:source (:join-source ctx)}))
+                                                       (:rels result-ctx))]
+                                    (rel/limit-rel joined join-vars)))]
+                          (recur (next bs) (conj acc r)))
+                        acc))
         valid (filterv some? branch-rels)
         union (when (seq valid) (reduce rel/sum-rel valid))]
-    (if union (update ctx :rels rel/collapse-rels union {:source (:join-source ctx)}) ctx)))
+    (if union (update ctx :rels rel/collapse-rels union {:source (:join-source ctx)}) ctx)))))
 
-(defn- execute-not [db op ctx]
-  (if (empty? (:rels ctx))
+(defn- execute-not
+  ([db op ctx] (execute-not db op ctx true))
+  ([db op ctx sync?]
+   (async+sync sync?
+   (if (empty? (:rels ctx))
     ctx
     (let [env {:source (:join-source ctx)}
           jf (fn [a b] (rel/hash-join a b env))
           join-rel (reduce jf (:rels ctx))
-          neg-ctx (execute-plan (:sub-plan op) (assoc ctx :rels [join-rel]) db)
+          neg-ctx (pca/await (execute-plan (:sub-plan op) (assoc ctx :rels [join-rel]) db sync?))
           neg-join (when (and neg-ctx (seq (:rels neg-ctx)))
                      (reduce jf (:rels neg-ctx)))
           result (if neg-join (rel/subtract-rel join-rel neg-join env) join-rel)]
-      (assoc ctx :rels [result]))))
+      (assoc ctx :rels [result]))))))
 
-(defn- execute-not-join [db op ctx]
-  (if (empty? (:rels ctx))
+(defn- execute-not-join
+  ([db op ctx] (execute-not-join db op ctx true))
+  ([db op ctx sync?]
+   (async+sync sync?
+   (if (empty? (:rels ctx))
     ctx
     (let [join-vars (:join-vars op)
           env {:source (:join-source ctx)}
           jf (fn [a b] (rel/hash-join a b env))
           join-rel (reduce jf (:rels ctx))
           limited-ctx (rel/limit-context (assoc ctx :rels [join-rel]) join-vars)
-          neg-ctx (execute-plan (:sub-plan op) limited-ctx db)
+          neg-ctx (pca/await (execute-plan (:sub-plan op) limited-ctx db sync?))
           neg-ctx (when neg-ctx (rel/limit-context neg-ctx join-vars))
           neg-join (when (and neg-ctx (seq (:rels neg-ctx)))
                      (reduce jf (:rels neg-ctx)))
           result (if neg-join (rel/subtract-rel join-rel neg-join env) join-rel)]
-      (assoc ctx :rels [result]))))
+      (assoc ctx :rels [result]))))))
 
 ;; ---------------------------------------------------------------------------
 ;; Recursive rule execution (semi-naive fixpoint with clause versions)
@@ -4802,10 +4824,14 @@
                       ;; run the function now; mark probed so we don't re-probe.
                         (recur (run-fn ctx op) plan (inc idx))))))
 
-                :or (recur (execute-or op-db op ctx) plan (inc idx))
-                :or-join (recur (execute-or-join op-db op ctx) plan (inc idx))
-                :not (recur (execute-not op-db op ctx) plan (inc idx))
-                :not-join (recur (execute-not-join op-db op ctx) plan (inc idx))
+                :or (let [ctx' (pca/await (execute-or op-db op ctx sync?))]
+                      (recur ctx' plan (inc idx)))
+                :or-join (let [ctx' (pca/await (execute-or-join op-db op ctx sync?))]
+                           (recur ctx' plan (inc idx)))
+                :not (let [ctx' (pca/await (execute-not op-db op ctx sync?))]
+                       (recur ctx' plan (inc idx)))
+                :not-join (let [ctx' (pca/await (execute-not-join op-db op ctx sync?))]
+                            (recur ctx' plan (inc idx)))
 
                 :rule-lookup
                 (let [acc-map (get-in ctx [:rule-accumulators (:rule-name op)])
