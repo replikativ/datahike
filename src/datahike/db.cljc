@@ -151,6 +151,20 @@
   [time-point]
   (complement (as-of-pred time-point)))
 
+(defn- as-of-tx-pred
+  "Pure per-datom companion to `as-of-pred` for NUMERIC time-points: applied
+   to any datom directly (no txInstant fetch), since a txInstant datom's tx
+   is its own entity. nil for Date time-points — those need the datom's value."
+  [time-point]
+  (when-not (date? time-point)
+    (let [tp (long time-point)]
+      (fn [d] (<= (dd/datom-tx d) tp)))))
+
+(defn- since-tx-pred
+  [time-point]
+  (when-let [p (as-of-tx-pred time-point)]
+    (complement p)))
+
 (defn assemble-datoms-xform [db]
   (mapcat
    (fn [[[_ a] datoms]]
@@ -182,7 +196,13 @@
     (cond
 
       time-pred
-      (let [time-xform (temporal-datom-filter datoms time-pred db)]
+      (let [tx-pred (dbi/context-time-tx-pred context)
+            ;; Numeric time-points filter on datom-tx directly — pure, no
+            ;; txInstant probes (see SearchContext txpred). Date-based fall
+            ;; back to the txInstant-datom filter.
+            time-xform (if tx-pred
+                         (filter tx-pred)
+                         (temporal-datom-filter datoms time-pred db))]
         (if (dbi/context-historical? context)
           (into [] (dbi/nil-comp time-xform xform) datoms)
           (->> datoms
@@ -573,7 +593,8 @@
   dbi/ISearch
   (-search-context [db] (dbi/context-with-temporal-timepred
                          (dbi/-search-context (.-origin-db db))
-                         (as-of-pred (.-time-point db))))
+                         (as-of-pred (.-time-point db))
+                         (as-of-tx-pred (.-time-point db))))
   (-search [db pattern context]
            (dbi/-search (.-origin-db db) pattern context))
   (-batch-search [db pattern batch-fn context]
@@ -639,7 +660,8 @@
   dbi/ISearch
   (-search-context [db] (dbi/context-with-temporal-timepred
                          (dbi/-search-context (.-origin-db db))
-                         (since-pred (.-time-point db))))
+                         (since-pred (.-time-point db))
+                         (since-tx-pred (.-time-point db))))
   (-search [db pattern context]
            (dbi/-search (.-origin-db db) pattern context))
   (-batch-search [db pattern batch-fn context]

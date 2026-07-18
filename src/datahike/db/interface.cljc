@@ -3,13 +3,22 @@
 
 ;; Database Protocols
 
-(defrecord SearchContext [historical temporal timepred xform currentdb])
+;; txpred is timepred's PURE companion: a per-datom predicate over
+;; `datom-tx` alone, carried only when every temporal layer's time-point
+;; is numeric (a tx id). When present it is semantically equivalent to
+;; the txInstant-datom filtering that `timepred` requires (a txInstant
+;; datom's tx IS its entity), but needs no index reads — so temporal
+;; post-processing stays pure, which the async cold path depends on and
+;; which skips per-tx probes on the JVM. Date-based time-points leave it
+;; nil (they must read the txInstant datom's value).
+(defrecord SearchContext [historical temporal timepred txpred xform currentdb])
 
 (def base-context
   (map->SearchContext
    {:historical false
     :temporal false
     :timepred nil
+    :txpred nil
     :xform nil
     :currentdb nil}))
 
@@ -22,6 +31,9 @@
 (defn context-time-pred [^SearchContext c]
   (.-timepred c))
 
+(defn context-time-tx-pred [^SearchContext c]
+  (.-txpred c))
+
 (defn context-xform [^SearchContext c]
   (.-xform c))
 
@@ -33,6 +45,7 @@
     (SearchContext. (.-historical c)
                     (.-temporal c)
                     (.-timepred c)
+                    (.-txpred c)
                     (.-xform c)
                     db)
     c))
@@ -42,12 +55,22 @@
     added-pred
     (fn [x] (and (pred x) (added-pred x)))))
 
-(defn context-with-temporal-timepred [^SearchContext c timepred]
-  (SearchContext. (.-historical c)
-                  true
-                  (extend-pred (.-timepred c) timepred)
-                  (.-xform c)
-                  (.-currentdb c)))
+(defn context-with-temporal-timepred
+  ([^SearchContext c timepred]
+   (context-with-temporal-timepred c timepred nil))
+  ([^SearchContext c timepred txpred]
+   (SearchContext. (.-historical c)
+                   true
+                   (extend-pred (.-timepred c) timepred)
+                   ;; txpred survives only while EVERY layer supplies one:
+                   ;; a fresh context takes the given txpred; composing onto
+                   ;; an existing timepred requires both sides' tx variants.
+                   (if (nil? (.-timepred c))
+                     txpred
+                     (when (and (.-txpred c) txpred)
+                       (extend-pred (.-txpred c) txpred)))
+                   (.-xform c)
+                   (.-currentdb c))))
 
 (defn nil-comp [a b]
   (cond
@@ -59,6 +82,7 @@
   (SearchContext. (.-historical c)
                   (.-temporal c)
                   (.-timepred c)
+                  (.-txpred c)
                   (nil-comp (.-xform c) xform)
                   (.-currentdb c)))
 
@@ -66,6 +90,7 @@
   (SearchContext. true
                   true
                   (.-timepred c)
+                  (.-txpred c)
                   (.-xform c)
                   (.-currentdb c)))
 

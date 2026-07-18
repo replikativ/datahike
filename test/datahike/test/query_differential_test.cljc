@@ -279,7 +279,7 @@
      "Exact number of the num-cases replayed cases that COMPLETE (rather
       than fault) under :async-cold. Bump on every conversion that widens
       cold coverage; a drop names a regressed seam (see the histogram)."
-     202))
+     256))
 
 #?(:cljs
    (defn- spec-dimensions [spec]
