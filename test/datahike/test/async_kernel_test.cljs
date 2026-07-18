@@ -216,13 +216,11 @@
         cold-db (assoc db :eavt cold-eavt)
         done (a/promise-chan)]
     (is (= 1200 (count sync-tuples)) "sync dispatch baseline")
-    ;; async: acquire the scan slice via the dual acquisition, then dispatch
-    ((ex/build-scan-slice-step cold-db cold-eavt from to :eavt nil cold-db nil false)
-     (fn [aslice]
-       (let [{:keys [expr result-list]} (run-gd cold-db false aslice)]
-         (expr (fn [_] (a/put! done {:tuples (mapv vec result-list)}))
-               (fn [e] (a/put! done {:error e})))))
-     (fn [e] (a/put! done {:error e})))
+    ;; async: group-direct is ONE dual body — it acquires the scan slice
+    ;; itself and resolves to the filled result-list
+    (let [{:keys [expr result-list]} (run-gd cold-db false nil)]
+      (expr (fn [_] (a/put! done {:tuples (mapv vec result-list)}))
+            (fn [e] (a/put! done {:error e}))))
     (let [{:keys [tuples error]} (<! done)]
       (is (nil? error) (str "async dispatch failed: " error))
       (is (= sync-tuples tuples)
