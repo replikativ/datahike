@@ -253,3 +253,43 @@
     (let [{:keys [result error]} (<! (run-async plan2 '[?b]))]
       (is (nil? error) (str "plan2 async failed: " error))
       (is (= sync2 result) "multi-group hash-probe plan async over cold store ≡ warm sync"))))
+
+(deftest-async q-async-end-to-end
+  (let [conn (<! (fresh-conn))
+        _ (<! (d/transact! conn (mapv (fn [i] {:db/id (inc i) :friend (inc (mod (* 7 i) 1200))})
+                                      (range 600))))
+        db @conn
+        query '[:find ?b :where [?p :name ?n] [?b :friend ?p]]
+        ;; warm sync run — also caches the PLAN (warmth-independent key),
+        ;; so the cold async run below skips estimate reads entirely
+        warm (d/q query db)
+        cold-db (-> db
+                    (assoc :eavt (cold-restored (:store db) (:eavt db)))
+                    (assoc :aevt (cold-restored (:store db) (:aevt db)))
+                    (assoc :avet (cold-restored (:store db) (:avet db))))]
+    (is (pos? (count warm)))
+    (testing "sync q over the cold store throws the decorated fault"
+      ;; MUST run first: the async pass below warms the LRU, after which
+      ;; sync reads legitimately succeed (the designed cold→warm transition)
+      ;; result-cache off: the warm run above cached the RESULT under a
+      ;; db-hash key the cold copy shares — a hit would skip the indices
+      (let [e (try (binding [q/*query-result-cache?* false] (d/q query cold-db))
+                   ::no-throw (catch :default e e))]
+        (is (not= ::no-throw e))
+        (when (not= ::no-throw e)
+          (is (= :storage/sync-read-unavailable (:error (ex-data e)))))))
+    (testing "q-async over an ALL-COLD async-only store ≡ warm sync"
+      (let [ch (a/promise-chan)]
+        ((q/q-async query cold-db)
+         (fn [v] (a/put! ch {:result v}))
+         (fn [e] (a/put! ch {:error e})))
+        (let [{:keys [result error]} (<! ch)]
+          (is (nil? error) (str "q-async cold failed: " error))
+          (is (= warm result)))))
+    (testing "q-async over the WARM store resolves on the calling stack"
+      (let [r (atom ::pending)]
+        ((q/q-async query db)
+         (fn [v] (reset! r v)) (fn [e] (reset! r [:err e])))
+        (is (= warm @r) "warm q-async completed synchronously with the sync result")))
+    (testing "after the async pass the SAME cold store serves sync q (LRU warmed)"
+      (is (= warm (binding [q/*query-result-cache?* false] (d/q query cold-db)))))))

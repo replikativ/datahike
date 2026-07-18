@@ -4,6 +4,7 @@
    [#?(:cljs cljs.reader :clj clojure.edn) :as edn]
    [clojure.set :as set]
    [clojure.string :as str]
+   [is.simm.partial-cps.async :as pca :refer [async async+sync]]
    [clojure.walk :as walk]
    [datahike.datom :as datom]
    [datahike.db.interface :as dbi]
@@ -112,6 +113,29 @@
 
 (defn q [query & inputs]
   (raw-q (normalize-q-input query inputs)))
+
+(defn raw-q-async
+  "Asynchronous raw query entry (ClojureScript only): runs the raw-q* dual
+   spine in async mode, returning a partial-cps async expression yielding
+   the result. Bypasses the result cache (v1 — sync q caches settled
+   results). Snapshots the dynamic controls exactly like raw-q."
+  [query-map]
+  #?(:clj (throw (ex-info "q-async is ClojureScript-only — on the JVM use q (virtual threads make an async engine unnecessary)"
+                          {:error :storage/async-unsupported}))
+     :cljs (raw-q* (assoc query-map
+                          :sync? false
+                          :disable-planner? *disable-planner*
+                          :profile? *profile?*))))
+
+(defn q-async
+  "Asynchronous query (ClojureScript): same inputs as `q`, returns a
+   partial-cps async expression — invoke it with (expr resolve reject), or
+   await it inside an async block. Warm stores resolve on the calling stack
+   (the trampoline's sync-completion property); cold async-only stores
+   stream the fused direct paths; other shapes surface the decorated
+   :storage/sync-read-unavailable fault until the relation path converts."
+  [query & inputs]
+  (raw-q-async (normalize-q-input query inputs)))
 
 (defn query-stats [query & inputs]
   (-> query
@@ -3606,25 +3630,26 @@
 (defn- execute-planned-direct
   "Direct HashSet path: write tuples directly, no Relations.
    Returns result set or nil if not eligible."
-  [plan db qfind find-elements context-in query stats? qreturnmaps]
-  (let [direct-eligible? (and (instance? FindRel qfind)
-                              (not stats?)
+  [plan db qfind find-elements context-in query stats? qreturnmaps sync?]
+  (async+sync sync?
+              (let [direct-eligible? (and (instance? FindRel qfind)
+                                          (not stats?)
                               ;; the fused HashSet path applies fns via post-apply-fns,
                               ;; which doesn't accumulate :fn-counts — route counting
                               ;; queries through the relation path (bind-by-fn) instead.
-                              (not (:count-fns? context-in))
-                              (not qreturnmaps)
-                              (not (:with query))
-                              (not-any? #(instance? Aggregate %) find-elements)
-                              (not-any? #(instance? Pull %) find-elements)
-                              (empty? (:rels context-in)))]
-    (when direct-eligible?
+                                          (not (:count-fns? context-in))
+                                          (not qreturnmaps)
+                                          (not (:with query))
+                                          (not-any? #(instance? Aggregate %) find-elements)
+                                          (not-any? #(instance? Pull %) find-elements)
+                                          (empty? (:rels context-in)))]
+                (when direct-eligible?
       ;; requiring-resolve is cheap after first call: just a ns-map lookup via resolve,
       ;; since the namespace is already loaded. No need to cache the resolved var.
-      (let [exec-direct #?(:clj (requiring-resolve 'datahike.query.execute/execute-plan-direct)
-                           :cljs execute/execute-plan-direct)
-            find-var-syms (mapv (fn [^Variable el] (.-symbol el)) (:elements qfind))]
-        (exec-direct plan db find-var-syms nil (:consts context-in) (:cancel context-in))))))
+                  (let [exec-direct #?(:clj (requiring-resolve 'datahike.query.execute/execute-plan-direct)
+                                       :cljs execute/execute-plan-direct)
+                        find-var-syms (mapv (fn [^Variable el] (.-symbol el)) (:elements qfind))]
+                    (pca/await (exec-direct plan db find-var-syms nil (:consts context-in) (:cancel context-in) sync?)))))))
 
 (defn- post-process-result
   "Shared post-processing pipeline for both planned-relation and legacy paths.
@@ -3734,50 +3759,58 @@
                            result-arity order-spec offset limit stats? qreturnmaps))))
 
 (defn- raw-q* [{:keys [query args offset limit order-by stats? count-fns? settings cancel
-                       disable-planner? profile?] :as _query-map}]
-  (let [t0 (when profile? #?(:clj (System/nanoTime) :cljs (* 1000 (.getTime (js/Date.)))))
-        settings (merge default-settings settings)
-        {:keys [qfind qwith qreturnmaps qin]} (memoized-parse-query query)
-        t1 (when profile? #?(:clj (System/nanoTime) :cljs (* 1000 (.getTime (js/Date.)))))
-        context-in (-> (if stats?
-                         (StatContext. [] {} built-in-rules {} [] settings cancel)
-                         (Context. [] {} built-in-rules {} settings cancel))
-                       (resolve-ins qin args)
+                       disable-planner? profile? sync?]
+                :or {sync? true} :as _query-map}]
+  ;; ONE dual spine (v1 scope): only the direct fused path awaits — plan-time
+  ;; reads (estimates, lookup-refs, date resolution), the relation fallback,
+  ;; the legacy engine and cartesian-split sub-queries stay synchronous. On a
+  ;; WARM store every shape therefore works in async mode (sync-completion on
+  ;; the trampoline); on a COLD async-only store, fused shapes stream and the
+  ;; rest surface the decorated :storage/sync-read-unavailable fault.
+  (async+sync sync?
+              (let [t0 (when profile? #?(:clj (System/nanoTime) :cljs (* 1000 (.getTime (js/Date.)))))
+                    settings (merge default-settings settings)
+                    {:keys [qfind qwith qreturnmaps qin]} (memoized-parse-query query)
+                    t1 (when profile? #?(:clj (System/nanoTime) :cljs (* 1000 (.getTime (js/Date.)))))
+                    context-in (-> (if stats?
+                                     (StatContext. [] {} built-in-rules {} [] settings cancel)
+                                     (Context. [] {} built-in-rules {} settings cancel))
+                                   (resolve-ins qin args)
                        ;; When set, bind-by-fn accumulates {fn-sym → invocations}
                        ;; into the threaded context :fn-counts; surfaced as result
                        ;; metadata. (Extra defrecord keys persist via the extmap.)
-                       (cond-> count-fns? (assoc :count-fns? true)))
-        t2 (when profile? #?(:clj (System/nanoTime) :cljs (* 1000 (.getTime (js/Date.)))))
+                                   (cond-> count-fns? (assoc :count-fns? true)))
+                    t2 (when profile? #?(:clj (System/nanoTime) :cljs (* 1000 (.getTime (js/Date.)))))
 
-        all-vars      (concat (dpi/find-vars qfind) (map :symbol qwith))
-        find-elements (dpip/find-elements qfind)
-        result-arity  (count find-elements)
-        order-spec    (when (and order-by (instance? FindRel qfind))
-                        (parse-order-by order-by find-elements))
+                    all-vars      (concat (dpi/find-vars qfind) (map :symbol qwith))
+                    find-elements (dpip/find-elements qfind)
+                    result-arity  (count find-elements)
+                    order-spec    (when (and order-by (instance? FindRel qfind))
+                                    (parse-order-by order-by find-elements))
 
         ;; Find the primary db for planning: $ if available, else first eligible source
-        primary-db (let [sources (:sources context-in)]
-                     (or (get sources '$)
-                         (some (fn [[_k v]] (when (and (dbu/db? v) (planner-eligible-db? v)) v))
-                               sources)))
-        multi-source? (> (count (:sources context-in)) 1)
-        use-planner? (and (not disable-planner?)
-                          (not stats?)
-                          (some? primary-db)
-                          (dbu/db? primary-db)
-                          (planner-eligible-db? primary-db))
-        [context-in lookup-ref-reverse-map]
-        (if use-planner?
+                    primary-db (let [sources (:sources context-in)]
+                                 (or (get sources '$)
+                                     (some (fn [[_k v]] (when (and (dbu/db? v) (planner-eligible-db? v)) v))
+                                           sources)))
+                    multi-source? (> (count (:sources context-in)) 1)
+                    use-planner? (and (not disable-planner?)
+                                      (not stats?)
+                                      (some? primary-db)
+                                      (dbu/db? primary-db)
+                                      (planner-eligible-db? primary-db))
+                    [context-in lookup-ref-reverse-map]
+                    (if use-planner?
           ;; For multi-source, don't pre-resolve lookup refs in :in bindings —
           ;; they may resolve to different entity IDs per source. The relation path's
           ;; lookup-batch-search handles per-source resolution at match time.
-          (if multi-source?
-            [context-in nil]
-            (resolve-lookup-ref-bindings primary-db context-in))
-          [context-in nil])]
+                      (if multi-source?
+                        [context-in nil]
+                        (resolve-lookup-ref-bindings primary-db context-in))
+                      [context-in nil])]
 
-    (if (and limit (zero? limit))
-      #{}
+                (if (and limit (zero? limit))
+                  #{}
 
       ;; Cartesian-product detection: if the where-clauses split into
       ;; two-or-more components sharing no free vars, the executor's
@@ -3788,26 +3821,26 @@
       ;; we're heading for the legacy engine anyway, the existing
       ;; relation pipeline handles disjoint components correctly via
       ;; collapse-rels / -collect, so no special-casing needed.
-      (if-let [split-result
-               (when (and use-planner?
-                          (planner-origin-db primary-db)
-                          (instance? FindRel qfind)
-                          (not qreturnmaps)
-                          (not (:with query))
-                          (not-any? #(instance? Aggregate %) find-elements)
-                          (not-any? #(instance? Pull %) find-elements))
-                 (let [find-var-syms (mapv (fn [^Variable el] (.-symbol el))
-                                           (:elements qfind))
+                  (if-let [split-result
+                           (when (and use-planner?
+                                      (planner-origin-db primary-db)
+                                      (instance? FindRel qfind)
+                                      (not qreturnmaps)
+                                      (not (:with query))
+                                      (not-any? #(instance? Aggregate %) find-elements)
+                                      (not-any? #(instance? Pull %) find-elements))
+                             (let [find-var-syms (mapv (fn [^Variable el] (.-symbol el))
+                                                       (:elements qfind))
                        ;; Only scalar :in bindings (stored in :consts) are
                        ;; constants. Collection / tuple bindings end up in
                        ;; :rels — those are JOIN dimensions across patterns,
                        ;; not constants. Excluding them would incorrectly
                        ;; treat e.g. `[?e ...]` as disconnecting two
                        ;; patterns that share ?e.
-                       in-bound-vars (set (keys (:consts context-in)))
-                       {:keys [components post-filters]}
-                       (connected-components (:where query) in-bound-vars find-var-syms)]
-                   (when (> (count components) 1)
+                                   in-bound-vars (set (keys (:consts context-in)))
+                                   {:keys [components post-filters]}
+                                   (connected-components (:where query) in-bound-vars find-var-syms)]
+                               (when (> (count components) 1)
                      ;; Recursively run each component as its own query.
                      ;; Sub-queries with one component will fall through to
                      ;; the existing dispatch below (no further split).
@@ -3818,14 +3851,14 @@
                      ;; merged wide tuples carry every value the
                      ;; post-filter evaluator needs. After filtering, we
                      ;; project back down to the user's find layout.
-                     (let [post-filter-vars (into #{}
-                                                  (mapcat (comp :vars analyze/classify-clause))
-                                                  post-filters)
-                           extended-find
-                           (mapv (fn [{:keys [vars find-vars]}]
-                                   (let [pf-here (filter vars post-filter-vars)
-                                         seen (into #{} find-vars)
-                                         ef (vec (concat find-vars (remove seen pf-here)))]
+                                 (let [post-filter-vars (into #{}
+                                                              (mapcat (comp :vars analyze/classify-clause))
+                                                              post-filters)
+                                       extended-find
+                                       (mapv (fn [{:keys [vars find-vars]}]
+                                               (let [pf-here (filter vars post-filter-vars)
+                                                     seen (into #{} find-vars)
+                                                     ef (vec (concat find-vars (remove seen pf-here)))]
                                      ;; A component that projects NO var is a pure
                                      ;; existence/liveness constraint (e.g. `[?e _ _]`
                                      ;; sharing no var with the rest of the query). Running
@@ -3836,117 +3869,120 @@
                                      ;; ≥1 row iff the component matches; the extra var is
                                      ;; dropped by the final projection to the user's
                                      ;; find-vars.
-                                     (if (and (empty? ef) (seq vars))
-                                       [(first vars)]
-                                       ef)))
-                                 components)
-                           sub-results
-                           (mapv
-                            (fn [{:keys [clauses]} sub-find]
-                              (let [sub-q (-> query
-                                              (assoc :find sub-find)
-                                              (assoc :where (vec clauses)))
-                                    sub-input (-> _query-map
-                                                  (assoc :query sub-q)
+                                                 (if (and (empty? ef) (seq vars))
+                                                   [(first vars)]
+                                                   ef)))
+                                             components)
+                                       sub-results
+                                       (mapv
+                                        (fn [{:keys [clauses]} sub-find]
+                                          (let [sub-q (-> query
+                                                          (assoc :find sub-find)
+                                                          (assoc :where (vec clauses)))
+                                                sub-input (-> _query-map
+                                                              (assoc :query sub-q)
+                                                  ;; sub-queries run synchronously
+                                                  ;; even under q-async (v1)
+                                                              (assoc :sync? true)
                                                   ;; offset/limit/order-by apply to
                                                   ;; the merged result only.
-                                                  (dissoc :offset :limit :order-by)
+                                                              (dissoc :offset :limit :order-by)
                                                   ;; stats? applies to the top-level
                                                   ;; query only.
-                                                  (dissoc :stats?))]
-                                {:tuples (raw-q* sub-input)
-                                 :vars   sub-find}))
-                            components extended-find)
-                           wide-vars (vec (mapcat :vars sub-results))
-                           merged    (cartesian-merge sub-results wide-vars)
-                           filtered  (apply-post-filters merged wide-vars post-filters
-                                                         (:consts context-in))
+                                                              (dissoc :stats?))]
+                                            {:tuples (raw-q* sub-input)
+                                             :vars   sub-find}))
+                                        components extended-find)
+                                       wide-vars (vec (mapcat :vars sub-results))
+                                       merged    (cartesian-merge sub-results wide-vars)
+                                       filtered  (apply-post-filters merged wide-vars post-filters
+                                                                     (:consts context-in))
                            ;; Project wide tuples back to the user's find-var order.
-                           wide->find-idxs (let [idx (into {} (map-indexed (fn [i v] [v i])) wide-vars)]
-                                             (mapv idx find-var-syms))
-                           projected (into #{} (map (fn [t] (mapv #(nth t %) wide->find-idxs))) filtered)]
-                       (apply-result-transforms projected order-spec offset limit qreturnmaps)))))]
-        split-result
+                                       wide->find-idxs (let [idx (into {} (map-indexed (fn [i v] [v i])) wide-vars)]
+                                                         (mapv idx find-var-syms))
+                                       projected (into #{} (map (fn [t] (mapv #(nth t %) wide->find-idxs))) filtered)]
+                                   (apply-result-transforms projected order-spec offset limit qreturnmaps)))))]
+                    split-result
 
-        (if (and use-planner?
+                    (if (and use-planner?
                ;; Nested temporal wrappers (e.g. (d/history (d/as-of ...))) → legacy
-                 (planner-origin-db primary-db))
-          (let [db primary-db
+                             (planner-origin-db primary-db))
+                      (let [db primary-db
               ;; For temporal wrappers, use origin-db for plan creation (schema, index stats)
-                plan-db (planner-origin-db db)
-                bound-vars (context-bound-vars context-in)
+                            plan-db (planner-origin-db db)
+                            bound-vars (context-bound-vars context-in)
               ;; Use the actual db (not origin) for lookup-ref resolution — temporal
               ;; DBs (history) can resolve retracted entities that origin-db can't.
               ;; For multi-source, pass sources so each clause resolves against its source db.
-                clauses (substitute-consts-with-lookup-refs db (:where query) (:consts context-in)
-                                                            (when multi-source? (:sources context-in)))
-                rules (not-empty (:rules context-in))
-                plan (get-or-create-plan plan-db clauses bound-vars rules (in-card-seed qin))]
+                            clauses (substitute-consts-with-lookup-refs db (:where query) (:consts context-in)
+                                                                        (when multi-source? (:sources context-in)))
+                            rules (not-empty (:rules context-in))
+                            plan (get-or-create-plan plan-db clauses bound-vars rules (in-card-seed qin))]
 
           ;; Try paths in order of preference:
           ;; 1. Direct HashSet (non-aggregate simple queries)
-            (if-let [direct-result (execute-planned-direct
-                                    plan db qfind find-elements context-in query stats? qreturnmaps)]
-              (let [result (apply-result-transforms direct-result order-spec offset limit qreturnmaps)]
-                #?(:clj
-                   (when profile?
-                     (let [t3 (System/nanoTime)]
-                       (println (format "parse=%.3f resolve=%.3f direct=%.3f total=%.3f ms"
-                                        (/ (- t1 t0) 1e6) (/ (- t2 t1) 1e6) (/ (- t3 t2) 1e6)
-                                        (/ (- t3 t0) 1e6))))))
-                result)
+                        (if-let [direct-result (pca/await (execute-planned-direct
+                                                           plan db qfind find-elements context-in query stats? qreturnmaps sync?))]
+                          (let [result (apply-result-transforms direct-result order-spec offset limit qreturnmaps)]
+                            #?(:clj
+                               (when profile?
+                                 (let [t3 (System/nanoTime)]
+                                   (println (format "parse=%.3f resolve=%.3f direct=%.3f total=%.3f ms"
+                                                    (/ (- t1 t0) 1e6) (/ (- t2 t1) 1e6) (/ (- t3 t2) 1e6)
+                                                    (/ (- t3 t0) 1e6))))))
+                            result)
 
             ;; 2. Columnar aggregate (secondary index or PSS scan)
-              (let [ta (when profile? #?(:clj (System/nanoTime) :cljs 0))
-                    has-aggs? (some #(instance? Aggregate %) find-elements)
-                    columnar-eligible? (and has-aggs?
-                                            (instance? FindRel qfind)
-                                            (not (:with query))
-                                            (not (some #(instance? Pull %) find-elements))
-                                            (empty? (:rels context-in))
-                                            (not lookup-ref-reverse-map))
-                    tb (when profile? #?(:clj (System/nanoTime) :cljs 0))
-                    columnar-result
-                    (when columnar-eligible?
-                      #?(:clj (or (try-secondary-index-aggregate db plan find-elements)
-                                  (try-columnar-aggregate plan db find-elements (:cancel context-in)))
-                         :cljs nil))
-                    tc (when profile? #?(:clj (System/nanoTime) :cljs 0))]
-                (if columnar-result
-                  (let [result (-post-process qfind columnar-result)
-                        result (apply-result-transforms result order-spec offset limit qreturnmaps)]
-                    #?(:clj
-                       (when profile?
-                         (let [t3 (System/nanoTime)]
-                           (println (format "parse=%.3f resolve=%.3f plan=%.3f elig=%.3f sec-idx=%.3f post=%.3f total=%.3f ms"
-                                            (/ (- t1 t0) 1e6) (/ (- t2 t1) 1e6) (/ (- ta t2) 1e6)
-                                            (/ (- tb ta) 1e6) (/ (- tc tb) 1e6) (/ (- t3 tc) 1e6)
-                                            (/ (- t3 t0) 1e6))))))
-                    result)
+                          (let [ta (when profile? #?(:clj (System/nanoTime) :cljs 0))
+                                has-aggs? (some #(instance? Aggregate %) find-elements)
+                                columnar-eligible? (and has-aggs?
+                                                        (instance? FindRel qfind)
+                                                        (not (:with query))
+                                                        (not (some #(instance? Pull %) find-elements))
+                                                        (empty? (:rels context-in))
+                                                        (not lookup-ref-reverse-map))
+                                tb (when profile? #?(:clj (System/nanoTime) :cljs 0))
+                                columnar-result
+                                (when columnar-eligible?
+                                  #?(:clj (or (try-secondary-index-aggregate db plan find-elements)
+                                              (try-columnar-aggregate plan db find-elements (:cancel context-in)))
+                                     :cljs nil))
+                                tc (when profile? #?(:clj (System/nanoTime) :cljs 0))]
+                            (if columnar-result
+                              (let [result (-post-process qfind columnar-result)
+                                    result (apply-result-transforms result order-spec offset limit qreturnmaps)]
+                                #?(:clj
+                                   (when profile?
+                                     (let [t3 (System/nanoTime)]
+                                       (println (format "parse=%.3f resolve=%.3f plan=%.3f elig=%.3f sec-idx=%.3f post=%.3f total=%.3f ms"
+                                                        (/ (- t1 t0) 1e6) (/ (- t2 t1) 1e6) (/ (- ta t2) 1e6)
+                                                        (/ (- tb ta) 1e6) (/ (- tc tb) 1e6) (/ (- t3 tc) 1e6)
+                                                        (/ (- t3 t0) 1e6))))))
+                                result)
 
                 ;; 3. Standard Relation path
-                  (let [result (execute-planned-relation
-                                plan db qfind find-elements context-in query all-vars
-                                result-arity lookup-ref-reverse-map order-spec offset limit
-                                stats? qreturnmaps)]
-                    #?(:clj
-                       (when profile?
-                         (let [t3 (System/nanoTime)]
-                           (println (format "parse=%.3f resolve=%.3f relation=%.3f total=%.3f ms"
-                                            (/ (- t1 t0) 1e6) (/ (- t2 t1) 1e6) (/ (- t3 t2) 1e6)
-                                            (/ (- t3 t0) 1e6))))))
-                    result)))))
+                              (let [result (execute-planned-relation
+                                            plan db qfind find-elements context-in query all-vars
+                                            result-arity lookup-ref-reverse-map order-spec offset limit
+                                            stats? qreturnmaps)]
+                                #?(:clj
+                                   (when profile?
+                                     (let [t3 (System/nanoTime)]
+                                       (println (format "parse=%.3f resolve=%.3f relation=%.3f total=%.3f ms"
+                                                        (/ (- t1 t0) 1e6) (/ (- t2 t1) 1e6) (/ (- t3 t2) 1e6)
+                                                        (/ (- t3 t0) 1e6))))))
+                                result)))))
 
         ;; Legacy engine
-          (let [result (execute-legacy context-in query qfind find-elements all-vars result-arity
-                                       order-spec offset limit stats? qreturnmaps)]
-            #?(:clj
-               (when profile?
-                 (let [t3 (System/nanoTime)]
-                   (println (format "parse=%.3f resolve=%.3f legacy=%.3f total=%.3f ms"
-                                    (/ (- t1 t0) 1e6) (/ (- t2 t1) 1e6) (/ (- t3 t2) 1e6)
-                                    (/ (- t3 t0) 1e6))))))
-            result))))))
+                      (let [result (execute-legacy context-in query qfind find-elements all-vars result-arity
+                                                   order-spec offset limit stats? qreturnmaps)]
+                        #?(:clj
+                           (when profile?
+                             (let [t3 (System/nanoTime)]
+                               (println (format "parse=%.3f resolve=%.3f legacy=%.3f total=%.3f ms"
+                                                (/ (- t1 t0) 1e6) (/ (- t2 t1) 1e6) (/ (- t3 t2) 1e6)
+                                                (/ (- t3 t0) 1e6))))))
+                        result)))))))
 
 #?(:clj
    (defn- try-secondary-index-aggregate-fast
