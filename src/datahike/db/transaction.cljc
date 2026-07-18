@@ -1503,7 +1503,10 @@
                          (log/raise "Bad entity type at " entity ", expected map or vector"
                                     {:error :transact/syntax, :tx-data entity})))))))))
 
-(defn transact-entities-directly [initial-report initial-es]
+(defn transact-entities-directly
+  ([initial-report initial-es] (transact-entities-directly initial-report initial-es true))
+  ([initial-report initial-es sync?]
+  (async+sync sync?
   (loop [report (update initial-report :db-after transient)
          es initial-es
          migration-state (get-in initial-report [:db-before :migration] {})]
@@ -1539,7 +1542,7 @@
                 new-datom (dd/datom new-t a v new-t op)
                 new-e (.-e new-datom)
                 upsert? (not (dbu/multival? db a-ident))]
-            (recur (-> (transact-report report new-datom upsert?)
+            (recur (-> (pca/await (transact-report report new-datom upsert? sync?))
                        (assoc-in [:db-after :max-tx] max-tid))
                    entities
                    (-> migration-state
@@ -1565,4 +1568,4 @@
                                   op)
                 upsert? (and (not (dbu/multival? db a-ident))
                              op)]
-            (recur (transact-report report new-datom upsert?) entities (assoc-in migration-state [:eids e] (.-e new-datom)))))))))
+            (recur (pca/await (transact-report report new-datom upsert? sync?)) entities (assoc-in migration-state [:eids e] (.-e new-datom)))))))))))

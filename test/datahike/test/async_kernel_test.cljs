@@ -529,6 +529,42 @@
         (when result
           (is (= sync-r (report-norm result)) (str label ": cold ≡ sync")))))))
 
+(deftest-async entity-async-cold
+  ;; d/entity {:eid .. :sync? false}: awaited eid resolution + touch,
+  ;; component sub-entities recursively realized — all on a COLD store
+  (let [db (-> (ddb/empty-db {:en-email {:db/unique :db.unique/identity}
+                              :en-part {:db/valueType :db.type/ref
+                                        :db/isComponent true}
+                              :en-tags {:db/cardinality :db.cardinality/many}})
+               (d/db-with [{:db/id 1 :en-email "a@x" :en-name "alice"
+                            :en-tags ["x" "y"] :en-part 2}
+                           {:db/id 2 :en-name "part" :en-part 3}
+                           {:db/id 3 :en-name "leaf"}]))
+        handle (am/flush-db! db)
+        run (fn [expr]
+              (let [ch (a/promise-chan)]
+                (expr (fn [v] (a/put! ch {:result v}))
+                      (fn [e] (a/put! ch {:error e})))
+                ch))
+        sync-e (d/entity db 1)]
+    (doseq [[label eid] [["by eid" 1] ["by lookup ref" [:en-email "a@x"]]]]
+      (let [cold (am/cold-db db handle)
+            {:keys [result error]} (<! (run (d/entity cold {:eid eid :sync? false})))]
+        (is (nil? error) (str label " errored: " (some-> error ex-message)))
+        (is (some? result) (str label ": entity found"))
+        (when result
+          (is (= (:en-name sync-e) (:en-name result)) label)
+          (is (= (:en-tags sync-e) (:en-tags result)) label)
+          ;; component chain realized recursively
+          (is (= "part" (:en-name (:en-part result))) (str label ": component"))
+          (is (= "leaf" (:en-name (:en-part (:en-part result))))
+              (str label ": nested component")))))
+    (testing "invalid eid form yields nil like the sync contract"
+      (let [cold (am/cold-db db handle)
+            {:keys [result error]} (<! (run (d/entity cold {:eid "garbage" :sync? false})))]
+        (is (nil? error))
+        (is (nil? result))))))
+
 (deftest-async q-async-date-as-of-cold
   ;; Date-based as-of/since wrappers are normalized to numeric time-points by
   ;; one awaited txInstant scan, then ride the pure txpred path cold.

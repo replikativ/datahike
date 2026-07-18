@@ -3,7 +3,10 @@
   (:require [#?(:cljs cljs.core :clj clojure.core)]
             [datahike.db :as db]
             [datahike.db.interface :as dbi]
-            [datahike.db.utils :as dbu])
+            [datahike.db.utils :as dbu]
+            #?(:cljs [datahike.db.search :as dbs])
+            #?(:cljs [datahike.query.execute :as ex])
+            #?(:cljs [is.simm.partial-cps.async :as pca :refer-macros [async]]))
   #?(:clj (:import [datahike.java IEntity])))
 
 (declare entity ->Entity equiv-entity lookup-entity touch)
@@ -14,10 +17,25 @@
             (keyword? eid))
     (dbu/entid db eid)))
 
-(defn entity [db eid]
+(declare entity-step touch-step)
+
+(defn entity
+  "Entity by eid. The arg-map form ({:eid .. :sync? false}, ClojureScript
+   only) resolves and TOUCHES the entity asynchronously — a partial-cps
+   async expression yielding the realized entity (component sub-entities
+   recursively realized, like touch) or nil. Navigating a non-component
+   ref afterwards yields ordinary lazy entities — realize those with
+   another async entity call."
+  [db eid]
   {:pre [(dbu/db? db)]}
-  (when-let [e (entid db eid)]
-    (->Entity db e (volatile! false) (volatile! {}))))
+  (if (and (map? eid) (contains? eid :eid))
+    (if (false? (:sync? eid))
+      #?(:clj (throw (ex-info ":sync? false is ClojureScript-only — JVM reads are synchronous"
+                              {:error :storage/async-unsupported}))
+         :cljs (entity-step db (:eid eid)))
+      (entity db (:eid eid)))
+    (when-let [e (entid db eid)]
+      (->Entity db e (volatile! false) (volatile! {})))))
 
 (defn- entity-attr [db a-ident datoms]
   (if (dbu/multival? db a-ident)
@@ -211,6 +229,49 @@
                                 (touch-components (.-db e))))
       (vreset! (.-touched e) true)))
   e)
+
+#?(:cljs
+   (defn touch-step
+     "Async touch: the entity read and the recursive component touches are
+      awaited (mirrors touch + touch-components exactly, incl. their
+      no-cycle-guard semantics). Yields e."
+     [^Entity e]
+     (async
+      (do
+        (when-not @(.-touched e)
+          (let [db (.-db e)
+                datoms (not-empty (pca/await (ex/datoms-step db :eavt [(.-eid e)] false)))]
+            (when datoms
+              (let [a->v (datoms->cache db datoms)
+                    cache (loop [acc {} kvs (seq a->v)]
+                            (if (nil? kvs)
+                              acc
+                              (let [[a-ident v] (first kvs)
+                                    v' (if (dbu/component? db a-ident)
+                                         (if (dbu/multival? db a-ident)
+                                           (loop [s #{} vs (seq v)]
+                                             (if (nil? vs)
+                                               s
+                                               (recur (conj s (pca/await (touch-step (first vs))))
+                                                      (next vs))))
+                                           (pca/await (touch-step v)))
+                                         v)]
+                                (recur (assoc acc a-ident v') (next kvs)))))]
+                (vreset! (.-cache e) cache)
+                (vreset! (.-touched e) true)))))
+        e))))
+
+#?(:cljs
+   (defn entity-step
+     "Async entity (see entity's arg-map form): awaited eid resolution +
+      touch-step. Yields the realized entity or nil."
+     [db eid]
+     (async
+      ;; mirror the local `entid` guard: invalid eid forms yield nil (the
+      ;; sync entity contract), they do not raise
+      (when (or (number? eid) (sequential? eid) (keyword? eid))
+        (when-let [e (pca/await (dbs/entid-step db eid))]
+          (pca/await (touch-step (->Entity db e (volatile! false) (volatile! {})))))))))
 
 #?(:cljs (goog/exportSymbol "datahike.impl.entity.Entity" Entity))
 

@@ -15,7 +15,7 @@
             [datahike.bitemporal.platform :as bp]
             [datahike.datom]))
 
-(defn- vt-meta-attrs
+(defn vt-meta-attrs
   "On an attribute-refs DB the schema attrs are stored as ref-eids;
    resolve them up-front so the predicate's inner loop compares ints,
    not keywords."
@@ -25,6 +25,25 @@
      :vt (dbi/-ref-for db :db.valid/to)}
     {:vf :db.valid/from
      :vt :db.valid/to}))
+
+;; ---------------------------------------------------------------------------
+;; Pure window algebra — the single source of truth shared by the per-datom
+;; predicates below and the async engine's pure-pred rebuilds
+;; (execute/prepare-vt-wrappers-step). Missing vf = -inf, missing vt = +inf;
+;; :during requires both endpoints.
+
+(defn window-covers-at? [vf-val vt-val at]
+  (and (or (nil? vf-val) (not (bp/date-after? vf-val at)))
+       (or (nil? vt-val) (bp/date-after? vt-val at))))
+
+(defn window-overlaps? [vf-val vt-val from to]
+  (and (or (nil? vf-val) (bp/date-before? vf-val to))
+       (or (nil? vt-val) (bp/date-after? vt-val from))))
+
+(defn window-during? [vf-val vt-val from to]
+  (and (some? vf-val) (some? vt-val)
+       (not (bp/date-before? vf-val from))
+       (not (bp/date-after? vt-val to))))
 
 (defn- tx-covers-at?
   "Does the tx-entity `tx-id`'s vt-window contain `at`? Reads
@@ -42,8 +61,7 @@
                            (when (= vf (.-a td)) (.-v td))) tx-datoms)
             vt-val (some (fn [^datahike.datom.Datom td]
                            (when (= vt (.-a td)) (.-v td))) tx-datoms)
-            ok? (and (or (nil? vf-val) (not (bp/date-after? vf-val at)))
-                     (or (nil? vt-val) (bp/date-after? vt-val at)))]
+            ok? (window-covers-at? vf-val vt-val at)]
         (bp/mput! cover-cache tx-id ok?)
         ok?))))
 
@@ -106,14 +124,18 @@
   [at]
   (let [cover-cache  (bp/mutable-map)
         winner-cache (bp/mutable-map)]
-    (fn vt-pred [db ^datahike.datom.Datom d]
+    (with-meta
+      (fn vt-pred [db ^datahike.datom.Datom d]
       ;; (datom-tx d) is always-positive (retractions store it negated).
-      (when (tx-covers-at? db (datahike.datom/datom-tx d) at cover-cache)
-        (when-let [^datahike.datom.Datom w
-                   (find-eav-winner db (.-e d) (.-a d) (.-v d) at
-                                    cover-cache winner-cache)]
-          (= (datahike.datom/datom-tx d)
-             (datahike.datom/datom-tx w)))))))
+        (when (tx-covers-at? db (datahike.datom/datom-tx d) at cover-cache)
+          (when-let [^datahike.datom.Datom w
+                     (find-eav-winner db (.-e d) (.-a d) (.-v d) at
+                                      cover-cache winner-cache)]
+            (= (datahike.datom/datom-tx d)
+               (datahike.datom/datom-tx w)))))
+      ;; explicit with-meta: reader ^{} meta on a tail-position fn literal
+      ;; miscompiles on cljs (with_meta around a statement-positioned fn)
+      {:datahike/vt-spec {:kind :at :at at}})))
 
 (defn mk-vt-overlap-pred
   "Pred that admits a datom iff its tx's vt-window *overlaps*
@@ -121,21 +143,22 @@
    `vf` is `-∞`. The overlap condition is `(vf < to) AND (vt > from)`."
   [from to]
   (let [cache (bp/mutable-map)]
-    (fn vt-overlap-pred [db ^datahike.datom.Datom d]
-      (let [tx-id (datahike.datom/datom-tx d)
-            cached (bp/mget cache tx-id)]
-        (if (some? cached)
-          cached
-          (let [{:keys [vf vt]} (vt-meta-attrs db)
-                tx-datoms (dbi/-datoms db :eavt [tx-id] (dbi/-search-context db))
-                vf-val (some (fn [^datahike.datom.Datom td]
-                               (when (= vf (.-a td)) (.-v td))) tx-datoms)
-                vt-val (some (fn [^datahike.datom.Datom td]
-                               (when (= vt (.-a td)) (.-v td))) tx-datoms)
-                ok? (and (or (nil? vf-val) (bp/date-before? vf-val to))
-                         (or (nil? vt-val) (bp/date-after? vt-val from)))]
-            (bp/mput! cache tx-id ok?)
-            ok?))))))
+    (with-meta
+      (fn vt-overlap-pred [db ^datahike.datom.Datom d]
+        (let [tx-id (datahike.datom/datom-tx d)
+              cached (bp/mget cache tx-id)]
+          (if (some? cached)
+            cached
+            (let [{:keys [vf vt]} (vt-meta-attrs db)
+                  tx-datoms (dbi/-datoms db :eavt [tx-id] (dbi/-search-context db))
+                  vf-val (some (fn [^datahike.datom.Datom td]
+                                 (when (= vf (.-a td)) (.-v td))) tx-datoms)
+                  vt-val (some (fn [^datahike.datom.Datom td]
+                                 (when (= vt (.-a td)) (.-v td))) tx-datoms)
+                  ok? (window-overlaps? vf-val vt-val from to)]
+              (bp/mput! cache tx-id ok?)
+              ok?))))
+      {:datahike/vt-spec {:kind :overlap :from from :to to}})))
 
 (defn mk-vt-during-pred
   "Pred that admits a datom iff its tx's vt-window is *fully
@@ -144,19 +167,19 @@
    bounded one)."
   [from to]
   (let [cache (bp/mutable-map)]
-    (fn vt-during-pred [db ^datahike.datom.Datom d]
-      (let [tx-id (datahike.datom/datom-tx d)
-            cached (bp/mget cache tx-id)]
-        (if (some? cached)
-          cached
-          (let [{:keys [vf vt]} (vt-meta-attrs db)
-                tx-datoms (dbi/-datoms db :eavt [tx-id] (dbi/-search-context db))
-                vf-val (some (fn [^datahike.datom.Datom td]
-                               (when (= vf (.-a td)) (.-v td))) tx-datoms)
-                vt-val (some (fn [^datahike.datom.Datom td]
-                               (when (= vt (.-a td)) (.-v td))) tx-datoms)
-                ok? (and (some? vf-val) (some? vt-val)
-                         (not (bp/date-before? vf-val from))
-                         (not (bp/date-after? vt-val to)))]
-            (bp/mput! cache tx-id ok?)
-            ok?))))))
+    (with-meta
+      (fn vt-during-pred [db ^datahike.datom.Datom d]
+        (let [tx-id (datahike.datom/datom-tx d)
+              cached (bp/mget cache tx-id)]
+          (if (some? cached)
+            cached
+            (let [{:keys [vf vt]} (vt-meta-attrs db)
+                  tx-datoms (dbi/-datoms db :eavt [tx-id] (dbi/-search-context db))
+                  vf-val (some (fn [^datahike.datom.Datom td]
+                                 (when (= vf (.-a td)) (.-v td))) tx-datoms)
+                  vt-val (some (fn [^datahike.datom.Datom td]
+                                 (when (= vt (.-a td)) (.-v td))) tx-datoms)
+                  ok? (window-during? vf-val vt-val from to)]
+              (bp/mput! cache tx-id ok?)
+              ok?))))
+      {:datahike/vt-spec {:kind :during :from from :to to}})))

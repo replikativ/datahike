@@ -7,6 +7,7 @@
    [datahike.datom :as datom :refer [datom]]
    [datahike.db.interface :as dbi]
    [datahike.tools :as dt]
+   [datahike.bitemporal.predicate :as bp-pred]
    [datahike.db.utils :as dbu]
    [datahike.index.interface :as di]
    [datahike.query.analyze :as analyze]
@@ -1081,7 +1082,11 @@
                      ;; regular DB: plain streamed slice unless a wrapper
                      ;; post-processes (FilteredDB xform) — then realize+apply
                      (let [ctx (dbi/-search-context db)]
-                       (if (or (:xform-after ctx) (:timepred ctx))
+                       ;; NB the record fields are xform/timepred — the old
+                       ;; (:xform-after ctx) keyword was ALWAYS nil (latent:
+                       ;; a filtered stream would have skipped its predicate
+                       ;; had this arm been reachable for filtered dbs)
+                       (if (or (dbi/context-xform ctx) (dbi/context-time-pred ctx))
                          (into [] (maybe-post-process
                                    (pca/await (realize-slice db-index from-datom to-datom index nil sync?))
                                    db origin-db))
@@ -1443,9 +1448,79 @@
         (let [inner (pca/await (normalize-date-wrappers-step (.-unfiltered-db db)))]
           (if (identical? inner (.-unfiltered-db db))
             db
-            (FilteredDB. inner (.-pred db))))
+            ;; preserve record meta — the :datahike/valid-* markers route
+            ;; vt-aware secondary indices
+            (with-meta (FilteredDB. inner (.-pred db)) (meta db))))
 
         :else db))))
+
+#?(:cljs
+   (defn prepare-vt-wrappers-step
+     "Async-only: rewrite a FilteredDB whose predicate layers are all
+      PURIFIABLE valid-time specs into an equivalent FilteredDB with a PURE
+      predicate over batch-read tx windows — two awaited AVET range reads
+      (:db.valid/from / :db.valid/to are indexed system attrs) replace the
+      per-datom tx-entity probes, so every downstream application site
+      (post-process xforms, fused-kernel fpred) is cold-safe with zero
+      hooks. :overlap/:during are always purifiable; :at only over a
+      NON-historical stack (applied post-assembly, supersession reduces to
+      window coverage — see mk-vt-pred). valid-at over history and opaque
+      d/filter predicates are left unchanged (documented sync islands)."
+     [db]
+     (async
+      (if-not (instance? FilteredDB db)
+        db
+        (let [pred (.-pred db)
+              layers (:datahike/pred-layers (meta pred))
+              inner (pca/await (prepare-vt-wrappers-step (.-unfiltered-db db)))
+              historical? (loop [d inner]
+                            (cond
+                              (instance? HistoricalDB d) true
+                              (instance? FilteredDB d) (recur (.-unfiltered-db d))
+                              (satisfies? dbi/IHistory d) (recur (dbi/-origin d))
+                              :else false))
+              purifiable? (and (seq layers)
+                               (every? (fn [l]
+                                         (and (map? l)
+                                              (case (:kind l)
+                                                (:overlap :during) true
+                                                :at (not historical?)
+                                                false)))
+                                       layers))]
+          (if-not purifiable?
+            (if (identical? inner (.-unfiltered-db db))
+              db
+              (with-meta (FilteredDB. inner pred) (meta db)))
+            (let [{:keys [vf vt]} (bp-pred/vt-meta-attrs inner)
+                  vf-map (loop [m {} ds (seq (pca/await (datoms-step inner :avet [vf] false)))]
+                           (if ds
+                             (let [^Datom d (first ds)]
+                               (recur (assoc m (.-e d) (.-v d)) (next ds)))
+                             m))
+                  vt-map (loop [m {} ds (seq (pca/await (datoms-step inner :avet [vt] false)))]
+                           (if ds
+                             (let [^Datom d (first ds)]
+                               (recur (assoc m (.-e d) (.-v d)) (next ds)))
+                             m))
+                  layer-pred (fn [l]
+                               (case (:kind l)
+                                 :overlap (fn [d]
+                                            (let [tx (datom/datom-tx d)]
+                                              (bp-pred/window-overlaps? (get vf-map tx) (get vt-map tx)
+                                                                        (:from l) (:to l))))
+                                 :during (fn [d]
+                                           (let [tx (datom/datom-tx d)]
+                                             (bp-pred/window-during? (get vf-map tx) (get vt-map tx)
+                                                                     (:from l) (:to l))))
+                                 :at (fn [d]
+                                       (let [tx (datom/datom-tx d)]
+                                         (bp-pred/window-covers-at? (get vf-map tx) (get vt-map tx)
+                                                                    (:at l))))))
+                  preds (mapv layer-pred layers)
+                  pure (if (= 1 (count preds))
+                         (first preds)
+                         (fn [d] (every? (fn [p] (p d)) preds)))]
+              (with-meta (FilteredDB. inner pure) (meta db)))))))))
 
 (defn execute-scan-only
   "Path 1: Scan without merges (e.g. Q1). Smallest possible loop.

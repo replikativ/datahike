@@ -115,12 +115,21 @@
 (defn filter
   [db pred]
   {:pre [(dbu/db? db)]}
-  (if (is-filtered db)
-    (let [^FilteredDB fdb db
-          orig-pred (.-pred fdb)
-          orig-db (.-unfiltered-db fdb)]
-      (FilteredDB. orig-db #(and (orig-pred %) (pred orig-db %))))
-    (FilteredDB. db #(pred db %))))
+  ;; the composed one-arg closure carries :datahike/pred-layers — the vt
+  ;; factory preds' :datahike/vt-spec metadata (or ::opaque for arbitrary
+  ;; preds) — so the async engine can rebuild PURIFIABLE valid-time filters
+  ;; from batch-read tx windows (execute/prepare-vt-wrappers-step)
+  (let [layer (or (:datahike/vt-spec (meta pred)) ::opaque)]
+    (if (is-filtered db)
+      (let [^FilteredDB fdb db
+            orig-pred (.-pred fdb)
+            orig-db (.-unfiltered-db fdb)
+            layers (conj (or (:datahike/pred-layers (meta orig-pred)) [::opaque])
+                         layer)]
+        (FilteredDB. orig-db (with-meta #(and (orig-pred %) (pred orig-db %))
+                               {:datahike/pred-layers layers})))
+      (FilteredDB. db (with-meta #(pred db %)
+                        {:datahike/pred-layers [layer]})))))
 
 ; Changing DB
 
@@ -162,14 +171,17 @@
                      db
                      (pca/await (dbt/transact-tx-data initial tx-data false))))))))))
 
-(defn load-entities-with [db entities tx-meta]
-  (dbt/transact-entities-directly
-   (db/map->TxReport {:db-before db
-                      :db-after  db
-                      :tx-data   []
-                      :tempids   {}
-                      :tx-meta   tx-meta})
-   entities))
+(defn load-entities-with
+  ([db entities tx-meta] (load-entities-with db entities tx-meta true))
+  ([db entities tx-meta sync?]
+   (dbt/transact-entities-directly
+    (db/map->TxReport {:db-before db
+                       :db-after  db
+                       :tx-data   []
+                       :tempids   {}
+                       :tx-meta   tx-meta})
+    entities
+    sync?)))
 
 (defn db-with
   "Applies transaction to an immutable db value, returning new immutable db value. Same as `(:db-after (with db tx-data))`."

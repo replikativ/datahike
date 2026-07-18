@@ -75,11 +75,14 @@
                             ;; channel, so the background-op branch (which
                             ;; bypasses the commit queue) is never taken.
                             spine? #?(:clj false
-                                      :cljs (= op 'transact!))
+                                      :cljs (contains? #{'transact! 'load-entities} op))
                             spine-res #?(:clj nil
                                          :cljs (when spine?
-                                                 (let [ch (promise-chan)]
-                                                   ((w/transact!-step old (first args))
+                                                 (let [ch (promise-chan)
+                                                       expr (case op
+                                                              transact! (w/transact!-step old (first args))
+                                                              load-entities (w/load-entities-step old (first args)))]
+                                                   (expr
                                                     (fn [v] (put! ch {:ok v}))
                                                     (fn [e] (put! ch {:err e})))
                                                    (<! ch))))

@@ -842,3 +842,11 @@
 (defn load-entities [old entities]
   (log/debug :datahike/load-entities {:entity-count (count entities)})
   (complete-db-update old (core/load-entities-with old entities nil)))
+
+#?(:cljs
+   (defn load-entities-step
+     "Async load-entities op for the writer loop (see transact!-step)."
+     [old entities]
+     (log/debug :datahike/load-entities {:entity-count (count entities) :async? true})
+     (pca/async
+      (complete-db-update old (pca/await (core/load-entities-with old entities nil false))))))

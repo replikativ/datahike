@@ -371,13 +371,17 @@
      :stability :stable
      :supports-remote? true
      :referentially-transparent? true
-     :doc "Retrieves an entity by its id. Returns lazy map-like structure."
+     :doc "Retrieves an entity by its id. Returns lazy map-like structure. The arg-map form ({:eid .. :sync? false}, ClojureScript only) resolves and TOUCHES the entity asynchronously, returning a partial-cps async expression yielding the realized entity (component sub-entities recursively realized) or nil — navigate non-component refs with further async entity calls."
      :examples [{:desc "Get entity by id"
                  :code "(entity db 1)"}
                 {:desc "Get entity by lookup ref"
                  :code "(entity db [:email \"alice@example.com\"])"}
                 {:desc "Navigate entity attributes"
-                 :code "(:name (entity db 1))"}]
+                 :code "(:name (entity db 1))"}
+                {:desc "Asynchronous realized entity (ClojureScript)"
+                 :code "((entity db {:eid 1 :sync? false})
+                        (fn [e] (println (:name e)))
+                        (fn [err] (js/console.error err)))"}]
      :impl datahike.impl.entity/entity}
 
     entity-db

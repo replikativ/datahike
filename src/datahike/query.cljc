@@ -3913,7 +3913,8 @@
                                                         (if ks
                                                           (let [k (first ks)
                                                                 v (get m k)
-                                                                v' (pca/await (execute/normalize-date-wrappers-step v))]
+                                                                v' (pca/await (execute/normalize-date-wrappers-step v))
+                                                                v' (pca/await (execute/prepare-vt-wrappers-step v'))]
                                                             (recur (next ks) (if (identical? v v') m (assoc m k v'))))
                                                           m))]
                                             (if (identical? srcs' srcs)
