@@ -1131,6 +1131,20 @@
                        (persistent! acc)))))))
 
 #?(:cljs
+   (defn- index-origin
+     "Innermost index-carrying db: unwraps temporal wrappers (IHistory) AND
+      FilteredDB. NB (:eavt filtered-db) THROWS (-lookup unsupported) — never
+      field-access a wrapper. Reads through the unwrapped db stay correct as
+      long as the ORIGINAL db's -search-context is applied afterwards: it
+      carries the temporal preds and the filter xform."
+     [db]
+     (loop [d db]
+       (cond
+         (satisfies? dbi/IHistory d) (recur (dbi/-origin d))
+         (instance? FilteredDB d) (recur (.-unfiltered-db d))
+         :else d))))
+
+#?(:cljs
    (defn datoms-step
      "Dual dbi/datoms for ground component patterns. sync? true delegates to
       dbi/datoms (the wrapper's -search-context applies). sync? false yields
@@ -1143,7 +1157,7 @@
      [db index-type cs sync?]
      (if sync?
        (dbi/datoms db index-type cs)
-       (let [idb (loop [d db] (if (satisfies? dbi/IHistory d) (recur (dbi/-origin d)) d))]
+       (let [idb (index-origin db)]
          (if (nil? (get idb index-type))
            (async (dbi/datoms db index-type cs))
            (async
@@ -1187,7 +1201,7 @@
                    nil)
             {:keys [src e attrs]} spec
             fdb (when spec (or (when (symbol? src) (get (:sources ctx) src)) db))
-            idb (when fdb (loop [d fdb] (if (satisfies? dbi/IHistory d) (recur (dbi/-origin d)) d)))]
+            idb (when fdb (index-origin fdb))]
         (when (and spec
                    (symbol? e) (analyze/free-var? e)
                    (seq attrs)
@@ -1294,9 +1308,7 @@
         (let [origin (pca/await (normalize-date-wrappers-step (dbi/-origin db)))
               tp (dbi/-time-point db)
               tp' (if (instance? js/Date tp)
-                    (pca/await (resolve-date-tx-step
-                                (loop [d origin] (if (satisfies? dbi/IHistory d) (recur (dbi/-origin d)) d))
-                                tp))
+                    (pca/await (resolve-date-tx-step (index-origin origin) tp))
                     tp)]
           (if (and (identical? origin (dbi/-origin db)) (identical? tp' tp))
             db
@@ -1306,9 +1318,7 @@
         (let [origin (pca/await (normalize-date-wrappers-step (dbi/-origin db)))
               tp (dbi/-time-point db)
               tp' (if (instance? js/Date tp)
-                    (pca/await (resolve-date-tx-step
-                                (loop [d origin] (if (satisfies? dbi/IHistory d) (recur (dbi/-origin d)) d))
-                                tp))
+                    (pca/await (resolve-date-tx-step (index-origin origin) tp))
                     tp)]
           (if (and (identical? origin (dbi/-origin db)) (identical? tp' tp))
             db
@@ -1319,6 +1329,12 @@
           (if (identical? origin (dbi/-origin db))
             db
             (HistoricalDB. origin)))
+
+        (instance? FilteredDB db)
+        (let [inner (pca/await (normalize-date-wrappers-step (.-unfiltered-db db)))]
+          (if (identical? inner (.-unfiltered-db db))
+            db
+            (FilteredDB. inner (.-pred db))))
 
         :else db))))
 
@@ -4142,8 +4158,10 @@
       ;; Semi-naive fixpoint over ALL SCC rules
       ;; Uses mutable HashSet for deduplication (avoids PersistentVector allocation)
       (let [;; Magic set detection — only for single-rule SCCs with binary head vars
-            ;; and at least one ground call-arg
-            magic-info (compute-magic-info call-args head-vars scc-rule-names)
+            ;; and at least one ground call-arg. Disabled on FilteredDB: the
+            ;; magic base scans read raw indexes, bypassing the filter predicate.
+            magic-info (when-not (instance? FilteredDB db)
+                         (compute-magic-info call-args head-vars scc-rule-names))
             magic-demand (when magic-info
                            (let [hs #?(:clj (java.util.HashSet. 64) :cljs (js/Set.))
                                  ground-pos (ffirst (:ground-positions magic-info))
@@ -4303,6 +4321,8 @@
                                            ;; body); false on cljs → the correct
                                            ;; non-delta recursive scan below.
                                            use-delta-driven? (and #?(:cljs false :clj base-scan-attr)
+                                                                  ;; raw avet reads bypass a filter predicate
+                                                                  (not (instance? FilteredDB db))
                                                                   rec-has-db-pattern?
                                                                   rec-shape-simple?
                                                                   (= rn rule-name)
@@ -4733,11 +4753,15 @@
                             (do (log/warn :datahike/source-not-found "Source not found in query context, using default db"
                                           {:source src :available (set (keys (:sources ctx)))})
                                 db))
-                        db)]
+                        db)
+                ;; FilteredDB: never touch raw index fields ((:eavt op-db)
+                ;; THROWS on the JVM) — every filtered op routes through the
+                ;; contextual per-clause reads, which apply the predicate.
+                filtered? (instance? FilteredDB op-db)]
             ;; Runtime corrector for the one thing static cost can't know: pull an
             ;; expensive function ahead of a group that would EXPAND its input.
             ;; (sync only — its probe reads are synchronous)
-            (if-let [plan' (when sync? (hoist-expensive-fn plan idx ctx op-db op))]
+            (if-let [plan' (when (and sync? (not filtered?)) (hoist-expensive-fn plan idx ctx op-db op))]
               (recur ctx plan' idx)
               (case (:op op)
               ;; Entity group — fused scan+merges (only works with concrete DB sources
@@ -4749,7 +4773,7 @@
                 ;; Single temporal wrapper over a PSS-backed origin — stay on the
                 ;; FUSED path (temporal-aware execute-group-direct + SIP probe)
                 ;; rather than the per-clause legacy lookup-batch-search fallback.
-                    (and (some? ti) (pss-instance? (:eavt (:origin-db ti))))
+                    (and (not filtered?) (some? ti) (pss-instance? (:eavt (:origin-db ti))))
                     (let [[ctx' _] (pca/await (execute-temporal-group-rel op-db op ctx ti sync?))
                           actual-card (ctx-total-tuples ctx')
                       ;; Re-plan cardinality estimation reads index subtree counts
@@ -4764,7 +4788,7 @@
                                   plan)]
                       (recur ctx' plan' (inc idx)))
 
-                    (pss-instance? (:eavt op-db))
+                    (and (not filtered?) (pss-instance? (:eavt op-db)))
                     (let [[ctx' consumed] (pca/await (execute-fused-scan-rel op-db (:scan-op op) (:merge-ops op) ctx sync?))
                           actual-card (ctx-total-tuples ctx')
                           plan' (if (and sync?
@@ -4912,10 +4936,11 @@
                                        {:source op-db
                                         :lookup-attrs (lookup-attrs-for-clauses op-db (:clause op) nil)})]
                       (recur ctx' plan (inc idx)))
-                    (if (not (pss-instance? (:eavt op-db)))
+                    (if (or filtered? (not (pss-instance? (:eavt op-db))))
                       (let [ti (temporal-info op-db)
                             scan-attr (second (:clause op))]
-                        (if (and (some? ti)
+                        (if (and (not filtered?)
+                                 (some? ti)
                                  (pss-instance? (:eavt (:origin-db ti)))
                                  (not (:optional? op))
                                  (some? scan-attr) (not (symbol? scan-attr)))
@@ -5008,6 +5033,7 @@
                     ;; (:exec-cost-fn), not already probed, on a PSS default
                     ;; source, AND some deferred index-backed op shares its input.
                       probe? (and sync? ;; probe-card = synchronous index reads
+                                  (not filtered?)
                                   (:exec-cost-fn op)
                                   (not (:probed? op))
                                   (nil? (:source op))

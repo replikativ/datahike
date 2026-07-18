@@ -30,7 +30,7 @@
    [datahike.query.analyze :as analyze]
    #?(:clj [datahike.query.logical :as logical])
    #?(:clj [datahike.query.lower :as lower])
-   #?(:cljs [datahike.db :refer [DB AsOfDB SinceDB HistoricalDB]])
+   #?(:cljs [datahike.db :refer [DB AsOfDB SinceDB HistoricalDB FilteredDB]])
    #?(:cljs [datahike.query.execute :as execute])
    #?(:cljs [datahike.query.logical :as logical])
    #?(:cljs [datahike.query.lower :as lower])
@@ -44,7 +44,7 @@
 
   #?(:clj (:import [clojure.lang Reflector Seqable]
                    [datahike.datom Datom]
-                   [datahike.db DB AsOfDB SinceDB HistoricalDB]
+                   [datahike.db DB AsOfDB SinceDB HistoricalDB FilteredDB]
                    [datahike.query.relation Relation]
                    [datalog.parser.type Aggregate BindColl BindIgnore BindScalar BindTuple Constant
                     FindColl FindRel FindScalar FindTuple PlainSymbol Pull
@@ -3683,21 +3683,29 @@
 
 (defn- planner-eligible-db?
   "Check if db is eligible for the query planner.
-   Accepts regular DB and all temporal wrappers (AsOfDB, SinceDB, HistoricalDB).
+   Accepts regular DB, all temporal wrappers (AsOfDB, SinceDB, HistoricalDB),
+   and FilteredDB over an eligible db (its execution routes through the
+   contextual per-clause reads, which apply the filter predicate — the fused
+   raw-index kernels are gated off for filtered dbs).
    Date-based time-points are resolved to tx-ids at execution time via AVET lookup."
   [db]
   (or (instance? DB db)
       (instance? SinceDB db)
       (instance? AsOfDB db)
-      (instance? HistoricalDB db)))
+      (instance? HistoricalDB db)
+      (and (instance? FilteredDB db)
+           (planner-eligible-db? (.-unfiltered-db ^FilteredDB db)))))
 
 (defn- planner-origin-db
   "For temporal wrappers, return the origin DB for plan creation (schema, indexes).
-   For regular DB, return as-is. Returns nil for nested temporal wrappers
-   (e.g. (d/history (d/as-of ...))) which should fall back to legacy."
+   For regular DB, return as-is. FilteredDB unwraps to its underlying db's
+   origin (planning sees unfiltered stats; execution applies the predicate).
+   Returns nil for nested temporal wrappers (e.g. (d/history (d/as-of ...)))
+   which should fall back to legacy."
   [db]
   (cond
     (instance? DB db) db
+    (instance? FilteredDB db) (planner-origin-db (.-unfiltered-db ^FilteredDB db))
     (or (instance? SinceDB db) (instance? AsOfDB db) (instance? HistoricalDB db))
     (let [origin (dbi/-origin db)]
       (when (instance? DB origin) origin))
@@ -3792,7 +3800,10 @@
         ;; (jobtech batched lookups: 43ms -> 0.26ms at small batch sizes). This
         ;; mirrors the `(empty? (:rels context-in))` gate already in
         ;; execute-planned-direct.
-        fused-rel (when (empty? (:rels context-in))
+        fused-rel (when (and (empty? (:rels context-in))
+                             ;; fused direct-rel reads raw indexes — a FilteredDB
+                             ;; must go through execute-plan's contextual reads
+                             (not (instance? FilteredDB db)))
                     (try (pca/await (exec-direct-rel plan db (:cancel context-in) sync?))
                          (catch #?(:clj Exception :cljs :default) e
                            ;; storage faults / cancellation must escape — a
@@ -3945,6 +3956,7 @@
                   (if-let [split-result
                            (when (and use-planner?
                                       (planner-origin-db primary-db)
+                                      (not (instance? FilteredDB primary-db))
                                       (instance? FindRel qfind)
                                       (not qreturnmaps)
                                       (not (:with query))
@@ -4031,6 +4043,10 @@
                       (let [db primary-db
               ;; For temporal wrappers, use origin-db for plan creation (schema, index stats)
                             plan-db (planner-origin-db db)
+              ;; FilteredDB executes via the contextual per-clause reads (the
+              ;; predicate applies through -search); the fused raw-index paths
+              ;; below are gated off for it.
+                            filtered? (instance? FilteredDB db)
                             bound-vars (context-bound-vars context-in)
               ;; Use the actual db (not origin) for lookup-ref resolution — temporal
               ;; DBs (history) can resolve retracted entities that origin-db can't.
@@ -4049,8 +4065,9 @@
 
           ;; Try paths in order of preference:
           ;; 1. Direct HashSet (non-aggregate simple queries)
-                        (if-let [direct-result (pca/await (execute-planned-direct
-                                                           plan db qfind find-elements context-in query stats? qreturnmaps sync?))]
+                        (if-let [direct-result (when-not filtered?
+                                                 (pca/await (execute-planned-direct
+                                                             plan db qfind find-elements context-in query stats? qreturnmaps sync?)))]
                           (let [result (apply-result-transforms direct-result order-spec offset limit qreturnmaps)]
                             #?(:clj
                                (when profile?
@@ -4064,6 +4081,7 @@
                           (let [ta (when profile? #?(:clj (System/nanoTime) :cljs 0))
                                 has-aggs? (some #(instance? Aggregate %) find-elements)
                                 columnar-eligible? (and has-aggs?
+                                                        (not filtered?)
                                                         (instance? FindRel qfind)
                                                         (not (:with query))
                                                         (not (some #(instance? Pull %) find-elements))

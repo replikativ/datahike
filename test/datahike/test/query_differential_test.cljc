@@ -120,6 +120,10 @@
    :temporal  (gen/frequency [[6 (gen/return :none)]
                               [2 (gen/return :as-of)]
                               [1 (gen/return :history)]])
+   ;; d/filter wrapper (outermost, over the temporal wrapper): the planner
+   ;; must route every filtered read through the contextual per-clause path
+   :filtered? (gen/frequency [[4 (gen/return false)]
+                              [1 (gen/return true)]])
    :in-coll?  gen/boolean                                    ;; bind ?e via :in [?e ...]
    ;; rules: a rule clause added to the body, rule set passed via :in %
    :rules     (gen/frequency [[5 (gen/return :none)]
@@ -175,8 +179,11 @@
             :not-tag       [['(not [?e :tag :red])] nil]
             :not-join-nick [['(not-join [?e] [?e :nick _])] nil]
             :or-tag        [['(or [?e :tag :red] [?e :tag :blue])] nil]
+            ;; both branches must bind the same var set — the earlier
+            ;; single-clause second branch left ?s2 undeclared, making EVERY
+            ;; :or-and query invalid (they only ever tested the error path)
             :or-and        [['(or (and [?e :tag :red] [?e :score ?s2])
-                                  [?e :nick "al"])] nil]))
+                                  (and [?e :nick "al"] [?e :score ?s2]))] nil]))
         expanded (mapv mod->clauses modifiers)
         mod-clauses (into [] (mapcat first) expanded)
         mod-var (some second expanded)
@@ -235,17 +242,24 @@
                         (map (fn [a] (if (= ::db2 a) @test-db2 a)) args))))
     (catch #?(:clj Exception :cljs :default) _ ::raised)))
 
-(defn- wrap-db [db temporal]
-  (case temporal
-    :none db
-    :as-of (d/as-of db (:max-tx db))
-    :history (d/history db)))
+(defn- wrap-db
+  ([db temporal] (wrap-db db temporal false))
+  ([db temporal filtered?]
+   (let [db (case temporal
+              :none db
+              :as-of (d/as-of db (:max-tx db))
+              :history (d/history db))]
+     (if filtered?
+       ;; hide entity 105 (frank: nick, tags incl :red, score) — exercises
+       ;; filtering against or-branches, get-else defaults and aggregates
+       (d/filter db (fn [_ d] (not= 105 (:e d))))
+       db))))
 
 (defspec base-and-planner-agree-on-generated-queries
   {:num-tests num-cases :seed 1721160000042}
   (prop/for-all [spec gen-spec]
                 (let [[query args] (build-query spec)
-                      db (wrap-db @test-db (:temporal spec))
+                      db (wrap-db @test-db (:temporal spec) (:filtered? spec))
                       base (run-engine true query db args)
                       planner (run-engine false query db args)]
                   (is (= base planner)
@@ -278,13 +292,19 @@
    (def ^:private expected-cold-covered
      "Exact number of the num-cases replayed cases that COMPLETE (rather
       than fault) under :async-cold. Bump on every conversion that widens
-      cold coverage; a drop names a regressed seam (see the histogram)."
-     259))
+      cold coverage; a drop names a regressed seam (see the histogram).
+      Re-baselined at 248 when the :filtered axis + the :or-and fix changed
+      the case stream: every one of the 40 remaining faults is a
+      :filtered? true case (their per-clause scans stay sync until the
+      fused kernels apply the filter predicate — F2); the rest are
+      legitimately-raising queries."
+     248))
 
 #?(:cljs
    (defn- spec-dimensions [spec]
      {:modifiers (vec (:modifiers spec))
       :temporal (:temporal spec)
+      :filtered? (:filtered? spec)
       :multi (:multi spec)
       :rules (:rules spec)
       :in-coll? (:in-coll? spec)
@@ -300,9 +320,9 @@
                acc
                (let [[query args] (build-query spec)
                      rargs (mapv (fn [x] (if (= ::db2 x) @test-db2 x)) args)
-                     warm-db (wrap-db @test-db (:temporal spec))
+                     warm-db (wrap-db @test-db (:temporal spec) (:filtered? spec))
                      cold-base (am/cold-db @test-db flush-handle)
-                     cold-db (wrap-db cold-base (:temporal spec))
+                     cold-db (wrap-db cold-base (:temporal spec) (:filtered? spec))
                      sync-out (<! (apply am/run-query-in-mode :sync query warm-db rargs))
                      warm-out (<! (apply am/run-query-in-mode :async-warm query warm-db rargs))
                      cold-out (<! (apply am/run-query-in-mode :async-cold query cold-db rargs))
