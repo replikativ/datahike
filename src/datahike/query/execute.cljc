@@ -3129,68 +3129,89 @@
                                                    (not (get-in op [:schema-info :card-one?] true))))
                                             merge-ops))
             acc (make-result-list 2000)
-            _ (letfn [(process-merges [scan-d eid mi tuple]
-                        (if (>= mi n-merges)
-                          (result-list-add acc tuple)
-                          (let [anti? (aget merge-anti mi)
-                                ra (aget merge-attrs mi)
-                                vg? (aget merge-v-ground mi)
-                                vgv (aget merge-v-vals mi)
-                                card-many? (aget merge-card-many mi)
-                                has-v-var? (let [mv (get (:clause (nth merge-ops mi)) 2)]
-                                             (and (symbol? mv) (analyze/free-var? mv)))
-                                has-tx-var? (let [mtx (get (:clause (nth merge-ops mi)) 3)]
-                                              (and (some? mtx) (symbol? mtx) (analyze/free-var? mtx)))]
-                            (if card-many?
-                          ;; Card-many: iterate ALL matching datoms
-                              (let [from-d (datom eid ra (when vg? vgv) tx0)
-                                    to-d (datom eid ra (when vg? vgv) txmax)
-                                    slice (di/-slice (:eavt db) from-d to-d :eavt)]
-                                (if anti?
-                                  (let [check-v? (aget merge-check-scan-v mi)
-                                        check-tx? (aget merge-check-scan-tx mi)]
-                                    (when (not-any? (fn [^Datom d] (merge-datom-match? d eid ra vg? vgv check-v? check-tx? scan-d)) slice)
-                                      (process-merges scan-d eid (inc mi) tuple)))
-                                  (let [check-v? (aget merge-check-scan-v mi)
-                                        check-tx? (aget merge-check-scan-tx mi)]
-                                    (doseq [^Datom d slice]
-                                      (when (merge-datom-match? d eid ra vg? vgv check-v? check-tx? scan-d)
-                                        (process-merges scan-d eid (inc mi)
-                                                        (cond-> tuple
-                                                          has-v-var? (conj (.-v d))
-                                                          has-tx-var? (conj (.-tx d)))))))))
-                          ;; Card-one: single lookupGE
-                              (let [^Datom d (pss-lookup-ge eavt-pss (datom eid ra vgv tx0))
-                                    check-v? (aget merge-check-scan-v mi)
-                                    check-tx? (aget merge-check-scan-tx mi)
-                                    found? (and d (merge-datom-match? d eid ra vg? vgv check-v? check-tx? scan-d))
-                                    merge-op (nth merge-ops mi)
-                                    optional? (:optional? merge-op)]
-                                (cond
-                                  anti?
-                                  (when (not found?)
-                                    (process-merges scan-d eid (inc mi) tuple))
+            ;; PHASE 1+2 per scan datom (see execute-card-many-merge): levels
+            ;; are independent; each level realizes to a vector of tuple
+            ;; CONTRIBUTIONS (the values it appends — [] for anti-pass or
+            ;; var-less merges), or nil-level-vector [[]]; a failing level
+            ;; rejects the scan datom. The odometer then emits base-tuple +
+            ;; concatenated contributions, deepest level fastest — identical
+            ;; order to the recursive builder it replaces (which conj'd onto
+            ;; the tuple while recursing).
+            _ (doseq [^Datom scan-d filtered-datoms]
+                (check-cancel! cancel)
+                (when (or (nil? entity-filter)
+                          #?(:clj (es/entity-bitset-contains? entity-filter (.-e scan-d))
+                             :cljs true))
+                  (let [eid (.-e scan-d)
+                        base-tuple [(.-e scan-d) (.-a scan-d) (.-v scan-d) (.-tx scan-d) (datom/datom-added scan-d)]
+                        levels
+                        (loop [mi 0 lacc []]
+                          (if (>= mi n-merges)
+                            lacc
+                            (let [anti? (aget merge-anti mi)
+                                  ra (aget merge-attrs mi)
+                                  vg? (aget merge-v-ground mi)
+                                  vgv (aget merge-v-vals mi)
+                                  card-many? (aget merge-card-many mi)
+                                  has-v-var? (let [mv (get (:clause (nth merge-ops mi)) 2)]
+                                               (and (symbol? mv) (analyze/free-var? mv)))
+                                  has-tx-var? (let [mtx (get (:clause (nth merge-ops mi)) 3)]
+                                                (and (some? mtx) (symbol? mtx) (analyze/free-var? mtx)))
+                                  check-v? (aget merge-check-scan-v mi)
+                                  check-tx? (aget merge-check-scan-tx mi)]
+                              (if card-many?
+                                ;; Card-many: every matching datom is one contribution
+                                (let [from-d (datom eid ra (when vg? vgv) tx0)
+                                      to-d (datom eid ra (when vg? vgv) txmax)
+                                      slice (di/-slice (:eavt db) from-d to-d :eavt)
+                                      contribs (into []
+                                                     (comp (filter (fn [^Datom d]
+                                                                     (merge-datom-match? d eid ra vg? vgv check-v? check-tx? scan-d)))
+                                                           (map (fn [^Datom d]
+                                                                  (cond-> []
+                                                                    has-v-var? (conj (.-v d))
+                                                                    has-tx-var? (conj (.-tx d))))))
+                                                     slice)]
+                                  (if anti?
+                                    (when (empty? contribs) (recur (inc mi) (conj lacc [[]])))
+                                    (when (seq contribs) (recur (inc mi) (conj lacc contribs)))))
+                                ;; Card-one: single lookupGE
+                                (let [^Datom d (pss-lookup-ge eavt-pss (datom eid ra vgv tx0))
+                                      found? (and d (merge-datom-match? d eid ra vg? vgv check-v? check-tx? scan-d))
+                                      merge-op (nth merge-ops mi)
+                                      optional? (:optional? merge-op)]
+                                  (cond
+                                    anti?
+                                    (when (not found?) (recur (inc mi) (conj lacc [[]])))
 
-                                  found?
-                                  (process-merges scan-d eid (inc mi)
-                                                  (cond-> tuple
-                                                    has-v-var? (conj (.-v d))
-                                                    has-tx-var? (conj (.-tx d))))
+                                    found?
+                                    (recur (inc mi) (conj lacc [(cond-> []
+                                                                  has-v-var? (conj (.-v d))
+                                                                  has-tx-var? (conj (.-tx d)))]))
 
-                                  ;; Optional merge (get-else): produce default value on miss
-                                  optional?
-                                  (process-merges scan-d eid (inc mi)
-                                                  (cond-> tuple
-                                                    has-v-var? (conj (:default-value merge-op))
-                                                    has-tx-var? (conj 0)))))))))]
-                (run! (fn [^Datom scan-d]
-                        (check-cancel! cancel)
-                        (when (or (nil? entity-filter)
-                                  #?(:clj (es/entity-bitset-contains? entity-filter (.-e scan-d))
-                                     :cljs true))
-                          (process-merges scan-d (.-e scan-d) (int 0)
-                                          [(.-e scan-d) (.-a scan-d) (.-v scan-d) (.-tx scan-d) (datom/datom-added scan-d)])))
-                      filtered-datoms))]
+                                    ;; Optional merge (get-else): default value on miss
+                                    optional?
+                                    (recur (inc mi) (conj lacc [(cond-> []
+                                                                  has-v-var? (conj (:default-value merge-op))
+                                                                  has-tx-var? (conj 0))]))))))))]
+                    (when levels
+                      (let [^ints idxs (int-array n-merges)]
+                        (loop []
+                          (result-list-add acc
+                                           (persistent!
+                                            (reduce (fn [t mi]
+                                                      (reduce conj! t (nth (nth levels mi) (aget idxs mi))))
+                                                    (transient base-tuple)
+                                                    (range n-merges))))
+                          (when (loop [mi (dec n-merges)]
+                                  (if (neg? mi)
+                                    false
+                                    (let [n (count (nth levels mi))
+                                          i (inc (aget idxs mi))]
+                                      (if (< i n)
+                                        (do (aset idxs mi i) true)
+                                        (do (aset idxs mi 0) (recur (dec mi)))))))
+                            (recur))))))))]
         (let [out-rel (rel/->Relation out-attrs #?(:clj (vec (.toArray ^java.util.ArrayList acc))
                                                    :cljs (vec acc)))
               ;; Env so that hash-join inside collapse-rels can resolve lookup
