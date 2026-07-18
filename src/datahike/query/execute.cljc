@@ -3539,20 +3539,28 @@
 
    Cross-platform: its callees (execute-group-direct, the temporal merge path) are
    cljc; only the result-list drain differs (JVM ArrayList .toArray vs the cljs
-   #js [] dual, as elsewhere in this ns)."
-  [db op context temporal]
-  (let [scan-op     (entity-group-scan-op op)
+   #js [] dual, as elsewhere in this ns).
+
+   cljs dual: sync? false yields an async expression producing [ctx' consumed]
+   — the one execute-group-direct call is awaited; everything else is pure."
+  ([db op context temporal]
+   (execute-temporal-group-rel db op context temporal true))
+  ([db op context temporal sync?]
+   (async+sync sync?
+   (let [scan-op     (entity-group-scan-op op)
         merge-ops   (entity-group-merge-ops op)
         scan-clause (:clause scan-op)
         index-db    (or (:origin-db temporal) db)
         a           (second scan-clause)
         resolved-a  (when (and (some? a) (not (symbol? a))) (resolve-attr index-db a))
-        scan-n      (or (:estimated-card scan-op)
-                        (di/-count (get index-db (:index scan-op))))
         ;; SIP probe-set is a JVM-only fast-path optimization (HashSet + ForwardCursor
-        ;; seeks). On cljs fall back to a full temporal scan — slower but identical
-        ;; results, since the probe only restricts the scan to already-bound values.
-        probe       #?(:clj  (pattern-probe-set index-db scan-clause resolved-a (:rels context) scan-n)
+        ;; seeks) — scan-n's di/-count fallback lives inside the :clj arm so the
+        ;; cljs path never issues that (synchronous) count read. On cljs fall back
+        ;; to a full temporal scan — slower but identical results, since the probe
+        ;; only restricts the scan to already-bound values.
+        probe       #?(:clj  (let [scan-n (or (:estimated-card scan-op)
+                                              (di/-count (get index-db (:index scan-op))))]
+                               (pattern-probe-set index-db scan-clause resolved-a (:rels context) scan-n))
                        :cljs nil)
         ;; Project to ALL free vars across the scan + merge clauses (mirroring
         ;; execute-fused-scan-rel's out-attrs), NOT (:vars op). (:vars op) is the
@@ -3563,12 +3571,13 @@
                                            (concat scan-clause
                                                    (mapcat :clause merge-ops)))))
         result-list (make-result-list 4000)]
-    (execute-group-direct db scan-op merge-ops find-vars nil
-                          result-list
-                          (when probe (:values probe)) (if probe (int (:field probe)) (int 0))
-                          nil 0 -1 nil
-                          :temporal temporal :pipeline (:pipeline op)
-                          :cancel (:cancel context))
+    (pca/await (execute-group-direct db scan-op merge-ops find-vars nil
+                                     result-list
+                                     (when probe (:values probe)) (if probe (int (:field probe)) (int 0))
+                                     nil 0 -1 nil
+                                     :temporal temporal :pipeline (:pipeline op)
+                                     :cancel (:cancel context)
+                                     :sync? sync?))
     (let [attrs   (into {} (map-indexed (fn [i v] [v i]) find-vars))
           out-rel (rel/->Relation attrs #?(:clj  (vec (.toArray ^java.util.ArrayList result-list))
                                            :cljs (vec result-list)))
@@ -3576,7 +3585,7 @@
                                      {:source db
                                       :lookup-attrs (lookup-attrs-for-clauses db scan-clause merge-ops)})]
       [(-> context (assoc :rels merged) (assoc :unique-results? true))
-       (inc (count merge-ops))])))
+       (inc (count merge-ops))])))))
 
 ;; ---------------------------------------------------------------------------
 ;; OR / NOT execution (Relation-based fallback)
@@ -4512,7 +4521,7 @@
                 ;; FUSED path (temporal-aware execute-group-direct + SIP probe)
                 ;; rather than the per-clause legacy lookup-batch-search fallback.
                     (and (some? ti) (pss-instance? (:eavt (:origin-db ti))))
-                    (let [[ctx' _] (execute-temporal-group-rel op-db op ctx ti)
+                    (let [[ctx' _] (pca/await (execute-temporal-group-rel op-db op ctx ti sync?))
                           actual-card (ctx-total-tuples ctx')
                       ;; Re-plan cardinality estimation reads index subtree counts
                       ;; (estimate-pattern → -has-subtree-counts?), which live on the
@@ -4680,7 +4689,7 @@
                     ;; and full-scans the attribute every call (catastrophic inside
                     ;; a recursive-rule fixpoint). Optional (get-else) and
                     ;; variable-attribute patterns stay on legacy below.
-                          (let [[ctx' _] (execute-temporal-group-rel op-db op ctx ti)]
+                          (let [[ctx' _] (pca/await (execute-temporal-group-rel op-db op ctx ti sync?))]
                             (recur ctx' plan (inc idx)))
                   ;; Temporal/non-standard DB — use legacy lookup with search context.
                   ;; lookup-batch-search takes [source context orig-pattern resolved-pattern];
