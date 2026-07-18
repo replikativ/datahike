@@ -225,3 +225,31 @@
       (is (nil? error) (str "async dispatch failed: " error))
       (is (= sync-tuples tuples)
           "cold async dispatch through execute-group-direct ≡ warm sync"))))
+
+(deftest-async plan-direct-async
+  (let [conn (<! (fresh-conn))
+        _ (<! (d/transact! conn (mapv (fn [i] {:db/id (inc i) :friend (inc (mod (* 7 i) 1200))})
+                                      (range 600))))
+        db @conn
+        plan1 (q/get-or-create-plan db '[[?e :name ?n]] #{} {} nil)
+        plan2 (q/get-or-create-plan db '[[?p :name ?n] [?b :friend ?p]] #{} {} nil)
+        sync1 (ex/execute-plan-direct plan1 db '[?e ?n] nil nil nil)
+        sync2 (ex/execute-plan-direct plan2 db '[?b] nil nil nil)
+        cold-db (-> db
+                    (assoc :eavt (cold-restored (:store db) (:eavt db)))
+                    (assoc :aevt (cold-restored (:store db) (:aevt db)))
+                    (assoc :avet (cold-restored (:store db) (:avet db))))
+        run-async (fn [plan find-vars]
+                    (let [ch (a/promise-chan)]
+                      ((ex/execute-plan-direct plan cold-db find-vars nil nil nil false)
+                       (fn [v] (a/put! ch {:result v}))
+                       (fn [e] (a/put! ch {:error e})))
+                      ch))]
+    (is (pos? (count sync1)))
+    (is (pos? (count sync2)) "multi-group hash-probe has results")
+    (let [{:keys [result error]} (<! (run-async plan1 '[?e ?n]))]
+      (is (nil? error) (str "plan1 async failed: " error))
+      (is (= sync1 result) "single-group plan async over cold store ≡ warm sync"))
+    (let [{:keys [result error]} (<! (run-async plan2 '[?b]))]
+      (is (nil? error) (str "plan2 async failed: " error))
+      (is (= sync2 result) "multi-group hash-probe plan async over cold store ≡ warm sync"))))

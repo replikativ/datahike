@@ -2736,47 +2736,53 @@
    cancel: optional IDeref/Volatile; when its value is truthy the query
      raises :datahike/canceled at the next check point.
    Returns the HashSet, or nil if the plan can't be executed directly."
-  [plan db find-vars max-results consts cancel]
-  (let [ops (:ops plan)
-        temporal (temporal-info db)]
-    (when (and (not (:has-passthrough? plan))
+  ([plan db find-vars max-results consts cancel]
+   (execute-plan-direct plan db find-vars max-results consts cancel true))
+  ([plan db find-vars max-results consts cancel sync?]
+   ;; ONE dual body — the six execute-group-direct calls below are awaited;
+   ;; awaits strip away on :clj / sync mode.
+   (async+sync sync?
+               (let [ops (:ops plan)
+                     temporal (temporal-info db)]
+                 (when (and (not (:has-passthrough? plan))
                ;; Fast structural pre-check from IR pipeline (when available)
-               (if (contains? plan :structurally-fusable?)
-                 (:structurally-fusable? plan)
-                 true)
-               (can-direct-fuse? plan find-vars consts))
-      (let [group-joins (:group-joins plan)
-            groups (filterv #(#{:entity-group :pattern-scan} (:op %)) ops)
-            pred-ops (filterv #(= :predicate (:op %)) ops)
-            fn-ops (filterv #(= :function (:op %)) ops)
-            not-join-ops (filterv #(= :not-join (:op %)) ops)
-            has-post-ops? (or (seq pred-ops) (seq fn-ops) (seq not-join-ops))
+                            (if (contains? plan :structurally-fusable?)
+                              (:structurally-fusable? plan)
+                              true)
+                            (can-direct-fuse? plan find-vars consts))
+                   (let [group-joins (:group-joins plan)
+                         groups (filterv #(#{:entity-group :pattern-scan} (:op %)) ops)
+                         pred-ops (filterv #(= :predicate (:op %)) ops)
+                         fn-ops (filterv #(= :function (:op %)) ops)
+                         not-join-ops (filterv #(= :not-join (:op %)) ops)
+                         has-post-ops? (or (seq pred-ops) (seq fn-ops) (seq not-join-ops))
             ;; When post-ops exist, emit ALL group vars (wide tuples) so
             ;; predicates/functions can reference any var. Project afterwards.
-            all-group-vars (when has-post-ops?
-                             (vec (distinct (mapcat :vars groups))))
-            emit-vars (if has-post-ops? all-group-vars find-vars)
-            n-groups (count groups)
-            result-list (make-result-list 4000)]
+                         all-group-vars (when has-post-ops?
+                                          (vec (distinct (mapcat :vars groups))))
+                         emit-vars (if has-post-ops? all-group-vars find-vars)
+                         n-groups (count groups)
+                         result-list (make-result-list 4000)]
 
-        (if (= 1 n-groups)
+                     (if (= 1 n-groups)
           ;; Single group — fused scan+merge
-          (let [g (first groups)
-                scan-op (entity-group-scan-op g)
-                merge-ops (entity-group-merge-ops g)
-                g-attached (:attached-preds g)
-                g-emit (if (seq g-attached)
-                         (group-emit-vars g emit-vars)
-                         emit-vars)]
-            (execute-group-direct db scan-op merge-ops g-emit consts
-                                  result-list nil 0 nil 0 -1
-                                  max-results
-                                  :temporal temporal :pipeline (:pipeline g)
-                                  :cancel cancel)
-            (when (seq g-attached)
-              (apply-attached-preds result-list g-attached
-                                    (vec (or (:output-vars g) (:vars g)))
-                                    emit-vars consts)))
+                       (let [g (first groups)
+                             scan-op (entity-group-scan-op g)
+                             merge-ops (entity-group-merge-ops g)
+                             g-attached (:attached-preds g)
+                             g-emit (if (seq g-attached)
+                                      (group-emit-vars g emit-vars)
+                                      emit-vars)]
+                         (pca/await (execute-group-direct db scan-op merge-ops g-emit consts
+                                                          result-list nil 0 nil 0 -1
+                                                          max-results
+                                                          :temporal temporal :pipeline (:pipeline g)
+                                                          :cancel cancel
+                                                          :sync? sync?))
+                         (when (seq g-attached)
+                           (apply-attached-preds result-list g-attached
+                                                 (vec (or (:output-vars g) (:vars g)))
+                                                 emit-vars consts)))
 
           ;; Multi-group — hash-probe value join
           ;; Execute groups in order, build probe-sets between them.
@@ -2790,115 +2796,116 @@
           ;; first consumer's map and silently produced wrong joins
           ;; whenever the two probe-vars ranged over the same value
           ;; domain. See planner-bugs/cross-product-test.cljc Bug B.
-          (let [producer-idxs (into #{} (map :producer-idx) (vals group-joins))
-                extra-preds (into [] (comp (keep-indexed
-                                            (fn [i g] (when (contains? producer-idxs i)
-                                                        (:attached-preds g))))
-                                           cat)
-                                  groups)
-                pred-ops (into pred-ops extra-preds)
-                has-post-ops? (or (seq pred-ops) (seq fn-ops))
-                all-group-vars (when has-post-ops?
-                                 (vec (distinct (mapcat :vars groups))))
-                emit-vars (if has-post-ops? all-group-vars find-vars)]
-            (loop [gi 0
-                   probe-sets    {} ;; {[producer-idx probe-var] → HashSet of join-var values}
-                   probe-maps    {} ;; {[producer-idx probe-var] → {:map HashMap :p-all-vars [...]}}
+                       (let [producer-idxs (into #{} (map :producer-idx) (vals group-joins))
+                             extra-preds (into [] (comp (keep-indexed
+                                                         (fn [i g] (when (contains? producer-idxs i)
+                                                                     (:attached-preds g))))
+                                                        cat)
+                                               groups)
+                             pred-ops (into pred-ops extra-preds)
+                             has-post-ops? (or (seq pred-ops) (seq fn-ops))
+                             all-group-vars (when has-post-ops?
+                                              (vec (distinct (mapcat :vars groups))))
+                             emit-vars (if has-post-ops? all-group-vars find-vars)]
+                         (loop [gi 0
+                                probe-sets    {} ;; {[producer-idx probe-var] → HashSet of join-var values}
+                                probe-maps    {} ;; {[producer-idx probe-var] → {:map HashMap :p-all-vars [...]}}
                    ;; Consumer-group indices already materialized by the
                    ;; multi-consumer producer step. Each entry's own loop
                    ;; iteration becomes a no-op (the producer step
                    ;; produced the joined result-list inline).
-                   consumed-cgi #{}]
-              (if (>= gi n-groups)
-                nil ;; done
-                (let [g (nth groups gi)
-                      join-info (get group-joins gi)
-                      scan-op (entity-group-scan-op g)
-                      merge-ops (entity-group-merge-ops g)]
+                                consumed-cgi #{}]
+                           (if (>= gi n-groups)
+                             nil ;; done
+                             (let [g (nth groups gi)
+                                   join-info (get group-joins gi)
+                                   scan-op (entity-group-scan-op g)
+                                   merge-ops (entity-group-merge-ops g)]
 
-                  (cond
+                               (cond
                     ;; Multi-consumer producer's downstream — already handled
                     ;; inline at the producer step; nothing to do here.
-                    (contains? consumed-cgi gi)
-                    (recur (inc gi) probe-sets probe-maps consumed-cgi)
+                                 (contains? consumed-cgi gi)
+                                 (recur (inc gi) probe-sets probe-maps consumed-cgi)
 
-                    join-info
+                                 join-info
                     ;; Consumer group: use probe-set/map from producer keyed
                     ;; on this consumer's own probe-var.
-                    (let [{:keys [producer-idx probe-vars]} join-info
-                          producer-g (nth groups producer-idx)
-                          pinfo (find-probe-info g producer-g probe-vars)
-                          probe-var (:probe-var pinfo)
-                          probe-key [producer-idx probe-var]
-                          probe-set (get probe-sets probe-key)
-                          pmap (get probe-maps probe-key)
-                          c-attached (when-not (contains? producer-idxs gi)
-                                       (:attached-preds g))
+                                 (let [{:keys [producer-idx probe-vars]} join-info
+                                       producer-g (nth groups producer-idx)
+                                       pinfo (find-probe-info g producer-g probe-vars)
+                                       probe-var (:probe-var pinfo)
+                                       probe-key [producer-idx probe-var]
+                                       probe-set (get probe-sets probe-key)
+                                       pmap (get probe-maps probe-key)
+                                       c-attached (when-not (contains? producer-idxs gi)
+                                                    (:attached-preds g))
                           ;; Consumer emits all its vars (wide) so we can extract probe-var for map lookup
-                          c-all-vars (vec (or (:output-vars g) (:vars g)))
-                          c-emit (if (or pmap (seq c-attached) has-post-ops?)
-                                   c-all-vars
-                                   emit-vars)]
-                      (when (and pinfo probe-set)
-                        (execute-group-direct db scan-op merge-ops c-emit consts
-                                              result-list probe-set
-                                              (int (:consumer-scan-field pinfo))
-                                              nil 0 -1
-                                              max-results
-                                              :temporal temporal
-                                              :scan-estimate (:estimated-card g)
-                                              :pipeline (:pipeline g)
-                                              :cancel cancel)
+                                       c-all-vars (vec (or (:output-vars g) (:vars g)))
+                                       c-emit (if (or pmap (seq c-attached) has-post-ops?)
+                                                c-all-vars
+                                                emit-vars)]
+                                   (when (and pinfo probe-set)
+                                     (pca/await (execute-group-direct db scan-op merge-ops c-emit consts
+                                                                      result-list probe-set
+                                                                      (int (:consumer-scan-field pinfo))
+                                                                      nil 0 -1
+                                                                      max-results
+                                                                      :temporal temporal
+                                                                      :scan-estimate (:estimated-card g)
+                                                                      :pipeline (:pipeline g)
+                                                                      :cancel cancel
+                                                                      :sync? sync?))
                         ;; Apply consumer attached-preds (if any)
-                        (when (seq c-attached)
-                          (apply-attached-preds result-list c-attached c-all-vars c-all-vars consts))
+                                     (when (seq c-attached)
+                                       (apply-attached-preds result-list c-attached c-all-vars c-all-vars consts))
                         ;; Combine consumer tuples with producer values from probe-map
-                        (when pmap
-                          (let [probe-var (:probe-var pinfo)
-                                c-var-index (into {} (map-indexed (fn [i v] [v i])) c-all-vars)
-                                c-probe-idx (int (get c-var-index probe-var))
-                                the-map (:map pmap)
-                                p-all-vars (:p-all-vars pmap)
-                                target-vars (if has-post-ops?
+                                     (when pmap
+                                       (let [probe-var (:probe-var pinfo)
+                                             c-var-index (into {} (map-indexed (fn [i v] [v i])) c-all-vars)
+                                             c-probe-idx (int (get c-var-index probe-var))
+                                             the-map (:map pmap)
+                                             p-all-vars (:p-all-vars pmap)
+                                             target-vars (if has-post-ops?
                                               ;; Wide: must match all-group-vars layout for post-processing
-                                              all-group-vars
-                                              find-vars)
-                                p-var-index (into {} (map-indexed (fn [i v] [v i])) p-all-vars)
-                                n-target (count target-vars)
+                                                           all-group-vars
+                                                           find-vars)
+                                             p-var-index (into {} (map-indexed (fn [i v] [v i])) p-all-vars)
+                                             n-target (count target-vars)
                                 ;; Build combination plan: for each target var, [source index]
-                                combo-plan (mapv (fn [tv]
-                                                   (cond
-                                                     (and consts (contains? consts tv)) [:const (get consts tv)]
-                                                     (contains? c-var-index tv) [:consumer (get c-var-index tv)]
-                                                     (contains? p-var-index tv) [:producer (get p-var-index tv)]
-                                                     :else [:const nil]))
-                                                 target-vars)
-                                n-consumer (result-list-size result-list)
-                                combined (make-result-list (* 2 n-consumer))]
-                            (dotimes [ci n-consumer]
-                              (let [^objects c-tuple (result-list-get result-list ci)
-                                    probe-val (aget c-tuple c-probe-idx)
-                                    p-entries (probe-map-get the-map probe-val)]
-                                (when p-entries
-                                  (dotimes [pi (probe-map-entry-size p-entries)]
-                                    (let [^objects p-tuple (probe-map-entry-get p-entries pi)
-                                          ^objects out #?(:clj (object-array n-target) :cljs (make-array n-target))]
-                                      (dotimes [ti n-target]
-                                        (let [[src idx] (nth combo-plan ti)]
-                                          (case src
-                                            :consumer (aset out ti (aget c-tuple (int idx)))
-                                            :producer (aset out ti (aget p-tuple (int idx)))
-                                            :const    (aset out ti idx))))
-                                      (result-list-add combined out))))))
+                                             combo-plan (mapv (fn [tv]
+                                                                (cond
+                                                                  (and consts (contains? consts tv)) [:const (get consts tv)]
+                                                                  (contains? c-var-index tv) [:consumer (get c-var-index tv)]
+                                                                  (contains? p-var-index tv) [:producer (get p-var-index tv)]
+                                                                  :else [:const nil]))
+                                                              target-vars)
+                                             n-consumer (result-list-size result-list)
+                                             combined (make-result-list (* 2 n-consumer))]
+                                         (dotimes [ci n-consumer]
+                                           (let [^objects c-tuple (result-list-get result-list ci)
+                                                 probe-val (aget c-tuple c-probe-idx)
+                                                 p-entries (probe-map-get the-map probe-val)]
+                                             (when p-entries
+                                               (dotimes [pi (probe-map-entry-size p-entries)]
+                                                 (let [^objects p-tuple (probe-map-entry-get p-entries pi)
+                                                       ^objects out #?(:clj (object-array n-target) :cljs (make-array n-target))]
+                                                   (dotimes [ti n-target]
+                                                     (let [[src idx] (nth combo-plan ti)]
+                                                       (case src
+                                                         :consumer (aset out ti (aget c-tuple (int idx)))
+                                                         :producer (aset out ti (aget p-tuple (int idx)))
+                                                         :const    (aset out ti idx))))
+                                                   (result-list-add combined out))))))
                             ;; Replace result-list contents with combined results
-                            #?(:clj  (do (.clear ^java.util.ArrayList result-list)
-                                         (.addAll ^java.util.ArrayList result-list ^java.util.ArrayList combined))
-                               :cljs (do (.splice result-list 0)
-                                         (dotimes [i (.-length combined)]
-                                           (.push result-list (aget combined i))))))))
-                      (recur (inc gi) probe-sets probe-maps consumed-cgi))
+                                         #?(:clj  (do (.clear ^java.util.ArrayList result-list)
+                                                      (.addAll ^java.util.ArrayList result-list ^java.util.ArrayList combined))
+                                            :cljs (do (.splice result-list 0)
+                                                      (dotimes [i (.-length combined)]
+                                                        (.push result-list (aget combined i))))))))
+                                   (recur (inc gi) probe-sets probe-maps consumed-cgi))
 
-                    :else
+                                 :else
                   ;; Producer group: collect join-var values for downstream consumers.
                   ;;
                   ;; A producer may have MULTIPLE downstream consumers probing
@@ -2907,44 +2914,44 @@
                   ;; ?v1 = :src, the other on ?v2 = :tgt). Build one probe
                   ;; collection per unique consumer probe-var, all keyed by
                   ;; [producer-idx probe-var] in the threaded state.
-                    (let [downstream-consumers
-                          (vec
-                           (keep (fn [[consumer-gi info]]
-                                   (when (= (:producer-idx info) gi)
-                                     (let [consumer-g (nth groups consumer-gi)
-                                           pinfo (find-probe-info consumer-g g (:probe-vars info))]
-                                       (when pinfo
-                                         {:consumer-gi consumer-gi
-                                          :probe-vars  (:probe-vars info)
-                                          :pinfo       pinfo
-                                          :consumer-g  consumer-g}))))
-                                 group-joins))
+                                 (let [downstream-consumers
+                                       (vec
+                                        (keep (fn [[consumer-gi info]]
+                                                (when (= (:producer-idx info) gi)
+                                                  (let [consumer-g (nth groups consumer-gi)
+                                                        pinfo (find-probe-info consumer-g g (:probe-vars info))]
+                                                    (when pinfo
+                                                      {:consumer-gi consumer-gi
+                                                       :probe-vars  (:probe-vars info)
+                                                       :pinfo       pinfo
+                                                       :consumer-g  consumer-g}))))
+                                              group-joins))
                           ;; Deduplicate by the probe-var (a single producer/var
                           ;; combination only needs one probe collection even
                           ;; if multiple consumers share it).
-                          unique-probes
-                          (vec (vals
-                                (reduce (fn [m d]
-                                          (let [pv (get-in d [:pinfo :probe-var])]
-                                            (cond-> m
-                                              (not (contains? m pv)) (assoc pv d))))
-                                        {}
-                                        downstream-consumers)))
+                                       unique-probes
+                                       (vec (vals
+                                             (reduce (fn [m d]
+                                                       (let [pv (get-in d [:pinfo :probe-var])]
+                                                         (cond-> m
+                                                           (not (contains? m pv)) (assoc pv d))))
+                                                     {}
+                                                     downstream-consumers)))
                           ;; producer-has-find-vars? if ANY downstream consumer
                           ;; is missing a find-var the producer supplies — we
                           ;; need to keep the producer's tuples to combine
                           ;; them in. If multiple probe-vars feed different
                           ;; consumers we also need the producer tuples
                           ;; retained to build each probe-map.
-                          producer-has-find-vars?
-                          (and (seq downstream-consumers)
-                               (some (fn [{c-g :consumer-g}]
-                                       (some (fn [fv]
-                                               (and (not (and consts (contains? consts fv)))
-                                                    (group-provides-var? g fv)
-                                                    (not (group-provides-var? c-g fv))))
-                                             find-vars))
-                                     downstream-consumers))
+                                       producer-has-find-vars?
+                                       (and (seq downstream-consumers)
+                                            (some (fn [{c-g :consumer-g}]
+                                                    (some (fn [fv]
+                                                            (and (not (and consts (contains? consts fv)))
+                                                                 (group-provides-var? g fv)
+                                                                 (not (group-provides-var? c-g fv))))
+                                                          find-vars))
+                                                  downstream-consumers))
                           ;; A producer must also materialize when post-ops are
                           ;; in play: its attached preds were hoisted into
                           ;; pred-ops (extra-preds above), and post-filtering /
@@ -2954,11 +2961,11 @@
                           ;; so a hoisted predicate would read a foreign slot
                           ;; out of the consumer-shaped tuples (e.g. a string
                           ;; var resolving to the join entity id).
-                          use-new-path?
-                          (or producer-has-find-vars?
-                              (and has-post-ops? (seq downstream-consumers)))]
+                                       use-new-path?
+                                       (or producer-has-find-vars?
+                                           (and has-post-ops? (seq downstream-consumers)))]
 
-                      (cond
+                                   (cond
                         ;; MULTI-CONSUMER PATH: a single producer has two-or-more
                         ;; distinct probe-vars flowing to downstream consumers.
                         ;; We materialize the producer's wide tuples once,
@@ -2966,243 +2973,247 @@
                         ;; filter the producer tuples by ALL constraints
                         ;; simultaneously. Marking the consumer-gis as consumed
                         ;; makes their main-loop iterations no-ops.
-                        (> (count unique-probes) 1)
-                        (let [p-all-vars (vec (or (:output-vars g) (:vars g)))
-                              p-attached (:attached-preds g)
+                                     (> (count unique-probes) 1)
+                                     (let [p-all-vars (vec (or (:output-vars g) (:vars g)))
+                                           p-attached (:attached-preds g)
                               ;; 1. Producer wide tuples.
-                              _ (execute-group-direct db scan-op merge-ops p-all-vars consts
-                                                      result-list nil 0 nil 0 -1 nil
-                                                      :temporal temporal :pipeline (:pipeline g)
-                                                      :cancel cancel)
-                              p-var-index (into {} (map-indexed (fn [i v] [v i])) p-all-vars)
-                              _ (when (seq p-attached)
-                                  (post-filter-preds result-list (vec p-attached) p-var-index))
-                              n-producer (result-list-size result-list)
+                                           _ (pca/await (execute-group-direct db scan-op merge-ops p-all-vars consts
+                                                                              result-list nil 0 nil 0 -1 nil
+                                                                              :temporal temporal :pipeline (:pipeline g)
+                                                                              :cancel cancel
+                                                                              :sync? sync?))
+                                           p-var-index (into {} (map-indexed (fn [i v] [v i])) p-all-vars)
+                                           _ (when (seq p-attached)
+                                               (post-filter-preds result-list (vec p-attached) p-var-index))
+                                           n-producer (result-list-size result-list)
                               ;; 2. For each unique probe-var: run the consumer scan
                               ;; against the producer's probe-set to get accepted
                               ;; values. We do this by reusing the producer's
                               ;; probe-set as the filter for the consumer scan.
                               ;; The accepted set is the set of values the
                               ;; consumer's scan emits for the probe-var.
-                              probe-info-by-var
-                              (reduce
-                               (fn [acc {:keys [pinfo consumer-g consumer-gi]}]
-                                 (let [probe-var (:probe-var pinfo)
-                                       probe-idx (int (get p-var-index probe-var))
-                                       producer-set (let [s (make-probe-set 64)]
-                                                      (dotimes [i n-producer]
-                                                        (let [^objects t (result-list-get result-list i)]
-                                                          (probe-set-add s (aget t probe-idx))))
-                                                      s)
-                                       c-scan-op (entity-group-scan-op consumer-g)
-                                       c-merge-ops (entity-group-merge-ops consumer-g)
-                                       c-attached (when-not (contains? producer-idxs consumer-gi)
-                                                    (:attached-preds consumer-g))
-                                       c-all-vars (vec (or (:output-vars consumer-g) (:vars consumer-g)))
+                                           probe-info-by-var
+                                           (reduce
+                                            (fn [acc {:keys [pinfo consumer-g consumer-gi]}]
+                                              (let [probe-var (:probe-var pinfo)
+                                                    probe-idx (int (get p-var-index probe-var))
+                                                    producer-set (let [s (make-probe-set 64)]
+                                                                   (dotimes [i n-producer]
+                                                                     (let [^objects t (result-list-get result-list i)]
+                                                                       (probe-set-add s (aget t probe-idx))))
+                                                                   s)
+                                                    c-scan-op (entity-group-scan-op consumer-g)
+                                                    c-merge-ops (entity-group-merge-ops consumer-g)
+                                                    c-attached (when-not (contains? producer-idxs consumer-gi)
+                                                                 (:attached-preds consumer-g))
+                                                    c-all-vars (vec (or (:output-vars consumer-g) (:vars consumer-g)))
                                        ;; Scratch list for consumer scan results.
-                                       c-list (make-result-list 256)]
-                                   (execute-group-direct db c-scan-op c-merge-ops c-all-vars consts
-                                                         c-list producer-set
-                                                         (int (:consumer-scan-field pinfo))
-                                                         nil 0 -1 nil
-                                                         :temporal temporal
-                                                         :scan-estimate (:estimated-card consumer-g)
-                                                         :pipeline (:pipeline consumer-g)
-                                                         :cancel cancel)
-                                   (when (seq c-attached)
-                                     (apply-attached-preds c-list c-attached c-all-vars c-all-vars consts))
+                                                    c-list (make-result-list 256)]
+                                                (pca/await (execute-group-direct db c-scan-op c-merge-ops c-all-vars consts
+                                                                                 c-list producer-set
+                                                                                 (int (:consumer-scan-field pinfo))
+                                                                                 nil 0 -1 nil
+                                                                                 :temporal temporal
+                                                                                 :scan-estimate (:estimated-card consumer-g)
+                                                                                 :pipeline (:pipeline consumer-g)
+                                                                                 :cancel cancel
+                                                                                 :sync? sync?))
+                                                (when (seq c-attached)
+                                                  (apply-attached-preds c-list c-attached c-all-vars c-all-vars consts))
                                    ;; Extract the probe-var values that the
                                    ;; consumer scan accepted.
-                                   (let [c-var-index (into {} (map-indexed (fn [i v] [v i])) c-all-vars)
-                                         c-probe-idx (int (get c-var-index probe-var))
-                                         accepted (make-probe-set (result-list-size c-list))]
-                                     (dotimes [i (result-list-size c-list)]
-                                       (let [^objects ct (result-list-get c-list i)]
-                                         (probe-set-add accepted (aget ct c-probe-idx))))
-                                     (assoc acc probe-var
-                                            {:probe-idx probe-idx
-                                             :accepted  accepted}))))
-                               {}
-                               unique-probes)
+                                                (let [c-var-index (into {} (map-indexed (fn [i v] [v i])) c-all-vars)
+                                                      c-probe-idx (int (get c-var-index probe-var))
+                                                      accepted (make-probe-set (result-list-size c-list))]
+                                                  (dotimes [i (result-list-size c-list)]
+                                                    (let [^objects ct (result-list-get c-list i)]
+                                                      (probe-set-add accepted (aget ct c-probe-idx))))
+                                                  (assoc acc probe-var
+                                                         {:probe-idx probe-idx
+                                                          :accepted  accepted}))))
+                                            {}
+                                            unique-probes)
                               ;; 3. Filter producer tuples: keep only those whose
                               ;; values at each probe-var are in the corresponding
                               ;; accepted set. Then project to emit-vars.
-                              filtered (make-result-list n-producer)
-                              probe-checks (vec (vals probe-info-by-var))
-                              target-vars  (if has-post-ops? all-group-vars find-vars)
-                              n-target     (count target-vars)
-                              combo-plan   (mapv (fn [tv]
-                                                   (cond
-                                                     (and consts (contains? consts tv)) [:const (get consts tv)]
-                                                     (contains? p-var-index tv) [:producer (get p-var-index tv)]
-                                                     :else [:const nil]))
-                                                 target-vars)
-                              _ (dotimes [i n-producer]
-                                  (let [^objects t (result-list-get result-list i)
-                                        ok? (every? (fn [{:keys [probe-idx accepted]}]
-                                                      (probe-set-contains? accepted (aget t (int probe-idx))))
-                                                    probe-checks)]
-                                    (when ok?
-                                      (let [^objects out #?(:clj (object-array n-target) :cljs (make-array n-target))]
-                                        (dotimes [ti n-target]
-                                          (let [[src idx] (nth combo-plan ti)]
-                                            (case src
-                                              :producer (aset out ti (aget t (int idx)))
-                                              :const    (aset out ti idx))))
-                                        (result-list-add filtered out)))))]
+                                           filtered (make-result-list n-producer)
+                                           probe-checks (vec (vals probe-info-by-var))
+                                           target-vars  (if has-post-ops? all-group-vars find-vars)
+                                           n-target     (count target-vars)
+                                           combo-plan   (mapv (fn [tv]
+                                                                (cond
+                                                                  (and consts (contains? consts tv)) [:const (get consts tv)]
+                                                                  (contains? p-var-index tv) [:producer (get p-var-index tv)]
+                                                                  :else [:const nil]))
+                                                              target-vars)
+                                           _ (dotimes [i n-producer]
+                                               (let [^objects t (result-list-get result-list i)
+                                                     ok? (every? (fn [{:keys [probe-idx accepted]}]
+                                                                   (probe-set-contains? accepted (aget t (int probe-idx))))
+                                                                 probe-checks)]
+                                                 (when ok?
+                                                   (let [^objects out #?(:clj (object-array n-target) :cljs (make-array n-target))]
+                                                     (dotimes [ti n-target]
+                                                       (let [[src idx] (nth combo-plan ti)]
+                                                         (case src
+                                                           :producer (aset out ti (aget t (int idx)))
+                                                           :const    (aset out ti idx))))
+                                                     (result-list-add filtered out)))))]
                           ;; Replace result-list with the filtered+projected tuples.
-                          #?(:clj  (do (.clear ^java.util.ArrayList result-list)
-                                       (.addAll ^java.util.ArrayList result-list ^java.util.ArrayList filtered))
-                             :cljs (do (.splice result-list 0)
-                                       (dotimes [i (.-length filtered)]
-                                         (.push result-list (aget filtered i)))))
+                                       #?(:clj  (do (.clear ^java.util.ArrayList result-list)
+                                                    (.addAll ^java.util.ArrayList result-list ^java.util.ArrayList filtered))
+                                          :cljs (do (.splice result-list 0)
+                                                    (dotimes [i (.-length filtered)]
+                                                      (.push result-list (aget filtered i)))))
                           ;; Mark all downstream consumers as consumed so the main
                           ;; loop skips them.
-                          (recur (inc gi)
-                                 probe-sets probe-maps
-                                 (into consumed-cgi (map :consumer-gi) downstream-consumers)))
+                                       (recur (inc gi)
+                                              probe-sets probe-maps
+                                              (into consumed-cgi (map :consumer-gi) downstream-consumers)))
 
                         ;; SINGLE-CONSUMER NEW PATH: producer has find-vars not
                         ;; in the (single) consumer, or post-ops need the
                         ;; producer's columns — keep producer tuples by
                         ;; building a probe-map for value propagation.
-                        use-new-path?
-                        (let [p-all-vars (vec (or (:output-vars g) (:vars g)))
-                              p-attached (:attached-preds g)]
-                          (execute-group-direct db scan-op merge-ops p-all-vars consts
-                                                result-list nil 0 nil 0 -1 nil
-                                                :temporal temporal :pipeline (:pipeline g)
-                                                :cancel cancel)
-                          (when (seq p-attached)
-                            (let [var-idx (into {} (map-indexed (fn [i v] [v i])) p-all-vars)]
-                              (post-filter-preds result-list (vec p-attached) var-idx)))
-                          (let [p-var-index (into {} (map-indexed (fn [i v] [v i])) p-all-vars)
-                                {:keys [pinfo]} (first unique-probes)
-                                probe-var (:probe-var pinfo)
-                                probe-idx (int (get p-var-index probe-var))
-                                n-producer (result-list-size result-list)
-                                pmap (make-probe-map n-producer)]
-                            (dotimes [i n-producer]
-                              (let [^objects tuple (result-list-get result-list i)
-                                    probe-val (aget tuple probe-idx)]
-                                (probe-map-add pmap probe-val tuple)))
-                            #?(:clj  (.clear ^java.util.ArrayList result-list)
-                               :cljs (.splice result-list 0))
-                            (recur (inc gi)
-                                   (assoc probe-sets [gi probe-var] (probe-map->set pmap))
-                                   (assoc probe-maps [gi probe-var]
-                                          {:map pmap :p-all-vars p-all-vars})
-                                   consumed-cgi)))
+                                     use-new-path?
+                                     (let [p-all-vars (vec (or (:output-vars g) (:vars g)))
+                                           p-attached (:attached-preds g)]
+                                       (pca/await (execute-group-direct db scan-op merge-ops p-all-vars consts
+                                                                        result-list nil 0 nil 0 -1 nil
+                                                                        :temporal temporal :pipeline (:pipeline g)
+                                                                        :cancel cancel
+                                                                        :sync? sync?))
+                                       (when (seq p-attached)
+                                         (let [var-idx (into {} (map-indexed (fn [i v] [v i])) p-all-vars)]
+                                           (post-filter-preds result-list (vec p-attached) var-idx)))
+                                       (let [p-var-index (into {} (map-indexed (fn [i v] [v i])) p-all-vars)
+                                             {:keys [pinfo]} (first unique-probes)
+                                             probe-var (:probe-var pinfo)
+                                             probe-idx (int (get p-var-index probe-var))
+                                             n-producer (result-list-size result-list)
+                                             pmap (make-probe-map n-producer)]
+                                         (dotimes [i n-producer]
+                                           (let [^objects tuple (result-list-get result-list i)
+                                                 probe-val (aget tuple probe-idx)]
+                                             (probe-map-add pmap probe-val tuple)))
+                                         #?(:clj  (.clear ^java.util.ArrayList result-list)
+                                            :cljs (.splice result-list 0))
+                                         (recur (inc gi)
+                                                (assoc probe-sets [gi probe-var] (probe-map->set pmap))
+                                                (assoc probe-maps [gi probe-var]
+                                                       {:map pmap :p-all-vars p-all-vars})
+                                                consumed-cgi)))
 
                         ;; SINGLE-CONSUMER EXISTING PATH: collect-only scan;
                         ;; producer's vars not needed in output.
-                        :else
-                        (let [{:keys [pinfo] :as one} (first downstream-consumers)
-                              probe-var (:probe-var pinfo)
-                              collect-set (when one (make-probe-set 4000))]
-                          (execute-group-direct db scan-op merge-ops [] consts
-                                                result-list nil 0
-                                                collect-set
-                                                (int (or (:producer-datom-field pinfo) 0))
-                                                (int (or (:producer-merge-idx pinfo) -1))
-                                                nil
-                                                :temporal temporal :pipeline (:pipeline g)
-                                                :cancel cancel)
-                          (recur (inc gi)
-                                 (if collect-set
-                                   (assoc probe-sets [gi probe-var] collect-set)
-                                   probe-sets)
-                                 probe-maps
-                                 consumed-cgi))))))))
+                                     :else
+                                     (let [{:keys [pinfo] :as one} (first downstream-consumers)
+                                           probe-var (:probe-var pinfo)
+                                           collect-set (when one (make-probe-set 4000))]
+                                       (pca/await (execute-group-direct db scan-op merge-ops [] consts
+                                                                        result-list nil 0
+                                                                        collect-set
+                                                                        (int (or (:producer-datom-field pinfo) 0))
+                                                                        (int (or (:producer-merge-idx pinfo) -1))
+                                                                        nil
+                                                                        :temporal temporal :pipeline (:pipeline g)
+                                                                        :cancel cancel
+                                                                        :sync? sync?))
+                                       (recur (inc gi)
+                                              (if collect-set
+                                                (assoc probe-sets [gi probe-var] collect-set)
+                                                probe-sets)
+                                              probe-maps
+                                              consumed-cgi))))))))
             ;; Post-processing for multi-group: use potentially augmented pred-ops
-            (when has-post-ops?
-              (let [var-index (into {} (map-indexed (fn [i v] [v i])) all-group-vars)]
-                (when (seq pred-ops)
-                  (post-filter-preds result-list pred-ops var-index))
-                (let [var-index (if (seq fn-ops)
-                                  (post-apply-fns result-list fn-ops var-index)
-                                  var-index)]
-                  (project-tuples result-list find-vars var-index consts))))))
+                         (when has-post-ops?
+                           (let [var-index (into {} (map-indexed (fn [i v] [v i])) all-group-vars)]
+                             (when (seq pred-ops)
+                               (post-filter-preds result-list pred-ops var-index))
+                             (let [var-index (if (seq fn-ops)
+                                               (post-apply-fns result-list fn-ops var-index)
+                                               var-index)]
+                               (project-tuples result-list find-vars var-index consts))))))
         ;; Post-processing: apply predicates, functions, NOT-JOINs, then project
         ;; (single-group standalone post-ops only — multi-group handled above)
-        (when (and (= 1 n-groups) has-post-ops?)
-          (let [var-index (into {} (map-indexed (fn [i v] [v i])) all-group-vars)]
-            (when (seq pred-ops)
-              (post-filter-preds result-list pred-ops var-index))
-            (when (seq not-join-ops)
-              (post-filter-not-joins result-list not-join-ops var-index db))
-            (let [var-index (if (seq fn-ops)
-                              (post-apply-fns result-list fn-ops var-index)
-                              var-index)]
-              (project-tuples result-list find-vars var-index consts))))
+                     (when (and (= 1 n-groups) has-post-ops?)
+                       (let [var-index (into {} (map-indexed (fn [i v] [v i])) all-group-vars)]
+                         (when (seq pred-ops)
+                           (post-filter-preds result-list pred-ops var-index))
+                         (when (seq not-join-ops)
+                           (post-filter-not-joins result-list not-join-ops var-index db))
+                         (let [var-index (if (seq fn-ops)
+                                           (post-apply-fns result-list fn-ops var-index)
+                                           var-index)]
+                           (project-tuples result-list find-vars var-index consts))))
         ;; Convert result-list → final result with appropriate dedup strategy
-        (let [has-card-many-dupes?
-              (some (fn [g]
-                      (let [scan-op (entity-group-scan-op g)
-                            mops (entity-group-merge-ops g)]
-                        (or (some (fn [op] (not (get-in op [:schema-info :card-one?] true))) mops)
+                     (let [has-card-many-dupes?
+                           (some (fn [g]
+                                   (let [scan-op (entity-group-scan-op g)
+                                         mops (entity-group-merge-ops g)]
+                                     (or (some (fn [op] (not (get-in op [:schema-info :card-one?] true))) mops)
                             ;; Entity var not in find-vars → different entities can produce same tuple
-                            (let [e-var (first (:clause scan-op))]
-                              (not (some #{e-var} find-vars)))
+                                         (let [e-var (first (:clause scan-op))]
+                                           (not (some #{e-var} find-vars)))
                             ;; DRIVING scan on a card-many attribute whose value
                             ;; var is projected away → one tuple per value with
                             ;; identical projection. (Found by the generative
                             ;; differential test: [?e :tag ?t] chosen as the
                             ;; driving scan with :find [?e] emitted duplicate
                             ;; [e] tuples into the no-dedup QueryResult path.)
-                            (let [v-var (nth (:clause scan-op) 2 nil)]
-                              (and (not (get-in scan-op [:schema-info :card-one?] true))
-                                   (symbol? v-var) (analyze/free-var? v-var)
-                                   (not (some #{v-var} find-vars)))))))
-                    groups)
-              is-historical? (= :historical (when temporal (:type temporal)))
-              dedup-strategy (cond
-                               has-card-many-dupes? :hash
-                               is-historical? :adjacent
-                               :else nil)]
-          #?(:clj
-             (case dedup-strategy
-               :hash
-               (let [n (result-list-size result-list)]
-                 (persistent!
-                  (loop [i (int 0) s (transient #{})]
-                    (if (< i n)
-                      (recur (unchecked-inc-int i)
-                             (conj! s (adopt-vector (result-list-get result-list i))))
-                      s))))
+                                         (let [v-var (nth (:clause scan-op) 2 nil)]
+                                           (and (not (get-in scan-op [:schema-info :card-one?] true))
+                                                (symbol? v-var) (analyze/free-var? v-var)
+                                                (not (some #{v-var} find-vars)))))))
+                                 groups)
+                           is-historical? (= :historical (when temporal (:type temporal)))
+                           dedup-strategy (cond
+                                            has-card-many-dupes? :hash
+                                            is-historical? :adjacent
+                                            :else nil)]
+                       #?(:clj
+                          (case dedup-strategy
+                            :hash
+                            (let [n (result-list-size result-list)]
+                              (persistent!
+                               (loop [i (int 0) s (transient #{})]
+                                 (if (< i n)
+                                   (recur (unchecked-inc-int i)
+                                          (conj! s (adopt-vector (result-list-get result-list i))))
+                                   s))))
 
-               :adjacent
+                            :adjacent
                ;; Adjacent dedup: history card-one duplicates are adjacent in scan order.
                ;; Returns PHS for consistent set behavior and iteration order.
-               (let [n (result-list-size result-list)]
-                 (persistent!
-                  (loop [i (int 0)
-                         ^objects prev nil
-                         s (transient #{})]
-                    (if (< i n)
-                      (let [^objects cur (result-list-get result-list i)]
-                        (if (or (nil? prev)
-                                (not (java.util.Arrays/equals prev cur)))
-                          (recur (unchecked-inc-int i) cur
-                                 (conj! s (adopt-vector cur)))
-                          (recur (unchecked-inc-int i) cur s)))
-                      s))))
+                            (let [n (result-list-size result-list)]
+                              (persistent!
+                               (loop [i (int 0)
+                                      ^objects prev nil
+                                      s (transient #{})]
+                                 (if (< i n)
+                                   (let [^objects cur (result-list-get result-list i)]
+                                     (if (or (nil? prev)
+                                             (not (java.util.Arrays/equals prev cur)))
+                                       (recur (unchecked-inc-int i) cur
+                                              (conj! s (adopt-vector cur)))
+                                       (recur (unchecked-inc-int i) cur s)))
+                                   s))))
 
                ;; nil — Fast path: no duplicates, use QueryResult
-               (let [n (result-list-size result-list)
-                     out (object-array n)]
-                 (loop [i (int 0)]
-                   (when (< i n)
-                     (aset out i (adopt-vector (result-list-get result-list i)))
-                     (recur (unchecked-inc-int i))))
-                 (datahike.java.QueryResult. out n)))
-             :cljs
-             (let [n (result-list-size result-list)]
-               (persistent!
-                (loop [i 0 s (transient #{})]
-                  (if (< i n)
-                    (recur (inc i) (conj! s (adopt-vector (result-list-get result-list i))))
-                    s))))))))))
+                            (let [n (result-list-size result-list)
+                                  out (object-array n)]
+                              (loop [i (int 0)]
+                                (when (< i n)
+                                  (aset out i (adopt-vector (result-list-get result-list i)))
+                                  (recur (unchecked-inc-int i))))
+                              (datahike.java.QueryResult. out n)))
+                          :cljs
+                          (let [n (result-list-size result-list)]
+                            (persistent!
+                             (loop [i 0 s (transient #{})]
+                               (if (< i n)
+                                 (recur (inc i) (conj! s (adopt-vector (result-list-get result-list i))))
+                                 s))))))))))))
 
 (defn execute-plan-direct-rel
   "Execute a fusable plan using the fast direct path, but return a Relation
