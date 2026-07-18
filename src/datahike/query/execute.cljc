@@ -1130,6 +1130,64 @@
                                     a))))
                        (persistent! acc)))))))
 
+#?(:cljs
+   (defn- search-first-datom-step
+     "Async point search for a ground [e translated-attr] pattern honoring
+      the db's temporal search context. Post-processing is pure for numeric
+      time-points (txpred); a Date-based wrapper still falls into the
+      txInstant filter, whose cold reads fault as before. Yields the first
+      visible datom or :datahike.tools/absent."
+     [db e ta]
+     (async
+      (let [ctx (dbi/-search-context db)
+            idb (loop [d db] (if (satisfies? dbi/IHistory d) (recur (dbi/-origin d)) d))
+            from (dbu/components->pattern idb :eavt [e ta] e0 tx0)
+            to (dbu/components->pattern idb :eavt [e ta] emax txmax)
+            cur (pca/await (realize-slice (:eavt idb) from to :eavt nil false))
+            datoms (if (dbi/context-temporal? ctx)
+                     (let [tmp (pca/await (realize-slice (:temporal-eavt idb) from to :eavt nil false))]
+                       (db/post-process-datoms (dbu/distinct-datoms idb :eavt cur tmp) idb ctx))
+                     (db/post-process-datoms cur idb ctx))]
+        (or (first datoms) :datahike.tools/absent)))))
+
+#?(:cljs
+   (defn- prefetch-db-fn-step
+     "Async-only prefetch for the db-reading query builtins. When `clause`
+      is a get-else / get-some / missing? call whose entity arg is a
+      rel-bound var and whose attributes are constant forward keywords,
+      await the point reads the legacy binder will issue and return the
+      {[e translated-attr] → datom-or-absent} map for dt/*db-fn-cache*.
+      Yields nil when not applicable — the caller then runs the binder
+      uncached and cold reads fault as before."
+     [db clause ctx]
+     (async
+      (let [[[f & args]] clause
+            spec (case f
+                   get-else (let [[src e a] args] {:src src :e e :attrs [a]})
+                   get-some (let [[src e & as] args] {:src src :e e :attrs (vec as)})
+                   missing? (let [[src e a] args] {:src src :e e :attrs [a]})
+                   nil)
+            {:keys [src e attrs]} spec
+            fdb (when spec (or (when (symbol? src) (get (:sources ctx) src)) db))
+            idb (when fdb (loop [d fdb] (if (satisfies? dbi/IHistory d) (recur (dbi/-origin d)) d)))]
+        (when (and spec
+                   (symbol? e) (analyze/free-var? e)
+                   (seq attrs)
+                   (every? #(and (keyword? %) (not= \_ (first (name %)))) attrs)
+                   (pss-instance? (:eavt idb)))
+          (let [e-vals (into #{}
+                             (mapcat (fn [r]
+                                       (when-some [i (get (:attrs r) e)]
+                                         (map (fn [t] (if (array? t) (aget t i) (nth t i)))
+                                              (:tuples r)))))
+                             (:rels ctx))
+                refs? (:attribute-refs? (dbi/-config idb))
+                tas (mapv #(if (and refs? (keyword? %)) (dbi/-ref-for idb %) %) attrs)
+                pairs (vec (for [ev e-vals ta tas] [ev ta]))
+                results (pca/await (pca/all (mapv (fn [[ev ta]] (search-first-datom-step fdb ev ta))
+                                                  pairs)))]
+            (zipmap pairs results)))))))
+
 (defn execute-scan-only
   "Path 1: Scan without merges (e.g. Q1). Smallest possible loop.
    `cancel` is an IDeref (typically Volatile) or nil; checked per iteration
@@ -3721,20 +3779,24 @@
 
 (defn- execute-branch-plans
   "Execute a list of branch plans (sub-plans), union results, project to output-vars.
-   Returns a Relation."
-  [db plans ctx output-vars]
-  (let [branch-rels
-        (into []
-              (keep (fn [plan]
-                      (let [result-ctx (execute-plan plan ctx db)]
-                        (when (and result-ctx (seq (:rels result-ctx)))
-                          (let [joined (reduce (fn [a b] (rel/hash-join a b {:source (:join-source ctx)}))
-                                               (:rels result-ctx))]
-                            (rel/limit-rel joined output-vars))))))
-              plans)]
-    (if (seq branch-rels)
-      (reduce rel/sum-rel branch-rels)
-      (rel/->Relation (zipmap output-vars (range)) []))))
+   Returns a Relation. Dual: the per-branch execute-plan calls are awaited,
+   so iteration is an explicit loop."
+  ([db plans ctx output-vars] (execute-branch-plans db plans ctx output-vars true))
+  ([db plans ctx output-vars sync?]
+   (async+sync sync?
+   (let [branch-rels
+         (loop [ps (seq plans) acc []]
+           (if ps
+             (let [result-ctx (pca/await (execute-plan (first ps) ctx db sync?))
+                   r (when (and result-ctx (seq (:rels result-ctx)))
+                       (let [joined (reduce (fn [a b] (rel/hash-join a b {:source (:join-source ctx)}))
+                                            (:rels result-ctx))]
+                         (rel/limit-rel joined output-vars)))]
+               (recur (next ps) (if r (conj acc r) acc)))
+             acc))]
+     (if (seq branch-rels)
+       (reduce rel/sum-rel branch-rels)
+       (rel/->Relation (zipmap output-vars (range)) []))))))
 
 (defn- compute-magic-info
   "Detect ground call-args for a recursive rule and compute magic set parameters.
@@ -3925,9 +3987,16 @@
    computing the full transitive closure when only a subset is needed.
 
    For mutual recursion (multi-rule SCC), all rules share the fixpoint loop.
-   Each rule has its own accumulator."
-  [db op ctx]
-  (let [{:keys [scc-rule-plans scc-rule-names call-args head-vars rule-name
+   Each rule has its own accumulator.
+
+   Dual: the base and recursive execute-branch-plans calls are awaited (the
+   per-rule maps are explicit loops for that reason); the magic-set arms are
+   JVM-only and stay synchronous. The legacy solve-rule fallback is sync —
+   its cold reads fault."
+  ([db op ctx] (execute-recursive-rule db op ctx true))
+  ([db op ctx sync?]
+   (async+sync sync?
+   (let [{:keys [scc-rule-plans scc-rule-names call-args head-vars rule-name
                 base-scan-attr]} op]
     (if (nil? scc-rule-plans)
       ;; No pre-built plans — fall back to legacy
@@ -3960,30 +4029,32 @@
             ;; Execute base branches for each SCC rule
             ;; With magic sets: use demand-driven base scan (point lookups only)
             rule-states
-            (into {}
-                  (map (fn [rn]
-                         (let [{:keys [head-vars base-plans]} (get scc-rule-plans rn)
-                               base-rel (cond
+            (loop [rns (seq scc-rule-names) m {}]
+              (if (nil? rns)
+                m
+                (let [rn (first rns)
+                      {:keys [head-vars base-plans]} (get scc-rule-plans rn)
+                      base-rel (cond
                                   ;; Magic, single ref-edge base: EAVT point lookups for demand entities
-                                          (and magic-demand base-scan-attr (= rn rule-name))
-                                          (or (magic-base-scan db head-vars base-scan-attr magic-demand magic-scanned)
-                                              (rel/->Relation (zipmap head-vars (range)) []))
+                                 (and magic-demand base-scan-attr (= rn rule-name))
+                                 (or (magic-base-scan db head-vars base-scan-attr magic-demand magic-scanned)
+                                     (rel/->Relation (zipmap head-vars (range)) []))
                                   ;; Magic, any other base shape: demand-restricted base branches
-                                          (and magic-demand (= rn rule-name))
-                                          (or (magic-base-scan-general db base-plans head-vars magic-ground-pos
-                                                                       magic-demand magic-scanned ctx)
-                                              (rel/->Relation (zipmap head-vars (range)) []))
+                                 (and magic-demand (= rn rule-name))
+                                 (or (magic-base-scan-general db base-plans head-vars magic-ground-pos
+                                                              magic-demand magic-scanned ctx)
+                                     (rel/->Relation (zipmap head-vars (range)) []))
                                   ;; No magic: full base branch plan execution
-                                          :else
-                                          (execute-branch-plans db base-plans ctx head-vars))
-                               delta-rel (rel-dedup-into! base-rel head-vars (get seen-sets rn))]
+                                 :else
+                                 (pca/await (execute-branch-plans db base-plans ctx head-vars sync?)))
+                      delta-rel (rel-dedup-into! base-rel head-vars (get seen-sets rn))]
                   ;; Propagate magic demand from base results
-                           (when (and magic-demand (= rn rule-name))
-                             (extract-demand-values delta-rel magic-prop-pos magic-demand))
-                           [rn {:head-vars head-vars
-                                :main-rel delta-rel
-                                :delta-rel delta-rel}])))
-                  scc-rule-names)
+                  (when (and magic-demand (= rn rule-name))
+                    (extract-demand-values delta-rel magic-prop-pos magic-demand))
+                  (recur (next rns)
+                         (assoc m rn {:head-vars head-vars
+                                      :main-rel delta-rel
+                                      :delta-rel delta-rel})))))
             ;; Main fixpoint loop — Relations throughout, no vector conversion
             ;; With magic sets: re-scan base edges for newly demanded entities each
             ;; iteration (direct EAVT point lookups, not full branch plan re-execution).
@@ -4020,9 +4091,11 @@
                                   base-aug-ctx)
                         ;; Execute rec clause versions, dedup via seen-set
                         new-states
-                        (into {}
-                              (map (fn [rn]
-                                     (let [{:keys [head-vars rec-clause-versions base-plans]} (get scc-rule-plans rn)
+                        (loop [rns (seq scc-rule-names) m {}]
+                          (if (nil? rns)
+                            m
+                            (let [rn (first rns)
+                                  {:keys [head-vars rec-clause-versions base-plans]} (get scc-rule-plans rn)
                                   ;; With magic: scan newly demanded entities AND run
                                   ;; recursive branches (constrained by demand relation).
                                            magic-base-rel
@@ -4041,7 +4114,7 @@
                                   ;; (dedup makes it idempotent) so reflexive / leaf base
                                   ;; facts exist for every entity the closure can reach.
                                              (and (not use-magic?) magic-demand (not base-scan-attr) (= rn rule-name))
-                                             (execute-branch-plans db base-plans ctx head-vars))
+                                             (pca/await (execute-branch-plans db base-plans ctx head-vars sync?)))
                                   ;; Execute recursive clause versions
                                   ;; Optimization: delta-driven expansion for simple binary rules
                                   ;; Instead of full index scan + hash-join, iterate delta tuples
@@ -4112,7 +4185,7 @@
                                                                               0 1)
                                                          (rel/->Relation (zipmap head-vars (range)) []))
                                             ;; Normal: full branch plan execution
-                                                     (execute-branch-plans db rec-clause-versions aug-ctx head-vars))
+                                                     (pca/await (execute-branch-plans db rec-clause-versions aug-ctx head-vars sync?)))
                                   ;; Union base and rec results
                                            new-rel (if (and magic-base-rel (seq (:tuples magic-base-rel)))
                                                      (rel/sum-rel magic-base-rel rec-rel)
@@ -4127,10 +4200,10 @@
                                            new-main (if (seq (:tuples delta-rel))
                                                       (rel/sum-rel old-main delta-rel)
                                                       old-main)]
-                                       [rn {:head-vars head-vars
-                                            :main-rel new-main
-                                            :delta-rel delta-rel}])))
-                              scc-rule-names)]
+                                       (recur (next rns)
+                                              (assoc m rn {:head-vars head-vars
+                                                           :main-rel new-main
+                                                           :delta-rel delta-rel})))))]
                     (recur new-states (inc iteration) use-magic?)))))
             ;; Extract result for the called rule
             called-state (get final-states rule-name)
@@ -4187,7 +4260,7 @@
                        :cljs (.push result arr)))))
               #?(:clj (vec result) :cljs (vec result)))
             final-rel (rel/->Relation (zipmap output-vars (range)) projected-tuples)]
-        (update ctx :rels rel/collapse-rels final-rel {:source (:join-source ctx)})))))
+        (update ctx :rels rel/collapse-rels final-rel {:source (:join-source ctx)})))))))
 
 ;; ---------------------------------------------------------------------------
 ;; ---------------------------------------------------------------------------
@@ -4678,7 +4751,16 @@
                         default-arg (if (seq? default-val) (list 'quote default-val) default-val)
                         src (or (:source op) '$)
                         fn-clause [(list 'get-else src e-var attr default-arg) bind-var]
-                        ctx' (bind-by-fn-strict (assoc ctx :join-source op-db) fn-clause)
+                        ctx' #?(:clj (bind-by-fn-strict (assoc ctx :join-source op-db) fn-clause)
+                                :cljs (if sync?
+                                        (bind-by-fn-strict (assoc ctx :join-source op-db) fn-clause)
+                                        ;; async: prefetch, then bind synchronously
+                                        ;; against the cache (see the :function arm)
+                                        (let [cache (pca/await (prefetch-db-fn-step op-db fn-clause ctx))]
+                                          (if cache
+                                            (binding [dt/*db-fn-cache* cache]
+                                              (bind-by-fn-strict (assoc ctx :join-source op-db) fn-clause))
+                                            (bind-by-fn-strict (assoc ctx :join-source op-db) fn-clause)))))
                         ;; lookup via bind-by-fn doesn't honor :pushdown-preds;
                         ;; re-apply them as post-filters (cf. the temporal
                         ;; fallback below).
@@ -4771,10 +4853,18 @@
                             (recur ctx' plan' (inc idx))))))))
 
                 :predicate
-                (recur (#?(:clj legacy/filter-by-pred
-                           :cljs (rel/get-legacy-fn :filter-by-pred))
-                        ctx (:clause op))
-                       plan (inc idx))
+                #?(:clj (recur (legacy/filter-by-pred ctx (:clause op)) plan (inc idx))
+                   :cljs (if sync?
+                           (recur ((rel/get-legacy-fn :filter-by-pred) ctx (:clause op)) plan (inc idx))
+                           ;; async: missing? (and friends) as a PREDICATE reads the
+                           ;; index per row — same prefetch-then-bind-sync pattern
+                           ;; as the :function arm. Pure predicates get a nil cache.
+                           (let [cache (pca/await (prefetch-db-fn-step op-db (:clause op) ctx))
+                                 ctx' (if cache
+                                        (binding [dt/*db-fn-cache* cache]
+                                          ((rel/get-legacy-fn :filter-by-pred) ctx (:clause op)))
+                                        ((rel/get-legacy-fn :filter-by-pred) ctx (:clause op)))]
+                             (recur ctx' plan (inc idx)))))
 
                 :function
                 (let [run-fn (fn [c o] (bind-by-fn-strict c (:clause o)))
@@ -4792,7 +4882,17 @@
                                               (some in-vars (:vars %)))
                                         rest-ops))]
                   (if-not probe?
-                    (recur (run-fn ctx op) plan (inc idx))
+                    #?(:clj (recur (run-fn ctx op) plan (inc idx))
+                       :cljs (if sync?
+                               (recur (run-fn ctx op) plan (inc idx))
+                               ;; async: prefetch the builtin's point reads, then
+                               ;; run the unchanged binder synchronously against
+                               ;; the cache (bound only around sync code).
+                               (let [cache (pca/await (prefetch-db-fn-step op-db (:clause op) ctx))
+                                     ctx' (if cache
+                                            (binding [dt/*db-fn-cache* cache] (run-fn ctx op))
+                                            (run-fn ctx op))]
+                                 (recur ctx' plan (inc idx)))))
                     (let [cur-cards (ctx-var-cards ctx)
                           bound (set (keys cur-cards))
                         ;; Measure each candidate's true join size and inject it
@@ -4854,7 +4954,8 @@
                          plan (inc idx)))
 
                 :recursive-rule
-                (recur (execute-recursive-rule op-db op ctx) plan (inc idx))
+                (let [ctx' (pca/await (execute-recursive-rule op-db op ctx sync?))]
+                  (recur ctx' plan (inc idx)))
 
                 :external-engine
                 (recur (#?(:clj execute-external-engine

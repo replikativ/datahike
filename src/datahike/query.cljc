@@ -436,29 +436,57 @@
   (let [l (count xs)]
     (not= (take (/ l 2) xs) (drop (/ l 2) xs))))
 
+(defn- cached-first-datom
+  "Consult the async prefetch cache (dt/*db-fn-cache*) for the first
+   visible datom of ground [e translated-attr]. Returns the datom,
+   :datahike.tools/absent (probed, attribute absent), or nil (not probed
+   / no cache — caller falls through to the direct index read)."
+  [e ta]
+  (when-some [c dt/*db-fn-cache*]
+    (get c [e ta])))
+
 (defn- -get-else
   [db e a else-val]
   (when (nil? else-val)
     (log/raise "get-else: nil default value is not supported" {:error :query/where}))
-  (if-some [datom (first (dbi/search db [e (translate-for db a)]))]
-    (:v datom)
-    else-val))
+  (let [ta (translate-for db a)
+        hit (cached-first-datom e ta)]
+    (cond
+      (= :datahike.tools/absent hit) else-val
+      (some? hit) (:v hit)
+      :else (if-some [datom (first (dbi/search db [e ta]))]
+              (:v datom)
+              else-val))))
 
 (defn- -get-some
   [db e & as]
   (reduce
    (fn [_ a]
-     (when-some [datom (first (dbi/search db [e (translate-for db a)]))]
-       (let [a-ident (if (keyword? (:a datom))
-                       (:a datom)
-                       (dbi/ident-for db (:a datom) :error-on-missing))]
-         (reduced [a-ident (:v datom)]))))
+     (let [ta (translate-for db a)
+           hit (cached-first-datom e ta)
+           datom (cond
+                   (= :datahike.tools/absent hit) nil
+                   (some? hit) hit
+                   :else (first (dbi/search db [e ta])))]
+       (when-some [datom datom]
+         (let [a-ident (if (keyword? (:a datom))
+                         (:a datom)
+                         (dbi/ident-for db (:a datom) :error-on-missing))]
+           (reduced [a-ident (:v datom)])))))
    nil
    as))
 
 (defn- -missing?
   [db e a]
-  (nil? (get (de/entity db e) a)))
+  ;; forward-keyword attrs can be answered from the prefetch cache (presence
+  ;; of a visible datom ≡ entity get non-nil); anything else — reverse refs,
+  ;; :db/id — keeps the entity path.
+  (let [hit (when (and (keyword? a) (not (str/starts-with? (name a) "_")))
+              (cached-first-datom e (translate-for db a)))]
+    (cond
+      (= :datahike.tools/absent hit) true
+      (some? hit) false
+      :else (nil? (get (de/entity db e) a)))))
 
 (defn- and-fn [& args]
   (reduce (fn [_a b]

@@ -323,6 +323,16 @@
                b (lazy-seq
                   (merge-distinct-sorted-seqs cmp seq-a (rest seq-b))))))))
 
+(def ^:dynamic *db-fn-cache*
+  "Async-mode prefetch cache for the db-reading query builtins (get-else /
+   get-some / missing?): {[e translated-attr] → first-visible-datom or
+   :datahike.tools/absent}. The async engine populates it with awaited
+   point reads and then runs the unchanged legacy binder synchronously
+   against it (bound only around synchronous code — never across a
+   suspension). nil (the default) means no cache: the builtins read the
+   index directly, as always on the JVM."
+  nil)
+
 (defn storage-fault?
   "Is e the storage seam's cold-sync-read error? (CachedStorage's sync arm
    throws it when a read genuinely requires asynchronous store access.)
