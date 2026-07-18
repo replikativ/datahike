@@ -3750,8 +3750,9 @@
                            nil)))
         context-out (if fused-rel
                       (update context-in :rels rel/collapse-rels fused-rel (join-env context-in))
-                      (#?(:clj (requiring-resolve 'datahike.query.execute/execute-plan)
-                          :cljs execute/execute-plan) plan context-in db))
+                      (pca/await
+                       (#?(:clj (requiring-resolve 'datahike.query.execute/execute-plan)
+                           :cljs execute/execute-plan) plan context-in db sync?)))
         resultset (collect context-out all-vars)
         deduped (if (and (not order-spec)
                          (:unique-results? context-out)

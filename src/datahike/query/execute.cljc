@@ -92,6 +92,11 @@
                 (catch :default e
                   (dt/rethrow-decorated e {:probe key})))))
 
+;; dual helpers are defined lower in the file (with the kernel machinery)
+;; but used by scan-datoms above them — declare early (cljs resolves
+;; forward references to silent `undefined` otherwise).
+#?(:cljs (declare chunk-step realize-slice lookup-ge-step))
+
 (defn- make-result-list
   "Create a mutable list for collecting results."
   [capacity]
@@ -502,9 +507,16 @@
    Result-preserving: seek/filter only restrict the scan to the bound
    entity/value set, which the downstream join enforces anyway — so this never
    changes results, only how many datoms (and downstream merge lookups) are
-   touched."
-  [db clause index pushdown-preds rels scan-n]
-  (let [[e a v] clause
+   touched.
+
+   cljs dual: sync? true returns the (lazy) slice seq as before; false
+   returns an async expression yielding a REALIZED vector of the slice
+   (chunk-drained — the probe regimes are JVM-only, so async pays a full
+   slice; SIP restriction still happens via the caller's join)."
+  ([db clause index pushdown-preds rels scan-n]
+   (scan-datoms db clause index pushdown-preds rels scan-n true))
+  ([db clause index pushdown-preds rels scan-n sync?]
+   (let [[e a v] clause
         resolved-a (when (and (some? a) (not (symbol? a))) (resolve-attr db a))
         resolved-e (when (and (some? e) (not (symbol? e)) (number? e)) #?(:clj (long e) :cljs e))
         pushdown-bounds (when (seq pushdown-preds) (plan/pushdown-to-bounds pushdown-preds))
@@ -545,12 +557,18 @@
                            (.contains hs (if (== field 0) (.-e d) (.-v d))))
                          (full)))))
            (full)))
-       :cljs (full))))
+       :cljs (if sync?
+               (full)
+               (realize-slice db-index from to index nil false))))))
 
-(defn- execute-pattern-scan [db op cancel rels]
-  (let [{:keys [clause index pushdown-preds]} op
+(defn- execute-pattern-scan
+  ([db op cancel rels] (execute-pattern-scan db op cancel rels true))
+  ([db op cancel rels sync?]
+   ;; ONE dual body — only the scan retrieval is awaited; tuple building is pure.
+   (async+sync sync?
+   (let [{:keys [clause index pushdown-preds]} op
         pushdown-bounds (when (seq pushdown-preds) (plan/pushdown-to-bounds pushdown-preds))
-        datoms (scan-datoms db clause index pushdown-preds rels (:estimated-card op))
+        datoms (pca/await (scan-datoms db clause index pushdown-preds rels (:estimated-card op) sync?))
         var-map (rel/var-mapping clause (range))
         ground-filter (build-ground-filter clause index)
         scan-var-map (rel/var-mapping clause (range))
@@ -576,7 +594,7 @@
                                              (aset t 4 (datom/datom-added d))
                                              t)))))
                      datoms)]
-    (rel/->Relation var-map tuples)))
+    (rel/->Relation var-map tuples)))))
 
 ;; ---------------------------------------------------------------------------
 ;; Fused scan+merge execution (single entity group, direct to output)
@@ -3305,9 +3323,16 @@
 ;; Relation-based execution (fallback path for predicates, functions, etc.)
 
 (defn- execute-fused-scan-rel
-  "Execute an entity-group as a fused scan, returning a Relation."
-  [db scan-op merge-ops context]
-  (let [cancel (:cancel context)
+  "Execute an entity-group as a fused scan, returning a Relation.
+   cljs dual: sync? false yields an async expression producing the same
+   [ctx' consumed] — the scan slice is realized up front (realize-with-pred
+   shape, no streaming) and the per-datom merge reads go through the
+   lookup-ge-step / realize-slice dual helpers."
+  ([db scan-op merge-ops context]
+   (execute-fused-scan-rel db scan-op merge-ops context true))
+  ([db scan-op merge-ops context sync?]
+   (async+sync sync?
+   (let [cancel (:cancel context)
         {:keys [clause index pushdown-preds]} scan-op
         [e a v tx] clause
         resolved-a (when (and (some? a) (not (symbol? a))) (resolve-attr db a))
@@ -3381,8 +3406,10 @@
             ;; shared `scan-datoms` seam. The merge below runs once per emitted
             ;; scan datom, so restricting the scan to the bound entities/values
             ;; is what keeps an :in-bound join O(bound) rather than O(attribute).
-            filtered-datoms (cond->> (scan-datoms db clause index pushdown-preds
-                                                  (:rels context) (:estimated-card scan-op))
+            filtered-datoms (cond->> (pca/await
+                                      (scan-datoms db clause index pushdown-preds
+                                                   (:rels context) (:estimated-card scan-op)
+                                                   sync?))
                               ground-filter (filter ground-filter)
                               strict-filter (filter strict-filter))
 
@@ -3401,9 +3428,14 @@
             ;; concatenated contributions, deepest level fastest — identical
             ;; order to the recursive builder it replaces (which conj'd onto
             ;; the tuple while recursing).
-            _ (doseq [^Datom scan-d filtered-datoms]
-                (check-cancel! cancel)
-                (when (or (nil? entity-filter)
+            ;; explicit loop (not doseq): the merge reads below await in async
+            ;; mode, so the iteration must be a plain loop/recur the CPS
+            ;; transform can rewrite (filtered-datoms is realized there).
+            _ (loop [ds (seq filtered-datoms)]
+                (when ds
+                 (let [^Datom scan-d (first ds)]
+                  (check-cancel! cancel)
+                  (when (or (nil? entity-filter)
                           #?(:clj (es/entity-bitset-contains? entity-filter (.-e scan-d))
                              :cljs true))
                   (let [eid (.-e scan-d)
@@ -3427,7 +3459,8 @@
                                 ;; Card-many: every matching datom is one contribution
                                 (let [from-d (datom eid ra (when vg? vgv) tx0)
                                       to-d (datom eid ra (when vg? vgv) txmax)
-                                      slice (di/-slice (:eavt db) from-d to-d :eavt)
+                                      slice #?(:clj (di/-slice (:eavt db) from-d to-d :eavt)
+                                               :cljs (pca/await (realize-slice (:eavt db) from-d to-d :eavt nil sync?)))
                                       contribs (into []
                                                      (comp (filter (fn [^Datom d]
                                                                      (merge-datom-match? d eid ra vg? vgv check-v? check-tx? scan-d)))
@@ -3440,7 +3473,8 @@
                                     (when (empty? contribs) (recur (inc mi) (conj lacc [[]])))
                                     (when (seq contribs) (recur (inc mi) (conj lacc contribs)))))
                                 ;; Card-one: single lookupGE
-                                (let [^Datom d (pss-lookup-ge eavt-pss (datom eid ra vgv tx0))
+                                (let [^Datom d #?(:clj (pss-lookup-ge eavt-pss (datom eid ra vgv tx0))
+                                                  :cljs (pca/await (lookup-ge-step eavt-pss (datom eid ra vgv tx0) sync?)))
                                       found? (and d (merge-datom-match? d eid ra vg? vgv check-v? check-tx? scan-d))
                                       merge-op (nth merge-ops mi)
                                       optional? (:optional? merge-op)]
@@ -3478,7 +3512,8 @@
                                       (if (< i n)
                                         (do (aset idxs mi i) true)
                                         (do (aset idxs mi 0) (recur (dec mi)))))))
-                            (recur))))))))]
+                            (recur)))))))
+                  (recur (next ds)))))]
         (let [out-rel (rel/->Relation out-attrs #?(:clj (vec (.toArray ^java.util.ArrayList acc))
                                                    :cljs (vec acc)))
               ;; Env so that hash-join inside collapse-rels can resolve lookup
@@ -3490,7 +3525,7 @@
           [(-> context
                (assoc :rels merged)
                (assoc :unique-results? true))
-           (inc (count merge-ops))])))))
+           (inc (count merge-ops))])))))))
 
 (defn- execute-temporal-group-rel
   "Temporal entity-group / pattern-scan kept on the FUSED fast path. Runs the
@@ -4418,8 +4453,18 @@
    one that EXPANDS it stays behind. This resolves the row-reducing-vs-expanding
    join ambiguity that no static cost model can (correlation/skew is invisible
    to per-attribute stats) — see plan/op-required-vars and the cost oracle.
-   Takes and returns a query context."
-  [plan context db]
+   Takes and returns a query context.
+
+   cljs dual: sync? false yields an async expression producing the context.
+   Only the fused-scan / pattern-scan arms await; adaptive replanning,
+   expensive-fn hoisting, and probe-sinking are DISABLED in async mode
+   (their cardinality probes are synchronous index reads — a cold probe
+   would fault a query that executes fine without the optimization).
+   Temporal, legacy, or/not, and rule arms still run synchronously and
+   fault on cold reads until B3/B4."
+  ([plan context db] (execute-plan plan context db true))
+  ([plan context db sync?]
+  (async+sync sync?
   (if (:has-passthrough? plan)
     nil
     (let [replan-fn plan/replan
@@ -4453,7 +4498,8 @@
                         db)]
             ;; Runtime corrector for the one thing static cost can't know: pull an
             ;; expensive function ahead of a group that would EXPAND its input.
-            (if-let [plan' (hoist-expensive-fn plan idx ctx op-db op)]
+            ;; (sync only — its probe reads are synchronous)
+            (if-let [plan' (when sync? (hoist-expensive-fn plan idx ctx op-db op))]
               (recur ctx plan' idx)
               (case (:op op)
               ;; Entity group — fused scan+merges (only works with concrete DB sources
@@ -4473,16 +4519,18 @@
                       ;; origin's PSS indexes — the temporal wrapper has none. Estimate
                       ;; against the origin (filtering only changes counts, not the
                       ;; relative ordering the re-plan decides); execution still uses op-db.
-                          plan' (if (and (> (- (count (:ops plan)) idx) 2)
+                          plan' (if (and sync?
+                                         (> (- (count (:ops plan)) idx) 2)
                                          (should-replan? actual-card estimated-card))
                                   (replan-fn plan idx actual-card (:origin-db ti))
                                   plan)]
                       (recur ctx' plan' (inc idx)))
 
                     (pss-instance? (:eavt op-db))
-                    (let [[ctx' consumed] (execute-fused-scan-rel op-db (:scan-op op) (:merge-ops op) ctx)
+                    (let [[ctx' consumed] (pca/await (execute-fused-scan-rel op-db (:scan-op op) (:merge-ops op) ctx sync?))
                           actual-card (ctx-total-tuples ctx')
-                          plan' (if (and (> (- (count (:ops plan)) idx) 2)
+                          plan' (if (and sync?
+                                         (> (- (count (:ops plan)) idx) 2)
                                          (should-replan? actual-card estimated-card))
                                   (replan-fn plan idx actual-card op-db)
                                   plan)]
@@ -4671,19 +4719,21 @@
                                               (recur (inc j) (conj fused next-op))
                                               fused)))))]
                         (if (seq fusable)
-                          (let [[ctx' consumed] (execute-fused-scan-rel op-db op fusable ctx)
+                          (let [[ctx' consumed] (pca/await (execute-fused-scan-rel op-db op fusable ctx sync?))
                                 actual-card (ctx-total-tuples ctx')
-                                plan' (if (and (> (- (count (:ops plan)) (+ idx consumed)) 1)
+                                plan' (if (and sync?
+                                               (> (- (count (:ops plan)) (+ idx consumed)) 1)
                                                (should-replan? actual-card estimated-card))
                                         (replan-fn plan (+ idx (dec consumed)) actual-card op-db)
                                         plan)]
                             (recur ctx' plan' (long (+ idx consumed))))
-                          (let [new-rel (execute-pattern-scan op-db op (:cancel ctx) (:rels ctx))
+                          (let [new-rel (pca/await (execute-pattern-scan op-db op (:cancel ctx) (:rels ctx) sync?))
                                 ctx' (update ctx :rels rel/collapse-rels new-rel
                                              {:source op-db
                                               :lookup-attrs (lookup-attrs-for-clauses op-db (:clause op) nil)})
                                 actual-card (count (:tuples new-rel))
-                                plan' (if (and (> (- (count (:ops plan)) idx) 2)
+                                plan' (if (and sync?
+                                               (> (- (count (:ops plan)) idx) 2)
                                                (should-replan? actual-card estimated-card))
                                         (replan-fn plan idx actual-card op-db)
                                         plan)]
@@ -4702,7 +4752,8 @@
                     ;; Only probe when it can pay off: the function is expensive
                     ;; (:exec-cost-fn), not already probed, on a PSS default
                     ;; source, AND some deferred index-backed op shares its input.
-                      probe? (and (:exec-cost-fn op)
+                      probe? (and sync? ;; probe-card = synchronous index reads
+                                  (:exec-cost-fn op)
                                   (not (:probed? op))
                                   (nil? (:source op))
                                   (pss-instance? (:eavt op-db))
@@ -4779,7 +4830,7 @@
               ;; result (same silent-degradation class as the #814/#815 guard
               ;; history — see bind-by-fn-strict).
                 (log/raise "Unknown plan operation"
-                           {:error :query/plan :op (:op op) :clause (:clause op)})))))))))
+                           {:error :query/plan :op (:op op) :clause (:clause op)})))))))))))
 
 ;; ---------------------------------------------------------------------------
 ;; Columnar aggregate execution (JVM only)
