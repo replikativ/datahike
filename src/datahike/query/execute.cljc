@@ -3244,39 +3244,44 @@
    instead of the slow per-clause Relation pipeline.
    cancel: optional IDeref; see execute-plan-direct.
    Returns nil if the plan can't be fused."
-  [plan db cancel]
-  (let [ops (:ops plan)]
-    (when (and (not (:has-passthrough? plan))
+  ([plan db cancel]
+   (execute-plan-direct-rel plan db cancel true))
+  ([plan db cancel sync?]
+   ;; ONE dual body — the single execute-group-direct call is awaited;
+   ;; the await strips away on :clj / sync mode.
+   (async+sync sync?
+               (let [ops (:ops plan)]
+                 (when (and (not (:has-passthrough? plan))
                ;; direct-rel only handles pure group plans — no predicates/functions
                ;; (unlike execute-plan-direct which has post-filter machinery)
-               (seq ops)
-               (every? #(#{:entity-group :pattern-scan} (:op %)) ops)
-               (not-any? :source ops))
-      ;; Collect ALL vars produced by all groups
-      (let [groups (filterv #(#{:entity-group :pattern-scan} (:op %)) ops)
-            all-vars (vec (distinct (mapcat :vars groups)))
-            ;; For single-group plans only (multi-group needs more work)
-            _ (when (> (count groups) 1)
-                (throw (ex-info "multi-group direct-rel not yet supported" {})))]
-        (when (= 1 (count groups))
-          (let [g (first groups)
-                scan-op (entity-group-scan-op g)
-                merge-ops (entity-group-merge-ops g)
-                result-list (make-result-list 4000)]
-            (let [ti (temporal-info db)]
-              (execute-group-direct db scan-op merge-ops all-vars nil
-                                    result-list nil 0 nil 0 -1 nil
-                                    :temporal ti :pipeline (:pipeline g)
-                                    :cancel cancel))
+                            (seq ops)
+                            (every? #(#{:entity-group :pattern-scan} (:op %)) ops)
+                            (not-any? :source ops))
+                   (let [groups (filterv #(#{:entity-group :pattern-scan} (:op %)) ops)
+                         all-vars (vec (distinct (mapcat :vars groups)))]
+        ;; Single-group plans only — multi-group plans fall through purely
+        ;; (nil → caller's execute-plan fallback, same net effect the old
+        ;; throw-and-catch produced)
+                     (when (= 1 (count groups))
+                       (let [g (first groups)
+                             scan-op (entity-group-scan-op g)
+                             merge-ops (entity-group-merge-ops g)
+                             result-list (make-result-list 4000)
+                             ti (temporal-info db)]
+                         (pca/await (execute-group-direct db scan-op merge-ops all-vars nil
+                                                          result-list nil 0 nil 0 -1 nil
+                                                          :temporal ti :pipeline (:pipeline g)
+                                                          :cancel cancel
+                                                          :sync? sync?))
             ;; Apply attached predicates (group-level filters from Step 4c)
-            (when-let [attached (seq (:attached-preds g))]
-              (let [var-index (into {} (map-indexed (fn [i v] [v i])) all-vars)]
-                (post-filter-preds result-list (vec attached) var-index)))
+                         (when-let [attached (seq (:attached-preds g))]
+                           (let [var-index (into {} (map-indexed (fn [i v] [v i])) all-vars)]
+                             (post-filter-preds result-list (vec attached) var-index)))
             ;; Convert to Relation: attrs = {var-sym → column-index}, tuples = vec of Object[]
-            (let [attrs (into {} (map-indexed (fn [i v] [v i]) all-vars))
-                  tuples #?(:clj (vec (.toArray ^java.util.ArrayList result-list))
-                            :cljs (vec result-list))]
-              (rel/->Relation attrs tuples))))))))
+                         (let [attrs (into {} (map-indexed (fn [i v] [v i]) all-vars))
+                               tuples #?(:clj (vec (.toArray ^java.util.ArrayList result-list))
+                                         :cljs (vec result-list))]
+                           (rel/->Relation attrs tuples))))))))))
 
 (defn- lookup-attrs-for-clauses
   "Compute the set of variable symbols that may hold lookup refs,

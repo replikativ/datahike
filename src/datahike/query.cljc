@@ -3723,7 +3723,10 @@
    Returns final result."
   [plan db qfind find-elements context-in query all-vars
    result-arity lookup-ref-reverse-map order-spec offset limit
-   stats? qreturnmaps]
+   stats? qreturnmaps sync?]
+  ;; ONE dual body — only the direct-rel probe is awaited; the execute-plan
+  ;; fallback stays synchronous until B2 (its cold reads fault, by design).
+  (async+sync sync?
   (let [exec-direct-rel #?(:clj (requiring-resolve 'datahike.query.execute/execute-plan-direct-rel)
                            :cljs execute/execute-plan-direct-rel)
         ;; Only take the direct-rel fast path when there are NO input relations.
@@ -3737,7 +3740,7 @@
         ;; mirrors the `(empty? (:rels context-in))` gate already in
         ;; execute-planned-direct.
         fused-rel (when (empty? (:rels context-in))
-                    (try (exec-direct-rel plan db (:cancel context-in))
+                    (try (pca/await (exec-direct-rel plan db (:cancel context-in) sync?))
                          (catch #?(:clj Exception :cljs :default) e
                            ;; storage faults / cancellation must escape — a
                            ;; silent fallback would re-execute (and mask the
@@ -3778,7 +3781,7 @@
                   deduped)]
     (with-fn-counts context-out
       (post-process-result deduped context-in context-out query qfind find-elements
-                           result-arity order-spec offset limit stats? qreturnmaps))))
+                           result-arity order-spec offset limit stats? qreturnmaps)))))
 
 (defn- execute-legacy
   "Legacy engine path: -q → collect → dedup → aggregate/pull."
@@ -3995,10 +3998,11 @@
                                 result)
 
                 ;; 3. Standard Relation path
-                              (let [result (execute-planned-relation
-                                            plan db qfind find-elements context-in query all-vars
-                                            result-arity lookup-ref-reverse-map order-spec offset limit
-                                            stats? qreturnmaps)]
+                              (let [result (pca/await
+                                            (execute-planned-relation
+                                             plan db qfind find-elements context-in query all-vars
+                                             result-arity lookup-ref-reverse-map order-spec offset limit
+                                             stats? qreturnmaps sync?))]
                                 #?(:clj
                                    (when profile?
                                      (let [t3 (System/nanoTime)]
