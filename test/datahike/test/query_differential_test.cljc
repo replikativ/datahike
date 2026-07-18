@@ -326,8 +326,31 @@
       :find (:find spec)}))
 
 #?(:cljs
+   (defonce ^:private shared-flush-handle
+     ;; ONE flush per fixture db: psset/store is incremental by node address,
+     ;; so a second flush-db! into a fresh sink writes nothing (see
+     ;; am/flush-db!) — every test against @test-db must share this handle.
+     (delay (am/flush-db! @test-db))))
+
+#?(:cljs
+   (deftest-async three-mode-raise-agreement
+     ;; the grammar no longer PRODUCES raising queries (fixing :or-and made
+     ;; that taxon valid), so pin the error-path agreement with an
+     ;; enumerated invalid query: or-branches binding different var sets
+     ;; must raise identically in sync, async-warm, and async-cold.
+     (let [query '[:find ?e :where (or [?e :name ?n] [?e :score ?s])]
+           sync-out (<! (am/run-query-in-mode :sync query @test-db))
+           warm-out (<! (am/run-query-in-mode :async-warm query @test-db))
+           cold-out (<! (am/run-query-in-mode :async-cold query
+                                              (am/cold-db @test-db @shared-flush-handle)))]
+       (is (some? (:error sync-out)) "reference: sync raises")
+       (is (some? (:error warm-out)) "async-warm raises like sync")
+       (is (or (some? (:error cold-out)) (some? (:fault cold-out)))
+           "async-cold raises (or faults) — never resolves"))))
+
+#?(:cljs
    (deftest-async three-mode-axis
-     (let [flush-handle (am/flush-db! @test-db)
+     (let [flush-handle @shared-flush-handle
            cases (seeded-case-seq num-cases 1721160000042)
            outcomes
            (loop [idx 0 [spec & more] cases acc []]

@@ -49,16 +49,23 @@
 
 (defn restore-cold
   "A LAZY copy of a flushed index: fresh empty CachedStorage over an
-   async-only wrapper — every node load must go through the async seam."
-  [store {:keys [address comparator]}]
-  (psset/restore {:root-address address :comparator comparator}
-                 (dip/create-storage (->AsyncOnlyStore store) {:store-cache-size 10000})))
+   async-only wrapper — every node load must go through the async seam.
+   cache-size (default 10000) bounds the node cache: tiny values force
+   constant eviction mid-query (adversarial residency)."
+  ([store handle] (restore-cold store handle 10000))
+  ([store {:keys [address comparator]} cache-size]
+   (psset/restore {:root-address address :comparator comparator}
+                  (dip/create-storage (->AsyncOnlyStore store) {:store-cache-size cache-size}))))
 
 (def index-keys [:eavt :aevt :avet :temporal-eavt :temporal-aevt :temporal-avet])
 
 (defn flush-db!
   "Flush all (present) indices of db into a fresh sink store; returns the
-   handle map for cold-db."
+   handle map for cold-db.
+   CALL AT MOST ONCE PER LIVE DB VALUE: psset/store is incremental by node
+   address — a second flush into a fresh sink store writes NOTHING (the
+   nodes already carry addresses), leaving every cold read node-not-found.
+   Share one handle (e.g. via delay) across tests using the same fixture."
   [db]
   (let [store (fresh-sink-store)]
     {:store store
@@ -72,9 +79,10 @@
   "db with every flushed index replaced by a fresh cold restore. Call per
    case — restores are O(1) and an earlier case's reads must not warm a
    later case. Temporal wrappers (as-of/history) must be applied AFTER."
-  [db {:keys [store roots]}]
-  (reduce-kv (fn [d k handle] (assoc d k (restore-cold store handle)))
-             db roots))
+  ([db handle] (cold-db db handle 10000))
+  ([db {:keys [store roots]} cache-size]
+   (reduce-kv (fn [d k handle] (assoc d k (restore-cold store handle cache-size)))
+              db roots)))
 
 (defn- classify [e]
   (if (= :storage/sync-read-unavailable (:error (ex-data e)))

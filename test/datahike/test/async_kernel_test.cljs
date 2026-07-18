@@ -423,6 +423,69 @@
           (is (nil? error) (str label " errored: " (some-> error ex-message)))
           (is (= (norm sync-v) (norm result)) (str label " cold ≡ sync")))))))
 
+(deftest-async q-async-tiny-cache-eviction
+  ;; adversarial residency: a node cache of size 2 evicts constantly
+  ;; mid-query — correctness must not depend on nodes staying resident
+  ;; (the design premise the async engine replaced rejection-sampling with)
+  (let [db (-> (ddb/empty-db {:ev-friend {:db/valueType :db.type/ref}})
+               (d/db-with (mapv (fn [i] {:db/id (inc i)
+                                         :ev-name (str "n" i)
+                                         :ev-friend (inc (mod (* 7 i) 500))})
+                                (range 500))))
+        handle (am/flush-db! db)
+        query '[:find ?b :where [?p :ev-name ?n] [?b :ev-friend ?p]]
+        sync-r (binding [q/*query-result-cache?* false] (d/q query db))
+        cold (am/cold-db db handle 2)
+        out (<! (am/run-query-in-mode :async-cold query cold))]
+    (is (pos? (count sync-r)))
+    (is (nil? (:fault out)) (str "faulted: " (some-> (:fault out) ex-message)))
+    (is (nil? (:error out)) (str "errored: " (some-> (:error out) ex-message)))
+    (is (= sync-r (:result out)) "constant-eviction cold ≡ sync")))
+
+(deftest-async q-async-cancellation
+  ;; a pre-set :cancel volatile rejects the async expression with
+  ;; :datahike/canceled instead of resolving
+  (let [db (-> (ddb/empty-db)
+               (d/db-with (mapv (fn [i] {:db/id (inc i) :cn-name (str "n" i)})
+                                (range 200))))
+        handle (am/flush-db! db)
+        cold (am/cold-db db handle)
+        cancel (volatile! true)
+        ch (a/promise-chan)]
+    ((d/q {:query '[:find ?e :where [?e :cn-name ?n]]
+           :args [cold] :cancel cancel :sync? false})
+     (fn [v] (a/put! ch {:result v}))
+     (fn [e] (a/put! ch {:error e})))
+    (let [{:keys [result error]} (<! ch)]
+      (is (nil? result))
+      (is (some? error) "canceled query must reject")
+      (is (true? (:datahike/canceled (ex-data error)))
+          (str "unexpected error: " (some-> error ex-message))))))
+
+(deftest-async q-async-concurrent-cold
+  ;; several async queries interleave on ONE shared cold store instance —
+  ;; node-load dedup and cache races must not corrupt results
+  (let [db (-> (ddb/empty-db {:cc-friend {:db/valueType :db.type/ref}})
+               (d/db-with (mapv (fn [i] {:db/id (inc i)
+                                         :cc-name (str "n" i)
+                                         :cc-friend (inc (mod (* 11 i) 400))})
+                                (range 400))))
+        handle (am/flush-db! db)
+        query '[:find ?b :where [?p :cc-name ?n] [?b :cc-friend ?p]]
+        sync-r (binding [q/*query-result-cache?* false] (d/q query db))
+        cold (am/cold-db db handle)
+        chans (mapv (fn [_]
+                      (let [ch (a/promise-chan)]
+                        ((q/q-async query cold)
+                         (fn [v] (a/put! ch {:result v}))
+                         (fn [e] (a/put! ch {:error e})))
+                        ch))
+                    (range 3))]
+    (doseq [ch chans]
+      (let [{:keys [result error]} (<! ch)]
+        (is (nil? error) (str "concurrent q errored: " (some-> error ex-message)))
+        (is (= sync-r result) "concurrent cold ≡ sync")))))
+
 (deftest-async q-async-date-as-of-cold
   ;; Date-based as-of/since wrappers are normalized to numeric time-points by
   ;; one awaited txInstant scan, then ride the pure txpred path cold.

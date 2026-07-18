@@ -358,6 +358,9 @@
    or a query that cannot be cancelled."
   [e]
   (or (storage-fault? e)
+      ;; check-cancel! raises {:datahike/canceled true}; the :type form is
+      ;; kept defensively for external raisers
+      (true? (:datahike/canceled (ex-data e)))
       (= :datahike/canceled (:type (ex-data e)))))
 
 (defn rethrow-decorated
