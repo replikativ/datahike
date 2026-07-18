@@ -6,6 +6,7 @@
    [datahike.db :as db #?@(:cljs [:refer [FilteredDB]])]
    [datahike.db.interface :as dbi]
    [datahike.db.transaction :as dbt]
+            #?(:cljs [is.simm.partial-cps.async :as pca :refer-macros [async]])
    [datahike.db.utils :as dbu]
    [datahike.impl.entity :as de]
    [datahike.pull-api :as dp]
@@ -123,28 +124,43 @@
 
 ; Changing DB
 
+(defn- with-cache-propagation
+  "Query-cache propagation tail of `with` (pure map/cache work)."
+  [db report]
+  (let [rim (:ref-ident-map (:db-after report))
+        modified-attrs (into #{}
+                             (comp (map :a)
+                                   (clojure.core/filter some?)
+                                   (map (fn [a] (if (and rim (number? a)) (get rim a a) a))))
+                             (:tx-data report))]
+    (dq/propagate-query-cache db (:db-after report) modified-attrs)
+    report))
+
 (defn with
-  "Same as [[transact!]], but applies to an immutable database value. Returns transaction report (see [[transact!]])."
+  "Same as [[transact!]], but applies to an immutable database value. Returns
+   transaction report (see [[transact!]]). The sync? arity (ClojureScript,
+   sync? false) returns a partial-cps async expression yielding the report —
+   the transaction pipeline awaits every index read and write."
   ([db tx-data] (with db tx-data nil))
-  ([db tx-data tx-meta]
+  ([db tx-data tx-meta] (with db tx-data tx-meta true))
+  ([db tx-data tx-meta sync?]
    {:pre [(dbu/db? db)]}
    (if (is-filtered db)
      (throw (ex-info "Filtered DB cannot be modified" {:error :transaction/filtered}))
-     (let [report (dbt/transact-tx-data (db/map->TxReport
-                                         {:db-before db
-                                          :db-after  db
-                                          :tx-data   []
-                                          :tempids   {}
-                                          :tx-meta   tx-meta}) tx-data)
-           ;; Propagate query result cache with selective invalidation
-           rim (:ref-ident-map (:db-after report))
-           modified-attrs (into #{}
-                                (comp (map :a)
-                                      (clojure.core/filter some?)
-                                      (map (fn [a] (if (and rim (number? a)) (get rim a a) a))))
-                                (:tx-data report))
-           _ (dq/propagate-query-cache db (:db-after report) modified-attrs)]
-       report))))
+     (let [initial (db/map->TxReport
+                    {:db-before db
+                     :db-after  db
+                     :tx-data   []
+                     :tempids   {}
+                     :tx-meta   tx-meta})]
+       (if sync?
+         (with-cache-propagation db (dbt/transact-tx-data initial tx-data))
+         #?(:clj (throw (ex-info "async transactions are ClojureScript-only"
+                                 {:error :storage/async-unsupported}))
+            :cljs (pca/async
+                   (with-cache-propagation
+                     db
+                     (pca/await (dbt/transact-tx-data initial tx-data false))))))))))
 
 (defn load-entities-with [db entities tx-meta]
   (dbt/transact-entities-directly

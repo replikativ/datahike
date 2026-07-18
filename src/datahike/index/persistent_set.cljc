@@ -319,34 +319,41 @@
                                     {:error :storage/async-unsupported})))
                   (count pset))
         :cljs (psset/count pset opts))))
-  (-insert [^PersistentSortedSet pset datom index-type _op-count]
-    (insert pset datom index-type))
-  (-insert [^PersistentSortedSet pset datom index-type _op-count opts]
-    (insert pset datom index-type opts))
-  (-temporal-insert [^PersistentSortedSet pset datom index-type _op-count]
-    (psset/conj pset datom (index-type->cmp-quick index-type)))
-  (-temporal-insert [^PersistentSortedSet pset datom index-type _op-count opts]
-    (jvm-no-async! opts)
-    #?(:clj  (psset/conj pset datom (index-type->cmp-quick index-type))
-       :cljs (if (false? (:sync? opts))
-               (psset/conj pset datom (index-type->cmp-quick index-type) opts)
-               (psset/conj pset datom (index-type->cmp-quick index-type)))))
-  (-upsert [^PersistentSortedSet pset datom index-type _op-count old-datom]
-    (upsert pset datom index-type old-datom))
-  (-upsert [^PersistentSortedSet pset datom index-type _op-count old-datom opts]
-    (upsert pset datom index-type old-datom opts))
-  (-temporal-upsert [^PersistentSortedSet pset datom index-type _op-count old-val]
-    (temporal-upsert pset datom index-type old-val))
-  (-temporal-upsert [^PersistentSortedSet pset datom index-type _op-count old-val opts]
-    (jvm-no-async! opts)
-    #?(:clj  (temporal-upsert pset datom index-type old-val)
-       :cljs (if (false? (:sync? opts))
-               (temporal-upsert-async pset datom index-type (:v old-val) opts)
-               (temporal-upsert pset datom index-type old-val))))
-  (-remove [^PersistentSortedSet pset datom index-type _op-count]
-    (remove-datom pset datom index-type))
-  (-remove [^PersistentSortedSet pset datom index-type _op-count opts]
-    (remove-datom pset datom index-type opts))
+  ;; NB extend-type does NOT group separate same-named method forms (last
+  ;; wins) — multi-arity methods must be single forms with arity bodies.
+  (-insert
+    ([^PersistentSortedSet pset datom index-type _op-count]
+     (insert pset datom index-type))
+    ([^PersistentSortedSet pset datom index-type _op-count opts]
+     (insert pset datom index-type opts)))
+  (-temporal-insert
+    ([^PersistentSortedSet pset datom index-type _op-count]
+     (psset/conj pset datom (index-type->cmp-quick index-type)))
+    ([^PersistentSortedSet pset datom index-type _op-count opts]
+     (jvm-no-async! opts)
+     #?(:clj  (psset/conj pset datom (index-type->cmp-quick index-type))
+        :cljs (if (false? (:sync? opts))
+                (psset/conj pset datom (index-type->cmp-quick index-type) opts)
+                (psset/conj pset datom (index-type->cmp-quick index-type))))))
+  (-upsert
+    ([^PersistentSortedSet pset datom index-type _op-count old-datom]
+     (upsert pset datom index-type old-datom))
+    ([^PersistentSortedSet pset datom index-type _op-count old-datom opts]
+     (upsert pset datom index-type old-datom opts)))
+  (-temporal-upsert
+    ([^PersistentSortedSet pset datom index-type _op-count old-val]
+     (temporal-upsert pset datom index-type old-val))
+    ([^PersistentSortedSet pset datom index-type _op-count old-val opts]
+     (jvm-no-async! opts)
+     #?(:clj  (temporal-upsert pset datom index-type old-val)
+        :cljs (if (false? (:sync? opts))
+                (temporal-upsert-async pset datom index-type (:v old-val) opts)
+                (temporal-upsert pset datom index-type old-val)))))
+  (-remove
+    ([^PersistentSortedSet pset datom index-type _op-count]
+     (remove-datom pset datom index-type))
+    ([^PersistentSortedSet pset datom index-type _op-count opts]
+     (remove-datom pset datom index-type opts)))
   (-flush [^PersistentSortedSet pset _]
     (psset/store pset)
     pset)

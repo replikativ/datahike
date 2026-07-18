@@ -140,18 +140,22 @@
    (let [tx-data (if (:tx-data arg-map) (:tx-data arg-map) arg-map)
          tx-meta (if (:tx-meta arg-map) (:tx-meta arg-map) nil)]
      (if (and (map? arg-map) (false? (:sync? arg-map)))
-       ;; async mode (ClojureScript): await the transaction's derivable index
-       ;; reads against db-before (entid value-cache + node warming), then run
-       ;; the unchanged synchronous transaction core. Correctness never depends
-       ;; on node residency — a cold read that slips through fails the
-       ;; transaction cleanly BEFORE commit (retryable), never wrong data.
-       ;; Arbitrary tx functions remain synchronous (documented).
+       ;; async mode (ClojureScript): the transaction pipeline itself is a
+       ;; dual spine — every index read AND write awaits (removal
+       ;; rebalancing's sibling loads included). Returns the partial-cps
+       ;; async expression yielding the tx-report. Arbitrary tx-function
+       ;; bodies and purge ops remain synchronous (documented).
        #?(:clj (throw (ex-info ":sync? false is ClojureScript-only — JVM reads are synchronous"
                                {:error :storage/async-unsupported}))
-          :cljs (pca/async
-                 (let [{:keys [entid-cache]} (pca/await (ex/prefetch-tx-reads-step db tx-data))]
-                   (binding [dt/*entid-cache* entid-cache]
-                     (with db tx-data tx-meta)))))
+          :cljs (if (dcore/is-filtered db)
+                  (log/raise "Filtered DB cannot be modified" {:error :transaction/filtered})
+                  (dbt/transact-tx-data (db/map->TxReport
+                                         {:db-before db
+                                          :db-after  db
+                                          :tx-data   []
+                                          :tempids   {}
+                                          :tx-meta   tx-meta})
+                                        tx-data false)))
        (with db tx-data tx-meta))))
   ([db tx-data tx-meta]
    (if (dcore/is-filtered db)

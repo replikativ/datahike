@@ -121,6 +121,11 @@
   (throw (ex-info "Mark phase not implemented for hitchhiker-tree."
                   {:type :gc-not-implemented})))
 
+(defn- hht-no-async! [opts]
+  (when (false? (:sync? opts))
+    (throw (ex-info "async index access is not supported by the hitchhiker-tree backend"
+                    {:error :storage/async-unsupported}))))
+
 (extend-type DataNode
   IIndex
   (-all [eavt-tree]
@@ -135,16 +140,36 @@
        (throw (ex-info "hitchhiker-tree index is synchronous-only"
                        {:error :storage/async-unsupported})))
      (datom-count eavt-tree :eavt)))
-  (-insert [tree datom index-type op-count]
-    (insert tree datom index-type op-count))
-  (-temporal-insert [tree datom index-type op-count]
-    (temporal-insert tree datom index-type op-count))
-  (-upsert [tree datom index-type op-count _old-datom]
-    (upsert tree datom index-type op-count))
-  (-temporal-upsert [tree datom index-type op-count _old-datom]
-    (temporal-upsert tree datom index-type op-count))
-  (-remove [tree datom index-type op-count]
-    (remove-datom tree datom index-type op-count))
+  (-insert
+    ([tree datom index-type op-count]
+     (insert tree datom index-type op-count))
+    ([tree datom index-type op-count opts]
+     (hht-no-async! opts)
+     (insert tree datom index-type op-count)))
+  (-temporal-insert
+    ([tree datom index-type op-count]
+     (temporal-insert tree datom index-type op-count))
+    ([tree datom index-type op-count opts]
+     (hht-no-async! opts)
+     (temporal-insert tree datom index-type op-count)))
+  (-upsert
+    ([tree datom index-type op-count _old-datom]
+     (upsert tree datom index-type op-count))
+    ([tree datom index-type op-count _old-datom opts]
+     (hht-no-async! opts)
+     (upsert tree datom index-type op-count)))
+  (-temporal-upsert
+    ([tree datom index-type op-count _old-datom]
+     (temporal-upsert tree datom index-type op-count))
+    ([tree datom index-type op-count _old-datom opts]
+     (hht-no-async! opts)
+     (temporal-upsert tree datom index-type op-count)))
+  (-remove
+    ([tree datom index-type op-count]
+     (remove-datom tree datom index-type op-count))
+    ([tree datom index-type op-count opts]
+     (hht-no-async! opts)
+     (remove-datom tree datom index-type op-count)))
   (-slice
     ([tree from to index-type]
      (slice tree from to index-type))
@@ -188,16 +213,36 @@
        (throw (ex-info "hitchhiker-tree index is synchronous-only"
                        {:error :storage/async-unsupported})))
      (datom-count eavt-tree :eavt)))
-  (-insert [tree datom index-type op-count]
-    (insert tree datom index-type op-count))
-  (-temporal-insert [index datom index-type op-count]
-    (temporal-insert index datom index-type op-count))
-  (-upsert [tree datom index-type op-count _old-datom]
-    (upsert tree datom index-type op-count))
-  (-temporal-upsert [tree datom index-type op-count _old-datom]
-    (temporal-upsert tree datom index-type op-count))
-  (-remove [tree datom index-type op-count]
-    (remove-datom tree datom index-type op-count))
+  (-insert
+    ([tree datom index-type op-count]
+     (insert tree datom index-type op-count))
+    ([tree datom index-type op-count opts]
+     (hht-no-async! opts)
+     (insert tree datom index-type op-count)))
+  (-temporal-insert
+    ([index datom index-type op-count]
+     (temporal-insert index datom index-type op-count))
+    ([index datom index-type op-count opts]
+     (hht-no-async! opts)
+     (temporal-insert index datom index-type op-count)))
+  (-upsert
+    ([tree datom index-type op-count _old-datom]
+     (upsert tree datom index-type op-count))
+    ([tree datom index-type op-count _old-datom opts]
+     (hht-no-async! opts)
+     (upsert tree datom index-type op-count)))
+  (-temporal-upsert
+    ([tree datom index-type op-count _old-datom]
+     (temporal-upsert tree datom index-type op-count))
+    ([tree datom index-type op-count _old-datom opts]
+     (hht-no-async! opts)
+     (temporal-upsert tree datom index-type op-count)))
+  (-remove
+    ([tree datom index-type op-count]
+     (remove-datom tree datom index-type op-count))
+    ([tree datom index-type op-count opts]
+     (hht-no-async! opts)
+     (remove-datom tree datom index-type op-count)))
   (-slice
     ([tree from to index-type]
      (slice tree from to index-type))

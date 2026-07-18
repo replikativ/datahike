@@ -115,12 +115,12 @@
       async-transaction conversion lands; a drop names a regressed seam.
       The dual transaction spine over async tree ops should take this to
       num-cases minus the raising transactions."
-     ;; First light on the PREFETCH implementation: 129/200 covered,
-     ;; 47 raises (deterministic, agreeing), 24 clean faults — the
-     ;; rebalancing residue static warming cannot reach. The dual
-     ;; transaction spine over async tree writes targets 153 (all but
-     ;; the raising transactions).
-     129))
+     ;; History: 129 on the prefetch/warming implementation (24 clean
+     ;; faults = the rebalancing residue static warming cannot reach).
+     ;; 153 = the dual transaction spine over async tree writes — every
+     ;; non-raising transaction completes cold; the 47 raisers raise
+     ;; identically in both modes. 153 is the ceiling for this stream.
+     153))
 
 #?(:cljs
    (defn- seeded-tx-seq [n seed]

@@ -6,7 +6,6 @@
             [datahike.gc :as gc]
             [datahike.tools :as dt :refer [throwable-promise get-time-ms]]
             [clojure.core.async :refer [chan close! promise-chan put! go go-loop <! >! poll! buffer timeout]]
-            #?(:cljs [datahike.query.execute :as ex])
             #?(:cljs [cljs.core.async.impl.channels :refer [ManyToManyChannel]]))
   #?(:clj (:import [clojure.core.async.impl.channels ManyToManyChannel])))
 
@@ -68,31 +67,28 @@
                                   old)
 
                             op-fn (write-fn-map op)
-                            ;; cljs: pre-warm the transaction's derivable index
-                            ;; reads against db-before (a no-op on warm memory
-                            ;; frontends — the probes resolve on the calling
-                            ;; stack). Awaited HERE in the loop: the op itself
-                            ;; must NOT return a channel — channel results are
-                            ;; treated as background ops and BYPASS the commit
-                            ;; queue. Prefetch failure is logged and ignored:
-                            ;; the sync core then faults cleanly if truly cold.
-                            prefetched #?(:clj nil
-                                          :cljs (when-let [txd (and (= op 'transact!)
-                                                                    (:tx-data (first args)))]
-                                                  (let [ch (promise-chan)]
-                                                    ((ex/prefetch-tx-reads-step old txd)
-                                                     (fn [v] (put! ch {:ok (or v {})}))
-                                                     (fn [e] (put! ch {:err e})))
-                                                    (let [r (<! ch)]
-                                                      (when (:err r)
-                                                        (log/debug :datahike/tx-prefetch-failed
-                                                                   {:error (:err r)}))
-                                                      r))))
+                            ;; cljs: the transact op runs the dual transaction
+                            ;; spine (every index read AND write awaited).
+                            ;; Awaited HERE in the loop as a partial-cps
+                            ;; expression adapted through a promise-chan — the
+                            ;; op RESULT is the plain report map, never a
+                            ;; channel, so the background-op branch (which
+                            ;; bypasses the commit queue) is never taken.
+                            spine? #?(:clj false
+                                      :cljs (= op 'transact!))
+                            spine-res #?(:clj nil
+                                         :cljs (when spine?
+                                                 (let [ch (promise-chan)]
+                                                   ((w/transact!-step old (first args))
+                                                    (fn [v] (put! ch {:ok v}))
+                                                    (fn [e] (put! ch {:err e})))
+                                                   (<! ch))))
                             res   (try
                                     #?(:clj (apply op-fn old args)
-                                       :cljs (if-let [cache (get-in prefetched [:ok :entid-cache])]
-                                               (binding [dt/*entid-cache* cache]
-                                                 (apply op-fn old args))
+                                       :cljs (if spine?
+                                               (if-some [e (:err spine-res)]
+                                                 (throw e)
+                                                 (:ok spine-res))
                                                (apply op-fn old args)))
                             ;; Catch all Throwables to handle AssertionError and other Errors
                             ;; These should crash the writer, but we deliver to callback first to prevent hangs

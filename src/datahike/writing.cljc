@@ -12,6 +12,7 @@
             [datahike.store :as ds]
             [datahike.tools :as dt]
             [datahike.core :as core]
+            #?(:cljs [is.simm.partial-cps.async :as pca :refer-macros [async]])
             [datahike.query :as dq]
             [datahike.config :as dc]
             [datahike.schema-cache :as sc]
@@ -825,6 +826,18 @@
   (log/debug :datahike/transact {:tx-count (count tx-data)})
   (log/trace :datahike/transact-detail {:tx-data tx-data :tx-meta tx-meta})
   (complete-db-update old (core/with old tx-data tx-meta)))
+
+#?(:cljs
+   (defn transact!-step
+     "Async transact op for the writer loop: awaits the dual transaction
+      spine, then runs the (pure) db-update completion. Returns a partial-cps
+      async expression yielding the completed report — deliberately NOT a
+      channel: channel op results are treated as background ops and bypass
+      the writer's commit queue."
+     [old {:keys [tx-data tx-meta]}]
+     (log/debug :datahike/transact {:tx-count (count tx-data) :async? true})
+     (pca/async
+      (complete-db-update old (pca/await (core/with old tx-data tx-meta false))))))
 
 (defn load-entities [old entities]
   (log/debug :datahike/load-entities {:entity-count (count entities)})

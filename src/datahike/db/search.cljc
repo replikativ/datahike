@@ -10,6 +10,8 @@
    [datahike.lru :refer [lru-datom-cache-factory]]
    [datahike.tools :refer [match-vector]]
    [environ.core :refer [env]]
+   #?(:cljs [is.simm.partial-cps.async :as pca :refer-macros [async]])
+   #?(:cljs [org.replikativ.persistent-sorted-set.btset :as btset])
    [replikativ.logging :as log])
   #?(:cljs (:require-macros [datahike.db.search :refer [lookup-strategy]]))
   #?(:clj (:import [datahike.datom Datom])))
@@ -231,6 +233,126 @@
             (search-strategy-with-index db pattern false)]
      (batch-fn strategy-vec (backend-fn db-index) identity)
      [])))
+
+#?(:cljs
+   (defn- achunk-step
+     "One chunk-granular step over a PSS AsyncSeq (or a realized coll served
+      as instantly-resolving pseudo-chunks). Async-only local copy of the
+      query engine's chunk consumption — db.search must not require the
+      engine (that would drag the planner into the write path)."
+     [s]
+     (cond
+       (nil? s) (async nil)
+       (not (instance? btset/AsyncSeq s))
+       (async
+        (when-let [sq (seq s)]
+          (if (chunked-seq? sq)
+            (let [ch (chunk-first sq)]
+              [(.-arr ch) (.-off ch) (.-end ch) (chunk-next sq)])
+            [(array (first sq)) 0 1 (next sq)])))
+       :else (btset/achunk-next s))))
+
+#?(:cljs
+   (defn arealize-slice
+     "Async-only slice realization into a vector; pred (nil = keep all) is
+      applied synchronously per datom."
+     [index from to index-type pred]
+     (async
+      (let [s0 (pca/await (di/-slice index from to index-type {:sync? false}))]
+        (loop [s s0 acc (transient [])]
+          (if-some [step (pca/await (achunk-step s))]
+            (let [ks (nth step 0)
+                  start (nth step 1)
+                  end (nth step 2)
+                  nxt (nth step 3)]
+              (recur nxt
+                     (loop [i start a acc]
+                       (if (< i end)
+                         (let [d (aget ks i)]
+                           (recur (inc i) (if (or (nil? pred) (pred d)) (conj! a d) a)))
+                         a))))
+            (persistent! acc)))))))
+
+#?(:cljs
+   (defn search-current-step
+     "Async mirror of (search-current-indices db pattern): the SAME strategy
+      selection (validate-pattern raises included), bounds and filters
+      derived from the declarative :strategy-vec, realized via awaited
+      chunk consumption. Deliberately UNMEMOIZED — the transaction path
+      searches the evolving transient, whose state must never be cached."
+     [db pattern]
+     (async
+      (if-let [{:keys [index-key strategy-vec db-index]}
+               (search-strategy-with-index db pattern false)]
+        (let [[e a v tx] pattern
+              [es as vs ts] strategy-vec
+              from (datom (if (= :substitute es) e e0)
+                          (when (= :substitute as) a)
+                          (when (= :substitute vs) v)
+                          (if (= :substitute ts) tx tx0))
+              to (datom (if (= :substitute es) e emax)
+                        (when (= :substitute as) a)
+                        (when (= :substitute vs) v)
+                        (if (= :substitute ts) tx txmax))
+              pred (cond
+                     (and (= :filter vs) (= :filter ts))
+                     (fn [d] (and (a= v (.-v d)) (= tx (datom-tx d))))
+                     (= :filter vs) (fn [d] (a= v (.-v d)))
+                     (= :filter ts) (fn [d] (= tx (datom-tx d)))
+                     :else nil)]
+          (pca/await (arealize-slice db-index from to index-key pred)))
+        []))))
+
+#?(:cljs
+   (defn datoms-components-step
+     "Async prefix-components read on a PLAIN db record (base-context
+      semantics — exactly what the transaction path's dbi/datoms calls see)."
+     [db index-type cs]
+     (arealize-slice (get db index-type)
+                     (dbu/components->pattern db index-type cs e0 tx0)
+                     (dbu/components->pattern db index-type cs emax txmax)
+                     index-type nil)))
+
+#?(:cljs
+   (defn entid-step
+     "Async dbu/entid: identical validation raises; avet probes awaited."
+     [db eid]
+     (async
+      (cond
+        (dbu/numeric-entid? eid) eid
+
+        (sequential? eid)
+        (let [[attr value] eid]
+          (cond
+            (not= (count eid) 2)
+            (log/raise "Lookup ref should contain 2 elements: " eid
+                       {:error :lookup-ref/syntax, :entity-id eid})
+            (not (dbu/is-attr? db attr :db/unique))
+            (log/raise "Lookup ref attribute should be marked as :db/unique: " eid
+                       {:error :lookup-ref/unique, :entity-id eid})
+            (nil? value)
+            nil
+            :else
+            (:e (first (pca/await (datoms-components-step db :avet [attr value]))))))
+
+        (array? eid)
+        (pca/await (entid-step db (array-seq eid)))
+
+        (keyword? eid)
+        (:e (first (pca/await (datoms-components-step db :avet [:db/ident eid]))))
+
+        :else
+        (log/raise "Expected number or lookup ref for entity id, got " eid
+                   {:error :entity-id/syntax, :entity-id eid})))))
+
+#?(:cljs
+   (defn entid-strict-step
+     [db eid]
+     (async
+      (or (pca/await (entid-step db eid))
+          (log/raise "Nothing found for entity id " eid
+                     {:error :entity-id/missing
+                      :entity-id eid})))))
 
 (defn added? [[_ _ _ _ added]]
   added)
