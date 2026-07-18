@@ -120,10 +120,17 @@
    :temporal  (gen/frequency [[6 (gen/return :none)]
                               [2 (gen/return :as-of)]
                               [1 (gen/return :history)]])
-   ;; d/filter wrapper (outermost, over the temporal wrapper): the planner
-   ;; must route every filtered read through the contextual per-clause path
+   ;; d/filter wrapper (over the temporal wrapper): the planner must apply
+   ;; the predicate on every fused read
    :filtered? (gen/frequency [[4 (gen/return false)]
                               [1 (gen/return true)]])
+   ;; an EXTRA outermost wrapper — exercises composed stacks (nested
+   ;; temporal, temporal-over-filtered): as-of∘as-of=min, since×as-of=
+   ;; window, history absorbs assembly regardless of order
+   :nest      (gen/frequency [[6 (gen/return nil)]
+                              [1 (gen/return :history)]
+                              [1 (gen/return :as-of-mid)]
+                              [1 (gen/return :since-mid)]])
    :in-coll?  gen/boolean                                    ;; bind ?e via :in [?e ...]
    ;; rules: a rule clause added to the body, rule set passed via :in %
    :rules     (gen/frequency [[5 (gen/return :none)]
@@ -243,23 +250,31 @@
     (catch #?(:clj Exception :cljs :default) _ ::raised)))
 
 (defn- wrap-db
-  ([db temporal] (wrap-db db temporal false))
-  ([db temporal filtered?]
-   (let [db (case temporal
-              :none db
-              :as-of (d/as-of db (:max-tx db))
-              :history (d/history db))]
-     (if filtered?
-       ;; hide entity 105 (frank: nick, tags incl :red, score) — exercises
-       ;; filtering against or-branches, get-else defaults and aggregates
-       (d/filter db (fn [_ d] (not= 105 (:e d))))
-       db))))
+  ([db temporal] (wrap-db db temporal false nil))
+  ([db temporal filtered?] (wrap-db db temporal filtered? nil))
+  ([db temporal filtered? nest]
+   (let [max-tx (:max-tx db)
+         d (case temporal
+             :none db
+             :as-of (d/as-of db max-tx)
+             :history (d/history db))
+         d (if filtered?
+             ;; hide entity 105 (frank: nick, tags incl :red, score) — exercises
+             ;; filtering against or-branches, get-else defaults and aggregates
+             (d/filter d (fn [_ x] (not= 105 (:e x))))
+             d)]
+     (case nest
+       nil d
+       :history (d/history d)
+       ;; mid = excludes the fixture's last transaction (the :score re-add)
+       :as-of-mid (d/as-of d (dec max-tx))
+       :since-mid (d/since d (dec max-tx))))))
 
 (defspec base-and-planner-agree-on-generated-queries
   {:num-tests num-cases :seed 1721160000042}
   (prop/for-all [spec gen-spec]
                 (let [[query args] (build-query spec)
-                      db (wrap-db @test-db (:temporal spec) (:filtered? spec))
+                      db (wrap-db @test-db (:temporal spec) (:filtered? spec) (:nest spec))
                       base (run-engine true query db args)
                       planner (run-engine false query db args)]
                   (is (= base planner)
@@ -293,17 +308,18 @@
      "Exact number of the num-cases replayed cases that COMPLETE (rather
       than fault) under :async-cold. Bump on every conversion that widens
       cold coverage; a drop names a regressed seam (see the histogram).
-      Re-baselined at 248 when the :filtered axis + the :or-and fix changed
-      the case stream. At 279 every remaining fault is a FILTERED-over-
-      TEMPORAL case (that composition stays on the legacy per-clause reads);
-      the rest are legitimately-raising queries."
-     279))
+      Re-baselined on grammar changes (:filtered axis + :or-and fix at 248,
+      :nest axis at 300). 300/300: with wrapper-stack normalization every
+      composition streams cold, and the :or-and fix removed the only
+      raising taxon — the FULL corpus completes async-cold."
+     300))
 
 #?(:cljs
    (defn- spec-dimensions [spec]
      {:modifiers (vec (:modifiers spec))
       :temporal (:temporal spec)
       :filtered? (:filtered? spec)
+      :nest (:nest spec)
       :multi (:multi spec)
       :rules (:rules spec)
       :in-coll? (:in-coll? spec)
@@ -319,9 +335,9 @@
                acc
                (let [[query args] (build-query spec)
                      rargs (mapv (fn [x] (if (= ::db2 x) @test-db2 x)) args)
-                     warm-db (wrap-db @test-db (:temporal spec) (:filtered? spec))
+                     warm-db (wrap-db @test-db (:temporal spec) (:filtered? spec) (:nest spec))
                      cold-base (am/cold-db @test-db flush-handle)
-                     cold-db (wrap-db cold-base (:temporal spec) (:filtered? spec))
+                     cold-db (wrap-db cold-base (:temporal spec) (:filtered? spec) (:nest spec))
                      sync-out (<! (apply am/run-query-in-mode :sync query warm-db rargs))
                      warm-out (<! (apply am/run-query-in-mode :async-warm query warm-db rargs))
                      cold-out (<! (apply am/run-query-in-mode :async-cold query cold-db rargs))

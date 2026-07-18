@@ -762,37 +762,68 @@
    stays on the outer `db`'s search-context and fires via
    `post-process-datoms` alongside the AsOf timepred."
   [db]
-  (cond
-    (instance? FilteredDB db)
-    (temporal-info (.-unfiltered-db ^FilteredDB db))
+  ;; Fold an arbitrary wrapper stack into the NORMAL FORM
+  ;;   {:origin-db DB, :historical? bool, :as-of-tx long?, :since-tx long?,
+  ;;    :fpred fn?, :type kw, :time-point long?}
+  ;; The algebra (validated against the legacy context machinery, whose
+  ;; post-process order is: tx-window -> assemble-unless-historical ->
+  ;; filter-preds LAST): as-of∘as-of = min, since∘since = max, mixed =
+  ;; window (since-tx, as-of-tx], history absorbs assembly regardless of
+  ;; nesting order, and filter preds commute with the temporal layers.
+  ;; :type stays the single-layer keyword the kernels dispatch on
+  ;; (:historical wins; a window reports :as-of and carries :since-tx —
+  ;; build-temporal-tx-filter composes both bounds). A filter-only stack
+  ;; returns nil: the non-temporal fused path applies the predicate itself.
+  (loop [d db, historical? false, as-ofs [], sinces [], fpred nil]
+    (cond
+      (instance? FilteredDB d)
+      (let [p (.-pred ^FilteredDB d)
+            fpred' (if fpred (fn [x] (and (p x) (fpred x))) p)]
+        (recur (.-unfiltered-db ^FilteredDB d) historical? as-ofs sinces fpred'))
 
-    (instance? HistoricalDB db)
-    {:type :historical :origin-db (dbi/-origin db)}
+      (instance? HistoricalDB d)
+      (recur (dbi/-origin d) true as-ofs sinces fpred)
 
-    (instance? AsOfDB db)
-    (let [tp (dbi/-time-point db)
-          origin-db (dbi/-origin db)
-          numeric-tp (if (number? tp) (long tp) (resolve-date-to-tx-id origin-db tp))]
-      {:type :as-of :origin-db origin-db :time-point numeric-tp})
+      (instance? AsOfDB d)
+      (recur (dbi/-origin d) historical? (conj as-ofs (dbi/-time-point d)) sinces fpred)
 
-    (instance? SinceDB db)
-    (let [tp (dbi/-time-point db)
-          origin-db (dbi/-origin db)
-          numeric-tp (if (number? tp) (long tp) (resolve-date-to-tx-id origin-db tp))]
-      {:type :since :origin-db origin-db :time-point numeric-tp})
+      (instance? SinceDB d)
+      (recur (dbi/-origin d) historical? as-ofs (conj sinces (dbi/-time-point d)) fpred)
 
-    :else nil))
+      :else
+      (when (and (dbu/db? d)
+                 (or historical? (seq as-ofs) (seq sinces)))
+        (let [resolve-tp (fn [tp] (if (number? tp) (long tp) (resolve-date-to-tx-id d tp)))
+              as-of-tx (when (seq as-ofs) (reduce min (map resolve-tp as-ofs)))
+              since-tx (when (seq sinces) (reduce max (map resolve-tp sinces)))]
+          {:origin-db d
+           :historical? historical?
+           :as-of-tx as-of-tx
+           :since-tx since-tx
+           :fpred fpred
+           :type (cond historical? :historical
+                       as-of-tx :as-of
+                       :else :since)
+           :time-point (or as-of-tx since-tx)})))))
 
 (defn- build-temporal-tx-filter
-  "Build a tx filter function for as-of/since temporal queries.
-   Returns nil for non-temporal or historical queries."
+  "Build a tx filter composing BOTH window bounds when present
+   (since-tx, as-of-tx]. Plain history has no bounds → nil (all versions).
+   A BOUNDED history stack (e.g. (since (history db) t)) gets the window:
+   legacy applies its timepred PRE-assembly, and history skips assembly,
+   so filtering scan datoms (scan-filter-temporal) and merge candidates
+   (temporal-merge-datom-match?) by tx is semantically identical."
   [temporal]
   (when temporal
-    (let [tp (long (or (:time-point temporal) 0))]
-      (case (:type temporal)
-        :since (fn [^Datom d] (> (datom/datom-tx d) tp))
-        :as-of (fn [^Datom d] (<= (datom/datom-tx d) tp))
-        nil))))
+    (let [a (:as-of-tx temporal)
+          s (:since-tx temporal)]
+      (cond
+        (and a s) (let [a (long a) s (long s)]
+                    (fn [^Datom d] (let [tx (datom/datom-tx d)]
+                                     (and (<= tx a) (> tx s)))))
+        a (let [a (long a)] (fn [^Datom d] (<= (datom/datom-tx d) a)))
+        s (let [s (long s)] (fn [^Datom d] (> (datom/datom-tx d) s)))
+        :else nil))))
 
 #?(:clj
    (defn- fast-merge-scan
@@ -999,7 +1030,8 @@
     (maybe-post-process (di/-slice db-index from-datom to-datom index) db origin-db)
     (let [temporal-type (:type temporal)
           as-of-at-max-tx? (and (= temporal-type :as-of)
-                                (= (long (:time-point temporal))
+                                (nil? (:since-tx temporal))
+                                (= (long (:as-of-tx temporal))
                                    (long (:max-tx origin-db))))
           temporal-index-key (keyword (str "temporal-" (name index)))]
       (case temporal-type
@@ -1056,7 +1088,8 @@
                          (pca/await (di/-slice db-index from-datom to-datom index {:sync? sync?}))))
                      (let [temporal-type (:type temporal)
                            as-of-at-max-tx? (and (= temporal-type :as-of)
-                                                 (= (long (:time-point temporal))
+                                                 (nil? (:since-tx temporal))
+                                                 (= (long (:as-of-tx temporal))
                                                     (long (:max-tx origin-db))))
                            temporal-index-key (keyword (str "temporal-" (name index)))]
                        (case temporal-type
@@ -2063,6 +2096,12 @@
                                   (aget ^objects temporal-ctx 16))
         ^objects merge-defaults (when (> (alength ^objects temporal-ctx) 17)
                                   (aget ^objects temporal-ctx 17))
+        ;; FilteredDB-over-temporal visibility predicate: when present the
+        ;; card-one direct-lookupGE shortcut is disabled so every merge goes
+        ;; through temporal-merge-slice, whose wrapper-context post-processing
+        ;; applies assemble-then-filter in the legacy order.
+        merge-fpred (when (> (alength ^objects temporal-ctx) 18)
+                      (aget ^objects temporal-ctx 18))
         ^objects merge-datoms merge-datoms
         ^ints find-source find-source
         ^objects const-vals const-vals]
@@ -2158,7 +2197,9 @@
                                      :else nil)))
                                ;; Temporal card-one: for as-of/since, try direct lookupGE
                                ;; on current EAVT (avoids lazy-seq merge overhead per entity).
-                               (if (and (not= temporal-type :historical) temporal-tx-filter)
+                               ;; Disabled under a filter predicate — the direct hit would
+                               ;; skip the post-assembly pred application.
+                               (if (and (not= temporal-type :historical) temporal-tx-filter (nil? merge-fpred))
                                  (let [probe (datom eid ra vgv tx0)
                                        ^Datom d (.lookupGE ^PersistentSortedSet eavt-pss probe)
                                        check-v? (aget merge-check-scan-v mi)
@@ -2391,6 +2432,9 @@
                     merge-temporal-only (when temporal
                                           (to-array (mapv (fn [op]
                                                             (and (= temporal-type :historical)
+                                                                 ;; raw temporal slice — no post-processing,
+                                                                 ;; so no filter predicate may be pending
+                                                                 (nil? (:fpred temporal))
                                                                  (some? temporal-eavt-pss)
                                                                  (get-in op [:schema-info :card-one?] true)
                                                                  (not (dbu/no-history? index-db
@@ -2520,7 +2564,8 @@
                                                                  temporal-eavt-pss temporal-cursors
                                                                  temporal-type temporal-tx-filter
                                                                  scan-added-val origin-db
-                                                                 merge-optional merge-defaults])
+                                                                 merge-optional merge-defaults
+                                                                 (:fpred temporal)])
                                                   cancel sync?))
 
       ;; Non-temporal dispatch via fused-path keyword
@@ -4800,7 +4845,7 @@
                 ;; Single temporal wrapper over a PSS-backed origin — stay on the
                 ;; FUSED path (temporal-aware execute-group-direct + SIP probe)
                 ;; rather than the per-clause legacy lookup-batch-search fallback.
-                    (and (not filtered?) (some? ti) (pss-instance? (:eavt (:origin-db ti))))
+                    (and (some? ti) (pss-instance? (:eavt (:origin-db ti))))
                     (let [[ctx' _] (pca/await (execute-temporal-group-rel op-db op ctx ti sync?))
                           actual-card (ctx-total-tuples ctx')
                       ;; Re-plan cardinality estimation reads index subtree counts
@@ -4970,8 +5015,7 @@
                     (if (not (pss-instance? (:eavt (unfiltered-db op-db))))
                       (let [ti (temporal-info op-db)
                             scan-attr (second (:clause op))]
-                        (if (and (not filtered?)
-                                 (some? ti)
+                        (if (and (some? ti)
                                  (pss-instance? (:eavt (:origin-db ti)))
                                  (not (:optional? op))
                                  (some? scan-attr) (not (symbol? scan-attr)))

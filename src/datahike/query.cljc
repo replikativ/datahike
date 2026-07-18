@@ -3690,25 +3690,24 @@
    Date-based time-points are resolved to tx-ids at execution time via AVET lookup."
   [db]
   (or (instance? DB db)
-      (instance? SinceDB db)
-      (instance? AsOfDB db)
-      (instance? HistoricalDB db)
+      (and (or (instance? SinceDB db)
+               (instance? AsOfDB db)
+               (instance? HistoricalDB db))
+           (planner-eligible-db? (dbi/-origin db)))
       (and (instance? FilteredDB db)
            (planner-eligible-db? (.-unfiltered-db ^FilteredDB db)))))
 
 (defn- planner-origin-db
-  "For temporal wrappers, return the origin DB for plan creation (schema, indexes).
-   For regular DB, return as-is. FilteredDB unwraps to its underlying db's
-   origin (planning sees unfiltered stats; execution applies the predicate).
-   Returns nil for nested temporal wrappers (e.g. (d/history (d/as-of ...)))
-   which should fall back to legacy."
+  "The innermost plain DB of an arbitrary wrapper stack — temporal wrappers
+   and FilteredDB recurse (planning sees the origin's stats; execution
+   applies the composed visibility via the normalized temporal-info).
+   Returns nil only for stacks not bottoming out on a plain DB."
   [db]
   (cond
     (instance? DB db) db
     (instance? FilteredDB db) (planner-origin-db (.-unfiltered-db ^FilteredDB db))
     (or (instance? SinceDB db) (instance? AsOfDB db) (instance? HistoricalDB db))
-    (let [origin (dbi/-origin db)]
-      (when (instance? DB origin) origin))
+    (planner-origin-db (dbi/-origin db))
     :else nil))
 
 (defn- execute-planned-direct
@@ -4038,7 +4037,9 @@
                     split-result
 
                     (if (and use-planner?
-               ;; Nested temporal wrappers (e.g. (d/history (d/as-of ...))) → legacy
+               ;; Wrapper stacks (nested temporal, filtered-over-temporal) fold
+               ;; into the normalized temporal-info; only stacks not bottoming
+               ;; out on a plain DB fall back to legacy
                              (planner-origin-db primary-db))
                       (let [db primary-db
               ;; For temporal wrappers, use origin-db for plan creation (schema, index stats)
