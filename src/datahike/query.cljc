@@ -105,17 +105,26 @@
                      (log/warn :datahike/query-input-ignored {:query query}))
                    (:args query-input))
                arg-inputs)
-        extra-ks [:offset :limit :order-by :stats? :count-fns? :settings :cancel]]
+        extra-ks [:offset :limit :order-by :stats? :count-fns? :settings :cancel :sync?]]
     (-> (cond-> {:query (apply dissoc query extra-ks)
                  :args args}
           (map? query-input)
           (merge (select-keys query-input extra-ks)))
         auto-inject-built-in-rules)))
 
-(declare raw-q* *profile?*)
+(declare raw-q* raw-q-async *profile?*)
 
-(defn q [query & inputs]
-  (raw-q (normalize-q-input query inputs)))
+(defn q
+  "Executes a datalog query. The arg-map form accepts `:sync? false`
+   (ClojureScript): the query runs on the async engine and a partial-cps
+   async expression is returned — invoke it with (expr resolve reject) or
+   await it in an async block; warm stores resolve on the calling stack,
+   cold async-only stores stream every read."
+  [query & inputs]
+  (let [qm (normalize-q-input query inputs)]
+    (if (false? (:sync? qm))
+      (raw-q-async qm)
+      (raw-q (dissoc qm :sync?)))))
 
 (defn raw-q-async
   "Asynchronous raw query entry (ClojureScript only): runs the raw-q* dual

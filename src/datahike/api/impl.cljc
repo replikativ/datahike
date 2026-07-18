@@ -16,6 +16,7 @@
             [datahike.db.interface :as dbi]
             [datahike.db.transaction :as dbt]
             [datahike.impl.entity :as de]
+            #?(:cljs [datahike.query.execute :as ex])
             [datahike.versioning :as dv]
             [datahike.bitemporal.predicate :as bp.pred]
             [replikativ.logging :as log]
@@ -82,8 +83,12 @@
     ([_db _index & _components] ::index)))
 
 (defmethod datoms ::arg-map
-  [db {:keys [index components]}]
-  (dbi/datoms db index components))
+  [db {:keys [index components sync?]}]
+  (if (false? sync?)
+    #?(:clj (throw (ex-info ":sync? false is ClojureScript-only — JVM reads are synchronous"
+                            {:error :storage/async-unsupported}))
+       :cljs (ex/datoms-step db index components false))
+    (dbi/datoms db index components)))
 
 (defmethod datoms ::index
   [db index & components]
@@ -97,8 +102,12 @@
     ([_db _index & _components] ::index)))
 
 (defmethod seek-datoms ::arg-map
-  [db {:keys [index components]}]
-  (dbi/seek-datoms db index components))
+  [db {:keys [index components sync?]}]
+  (if (false? sync?)
+    #?(:clj (throw (ex-info ":sync? false is ClojureScript-only — JVM reads are synchronous"
+                            {:error :storage/async-unsupported}))
+       :cljs (ex/seek-datoms-step db index components))
+    (dbi/seek-datoms db index components)))
 
 (defmulti rseek-datoms
   (fn
@@ -106,8 +115,12 @@
     ([_db _index & _components] ::index)))
 
 (defmethod rseek-datoms ::arg-map
-  [db {:keys [index components]}]
-  (dbi/rseek-datoms db index components))
+  [db {:keys [index components sync?]}]
+  (if (false? sync?)
+    #?(:clj (throw (ex-info ":sync? false is ClojureScript-only — JVM reads are synchronous"
+                            {:error :storage/async-unsupported}))
+       :cljs (ex/rseek-datoms-step db index components))
+    (dbi/rseek-datoms db index components)))
 
 (defmethod rseek-datoms ::index
   [db index & components]
@@ -289,8 +302,12 @@
              :datahike/valid-between
              :datahike/valid-during))
 
-(defn index-range [db {:keys [attrid start end]}]
-  (dbi/index-range db attrid start end))
+(defn index-range [db {:keys [attrid start end sync?]}]
+  (if (false? sync?)
+    #?(:clj (throw (ex-info ":sync? false is ClojureScript-only — JVM reads are synchronous"
+                            {:error :storage/async-unsupported}))
+       :cljs (ex/index-range-step db attrid start end))
+    (dbi/index-range db attrid start end)))
 
 (defn schema [db]
   (reduce-kv

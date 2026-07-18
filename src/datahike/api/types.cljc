@@ -93,10 +93,19 @@
   [:sequential :any])
 
 (def SPullOptions
-  "Pull pattern options map."
+  "Pull pattern options map. :sync? false (ClojureScript only) runs the
+   pull on the async engine and returns a partial-cps async expression."
   [:map
    [:selector [:vector :any]]
-   [:eid SEId]])
+   [:eid SEId]
+   [:sync? {:optional true} :boolean]])
+
+(def SPullManyOptions
+  "pull-many options map (like SPullOptions, with a sequence of eids)."
+  [:map
+   [:selector [:vector :any]]
+   [:eids [:sequential SEId]]
+   [:sync? {:optional true} :boolean]])
 
 (def SQueryArgs
   "Query arguments map."
@@ -104,7 +113,8 @@
    [:query [:or :string [:vector :any] :map]]
    [:args {:optional true} [:sequential :any]]
    [:limit {:optional true} :int]
-   [:offset {:optional true} :int]])
+   [:offset {:optional true} :int]
+   [:sync? {:optional true} :boolean]])
 
 (def SWithArgs
   "Arguments for 'with' operation."
@@ -116,14 +126,16 @@
   "Index lookup arguments."
   [:map
    [:index [:enum :eavt :aevt :avet]]
-   [:components {:optional true} [:maybe [:sequential :any]]]])
+   [:components {:optional true} [:maybe [:sequential :any]]]
+   [:sync? {:optional true} :boolean]])
 
 (def SIndexRangeArgs
   "Index range query arguments."
   [:map
    [:attrid :keyword]
    [:start :any]
-   [:end :any]])
+   [:end :any]
+   [:sync? {:optional true} :boolean]])
 
 (def SSchema
   "Database schema - map of attributes to schema entries."
@@ -165,6 +177,7 @@
     :datahike/STransactionReport STransactionReport
     :datahike/STransactions STransactions
     :datahike/SPullOptions SPullOptions
+    :datahike/SPullManyOptions SPullManyOptions
     :datahike/SQueryArgs SQueryArgs
     :datahike/SWithArgs SWithArgs
     :datahike/SIndexLookupArgs SIndexLookupArgs

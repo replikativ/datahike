@@ -376,6 +376,53 @@
             (str (pr-str query) " cold errored: " (some-> (:error out) ex-message)))
         (is (= sync-r (:result out)) (str (pr-str query) " cold ≡ sync"))))))
 
+(deftest-async sync-opts-public-api
+  ;; the public API's async mode: `:sync? false` in the arg-map forms of
+  ;; q / pull / pull-many / datoms / seek-datoms / rseek-datoms /
+  ;; index-range returns a partial-cps async expression — no -async
+  ;; function variants. All compared cold ≡ sync.
+  (let [db (-> (ddb/empty-db {:so-email {:db/unique :db.unique/identity}
+                              :so-friend {:db/valueType :db.type/ref}})
+               (d/db-with [{:db/id 1 :so-email "a@x" :so-score 1 :so-friend 2}
+                           {:db/id 2 :so-email "b@x" :so-score 2}]))
+        handle (am/flush-db! db)
+        run (fn [expr]
+              (let [ch (a/promise-chan)]
+                (expr (fn [v] (a/put! ch {:result v}))
+                      (fn [e] (a/put! ch {:error e})))
+                ch))
+        norm (fn [datoms] (mapv (fn [d] [(:e d) (:a d) (:v d)]) datoms))]
+    (testing "q with :sync? false in the arg-map"
+      (let [query '[:find ?e ?s :where [?e :so-score ?s]]
+            sync-r (binding [q/*query-result-cache?* false] (d/q query db))
+            cold (am/cold-db db handle)
+            {:keys [result error]} (<! (run (d/q {:query query :args [cold] :sync? false})))]
+        (is (nil? error) (str "q errored: " (some-> error ex-message)))
+        (is (= sync-r result))))
+    (testing "pull / pull-many with :sync? false"
+      (let [sel [:so-email {:so-friend [:so-email]}]
+            sync-p (d/pull db sel 1)
+            sync-pm (d/pull-many db sel [1 2])
+            cold (am/cold-db db handle)
+            p (<! (run (d/pull cold {:selector sel :eid 1 :sync? false})))
+            pm (<! (run (d/pull-many cold {:selector sel :eids [1 2] :sync? false})))]
+        (is (= sync-p (:result p)) (str (some-> (:error p) ex-message)))
+        (is (= sync-pm (:result pm)) (str (some-> (:error pm) ex-message)))))
+    (testing "datoms / seek-datoms / rseek-datoms / index-range with :sync? false"
+      (doseq [[label sync-v mk]
+              [["datoms" (d/datoms db {:index :eavt :components [1]})
+                #(d/datoms % {:index :eavt :components [1] :sync? false})]
+               ["seek-datoms" (d/seek-datoms db {:index :eavt :components [2]})
+                #(d/seek-datoms % {:index :eavt :components [2] :sync? false})]
+               ["rseek-datoms" (d/rseek-datoms db {:index :eavt :components [1]})
+                #(d/rseek-datoms % {:index :eavt :components [1] :sync? false})]
+               ["index-range" (d/index-range db {:attrid :so-email :start "a" :end "z"})
+                #(d/index-range % {:attrid :so-email :start "a" :end "z" :sync? false})]]]
+        (let [cold (am/cold-db db handle)
+              {:keys [result error]} (<! (run (mk cold)))]
+          (is (nil? error) (str label " errored: " (some-> error ex-message)))
+          (is (= (norm sync-v) (norm result)) (str label " cold ≡ sync")))))))
+
 (deftest-async q-async-date-as-of-cold
   ;; Date-based as-of/since wrappers are normalized to numeric time-points by
   ;; one awaited txInstant scan, then ride the pure txpred path cold.

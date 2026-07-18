@@ -1223,6 +1223,65 @@
               datoms)))))))
 
 #?(:cljs
+   (defn seek-datoms-step
+     "Async mirror of dbi/seek-datoms: datoms >= the components pattern to
+      the index end, honoring the wrapper's search context (temporal merge,
+      filter xform)."
+     [db index-type cs]
+     (async
+      (let [ctx (dbi/-search-context db)
+            idb (index-origin db)
+            from (dbu/components->pattern idb index-type cs e0 tx0)
+            to (datom emax nil nil txmax)
+            cur (pca/await (realize-slice (get idb index-type) from to index-type nil false))
+            datoms (if (dbi/context-temporal? ctx)
+                     (let [tidx (get idb (keyword (str "temporal-" (name index-type))))
+                           tmp (pca/await (realize-slice tidx from to index-type nil false))]
+                       (dbu/distinct-datoms idb index-type cur tmp))
+                     cur)]
+        (db/post-process-datoms datoms idb ctx)))))
+
+#?(:cljs
+   (defn rseek-datoms-step
+     "Async mirror of dbi/rseek-datoms: datoms <= the components pattern,
+      DESCENDING to the index beginning. Realizes the [beginning, cs] prefix
+      forward and reverses — same datoms as the lazy -rslice, at O(prefix)
+      memory (the async public API is eager anyway)."
+     [db index-type cs]
+     (async
+      (let [ctx (dbi/-search-context db)
+            idb (index-origin db)
+            from (datom e0 nil nil tx0)
+            to (dbu/components->pattern idb index-type cs emax txmax)
+            cur (vec (rseq (pca/await (realize-slice (get idb index-type) from to index-type nil false))))
+            datoms (if (dbi/context-temporal? ctx)
+                     (let [tidx (get idb (keyword (str "temporal-" (name index-type))))
+                           tmp (vec (rseq (pca/await (realize-slice tidx from to index-type nil false))))]
+                       (dbu/distinct-datoms-desc idb index-type cur tmp))
+                     cur)]
+        (db/post-process-datoms datoms idb ctx)))))
+
+#?(:cljs
+   (defn index-range-step
+     "Async mirror of dbi/index-range over :avet, honoring the wrapper's
+      search context."
+     [db attr start end]
+     (async
+      (let [ctx (dbi/-search-context db)
+            idb (index-origin db)]
+        (when-not (dbu/indexing? idb attr)
+          (log/raise "Attribute" attr "should be marked as :db/index true" {}))
+        (dbu/validate-attr attr (list '-index-range 'db attr start end) idb)
+        (let [from (dbu/resolve-datom idb nil attr start nil e0 tx0)
+              to (dbu/resolve-datom idb nil attr end nil emax txmax)
+              cur (pca/await (realize-slice (:avet idb) from to :avet nil false))
+              datoms (if (dbi/context-temporal? ctx)
+                       (let [tmp (pca/await (realize-slice (:temporal-avet idb) from to :avet nil false))]
+                         (dbu/distinct-datoms idb :avet cur tmp))
+                       cur)]
+          (db/post-process-datoms datoms idb ctx))))))
+
+#?(:cljs
    (defn- search-first-datom-step
      "Async point search for a ground [e translated-attr] pattern honoring
       the db's temporal search context. Yields the first visible datom or

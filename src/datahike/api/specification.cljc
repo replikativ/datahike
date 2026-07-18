@@ -283,7 +283,7 @@
      :stability :stable
      :supports-remote? true
      :referentially-transparent? true
-     :doc "Executes a datalog query."
+     :doc "Executes a datalog query. The arg-map form accepts `:sync? false` (ClojureScript only): the query runs on the asynchronous engine against stores without synchronous read capability, and a partial-cps async expression is returned — invoke it with `(expr resolve reject)` or await it inside an async block. Warm stores resolve on the calling stack."
      :examples [{:desc "Query with vector syntax"
                  :code "(q '[:find ?value :where [_ :likes ?value]] db)"}
                 {:desc "Query with map syntax"
@@ -292,7 +292,13 @@
                  :code "(q {:query '[:find ?value :where [_ :likes ?value]]
                            :args [db]
                            :offset 2
-                           :limit 10})"}]
+                           :limit 10})"}
+                {:desc "Asynchronous query (ClojureScript)"
+                 :code "((q {:query '[:find ?value :where [_ :likes ?value]]
+                            :args [db]
+                            :sync? false})
+                        (fn [result] (println result))
+                        (fn [error] (js/console.error error)))"}]
      :impl datahike.query/q}
 
     query-stats
@@ -333,23 +339,27 @@
      :stability :stable
      :supports-remote? true
      :referentially-transparent? true
-     :doc "Fetches data using recursive declarative pull pattern."
+     :doc "Fetches data using recursive declarative pull pattern. The arg-map form accepts `:sync? false` (ClojureScript only) and returns a partial-cps async expression (see `q`)."
      :examples [{:desc "Pull with pattern"
                  :code "(pull db [:db/id :name :likes {:friends [:db/id :name]}] 1)"}
                 {:desc "Pull with arg-map"
-                 :code "(pull db {:selector [:db/id :name] :eid 1})"}]
+                 :code "(pull db {:selector [:db/id :name] :eid 1})"}
+                {:desc "Asynchronous pull (ClojureScript)"
+                 :code "((pull db {:selector [:db/id :name] :eid 1 :sync? false})
+                        (fn [result] (println result))
+                        (fn [error] (js/console.error error)))"}]
      :impl datahike.pull-api/pull}
 
     pull-many
     {:args [:function
-            [:=> [:cat :datahike/SDB :datahike/SPullOptions] [:sequential :map]]
+            [:=> [:cat :datahike/SDB :datahike/SPullManyOptions] [:sequential :map]]
             [:=> [:cat :datahike/SDB [:vector :any] :datahike/SEId] [:sequential :map]]]
      :ret [:sequential :map]
      :categories [:query :pull]
      :stability :stable
      :supports-remote? true
      :referentially-transparent? true
-     :doc "Same as pull, but accepts sequence of ids and returns sequence of maps."
+     :doc "Same as pull, but accepts sequence of ids and returns sequence of maps. The arg-map form ({:selector .. :eids .. :sync? ..}) accepts `:sync? false` (ClojureScript only) and returns a partial-cps async expression (see `q`)."
      :examples [{:desc "Pull multiple entities"
                  :code "(pull-many db [:db/id :name] [1 2 3])"}]
      :impl datahike.pull-api/pull-many}
@@ -395,7 +405,7 @@
      :stability :stable
      :supports-remote? true
      :referentially-transparent? true
-     :doc "Index lookup. Returns sequence of datoms matching index components."
+     :doc "Index lookup. Returns sequence of datoms matching index components. The arg-map form accepts `:sync? false` (ClojureScript only) and returns a partial-cps async expression yielding the datoms (see `q`)."
      :examples [{:desc "Find all datoms for entity"
                  :code "(datoms db {:index :eavt :components [1]})"}
                 {:desc "Find datoms for entity and attribute"

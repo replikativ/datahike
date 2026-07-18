@@ -361,12 +361,26 @@
      (pca/await (pull-pattern db (list (initial-frame pattern eids multi?)) sync?))))))
 
 (defn pull
-  ([db {:keys [selector eid]}]
-   (pull db selector eid))
+  ([db {:keys [selector eid sync?]}]
+   (if (false? sync?)
+     ;; async mode (ClojureScript): returns a partial-cps async expression —
+     ;; invoke it with (expr resolve reject) or await it in an async block;
+     ;; warm stores resolve on the calling stack.
+     #?(:clj (throw (ex-info ":sync? false is ClojureScript-only — JVM reads are synchronous"
+                             {:error :storage/async-unsupported}))
+        :cljs (pull-spec db (dpp/parse-pull selector) [eid] false false))
+     (pull db selector eid)))
   ([db selector eid]
    {:pre [(dbu/db? db)]}
    (pull-spec db (dpp/parse-pull selector) [eid] false)))
 
-(defn pull-many [db selector eids]
-  {:pre [(dbu/db? db)]}
-  (pull-spec db (dpp/parse-pull selector) eids true))
+(defn pull-many
+  ([db {:keys [selector eids sync?]}]
+   (if (false? sync?)
+     #?(:clj (throw (ex-info ":sync? false is ClojureScript-only — JVM reads are synchronous"
+                             {:error :storage/async-unsupported}))
+        :cljs (pull-spec db (dpp/parse-pull selector) eids true false))
+     (pull-many db selector eids)))
+  ([db selector eids]
+   {:pre [(dbu/db? db)]}
+   (pull-spec db (dpp/parse-pull selector) eids true)))

@@ -31,7 +31,16 @@
    {:name ::pull-options
     :keys-default ds/req
     :spec {:selector coll? ;; TODO: spec more of selector
-           :eid SEId}}))
+           :eid SEId
+           (ds/opt :sync?) boolean?}}))
+
+(def SPullManyOptions
+  (ds/spec
+   {:name ::pull-many-options
+    :keys-default ds/req
+    :spec {:selector coll?
+           :eids (s/coll-of SEId)
+           (ds/opt :sync?) boolean?}}))
 
 (def SDatom datom?)
 
@@ -57,7 +66,8 @@
     :spec {:query (s/or :vec vector? :map map? :str string?)
            :args (s/coll-of (set-of vector?))
            (ds/opt :limit) int?
-           (ds/opt :offset) int?}}))
+           (ds/opt :offset) int?
+           (ds/opt :sync?) boolean?}}))
 
 (def STransactions
   (s/coll-of (s/or :seq coll? :map map? :nil nil?)))
@@ -75,14 +85,16 @@
     :keys-default ds/req
     :spec {:attrid keyword?
            :start any?
-           :end any?}}))
+           :end any?
+           (ds/opt :sync?) boolean?}}))
 
 (def SIndexLookupArgs
   (ds/spec
    {:name ::index-lookup-args
     :keys-default ds/req
     :spec {:index keyword?
-           (ds/opt :components) (s/nilable coll?)}}))
+           (ds/opt :components) (s/nilable coll?)
+           (ds/opt :sync?) boolean?}}))
 
 (def SSchemaEntry :datahike.schema/schema)
 
