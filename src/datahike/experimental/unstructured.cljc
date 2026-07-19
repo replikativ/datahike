@@ -21,7 +21,14 @@
    (this is the JSON-LD blank-node / \"identity is declared, never inferred\" point),
    so it is a deliberate choice: for entity/record semantics, give the map a natural
    key — an attribute you declare `:db.unique/identity` — and datahike's ordinary
-   upsert dedups it under either mode, no content id needed."
+   upsert dedups it under either mode, no content id needed.
+
+   Note: under `:write` flexibility this generates `:db.type/string` schema for
+   inferred string fields, so string values are subject to the per-database
+   value-size default (`:max-string-length`, 4096 by default) — ingesting a
+   larger text field is rejected with `:transact/max-length`. Store large
+   payloads off-database as a pointer, use `:db.secondary/only`, or disable the
+   cap (per attribute `:db/maxLength 0`, or `:max-string-length 0` at creation)."
   (:require
    [datahike.api :as d]
    [datahike.db.interface :as dbi]

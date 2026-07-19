@@ -690,7 +690,9 @@
                   name-reverse-schema       {:db/ident           #{:name}
                                              :db/index           #{:name}
                                              :db.unique/identity #{:name}
-                                             :db/unique          #{:name}}
+                                             :db/unique          #{:name}
+                                             ;; :name is a string → subject to the value-size model
+                                             :db.attr/constrained #{:name}}
                   age-reverse-schema        (-> name-reverse-schema
                                                 (update :db/ident conj :age)
                                                 (assoc :db/noHistory #{:age}))
@@ -776,8 +778,8 @@
         schema-count 11                                     ;; amount of user schema datoms in temporal eavt index
         temporal-count 10                                   ;; amount of user data datoms in temporal eavt index when using schema-on-write
         temporal-avet-count 9                               ;; amount of user data datoms in temporal avet index when using schema-on write
-        sys-attr-count 108                                  ;; amount of system schema datoms in temporal eavt index when using attribute refs (was 79; +6 for the :db.secondary/* family idents; +22 for the :dh.ref/* entries; +1 for :db.type/store-ref)
-        sys-attr-avet-count 62                              ;; amount of system schema datoms in temporal avet index when using attribute refs (was 50; +6 for the :db/ident datoms of the new :db.secondary/* attrs; +5 for :dh.ref/*; +1 for :db.type/store-ref's :db/ident)
+        sys-attr-count 114                                  ;; system schema datoms in temporal eavt index under attribute-refs = main's 108 (:db.secondary/* + :dh.ref/* + :db.type/store-ref) + 6 for :db/maxLength & :db.attr/preds (3 full-spec datoms each)
+        sys-attr-avet-count 64                              ;; temporal avet index = main's 62 + 2 for the :db/ident datoms of :db/maxLength & :db.attr/preds
         update-for-schema-on-write
         (fn [metrics]
           (-> (update metrics :count #(+ % 11))

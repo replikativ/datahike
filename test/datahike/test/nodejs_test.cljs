@@ -40,7 +40,10 @@
             ;; Weighted LRU query-cache — the cljs WeightedLRU deftype has its
             ;; own implementation, so cover it (unit + test.check property) here.
             [datahike.test.lru-weighted-test]
-            [datahike.test.lru-weighted-property-test]))
+            [datahike.test.lru-weighted-property-test]
+            ;; Attribute-value constraints — registry resolution (pure, here)
+            ;; and an async enforcement test below.
+            [datahike.test.attr-preds-test]))
 
 ;; Hook cljs.test's end-of-run callback so the Node process exits with
 ;; status 0 only when all tests pass. The previous setup always exited
@@ -706,4 +709,5 @@
                'datahike.test.experimental.graph-test
                'datahike.test.experimental.anomaly-test
                'datahike.test.lru-weighted-test
-               'datahike.test.lru-weighted-property-test))
+               'datahike.test.lru-weighted-property-test
+               'datahike.test.attr-preds-test))

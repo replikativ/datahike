@@ -5,6 +5,8 @@
    [datahike.index :as di]
    [datahike.datom :as dd :refer [datom datom-tx datom-added datom?]]
    #?(:cljs [datahike.db :refer [HistoricalDB]])
+   [datahike.array :as arr]
+   [datahike.attr-preds :as ap]
    [datahike.db.interface :as dbi]
    [datahike.db.search :as dbs]
    [datahike.db.utils :as dbu]
@@ -108,16 +110,21 @@
                          (assoc-in [:schema e] v-ident)
                          (assoc-in [:ident-ref-map v-ident] e)
                          (assoc-in [:ref-ident-map e] v-ident)))
-                   (if-let [schema-entry (schema e)]
-                     (if (schema schema-entry)
-                       (update-in db [:schema schema-entry a-ident] (fn [old]
-                                                                      (if (ds/entity-spec-attr? a-ident)
-                                                                        (if old
-                                                                          (conj old v-ident)
-                                                                          [v-ident])
-                                                                        v-ident)))
-                       (assoc-in db [:schema e a-ident] v-ident))
-                     (assoc-in db [:schema e] (hash-map a-ident v-ident))))]
+                   ;; Many-valued schema attrs (entity-spec preds/attrs, :db.attr/preds)
+                   ;; accumulate into a vector; single-valued overwrite. Applied in EVERY
+                   ;; branch so the result is order-independent — a pred datom arriving
+                   ;; before its entity's :db/ident (map ordering differs across
+                   ;; platforms) must still land as a vector, not a bare value.
+                   (let [accum (fn [old]
+                                 (if (or (ds/entity-spec-attr? a-ident)
+                                         (= a-ident :db.attr/preds))
+                                   (if old (conj old v-ident) [v-ident])
+                                   v-ident))]
+                     (if-let [schema-entry (schema e)]
+                       (if (schema schema-entry)
+                         (update-in db [:schema schema-entry a-ident] accum)
+                         (update-in db [:schema e a-ident] accum))
+                       (update-in db [:schema e a-ident] accum))))]
       ;; A schema mutation must not produce a shape that lets GC delete a
       ;; still-referenced object — a :db.type/store-ref inside a tuple, or under
       ;; :db/noHistory (schema/key-bearing-misuse). check-schema-update rejects the
@@ -293,7 +300,11 @@
             (update-in [:ref-ident-map] #(dissoc % e))))
       (if-let [schema-entry (schema e)]
         (if (schema schema-entry)
-          (update-in db [:schema schema-entry] #(dissoc % a-ident))
+          (if (= a-ident :db.attr/preds)
+            ;; many-valued: drop just the retracted predicate, keep the rest
+            (update-in db [:schema schema-entry a-ident]
+                       (fn [old] (vec (remove #{v-ident} old))))
+            (update-in db [:schema schema-entry] #(dissoc % a-ident)))
           (update-in db [:schema e] #(dissoc % a-ident v-ident)))
         (let [err-msg (str "Schema with entity id " e " does not exist")
               err-map {:error :retract/schema :entity-id e :attribute a :value e}]
@@ -705,6 +716,62 @@
   [a-ident]
   (or (= a-ident :db.valid/from) (= a-ident :db.valid/to)))
 
+(defn- system-ident?
+  "System / meta / entity-spec / secondary-index attribute — exempt from the
+   implicit value-size default (e.g. `:db/doc` is a string but must not be
+   capped)."
+  [a-ident]
+  (or (ds/schema-attr? a-ident) (ds/meta-attr? a-ident)
+      (ds/entity-spec-attr? a-ident) (ds/secondary-index-attr? a-ident)))
+
+(defn- enforce-attr-constraints
+  "Per-value constraints, on assertion only (called from `transact-add`, never on
+   retract), gated on the O(1) `:db.attr/constrained` rschema set so
+   unconstrained attributes pay nothing:
+
+   - Value-size caps: an explicit `:db/maxLength` bounds the value's length —
+     chars for a `:db.type/string`, bytes for a `:db.type/bytes` — and wins over
+     the per-database default; otherwise, under `:write` and for a user
+     attribute, the per-database `:max-string-length` / `:max-bytes-length`
+     applies. `:db.secondary/only` values (stored out-of-line) are exempt.
+     Raises `:transact/max-length`.
+   - `:db.attr/preds` value predicates. Raises `:transact/attr-pred`
+     (`:transact/attr-pred-unresolved` when a named predicate can't be resolved)."
+  [db a-ident v ctx]
+  (when (contains? (get-in db [:rschema :db.attr/constrained]) a-ident)
+    (let [attr    (get (dbi/-schema db) a-ident)
+          config  (dbi/-config db)
+          write?  (= :write (:schema-flexibility config))
+          default? (and write? (not (system-ident? a-ident))
+                        (not (dbu/secondary-only? db a-ident)))]
+      ;; --- value-size caps ---
+      (cond
+        (string? v)
+        (when-let [eff (or (:db/maxLength attr)
+                           (when default? (:max-string-length config)))]
+          (when (and (pos? eff) (> (count v) eff))
+            (log/raise "String value for " a-ident " exceeds max length " eff " (was " (count v) ")"
+                       {:error :transact/max-length :attribute a-ident
+                        :length (count v) :limit eff :unit :chars :context ctx})))
+
+        (arr/bytes? v)
+        (when-let [eff (or (:db/maxLength attr)
+                           (when default? (:max-bytes-length config)))]
+          (when (and (pos? eff) (> (arr/byte-count v) eff))
+            (log/raise "Byte value for " a-ident " exceeds max length " eff " bytes (was " (arr/byte-count v) ")"
+                       {:error :transact/max-length :attribute a-ident
+                        :length (arr/byte-count v) :limit eff :unit :bytes :context ctx}))))
+      ;; --- predicates ---
+      (doseq [p (let [ps (:db.attr/preds attr)]      ; tolerate bare or collection
+                  (cond (nil? ps) nil (coll? ps) ps :else [ps]))]
+        (if-let [f (ap/resolve-pred p)]
+          (when-not (true? (f v))
+            (log/raise "Value for " a-ident " failed :db.attr/preds predicate " p
+                       {:error :transact/attr-pred :attribute a-ident :value v :pred p :context ctx}))
+          (log/raise "Unresolved :db.attr/preds predicate " p " for " a-ident
+                     " — register it with datahike.attr-preds/register-attr-pred! (or ensure the symbol is resolvable)"
+                     {:error :transact/attr-pred-unresolved :attribute a-ident :pred p :context ctx}))))))
+
 (defn- transact-add [{:keys [db-after] :as report} [_ e a v tx :as ent]]
   (let [a (dbu/normalize-and-validate-attr a ent db-after)
         _ (validate-val v ent db-after)
@@ -713,6 +780,7 @@
         db db-after
         e (dbu/entid-strict db e)
         a-ident (if attribute-refs? (dbi/ident-for db a :error-on-missing) a)
+        _ (enforce-attr-constraints db a-ident v ent)
         v (if (dbu/ref? db a-ident) (dbu/entid-strict db v) v)
         new-datom (datom e a v tx)
         upsert? (not (dbu/multival? db a))
@@ -933,7 +1001,7 @@
       [report []])))
 
 (defn check-tuple [db op-vec]
-  (let [[_ _ a v] op-vec
+  (let [[op _ a v] op-vec
         attr-schema (-> db dbi/-schema (get a))]
     (cond (:db/tupleType attr-schema)
           (cond (> (count v) 8)
@@ -958,7 +1026,22 @@
           (and (:db/tupleAttrs attr-schema)
                (not (::internal (meta op-vec))))
           (log/raise "Can’t modify tuple attrs directly: " op-vec
-                     {:error :transact/syntax, :tx-data op-vec}))))
+                     {:error :transact/syntax, :tx-data op-vec}))
+    ;; String-slot length cap (Datomic parity, default 256). Assert-only
+    ;; (`:db/add` — never blocks retracting a pre-cap value) and `:write`-only,
+    ;; mirroring the scalar string default. Structural checks above run first.
+    (when (and (= :db/add op)
+               (= :write (:schema-flexibility (dbi/-config db))))
+      (when-let [limit (:max-tuple-string-length (dbi/-config db))]
+        (when (pos? limit)
+          (let [types (cond
+                        (:db/tupleType attr-schema)  (repeat (count v) (:db/tupleType attr-schema))
+                        (:db/tupleTypes attr-schema) (:db/tupleTypes attr-schema))]
+            (doseq [[t slot] (map vector types v)]
+              (when (and (= :db.type/string t) (string? slot) (> (count slot) limit))
+                (log/raise "Tuple string slot for " a " exceeds max length " limit " (was " (count slot) ")"
+                           {:error :transact/max-length :attribute a :length (count slot)
+                            :limit limit :unit :chars :context op-vec})))))))))
 
 (defn- filter-before [datoms ^Date before-date db]
   (let [before-pred (fn [^Datom d]

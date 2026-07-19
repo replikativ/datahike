@@ -124,9 +124,12 @@
                   :config config}))))
 
 (defn ensure-stored-config-consistency [config stored-config]
-  (let [;; Remove runtime parameters and creation-time parameters
-        config (dissoc config :name :search-cache-size :store-cache-size)
-        stored-config (dissoc stored-config :initial-tx :name :search-cache-size :store-cache-size)
+  (let [;; Remove runtime parameters and creation-time parameters. Value-size
+        ;; caps are creation-time defaults the connect config may lack (or hold a
+        ;; different explicit value for — stored wins), so exclude them here.
+        cap-keys (cons :value-caps (keys dc/default-value-caps))
+        config (apply dissoc config :name :search-cache-size :store-cache-size cap-keys)
+        stored-config (apply dissoc stored-config :initial-tx :name :search-cache-size :store-cache-size cap-keys)
         stored-config (merge {:writer dc/self-writer} stored-config)
         stored-config (if (empty? (:index-config stored-config))
                         (dissoc stored-config :index-config)
@@ -219,13 +222,14 @@
               store-fixed-record-keys))))
 
 (defn- normalize-config [cfg]
-  (-> cfg
-      ;; :index-config and the store-fixed-record-keys are store-fixed and
-      ;; adopted on a fresh connect (adopt-create-time-fixed), so an existing
-      ;; connection may carry adopted keys the caller's config omits;
-      ;; conflicts are guarded on the fresh-connect path, not here.
-      (dissoc :writer :store :store-cache-size :search-cache-size
-              :index-config :fuse-index-roots? :commit-graph?)))
+  ;; :index-config and the store-fixed-record-keys are store-fixed and
+  ;; adopted on a fresh connect (adopt-create-time-fixed), so an existing
+  ;; connection may carry adopted keys the caller's config omits; conflicts
+  ;; are guarded on the fresh-connect path, not here. The value-size caps live
+  ;; only in the stored config and are ignored for normalization too.
+  (apply dissoc cfg :writer :store :store-cache-size :search-cache-size
+         :index-config :fuse-index-roots? :commit-graph?
+         (cons :value-caps (keys dc/default-value-caps))))
 
 (defn -connect-impl* [config opts]
   (async+sync (:sync? opts) *default-sync-translation*
@@ -283,6 +287,14 @@
                                    _ (<?- (ds/ready-store (assoc store-config :opts opts) store))
                                    stored-db (<?- (k/get store (:branch config') nil opts))]
                                [config' store stored-db])))
+                         ;; The runtime db is built from the connect-time config (below),
+                         ;; but value-size caps live only in the *stored* config (written
+                         ;; at create). Merge them in so enforcement sees them and the
+                         ;; consistency check matches. Absent in the stored config (older
+                         ;; DBs) → nothing merged → unbounded.
+                         config (merge config
+                                       (select-keys (:config stored-db)
+                                                    (keys dc/default-value-caps)))
                          _ (version-check stored-db)
                          _ (when-not (:allow-unsafe-config config)
                              (ensure-stored-config-consistency config (:config stored-db)))

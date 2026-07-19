@@ -96,7 +96,7 @@
 ;; only for old datomic compliance, will be part of partioning in the future
 (s/def :db.type.install/_attribute #{:db.part/tx :db.part/db :db.part/user})
 
-(s/def ::schema-attribute #{:db/id :db/ident :db/isComponent :db/noHistory :db/valueType :db/cardinality :db/unique :db/index :db.install/_attribute :db/doc :db/tupleAttrs  :db/tupleType :db/tupleTypes :db.secondary/only})
+(s/def ::schema-attribute #{:db/id :db/ident :db/isComponent :db/noHistory :db/valueType :db/cardinality :db/unique :db/index :db.install/_attribute :db/doc :db/tupleAttrs  :db/tupleType :db/tupleTypes :db.secondary/only :db/maxLength :db.attr/preds})
 
 (s/def ::secondary-index-attribute #{:db.secondary/type :db.secondary/attrs :db.secondary/config :db.secondary/status :db.secondary/building-since-tx})
 
@@ -109,7 +109,7 @@
                           :db.valid/from :db.valid/to})
 
 (s/def ::schema (s/keys :req [:db/ident :db/valueType :db/cardinality]
-                        :opt [:db/id :db/unique :db/index :db.install/_attribute :db/doc :db/noHistory :db/tupleType :db/tupleTypes :db.secondary/only]))
+                        :opt [:db/id :db/unique :db/index :db.install/_attribute :db/doc :db/noHistory :db/tupleType :db/tupleTypes :db.secondary/only :db/maxLength :db.attr/preds]))
 
 (s/def ::entity-spec (s/keys :opt [:db.entity/attrs :db.entity/preds]))
 
@@ -168,6 +168,17 @@
                                                   :db/cardinality :db.cardinality/one}
                                    :db.secondary/only {:db/valueType :db.type/boolean
                                                        :db/cardinality :db.cardinality/one}
+                                   ;; Attribute-value constraints (opt-in). :db/maxLength is a
+                                   ;; declarative string-length bound; :db.attr/preds names value
+                                   ;; predicates (registry keywords or, on clj, resolvable symbols),
+                                   ;; many-valued. Both enforced on assertion in transact-add.
+                                   :db/maxLength {:db/valueType :db.type/long
+                                                  :db/cardinality :db.cardinality/one}
+                                   ;; symbol-typed (like :db.entity/preds) so many-valued
+                                   ;; preds stay homogeneous — the datom index compares
+                                   ;; values directly and can't order keyword-vs-symbol.
+                                   :db.attr/preds {:db/valueType :db.type/symbol
+                                                   :db/cardinality :db.cardinality/many}
                                    :db/txInstant {:db/valueType :db.type/instant
                                                   :db/unique :db.unique/identity
                                                   :db/index true
@@ -218,10 +229,10 @@
 
 (def schema-keys #{:db/ident :db/isComponent :db/noHistory :db/valueType :db/cardinality :db/unique :db/index :db.install/_attribute :db/doc :db/tupleType :db/tupleTypes :db/tupleAttrs
                    :db.secondary/type :db.secondary/attrs :db.secondary/config :db.secondary/status :db.secondary/building-since-tx
-                   :db.secondary/only})
+                   :db.secondary/only :db/maxLength :db.attr/preds})
 
 (s/def ::old-schema-val (s/keys :req [:db/valueType :db/cardinality]
-                                :opt [:db/ident :db/unique :db/index :db.install/_attribute :db/doc :db/noHistory]))
+                                :opt [:db/ident :db/unique :db/index :db.install/_attribute :db/doc :db/noHistory :db/maxLength :db.attr/preds]))
 
 (s/def ::old-schema-key keyword?)
 
@@ -350,6 +361,11 @@
            :db/noHistory nil
            :db/isComponent nil
 
+           ;; Attribute-value constraints may be added or changed on an
+           ;; existing attribute; they only affect future assertions.
+           :db/maxLength nil
+           :db.attr/preds nil
+
            ;; Secondary index: monotonic status transitions only
            ;; :building → :ready → :disabled (no going back)
            :db.secondary/status
@@ -372,8 +388,13 @@
     :db/tupleAttrs :db/tupleType :db/tupleTypes :db/isComponent})
 
 (def ^:private always-allowed-schema-keys
-  "Schema-entry keys whose change never needs a transition rule or data scan."
+  "Schema-entry keys whose change never needs a transition rule or data scan.
+   The value-constraint keys (:db/maxLength, :db.attr/preds) belong here with
+   their sibling :db.entity/preds: they are enforced on assertion only, so
+   adding or changing one never invalidates existing (or history) datoms —
+   it is a valid post-hoc addition to an already-defined attribute."
   #{:db/doc :db/isComponent :db/noHistory :db/ident
+    :db/maxLength :db.attr/preds
     :db.entity/attrs :db.entity/preds :db.secondary/building-since-tx})
 
 (defn assess-schema-transition

@@ -196,7 +196,20 @@
    ;; the schema transaction is rejected. APPENDED (never inserted): the ids of
    ;; existing system entities are on disk in every attribute-refs database.
    {:db/id 52
-    :db/ident :db.type/store-ref}])
+    :db/ident :db.type/store-ref}
+   ;; Attribute-value constraints (opt-in). Full specs inline (like
+   ;; :db.valid/*) so `ref-implicit-schema` conveys cardinality — needed
+   ;; because :db.attr/preds is many-valued and must be recognized as such
+   ;; under :attribute-refs? too. IDs reassigned 47/48 → 53/54 on rebase onto
+   ;; main (which took 47-52 for :dh.ref/* + :db.type/store-ref).
+   {:db/id 53
+    :db/ident :db/maxLength
+    :db/valueType :db.type/long
+    :db/cardinality :db.cardinality/one}
+   {:db/id 54
+    :db/ident :db.attr/preds
+    :db/valueType :db.type/symbol
+    :db/cardinality :db.cardinality/many}])
 
 (def ^:const system-entities
   "Holds the entity IDs of system attributes"
@@ -237,7 +250,8 @@
    :dh.ref/db     {:db/index true}
    :dh.ref/value  {:db/index true}
    :db.entity/attrs {:db/cardinality :db.cardinality/many}
-   :db.entity/preds {:db/cardinality :db.cardinality/many}})
+   :db.entity/preds {:db/cardinality :db.cardinality/many}
+   :db.attr/preds {:db/cardinality :db.cardinality/many}})
 
 (def ^:const ref-implicit-schema
   "Maps attribute names to the attribute's specification"
