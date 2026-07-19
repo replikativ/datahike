@@ -18,6 +18,7 @@
             [datahike.test.query-differential-test]
             [datahike.test.transact-differential-test]
             [datahike.test.valid-time-async-test]
+            [datahike.test.ivm-async-test]
             [datahike.test.cold-async-store-test]
             [datahike.test.async-kernel-test]
             [datahike.test.cljs-tiered-storage-test]
@@ -702,6 +703,7 @@
                'datahike.test.query-differential-test
                'datahike.test.transact-differential-test
                'datahike.test.valid-time-async-test
+               'datahike.test.ivm-async-test
                'datahike.test.cold-async-store-test
                'datahike.test.async-kernel-test
                'datahike.test.cljs-tiered-storage-test

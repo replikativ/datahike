@@ -281,6 +281,17 @@
                 ident))
             after))))
 
+(defn- notify-listeners!
+  "Invoke all registered listeners with the tx-report. A throwing listener
+   must never prevent the promise delivery that follows in the callers —
+   the transact/merge caller would block forever."
+  [connection tx-report]
+  (doseq [[key callback] (some-> (:listeners (meta connection)) (deref))]
+    (try
+      (callback tx-report)
+      (catch #?(:clj Exception :cljs js/Error) e
+        (log/warn :datahike/listener-error "Listener callback failed" {:listener key :error e})))))
+
 (defn transact!
   [connection arg-map]
   (let [p (throwable-promise)
@@ -302,8 +313,7 @@
                    (when (map? build-result)
                      (dispatch! writer {:op 'install-secondary-index!
                                         :args [build-result]}))))))
-          (doseq [[_ callback] (some-> (:listeners (meta connection)) (deref))]
-            (callback tx-report)))
+          (notify-listeners! connection tx-report))
         (#?(:clj deliver :cljs put!) p tx-report)))
     p))
 
@@ -329,8 +339,7 @@
                                      {:op 'merge!
                                       :args [arg-map]}))]
         (when (map? tx-report)
-          (doseq [[_ callback] (some-> (:listeners (meta connection)) (deref))]
-            (callback tx-report)))
+          (notify-listeners! connection tx-report))
         (#?(:clj deliver :cljs put!) p tx-report)))
     p))
 

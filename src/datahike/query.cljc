@@ -3974,7 +3974,13 @@
                                       (not qreturnmaps)
                                       (not (:with query))
                                       (not-any? #(instance? Aggregate %) find-elements)
-                                      (not-any? #(instance? Pull %) find-elements))
+                                      (not-any? #(instance? Pull %) find-elements)
+                       ;; Input relation/collection bindings JOIN components
+                       ;; through the bound relation and can supply find-vars
+                       ;; themselves; the component split can model neither.
+                       ;; The legacy pipeline handles disjoint components with
+                       ;; input rels correctly via collapse-rels/-collect.
+                                      (empty? (:rels context-in)))
                              (let [find-var-syms (mapv (fn [^Variable el] (.-symbol el))
                                                        (:elements qfind))
                        ;; Only scalar :in bindings (stored in :consts) are
@@ -3986,7 +3992,13 @@
                                    in-bound-vars (set (keys (:consts context-in)))
                                    {:keys [components post-filters]}
                                    (connected-components (:where query) in-bound-vars find-var-syms)]
-                               (when (> (count components) 1)
+                               (when (and (> (count components) 1)
+                                 ;; every projected var must be produced by some
+                                 ;; component — an :in-bound scalar in :find is
+                                 ;; substituted only at execution time, which the
+                                 ;; wide-tuple projection cannot see
+                                          (every? (into #{} (mapcat :vars) components)
+                                                  find-var-syms))
                      ;; Recursively run each component as its own query.
                      ;; Sub-queries with one component will fall through to
                      ;; the existing dispatch below (no further split).
@@ -4186,9 +4198,11 @@
   (let [;; snapshot the dynamic controls ONCE at query entry: partial-cps
         ;; conveys no bindings across suspension on cljs, so the executable
         ;; values travel in the query-map, not in the binding frame
-        query-map (assoc query-map
-                         :disable-planner? *disable-planner*
-                         :profile? *profile?*)
+        query-map (-> query-map
+                      ;; an explicit :disable-planner? on the query-map wins;
+                      ;; the dynamic var is only the default
+                      (update :disable-planner? #(if (some? %) % *disable-planner*))
+                      (assoc :profile? *profile?*))
         disable-planner? (:disable-planner? query-map)
         uncached (fn []
                    #?(:clj (or (try-secondary-index-aggregate-fast query-map)

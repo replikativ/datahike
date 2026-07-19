@@ -531,6 +531,10 @@
                                  :datom     datom})))))))
 
 (defn- with-datom-upsert
+  "Returns [db' displaced-datom]. displaced-datom is the old primary datom
+   the upsert replaced (nil when none, and nil for :db.secondary/only
+   attributes whose primary datom holds only the content hash) — the caller
+   reports it as a retraction so tx-data stays a complete delta."
   ([db datom] (with-datom-upsert db datom true))
   ([db ^Datom datom sync?]
    (async+sync sync?
@@ -590,7 +594,7 @@
                          db (advance-max-eid db (.-e datom))
                          db (update db :hash + (hash prim))
                          db (if schema? (-> db (update-schema datom) update-rschema) db)]
-                     db))))))
+                     [db (when-not secondary-only? old-datom)]))))))
 
 (defn- transact-report
   ([report datom] (transact-report report datom false))
@@ -599,11 +603,17 @@
    (async+sync sync?
                (let [db      (:db-after report)
                      a       (:a datom)
-                     db'     (if upsert?
-                               (pca/await (with-datom-upsert db datom sync?))
-                               (pca/await (with-datom db datom sync?)))
+                     [db' displaced] (if upsert?
+                                       (pca/await (with-datom-upsert db datom sync?))
+                                       [(pca/await (with-datom db datom sync?)) nil])
+                     ;; a cardinality-one upsert displaces the old datom from the
+                     ;; index; report that as a retraction (Datomic parity) so
+                     ;; tx-data remains a complete delta of the current index
+                     retraction (when (and displaced (not= (:v displaced) (:v datom)))
+                                  (dd/datom (:e datom) a (:v displaced) (:tx datom) false))
                      report' (-> report
                                  (assoc :db-after db')
+                                 (cond-> retraction (update-in [:tx-data] conj retraction))
                                  (update-in [:tx-data] conj datom))]
                  (if (dbu/tuple-source? db a)
                    (let [e      (:e datom)
