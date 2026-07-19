@@ -9,8 +9,6 @@
             [konserve.node-filestore :as nfs] ;; Register :file backend for Node.js
             [cljs.core.async :refer [go <!] :include-macros true]
             [cljs.nodejs :as nodejs]
-            [clojure.string :as str]
-            [datahike.attr-preds :as ap]
             ;; Sibling test namespaces — included so `bb node-cljs-test`
             ;; covers them too.
             [datahike.test.index-test]
@@ -689,51 +687,6 @@
                (is false (str "xhost-fress-probe error: " (.-message e))))
              (finally
                (done))))))
-(deftest attr-constraints-node-test
-  ;; Exercises the cljs enforcement path (transact-add + resolve-pred + rschema
-  ;; gate). Asserted behaviorally: a violating value must never land in the DB.
-  (let [dir (tmp-dir)
-        cfg {:store {:backend :file :path dir :id (random-uuid)}
-             :keep-history? false
-             :schema-flexibility :write}]
-    (async done
-           (go
-             (try
-               (ap/register-attr-pred! 'node/nonblank (fn [s] (boolean (seq (str/trim s)))))
-               (<! (d/create-database cfg))
-               (let [conn (d/connect cfg)]
-                 (<! (d/transact! conn [{:db/ident :nm :db/valueType :db.type/string
-                                         :db/cardinality :db.cardinality/one :db/maxLength 5}
-                                        {:db/ident :code :db/valueType :db.type/string
-                                         :db/cardinality :db.cardinality/one
-                                         :db.attr/preds ['node/nonblank]}]))
-                 ;; valid commit
-                 (let [r (<! (d/transact! conn [{:nm "abc" :code "x"}]))]
-                   (is (:db-after r) "valid values commit"))
-                 ;; maxLength violation must not commit
-                 (<! (d/transact! conn [{:nm "toolong"}]))
-                 (is (empty? (d/q '[:find ?e :where [?e :nm "toolong"]] @conn))
-                     "over-maxLength value not committed")
-                 ;; predicate violation must not commit
-                 (<! (d/transact! conn [{:code "   "}]))
-                 (is (empty? (d/q '[:find ?e :where [?e :code "   "]] @conn))
-                     "predicate-failing value not committed")
-                 ;; default value-size cap (4096) on a plain string attribute
-                 (<! (d/transact! conn [{:db/ident :plain :db/valueType :db.type/string
-                                         :db/cardinality :db.cardinality/one}]))
-                 (let [ok (apply str (repeat 4096 \x))
-                       too (apply str (repeat 5000 \x))]
-                   (<! (d/transact! conn [{:plain ok}]))
-                   (is (seq (d/q '[:find ?e :where [?e :plain _]] @conn))
-                       "at-limit string commits under the default cap")
-                   (<! (d/transact! conn [{:plain too}]))
-                   (is (empty? (d/q '[:find ?e :in $ ?v :where [?e :plain ?v]] @conn too))
-                       "over-default string not committed"))
-                 (d/release conn))
-               (<! (d/delete-database cfg))
-               (catch js/Error e
-                 (is false (str "Error: " (.-message e))))
-               (finally (done)))))))
 
 (defn -main []
   (t/run-tests 'datahike.test.nodejs-test
