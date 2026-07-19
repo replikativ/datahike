@@ -17,7 +17,8 @@
     (let [cfg {:store {:backend :memory :id (random-uuid)}
                :schema-flexibility :read :keep-history? true}]
       (<! (d/create-database cfg))
-      (<! (d/connect cfg)))))
+      ;; connect is synchronous on cljs for sync-capable (memory) stores
+      (d/connect cfg))))
 
 (defn- wait-until
   "Poll pred every 20ms up to ~3s; yields the final pred value."

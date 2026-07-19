@@ -33,6 +33,9 @@
     (is (= {:some-metadata 1}
            (dissoc (:tx-meta (first @reports)) :db/txInstant :db/commitId)))
     (is (= [(dd/datom 5 :name "Fedor"  (+ const/tx0 3) true)
+            ;; the card-one replacement reports the displaced datom as a
+            ;; retraction before the add (Datomic parity)
+            (dd/datom 1 :name "Alex"   (+ const/tx0 3) false)
             (dd/datom 1 :name "Alex2"  (+ const/tx0 3) true)
             (dd/datom 4 :name "Evgeny" (+ const/tx0 3) false)]
            (rest (:tx-data (second @reports)))))

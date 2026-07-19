@@ -57,8 +57,12 @@
            (map dvec (:tx-data (d/transact conn {:tx-data [[:db/add -1 :friend 296]]})))))
 
     ;; create an entity and set multiple attributes (in a single transaction
-    ;; equal tempids will be replaced with the same unused yet entid)
-    (is (= '([7 :name "Ivan"] [7 :likes "fries"] [7 :likes "pizza"] [7 :friend 296])
+    ;; equal tempids will be replaced with the same unused yet entid).
+    ;; NOTE: :likes is cardinality-one here (schema-on-read default), so the
+    ;; second :likes value DISPLACES the first — reported as a retraction
+    ;; ("fries" appears twice below: once added, once retracted; dvec hides
+    ;; the :added flag)
+    (is (= '([7 :name "Ivan"] [7 :likes "fries"] [7 :likes "fries"] [7 :likes "pizza"] [7 :friend 296])
            (map dvec (:tx-data (d/transact conn {:tx-data [[:db/add -1 :name "Ivan"]
                                                            [:db/add -1 :likes "fries"]
                                                            [:db/add -1 :likes "pizza"]
@@ -99,20 +103,21 @@
                                                             :name   "Oleg"
                                                             :_friend 296}]})))))
 
-    ;; equivalent to
-    (is (= '([300 :name "Oleg"] [296 :friend 300])
+    ;; equivalent to. Replacing 296's cardinality-one :friend reports the
+    ;; displaced value (299) as a retraction before the add
+    (is (= '([300 :name "Oleg"] [296 :friend 299] [296 :friend 300])
            (map dvec (:tx-data (d/transact conn {:tx-data [{:db/id  -1, :name   "Oleg"}
                                                            {:db/id 296, :friend -1}]})))))
 
-    ;; deprecated api
-    (is (= '([301 :name "Oleg"] [301 :likes "pie"] [301 :likes "dates"] [301 :friend 297])
+    ;; deprecated api ("pie" twice: within-tx displacement, as above)
+    (is (= '([301 :name "Oleg"] [301 :likes "pie"] [301 :likes "pie"] [301 :likes "dates"] [301 :friend 297])
            (map dvec (:tx-data (d/transact conn [[:db/add -1 :name "Oleg"]
                                                  [:db/add -1 :likes "pie"]
                                                  [:db/add -1 :likes "dates"]
                                                  [:db/add -1 :friend 297]])))))
 
     ;; lazy sequence
-    (is (= '([302 :name "Oleg"] [302 :likes "pie"] [302 :likes "dates"] [302 :friend 297])
+    (is (= '([302 :name "Oleg"] [302 :likes "pie"] [302 :likes "pie"] [302 :likes "dates"] [302 :friend 297])
            (map dvec (:tx-data (d/transact conn (take 4 [[:db/add -1 :name "Oleg"]
                                                          [:db/add -1 :likes "pie"]
                                                          [:db/add -1 :likes "dates"]
