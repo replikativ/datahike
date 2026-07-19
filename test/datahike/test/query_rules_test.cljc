@@ -283,3 +283,47 @@
                                           (parent-info ?child ["Alice"] ?age)]}
                                 :args [@conn "Charlie" rules]})))
     (d/release conn)))
+
+(deftest test-deep-bound-recursive-rule
+  ;; A ground argument routes the recursive fixpoint through the magic-set
+  ;; (demand) restriction. This regression pins the properties that restriction
+  ;; must preserve:
+  ;; 1. depth — closures deeper than any internal batching stay complete (an
+  ;;    earlier demand-set threshold silently truncated results at 999);
+  ;; 2. the demand guard drops derivations arriving from undemanded sources
+  ;;    without losing any tuple of the ground row;
+  ;; 3. demand stays timely when short and long paths rejoin (uneven diamond).
+  (let [depth 1200
+        anc-rule '[[(anc ?c ?a) [?c :parent ?a]]
+                   [(anc ?c ?a) [?c :parent ?m] (anc ?m ?a)]]
+        chain-db (d/db-with (db/empty-db {:parent {:db/valueType :db.type/ref
+                                                   :db/cardinality :db.cardinality/one}})
+                            (for [i (range 1 depth)] {:db/id i :parent (inc i)}))]
+    (testing "ancestors of the head of a deep chain are complete"
+      (is (= (dec depth)
+             (count (d/q '[:find [?a ...] :in $ % ?h :where (anc ?h ?a)]
+                         chain-db anc-rule 1)))))
+    (testing "a ground argument bound deep inside the chain"
+      (is (= 200
+             (count (d/q '[:find [?a ...] :in $ % ?h :where (anc ?h ?a)]
+                         chain-db anc-rule 1000)))))
+    (testing "derivations from undemanded side entities are guarded without loss"
+      (let [noisy-db (d/db-with chain-db
+                                (for [i (range 1 51)]
+                                  {:db/id (+ 10000 i) :parent i}))]
+        (is (= (dec depth)
+               (count (d/q '[:find [?a ...] :in $ % ?h :where (anc ?h ?a)]
+                           noisy-db anc-rule 1))))))
+    (testing "uneven diamond: short and long paths to the same ancestor"
+      (let [dia-db (d/db-with (db/empty-db {:parent {:db/valueType :db.type/ref
+                                                     :db/cardinality :db.cardinality/many}})
+                              [{:db/id 1 :parent [2 10]}
+                               {:db/id 2 :parent 3}
+                               {:db/id 10 :parent 11}
+                               {:db/id 11 :parent 12}
+                               {:db/id 12 :parent 3}
+                               {:db/id 3 :parent 4}
+                               {:db/id 4 :parent 5}])]
+        (is (= #{2 3 4 5 10 11 12}
+               (set (d/q '[:find [?a ...] :in $ % ?h :where (anc ?h ?a)]
+                         dia-db anc-rule 1))))))))

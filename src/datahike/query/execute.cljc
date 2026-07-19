@@ -3394,13 +3394,15 @@
      :cljs nil))
 
 (defn- magic-base-scan
-  "Directly scan edges for entities in the demand set using EAVT point lookups.
-   Only scans entities not yet in the scanned set (if provided).
-   Much faster than re-executing the full base branch plan for large graphs.
+  "Directly scan edges for the newly demanded entities using EAVT point lookups
+   — the demand relation's delta step. `batch` holds only first-time demand
+   values (admission into the demand index is the dedup), so each entity is
+   scanned exactly once and total base work stays O(|demand|) across the whole
+   fixpoint. Much faster than re-executing the full base branch plan.
    Only works for simple binary base patterns like [?x :attr ?y]."
-  [db head-vars attr demand-set scanned-set]
+  [db head-vars attr ^java.util.ArrayList batch]
   #?(:clj
-     (when attr
+     (when (and attr (pos? (.size batch)))
        ;; Resolve the EAVT index through any temporal wrapper: AsOfDB/SinceDB/
        ;; HistoricalDB carry no :eavt of their own (it lives on the origin-db),
        ;; and the slice must merge current+temporal history and post-process by
@@ -3410,22 +3412,19 @@
              index-db (if ti (:origin-db ti) db)
              eavt-pss (:eavt index-db)
              result (java.util.ArrayList.)
-             iter (.iterator ^java.util.HashSet demand-set)]
-         ;; Point-lookup each NEW entity's edges (skip already-scanned)
+             iter (.iterator batch)]
          (while (.hasNext iter)
-           (let [e (.next iter)]
-             (when (or (nil? scanned-set)
-                       (.add ^java.util.HashSet scanned-set e))
-               (let [from-datom (datom (if (number? e) (long e) e) attr nil tx0)
-                     to-datom (datom (if (number? e) (long e) e) attr nil txmax)
-                     slice (build-scan-slice db eavt-pss from-datom to-datom :eavt ti index-db attr)]
-                 (doseq [^Datom sd slice]
-                   (when (and (= (.-e sd) e) (= (.-a sd) attr))
-                     (let [arr (object-array 2)
-                           eid (.-e sd)]
-                       (aset arr 0 (Long/valueOf eid))
-                       (aset arr 1 (.-v sd))
-                       (.add result arr))))))))
+           (let [e (.next iter)
+                 from-datom (datom (if (number? e) (long e) e) attr nil tx0)
+                 to-datom (datom (if (number? e) (long e) e) attr nil txmax)
+                 slice (build-scan-slice db eavt-pss from-datom to-datom :eavt ti index-db attr)]
+             (doseq [^Datom sd slice]
+               (when (and (= (.-e sd) e) (= (.-a sd) attr))
+                 (let [arr (object-array 2)
+                       eid (.-e sd)]
+                   (aset arr 0 (Long/valueOf eid))
+                   (aset arr 1 (.-v sd))
+                   (.add result arr))))))
          (when (pos? (.size result))
            (rel/->Relation (zipmap head-vars (range)) (vec result)))))
      :cljs nil))
@@ -3437,44 +3436,36 @@
    demand entity into the EAVT entity slot and maps [entity value] onto the head
    vars, breaking whenever the propagated head var is not the scanned attr's value).
 
-   Computes the NEW demand entities (those not yet in `scanned-set`), marks them
-   scanned, then runs ALL base branch plans with the ground head var constrained to
-   that batch via `inject-magic-relation`. Range-restricted datalog guarantees every
-   base branch binds both head vars, so the injected demand relation always shares
-   the ground var and hash-joins (never a Cartesian product) — the same mechanism
-   the loop already uses to demand-restrict the recursive clause versions (aug-ctx).
-   Keeps the base O(demand). Returns a Relation or nil when there is nothing new."
-  [db base-plans head-vars ground-pos ^java.util.HashSet demand-set ^java.util.HashSet scanned-set ctx]
+   Runs ALL base branch plans with the ground head var constrained to the batch
+   of newly demanded entities via `inject-magic-relation`. Range-restricted
+   datalog guarantees every base branch binds both head vars, so the injected
+   demand relation always shares the ground var and hash-joins (never a
+   Cartesian product). `batch` holds only first-time demand values, so each is
+   base-evaluated exactly once and the base stays O(demand) across the whole
+   fixpoint. Returns a Relation or nil when there is nothing new."
+  [db base-plans head-vars ground-pos ^java.util.ArrayList batch ctx]
   #?(:clj
-     (let [new-batch (java.util.ArrayList.)
-           it (.iterator demand-set)]
-       ;; Select the new-entity batch BEFORE marking, so an entity that appears in
-       ;; two branches (or twice in one) is still scanned exactly once and never
-       ;; marked-before-emitted.
-       (while (.hasNext it)
-         (let [e (.next it)]
-           (when (and scanned-set (not (.contains scanned-set e)))
-             (.add new-batch e))))
-       (when (pos? (.size new-batch))
-         (doseq [e new-batch] (.add scanned-set e))
-         (let [demand' (java.util.HashSet. new-batch)
-               ctx' (inject-magic-relation ctx head-vars ground-pos demand')]
-           (execute-branch-plans db base-plans ctx' head-vars))))
+     (when (pos? (.size batch))
+       (let [demand' (java.util.HashSet. batch)
+             ctx' (inject-magic-relation ctx head-vars ground-pos demand')]
+         (execute-branch-plans db base-plans ctx' head-vars)))
      :cljs nil))
 
 (defn- extract-demand-values
-  "Extract values from delta tuples at the propagation position.
-   Adds them to the demand set. Returns true if new values were added."
-  [delta-rel prop-pos ^java.util.HashSet demand-set]
-  (let [tuples (:tuples delta-rel)
-        initial-size (.size demand-set)]
+  "Derive the demand relation's next delta: values at the propagation position
+   of new tuples enter the demand index, and FIRST-TIME values are also pushed
+   onto `new-batch` — the batch the next iteration's base scan consumes. This
+   is the magic rule `magic(?m) :- magic(?c), edge(?c,?m)` evaluated
+   incrementally: O(1) per value, never re-walking the accumulated demand."
+  [delta-rel prop-pos ^java.util.HashSet demand-set ^java.util.ArrayList new-batch]
+  (let [tuples (:tuples delta-rel)]
     (doseq [tuple tuples]
       (let [v #?(:clj (if (instance? object-array-class tuple)
                         (aget ^objects tuple (int prop-pos))
                         (nth tuple prop-pos))
                  :cljs (aget tuple prop-pos))]
-        (.add demand-set v)))
-    (> (.size demand-set) initial-size)))
+        (when (.add demand-set v)
+          (.add new-batch v))))))
 
 (defn- execute-recursive-rule
   "Execute a recursive rule via semi-naive fixpoint with clause versions.
@@ -3484,9 +3475,18 @@
    3. Terminate when no new tuples produced across any rule (fixpoint).
    4. Post-filter: apply constant call-args to restrict final result.
 
-   Magic set optimization: when the called rule has ground arguments, a demand
-   set is maintained to restrict DB scans to only reachable entities. This avoids
-   computing the full transitive closure when only a subset is needed.
+   Magic set (demand) restriction: when the called rule has a ground argument,
+   the demand set — the values the ground position can usefully take, i.e. the
+   entities reachable from the ground value — is maintained as a first-class
+   incremental relation alongside the rule accumulators. `magic-demand` is its
+   membership index; the per-iteration batch is its delta (only first-time
+   values, consumed once by the base scan); `demand-tuples` is the same set as a
+   one-column relation, grown by append. Each round that relation is injected to
+   PRUNE the recursive scan's ground var before expansion (a push-down, not a
+   post-filter). The restriction stays ON for the entire fixpoint: admission is
+   O(1) per value and the demand relation grows by append (never rebuilt from
+   the index), so there is no blow-up to guard against — and no threshold past
+   which results could silently truncate.
 
    For mutual recursion (multi-rule SCC), all rules share the fixpoint loop.
    Each rule has its own accumulator."
@@ -3503,22 +3503,26 @@
       (let [;; Magic set detection — only for single-rule SCCs with binary head vars
             ;; and at least one ground call-arg
             magic-info (compute-magic-info call-args head-vars scc-rule-names)
-            magic-demand (when magic-info
-                           (let [hs #?(:clj (java.util.HashSet. 64) :cljs (js/Set.))
-                                 ground-pos (ffirst (:ground-positions magic-info))
-                                 ground-val (get (:ground-positions magic-info) ground-pos)]
-                             (.add hs ground-val)
-                             hs))
-            ;; Track which demand entities have already been base-scanned
-            magic-scanned (when magic-info
-                            #?(:clj (java.util.HashSet. 64) :cljs (js/Set.)))
             magic-ground-pos (when magic-info (ffirst (:ground-positions magic-info)))
             magic-prop-pos (when magic-info (:propagation-pos magic-info))
+            ;; The demand relation: membership index + seed delta (the ground value)
+            magic-demand (when magic-info
+                           (let [hs #?(:clj (java.util.HashSet. 64) :cljs (js/Set.))]
+                             (.add hs (get (:ground-positions magic-info) magic-ground-pos))
+                             hs))
+            seed-batch (when magic-info
+                         #?(:clj (let [al (java.util.ArrayList. 16)]
+                                   (.add al (get (:ground-positions magic-info) magic-ground-pos))
+                                   al)
+                            :cljs nil))
             ;; Create per-rule seen-sets for deduplication across iterations
             seen-sets (into {} (map (fn [rn]
                                       [rn #?(:clj (java.util.HashSet. 256)
                                              :cljs (js/Set.))]))
                             scc-rule-names)
+            ;; The demand delta produced while seeding, consumed by iteration 1
+            init-batch (when magic-demand
+                         #?(:clj (java.util.ArrayList. 16) :cljs nil))
             ;; Execute base branches for each SCC rule
             ;; With magic sets: use demand-driven base scan (point lookups only)
             rule-states
@@ -3526,14 +3530,14 @@
                   (map (fn [rn]
                          (let [{:keys [head-vars base-plans]} (get scc-rule-plans rn)
                                base-rel (cond
-                                  ;; Magic, single ref-edge base: EAVT point lookups for demand entities
+                                  ;; Magic, single ref-edge base: EAVT point lookups for the seed
                                           (and magic-demand base-scan-attr (= rn rule-name))
-                                          (or (magic-base-scan db head-vars base-scan-attr magic-demand magic-scanned)
+                                          (or (magic-base-scan db head-vars base-scan-attr seed-batch)
                                               (rel/->Relation (zipmap head-vars (range)) []))
                                   ;; Magic, any other base shape: demand-restricted base branches
                                           (and magic-demand (= rn rule-name))
                                           (or (magic-base-scan-general db base-plans head-vars magic-ground-pos
-                                                                       magic-demand magic-scanned ctx)
+                                                                       seed-batch ctx)
                                               (rel/->Relation (zipmap head-vars (range)) []))
                                   ;; No magic: full base branch plan execution
                                           :else
@@ -3541,30 +3545,38 @@
                                delta-rel (rel-dedup-into! base-rel head-vars (get seen-sets rn))]
                   ;; Propagate magic demand from base results
                            (when (and magic-demand (= rn rule-name))
-                             (extract-demand-values delta-rel magic-prop-pos magic-demand))
+                             (extract-demand-values delta-rel magic-prop-pos magic-demand init-batch))
                            [rn {:head-vars head-vars
                                 :main-rel delta-rel
                                 :delta-rel delta-rel}])))
                   scc-rule-names)
-            ;; Main fixpoint loop — Relations throughout, no vector conversion
-            ;; With magic sets: re-scan base edges for newly demanded entities each
-            ;; iteration (direct EAVT point lookups, not full branch plan re-execution).
-            ;; Explosion guard: if demand grows beyond threshold after 3 iterations,
-            ;; abandon magic and switch to normal fixpoint.
-            magic-explosion-threshold 1000
+            ;; The demand as a one-column relation, grown incrementally: a
+            ;; single-element tuple per demanded value, mirroring the demand
+            ;; index. Wrapping it each round is O(1); it is injected to PRUNE the
+            ;; ground var during the recursive scan (a push-down), never rebuilt
+            ;; from the index. Seeded from the demand admitted by the base step.
+            init-demand-tuples
+            (when magic-demand
+              #?(:clj (mapv (fn [v] (let [a (object-array 1)] (aset a 0 v) a))
+                            (iterator-seq (.iterator ^java.util.HashSet magic-demand)))
+                 :cljs nil))
+            ;; Main fixpoint loop — Relations throughout, no vector conversion.
+            ;; With magic sets each iteration base-scans ONLY the entities
+            ;; demanded last round (`batch`, the demand delta) and injects the
+            ;; accumulated demand to constrain the recursive scan's ground var.
+            ;; Demand restriction is always on — admission is O(1) and the demand
+            ;; relation grows by append, so there is no cost cliff to escape and
+            ;; no explosion guard / fallback that could truncate results.
             final-states
             (loop [states rule-states
-                   iteration 0
-                   use-magic? (boolean magic-demand)]
+                   batch init-batch
+                   demand-tuples init-demand-tuples]
               (let [any-delta? (some (fn [[_ s]] (seq (:tuples (:delta-rel s)))) states)]
                 (if (not any-delta?)
                   states
-                  ;; Check for magic explosion
-                  (let [use-magic? (and use-magic?
-                                        (or (<= iteration 2)
-                                            (< #?(:clj (.size ^java.util.HashSet magic-demand)
-                                                  :cljs (.-size magic-demand))
-                                               magic-explosion-threshold)))
+                  (let [;; The demand delta produced this round, consumed next round
+                        next-batch (when magic-demand
+                                     #?(:clj (java.util.ArrayList. 16) :cljs nil))
                         ;; Build accumulators for ALL SCC rules
                         acc-map
                         (into {}
@@ -3575,35 +3587,31 @@
                                             :output-vars hv}])))
                               states)
                         base-aug-ctx (assoc ctx :rule-accumulators acc-map)
-                        ;; With magic: inject demand relation to constrain recursive scans
-                        aug-ctx (if use-magic?
-                                  (inject-magic-relation base-aug-ctx head-vars
-                                                         magic-ground-pos magic-demand)
+                        ;; Push the accumulated demand into the recursive scan so
+                        ;; the ground var is pruned BEFORE expansion (not filtered
+                        ;; after). O(1) to wrap the incrementally grown tuples.
+                        aug-ctx (if magic-demand
+                                  (update base-aug-ctx :rels rel/collapse-rels
+                                          (rel/->Relation
+                                           {(nth head-vars magic-ground-pos) 0}
+                                           demand-tuples))
                                   base-aug-ctx)
                         ;; Execute rec clause versions, dedup via seen-set
                         new-states
                         (into {}
                               (map (fn [rn]
                                      (let [{:keys [head-vars rec-clause-versions base-plans]} (get scc-rule-plans rn)
-                                  ;; With magic: scan newly demanded entities AND run
-                                  ;; recursive branches (constrained by demand relation).
+                                  ;; Demand delta step: base facts for entities
+                                  ;; demanded last round (each scanned exactly once).
                                            magic-base-rel
                                            (cond
                                   ;; Single ref-edge fast path
-                                             (and use-magic? base-scan-attr (= rn rule-name))
-                                             (magic-base-scan db head-vars base-scan-attr
-                                                              magic-demand magic-scanned)
+                                             (and magic-demand base-scan-attr (= rn rule-name))
+                                             (magic-base-scan db head-vars base-scan-attr batch)
                                   ;; General demand-restricted base for newly demanded entities
-                                             (and use-magic? (= rn rule-name))
+                                             (and magic-demand (= rn rule-name))
                                              (magic-base-scan-general db base-plans head-vars magic-ground-pos
-                                                                      magic-demand magic-scanned ctx)
-                                  ;; Magic abandoned by the explosion guard (use-magic? now false)
-                                  ;; on the general path: the recursive step below runs
-                                  ;; unrestricted, so backfill the FULL base once per round
-                                  ;; (dedup makes it idempotent) so reflexive / leaf base
-                                  ;; facts exist for every entity the closure can reach.
-                                             (and (not use-magic?) magic-demand (not base-scan-attr) (= rn rule-name))
-                                             (execute-branch-plans db base-plans ctx head-vars))
+                                                                      batch ctx))
                                   ;; Execute recursive clause versions
                                   ;; Optimization: delta-driven expansion for simple binary rules
                                   ;; Instead of full index scan + hash-join, iterate delta tuples
@@ -3674,6 +3682,8 @@
                                                                               0 1)
                                                          (rel/->Relation (zipmap head-vars (range)) []))
                                             ;; Normal: full branch plan execution
+                                            ;; (ground var already pruned by the
+                                            ;; injected demand in aug-ctx).
                                                      (execute-branch-plans db rec-clause-versions aug-ctx head-vars))
                                   ;; Union base and rec results
                                            new-rel (if (and magic-base-rel (seq (:tuples magic-base-rel)))
@@ -3683,7 +3693,7 @@
                                            delta-rel (rel-dedup-into! new-rel head-vars (get seen-sets rn))
                                   ;; Propagate magic demand from new results
                                            _ (when (and magic-demand (= rn rule-name))
-                                               (extract-demand-values delta-rel magic-prop-pos magic-demand))
+                                               (extract-demand-values delta-rel magic-prop-pos magic-demand next-batch))
                                   ;; Accumulate main by summing with delta
                                            old-main (:main-rel (get states rn))
                                            new-main (if (seq (:tuples delta-rel))
@@ -3693,7 +3703,12 @@
                                             :main-rel new-main
                                             :delta-rel delta-rel}])))
                               scc-rule-names)]
-                    (recur new-states (inc iteration) use-magic?)))))
+                    (recur new-states next-batch
+                           (if magic-demand
+                             (into demand-tuples
+                                   (map (fn [v] (let [a (object-array 1)] (aset a 0 v) a)))
+                                   #?(:clj (seq next-batch) :cljs next-batch))
+                             demand-tuples))))))
             ;; Extract result for the called rule
             called-state (get final-states rule-name)
             main-rel (:main-rel called-state)
