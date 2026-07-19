@@ -94,11 +94,18 @@ are entity ids.
 (graph/all-paths g db a {:target b :max-depth 6})  ; seq of node vectors
 (graph/shortest-path g db a b)      ; [a ... b] with fewest edges, or nil
 (graph/path-length g db a b)        ; number of edges, or nil
+(graph/bfs-distances g db a)        ; {node hop-count} for a (0) and all reachable
+(graph/lowest-common-ancestor g db a b)  ; nearest node reachable from both (merge-base)
 (graph/semi-naive-transitive-closure g db)  ; #{[source target] ...}
 ```
 
 `transitive-closure` and `reachable?` follow at least one edge, so `a` is in its
-own closure exactly when it lies on a cycle.
+own closure exactly when it lies on a cycle. `bfs-distances` is the all-targets
+companion to `path-length` — the same single-source BFS, but it keeps the whole
+distance map and always includes the source at 0 (a distance map is keyed by
+cost-to-reach). `lowest-common-ancestor` composes two distance maps: the common
+node minimizing `(a→n) + (b→n)`, deterministic on ties — the merge-base when
+out-edges are parent edges.
 
 ### Connected components
 
