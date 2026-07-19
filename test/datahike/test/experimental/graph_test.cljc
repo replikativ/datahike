@@ -432,3 +432,38 @@
                 (and (= #{"A" "B"} #{(nm source) (nm target)}) (= 1 score)))
               cands)
         "(A,B) scored 1 by common neighbors")))
+
+;; ---------------------------------------------------------------------------
+;; BFS distances, lowest common ancestor
+;; ---------------------------------------------------------------------------
+
+;; Git-shaped history over parent edges (child :e/to parent):
+;;   c0 <- c1 <- c2 <- c3        (main line)
+;;               ^
+;;               \-- b1 <- b2    (branch off c1)
+(def hist (build [["c1" "c0"] ["c2" "c1"] ["c3" "c2"]
+                  ["b1" "c1"] ["b2" "b1"]]))
+
+(deftest test-bfs-distances
+  (let [[gr db] (g-of dag) id (:id dag) nm (:name dag)]
+    (is (= {"A" 0 "B" 1 "C" 1 "D" 2}
+           (into {} (map (fn [[e d]] [(nm e) d])) (g/bfs-distances gr db (id "A"))))
+        "start at 0; A→C→D is 2 hops, the short A→C not A→B→C")
+    (is (= {"D" 0} (into {} (map (fn [[e d]] [(nm e) d])) (g/bfs-distances gr db (id "D"))))
+        "a sink reaches only itself"))
+  (let [[gr db] (g-of cyc) id (:id cyc) nm (:name cyc)]
+    (is (= {"X" 0 "Y" 1 "Z" 2}
+           (into {} (map (fn [[e d]] [(nm e) d])) (g/bfs-distances gr db (id "X"))))
+        "start stays at 0 despite the cycle back to it")))
+
+(deftest test-lowest-common-ancestor
+  (let [[gr db] (g-of hist) id (:id hist) nm (:name hist)]
+    (is (= "c1" (nm (g/lowest-common-ancestor gr db (id "c3") (id "b2"))))
+        "merge-base of the two branch tips is where they diverged")
+    (is (= "c1" (nm (g/lowest-common-ancestor gr db (id "c2") (id "b1"))))
+        "nearest, not oldest, common ancestor")
+    (is (= "c1" (nm (g/lowest-common-ancestor gr db (id "c1") (id "b2"))))
+        "an endpoint is its own ancestor at distance 0"))
+  (let [[gr db] (g-of dag) id (:id dag)]
+    (is (nil? (g/lowest-common-ancestor gr db (id "A") (id "E")))
+        "disjoint components have no common ancestor")))

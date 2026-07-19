@@ -155,6 +155,38 @@
           (contains? seen n) (recur seen (pop q))
           :else (recur (conj seen n) (into (pop q) (gs/out-neighbors g db n))))))))
 
+(defn ^{:datahike/output-cardinality node-set-card
+        :datahike/cost linear-exec-cost} bfs-distances
+  "Map {node hop-count} for `start` (at distance 0) and every node reachable
+   from it via out-edges, measured in edges. Single-source unweighted BFS — the
+   whole-frontier companion to `path-length` (which is one target). Unlike
+   `transitive-closure`, `start` is always present at 0, since a distance map is
+   keyed by cost-to-reach and reaching `start` costs nothing."
+  [g db start]
+  (loop [q (conj gu/empty-queue start)
+         dist {start 0}]
+    (if (empty? q)
+      dist
+      (let [n (peek q)
+            d (inc (long (dist n)))
+            nbrs (remove #(contains? dist %) (gs/out-neighbors g db n))]
+        (recur (into (pop q) nbrs)
+               (reduce (fn [m nb] (assoc m nb d)) dist nbrs))))))
+
+(defn ^{:datahike/cost linear-exec-cost} lowest-common-ancestor
+  "The nearest common node reachable from both `a` and `b` via out-edges — where
+   each of `a`, `b` counts as its own ancestor at distance 0 — minimizing the
+   total distance (a→n) + (b→n). Ties are broken deterministically by node
+   ordering, so the result is stable across runs. nil when `a` and `b` share no
+   reachable node. This is the merge-base when out-edges are parent edges."
+  [g db a b]
+  (let [a-dist (bfs-distances g db a)
+        b-dist (bfs-distances g db b)
+        common (filter a-dist (keys b-dist))]
+    (first
+     (sort-by (fn [n] [(+ (long (a-dist n)) (long (b-dist n))) (str n)])
+              common))))
+
 ;; ===========================================================================
 ;; Path enumeration
 ;; ===========================================================================
