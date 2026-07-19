@@ -173,19 +173,26 @@
         (recur (into (pop q) nbrs)
                (reduce (fn [m nb] (assoc m nb d)) dist nbrs))))))
 
-(defn ^{:datahike/cost linear-exec-cost} lowest-common-ancestor
-  "The nearest common node reachable from both `a` and `b` via out-edges — where
-   each of `a`, `b` counts as its own ancestor at distance 0 — minimizing the
-   total distance (a→n) + (b→n). Ties are broken deterministically by node
-   ordering, so the result is stable across runs. nil when `a` and `b` share no
-   reachable node. This is the merge-base when out-edges are parent edges."
+(defn ^{:datahike/output-cardinality node-set-card
+        :datahike/cost quadratic-exec-cost} lowest-common-ancestors
+  "The lowest common ancestors of `a` and `b` over out-edges: the common
+   ancestors — each of `a`, `b` counting as its own ancestor — that are
+   *minimal*, i.e. no other common ancestor is reachable from them. This is the
+   graph-theoretic LCA set, and the true merge-base set when out-edges are parent
+   edges; a DAG can have several (a criss-cross). Empty when `a` and `b` share no
+   ancestor."
   [g db a b]
-  (let [a-dist (bfs-distances g db a)
-        b-dist (bfs-distances g db b)
-        common (filter a-dist (keys b-dist))]
-    (first
-     (sort-by (fn [n] [(+ (long (a-dist n)) (long (b-dist n))) (str n)])
-              common))))
+  (let [a-anc (conj (transitive-closure g db a) a)
+        b-anc (conj (transitive-closure g db b) b)
+        common (set/intersection a-anc b-anc)]
+    (if (empty? common)
+      #{}
+      ;; A common node is dominated (not lowest) when it is an ancestor of
+      ;; another common node — i.e. it appears in that node's out-closure.
+      (let [dominated (into #{}
+                            (mapcat (fn [c] (set/intersection (transitive-closure g db c) common)))
+                            common)]
+        (set/difference common dominated)))))
 
 ;; ===========================================================================
 ;; Path enumeration
