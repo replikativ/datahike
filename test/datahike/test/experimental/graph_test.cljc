@@ -456,14 +456,24 @@
            (into {} (map (fn [[e d]] [(nm e) d])) (g/bfs-distances gr db (id "X"))))
         "start stays at 0 despite the cycle back to it")))
 
-(deftest test-lowest-common-ancestor
-  (let [[gr db] (g-of hist) id (:id hist) nm (:name hist)]
-    (is (= "c1" (nm (g/lowest-common-ancestor gr db (id "c3") (id "b2"))))
-        "merge-base of the two branch tips is where they diverged")
-    (is (= "c1" (nm (g/lowest-common-ancestor gr db (id "c2") (id "b1"))))
-        "nearest, not oldest, common ancestor")
-    (is (= "c1" (nm (g/lowest-common-ancestor gr db (id "c1") (id "b2"))))
-        "an endpoint is its own ancestor at distance 0"))
+;; Criss-cross: m1 and m2 each merge a1 and a2 (in opposite parent order);
+;; ours descends from m1, theirs from m2. Both a1 and a2 are genuine merge
+;; bases — neither is an ancestor of the other.
+(def criss (build [["m1" "a1"] ["m1" "a2"] ["m2" "a2"] ["m2" "a1"]
+                   ["ours" "m1"] ["theirs" "m2"]]))
+
+(deftest test-lowest-common-ancestors
+  (let [[gr db] (g-of hist) id (:id hist) nm (:name hist)
+        lcas (fn [a b] (set (map nm (g/lowest-common-ancestors gr db (id a) (id b)))))]
+    (is (= #{"c1"} (lcas "c3" "b2")) "the divergence point; the older c0 is dominated by c1")
+    (is (= #{"c1"} (lcas "c2" "b1")) "nearest, not oldest, common ancestor")
+    (is (= #{"c1"} (lcas "c1" "b2")) "an endpoint is its own ancestor at distance 0"))
   (let [[gr db] (g-of dag) id (:id dag)]
-    (is (nil? (g/lowest-common-ancestor gr db (id "A") (id "E")))
-        "disjoint components have no common ancestor")))
+    (is (empty? (g/lowest-common-ancestors gr db (id "A") (id "E")))
+        "disjoint components share no ancestor"))
+  (let [[gr db] (g-of criss) id (:id criss) nm (:name criss)]
+    (is (= #{"a1" "a2"}
+           (set (map nm (g/lowest-common-ancestors gr db (id "ours") (id "theirs")))))
+        "a criss-cross has two genuine merge bases — both are returned")
+    (is (empty? (g/lowest-common-ancestors gr db (id "a1") (id "a2")))
+        "two roots share no ancestor")))
