@@ -147,7 +147,7 @@
    stream EVERY read — planning included, across all find specs, rules,
    wrapper stacks (temporal, filtered, nested) and pull. Remaining sync
    islands (query-stats, collection-only sources, db-reading filter
-   predicates, tx functions) surface the decorated
+   predicates, tx functions, cartesian-split sub-queries) surface the decorated
    :storage/sync-read-unavailable fault cleanly. Equivalent to the public
    arg-map form (q {:query .. :args .. :sync? false})."
   [query & inputs]

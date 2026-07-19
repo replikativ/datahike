@@ -1522,6 +1522,18 @@
                          (fn [d] (every? (fn [p] (p d)) preds)))]
               (with-meta (FilteredDB. inner pure) (meta db)))))))))
 
+#?(:cljs
+   (defn normalize-db-step
+     "Async: the SAME wrapper normalization raw-q* applies to every query
+      source — Date-based as-of/since rewritten numeric, purifiable
+      valid-time filters rebuilt as pure predicates — so the direct read
+      entries (datoms/seek/rseek/index-range, pull, entity) behave like q
+      over temporal and valid-time wrappers instead of faulting cold."
+     [db]
+     (async
+      (pca/await (prepare-vt-wrappers-step
+                  (pca/await (normalize-date-wrappers-step db)))))))
+
 (defn execute-scan-only
   "Path 1: Scan without merges (e.g. Q1). Smallest possible loop.
    `cancel` is an IDeref (typically Volatile) or nil; checked per iteration

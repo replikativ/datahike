@@ -1478,7 +1478,7 @@
                                                     (:e (first (pca/await (datoms-read-step db :avet [a v] sync?)))))
                                      allocated-eid (get tempids e)]
                                  (if (and upserted-eid allocated-eid (not= upserted-eid allocated-eid))
-                                   (retry-with-tempid initial-report report initial-es e upserted-eid)
+                                   (pca/await (retry-with-tempid initial-report report initial-es e upserted-eid sync?))
                                    (let [eid (or upserted-eid allocated-eid (next-eid db))]
                                      (recur (allocate-eid report e eid) (cons [op eid a v] entities))))))
 

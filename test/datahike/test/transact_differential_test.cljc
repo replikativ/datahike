@@ -87,7 +87,15 @@
     ;; transient directly)
     (gen/fmap (fn [v] [{:td-email "c@x" :td-name "newbie"}
                        [:db/add [:td-email "c@x"] :td-score v]])
-              (gen/choose 900 999))]))
+              (gen/choose 900 999))
+    ;; raw-op tempid upsert CONFLICT: the first op allocates the string
+    ;; tempid a fresh eid, the second upserts it onto entity 1 via the
+    ;; unique email — forcing the retry-with-tempid re-run of the whole
+    ;; transaction (the async-arm gap the quality review found: the raw-op
+    ;; retry path was not spine-threaded)
+    (gen/fmap (fn [v] [[:db/add "t1" :td-score v]
+                       [:db/add "t1" :td-email "a@x"]])
+              (gen/choose 1000 1099))]))
 
 (def ^:private gen-tx
   ;; 1-3 op groups concatenated — cross-op interactions inside one
@@ -129,8 +137,10 @@
      ;; transaction completes cold); 163 after the mid-tx-created
      ;; lookup-ref case joined the grammar (a shape the old value-cache
      ;; design would have diverged on — the spine reads the evolving
-     ;; transient directly). covered + raisers = num-cases: the ceiling.
-     163))
+     ;; transient directly); 171 with the raw-op tempid-conflict taxon
+     ;; (whose retry path the quality review found un-threaded).
+     ;; covered + raisers = num-cases: the ceiling.
+     171))
 
 #?(:cljs
    (defn- seeded-tx-seq [n seed]

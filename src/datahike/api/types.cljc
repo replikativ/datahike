@@ -118,8 +118,8 @@
 
 (def SWithArgs
   "Arguments for 'with' operation. :sync? false (ClojureScript only) runs
-   the transaction's index reads asynchronously (prefetch against
-   db-before) and returns a partial-cps async expression yielding the
+   the full transaction pipeline asynchronously — every index read and
+   write awaited — returning a partial-cps async expression yielding the
    tx-report."
   [:map
    [:tx-data STransactions]

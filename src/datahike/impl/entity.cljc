@@ -270,8 +270,9 @@
       ;; mirror the local `entid` guard: invalid eid forms yield nil (the
       ;; sync entity contract), they do not raise
       (when (or (number? eid) (sequential? eid) (keyword? eid))
-        (when-let [e (pca/await (dbs/entid-step db eid))]
-          (pca/await (touch-step (->Entity db e (volatile! false) (volatile! {})))))))))
+        (let [db (pca/await (ex/normalize-db-step db))]
+          (when-let [e (pca/await (dbs/entid-step db eid))]
+            (pca/await (touch-step (->Entity db e (volatile! false) (volatile! {}))))))))))
 
 #?(:cljs (goog/exportSymbol "datahike.impl.entity.Entity" Entity))
 

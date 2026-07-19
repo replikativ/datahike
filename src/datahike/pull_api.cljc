@@ -368,7 +368,9 @@
      ;; warm stores resolve on the calling stack.
      #?(:clj (throw (ex-info ":sync? false is ClojureScript-only — JVM reads are synchronous"
                              {:error :storage/async-unsupported}))
-        :cljs (pull-spec db (dpp/parse-pull selector) [eid] false false))
+        :cljs (pca/async
+               (let [db (pca/await (ex/normalize-db-step db))]
+                 (pca/await (pull-spec db (dpp/parse-pull selector) [eid] false false)))))
      (pull db selector eid)))
   ([db selector eid]
    {:pre [(dbu/db? db)]}
@@ -379,7 +381,9 @@
    (if (false? sync?)
      #?(:clj (throw (ex-info ":sync? false is ClojureScript-only — JVM reads are synchronous"
                              {:error :storage/async-unsupported}))
-        :cljs (pull-spec db (dpp/parse-pull selector) eids true false))
+        :cljs (pca/async
+               (let [db (pca/await (ex/normalize-db-step db))]
+                 (pca/await (pull-spec db (dpp/parse-pull selector) eids true false)))))
      (pull-many db selector eids)))
   ([db selector eids]
    {:pre [(dbu/db? db)]}

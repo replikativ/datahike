@@ -427,7 +427,7 @@
      :stability :stable
      :supports-remote? true
      :referentially-transparent? true
-     :doc "Like datoms, but returns datoms starting from specified components through end of index."
+     :doc "Like datoms, but returns datoms starting from specified components through end of index. The arg-map form accepts `:sync? false` (ClojureScript only) and returns a partial-cps async expression yielding the datoms (see `q`)."
      :examples [{:desc "Seek from entity"
                  :code "(seek-datoms db {:index :eavt :components [1]})"}]
      :impl datahike.api.impl/seek-datoms}
@@ -441,7 +441,7 @@
      :stability :experimental
      :supports-remote? true
      :referentially-transparent? true
-     :doc "Like seek-datoms, but iterates BACKWARDS: datoms <= the given components, descending to the beginning of the index. Lazy on the persistent-sorted-set index — the primitive for windowed backwards pagination (latest-N, N-before-cursor)."
+     :doc "Like seek-datoms, but iterates BACKWARDS: datoms <= the given components, descending to the beginning of the index. Lazy on the persistent-sorted-set index — the primitive for windowed backwards pagination (latest-N, N-before-cursor). The arg-map form accepts `:sync? false` (ClojureScript only) and returns a partial-cps async expression yielding the datoms (see `q`)."
      :examples [{:desc "Latest room messages, newest first"
                  :code "(take 20 (rseek-datoms db {:index :avet :components [:message/room room-eid]}))"}]
      :impl datahike.api.impl/rseek-datoms}
@@ -453,7 +453,7 @@
      :stability :stable
      :supports-remote? true
      :referentially-transparent? true
-     :doc "Returns part of :avet index between start and end values."
+     :doc "Returns part of :avet index between start and end values. The arg-map form accepts `:sync? false` (ClojureScript only) and returns a partial-cps async expression yielding the datoms (see `q`)."
      :examples [{:desc "Find datoms in value range"
                  :code "(index-range db {:attrid :likes :start \"a\" :end \"z\"})"}
                 {:desc "Find entities with age in range"

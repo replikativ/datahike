@@ -487,10 +487,9 @@
         (is (= sync-r result) "concurrent cold ≡ sync")))))
 
 (deftest-async with-async-cold
-  ;; d/with {:sync? false}: the transaction's derivable reads are awaited
-  ;; against db-before (entid cache + node warming), then the unchanged sync
-  ;; core runs — plain asserts, upserts (incl. within-tx double upsert),
-  ;; lookup-ref ops, cas and retractEntity, all on a COLD store
+  ;; d/with {:sync? false}: the dual transaction spine — every index read
+  ;; AND write awaited — plain asserts, upserts (incl. within-tx double
+  ;; upsert), lookup-ref ops, cas and retractEntity, all on a COLD store
   (let [db (-> (ddb/empty-db {:wa-email {:db/unique :db.unique/identity}
                               :wa-friend {:db/valueType :db.type/ref
                                           :db/isComponent true}})

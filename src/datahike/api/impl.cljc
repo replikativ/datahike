@@ -88,7 +88,9 @@
   (if (false? sync?)
     #?(:clj (throw (ex-info ":sync? false is ClojureScript-only — JVM reads are synchronous"
                             {:error :storage/async-unsupported}))
-       :cljs (ex/datoms-step db index components false))
+       :cljs (pca/async
+              (let [db (pca/await (ex/normalize-db-step db))]
+                (pca/await (ex/datoms-step db index components false)))))
     (dbi/datoms db index components)))
 
 (defmethod datoms ::index
@@ -107,7 +109,9 @@
   (if (false? sync?)
     #?(:clj (throw (ex-info ":sync? false is ClojureScript-only — JVM reads are synchronous"
                             {:error :storage/async-unsupported}))
-       :cljs (ex/seek-datoms-step db index components))
+       :cljs (pca/async
+              (let [db (pca/await (ex/normalize-db-step db))]
+                (pca/await (ex/seek-datoms-step db index components)))))
     (dbi/seek-datoms db index components)))
 
 (defmulti rseek-datoms
@@ -120,7 +124,9 @@
   (if (false? sync?)
     #?(:clj (throw (ex-info ":sync? false is ClojureScript-only — JVM reads are synchronous"
                             {:error :storage/async-unsupported}))
-       :cljs (ex/rseek-datoms-step db index components))
+       :cljs (pca/async
+              (let [db (pca/await (ex/normalize-db-step db))]
+                (pca/await (ex/rseek-datoms-step db index components)))))
     (dbi/rseek-datoms db index components)))
 
 (defmethod rseek-datoms ::index
@@ -324,7 +330,9 @@
   (if (false? sync?)
     #?(:clj (throw (ex-info ":sync? false is ClojureScript-only — JVM reads are synchronous"
                             {:error :storage/async-unsupported}))
-       :cljs (ex/index-range-step db attrid start end))
+       :cljs (pca/async
+              (let [db (pca/await (ex/normalize-db-step db))]
+                (pca/await (ex/index-range-step db attrid start end)))))
     (dbi/index-range db attrid start end)))
 
 (defn schema [db]
