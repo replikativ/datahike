@@ -42,6 +42,17 @@
                                    :where [?e :age]
                                    [(get-else $ ?e :height nil) ?height]] db))))
 
+    (testing "get-else with a VARIABLE default resolves the binding, not the symbol"
+      ;; Regression: the query planner recognized get-else as a fused optional
+      ;; scan and planted the default into result tuples verbatim, so a variable
+      ;; default (here ?age) leaked as the raw symbol '?age instead of its bound
+      ;; value — diverging from the base engine, which resolves it via -call-fn.
+      ;; entities 1/3/4 have no :height -> default to their ?age; entity 2 -> 240.
+      (is (= #{[1 15] [2 240] [3 37] [4 22]}
+             (d/q '[:find ?e ?height
+                    :where [?e :age ?age]
+                    [(get-else $ ?e :height ?age) ?height]] db))))
+
     (testing "get-some"
       (is (= #{[1 :age 15]
                [2 :height 240]

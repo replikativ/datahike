@@ -158,7 +158,17 @@
                            ;; default is rejected at runtime with
                            ;; "get-else: nil default value is not supported".
                            ;; Fall through to LBind so that check still fires.
-                           (some? (nth (:args ci) 3 nil)))
+                           (some? (nth (:args ci) 3 nil))
+                           ;; A VARIABLE default (e.g. `[(get-else $ ?e :a ?d) ?v]`)
+                           ;; is not a compile-time constant: it must be resolved
+                           ;; per-row from ?d's binding. The fused LOptionalScan
+                           ;; plants :default-value into result tuples VERBATIM, so
+                           ;; a var default would leak as the raw symbol (the base
+                           ;; engine, going through -call-fn arg resolution, returns
+                           ;; the bound value — the two engines diverge). Fall
+                           ;; through to LBind, whose generic fn-call path resolves
+                           ;; the default var exactly like the base engine.
+                           (not (analyze/free-var? (nth (:args ci) 3 nil))))
                     ;; Recognize get-else as an optional scan:
                     ;; [(get-else $ ?e :attr default) ?v]
                     ;; args = ($ ?e :attr default), binding = ?v
