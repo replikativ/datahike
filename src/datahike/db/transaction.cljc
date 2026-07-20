@@ -539,15 +539,37 @@
       schema? (-> (update-schema datom)
                   update-rschema))))
 
+(defn- value-present?
+  "True when the CURRENT indexes already hold `datom`'s exact [e a v] — i.e. this
+   assertion re-states a value the entity already has (cardinality-one: v IS the
+   current value; cardinality-many: this value already exists). Probes EAVT with
+   `di/-slice`, so the value is compared through the index's own datom comparator
+   — content-correct for :db.type/bytes and tuple values, where Clojure `=` would
+   miss byte-array content equality. For :db.secondary/only attrs the primary
+   index holds a content hash, so we probe the same primary projection."
+  [db ^Datom datom]
+  (let [{a-ident :ident} (dbu/attr-info db (.-a datom) :error-on-missing)
+        prim ^Datom (project-primary (dbu/secondary-only? db a-ident) datom)
+        e (.-e prim) a (.-a prim) v (.-v prim)]
+    (some? (first (di/-slice (:eavt db)
+                             (dd/datom e a v tx0)
+                             (dd/datom e a v txmax)
+                             :eavt)))))
+
 (defn- transact-report
   ([report datom] (transact-report report datom false))
   ([report datom upsert?]
    (let [db      (:db-after report)
          a       (:a datom)
          update-fn (if upsert? with-datom-upsert with-datom)
-         report' (-> report
-                     (update-in [:db-after] update-fn datom)
-                     (update-in [:tx-data] conj datom))]
+         ;; Issue #457: an assertion that re-states an already-present value must
+         ;; not appear in :tx-data. Decided BEFORE the write, but the write itself
+         ;; still runs — so secondary indices, history and composite-tuple queueing
+         ;; behave exactly as before; only the :tx-data entry is suppressed.
+         noop?   (and (datom-added datom) (value-present? db datom))
+         report' (cond-> report
+                   true        (update-in [:db-after] update-fn datom)
+                   (not noop?) (update-in [:tx-data] conj datom))]
      (if (dbu/tuple-source? db a)
        (let [e      (:e datom)
              v      (if (datom-added datom) (:v datom) nil)
