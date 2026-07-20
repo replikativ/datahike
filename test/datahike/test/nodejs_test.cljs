@@ -6,6 +6,7 @@
             [datahike.audit :as audit]
             [datahike.online-gc :as online-gc]
             [konserve.core :as k]
+            [fress.impl.bigdec :as fbd] ;; cljs BigDecimal — :db.type/bigdec value type
             [konserve.node-filestore :as nfs] ;; Register :file backend for Node.js
             [cljs.core.async :refer [go <!] :include-macros true]
             [cljs.nodejs :as nodejs]
@@ -59,6 +60,35 @@
 (defn tmp-dir []
   (let [dir (path.join (os.tmpdir) (str "datahike-node-test-" (rand-int 100000)))]
     dir))
+
+(deftest bigdec-roundtrip-test
+  ;; :db.type/bigdec must accept a fress `Bigdec` (unscaled js/BigInt + scale) in
+  ;; cljs and round-trip it. The spec was `(complement any?)` — it rejected EVERY
+  ;; value, so a browser datahike could not store a decimal at all. Requires fress
+  ;; ≥ 0.4.317 (BIGDEC handlers), arriving transitively via konserve.
+  (async done
+         (go
+           (let [cfg    {:store {:backend :memory :id (random-uuid)}
+                         :schema-flexibility :write}
+                 amount (fbd/bigdec (js/BigInt "12345") 2)] ;; 123.45
+             (try
+               (<! (d/create-database cfg))
+               (let [conn (d/connect cfg)]
+                 (<! (d/transact! conn [{:db/ident :price
+                                         :db/valueType :db.type/bigdec
+                                         :db/cardinality :db.cardinality/one}]))
+                 (let [report (<! (d/transact! conn [{:price amount}]))
+                       eid    (d/q '[:find ?e . :where [?e :price _]] @conn)]
+                   (is (:db-after report) "a :db.type/bigdec value is accepted + transacted in cljs")
+                   (is (some? eid) "the bigdec-bearing entity committed")
+                   (is (fbd/bigdec? (:price (d/pull @conn [:price] eid)))
+                       "the stored value reads back as a fress Bigdec")
+                   (is (= amount (:price (d/pull @conn [:price] eid)))
+                       "the :db.type/bigdec value round-trips unchanged")))
+               (catch js/Error e
+                 (is false (str "bigdec roundtrip error: " (.-message e)))))
+             (<! (d/delete-database cfg))
+             (done)))))
 
 (deftest roundtrip-test
   (let [dir (tmp-dir)
