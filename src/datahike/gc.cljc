@@ -13,12 +13,15 @@
             [replikativ.logging :as log]
             [superv.async :refer [<? S go-try <<?]]
             ;; go-loop drives start-background-gc!'s scheduler; it's a MACRO, so
-            ;; cljs needs it via :require-macros (mirrors datahike.versioning).
+            ;; cljs refers it via :refer-macros in the same spec. Folding it into
+            ;; the require (rather than a separate :require-macros) keeps a single
+            ;; clojure.core.async require spec per platform — two specs for the same
+            ;; namespace make the cljdoc cljs analyzer fail with a duplicate-alias
+            ;; error. Mirrors the superv.async :refer/:refer-macros spec below.
             #?(:clj  [clojure.core.async :as async :refer [go-loop]]
-               :cljs [clojure.core.async :as async])
+               :cljs [clojure.core.async :as async :refer-macros [go-loop]])
             [datahike.schema-cache :as sc])
-  #?(:clj  (:import [java.util Date])
-     :cljs (:require-macros [clojure.core.async :refer [go-loop]])))
+  #?(:clj (:import [java.util Date])))
 
 ;; meta-data does not get passed in macros
 (defn get-time [d]
