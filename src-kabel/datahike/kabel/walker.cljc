@@ -22,10 +22,13 @@
   (:require [datahike.gc :as gc]
             [konserve.core :as k]
             [org.replikativ.persistent-sorted-set.arrays :as arrays]
+            ;; cljs: go is a MACRO → :refer-macros in the same clojure.core.async
+            ;; spec. A separate :require-macros [clojure.core.async ...] would make
+            ;; two require specs for one namespace and trip the cljdoc cljs
+            ;; analyzer's duplicate-alias check.
             #?@(:clj [[superv.async :refer [go-try- <?-]]]
-                :cljs [[clojure.core.async :refer [<!]]]))
-  #?(:cljs (:require-macros [clojure.core.async :refer [go]]
-                            [superv.async :refer [go-try- <?-]]))
+                :cljs [[clojure.core.async :refer [<!] :refer-macros [go]]]))
+  #?(:cljs (:require-macros [superv.async :refer [go-try- <?-]]))
   #?(:clj (:import [org.replikativ.persistent_sorted_set PersistentSortedSet Branch])))
 
 ;; ============================================================================

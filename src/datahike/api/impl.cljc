@@ -19,9 +19,12 @@
             [datahike.versioning :as dv]
             [datahike.bitemporal.predicate :as bp.pred]
             [replikativ.logging :as log]
-            #?(:cljs [clojure.core.async :as async :refer [<! >! chan put! close!]]))
-  #?(:cljs (:require-macros [superv.async :refer [go-try- <?-]]
-                            [clojure.core.async :refer [go]]))
+            ;; go is a MACRO referred via :refer-macros in the same spec — a
+            ;; separate :require-macros [clojure.core.async ...] would make two
+            ;; require specs for one namespace and trip the cljdoc cljs analyzer's
+            ;; duplicate-alias check.
+            #?(:cljs [clojure.core.async :as async :refer [<! >! chan put! close!] :refer-macros [go]]))
+  #?(:cljs (:require-macros [superv.async :refer [go-try- <?-]]))
   #?(:clj
      (:import [datahike.db HistoricalDB AsOfDB SinceDB FilteredDB]
               [datahike.impl.entity Entity])))

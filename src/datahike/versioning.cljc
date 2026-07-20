@@ -20,8 +20,11 @@
             [replikativ.logging :as log]
             [konserve.utils :refer [#?(:clj async+sync) multi-key-capable? *default-sync-translation*]
              #?@(:cljs [:refer-macros [async+sync]])]
-            #?(:cljs [clojure.core.async :refer [<!]]))
-  #?(:cljs (:require-macros [clojure.core.async :refer [go]])))
+            ;; go is a MACRO → :refer-macros in the same spec. A separate
+            ;; :require-macros [clojure.core.async ...] would make two require
+            ;; specs for one namespace and trip the cljdoc cljs analyzer's
+            ;; duplicate-alias check.
+            #?(:cljs [clojure.core.async :refer [<!] :refer-macros [go]])))
 
 (defn- branch-check [branch]
   (when-not (keyword? branch)
