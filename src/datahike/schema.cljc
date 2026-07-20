@@ -1,5 +1,6 @@
 (ns ^:no-doc datahike.schema
   (:require [clojure.spec.alpha :as s]
+            [datahike.array :as arr]
             [datahike.datom])
   #?(:clj (:import [datahike.datom Datom])))
 
@@ -31,12 +32,19 @@
 (s/def :db.type/symbol symbol?)
 (s/def :db.type/uuid uuid?)
 (s/def :db.type/tuple vector?)
+;; Primitive numeric arrays — a whole embedding/signal vector as one scalar
+;; value. JVM float[]/double[]; JS Float32Array/Float64Array. Element-wise
+;; compared and value-hashed via datahike.array (see compare-value / a=).
+(s/def :db.type/float-array arr/float-array?)
+(s/def :db.type/double-array arr/double-array?)
 
 (def builtin-value-types
   #{:db.type/bigdec
     :db.type/bigint
     :db.type/boolean
     :db.type/bytes
+    :db.type/float-array
+    :db.type/double-array
     :db.type/double
     :db.type/float
     :db.type/number

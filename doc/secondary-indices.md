@@ -95,10 +95,16 @@ Proximum provides HNSW-based approximate nearest neighbor search. Requires Java 
 ```clojure
 (require '[datahike.index.secondary.proximum])
 
-;; Add a vector index to an existing database
+;; Add a vector index to an existing database. Embeddings are stored as a
+;; :db.type/float-array — a whole vector is one scalar value, which is exactly
+;; the float[] Proximum indexes.
 (d/transact conn [{:db/ident :person/embedding
-                   :db/valueType :db.type/tuple
-                   :db/cardinality :db.cardinality/one}])
+                   :db/valueType :db.type/float-array
+                   :db/cardinality :db.cardinality/one
+                   ;; embeddings are search-only derived data — keep them out of
+                   ;; the primary index; the covering Proximum index holds them
+                   ;; and the primary stores only a content hash. Optional.
+                   :db.secondary/only true}])
 
 (d/transact conn [{:db/ident :idx/vectors
                    :db.secondary/type :proximum
@@ -109,7 +115,7 @@ Proximum provides HNSW-based approximate nearest neighbor search. Requires Java 
                                                         :id (random-uuid)}}}])
 (Thread/sleep 1000)
 
-;; Add vector data
+;; Add vector data — plain float arrays
 (d/transact conn [{:person/embedding (float-array [1.0 0.0 0.0 0.0])}
                   {:person/embedding (float-array [0.0 1.0 0.0 0.0])}
                   {:person/embedding (float-array [0.9 0.1 0.0 0.0])}])

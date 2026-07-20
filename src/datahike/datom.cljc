@@ -263,10 +263,11 @@
   "Compare two values with cross-platform UUID compatibility.
    CLJS UUID comparison is adjusted to match CLJ's signed comparison,
    ensuring consistent ordering when indices are built on CLJ and queried on CLJS.
-   Byte arrays are compared element-wise via datahike.array/compare-arrays,
-   since byte[] does not implement Comparable."
+   Byte/float/double arrays are compared element-wise via
+   datahike.array/compare-arrays, since primitive arrays do not implement
+   Comparable."
   [v1 v2]
-  #?(:clj (if (and (da/bytes? v1) (da/bytes? v2))
+  #?(:clj (if (and (da/value-array? v1) (da/value-array? v2))
             (da/compare-arrays v1 v2)
             (compare v1 v2))
      :cljs
@@ -286,7 +287,7 @@
            (and neg2 (not neg1)) 1   ;; v2 "negative", v1 "positive" → v1 > v2
            :else (compare s1 s2)))   ;; same sign → string compare works
 
-       (and (da/bytes? v1) (da/bytes? v2))
+       (and (da/value-array? v1) (da/value-array? v2))
        (da/compare-arrays v1 v2)
 
        :else (compare v1 v2))))

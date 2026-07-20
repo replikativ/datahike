@@ -587,11 +587,11 @@
          loaded-config (dc/load-config config deprecated-config)
          _ (when-not (dc/value-caps-configured? loaded-config)
              (log/warn :datahike/value-caps-unset
-                       (str "No value-size caps set — large :db.type/string / :db.type/bytes "
-                            "values can bloat the index and hit backend limits. Pass "
-                            ":value-caps :default for the 4096/4096/256 defaults (or set "
-                            ":max-string-length etc. explicitly) to bound them, or "
-                            ":max-string-length 0 to stay unbounded and silence this.")))
+                       (str "No value-size caps set — large :db.type/string / :db.type/bytes / "
+                            ":db.type/float-array / :db.type/double-array values can bloat the "
+                            "index and hit backend limits. Pass :value-caps :default for the "
+                            "default caps (or set :max-string-length etc. explicitly) to bound "
+                            "them, or :max-string-length 0 to stay unbounded and silence this.")))
          {:keys [keep-history?] :as config} (dc/apply-default-value-caps loaded-config)
          store-config (:store config)
          store (ds/add-cache-and-handlers (<?- (ks/create-store store-config opts)) config)
