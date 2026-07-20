@@ -760,7 +760,23 @@
           (when (and (pos? eff) (> (arr/byte-count v) eff))
             (log/raise "Byte value for " a-ident " exceeds max length " eff " bytes (was " (arr/byte-count v) ")"
                        {:error :transact/max-length :attribute a-ident
-                        :length (arr/byte-count v) :limit eff :unit :bytes :context ctx}))))
+                        :length (arr/byte-count v) :limit eff :unit :bytes :context ctx})))
+
+        (arr/float-array? v)
+        (when-let [eff (or (:db/maxLength attr)
+                           (when default? (:max-float-array-length config)))]
+          (when (and (pos? eff) (> (arr/value-array-length v) eff))
+            (log/raise "Float-array value for " a-ident " exceeds max length " eff " (was " (arr/value-array-length v) ")"
+                       {:error :transact/max-length :attribute a-ident
+                        :length (arr/value-array-length v) :limit eff :unit :floats :context ctx})))
+
+        (arr/double-array? v)
+        (when-let [eff (or (:db/maxLength attr)
+                           (when default? (:max-double-array-length config)))]
+          (when (and (pos? eff) (> (arr/value-array-length v) eff))
+            (log/raise "Double-array value for " a-ident " exceeds max length " eff " (was " (arr/value-array-length v) ")"
+                       {:error :transact/max-length :attribute a-ident
+                        :length (arr/value-array-length v) :limit eff :unit :doubles :context ctx}))))
       ;; --- predicates ---
       (doseq [p (let [ps (:db.attr/preds attr)]      ; tolerate bare or collection
                   (cond (nil? ps) nil (coll? ps) ps :else [ps]))]

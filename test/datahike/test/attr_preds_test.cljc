@@ -75,6 +75,11 @@
 
 (defn- rep [n c] (apply str (repeat n c)))
 
+(defn- farr [n]
+  #?(:clj (float-array (repeat n 1.0)) :cljs (js/Float32Array. n)))
+(defn- darr [n]
+  #?(:clj (double-array (repeat n 1.0)) :cljs (js/Float64Array. n)))
+
 ;; ---------------------------------------------------------------------------
 ;; Enforcement — portable (JVM + Node). `<?-` (bare, in the go body) rethrows a
 ;; setup failure → the test fails loudly; assertions inspect the taken value.
@@ -189,6 +194,32 @@
                                 :db/cardinality :db.cardinality/one}]))
     (is (= :transact/max-length (tx-err (<! (d/transact! conn [{:tup [(rep 300 \x) 1]}])))))
     (is (= :ok (tx-err (<! (d/transact! conn [{:tup [(rep 256 \x) 1]}])))))))
+
+(deftest-async float-double-array-length-caps
+  ;; float[]/double[] value-size caps mirror bytes: :db/maxLength wins, else the
+  ;; per-database :max-float-array-length / :max-double-array-length applies, in
+  ;; element counts.
+  (let [conn (<! (fresh-conn :write {:value-caps :default}))]
+    (sa/<?- (d/transact! conn [{:db/ident :fv :db/valueType :db.type/float-array
+                                :db/cardinality :db.cardinality/one}
+                               {:db/ident :dv :db/valueType :db.type/double-array
+                                :db/cardinality :db.cardinality/one}
+                               {:db/ident :fv3 :db/valueType :db.type/float-array
+                                :db/cardinality :db.cardinality/one :db/maxLength 3}]))
+    (testing "default 4096 element cap"
+      (is (= :ok (tx-err (<! (d/transact! conn [{:fv (farr 4096)}])))))
+      (is (= :transact/max-length (tx-err (<! (d/transact! conn [{:fv (farr 4097)}])))))
+      (is (= :transact/max-length (tx-err (<! (d/transact! conn [{:dv (darr 5000)}]))))))
+    (testing ":db/maxLength overrides the default"
+      (is (= :ok (tx-err (<! (d/transact! conn [{:fv3 (farr 3)}])))))
+      (is (= :transact/max-length (tx-err (<! (d/transact! conn [{:fv3 (farr 4)}]))))))))
+
+(deftest-async array-caps-unbounded-without-value-caps
+  ;; Opt-in: without :value-caps a float[]/double[] attr is unbounded.
+  (let [conn (<! (fresh-conn :write))]
+    (sa/<?- (d/transact! conn [{:db/ident :fv :db/valueType :db.type/float-array
+                                :db/cardinality :db.cardinality/one}]))
+    (is (= :ok (tx-err (<! (d/transact! conn [{:fv (farr 100000)}])))) "no caps → unbounded")))
 
 (deftest-async system-string-attr-exempt-from-default
   ;; :db/doc is a system string attribute — the default must not cap it.

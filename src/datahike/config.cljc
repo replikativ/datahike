@@ -73,6 +73,8 @@
 ;; nat-int? so 0 (explicitly disabled) is valid; nilable/absent = unbounded.
 (s/def ::max-string-length (s/nilable nat-int?))
 (s/def ::max-bytes-length (s/nilable nat-int?))
+(s/def ::max-float-array-length (s/nilable nat-int?))
+(s/def ::max-double-array-length (s/nilable nat-int?))
 (s/def ::max-tuple-string-length (s/nilable nat-int?))
 
 (s/def :datahike/config (s/keys :opt-un [:datahike/store
@@ -92,6 +94,8 @@
                                          ::writer
                                          ::max-string-length
                                          ::max-bytes-length
+                                         ::max-float-array-length
+                                         ::max-double-array-length
                                          ::max-tuple-string-length]))
 
 (s/def :deprecated/schema-on-read boolean?)
@@ -193,13 +197,18 @@
 (def default-value-caps
   "The Datomic-parity value-size caps that the `:value-caps :default` preset
    expands to: `:max-string-length` bounds `:db.type/string` values (chars),
-   `:max-bytes-length` bounds `:db.type/bytes` values (bytes), and string slots
-   inside a `:db.type/tuple` are bounded by `:max-tuple-string-length`. Value-size
-   caps are OPT-IN (a `0` disables an individual cap; an unconfigured database is
-   left unbounded — see `apply-default-value-caps`). This map is also the
-   canonical set of value-size config KEYS."
+   `:max-bytes-length` bounds `:db.type/bytes` values (bytes),
+   `:max-float-array-length` / `:max-double-array-length` bound
+   `:db.type/float-array` / `:db.type/double-array` values (element counts), and
+   string slots inside a `:db.type/tuple` are bounded by
+   `:max-tuple-string-length`. Value-size caps are OPT-IN (a `0` disables an
+   individual cap; an unconfigured database is left unbounded — see
+   `apply-default-value-caps`). This map is also the canonical set of value-size
+   config KEYS."
   {:max-string-length 4096
    :max-bytes-length 4096
+   :max-float-array-length 4096
+   :max-double-array-length 4096
    :max-tuple-string-length 256})
 
 (defn value-caps-configured?
