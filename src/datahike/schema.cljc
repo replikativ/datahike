@@ -1,6 +1,13 @@
 (ns ^:no-doc datahike.schema
   (:require [clojure.spec.alpha :as s]
-            [datahike.datom])
+            [datahike.datom]
+            ;; cljs bigdec values are fress `Bigdec` (unscaled js/BigInt + scale) —
+            ;; the same type konserve round-trips via the Fressian BIGDEC (0xC7)
+            ;; handlers. Recognise it so :db.type/bigdec accepts a real decimal in
+            ;; the browser instead of rejecting everything (the previous
+            ;; `(complement any?)` placeholder). Arrives transitively via konserve
+            ;; (≥ the release carrying fress 0.4.317), like `fress.api` already does.
+            #?(:cljs [fress.impl.bigdec :as fbd]))
   #?(:clj (:import [datahike.datom Datom])))
 
 (s/def :db.type/id #?(:clj #(or (= (class %) java.lang.Long) string?)
@@ -9,7 +16,7 @@
                                  string?)))
 
 ;; db types
-(s/def :db.type/bigdec #?(:cljs (complement any?) ; feels more appropriate than hiding key -pat
+(s/def :db.type/bigdec #?(:cljs fbd/bigdec?
                           :clj decimal?))
 (s/def :db.type/bigint #?(:clj integer?
                           :cljs #(or (integer? %)
