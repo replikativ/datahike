@@ -313,6 +313,20 @@ jobs:
             - .m2
             - .npm
             - replikativ
+  cljdoc-analysis:
+    executor: tools/clojurecli
+    steps:
+      - attach_workspace:
+          at: /home/circleci
+      - run:
+          name: Analyze jar with cljdoc-analyzer (mirrors the cljdoc.org build)
+          command: bb cljdoc-check-installed
+          no_output_timeout: 10m
+      - save_cache:
+          key: deps-{{ checksum "deps.edn" }}
+          paths:
+            - /home/circleci/.m2
+            - /home/circleci/.deps.clj
   deploy:
     executor: tools/clojurecli
     steps:
@@ -394,6 +408,10 @@ workflows:
           requires:
             - build
       - java-examples-test:
+          context: ghcr-read-package
+          requires:
+            - build
+      - cljdoc-analysis:
           context: ghcr-read-package
           requires:
             - build
