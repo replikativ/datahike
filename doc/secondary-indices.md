@@ -109,10 +109,13 @@ Proximum provides HNSW-based approximate nearest neighbor search. Requires Java 
                                                         :id (random-uuid)}}}])
 (Thread/sleep 1000)
 
-;; Add vector data
-(d/transact conn [{:person/embedding (float-array [1.0 0.0 0.0 0.0])}
-                  {:person/embedding (float-array [0.0 1.0 0.0 0.0])}
-                  {:person/embedding (float-array [0.9 0.1 0.0 0.0])}])
+;; Add vector data. A `:db.type/tuple` value is a plain Clojure vector — that
+;; is what datahike validates and stores in the primary index; the Proximum
+;; bridge coerces it to a float[] for the HNSW graph. (Query vectors passed to
+;; `-search` below are float[], the shape Proximum's search API takes.)
+(d/transact conn [{:person/embedding [1.0 0.0 0.0 0.0]}
+                  {:person/embedding [0.0 1.0 0.0 0.0]}
+                  {:person/embedding [0.9 0.1 0.0 0.0]}])
 ```
 
 ### KNN Search

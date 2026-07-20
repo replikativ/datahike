@@ -22,6 +22,25 @@
    [replikativ.logging :as log]
    [clojure.core.async :as async]))
 
+(def ^:private float-array-class (Class/forName "[F"))
+
+(defn- ->float-array
+  "Coerce a datom value into the float[] Proximum indexes.
+
+   A `:db.type/tuple` value is a Clojure vector (datahike validates the type as
+   `vector?`), so that is the shape a schema-declared embedding attribute
+   actually carries. Accept a float[] verbatim, and coerce a vector/seq of
+   numbers; return nil for anything else so the caller can warn and skip.
+
+   The primary index keeps the immutable vector (which hashes by value);
+   Proximum needs the primitive array, so the conversion lives here at the
+   boundary rather than forcing callers to pick one representation for both."
+  ^floats [val]
+  (cond
+    (instance? float-array-class val) val
+    (and (sequential? val) (every? number? val)) (float-array val)
+    :else nil))
+
 (defn- make-proximum-index
   "Create an ISecondaryIndex backed by Proximum.
    Entity IDs are used as external keys in the Proximum index."
@@ -138,12 +157,13 @@
               eid (.-e datom)
               val (.-v datom)]
           (if added?
-            ;; Insert: val should be a float-array vector, eid is external key
-            (if (instance? (Class/forName "[F") val)
+            ;; Insert: coerce the datom value (a :db.type/tuple vector, or a raw
+            ;; float[]) to float[]; eid is the external key.
+            (if-let [fa (->float-array val)]
               (make-proximum-index
-               (prox/insert prox-idx val eid)
+               (prox/insert prox-idx fa eid)
                config)
-              (do (log/warn :datahike/non-float-array-vector {:eid eid :type (type val)})
+              (do (log/warn :datahike/non-vector-embedding {:eid eid :type (type val)})
                   (make-proximum-index prox-idx config)))
             ;; Retract: delete by external entity ID
             (make-proximum-index

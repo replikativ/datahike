@@ -241,6 +241,44 @@
           (is (es/entity-bitset-contains? results 1))
           (is (es/entity-bitset-contains? results 2)))))))
 
+(deftest test-proximum-declarative-vector-values
+  ;; Regression: the fully declarative path (create-database → connect →
+  ;; schema-transact the index → transact embeddings) is what the docs show, and
+  ;; it went through datahike's write-time validation. A `:db.type/tuple` value
+  ;; validates as `vector?`, so an embedding attribute must carry a Clojure
+  ;; vector — but the bridge only indexed float[], so every validated value was
+  ;; silently skipped (0 indexed) while a float[] failed validation outright.
+  ;; The bridge now coerces the tuple vector to float[]; assert both index.
+  (when-not proximum-available?
+    (is (not proximum-available?) "SKIP: proximum requires Java 22+"))
+  (when proximum-available?
+    (testing "schema-declared :db.type/tuple embeddings are indexed from vector values"
+      (let [cfg {:store {:backend :memory :id (random-uuid)}
+                 :schema-flexibility :write}]
+        (d/create-database cfg)
+        (try
+          (let [conn (d/connect cfg)]
+            (d/transact conn [{:db/ident :person/embedding
+                               :db/valueType :db.type/tuple
+                               :db/cardinality :db.cardinality/one}])
+            (d/transact conn [{:db/ident :idx/vectors
+                               :db.secondary/type :proximum
+                               :db.secondary/attrs [:person/embedding]
+                               :db.secondary/config {:dim 4 :distance :cosine
+                                                     :store-config {:backend :memory
+                                                                    :id (random-uuid)}}}])
+            (Thread/sleep 1000)
+            ;; plain Clojure vectors — the shape a :db.type/tuple actually holds
+            (d/transact conn [{:person/embedding [1.0 0.0 0.0 0.0]}
+                              {:person/embedding [0.0 1.0 0.0 0.0]}
+                              {:person/embedding [0.9 0.1 0.0 0.0]}])
+            (Thread/sleep 500)
+            (let [vt (get-in (d/db conn) [:secondary-indices :idx/vectors])
+                  results (sec/-search vt {:vector (float-array [1.0 0.0 0.0 0.0]) :k 2} nil)]
+              ;; the two vectors nearest [1,0,0,0] — indexed, not skipped
+              (is (= 2 (es/entity-bitset-cardinality results)))))
+          (finally (d/delete-database cfg)))))))
+
 ;; ---------------------------------------------------------------------------
 ;; Stratum Entity-Filter Aggregate Tests
 
