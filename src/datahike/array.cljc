@@ -50,9 +50,16 @@
      (clojure.core/bytes? x))
    :cljs
    (defn bytes? [x]
+     ;; A byte array is a 1-byte-per-element typed array (Uint8Array/Int8Array).
+     ;; The BYTES_PER_ELEMENT guard is essential: without it every typed array —
+     ;; incl. Float32Array/Float64Array — has an ArrayBuffer buffer + numeric
+     ;; byteLength and would be misread as bytes, so a float array would be
+     ;; capped/compared/wrapped as bytes.
      (and (instance? js/ArrayBuffer (.-buffer x))
-          (number? (.-byteLength x)))))
+          (number? (.-byteLength x))
+          (= 1 (.-BYTES_PER_ELEMENT x)))))
 
+#?(:clj (def ^:private byte-array-class (Class/forName "[B")))
 #?(:clj (def ^:private float-array-class (Class/forName "[F")))
 #?(:clj (def ^:private double-array-class (Class/forName "[D")))
 
@@ -73,9 +80,16 @@
 (defn value-array?
   "Any primitive array datahike treats as a scalar value — byte[], float[] or
   double[]. These need element-wise comparison/equality because the JVM gives
-  them identity semantics."
+  them identity semantics. On the JVM this is one getClass + a few identical?
+  pointer compares (these array classes are final), keeping `compare-value` — a
+  query hot path — cheap for the common non-array case."
   [x]
-  (or (bytes? x) (float-array? x) (double-array? x)))
+  #?(:clj (when (some? x)
+            (let [c (class x)]
+              (or (identical? c byte-array-class)
+                  (identical? c float-array-class)
+                  (identical? c double-array-class))))
+     :cljs (or (bytes? x) (float-array? x) (double-array? x))))
 
 (defn byte-count
   "Number of bytes in a byte-array value (`:db.type/bytes`)."
