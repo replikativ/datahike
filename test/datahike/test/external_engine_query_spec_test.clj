@@ -3,11 +3,20 @@
    via an optional `:query-spec-fn` in the `:datahike/external-engine` metadata,
    with a backward-compatible `{:query :field}` default."
   (:require
-   [clojure.test :refer [deftest is testing]]
+   [clojure.test :refer [deftest is testing use-fixtures]]
    [datahike.api :as d]
    [datahike.index.secondary :as sec]
    [datahike.index.entity-set :as es]
+   [datahike.query :as q]
    [datahike.query.execute]))
+
+;; External-engine clauses are a planner feature: the planner recognizes the
+;; `:datahike/external-engine` metadata and generates the op. The base
+;; (relational) engine has no such mechanism, so under `persistent-set-test-
+;; base-engine` (which disables the planner globally) the clause is evaluated as
+;; an ordinary fn call and can't bind to `[[?e]]`. Force the planner on for the
+;; d/q-driven tests here.
+(use-fixtures :each (fn [f] (binding [q/*disable-planner* false] (f))))
 
 (def ^:private build @#'datahike.query.execute/external-query-spec)
 

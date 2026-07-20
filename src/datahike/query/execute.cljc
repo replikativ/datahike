@@ -3883,14 +3883,23 @@
                                                     nil nil nil nil)
                  ;; Map binding vars to column indices
                  attrs (into {} (map-indexed (fn [i v] [v i]) binding-vars))
-                 ;; Build tuples from results
+                 ;; The engine declares which result key each binding position
+                 ;; carries via :binding-columns (e.g. [:entity-id :distance]).
+                 ;; Map positionally by that — NOT by (keyword (name var)), which
+                 ;; would keep the leading `?` (?distance -> :?distance) and miss
+                 ;; the result key. Fall back to a `?`-stripped name if a column
+                 ;; isn't declared.
+                 binding-cols (:binding-columns (:engine-meta op))
                  tuples (set (mapv (fn [r]
-                                     (mapv (fn [v]
-                                             (cond
-                                               ;; entity id -> Long (Roaring yields Int; join needs Long)
-                                               (= v (first binding-vars)) (long (:entity-id r))
-                                               :else (get r (keyword (name v)))))
-                                           binding-vars))
+                                     (vec (map-indexed
+                                           (fn [i v]
+                                             (let [col (nth binding-cols i nil)]
+                                               (cond
+                                                 ;; entity id -> Long (Roaring yields Int; join needs Long)
+                                                 (= col :entity-id) (long (:entity-id r))
+                                                 (some? col) (get r col)
+                                                 :else (get r (keyword (subs (name v) 1))))))
+                                           binding-vars)))
                                    results))
                  rel (rel/->Relation attrs tuples)]
              (update ctx :rels rel/collapse-rels rel))
