@@ -1,4 +1,4 @@
-(ns datahike.index.secondary.stratum
+(ns ^:no-doc datahike.index.secondary.stratum
   "Stratum (columnar analytics) integration with Datahike.
 
    Two integration paths:

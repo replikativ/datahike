@@ -1,4 +1,4 @@
-(ns datahike.index.secondary.scriptum
+(ns ^:no-doc datahike.index.secondary.scriptum
   "Scriptum (Lucene full-text search) integration with Datahike secondary indices.
 
    Require this namespace to register the :scriptum index type:
