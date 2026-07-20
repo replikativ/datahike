@@ -57,6 +57,73 @@
       (is (= [[1 :attr 2], [3 :attr 4]]
              (map (juxt :e :a :v) (d/datoms db :eavt)))))))
 
+(deftest test-reassert-datom-is-noop
+  ;; Issue #457: re-asserting an identical [:db/add e a v] must be a no-op — the
+  ;; unchanged datom must NOT reappear in :tx-data. Historically (<=0.2.1, like
+  ;; DataScript) an unchanged re-assert produced no data datom, which let :tx-data
+  ;; be read as a diff of what actually changed. The upsert refactor (e9d55972)
+  ;; dropped that guard, so unchanged values started leaking back into :tx-data.
+  (let [dvec (juxt :e :a :v :added)]
+    (testing "cardinality-one: re-asserting the same value produces no tx-data"
+      (let [db (d/db-with (db/empty-db) [[:db/add 1 :name "Ivan"]])
+            tx (d/with db [[:db/add 1 :name "Ivan"]])]
+        (is (= [] (mapv dvec (:tx-data tx))))))
+
+    (testing "cardinality-one: changing the value still asserts the new datom"
+      (let [db (d/db-with (db/empty-db) [[:db/add 1 :name "Ivan"]])
+            tx (d/with db [[:db/add 1 :name "Petr"]])]
+        (is (= [[1 :name "Petr" true]]
+               (->> (:tx-data tx) (filterv :added) (mapv dvec))))))
+
+    (testing "cardinality-many: re-asserting an existing value produces no tx-data"
+      (let [db (d/db-with (db/empty-db {:aka {:db/cardinality :db.cardinality/many}})
+                          [[:db/add 1 :aka "Devil"]])
+            tx (d/with db [[:db/add 1 :aka "Devil"]])]
+        (is (= [] (mapv dvec (:tx-data tx))))))
+
+    (testing "cardinality-many: asserting a new value still asserts the new datom"
+      (let [db (d/db-with (db/empty-db {:aka {:db/cardinality :db.cardinality/many}})
+                          [[:db/add 1 :aka "Devil"]])
+            tx (d/with db [[:db/add 1 :aka "Tupen"]])]
+        (is (= [[1 :aka "Tupen" true]]
+               (->> (:tx-data tx) (filterv :added) (mapv dvec))))))
+
+    (testing "cardinality-many: re-asserting one of many existing values is a no-op and disturbs none"
+      (let [db (d/db-with (db/empty-db {:aka {:db/cardinality :db.cardinality/many}})
+                          [[:db/add 1 :aka "a"] [:db/add 1 :aka "b"] [:db/add 1 :aka "c"]])
+            tx (d/with db [[:db/add 1 :aka "b"]])]
+        (is (= [] (mapv dvec (:tx-data tx))))
+        (is (= #{"a" "b" "c"} (:aka (into {} (d/entity (:db-after tx) 1)))))))
+
+    ;; Tuple/collection values: the existence probe must compare via the index's
+    ;; datom comparator, not the search-pattern parser (which reads a vector value
+    ;; as a [start end] range and throws).
+    (testing "tuple-valued (cardinality-one) attribute: re-asserting the same value is a no-op"
+      (let [schema {:coord {:db/valueType :db.type/tuple
+                            :db/tupleTypes [:db.type/long :db.type/keyword]
+                            :db/cardinality :db.cardinality/one}}
+            db (d/db-with (db/empty-db schema) [[:db/add 1 :coord [100 :west]]])
+            tx (d/with db [[:db/add 1 :coord [100 :west]]])]
+        (is (= [] (mapv dvec (:tx-data tx))))))
+
+    (testing "tuple-valued (cardinality-one) attribute: changing the value still asserts the new datom"
+      (let [schema {:coord {:db/valueType :db.type/tuple
+                            :db/tupleTypes [:db.type/long :db.type/keyword]
+                            :db/cardinality :db.cardinality/one}}
+            db (d/db-with (db/empty-db schema) [[:db/add 1 :coord [100 :west]]])
+            tx (d/with db [[:db/add 1 :coord [200 :east]]])]
+        (is (= [[1 :coord [200 :east] true]]
+               (->> (:tx-data tx) (filterv :added) (mapv dvec))))))
+
+    ;; :db.type/bytes must be compared by CONTENT: Clojure `=` on byte-arrays is
+    ;; object identity, so the existence probe has to go through the index's datom
+    ;; comparator or an identical-content re-assert would leak back into :tx-data.
+    (testing "bytes-valued (cardinality-one) attribute: re-asserting identical content is a no-op"
+      (let [db (d/db-with (db/empty-db) [[:db/add 1 :blob (byte-array [1 2 3])]])
+            ;; a DISTINCT byte-array object with the same content
+            tx (d/with db [[:db/add 1 :blob (byte-array [1 2 3])]])]
+        (is (= [] (mapv dvec (:tx-data tx))))))))
+
 (deftest test-with-datoms
   (testing "keeps tx number"
     (let [db (-> (db/empty-db)
