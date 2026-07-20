@@ -3802,6 +3802,24 @@
        (into {} (map (fn [v] [v (keyword (subs (name v) 1))]) binding-vars)))))
 
 #?(:clj
+   (defn- external-query-spec
+     "Build the query-spec passed to a secondary index's `-search` /
+      `-slice-ordered` from an external-engine call's (index-ident-stripped)
+      args.
+
+      The `ISecondaryIndex` protocol treats query-spec as index-type-specific
+      (opaque). An engine may declare a `:query-spec-fn` in its
+      `:datahike/external-engine` metadata to construct an arbitrary, arity-free
+      spec from `query-args`; absent that, we default to the text-search-shaped
+      `{:query <arg0> :field <arg1>}` for backward compatibility (so existing
+      engines are unaffected)."
+     [engine-meta query-args]
+     (if-let [f (:query-spec-fn engine-meta)]
+       (f (vec query-args))
+       {:query (first query-args)
+        :field (second query-args)})))
+
+#?(:clj
    (defn- execute-external-engine
      "Execute an external engine op and merge results into context.
       Dispatches on :mode — :filter, :retrieval, or :solver."
@@ -3815,7 +3833,9 @@
            binding-vars (if (and (sequential? binding-form)
                                  (sequential? (first binding-form)))
                           (first binding-form)
-                          [binding-form])]
+                          [binding-form])
+           engine-meta (:engine-meta op)
+           build-query-spec (fn [query-args] (external-query-spec engine-meta query-args))]
        (case mode
          ;; Filter: produce EntityBitSet, create single-column relation of entity IDs.
          ;; Also stores the bitmap in :entity-filters for downstream entity-group optimization.
@@ -3829,19 +3849,21 @@
                  resolved-fn (when (and (symbol? fn-sym) (namespace fn-sym))
                                (some-> (resolve fn-sym) deref))
                  result-bs (if resolved-fn
-                             ;; Call the function which should return results.
                              ;; `search-with-vt` reads the db's `:datahike/valid-at`
                              ;; marker (set by `d/valid-at`) and routes through
                              ;; `-search-at-vt` for vt-aware indices.
                              (sec/search-with-vt db idx
-                                                 {:query (first resolved-args)
-                                                  :field (second resolved-args)}
+                                                 (build-query-spec resolved-args)
                                                  nil)
                              (es/entity-bitset))
                  ;; Create relation from entity IDs
                  entity-var (first binding-vars)
                  eids (es/entity-bitset-seq result-bs)
-                 tuples (mapv (fn [eid] [eid]) eids)
+                 ;; EntityBitSet (Roaring) yields 32-bit Ints; datom entity ids
+                 ;; are Longs. Coerce so the downstream hash-join on the entity
+                 ;; var matches (Java Integer != Long even when numerically equal,
+                 ;; which silently drops every joined row).
+                 tuples (mapv (fn [eid] [(long eid)]) eids)
                  rel (rel/->Relation
                       {entity-var 0}
                       (set tuples))]
@@ -3857,18 +3879,27 @@
          (if idx
            (let [query-args (vec (drop 1 args))
                  results (sec/slice-ordered-with-vt db idx
-                                                    {:query (first query-args)
-                                                     :field (second query-args)}
+                                                    (build-query-spec query-args)
                                                     nil nil nil nil)
                  ;; Map binding vars to column indices
                  attrs (into {} (map-indexed (fn [i v] [v i]) binding-vars))
-                 ;; Build tuples from results
+                 ;; The engine declares which result key each binding position
+                 ;; carries via :binding-columns (e.g. [:entity-id :distance]).
+                 ;; Map positionally by that — NOT by (keyword (name var)), which
+                 ;; would keep the leading `?` (?distance -> :?distance) and miss
+                 ;; the result key. Fall back to a `?`-stripped name if a column
+                 ;; isn't declared.
+                 binding-cols (:binding-columns (:engine-meta op))
                  tuples (set (mapv (fn [r]
-                                     (mapv (fn [v]
-                                             (cond
-                                               (= v (first binding-vars)) (:entity-id r)
-                                               :else (get r (keyword (name v)))))
-                                           binding-vars))
+                                     (vec (map-indexed
+                                           (fn [i v]
+                                             (let [col (nth binding-cols i nil)]
+                                               (cond
+                                                 ;; entity id -> Long (Roaring yields Int; join needs Long)
+                                                 (= col :entity-id) (long (:entity-id r))
+                                                 (some? col) (get r col)
+                                                 :else (get r (keyword (subs (name v) 1))))))
+                                           binding-vars)))
                                    results))
                  rel (rel/->Relation attrs tuples)]
              (update ctx :rels rel/collapse-rels rel))

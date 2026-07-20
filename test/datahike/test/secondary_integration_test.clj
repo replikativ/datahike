@@ -6,6 +6,7 @@
    [datahike.db :as db]
    [datahike.index.secondary :as sec]
    [datahike.index.entity-set :as es]
+   [datahike.query :as q]
    [datahike.index.secondary.scriptum]
    [datahike.index.secondary.stratum]))
 
@@ -240,6 +241,47 @@
           (is (= 2 (es/entity-bitset-cardinality results)))
           (is (es/entity-bitset-contains? results 1))
           (is (es/entity-bitset-contains? results 2)))))))
+
+(deftest test-proximum-knn-clause
+  ;; KNN as a first-class Datalog :where clause via the external-engine
+  ;; query-spec-fn. Planner-only (the base engine has no external-engine op).
+  (when-not proximum-available?
+    (is (not proximum-available?) "SKIP: proximum requires Java 22+"))
+  (when proximum-available?
+    (binding [q/*disable-planner* false]
+      (let [cfg {:store {:backend :memory :id (random-uuid)} :schema-flexibility :write}]
+        (d/create-database cfg)
+        (try
+          (let [conn (d/connect cfg)]
+            (d/transact conn [{:db/ident :doc/name :db/valueType :db.type/string :db/cardinality :db.cardinality/one}
+                              {:db/ident :doc/embedding :db/valueType :db.type/float-array
+                               :db/cardinality :db.cardinality/one :db.secondary/only true}])
+            (d/transact conn [{:db/ident :idx/emb :db.secondary/type :proximum :db.secondary/attrs [:doc/embedding]
+                               :db.secondary/config {:dim 4 :distance :cosine :capacity 100
+                                                     :store-config {:backend :memory :id (random-uuid)}}}])
+            (Thread/sleep 800)
+            (d/transact conn [{:doc/name "east"  :doc/embedding (float-array [1.0 0.0 0.0 0.0])}
+                              {:doc/name "east2" :doc/embedding (float-array [0.9 0.1 0.0 0.0])}
+                              {:doc/name "north" :doc/embedding (float-array [0.0 1.0 0.0 0.0])}])
+            (Thread/sleep 500)
+            (testing "retrieval: [[?e ?distance]] binds entity + cosine distance and joins to a scalar attr"
+              (let [rows (d/q '[:find ?name ?distance :in $ ?qvec
+                                :where [(datahike.index.secondary.proximum/knn :idx/emb ?qvec 3) [[?e ?distance]]]
+                                [?e :doc/name ?name]]
+                              @conn (float-array [1.0 0.0 0.0 0.0]))
+                    m (into {} (map (fn [[n d]] [n d]) rows))]
+                (is (= #{"east" "east2" "north"} (set (keys m))))
+                (is (< (m "east") (m "east2") (m "north")) "distances present and ordered")
+                (is (== 0.0 (m "east")))))
+            (testing "filter: [?e ...] composes with a Datalog predicate"
+              (let [names (d/q '[:find [?name ...] :in $ ?qvec
+                                 :where [(datahike.index.secondary.proximum/knn :idx/emb ?qvec 3) [?e ...]]
+                                 [?e :doc/name ?name]
+                                 [(clojure.string/starts-with? ?name "east")]]
+                               @conn (float-array [1.0 0.0 0.0 0.0]))]
+                (is (= #{"east" "east2"} (set names)))))
+            (d/release conn))
+          (finally (d/delete-database cfg)))))))
 
 ;; ---------------------------------------------------------------------------
 ;; Stratum Entity-Filter Aggregate Tests

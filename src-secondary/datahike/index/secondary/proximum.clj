@@ -173,3 +173,43 @@
     (assoc key-map
            :branch (name new-branch)
            :commit-id new-commit-id)))
+
+;; ---------------------------------------------------------------------------
+;; KNN as a Datalog clause (external-engine)
+;;
+;; With the query-spec-fn mechanism, a Proximum vector search is a first-class
+;; :where clause the planner recognizes — no manual EntityBitSet plumbing:
+;;
+;;   ;; retrieval — bind entity + cosine distance, then join like any relation
+;;   (d/q '[:find ?name ?distance
+;;          :in $ ?qvec
+;;          :where
+;;          [(datahike.index.secondary.proximum/knn :idx/embeddings ?qvec 10)
+;;           [[?e ?distance]]]
+;;          [?e :doc/name ?name]]
+;;        db query-float-array)
+;;
+;;   ;; filter — entities only (1 binding var)
+;;   [(datahike.index.secondary.proximum/knn :idx/embeddings ?qvec 10) [?e ...]]
+;;
+;; Planner-only: the base (relational) engine has no external-engine mechanism.
+(defn knn
+  "Vector k-nearest-neighbour search over a Proximum secondary index, callable
+   from a Datalog :where clause. Args: <idx-ident> <query-vector (float[])> <k>.
+   Binds [[?e ?distance]] (retrieval) or [?e ...] (filter). See the ns comment."
+  {:datahike/external-engine
+   {:index-key 0                                  ;; idx-ident is the first arg
+    :binding-columns [:entity-id :distance]       ;; 1 var → :filter, 2 → :retrieval
+    :accepts-entity-filter? true
+    ;; Proximum's own query-spec shape (not the full-text {:query :field} default)
+    :query-spec-fn (fn [query-args]
+                     {:vector (first query-args) :k (second query-args)})
+    :input-vars :all-bound
+    :cost-model (fn [_db _idx-ident args _n-cols]
+                  (let [k (nth (vec args) 2 10)]
+                    {:estimated-card (if (number? k) k 10)
+                     :cost-per-result 0.01}))}}
+  ;; Body is only the legacy/bare-fn fallback — the planner path calls the index
+  ;; directly through the executor. Returning the query-spec keeps it usable.
+  [_idx-ident query-vector k]
+  {:vector query-vector :k k})
