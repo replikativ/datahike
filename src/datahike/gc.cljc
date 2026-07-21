@@ -74,12 +74,29 @@
                   taevt (set/union (attr-store-refs taevt attr))))
               #{} attrs))))
 
-(defn- reachable-in-branch [store branch after-date config schema-cache]
+(defn- reachable-from
+  "Mark everything reachable from `start`, seeding the retained set with `seed`.
+
+   `time-gated?` is the difference between datahike's native retention model and
+   a git-shaped one. For a BRANCH it is true: ancestry is followed only while a
+   record is newer than `after-date`, so `remove-before` means \"drop history
+   older than X\". For a ROOT (see `:gc-roots`) it is false: the root and its
+   full ancestry stay live regardless of age, exactly as a git ref keeps a 2019
+   commit alive forever. With roots present, `remove-before` stops meaning
+   \"delete old history\" and starts meaning what git's reflog expiry means —
+   UNREFERENCED things older than X may go.
+
+   The seed is a parameter because a branch and a root are different KINDS of
+   key: a branch is a branch key whose record carries `:meta :datahike/commit-id`
+   (so both the branch and its head are retained), while a root is already a
+   commit-id and is retained as itself. The walk below is common to both — it
+   resolves whatever key it is handed with `k/get`."
+  [store start after-date config schema-cache time-gated? seed]
   (go-try S
-          (let [head-cid (<? S (k/get-in store [branch :meta :datahike/commit-id]))]
-            (loop [[to-check & r] [branch]
+          (do
+            (loop [[to-check & r] [start]
                    visited        #{}
-                   reachable      #{branch head-cid}
+                   reachable      seed
                    refs           #{}]
               (if to-check
                 (if (visited to-check) ;; skip
@@ -164,7 +181,7 @@
                                                        (-mark (bind temporal-avet-key temporal-avet-root)))
                                             sec-reachable
                                             (set/union sec-reachable))]
-                        (recur (concat r (when in-range? parents))
+                        (recur (concat r (when (or (not time-gated?) in-range?) parents))
                                (conj visited to-check)
                                new-reachable
                                (set/union refs record-refs))))
@@ -175,6 +192,58 @@
                     ;; get-time.)
                     (recur r (conj visited to-check) reachable refs)))
                 {:reachable reachable :store-refs refs})))))
+
+(defn gc-roots
+  "The set of explicit GC roots persisted in `store`, or `#{}`.
+
+   A root is a datahike commit-id that stays live regardless of `remove-before`,
+   the way a git ref keeps an arbitrarily old commit alive. Roots exist for
+   consumers whose OWN notion of liveness is invisible to datahike — geschichte
+   stores git refs as datoms, so without roots every geschichte commit looks
+   like unreferenced old history and a cutoff GC deletes its snapshot."
+  [store]
+  (go-try S (or (<? S (k/get store :gc-roots)) #{})))
+
+(defn gc-root!
+  "Declare `commit-id` a GC root. Idempotent. Returns the new root set.
+
+   Fails if the commit does not resolve: a root naming a missing commit retains
+   nothing, and the symptom would otherwise surface much later as a store that
+   has already lost the history the root was meant to protect."
+  [store commit-id]
+  (go-try S
+          (when-not (<? S (k/get store commit-id))
+            (throw (ex-info "Cannot root a commit-id that does not resolve in this store"
+                            {:type :datahike/gc-root-unresolved :commit-id commit-id})))
+          ;; k/update, not get+assoc: two concurrent declarations would otherwise
+          ;; race and one root would be silently dropped. The value is closed
+          ;; over rather than passed as a trailing arg — konserve reads that
+          ;; position as its opts map, so `(fnil conj #{}) commit-id` would
+          ;; silently apply `(conj #{})` and store the empty set.
+          (second (<? S (k/update store :gc-roots #(conj (or % #{}) commit-id))))))
+
+(defn gc-unroot!
+  "Drop `commit-id` from the root set. Idempotent. Returns the new root set.
+
+   Consumers that root per-commit MUST unroot as their refs move, or the set —
+   and the per-cycle mark cost, which walks each root's ancestry — grows without
+   bound."
+  [store commit-id]
+  (go-try S
+          (second (<? S (k/update store :gc-roots #(disj (or % #{}) commit-id))))))
+
+(defn- reachable-in-branch
+  "Walk a BRANCH: time-gated ancestry, retaining the branch key and its head."
+  [store branch after-date config schema-cache]
+  (go-try S
+          (let [head-cid (<? S (k/get-in store [branch :meta :datahike/commit-id]))]
+            (<? S (reachable-from store branch after-date config schema-cache
+                                  true #{branch head-cid})))))
+
+(defn- reachable-from-root
+  "Walk a ROOT: a commit-id, retained as itself, with ancestry NOT time-gated."
+  [store root after-date config schema-cache]
+  (reachable-from store root after-date config schema-cache false #{root}))
 
 (defn gc-storage!
   "Invokes garbage collection on the database by whitelisting currently known branches.
@@ -239,8 +308,23 @@
                  ;; shared across branches: the schema is content-addressed, so
                  ;; every commit that did not change it names the SAME object
                  schema-cache (atom {})
-                 walked (->> branches
-                             (map #(reachable-in-branch store % remove-before config schema-cache))
+                 ;; Explicit GC roots, persisted in the store under `:gc-roots`.
+                 ;; PERSISTED, not passed in: a generic sweeper (dvergr's
+                 ;; `gc-stores!` walks every room's kb/msgs/repo/data) must stay
+                 ;; correct for a mixed fleet without knowing what any one store
+                 ;; contains. A store that has its own notion of liveness —
+                 ;; geschichte, whose git refs point at commits datahike would
+                 ;; otherwise see as unreferenced old history — declares it here.
+                 roots (<? S (gc-roots store))
+                 _ (when (seq roots)
+                     (log/trace :datahike/gc-retain-roots {:root-count (count roots)}))
+                 walked (->> (concat
+                              (map #(reachable-in-branch store % remove-before
+                                                         config schema-cache)
+                                   branches)
+                              (map #(reachable-from-root store % remove-before
+                                                         config schema-cache)
+                                   roots))
                              async/merge
                              (<<? S))
                  ;; Store-refs are unioned into the whitelist here. For an object that
@@ -251,7 +335,8 @@
                  ;; the same set to sweep wherever it actually put the bytes.
                  reachable (-> (apply set/union (map :reachable walked))
                                (set/union (apply set/union (map :store-refs walked)))
-                               (conj :branches))]
+                               (conj :branches)
+                               (conj :gc-roots))]
              (log/trace :datahike/gc-reachable {:reachable-count (count reachable)
                                                 :cutoff cutoff})
              (<? S (sweep! store reachable cutoff))))))
