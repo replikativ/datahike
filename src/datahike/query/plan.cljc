@@ -1286,10 +1286,12 @@
     ;; unknown → no produced vars.
     #{}))
 
-(defn- branch-produced-vars
+(defn branch-produced-vars
   "Vars that an OR-JOIN branch's sub-plan produces internally — the
    union of `op-produced-vars` over the branch's :ops. Used to compute
-   the OR(-JOIN)'s required-from-outer set."
+   the OR(-JOIN)'s required-from-outer set, and by `plan-rule-op` to find
+   a rule branch's pass-through head vars (the ones its body never binds,
+   so their value can only come from the caller)."
   [sub-plan]
   (reduce (fn [acc op] (clojure.set/union acc (op-produced-vars op)))
           #{}

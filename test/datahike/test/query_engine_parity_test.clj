@@ -33,11 +33,19 @@
     (d/create-database cfg)
     (d/connect cfg)))
 
+;; The result cache is keyed by [query args db-snapshot] — the engine is NOT
+;; part of the key, so a cached base-engine answer would be served straight
+;; back to the planner call and every parity assertion below would compare a
+;; result against itself. Both helpers bypass it.
 (defn- planner [query & args]
-  (binding [q/*disable-planner* false] (apply d/q query args)))
+  (binding [q/*disable-planner* false
+            q/*query-result-cache?* false]
+    (apply d/q query args)))
 
 (defn- base [query & args]
-  (binding [q/*disable-planner* true] (apply d/q query args)))
+  (binding [q/*disable-planner* true
+            q/*query-result-cache?* false]
+    (apply d/q query args)))
 
 (defn- raised-cannot-resolve? [f]
   (try (f) false
@@ -244,3 +252,155 @@
            literal ?p in the replan seed would allow the reverse)")
       ;; And end-to-end: the full query stays correct on both engines.
       (is (= (base query db) (planner query db) #{["ALICE" 0]})))))
+
+;; ---------------------------------------------------------------------------
+;; Contract 3 — a rule head var that no branch body binds takes the caller's
+;; value on both engines (#897).
+;;
+;; Threading a caller-supplied parameter through a recursion is common:
+;;
+;;   [(reachable ?anchor ?eps ?n) ...base case, never mentions ?eps...]
+;;   [(reachable ?anchor ?eps ?o) ... [(contains? ?eps ?ep)]
+;;                                (reachable ?anchor ?eps ?s)]
+;;
+;; ?eps is not range-restricted — the base body cannot produce it, so its only
+;; possible value is the one the call site passed. The base engine gets this for
+;; free by renaming head vars to the call args. The planner renames to the
+;; rule's own head vars (so a constant call-arg can be filtered after the
+;; fixpoint instead of restricting the accumulator), which left ?eps bound by
+;; nobody: the branch relation came back without that column and the fixpoint's
+;; dedup step NPE'd on the missing :attrs entry.
+
+(defn- triple-conn
+  "Anchor/edge graph as (subject, predicate, object) triples:
+   root -isa-> Anchor, root -link-> b -link-> c -link-> d -link-> b (cycle),
+   c -skip-> z, and a disconnected q -isa-> Other, q -link-> r."
+  []
+  (let [conn (fresh-conn)]
+    (d/transact conn (for [a [:triple/s :triple/p :triple/o]]
+                       {:db/ident a
+                        :db/valueType :db.type/string
+                        :db/cardinality :db.cardinality/one}))
+    (d/transact conn [{:triple/s "root" :triple/p "isa" :triple/o "Anchor"}
+                      {:triple/s "root" :triple/p "link" :triple/o "b"}
+                      {:triple/s "b" :triple/p "link" :triple/o "c"}
+                      {:triple/s "c" :triple/p "link" :triple/o "d"}
+                      {:triple/s "d" :triple/p "link" :triple/o "b"}
+                      {:triple/s "c" :triple/p "skip" :triple/o "z"}
+                      {:triple/s "q" :triple/p "isa" :triple/o "Other"}
+                      {:triple/s "q" :triple/p "link" :triple/o "r"}])
+    conn))
+
+(def ^:private reachable-rules
+  "Right-recursive reachability: anchored start, edge kinds passed in by the
+   caller and never bound by a body."
+  '[[(reachable ?anchor ?eps ?n)
+     [?e :triple/s ?n] [?e :triple/p "isa"] [?e :triple/o ?anchor]]
+    [(reachable ?anchor ?eps ?o)
+     [?e :triple/s ?s] [?e :triple/p ?ep] [?e :triple/o ?o]
+     [(contains? ?eps ?ep)]
+     (reachable ?anchor ?eps ?s)]])
+
+(deftest unbound-head-var-takes-caller-value-on-both-engines
+  (let [conn (triple-conn)
+        db (d/db conn)]
+    (testing "the reported repro: ground anchor, edge set from :in"
+      (let [query '[:find ?n :in $ % ?anchor ?eps :where (reachable ?anchor ?eps ?n)]]
+        (is (= (base query db reachable-rules "Anchor" #{"link"})
+               (planner query db reachable-rules "Anchor" #{"link"})
+               #{["root"] ["b"] ["c"] ["d"]})
+            "cycle terminates and every reachable node is found")))
+
+    (testing "the call site names the parameter differently than the rule does"
+      ;; The planner used to get away with this only when the two names
+      ;; happened to coincide and the value sat in an outer relation.
+      (let [query '[:find ?n :in $ % ?anchor ?preds :where (reachable ?anchor ?preds ?n)]]
+        (is (= (base query db reachable-rules "Anchor" #{"link"})
+               (planner query db reachable-rules "Anchor" #{"link"})
+               #{["root"] ["b"] ["c"] ["d"]}))))
+
+    (testing "the parameter selects which edges are followed"
+      (let [query '[:find ?n :in $ % ?anchor ?eps :where (reachable ?anchor ?eps ?n)]]
+        (is (= (base query db reachable-rules "Anchor" #{"link" "skip"})
+               (planner query db reachable-rules "Anchor" #{"link" "skip"})
+               #{["root"] ["b"] ["c"] ["d"] ["z"]})
+            "adding :skip to the passed-in set pulls in z")
+        (is (= (base query db reachable-rules "Anchor" #{})
+               (planner query db reachable-rules "Anchor" #{})
+               #{["root"]})
+            "an empty set follows no edges at all")))
+
+    (testing "the anchor is free too — one row per anchor/node pair"
+      (let [query '[:find ?a ?n :in $ % ?eps :where (reachable ?a ?eps ?n)]]
+        (is (= (base query db reachable-rules #{"link"})
+               (planner query db reachable-rules #{"link"})
+               #{["Anchor" "root"] ["Anchor" "b"] ["Anchor" "c"] ["Anchor" "d"]
+                 ["Other" "q"] ["Other" "r"]}))))
+
+    (testing "the parameter is multi-valued, bound by an outer clause"
+      (let [rules '[[(reach ?anchor ?pred ?n)
+                     [?e :triple/s ?n] [?e :triple/p "isa"] [?e :triple/o ?anchor]]
+                    [(reach ?anchor ?pred ?o)
+                     [?e :triple/s ?s] [?e :triple/p ?pred] [?e :triple/o ?o]
+                     (reach ?anchor ?pred ?s)]]
+            query '[:find ?n :in $ % ?anchor
+                    :where [_ :triple/p ?p] [(not= ?p "isa")] (reach ?anchor ?p ?n)]]
+        ;; Each ?p value is followed on its own: "link" walks root→b→c→d,
+        ;; "skip" only ever reaches the anchored root (no skip edge leaves it),
+        ;; so z stays out — the parameter must not be smeared across values.
+        (is (= (base query db rules "Anchor")
+               (planner query db rules "Anchor")
+               #{["root"] ["b"] ["c"] ["d"]}))))
+
+    (testing "the base body filters on the parameter without binding it"
+      (let [rules '[[(reach ?anchor ?eps ?n)
+                     [?e :triple/s ?n] [?e :triple/p "isa"] [?e :triple/o ?anchor]
+                     [(contains? ?eps "link")]]
+                    [(reach ?anchor ?eps ?o)
+                     [?e :triple/s ?s] [?e :triple/p ?ep] [?e :triple/o ?o]
+                     [(contains? ?eps ?ep)]
+                     (reach ?anchor ?eps ?s)]]
+            query '[:find ?n :in $ % ?anchor ?eps :where (reach ?anchor ?eps ?n)]]
+        (is (= (base query db rules "Anchor" #{"link"})
+               (planner query db rules "Anchor" #{"link"})
+               #{["root"] ["b"] ["c"] ["d"]})
+            "the predicate sees the caller's value inside the base branch")
+        (is (= (base query db rules "Anchor" #{"other"})
+               (planner query db rules "Anchor" #{"other"})
+               #{})
+            "and can reject the base case outright")))
+
+    (testing "nothing binds the parameter on either side — the rule still runs"
+      ;; No caller binding to take, so the planner hands the whole rule to the
+      ;; relational engine rather than inventing a value.
+      (let [rules '[[(loose ?anchor ?x ?n)
+                     [?e :triple/s ?n] [?e :triple/p "isa"] [?e :triple/o ?anchor]]
+                    [(loose ?anchor ?x ?o)
+                     [?e :triple/s ?s] [?e :triple/p "link"] [?e :triple/o ?o]
+                     (loose ?anchor ?x ?s)]]
+            query '[:find ?n :in $ % ?anchor :where (loose ?anchor ?whatever ?n)]]
+        (is (= (base query db rules "Anchor")
+               (planner query db rules "Anchor")
+               #{["root"] ["b"] ["c"] ["d"]}))))
+
+    (d/release conn)))
+
+(deftest unbound-head-var-in-mutual-recursion
+  ;; Both rules of the SCC thread ?eps; only the called rule's base branch
+  ;; leaves it unbound, so the planner can still resolve it from the call args.
+  (let [conn (triple-conn)
+        db (d/db conn)
+        rules '[[(even-step ?anchor ?eps ?n)
+                 [?e :triple/s ?n] [?e :triple/p "isa"] [?e :triple/o ?anchor]]
+                [(even-step ?anchor ?eps ?o)
+                 [?e :triple/s ?s] [?e :triple/p ?ep] [?e :triple/o ?o]
+                 [(contains? ?eps ?ep)]
+                 (odd-step ?anchor ?eps ?s)]
+                [(odd-step ?anchor ?eps ?o)
+                 [?e :triple/s ?s] [?e :triple/p ?ep] [?e :triple/o ?o]
+                 [(contains? ?eps ?ep)]
+                 (even-step ?anchor ?eps ?s)]]
+        query '[:find ?n :in $ % ?anchor ?eps :where (even-step ?anchor ?eps ?n)]]
+    (is (= #{["root"] ["b"] ["c"] ["d"]}
+           (planner query db rules "Anchor" #{"link"})))
+    (d/release conn)))

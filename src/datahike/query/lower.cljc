@@ -381,10 +381,37 @@
                                    ;; LOptionalScan that binds `?e`)
                                    ;; apply uniformly inside rule
                                    ;; bodies.
+                          ;; Pass-through head vars: head vars this branch's
+                          ;; body never binds. Range-restricted datalog forbids
+                          ;; them, but a rule that threads a caller-supplied
+                          ;; parameter through the recursion —
+                          ;;
+                          ;;   [(reachable ?anchor ?eps ?n) ...base, no ?eps...]
+                          ;;   [(reachable ?anchor ?eps ?o) ... [(contains? ?eps ?ep)]
+                          ;;                                (reachable ?anchor ?eps ?s)]
+                          ;;
+                          ;; — is accepted by the relational engine, which
+                          ;; renames head vars to the CALL args, so the caller's
+                          ;; binding simply flows into the body. The planner
+                          ;; renames to the rule's own head vars instead (so
+                          ;; constant call-args can be filtered after the
+                          ;; fixpoint rather than restricting the accumulator),
+                          ;; which cuts that path: nothing binds ?eps, the
+                          ;; branch relation comes back without it, and
+                          ;; `rel-dedup-into!` NPEs on the missing :attrs entry.
+                          ;; Record them per branch so `execute-recursive-rule`
+                          ;; can bind them from the call site (#897).
+                                   with-pass-through
+                                   (fn [p]
+                                     (let [produced (plan/branch-produced-vars p)
+                                           missing (into #{} (remove produced) free-call-args)]
+                                       (cond-> p
+                                         (seq missing) (assoc :pass-through-vars missing))))
                                    plan-branch (fn plan-branch
                                                  [branch-clauses guarded]
-                                                 (plan-via-ir db branch-clauses branch-bound
-                                                              rules guarded))
+                                                 (with-pass-through
+                                                   (plan-via-ir db branch-clauses branch-bound
+                                                                rules guarded)))
                                    base-ps (mapv (fn [b]
                                                    (let [renamed (rename-branch-vars b free-call-args seqid db)]
                                                      (plan-branch (vec renamed) nil)))
