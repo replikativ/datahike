@@ -327,3 +327,27 @@
         (is (= #{2 3 4 5 10 11 12}
                (set (d/q '[:find [?a ...] :in $ % ?h :where (anc ?h ?a)]
                          dia-db anc-rule 1))))))))
+
+(deftest test-rule-head-var-bound-only-by-caller
+  ;; ?eps is a rule parameter no branch body binds — not range-restricted, so
+  ;; its only possible value is the one the call site passed. The planner used
+  ;; to rename head vars to the rule's own names without carrying that value in,
+  ;; leaving the branch relation without a ?eps column and NPEing in the
+  ;; fixpoint's dedup step (#897).
+  (let [db [[1 :s "root"] [1 :p "isa"] [1 :o "Anchor"]
+            [2 :s "root"] [2 :p "link"] [2 :o "b"]
+            [3 :s "b"] [3 :p "link"] [3 :o "c"]
+            [4 :s "c"] [4 :p "skip"] [4 :o "z"]]
+        rules '[[(reachable ?anchor ?eps ?n)
+                 [?e :s ?n] [?e :p "isa"] [?e :o ?anchor]]
+                [(reachable ?anchor ?eps ?o)
+                 [?e :s ?s] [?e :p ?ep] [?e :o ?o]
+                 [(contains? ?eps ?ep)]
+                 (reachable ?anchor ?eps ?s)]]
+        query '[:find ?n :in $ % ?anchor ?eps :where (reachable ?anchor ?eps ?n)]]
+    (testing "the passed-in edge set reaches the whole chain"
+      (is (= #{["root"] ["b"] ["c"]} (d/q query db rules "Anchor" #{"link"}))))
+    (testing "widening the passed-in set follows the extra edge kind"
+      (is (= #{["root"] ["b"] ["c"] ["z"]} (d/q query db rules "Anchor" #{"link" "skip"}))))
+    (testing "an empty set leaves only the anchored base case"
+      (is (= #{["root"]} (d/q query db rules "Anchor" #{}))))))

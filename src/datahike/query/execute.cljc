@@ -3286,19 +3286,33 @@
 
 (defn- execute-branch-plans
   "Execute a list of branch plans (sub-plans), union results, project to output-vars.
-   Returns a Relation."
-  [db plans ctx output-vars]
-  (let [branch-rels
-        (into []
-              (keep (fn [plan]
-                      (let [result-ctx (execute-plan plan ctx db)]
-                        (when (and result-ctx (seq (:rels result-ctx)))
-                          (let [joined (reduce rel/hash-join (:rels result-ctx))]
-                            (rel/limit-rel joined output-vars))))))
-              plans)]
-    (if (seq branch-rels)
-      (reduce rel/sum-rel branch-rels)
-      (rel/->Relation (zipmap output-vars (range)) []))))
+   Returns a Relation.
+
+   `pass-through-rels` maps a head var to a one-column Relation holding the
+   caller's value(s) for it. A branch whose body never binds that head var (the
+   planner marks it in the plan's :pass-through-vars) gets the relation injected
+   before execution, so the value is available to the body's own predicates and
+   functions and shows up as a column in the branch result."
+  ([db plans ctx output-vars]
+   (execute-branch-plans db plans ctx output-vars nil))
+  ([db plans ctx output-vars pass-through-rels]
+   (let [branch-rels
+         (into []
+               (keep (fn [plan]
+                       (let [ctx' (reduce (fn [c v]
+                                            (if-let [r (get pass-through-rels v)]
+                                              (update c :rels rel/collapse-rels r)
+                                              c))
+                                          ctx
+                                          (:pass-through-vars plan))
+                             result-ctx (execute-plan plan ctx' db)]
+                         (when (and result-ctx (seq (:rels result-ctx)))
+                           (let [joined (reduce rel/hash-join (:rels result-ctx))]
+                             (rel/limit-rel joined output-vars))))))
+               plans)]
+     (if (seq branch-rels)
+       (reduce rel/sum-rel branch-rels)
+       (rel/->Relation (zipmap output-vars (range)) [])))))
 
 (defn- compute-magic-info
   "Detect ground call-args for a recursive rule and compute magic set parameters.
@@ -3325,6 +3339,71 @@
                  prop-pos (if (= ground-pos 0) 1 0)]
              {:ground-positions ground-positions
               :propagation-pos prop-pos}))))))
+
+(defn- single-value-rel
+  "One-column, one-tuple Relation binding `v` to `head-var`."
+  [head-var v]
+  (let [arr #?(:clj (object-array 1) :cljs (make-array 1))]
+    (aset arr 0 v)
+    (rel/->Relation {head-var 0} [arr])))
+
+(defn- call-arg-rel
+  "The caller's binding for a rule head var, as a one-column Relation named by
+   the head var. `call-arg` is the argument the rule was called with at that
+   head var's position: a constant, a var the query already pinned to a constant
+   (:consts), or a var bound by an outer relation — at most one, since
+   `collapse-rels` keeps every var in a single rel. Returns nil when the caller
+   has no binding either — the head var is then unconstrained on both sides and
+   only the relational engine can evaluate the rule."
+  [ctx head-var call-arg]
+  (cond
+    (not (analyze/free-var? call-arg))
+    (single-value-rel head-var call-arg)
+
+    (contains? (:consts ctx) call-arg)
+    (single-value-rel head-var (get (:consts ctx) call-arg))
+
+    :else
+    (when-let [rel (first (filter #(contains? (:attrs %) call-arg) (:rels ctx)))]
+      (let [idx (get (:attrs rel) call-arg)
+            tuples (into []
+                         (comp (map (fn [tuple]
+                                      #?(:clj (if (instance? object-array-class tuple)
+                                                (aget ^objects tuple (int idx))
+                                                (nth tuple idx))
+                                         :cljs (aget tuple idx))))
+                               (distinct)
+                               (map (fn [v]
+                                      (let [arr #?(:clj (object-array 1) :cljs (make-array 1))]
+                                        (aset arr 0 v)
+                                        arr))))
+                         (:tuples rel))]
+        (rel/->Relation {head-var 0} tuples)))))
+
+(defn- resolve-pass-through-rels
+  "Resolve every pass-through head var of the called rule's branch plans (see
+   `plan-rule-op`) against the call site. Returns {head-var Relation}, or
+   :unresolvable when some pass-through var has no caller binding to take —
+   including any pass-through var in a *mutually* recursive SCC partner, which
+   is not the rule being called and so has no call args at all. The caller then
+   falls back to the relational engine, which handles these rules directly.
+   Returns nil when no branch has pass-through vars (the common case)."
+  [ctx scc-rule-plans rule-name call-args head-vars]
+  (let [needed (fn [rn]
+                 (let [{:keys [base-plans rec-clause-versions]} (get scc-rule-plans rn)]
+                   (into #{} (mapcat :pass-through-vars) (concat base-plans rec-clause-versions))))
+        others (into #{} (mapcat needed) (remove #{rule-name} (keys scc-rule-plans)))
+        mine (needed rule-name)
+        hv->call-arg (zipmap head-vars call-args)]
+    (cond
+      (seq others) :unresolvable
+      (empty? mine) nil
+      :else (reduce (fn [acc hv]
+                      (if-let [r (and (contains? hv->call-arg hv)
+                                      (call-arg-rel ctx hv (get hv->call-arg hv)))]
+                        (assoc acc hv r)
+                        (reduced :unresolvable)))
+                    {} mine))))
 
 (defn- inject-magic-relation
   "Add a magic demand relation to the context that constrains head-var at
@@ -3443,12 +3522,12 @@
    Cartesian product). `batch` holds only first-time demand values, so each is
    base-evaluated exactly once and the base stays O(demand) across the whole
    fixpoint. Returns a Relation or nil when there is nothing new."
-  [db base-plans head-vars ground-pos ^java.util.ArrayList batch ctx]
+  [db base-plans head-vars ground-pos ^java.util.ArrayList batch ctx pass-rels]
   #?(:clj
      (when (pos? (.size batch))
        (let [demand' (java.util.HashSet. batch)
              ctx' (inject-magic-relation ctx head-vars ground-pos demand')]
-         (execute-branch-plans db base-plans ctx' head-vars)))
+         (execute-branch-plans db base-plans ctx' head-vars pass-rels)))
      :cljs nil))
 
 (defn- extract-demand-values
@@ -3492,8 +3571,16 @@
    Each rule has its own accumulator."
   [db op ctx]
   (let [{:keys [scc-rule-plans scc-rule-names call-args head-vars rule-name
-                base-scan-attr]} op]
-    (if (nil? scc-rule-plans)
+                base-scan-attr]} op
+        ;; Head vars no branch body binds take their value from the call site
+        ;; (#897). When one has no caller binding either, the fixpoint cannot
+        ;; produce a well-formed tuple for it — hand the whole rule to the
+        ;; relational engine, which evaluates it by renaming head vars to the
+        ;; call args.
+        pass-rels (when scc-rule-plans
+                    (resolve-pass-through-rels ctx scc-rule-plans rule-name
+                                               call-args head-vars))]
+    (if (or (nil? scc-rule-plans) (= :unresolvable pass-rels))
       ;; No pre-built plans — fall back to legacy
       (let [clause (:clause op)]
         (binding [rel/*implicit-source* (get (:sources ctx) '$)]
@@ -3537,11 +3624,11 @@
                                   ;; Magic, any other base shape: demand-restricted base branches
                                           (and magic-demand (= rn rule-name))
                                           (or (magic-base-scan-general db base-plans head-vars magic-ground-pos
-                                                                       seed-batch ctx)
+                                                                       seed-batch ctx pass-rels)
                                               (rel/->Relation (zipmap head-vars (range)) []))
                                   ;; No magic: full base branch plan execution
                                           :else
-                                          (execute-branch-plans db base-plans ctx head-vars))
+                                          (execute-branch-plans db base-plans ctx head-vars pass-rels))
                                delta-rel (rel-dedup-into! base-rel head-vars (get seen-sets rn))]
                   ;; Propagate magic demand from base results
                            (when (and magic-demand (= rn rule-name))
@@ -3611,7 +3698,7 @@
                                   ;; General demand-restricted base for newly demanded entities
                                              (and magic-demand (= rn rule-name))
                                              (magic-base-scan-general db base-plans head-vars magic-ground-pos
-                                                                      batch ctx))
+                                                                      batch ctx pass-rels))
                                   ;; Execute recursive clause versions
                                   ;; Optimization: delta-driven expansion for simple binary rules
                                   ;; Instead of full index scan + hash-join, iterate delta tuples
@@ -3684,7 +3771,8 @@
                                             ;; Normal: full branch plan execution
                                             ;; (ground var already pruned by the
                                             ;; injected demand in aug-ctx).
-                                                     (execute-branch-plans db rec-clause-versions aug-ctx head-vars))
+                                                     (execute-branch-plans db rec-clause-versions aug-ctx head-vars
+                                                                           pass-rels))
                                   ;; Union base and rec results
                                            new-rel (if (and magic-base-rel (seq (:tuples magic-base-rel)))
                                                      (rel/sum-rel magic-base-rel rec-rel)
