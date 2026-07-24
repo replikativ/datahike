@@ -3340,12 +3340,15 @@
              {:ground-positions ground-positions
               :propagation-pos prop-pos}))))))
 
-(defn- single-value-rel
-  "One-column, one-tuple Relation binding `v` to `head-var`."
-  [head-var v]
-  (let [arr #?(:clj (object-array 1) :cljs (make-array 1))]
-    (aset arr 0 v)
-    (rel/->Relation {head-var 0} [arr])))
+(defn- values-rel
+  "One-column Relation binding `head-var` to each of `values` — the shape the
+   base engine gives a scalar `:in` binding (query/in->rel, BindScalar)."
+  [head-var values]
+  (rel/->Relation {head-var 0}
+                  (mapv (fn [v]
+                          (doto #?(:clj (object-array 1) :cljs (make-array 1))
+                            (aset 0 v)))
+                        values)))
 
 (defn- call-arg-rel
   "The caller's binding for a rule head var, as a one-column Relation named by
@@ -3358,27 +3361,15 @@
   [ctx head-var call-arg]
   (cond
     (not (analyze/free-var? call-arg))
-    (single-value-rel head-var call-arg)
+    (values-rel head-var [call-arg])
 
     (contains? (:consts ctx) call-arg)
-    (single-value-rel head-var (get (:consts ctx) call-arg))
+    (values-rel head-var [(get (:consts ctx) call-arg)])
 
     :else
     (when-let [rel (first (filter #(contains? (:attrs %) call-arg) (:rels ctx)))]
-      (let [idx (get (:attrs rel) call-arg)
-            tuples (into []
-                         (comp (map (fn [tuple]
-                                      #?(:clj (if (instance? object-array-class tuple)
-                                                (aget ^objects tuple (int idx))
-                                                (nth tuple idx))
-                                         :cljs (aget tuple idx))))
-                               (distinct)
-                               (map (fn [v]
-                                      (let [arr #?(:clj (object-array 1) :cljs (make-array 1))]
-                                        (aset arr 0 v)
-                                        arr))))
-                         (:tuples rel))]
-        (rel/->Relation {head-var 0} tuples)))))
+      (let [idx (get (:attrs rel) call-arg)]
+        (values-rel head-var (distinct (map #(get % idx) (:tuples rel))))))))
 
 (defn- resolve-pass-through-rels
   "Resolve every pass-through head var of the called rule's branch plans (see
