@@ -188,8 +188,23 @@
                                  (select-keys config [:crypto-hash?]))]
      (make-scriptum-index writer (assoc config :path path :branch branch)))))
 
-;; GC: scriptum uses filesystem, nothing in konserve to mark
-(defmethod sec/mark-from-key-map :scriptum [_ _] #{})
+;; GC: a path-backed index keeps its segments in a Lucene directory on the
+;; filesystem, so konserve holds nothing of it to mark and the empty set is the
+;; honest answer.
+;;
+;; That stops being true the moment the index is konserve-backed
+;; (scriptum.konserve: blobs under [:scriptum :blob <address>] reachable from
+;; [:scriptum :manifest <branch>]). Then the empty set means "unreachable" and
+;; the sweep deletes the whole index. So key off what the key-map DECLARES
+;; rather than assuming — and refuse rather than guess, because the failure is
+;; silent and total.
+(defmethod sec/mark-from-key-map :scriptum [key-map _store]
+  (if (sec/konserve-backed? key-map)
+    (throw (ex-info (str "Konserve-backed scriptum index cannot be marked yet:"
+                         " marking must return the branch manifest plus every"
+                         " blob it references, or GC will delete the index.")
+                    {:key-map key-map}))
+    #{}))
 
 ;; Branch: open source, fork via scriptum's native segment-sharing fork
 (defmethod sec/branch-from-key-map :scriptum [key-map _store _from-branch new-branch]
