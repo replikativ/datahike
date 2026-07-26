@@ -455,6 +455,22 @@
                                :where [(fun ?e) ?x]]
                              [1]))))
 
+(deftest test-predicate-on-unbindable-var
+  ;; A predicate over a var no clause can bind is unresolvable. The base
+  ;; engine's fixpoint resolver raises "Cannot resolve any more clauses";
+  ;; the planner used to return #{} silently — its executors feed the
+  ;; predicate a nil, the resulting IllegalArgumentException is swallowed
+  ;; as "false", and every row is filtered away. Silently dropping an
+  ;; unresolvable clause is what caused #814 and #815; both engines raise.
+  (let [db (d/db-with (db/empty-db) [{:db/id 1 :name "Ivan"}])]
+    (is (thrown-with-msg? ExceptionInfo #"Cannot resolve any more clauses|Insufficient bindings"
+                          (d/q '[:find ?n :where [?e :name ?n] [(> ?x 1)]] db)))
+    (is (thrown-with-msg? ExceptionInfo #"Cannot resolve any more clauses|Insufficient bindings"
+                          (d/q '[:find ?x :where [(> ?x 1)]] db)))
+    (testing "a predicate whose var IS bound later still resolves"
+      (is (= #{["Ivan"]}
+             (d/q '[:find ?n :where [(= ?n "Ivan")] [?e :name ?n]] db))))))
+
 (deftest test-issue-180
   (is (= #{}
          (d/q '[:find ?e ?a
