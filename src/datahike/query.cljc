@@ -133,6 +133,11 @@
        (case (:op op)
          :pattern-scan
          (str pad "SCAN " (name (or (:index op) :unknown))
+              ;; The source, when it is not the default `$`. Without it a scan
+              ;; against a foreign source is indistinguishable from one against
+              ;; `$` in the plan output, which is why a multi-source `not-join`
+              ;; running its sub-plan on the wrong db looked like a correct plan.
+              (when-let [src (:source op)] (str " " src))
               " " (pr-str (:clause op))
               (when-let [si (:schema-info op)]
                 (str " [" (when (:ref? si) "ref ")
@@ -2223,14 +2228,26 @@
          (let [join-rel (if (seq (:rels context))
                           (reduce hash-join (:rels context))
                           (prod-rel))
-               negation-context (-> context
-                                    (assoc :rels [join-rel])
-                                    (assoc :stats [])
-                                    (limit-context vars)
-                                    (resolve-context clauses)
-                                    (limit-context vars))
-               negation-join-rel (reduce hash-join (:rels negation-context))
-               negation (subtract-rel join-rel negation-join-rel)]
+               resolved (-> context
+                            (assoc :rels [join-rel])
+                            (assoc :stats [])
+                            (limit-context vars)
+                            (resolve-context clauses))
+               ;; Satisfiability is decided on the FULL negation, before
+               ;; projecting to the join vars: `limit-context` drops every
+               ;; relation with no join-var column — including the EMPTY one
+               ;; that is the whole reason the body has no solution. Dropping it
+               ;; left the body looking satisfiable, so
+               ;; `(not-join [?g] [?g :name "a"] [999 :city ?c])` excluded ?g
+               ;; even though no ?c exists. A negation whose body has no
+               ;; solution excludes nothing.
+               unsatisfiable? (some #(zero? (count (:tuples %))) (:rels resolved))
+               negation-context (limit-context resolved vars)
+               negation-join-rel (when-not unsatisfiable?
+                                   (reduce hash-join (:rels negation-context)))
+               negation (if negation-join-rel
+                          (subtract-rel join-rel negation-join-rel)
+                          join-rel)]
            (cond-> (assoc context :rels [negation])
              (:stats context) (assoc :tmp-stats {:type :not
                                                  :branches (:stats negation-context)})))))
@@ -3275,7 +3292,13 @@
                            (> (count (:components (connected-components
                                                    (:where query)
                                                    (set (keys (:consts context-in)))
-                                                   find-vars)))
+                                                   find-vars
+                                                   ;; same edges as raw-q*, so explain
+                                                   ;; reports the path d/q will take
+                                                   (into []
+                                                         (comp (map (comp set keys :attrs))
+                                                               (filter #(> (count %) 1)))
+                                                         (:rels context-in)))))
                               1))
                direct? (and find-rel? (not (:with query)) (not has-aggs?) (not has-pull?)
                             no-in-rels?
@@ -3672,15 +3695,17 @@
 
    `bound-vars` is the set of externally bound vars (from :in).
    `find-vars` is the original ordered seq of result-projection vars.
+   `in-rel-var-sets` is one var-set per MULTI-COLUMN :in relation binding
+   (`[[?e ?f]]`, `[?a ?b]`); each is a connectivity edge — see step 1b.
 
    Component order is stable: components appear in the order their
    first source clause appears. Each component's :find-vars preserves
    the original find order, filtered to vars produced by that
    component's clauses."
-  [clauses bound-vars find-vars]
+  [clauses bound-vars find-vars in-rel-var-sets]
   (let [classified  (mapv analyze/classify-clause clauses)
         clause-vars (mapv #(clause-meaningful-vars % bound-vars) classified)
-        all-vars    (into #{} cat clause-vars)
+        all-vars    (into (into #{} cat clause-vars) cat in-rel-var-sets)
         ;; Step 1: union vars within each joiner clause.
         uf (reduce
             (fn [uf [ci vs]]
@@ -3690,6 +3715,21 @@
                 uf))
             (into {} (map (fn [v] [v v])) all-vars)
             (map vector classified clause-vars))
+        ;; Step 1b: a multi-column :in relation CORRELATES its vars — the caller
+        ;; supplied tuples, so `[[?e ?f]]` with [[7 5] [8 6]] means (7,5) and
+        ;; (8,6), never (7,6). That makes its var-set an edge exactly like a
+        ;; pattern's. Without it, two patterns sharing no free var split into
+        ;; components, each ran as its own sub-query, and the Cartesian merge
+        ;; reassembled every combination — silently inventing rows. A
+        ;; single-var binding (`[?e ...]`) carries no correlation and needs no
+        ;; edge, which is why this went unnoticed.
+        uf (reduce (fn [uf vs]
+                     (if (> (count vs) 1)
+                       (let [[v0 & rest-vs] (vec vs)]
+                         (reduce (fn [p v] (uf-union p v0 v)) uf rest-vs))
+                       uf))
+                   uf
+                   (or in-rel-var-sets []))
         ;; Vars some clause actually BINDS. Negations and predicates only
         ;; constrain, so they produce nothing. A function binds its binding
         ;; form alone — its whole-clause vars would also count the args it
@@ -3940,7 +3980,9 @@
       (let [exec-direct #?(:clj (requiring-resolve 'datahike.query.execute/execute-plan-direct)
                            :cljs execute/execute-plan-direct)
             find-var-syms (mapv (fn [^Variable el] (.-symbol el)) (:elements qfind))]
-        (exec-direct plan db find-var-syms nil (:consts context-in) (:cancel context-in))))))
+        ;; pass the context so a NOT-JOIN sub-plan keeps its sources and cancel flag
+        (exec-direct plan db find-var-syms nil (:consts context-in) (:cancel context-in)
+                     context-in)))))
 
 (defn- post-process-result
   "Shared post-processing pipeline for both planned-relation and legacy paths.
@@ -4120,8 +4162,15 @@
                        ;; treat e.g. `[?e ...]` as disconnecting two
                        ;; patterns that share ?e.
                        in-bound-vars (set (keys (:consts context-in)))
+                       ;; …but a MULTI-COLUMN :in relation correlates its vars,
+                       ;; so hand those var-sets over as connectivity edges.
+                       in-rel-var-sets (into []
+                                             (comp (map (comp set keys :attrs))
+                                                   (filter #(> (count %) 1)))
+                                             (:rels context-in))
                        {:keys [components post-filters]}
-                       (connected-components (:where query) in-bound-vars find-var-syms)]
+                       (connected-components (:where query) in-bound-vars find-var-syms
+                                             in-rel-var-sets)]
                    (when (> (count components) 1)
                      ;; Recursively run each component as its own query.
                      ;; Sub-queries with one component will fall through to

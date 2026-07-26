@@ -2114,7 +2114,15 @@
    definition; the rule ops are opaque to the fused probe."
   [op]
   (case (:op op)
-    (:entity-group :pattern-scan) (:vars op)
+    (:entity-group :pattern-scan)
+    ;; An OPTIONAL scan (a fused `get-else`) does not BIND its entity var — it
+    ;; needs one bound to look up, and emits the default on a miss. Counting it
+    ;; as bound let a negation whose body is a `get-else` over the join var take
+    ;; the fused path, where the sub-plan has no relations and the entity is
+    ;; unbound: "Cannot resolve any more clauses".
+    (if (or (:optional? op) (some :optional? (:merge-ops op)))
+      (remove #{(first (:clause op))} (:vars op))
+      (:vars op))
     (:function :external-engine) (filter analyze/free-var?
                                          (analyze/extract-vars (:binding op)))
     (:or :or-join) (let [branch-vars (map sub-plan-bound-vars (:branches op))]
@@ -2317,13 +2325,20 @@
    A join var supplied as a scalar :in binding needs no handling here: the fold
    plants its VALUE in the sub-plan's body clauses, so the var is absent from
    the negation relation and drops out of the exclusion key below — the key
-   degenerates to the remaining join vars, which is exactly right."
-  [result-list not-join-ops var-index db]
+   degenerates to the remaining join vars, which is exactly right.
+
+   `outer-ctx` carries the query's non-relational context. The sub-plan runs
+   with no relations, but MUST keep the source bindings and the cancel flag: a
+   `$2`-prefixed pattern in the negation resolved against the default db
+   instead (logging :datahike/source-not-found) and silently excluded the wrong
+   rows, a `get-else` over a foreign source raised outright, and a long
+   negation scan ignored cancellation."
+  [result-list not-join-ops var-index db outer-ctx]
   (doseq [nj-op not-join-ops]
     (let [join-vars (:join-vars nj-op)
           sub-plan (:sub-plan nj-op)
           ;; Execute the NOT-JOIN's sub-plan via the Relation engine
-          neg-ctx (execute-plan sub-plan {:rels [] :sources {}} db)
+          neg-ctx (execute-plan sub-plan (rel/sub-context outer-ctx []) db)
           neg-rel (when (and neg-ctx (seq (:rels neg-ctx)))
                     (reduce rel/hash-join (:rels neg-ctx)))]
       (when (and neg-rel (pos? (count (:tuples neg-rel))))
@@ -2513,8 +2528,10 @@
    consts: map of var-sym → constant value for scalar :in bindings.
    cancel: optional IDeref/Volatile; when its value is truthy the query
      raises :datahike/canceled at the next check point.
+   outer-ctx: the query context, so a NOT-JOIN's sub-plan keeps its sources and
+     cancel flag (see post-filter-not-joins).
    Returns the HashSet, or nil if the plan can't be executed directly."
-  [plan db find-vars max-results consts cancel]
+  [plan db find-vars max-results consts cancel outer-ctx]
   (let [ops (:ops plan)
         temporal (temporal-info db)]
     (when (and (not (:has-passthrough? plan))
@@ -2908,7 +2925,7 @@
             (when (seq pred-ops)
               (post-filter-preds result-list pred-ops var-index))
             (when (seq not-join-ops)
-              (post-filter-not-joins result-list not-join-ops var-index db))
+              (post-filter-not-joins result-list not-join-ops var-index db outer-ctx))
             (let [var-index (if (seq fn-ops)
                               (post-apply-fns result-list fn-ops var-index)
                               var-index)]

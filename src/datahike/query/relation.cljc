@@ -245,6 +245,23 @@
          :rels (->> (:rels context)
                     (keep #(limit-rel % vars)))))
 
+(defn sub-context
+  "The context a SUB-PLAN runs in: everything non-relational the caller had —
+   `:sources`, `:consts`, `:cancel`, `:settings`, `:rules` — with exactly the
+   relations the caller chose to expose.
+
+   Every sub-plan execution site used to improvise this, and each improvised
+   differently: one passed `{:rels [] :sources {}}` and so lost the source
+   bindings (a `$2`-prefixed pattern inside a `not-join` silently fell back to
+   the default db), the cancellation flag (a long negation scan ignored
+   timeouts) and the consts; another passed the caller's relations wholesale
+   into a scope where the same var name means something else. Construct it here
+   so a new site cannot invent a sixth discipline."
+  [context rels]
+  (-> (select-keys context [:sources :consts :cancel :settings :rules
+                            :rule-accumulators :entity-filters])
+      (assoc :rels (vec rels))))
+
 ;; ---------------------------------------------------------------------------
 ;; Late-binding registry for query engine functions.
 ;; Breaks circular dependency: execute.cljc needs some functions from query.cljc,
