@@ -8,7 +8,8 @@
    [datahike.index.entity-set :as es]
    [datahike.query :as q]
    [datahike.index.secondary.scriptum]
-   [datahike.index.secondary.stratum]))
+   [datahike.index.secondary.stratum]
+   [datahike.test.query-aggregates-test :refer [aggregate-contract]]))
 
 ;; Proximum requires Java 22+ (class file version 66.0).
 ;; Load lazily so the test file compiles on older JVMs.
@@ -560,3 +561,41 @@
         (finally
           (d/release conn)
           (d/delete-database cfg))))))
+
+;; ---------------------------------------------------------------------------
+;; Columnar aggregate delegate: same contract as the reference implementation
+
+(deftest test-stratum-aggregate-contract
+  (testing "the columnar path answers datahike's aggregate contract"
+    ;; A fast path may only claim an aggregate it provably computes to the
+    ;; contract in `query-aggregates-test/aggregate-contract`. Mapping by NAME
+    ;; alone is what let this path return the SAMPLE variance (÷n−1) where the
+    ;; reference returns the population one, and ##NaN for a one-element group.
+    ;; stratum's population ops are named :variance-pop / :stddev-pop, so the
+    ;; adapter must translate rather than pass the name through.
+    ;; Keep this test honest: if the delegate declined every aggregate, the
+    ;; comparison below would pass vacuously by running the reference twice.
+    (is (datahike.index.secondary.stratum/stratum-compatible-aggs?
+         [[:variance :num/v] [:stddev :num/v] [:median :num/v] [:avg :num/v]])
+        "the columnar path must actually claim these aggregates")
+    (doseq [{:keys [agg in expect note]} aggregate-contract]
+      (let [schema {:num/v {}
+                    :idx/analytics {:db.secondary/type :stratum
+                                    :db.secondary/attrs [:num/v]}}
+            empty-db (db/empty-db schema)
+            stratum-idx (sec/create-index :stratum {:attrs #{:num/v}} empty-db)
+            db (-> (assoc empty-db :secondary-indices {:idx/analytics stratum-idx})
+                   (d/db-with (vec (map-indexed (fn [i v] {:db/id (inc i) :num/v v}) in))))
+            query {:find [(list agg '?x) '.] :where '[[?e :num/v ?x]]}
+            label (str "(" agg " " (pr-str in) ")" (when note (str " — " note)))
+            columnar (binding [q/*disable-planner* false] (d/q query db))
+            reference (binding [q/*disable-planner* true] (d/q query db))]
+        (is (and (number? columnar)
+                 (< (abs (- (double expect) (double columnar))) 1e-9))
+            (str label " columnar"))
+        (is (= (double reference) (double columnar))
+            (str label " — columnar and reference must agree"))
+        ;; a truncating median or an integral avg passes tolerance while still
+        ;; being the wrong answer, so pin the type too
+        (is (= (double? reference) (double? columnar))
+            (str label " — same numeric type on both paths"))))))

@@ -154,7 +154,44 @@
         '[:find ?e :in $ ?e :where [?e :name ?n]]
         '[:find ?e :in $ ?e :where [?e :name ?n] [?e :tag ?t]])
       (is (= #{[[:uid "u100"] "alice"]}
-             (d/q '[:find ?e ?n :in $ ?e :where [?e :name ?n]] db [:uid "u100"]))))))
+             (d/q '[:find ?e ?n :in $ ?e :where [?e :name ?n]] db [:uid "u100"]))))
+
+    (testing "a lookup ref is resolved wherever it sits in a collection binding"
+      ;; Resolution used to be gated on `(first (:tuples rel))`, so a lookup ref
+      ;; in any later row was left as a raw vector, joined against entity ids,
+      ;; matched nothing, and that row silently disappeared. Row 0 is not
+      ;; representative: a binding may mix entity ids and lookup refs freely.
+      (are [in] (= #{["alice"] ["bob"]}
+                   (d/q '[:find ?n :in $ [?e ...] :where [?e :name ?n]] db in))
+        [[:uid "u100"] [:uid "u101"]]
+        [[:uid "u100"] 101]
+        [100 [:uid "u101"]]                      ;; lookup ref NOT in row 0
+        [100 101]))
+
+    (testing "a value that merely looks like a lookup ref is left alone"
+      ;; `[:limit 5]` is a two-element keyword-led vector, i.e. shape-identical
+      ;; to a lookup ref. Resolving on shape called entid, which raises for a
+      ;; non-unique attribute, so passing an options-shaped value killed the
+      ;; query. The schema decides, not the shape.
+      (are [v] (= #{[v "alice"]}
+                  (d/q '[:find ?p ?n :in $ ?p :where [?e :name ?n] [?e :uid "u100"]] db v))
+        [:limit 5]
+        [:db/ident :name]
+        [:name "alice"]))                        ;; :name is not unique here
+
+    (testing "a second :in source does not disable lookup-ref resolution"
+      ;; Any extra source used to switch resolution off for the whole query,
+      ;; including vars that only ever touch $, so their raw vectors matched
+      ;; nothing. Scope it per var: only a var a FOREIGN source reads must be
+      ;; left alone, since a lookup ref denotes a different entity there.
+      (let [db2 (d/db-with (db/empty-db) [{:db/id 100 :name "other"}])]
+        (is (= #{[[:uid "u100"] "alice"]}
+               (d/q '[:find ?e ?n :in $ $2 ?e :where [?e :name ?n]] db db2 [:uid "u100"]))
+            "?e only reads from $, so it resolves against $")
+        (is (= #{[[:uid "u100"] "alice" "other"]}
+               (d/q '[:find ?e ?n ?m :in $ $2 ?e
+                      :where [?e :name ?n] [$2 100 :name ?m]] db db2 [:uid "u100"]))
+            "an unrelated foreign clause does not disable resolution")))))
 
 (deftest test-source-prefixed-pattern-uses-its-own-schema
   ;; A source-prefixed pattern runs against a different database than the one

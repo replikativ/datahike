@@ -386,6 +386,11 @@
 (defn simplify-rel [rel]
   (rel/->Relation (:attrs rel) (distinct-tuples (:tuples rel))))
 
+(defn- prod-rel-empty
+  "FALSE: no columns and no tuples — annihilates any join it takes part in."
+  []
+  (rel/->Relation {} []))
+
 (defn prod-rel
   ([] (rel/->Relation {} [(da/make-array 0)]))
   ([rel1 rel2]
@@ -592,25 +597,43 @@
 ;; Register built-ins with execute module for CLJS (breaks circular dep)
 #?(:cljs (execute/register-built-ins! built-ins clj-core-built-ins))
 
+;; Aggregate contract (validated against Datomic peer 1.0.7387, see the
+;; conformance test in query-aggregates-test):
+;;   avg, variance, stddev  -> DOUBLE. Datomic returns 18.0 / 62.0 / 7.874…,
+;;                             never a Long or a Ratio.
+;;   variance, stddev       -> POPULATION (÷n). A Datalog aggregate applies to
+;;                             the complete answer set, so that set IS the
+;;                             population — and it is the only total choice: a
+;;                             one-element group gives 0.0, where the sample
+;;                             estimator gives NaN (Datomic: 0.0).
+;;   median                 -> DOUBLE, like avg. This is a DELIBERATE departure
+;;                             from Datomic, which returns 2 for the median of
+;;                             [1 2 3 4] because it averages the two middle
+;;                             values in their own numeric type. A median is a
+;;                             central-tendency statistic and real-valued in
+;;                             general; truncating it to 2 is a wart, and it
+;;                             would be inconsistent with avg, which Datomic
+;;                             itself returns as a double.
+;;   sum, min, max, count   -> exact / type-preserving.
+;; Any fast path may only claim an aggregate it provably computes this way.
 (def built-in-aggregates
   (letfn [(sum [coll] (reduce + 0 coll))
-          (avg [coll] (/ (sum coll) (count coll)))
+          (avg [coll] (double (/ (sum coll) (count coll))))
           (median
             [coll]
             (let [terms (sort coll)
                   size (count coll)
                   med (bit-shift-right size 1)]
-              (cond-> (nth terms med)
-                (even? size)
-                (-> (+ (nth terms (dec med)))
-                    (/ 2)))))
+              (if (even? size)
+                (double (/ (+ (nth terms (dec med)) (nth terms med)) 2))
+                (nth terms med))))
           (variance
             [coll]
             (let [mean (avg coll)
                   sum (sum (for [x coll
                                  :let [delta (- x mean)]]
                              (* delta delta)))]
-              (/ sum (count coll))))
+              (double (/ sum (count coll)))))
           (stddev
             [coll]
             (#?(:cljs js/Math.sqrt :clj Math/sqrt) (variance coll)))]
@@ -1437,6 +1460,41 @@
          :rels (->> (:rels context)
                     (keep #(limit-rel % vars)))))
 
+(defn- union-branch-rels
+  "Union the per-branch relations of an `or` / `or-join`.
+
+   A branch relation with NO columns is a truth value, not a row set: one empty
+   tuple means the branch holds for every row of the enclosing context, zero
+   tuples means it holds for none. That happens whenever a branch constrains
+   none of the disjunction's visible vars — a negation evaluated with nothing
+   bound, or a branch whose last free var the :in fold consumed.
+
+   `sum-rel` cannot express that: it refuses to union relations with different
+   attrs. So decide the boolean cases here — a satisfied column-less branch
+   makes the whole disjunction unconstraining (return nil, meaning \"add no
+   restriction\"), an unsatisfied one contributes nothing — and only union the
+   branches that actually carry columns."
+  [rels]
+  (let [column-less? (fn [r] (empty? (:attrs r)))
+        satisfied-boolean? (fn [r] (and (column-less? r) (seq (:tuples r))))
+        with-columns (remove column-less? rels)]
+    (cond
+      (some satisfied-boolean? rels) nil
+      (seq with-columns) (reduce sum-rel with-columns)
+      ;; every branch was a column-less FALSE: the disjunction holds for no row
+      :else (prod-rel-empty))))
+
+(defn- join-rels
+  "Join a set of relations into one. The unit relation (no columns, one empty
+   tuple) is the identity, so an EMPTY set joins to it — which is what every
+   caller means: \"nothing has been bound yet\", i.e. one empty row, not \"no
+   rows\". `(reduce hash-join …)` over zero relations threw an arity-0
+   ArityException instead, and the guard had been added at two of the four call
+   sites — `not` and `not-join` — while `or` and `or-join` still crashed on a
+   leading disjunction containing a negation."
+  [rels]
+  (if (seq rels) (reduce hash-join rels) (prod-rel)))
+
 (defn- ctx-bound-vars [context]
   (set (concat (mapcat #(keys (:attrs %)) (:rels context))
                (keys (:consts context)))))
@@ -2157,10 +2215,8 @@
      (let [[_ & branches] clause
            context' (assoc context :stats [])
            contexts (mapv #(resolve-clause context' %) branches)
-           sum-rel (->> contexts
-                        (map #(reduce hash-join (:rels %)))
-                        (reduce sum-rel))]
-       (cond-> (assoc context :rels [sum-rel])
+           branch-rel (union-branch-rels (map #(join-rels (:rels %)) contexts))]
+       (cond-> (if branch-rel (assoc context :rels [branch-rel]) context)
          (:stats context) (assoc :tmp-stats {:type :or
                                              :branches (mapv :stats contexts)})))
 
@@ -2180,10 +2236,8 @@
                               (resolve-clause %)
                               (limit-context vars))
                          branches)
-           sum-rel (->> contexts
-                        (map #(reduce hash-join (:rels %)))
-                        (reduce sum-rel))]
-       (cond-> (update context :rels collapse-rels sum-rel)
+           branch-rel (union-branch-rels (map #(join-rels (:rels %)) contexts))]
+       (cond-> (if branch-rel (update context :rels collapse-rels branch-rel) context)
          (:stats context) (assoc :tmp-stats {:type :or-join
                                              :branches (mapv #(-> % :stats first) contexts)})))
 
@@ -2209,14 +2263,12 @@
          ;; is the identity here, and it makes the negation behave as the gate
          ;; it is: subtract leaves the tuple when the body has no solution and
          ;; removes it when it has one.
-         (let [join-rel (if (seq (:rels context))
-                          (reduce hash-join (:rels context))
-                          (prod-rel))
+         (let [join-rel (join-rels (:rels context))
                negation-context (-> context
                                     (assoc :rels [join-rel])
                                     (assoc :stats [])
                                     (resolve-context clauses))
-               negation-join-rel (reduce hash-join (:rels negation-context))
+               negation-join-rel (join-rels (:rels negation-context))
                negation (subtract-rel join-rel negation-join-rel)]
            (cond-> (assoc context :rels [negation])
              (:stats context) (assoc :tmp-stats {:type :not
@@ -2225,9 +2277,7 @@
      '[not-join [*] *] ;; (not-join [vars] ...)
      (let [[_ vars & clauses] clause]
        (when (all-bound? context vars)
-         (let [join-rel (if (seq (:rels context))
-                          (reduce hash-join (:rels context))
-                          (prod-rel))
+         (let [join-rel (join-rels (:rels context))
                resolved (-> context
                             (assoc :rels [join-rel])
                             (assoc :stats [])
@@ -2244,7 +2294,7 @@
                unsatisfiable? (some #(zero? (count (:tuples %))) (:rels resolved))
                negation-context (limit-context resolved vars)
                negation-join-rel (when-not unsatisfiable?
-                                   (reduce hash-join (:rels negation-context)))
+                                   (join-rels (:rels negation-context)))
                negation (if negation-join-rel
                           (subtract-rel join-rel negation-join-rel)
                           join-rel)]
@@ -2710,9 +2760,16 @@
 (defn- resolved-lookup-ref-eid
   "Entity id for `v` if it is a resolvable lookup ref, else nil. Never throws —
    a value that merely looks like one (a pull pattern, a two-element data
-   vector) resolves to nil and the caller leaves it alone."
+   vector) resolves to nil and the caller leaves it alone.
+
+   The schema decides, and it is consulted BEFORE `entid`: a lookup ref on a
+   non-unique attribute is an error there, and it logs at :error before raising,
+   so a try/catch alone would swallow the exception while still filling the log
+   with alarming noise about a value like `[:limit 5]` that was never a lookup
+   ref to begin with."
   [db v]
-  (when (lookup-ref-value? v)
+  (when (and (lookup-ref-value? v)
+             (dbu/is-attr? db (first v) :db/unique))
     (try (dbu/entid db v)
          (catch #?(:clj Exception :cljs :default) _ nil))))
 
@@ -2964,69 +3021,108 @@
 
           nil)))))
 
+(defn- tuple-val
+  [t idx]
+  (if (da/array? t) (aget ^objects t idx) (get t idx)))
+
+(defn- assoc-tuple
+  "Set index `idx` of an :in tuple, which is either a vector or an array.
+   An array is copied to an Object[] first: a typed array (PersistentVector[],
+   say) cannot hold the Long we are about to store."
+  [t idx v]
+  (if (da/array? t)
+    #?(:clj (let [^objects new-arr (object-array (alength ^objects t))]
+              (System/arraycopy ^objects t 0 new-arr 0 (alength ^objects t))
+              (aset new-arr (int idx) v)
+              new-arr)
+       :cljs (let [new-arr (.slice t)]
+               (aset new-arr idx v)
+               new-arr))
+    (assoc t idx v)))
+
+(defn- rel-lookup-ref-cols
+  "The [sym idx] columns of `rel` worth examining: those whose var is not read
+   by a foreign source."
+  [rel skip-vars]
+  (into [] (remove (fn [[sym _idx]] (contains? skip-vars sym))) (:attrs rel)))
+
 (defn- has-lookup-ref-bindings?
   "Check if any :in binding contains lookup refs (sequential values like [:name \"Ivan\"]).
    These need entity-id resolution before the query planner can join them.
    Covers both relation bindings and SCALAR ones — a scalar lives in :consts,
    and looking only at :rels meant a scalar lookup ref got no reverse mapping,
    so a find var bound to one came back as a bare entity id on some planner
-   paths and as the lookup ref on others."
-  [context-in]
+   paths and as the lookup ref on others.
+
+   Scans EVERY tuple. It used to look at `(first (:tuples rel))` alone, so
+   `:in [?e ...]` with `[103 [:uid \"u100\"]]` skipped resolution for the whole
+   binding: the raw vector was then joined against entity ids, matched nothing,
+   and that row silently vanished. Nothing makes row 0 representative — a
+   collection binding may mix entity ids and lookup refs freely."
+  [context-in skip-vars]
   (some (fn [rel]
-          (when-let [tuple (first (:tuples rel))]
-            (some (fn [[_sym idx]]
-                    (let [v (if (da/array? tuple)
-                              (aget ^objects tuple idx)
-                              (get tuple idx))]
-                      (lookup-ref-value? v)))
-                  (:attrs rel))))
+          (let [cols (rel-lookup-ref-cols rel skip-vars)]
+            (when (seq cols)
+              (some (fn [tuple]
+                      (some (fn [[_sym idx]] (lookup-ref-value? (tuple-val tuple idx)))
+                            cols))
+                    (:tuples rel)))))
         (:rels context-in)))
+
+(defn- foreign-source-vars
+  "The :in vars that some clause reads from a source other than `$`.
+
+   Their lookup refs cannot be resolved against the primary db — `[:uid \"u1\"]`
+   denotes a different entity in a different database — so they are left alone
+   for the per-source path to handle at match time. Every OTHER var resolves
+   normally, even in a multi-source query: previously the mere presence of a
+   second source disabled lookup-ref resolution for the whole query, including
+   vars that only ever touch `$`, and their raw vectors silently matched no rows."
+  [where-clauses]
+  (into #{}
+        (comp (filter #(and (sequential? %) (source? (first %)) (not= '$ (first %))))
+              (mapcat rest)
+              (filter free-var?))
+        (tree-seq sequential? seq where-clauses)))
 
 (defn- resolve-lookup-ref-bindings
   "Resolve lookup-ref values in :in binding relations to entity IDs for joining.
    Returns [context-in' reverse-map] where reverse-map is
    {var-sym {entity-id original-lookup-ref, ...}} for restoring output.
    Returns [context-in nil] when no lookup-refs are present (common fast path)."
-  [db context-in]
-  (if-not (has-lookup-ref-bindings? context-in)
+  [db context-in skip-vars]
+  (if-not (has-lookup-ref-bindings? context-in skip-vars)
     [context-in nil]
     (let [reverse-map (volatile! {})
           context-in'
           (update context-in :rels
                   (fn [rels]
                     (mapv (fn [rel]
-                            (let [tuples (:tuples rel)]
-                              (if (empty? tuples)
+                            (let [tuples (:tuples rel)
+                                  cols (rel-lookup-ref-cols rel skip-vars)]
+                              (if (or (empty? tuples) (empty? cols))
                                 rel
                                 (assoc rel :tuples
                                        (mapv (fn [tuple]
-                                               (reduce-kv
-                                                (fn [t sym idx]
-                                                  (let [v (if (da/array? t)
-                                                            (aget ^objects t idx)
-                                                            (get t idx))]
-                                                    (if (and (sequential? v)
-                                                             (= 2 (count v))
-                                                             (keyword? (first v)))
-                                                      (let [eid (dbu/entid db v)]
-                                                         ;; Track reverse mapping for this var
-                                                        (vswap! reverse-map update sym assoc eid v)
-                                                        (if (da/array? t)
-                                                           ;; Copy to Object[] to avoid ArrayStoreException
-                                                           ;; (typed arrays like PersistentVector[] can't hold Long)
-                                                          #?(:clj
-                                                             (let [^objects new-arr (object-array (alength ^objects t))]
-                                                               (System/arraycopy ^objects t 0 new-arr 0 (alength ^objects t))
-                                                               (aset new-arr (int idx) eid)
-                                                               new-arr)
-                                                             :cljs
-                                                             (let [new-arr (.slice t)]
-                                                               (aset new-arr idx eid)
-                                                               new-arr))
-                                                          (assoc t idx eid)))
-                                                      t)))
+                                               (reduce
+                                                (fn [t [sym idx]]
+                                                  ;; Resolve only what the SCHEMA says is a
+                                                  ;; lookup ref. Shape alone never proves it:
+                                                  ;; `[:limit 5]` and `[:db/ident :name]` are
+                                                  ;; two-element keyword-led vectors too, and
+                                                  ;; calling entid on them threw and killed
+                                                  ;; the query. A non-resolvable value is left
+                                                  ;; exactly as the caller supplied it.
+                                                  (if-let [eid (resolved-lookup-ref-eid
+                                                                db (tuple-val t idx))]
+                                                    (do
+                                                      ;; Track reverse mapping for this var
+                                                      (vswap! reverse-map update sym
+                                                              assoc eid (tuple-val t idx))
+                                                      (assoc-tuple t idx eid))
+                                                    t))
                                                 tuple
-                                                (:attrs rel)))
+                                                cols))
                                              tuples)))))
                           rels)))]
       [context-in' @reverse-map])))
@@ -4121,12 +4217,14 @@
                           (planner-eligible-db? primary-db))
         [context-in lookup-ref-reverse-map]
         (if use-planner?
-          ;; For multi-source, don't pre-resolve lookup refs in :in bindings —
-          ;; they may resolve to different entity IDs per source. The relation path's
-          ;; lookup-batch-search handles per-source resolution at match time.
-          (if multi-source?
-            [context-in nil]
-            (resolve-lookup-ref-bindings primary-db context-in))
+          ;; Resolve against the primary db every :in var except those a FOREIGN
+          ;; source reads — a lookup ref means a different entity in a different
+          ;; database, so those are left for per-source resolution at match time.
+          ;; Scoping this per var rather than per query matters: any second
+          ;; source, used or not, used to disable resolution wholesale.
+          (resolve-lookup-ref-bindings
+           primary-db context-in
+           (when multi-source? (foreign-source-vars (:where query))))
           [context-in nil])
         ;; Before the const fold and before the Cartesian split, so the whole
         ;; query is judged once with the bindings the user supplied.

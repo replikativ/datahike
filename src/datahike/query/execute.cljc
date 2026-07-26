@@ -3478,7 +3478,22 @@
   ([db plans ctx output-vars]
    (execute-branch-plans db plans ctx output-vars nil))
   ([db plans ctx output-vars pass-through-rels]
-   (let [branch-rels
+   (let [;; A rule body communicates with its caller ONLY through the head vars.
+         ;; Every other relation in the caller's context belongs to the caller's
+         ;; SCOPE, and a recursive rule's head vars are not renamed — so an outer
+         ;; relation over a var that merely SHARES a name with a head var used to
+         ;; be hash-joined into the branch as if it were the same variable.
+         ;; `[:find ?e ?r :in $ % :where (reach ?e ?r) [?e :nick ?a]]` against
+         ;; `[(reach ?a ?b) …]` joined the caller's ?a (nick strings) with the
+         ;; rule's ?a (entity ids) and returned nothing at all.
+         ;;
+         ;; Relations over head vars only are kept: that is the rule's declared
+         ;; interface — the magic-set demand relation and the pass-through
+         ;; relations for head vars no branch body binds.
+         head-var? (set output-vars)
+         ctx (rel/sub-context ctx (filterv #(every? head-var? (keys (:attrs %)))
+                                           (:rels ctx)))
+         branch-rels
          (into []
                (keep (fn [plan]
                        (let [ctx' (reduce (fn [c v]
@@ -3501,15 +3516,21 @@
    Returns nil if magic sets are not applicable (no ground args, mutual recursion,
    or non-binary rule). When applicable, returns:
    {:ground-positions {pos value}, :head-vars [...], :propagation-pos int}"
-  [call-args head-vars scc-rule-names]
+  [call-args head-vars scc-rule-names demand-sound?]
   ;; Magic-set optimization is JVM-only — the magic-base-scan / demand-set machinery
   ;; (java.util.HashSet, ArrayList) has :cljs nil bodies, so activating it on cljs
   ;; collapses recursive rules to an EMPTY rel (silently incomplete results). Return
   ;; nil on cljs so they take the correct (slower) full base-branch fixpoint instead.
   #?(:cljs nil
      :clj
-     ;; Only apply magic sets to single-rule SCCs with binary head vars
-     (when (and (= 1 (count scc-rule-names))
+     ;; Only apply magic sets to single-rule SCCs with binary head vars, and
+     ;; only when demand may soundly be read back out of the derived head tuples
+     ;; (`lower/magic-demand-sound?`). Where it may not, the demand set stops
+     ;; growing at values the recursion never navigates to and the fixpoint
+     ;; terminates early — answers missing, no error. The plain semi-naive
+     ;; fixpoint below assumes nothing about the rule's shape.
+     (when (and demand-sound?
+                (= 1 (count scc-rule-names))
                 (= 2 (count head-vars)))
        (let [ground-positions (into {}
                                     (keep-indexed (fn [i arg]
@@ -3744,7 +3765,7 @@
    Each rule has its own accumulator."
   [db op ctx]
   (let [{:keys [scc-rule-plans scc-rule-names call-args head-vars rule-name
-                base-scan-attr]} op
+                base-scan-attr magic-demand-sound?]} op
         ;; Head vars no branch body binds take their value from the call site
         ;; (#897). When one has no caller binding either, the fixpoint cannot
         ;; produce a well-formed tuple for it — hand the whole rule to the
@@ -3762,7 +3783,8 @@
       ;; Uses mutable HashSet for deduplication (avoids PersistentVector allocation)
       (let [;; Magic set detection — only for single-rule SCCs with binary head vars
             ;; and at least one ground call-arg
-            magic-info (compute-magic-info call-args head-vars scc-rule-names)
+            magic-info (compute-magic-info call-args head-vars scc-rule-names
+                                           magic-demand-sound?)
             magic-ground-pos (when magic-info (ffirst (:ground-positions magic-info)))
             magic-prop-pos (when magic-info (:propagation-pos magic-info))
             ;; The demand relation: membership index + seed delta (the ground value)
@@ -3939,7 +3961,22 @@
                                            ;; (delta-driven-expand has a :cljs nil
                                            ;; body); false on cljs → the correct
                                            ;; non-delta recursive scan below.
+                                  ;; …and only when the recursive body actually
+                                  ;; traverses `base-scan-attr`. The shortcut
+                                  ;; reverse-scans THAT attribute, so a rule
+                                  ;; whose recursion walks a different edge than
+                                  ;; its base case —
+                                  ;;   [(p ?a ?b) [?a :follows ?b]]
+                                  ;;   [(p ?a ?b) [?a :knows ?x] (p ?x ?b)]
+                                  ;; — had its :knows step silently replaced by a
+                                  ;; :follows lookup, losing every answer that
+                                  ;; needed the recursion. `magic-demand-sound?`
+                                  ;; is that condition: with a single base branch
+                                  ;; it holds exactly when the link attribute IS
+                                  ;; base-scan-attr. Unlike the magic-set use,
+                                  ;; this one bites with NO ground argument.
                                            use-delta-driven? (and #?(:cljs false :clj base-scan-attr)
+                                                                  magic-demand-sound?
                                                                   rec-has-db-pattern?
                                                                   rec-shape-simple?
                                                                   (= rn rule-name)

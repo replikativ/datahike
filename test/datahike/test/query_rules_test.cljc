@@ -382,3 +382,50 @@
         1 #{2 3 4 5 6}
         4 #{5}
         5 #{}))))
+
+(deftest test-recursive-rule-demand-not-transitive-closure
+  ;; Magic sets read the next round's demand out of the derived head tuples at
+  ;; the head's other position. That is sound only when the values in that
+  ;; column are the ones the recursion navigates to next — true for a linear
+  ;; transitive closure, where the base case and the recursive step traverse the
+  ;; SAME relation, and false in general.
+  ;;
+  ;; Here the base case yields city NAMES while the recursion walks :follows
+  ;; between entities, so demand was seeded with strings, matched nothing, and
+  ;; the fixpoint stopped with answers still underived — silently incomplete,
+  ;; no error. See `lower/magic-demand-sound?`.
+  (let [db (d/db-with (db/empty-db {:follows {:db/valueType :db.type/ref
+                                              :db/cardinality :db.cardinality/many}
+                                    :city {:db/cardinality :db.cardinality/one}})
+                      [{:db/id 1 :follows [2]}
+                       {:db/id 2 :follows [3] :city "berlin"}
+                       {:db/id 3 :city "paris"}])
+        rules '[[(sc ?a ?b) [?a :city ?b]]
+                [(sc ?a ?b) [?a :follows ?t] (sc ?t ?b)]]]
+    (testing "a ground input arg still reaches through the whole chain"
+      ;; 1 has no :city of its own; it follows 2 (berlin), which follows 3 (paris)
+      (are [source res] (= res (set (d/q '[:find [?b ...] :in $ % ?A :where (sc ?A ?b)]
+                                         db rules source)))
+        1 #{"berlin" "paris"}
+        2 #{"berlin" "paris"}
+        3 #{"paris"}))
+
+    (testing "the ungrounded call is unaffected"
+      (is (= #{[1 "berlin"] [1 "paris"] [2 "berlin"] [2 "paris"] [3 "paris"]}
+             (set (d/q '[:find ?a ?b :in $ % :where (sc ?a ?b)] db rules)))))
+
+    (testing "a rule whose recursive step walks a different edge than its base"
+      ;; base links via :follows, recursion via :knows — the harvested column
+      ;; holds :follows targets, which say nothing about where :knows leads.
+      (let [db2 (d/db-with (db/empty-db {:follows {:db/valueType :db.type/ref
+                                                   :db/cardinality :db.cardinality/many}
+                                         :knows {:db/valueType :db.type/ref
+                                                 :db/cardinality :db.cardinality/many}})
+                           [{:db/id 1 :knows [2]}
+                            {:db/id 2 :follows [3] :knows [3]}
+                            {:db/id 3 :follows [4]}
+                            {:db/id 4}])
+            r '[[(p ?a ?b) [?a :follows ?b]]
+                [(p ?a ?b) [?a :knows ?x] (p ?x ?b)]]]
+        ;; 1 knows 2; 2 follows 3 -> p(1,3). 1 knows 2 knows 3; 3 follows 4 -> p(1,4).
+        (is (= #{3 4} (set (d/q '[:find [?b ...] :in $ % ?A :where (p ?A ?b)] db2 r 1))))))))
