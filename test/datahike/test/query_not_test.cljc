@@ -81,6 +81,84 @@
                [?e :age  10])]
     #{[1 10] [5 10]}))
 
+(deftest test-not-join-in-bound-join-vars
+  ;; Regression for #901: a not-join whose join vars include one supplied
+  ;; through :in. Scalar :in bindings are constants, not columns of the
+  ;; fused wide tuple, so the planner's anti-join post-filter has to take
+  ;; their value from the const map — it used to read a missing column and
+  ;; throw an NPE.
+  (let [db (d/db-with (db/empty-db)
+                      [{:db/id 1 :name "Ivan" :age 10}
+                       {:db/id 2 :name "Ivan" :age 20}
+                       {:db/id 3 :name "Oleg" :age 20}
+                       {:db/id 4 :name "Petr" :age 30}])]
+    (testing "one :in-bound join var next to a where-bound one"
+      (are [age res] (= res
+                        (d/q '[:find ?n
+                               :in $ ?age
+                               :where
+                               [?e :name ?n]
+                               (not-join [?n ?age]
+                                         [?e2 :name ?n]
+                                         [?e2 :age ?age])]
+                             db age))
+        10 #{["Oleg"] ["Petr"]}
+        20 #{["Petr"]}
+        40 #{["Ivan"] ["Oleg"] ["Petr"]}))
+
+    (testing "several :in-bound join vars"
+      (are [name age res] (= res
+                             (d/q '[:find ?n
+                                    :in $ ?name ?age
+                                    :where
+                                    [?e :name ?n]
+                                    (not-join [?n ?name ?age]
+                                              [?e2 :name ?name]
+                                              [?e2 :age ?age]
+                                              [?e2 :name ?n])]
+                                  db name age))
+        "Ivan" 10 #{["Oleg"] ["Petr"]}
+        "Ivan" 30 #{["Ivan"] ["Oleg"] ["Petr"]}))))
+
+(deftest test-negation-over-only-constants
+  ;; When every var a negation mentions is supplied through :in, the fold turns
+  ;; its body fully ground and the clause becomes a BOOLEAN over every row.
+  ;; Three separate places lost that: the base engine reduced hash-join over
+  ;; zero relations (arity exception) when such a negation came first; the
+  ;; temporal fused scan emitted nothing for a column-less group, so the
+  ;; negation could not tell "exists" from "doesn't" under as-of/history; and
+  ;; not-join limited the negation to its join vars, which discarded a
+  ;; column-less relation entirely and left the clause constraining nothing.
+  (let [db (d/db-with (db/empty-db {:tag {:db/cardinality :db.cardinality/many}})
+                      [{:db/id 100 :name "alice" :nick "al" :tag [:red]}
+                       {:db/id 101 :name "bob" :tag [:blue]}])]
+    (testing "negation first, all vars from :in"
+      (are [eid res] (= res (d/q '[:find ?e ?n
+                                   :in $ ?e
+                                   :where (not [?e :tag :red]) [?e :name ?n]]
+                                 db eid))
+        100 #{}
+        101 #{[101 "bob"]}))
+
+    (testing "not-join whose join var is a constant"
+      (are [eid res] (= res (d/q '[:find ?n
+                                   :in $ ?e
+                                   :where [?e :name ?n] (not-join [?e] [?e :nick _])]
+                                 db eid))
+        100 #{}
+        101 #{["bob"]}))
+
+    (testing "with an aggregate in :find"
+      (is (= [] (d/q '[:find ?n (count ?e)
+                       :in $ ?e
+                       :where [?e :name ?n] (not-join [?e] [?e :nick _])]
+                     db 100)))
+      (is (= [["bob" 1]]
+             (d/q '[:find ?n (count ?e)
+                    :in $ ?e
+                    :where [?e :name ?n] (not-join [?e] [?e :nick _])]
+                  db 101))))))
+
 ;; The as-of / history side of this lives in query-planner-temporal-test, which
 ;; has the history-enabled connection fixtures.
 
@@ -153,6 +231,73 @@
                     :in $ ?age
                     :where [?e :name ?n] (not [?e2 :age ?age])]
                   db 99))))))
+
+(deftest test-not-join-join-var-not-bound-by-body
+  ;; The fused anti-join runs the negation's sub-plan with NO outer bindings,
+  ;; so the sub-plan has to bind every join var itself. Here it only READS
+  ;; ?a, in a body predicate: the sub-plan came back empty, the anti-join
+  ;; excluded nothing, and the query silently returned every row. Such plans
+  ;; belong to the Relation engine, which threads the outer context in.
+  (let [db (d/db-with (db/empty-db)
+                      [{:db/id 1 :name "a" :age 10 :color "red"}
+                       {:db/id 2 :name "b" :age 20 :color "blue"}
+                       {:db/id 3 :name "c" :age 10 :color "red"}
+                       {:db/id 4 :name "d" :age 30}])]
+    (testing "join var used only by a body predicate"
+      (is (= #{["d" 30]}
+             (d/q '[:find ?n ?a
+                    :where
+                    [?e :name ?n] [?e :age ?a]
+                    (not-join [?e ?a]
+                              [?e :color ?c]
+                              [(< ?a 25)])]
+                  db))))
+
+    (testing "join var used only as a body function argument"
+      (is (= #{["d" 30]}
+             (d/q '[:find ?n ?a
+                    :where
+                    [?e :name ?n] [?e :age ?a]
+                    (not-join [?e ?a]
+                              [?e :color ?c]
+                              [(str ?a) ?s])]
+                  db))))))
+
+(deftest test-not-join-disconnected-gate
+  ;; A not-join whose declared vars all come from :in shares no free var
+  ;; with the rest of the query, which makes it a global gate: its body
+  ;; either has a solution — and the whole result is empty — or it has
+  ;; none and the clause is a no-op. The planner used to treat it as its
+  ;; own Cartesian component, hand the resulting sub-query a :find var
+  ;; only the negation mentions, and raise "Query for unknown vars".
+  (let [db (d/db-with (db/empty-db)
+                      [{:db/id 1 :name "Ivan" :age 10}
+                       {:db/id 2 :name "Oleg" :age 20}])]
+    (testing "gate with a solution empties the result"
+      (is (= #{}
+             (d/q '[:find ?n
+                    :in $ ?age
+                    :where
+                    [?e :name ?n]
+                    (not-join [?age] [?e2 :age ?age])]
+                  db 10))))
+
+    (testing "gate without a solution is a no-op"
+      (is (= #{["Ivan"] ["Oleg"]}
+             (d/q '[:find ?n
+                    :in $ ?age
+                    :where
+                    [?e :name ?n]
+                    (not-join [?age] [?e2 :age ?age])]
+                  db 99))))
+
+    (testing "genuinely disjoint patterns still split and Cartesian-merge"
+      (is (= #{["Ivan" 10] ["Ivan" 20] ["Oleg" 10] ["Oleg" 20]}
+             (d/q '[:find ?n ?a
+                    :where
+                    [?e :name ?n]
+                    [?x :age ?a]]
+                  db))))))
 
 (deftest test-default-source
   (let [db1 (d/db-with (db/empty-db)

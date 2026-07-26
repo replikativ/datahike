@@ -573,3 +573,40 @@
           (d/release conn))
         (finally
           (d/delete-database cfg))))))
+
+;; ---------------------------------------------------------------------------
+;; Column-less existence scans under a temporal wrapper
+;;
+;; A group with no free var — every position ground, which is what the :in fold
+;; produces — is a pure existence test. The temporal fused scan emits one tuple
+;; per emitted var, so with none it emitted nothing whether or not the datoms
+;; were there, and the group read as UNSATISFIED. A negation over it therefore
+;; failed to exclude under as-of / history while excluding correctly on the
+;; current db.
+
+(deftest test-ground-only-existence-scan-under-temporal
+  (let [cfg {:store {:backend :memory :id (UUID/randomUUID)}
+             :writer {:backend :self}
+             :schema-flexibility :read
+             :keep-history? true}]
+    (try
+      (d/create-database cfg)
+      (let [conn (d/connect cfg)]
+        (try
+          (d/transact conn [{:db/id 100 :name "alice" :tag :red}
+                            {:db/id 101 :name "bob" :tag :blue}])
+          (let [db (d/db conn)
+                q '[:find ?e
+                    :in $ ?e
+                    :where [?e :name ?n] (not [?e :tag :red])]]
+            (doseq [[label tdb] [[:current db]
+                                 [:as-of (d/as-of db (:max-tx db))]
+                                 [:history (d/history db)]]]
+              (let [excluded (run-both q tdb 100)
+                    kept (run-both q tdb 101)]
+                (is (= (:legacy excluded) (:planner excluded)) (str label " engines agree (excluded)"))
+                (is (= #{} (:planner excluded)) (str label " negation excludes the tagged entity"))
+                (is (= (:legacy kept) (:planner kept)) (str label " engines agree (kept)"))
+                (is (= #{[101]} (:planner kept)) (str label " negation keeps the untagged entity")))))
+          (finally (d/release conn))))
+      (finally (d/delete-database cfg)))))
