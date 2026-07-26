@@ -409,19 +409,38 @@
   (let [l (count xs)]
     (not= (take (/ l 2) xs) (drop (/ l 2) xs))))
 
+(defn- resolve-entity-arg
+  "Resolve an entity argument that may be a lookup ref. Every other entity
+   position in a query accepts one; `get-else`/`get-some` passed it straight to
+   `search`, which cast it to a number and threw a ClassCastException — both
+   for a literal `[(get-else $ [:uid \"u1\"] :attr d) ?v]` and for an entity
+   arriving as a scalar `:in` lookup-ref binding.
+
+   Returns `::unresolvable` for a lookup ref naming no entity. That case MUST
+   NOT reach `search`: a nil entity there matches every datom of the attribute
+   and `first` wins, so a miss silently returned some other entity's value."
+  [db e]
+  (if (and (sequential? e) (= 2 (count e)) (keyword? (first e)))
+    (or (dbu/entid db e) ::unresolvable)
+    e))
+
 (defn- -get-else
   [db e a else-val]
   (when (nil? else-val)
     (log/raise "get-else: nil default value is not supported" {:error :query/where}))
-  (if-some [datom (first (dbi/search db [e (translate-for db a)]))]
-    (:v datom)
-    else-val))
+  (let [e' (resolve-entity-arg db e)]
+    (if (= ::unresolvable e')
+      else-val
+      (if-some [datom (first (dbi/search db [e' (translate-for db a)]))]
+        (:v datom)
+        else-val))))
 
 (defn- -get-some
   [db e & as]
   (reduce
    (fn [_ a]
-     (when-some [datom (first (dbi/search db [e (translate-for db a)]))]
+     (when-some [datom (when-not (= ::unresolvable (resolve-entity-arg db e))
+                         (first (dbi/search db [(resolve-entity-arg db e) (translate-for db a)])))]
        (let [a-ident (if (keyword? (:a datom))
                        (:a datom)
                        (dbi/ident-for db (:a datom) :error-on-missing))]
@@ -2179,7 +2198,15 @@
      (let [[_ & clauses] clause
            negation-vars (collect-vars clauses)]
        (when (some-bound? context negation-vars)
-         (let [join-rel (reduce hash-join (:rels context))
+         ;; With every var of the query supplied as a scalar :in, nothing has
+         ;; been bound into a RELATION yet, and `reduce hash-join` over no
+         ;; relations threw on arity 0. The unit relation — one empty tuple —
+         ;; is the identity here, and it makes the negation behave as the gate
+         ;; it is: subtract leaves the tuple when the body has no solution and
+         ;; removes it when it has one.
+         (let [join-rel (if (seq (:rels context))
+                          (reduce hash-join (:rels context))
+                          (prod-rel))
                negation-context (-> context
                                     (assoc :rels [join-rel])
                                     (assoc :stats [])
@@ -2193,7 +2220,9 @@
      '[not-join [*] *] ;; (not-join [vars] ...)
      (let [[_ vars & clauses] clause]
        (when (all-bound? context vars)
-         (let [join-rel (reduce hash-join (:rels context))
+         (let [join-rel (if (seq (:rels context))
+                          (reduce hash-join (:rels context))
+                          (prod-rel))
                negation-context (-> context
                                     (assoc :rels [join-rel])
                                     (assoc :stats [])
@@ -2609,9 +2638,16 @@
 (def default-settings {})
 
 (defn- context-bound-vars
-  "Extract the set of variables already bound in context relations (from :in bindings)."
+  "Extract the set of variables already bound by :in — both relation bindings
+   and scalar ones. Mirrors the base engine's `ctx-bound-vars`: a scalar :in
+   var IS bound, even though the planner also folds its value into the clauses.
+   The fold does not reach a not-join/or-join's declared var vector, so leaving
+   consts out made the planner reject `(not-join [?P] …)` with \"Insufficient
+   bindings\" for a `?P` the base engine happily treats as bound."
   [context]
-  (into #{} (mapcat (comp keys :attrs)) (:rels context)))
+  (into (set (keys (:consts context)))
+        (mapcat (comp keys :attrs))
+        (:rels context)))
 
 (defn- in-card-seed
   "Value-independent {var → card} cardinality seed for :in bindings, derived
@@ -2645,6 +2681,23 @@
                     clause)
               clause))
           where-clauses)))
+
+(defn- lookup-ref-value?
+  "A [attr value] pair — the SHAPE of a lookup ref. Shape alone never proves it
+   is one: a variable pull pattern arrives the same way (`:in $ ?p` with
+   `[:db/ident :name]`, whose first element is even `:db/unique`). Only resolve
+   at a site that must have an entity id."
+  [v]
+  (and (sequential? v) (= 2 (count v)) (keyword? (first v))))
+
+(defn- resolved-lookup-ref-eid
+  "Entity id for `v` if it is a resolvable lookup ref, else nil. Never throws —
+   a value that merely looks like one (a pull pattern, a two-element data
+   vector) resolves to nil and the caller leaves it alone."
+  [db v]
+  (when (lookup-ref-value? v)
+    (try (dbu/entid db v)
+         (catch #?(:clj Exception :cljs :default) _ nil))))
 
 (defn- substitute-consts-with-lookup-refs
   "Like substitute-consts but also resolves lookup refs in pattern positions.
@@ -2745,10 +2798,22 @@
                                     (boolean? v) (nil? v) (uuid? v)
                                     (inst? v)))
                       substituted-args (map (fn [x]
-                                              (if (and (symbol? x)
-                                                       (contains? consts x)
-                                                       (scalar? (get consts x)))
-                                                (get consts x)
+                                              (if (and (symbol? x) (contains? consts x))
+                                                (let [v (get consts x)]
+                                                  (cond
+                                                    (scalar? v) v
+                                                    ;; A lookup-ref const has to arrive as
+                                                    ;; the ENTITY ID here: `scalar?` rejects
+                                                    ;; vectors, so the rule's parameter was
+                                                    ;; left a free var with nothing to bind
+                                                    ;; it and the rule matched everything.
+                                                    ;; This is the only site that needs the
+                                                    ;; resolved id — pattern positions
+                                                    ;; resolve via resolve-pattern-lookup-refs
+                                                    ;; — so resolve HERE rather than rewriting
+                                                    ;; the const itself, which would also
+                                                    ;; corrupt its non-entity uses.
+                                                    :else (or (resolved-lookup-ref-eid resolve-db v) x)))
                                                 x))
                                             args)]
                   (apply list rule-name substituted-args))
@@ -2781,9 +2846,114 @@
                   clause))))]
      (mapv resolve-clause where-clauses))))
 
+;; ---------------------------------------------------------------------------
+;; Pre-fold clause-binding validation (the planner's shared oracle).
+;;
+;; The base engine resolves clauses by fixpoint: a predicate or negation whose
+;; inputs are not bound YET is deferred and retried, and when a whole pass
+;; makes no progress `datahike.tools/resolve-clauses` raises "Cannot resolve
+;; any more clauses". What that converges to is purely syntactic:
+;;
+;;   * a predicate is legal iff every free var in its args is bound by :in or
+;;     produced by some other clause;
+;;   * a negation is legal iff AT LEAST ONE of its vars is.
+;;
+;; The planner cannot re-derive this after planning starts, for two reasons:
+;;   1. `substitute-consts-with-lookup-refs` folds scalar :in values into the
+;;      clauses, and a plain `not` — unlike `not-join` — has no declared var
+;;      vector to keep the var alive, so the evidence is destroyed.
+;;   2. Plans are CACHED by [clauses bound-vars rules in-cards schema-hash],
+;;      all post-fold: `(not [?e :age ?x])` with ?x=10 and `(not [?e :age 10])`
+;;      with an unused ?x in :in produce an identical key, yet one is legal and
+;;      the other must raise. No post-fold check can tell them apart.
+;; So the check runs BEFORE the fold, on the clauses the user actually wrote.
+
+(defn- clause-output-vars
+  "Vars a where-clause can BIND. Predicates and negations only CONSTRAIN, so
+   their vars have to be produced elsewhere. Permissive by construction:
+   anything unrecognized contributes all of its vars, because falsely
+   rejecting a legal query is far worse than missing an illegal one."
+  [clause]
+  (let [ci (analyze/classify-clause clause)]
+    (case (:type ci)
+      (:predicate :not :not-join) #{}
+      :function      (analyze/extract-vars (:binding ci))
+      :and           (into #{} (mapcat clause-output-vars) (:sub-clauses ci))
+      :or            (into #{} (mapcat (fn [b]
+                                         (if (and (sequential? b) (sequential? (first b)))
+                                           (into #{} (mapcat clause-output-vars) b)
+                                           (clause-output-vars b))))
+                           (:branches ci))
+      :or-join       (into #{} (filter free-var?) (flatten (seq (:join-vars ci))))
+      :source-prefix (clause-output-vars (:inner-clause ci))
+      ;; :pattern — also rule invocations, which do bind their args — and :unknown
+      (:vars ci))))
+
+(defn- branch-clauses
+  "A branch of an or/or-join is either a single clause or a seq of them."
+  [b]
+  (if (and (sequential? b) (sequential? (first b))) (vec b) [b]))
+
+(defn- validate-clause-bindings
+  "Raise if a predicate references a var nothing can bind, or a negation
+   references no bindable var at all — the contract the base engine's
+   fixpoint resolver converges to. See the comment above."
+  [clauses scope]
+  (let [scope (into (set scope) (mapcat clause-output-vars) clauses)]
+    (doseq [clause clauses]
+      (let [ci (analyze/classify-clause clause)]
+        (case (:type ci)
+          ;; A predicate FILTERS on its args and a function READS its args to
+          ;; produce its binding form, so for both, every arg var must be
+          ;; bindable somewhere. `plan/args-free-vars` is the planner's own
+          ;; definition of "input var" — it recurses into seq forms but treats
+          ;; a data literal (a nested `q` query, a set, a vector) as opaque,
+          ;; because vars inside one are lexically scoped there. A raw
+          ;; `extract-vars` walk re-introduced exactly the phantom-input bug
+          ;; that function was written for (#814), here as a hard raise.
+          ;; `(quote ?x)` is a constant, not a reference — skip those args.
+          (:predicate :function)
+          (let [need (cond-> (into #{} (filter free-var?)
+                                   (plan/args-free-vars
+                                    (remove analyze/quote-form? (:args ci))))
+                       ;; a higher-order call's fn var is an input as well
+                       (free-var? (:fn-sym ci)) (conj (:fn-sym ci)))
+                missing (set/difference need scope)]
+            (when (seq missing)
+              ;; Lead with the base engine's own wording: query-engine-parity-test
+              ;; pins that BOTH engines report an unresolvable clause identically,
+              ;; and a downstream error-string matcher should not have to know
+              ;; which engine ran. The detail follows the prefix.
+              (log/raise "Cannot resolve any more clauses — insufficient bindings: "
+                         missing " not bound in " clause
+                         {:error :query/where :form clause :vars missing})))
+
+          (:not :not-join)
+          (let [nvars (into #{} (filter free-var?) (:vars ci))]
+            (when (and (seq nvars) (empty? (set/intersection nvars scope)))
+              (log/raise "Cannot resolve any more clauses — insufficient bindings: none of "
+                         nvars " is bound in " clause
+                         {:error :query/where :form clause}))
+            (validate-clause-bindings (vec (:sub-clauses ci)) scope))
+
+          :and (validate-clause-bindings (vec (:sub-clauses ci)) scope)
+
+          (:or :or-join)
+          (doseq [b (:branches ci)]
+            (validate-clause-bindings (branch-clauses b) scope))
+
+          :source-prefix
+          (validate-clause-bindings [(:inner-clause ci)] scope)
+
+          nil)))))
+
 (defn- has-lookup-ref-bindings?
   "Check if any :in binding contains lookup refs (sequential values like [:name \"Ivan\"]).
-   These need entity-id resolution before the query planner can join them."
+   These need entity-id resolution before the query planner can join them.
+   Covers both relation bindings and SCALAR ones — a scalar lives in :consts,
+   and looking only at :rels meant a scalar lookup ref got no reverse mapping,
+   so a find var bound to one came back as a bare entity id on some planner
+   paths and as the lookup ref on others."
   [context-in]
   (some (fn [rel]
           (when-let [tuple (first (:tuples rel))]
@@ -2791,9 +2961,7 @@
                     (let [v (if (da/array? tuple)
                               (aget ^objects tuple idx)
                               (get tuple idx))]
-                      (and (sequential? v)
-                           (= 2 (count v))
-                           (keyword? (first v)))))
+                      (lookup-ref-value? v)))
                   (:attrs rel))))
         (:rels context-in)))
 
@@ -3068,6 +3236,9 @@
                              (some? (planner-origin-db db)))
            find-vars (mapv #(.-symbol ^Variable %) (filter #(instance? Variable %) (dpip/find-elements qfind)))
            bound-vars (context-bound-vars context-in)
+           ;; Mirror the execution dispatch: explain must fail where d/q fails.
+           _ (when use-planner?
+               (validate-clause-bindings (:where query) bound-vars))
            rules (not-empty (:rules context-in))
            header (fn [engine path]
                     (str "=== Query Plan ===\n"
@@ -3423,11 +3594,49 @@
 ;;   - Anonymous vars (symbols starting with _) are not free vars and do
 ;;     not contribute.
 
+(defn- negation-clause?
+  "True for the clause types that only CONSTRAIN: they bind nothing, their
+   vars have to be produced elsewhere in the query."
+  [classified]
+  (contains? #{:not :not-join} (:type classified)))
+
 (defn- clause-meaningful-vars
   "Free vars in a classified clause that participate in connectivity.
-   Excludes externally bound vars (treated as constants)."
+   Excludes externally bound vars (treated as constants).
+
+   A not-join's / or-join's non-declared vars are LOCAL to it — only the
+   declared join vars can correlate it with the rest of the query, and a
+   same-named var outside is a different var. Counting the local ones as
+   connectivity vars put them in a component's :vars, where the split path
+   could hand one to a sub-query's :find and ask for a value nothing binds.
+
+   The declared vector is filtered to free vars and flattened so Datomic's
+   `(or-join [[?required] ?optional] …)` form cannot leak a vector into the
+   union-find — note `plan-or-op` rejects that form outright today, so this
+   branch is defensive rather than reachable on the planner path."
   [classified bound-vars]
-  (let [vs (:vars classified)]
+  (let [args-vars (fn [ci]
+                    ;; The FN POSITION can itself be a var — `[(?pred ?a)]` with
+                    ;; ?pred bound by a pattern (issue #180). It is an input like
+                    ;; any other, and dropping it from connectivity let the
+                    ;; predicate land in a component without its producer.
+                    (cond-> (into #{} (filter free-var?) (plan/args-free-vars (:args ci)))
+                      (free-var? (:fn-sym ci)) (conj (:fn-sym ci))))
+        vs (case (:type classified)
+             (:not-join :or-join)
+             (into #{} (filter free-var?) (flatten (seq (:join-vars classified))))
+             ;; A var inside a DATA LITERAL argument is lexically scoped THERE,
+             ;; not a reference to this query's scope — the canonical case being
+             ;; a nested `q` query, `[(datahike.api/q [:find ?x …] $)]`. Counting
+             ;; it as a connectivity var gave it its own component, and the split
+             ;; pass then asked a sub-query to :find a var nothing can bind
+             ;; ("Query for unknown vars"). `plan/args-free-vars` is the
+             ;; planner's own input-var walk: into seq forms, never into literals.
+             :predicate (args-vars classified)
+             :function (into (args-vars classified)
+                             (filter free-var?)
+                             (analyze/extract-vars (:binding classified)))
+             (:vars classified))]
     (if (seq bound-vars)
       (into #{} (remove bound-vars) vs)
       vs)))
@@ -3481,16 +3690,42 @@
                 uf))
             (into {} (map (fn [v] [v v])) all-vars)
             (map vector classified clause-vars))
+        ;; Vars some clause actually BINDS. Negations and predicates only
+        ;; constrain, so they produce nothing. A function binds its binding
+        ;; form alone — its whole-clause vars would also count the args it
+        ;; merely READS, the same distinction can-direct-fuse? draws for
+        ;; find-var coverage.
+        producer-vars (into #{}
+                            (comp (map (fn [[ci vs]]
+                                         (case (:type ci)
+                                           (:not :not-join :predicate) #{}
+                                           :function (into #{} (filter free-var?)
+                                                           (analyze/extract-vars (:binding ci)))
+                                           vs)))
+                                  cat)
+                            (map vector classified clause-vars))
         ;; Step 2: assign each clause a representative root (or a
         ;; sentinel for clauses with no meaningful vars — those become
         ;; global gates attached to the first component).
+        ;;
+        ;; A negation none of whose vars is produced anywhere is such a
+        ;; gate too: it either has a solution, which empties the whole
+        ;; result, or it has none and is a no-op — it cannot be a component
+        ;; of its own, because a component has to project something and a
+        ;; negation binds nothing. Rooting it separately made the split
+        ;; path give the sub-query a :find var no clause can bind, raising
+        ;; "Query for unknown vars" where the base engine answers fine.
         no-var-root   ::no-vars
-        clause-roots  (mapv
-                       (fn [vs]
-                         (if (empty? vs)
-                           no-var-root
-                           (second (uf-find uf (first vs)))))
-                       clause-vars)
+        gate?         (mapv (fn [ci vs]
+                              (and (negation-clause? ci)
+                                   (not-any? producer-vars vs)))
+                            classified clause-vars)
+        clause-roots  (vec (map-indexed
+                            (fn [i vs]
+                              (if (or (empty? vs) (nth gate? i))
+                                no-var-root
+                                (second (uf-find uf (first vs)))))
+                            clause-vars))
         ;; Step 3: identify post-filter predicates (those that touch >1 root).
         post-filter? (mapv
                       (fn [ci vs]
@@ -3519,7 +3754,26 @@
                                     i))
                                 clause-roots))
                  cs (mapv #(nth clauses %) own-idxs)
-                 vs (into #{} (mapcat #(nth clause-vars %)) own-idxs)
+                 ;; :vars is read as "what this component can project" — by
+                 ;; find-var assignment, post-filter var placement and the
+                 ;; existence-component fallback below. Drop only the vars NO
+                 ;; clause here except a negation mentions: a negation binds
+                 ;; nothing, so such a var is projectable by none of them.
+                 ;;
+                 ;; Filtering against the global `producer-vars` instead was far
+                 ;; too broad — an :in collection/tuple var constrained only by
+                 ;; a predicate (`:in $ [?a ...]` + `[(> ?a 30)]`, with ?a in
+                 ;; :find) produces nothing, so it vanished from every
+                 ;; component and the projection raised "Query for unknown
+                 ;; vars". That shape is common and used to work.
+                 vs (let [own-cis (map #(nth classified %) own-idxs)
+                          own-vars (map #(nth clause-vars %) own-idxs)
+                          pairs (map vector own-cis own-vars)
+                          positive (into #{}
+                                         (comp (remove (comp negation-clause? first))
+                                               (mapcat second))
+                                         pairs)]
+                      positive)
                  fvs (vec (filter vs find-vars))]
              {:clauses cs :vars vs :find-vars fvs}))
          (remove #(= no-var-root %) roots-in-order))
@@ -3831,7 +4085,11 @@
           (if multi-source?
             [context-in nil]
             (resolve-lookup-ref-bindings primary-db context-in))
-          [context-in nil])]
+          [context-in nil])
+        ;; Before the const fold and before the Cartesian split, so the whole
+        ;; query is judged once with the bindings the user supplied.
+        _ (when use-planner?
+            (validate-clause-bindings (:where query) (context-bound-vars context-in)))]
 
     (if (and limit (zero? limit))
       #{}
@@ -3919,9 +4177,34 @@
                            filtered  (apply-post-filters merged wide-vars post-filters
                                                          (:consts context-in))
                            ;; Project wide tuples back to the user's find-var order.
-                           wide->find-idxs (let [idx (into {} (map-indexed (fn [i v] [v i])) wide-vars)]
-                                             (mapv idx find-var-syms))
-                           projected (into #{} (map (fn [t] (mapv #(nth t %) wide->find-idxs))) filtered)]
+                           ;; A find var bound by a scalar :in is produced by NO
+                           ;; component — the components are exactly the clause
+                           ;; groups, and a const is why they came apart in the
+                           ;; first place. Its value is the constant, not a tuple
+                           ;; slot; indexing with the absent slot threw an NPE out
+                           ;; of `nth`.
+                           wide->find
+                           (let [idx (into {} (map-indexed (fn [i v] [v i])) wide-vars)
+                                 consts (:consts context-in)]
+                             (mapv (fn [v]
+                                     (if-let [i (get idx v)]
+                                       [::slot i]
+                                       (do (when-not (contains? consts v)
+                                             (log/raise "Query for unknown vars: " [v]
+                                                        {:error :query/where :vars [v]}))
+                                           [::const (get consts v)])))
+                                   find-var-syms))
+                           projected (into #{}
+                                           (map (fn [t]
+                                                  (mapv (fn [[kind x]]
+                                                          ;; `=`, not `identical?`: a cljs dev build does
+                                                          ;; not guarantee that two occurrences of the same
+                                                          ;; keyword LITERAL are one object, and comparing
+                                                          ;; by identity there silently projected the slot
+                                                          ;; INDEX instead of the tuple value.
+                                                          (if (= ::slot kind) (nth t x) x))
+                                                        wide->find)))
+                                           filtered)]
                        (apply-result-transforms projected order-spec offset limit qreturnmaps)))))]
         split-result
 

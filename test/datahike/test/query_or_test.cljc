@@ -1,7 +1,7 @@
 (ns datahike.test.query-or-test
   (:require
-   #?(:cljs [cljs.test    :as t :refer-macros [is are deftest]]
-      :clj  [clojure.test :as t :refer        [is are deftest]])
+   #?(:cljs [cljs.test    :as t :refer-macros [is are deftest testing]]
+      :clj  [clojure.test :as t :refer        [is are deftest testing]])
    [datahike.api :as d]
    #?(:cljs [datahike.cljs :refer [Throwable]])
    [datahike.db :as db]
@@ -156,6 +156,31 @@
                   [(= ?k 20)]]
                 db))
         "predicate on or-join output var filters correctly")))
+
+(deftest test-or-join-branch-local-var
+  ;; An or-join's branch-local vars are LOCAL to it — only the declared join
+  ;; vars correlate it with the rest of the query. Counting a branch-local as
+  ;; a connectivity var made the Cartesian-split pass put it in a component's
+  ;; :vars and then hand it to that sub-query's :find, raising "Query for
+  ;; unknown vars" for a var no clause outside the or-join can bind.
+  (let [db (d/db-with (db/empty-db)
+                      [{:db/id 1 :name "Ivan" :age 10 :color "red"}
+                       {:db/id 2 :name "Oleg" :age 20 :color "blue"}])]
+    (is (= #{["Ivan"] ["Oleg"]}
+           (d/q '[:find ?n
+                  :where
+                  [?e :name ?n]
+                  (or-join [?z] [?z :age ?local] [?z :color ?local])]
+                db))
+        "branch-local ?local does not leak into the outer component")
+
+    (is (= #{["Ivan"] ["Oleg"]}
+           (d/q '[:find ?n
+                  :where
+                  [?e :name ?n]
+                  (or-join [?z] [?z :age 10] [?z :color "red"])]
+                db))
+        "or-join with no branch-local var is unaffected")))
 
 (deftest test-default-source
   (let [db1 (d/db-with (db/empty-db)

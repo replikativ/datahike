@@ -1,7 +1,7 @@
 (ns datahike.test.query-test
   (:require
-   #?(:cljs [cljs.test    :as t :refer-macros [is deftest testing]]
-      :clj  [clojure.test :as t :refer        [is deftest testing]])
+   #?(:cljs [cljs.test    :as t :refer-macros [are is deftest testing]]
+      :clj  [clojure.test :as t :refer        [are is deftest testing]])
    [datahike.api :as d]
    [datahike.db :as db]
    [datahike.test.core-test :as core-test]
@@ -128,6 +128,33 @@
                     :in   ?a ?b]
                   10 20)
              #{[10 20]})))))
+
+(deftest test-in-bound-find-var-with-disjoint-clauses
+  ;; A find var supplied through :in is a constant, which is also why the
+  ;; clauses around it fall into disjoint components: they no longer share a
+  ;; free var. The Cartesian-split path then projected the wide tuple by
+  ;; looking each find var up in it — and a constant is in NO component, so the
+  ;; lookup returned nil and `nth` threw.
+  (let [db (d/db-with (db/empty-db {:tag {:db/cardinality :db.cardinality/many}
+                                    :uid {:db/unique :db.unique/identity
+                                          :db/cardinality :db.cardinality/one}})
+                      [{:db/id 100 :uid "u100" :name "alice" :tag [:red :blue]}
+                       {:db/id 101 :uid "u101" :name "bob" :tag [:green]}])]
+    (is (= #{[100]}
+           (d/q '[:find ?e :in $ ?e :where [?e :name ?n] [?e :tag ?t]] db 100)))
+    (is (= #{[100 "alice"]}
+           (d/q '[:find ?e ?n :in $ ?e :where [?e :name ?n] [?e :tag ?t]] db 100)))
+    (is (= #{[100 101]}
+           (d/q '[:find ?e ?x :in $ ?e ?x :where [?e :name ?n] [?x :tag ?t]] db 100 101)))
+
+    (testing "an :in binding given as a lookup ref is reported as written"
+      ;; …on every path: the fused one had no reverse mapping applied, and a
+      ;; SCALAR lookup ref got no reverse mapping built at all.
+      (are [q] (= #{[[:uid "u100"]]} (d/q q db [:uid "u100"]))
+        '[:find ?e :in $ ?e :where [?e :name ?n]]
+        '[:find ?e :in $ ?e :where [?e :name ?n] [?e :tag ?t]])
+      (is (= #{[[:uid "u100"] "alice"]}
+             (d/q '[:find ?e ?n :in $ ?e :where [?e :name ?n]] db [:uid "u100"]))))))
 
 (deftest test-bindings
   (let [db (-> (db/empty-db)
