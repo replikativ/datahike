@@ -81,6 +81,79 @@
                [?e :age  10])]
     #{[1 10] [5 10]}))
 
+;; The as-of / history side of this lives in query-planner-temporal-test, which
+;; has the history-enabled connection fixtures.
+
+(deftest test-not-value-var-bound-outside
+  ;; A single-pattern `not` folds into an entity group as an anti-merge, which
+  ;; drops everything but the entity: `(not [?e :tag ?t])` becomes "?e has no
+  ;; :tag datom". That is the clause's meaning only while ?t is LOCAL to the
+  ;; negation. Bind ?t outside and the clause means "?e has no :tag valued ?t"
+  ;; — a per-binding test the anti-merge cannot express. It also contributes
+  ;; no column for ?t, so the group advertised one it never wrote and the
+  ;; all-nil column annihilated the join against the outer binding: every
+  ;; shape below returned #{}.
+  (let [db (d/db-with (db/empty-db {:tag {:db/cardinality :db.cardinality/many}})
+                      [{:db/id 1 :name "a" :tag [:red :green]}
+                       {:db/id 2 :name "b" :tag [:blue]}
+                       {:db/id 3 :name "c"}])]
+    (testing "value var bound by :in"
+      (are [binding-form arg res]
+           (= res (d/q {:query {:find '[?e]
+                                :in ['$ binding-form]
+                                :where '[[?e :name _] (not [?e :tag ?T])]}
+                        :args [db arg]}))
+        '[?T ...] [:red]   #{[2] [3]}
+        '[?T ?U]  [:red :x] #{[2] [3]}
+        '?T       :red      #{[2] [3]}))
+
+    (testing "value var bound by another clause"
+      (is (= #{[1 :blue] [2 :red] [2 :green] [3 :red] [3 :green] [3 :blue]}
+             (d/q '[:find ?e ?T
+                    :where [?x :tag ?T] [?e :name _] (not [?e :tag ?T])]
+                  db))))
+
+    (testing "value var bound by a function"
+      (is (= #{[2] [3]}
+             (d/q '[:find ?e
+                    :where [(ground :red) ?T] [?e :name _] (not [?e :tag ?T])]
+                  db))))
+
+    (testing "value var supplied as a rule argument"
+      (is (= #{[2] [3]}
+             (d/q '[:find ?e :in $ % :where (untagged ?e :red)]
+                  db '[[(untagged ?e ?t) [?e :name _] (not [?e :tag ?t])]]))))
+
+    (testing "a genuinely local value var still folds to the anti-merge"
+      (is (= #{[3]}
+             (d/q '[:find ?e :where [?e :name _] (not [?e :tag ?t])] db))
+          "means: ?e has no :tag at all")
+      (is (= #{[2] [3]}
+             (d/q '[:find ?e :where [?e :name _] (not [?e :tag :red])] db))))))
+
+(deftest test-not-in-bound-var-only
+  ;; A plain `not` whose only bound var is a scalar :in binding. The planner
+  ;; folds const VALUES into clause bodies, and `not` — unlike `not-join` —
+  ;; has no declared var vector to keep the var alive, so by planning time
+  ;; the clause read as a negation with nothing bound and was rejected. The
+  ;; binding check now runs before the fold, on the clauses as written.
+  (let [db (d/db-with (db/empty-db)
+                      [{:db/id 1 :name "Ivan" :age 10}
+                       {:db/id 2 :name "Oleg" :age 20}])]
+    (testing "the negation's body has a solution — the gate empties the result"
+      (is (= #{}
+             (d/q '[:find ?n
+                    :in $ ?age
+                    :where [?e :name ?n] (not [?e2 :age ?age])]
+                  db 10))))
+
+    (testing "the negation's body has no solution — the gate is a no-op"
+      (is (= #{["Ivan"] ["Oleg"]}
+             (d/q '[:find ?n
+                    :in $ ?age
+                    :where [?e :name ?n] (not [?e2 :age ?age])]
+                  db 99))))))
+
 (deftest test-default-source
   (let [db1 (d/db-with (db/empty-db)
                        [[:db/add 1 :name "Ivan"]
