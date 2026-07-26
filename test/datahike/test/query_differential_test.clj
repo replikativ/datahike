@@ -44,13 +44,16 @@
                           {:db/ident :nick :db/valueType :db.type/string :db/cardinality :db.cardinality/one}
                           {:db/ident :score :db/valueType :db.type/long :db/cardinality :db.cardinality/one}
                           {:db/ident :tag :db/valueType :db.type/keyword :db/cardinality :db.cardinality/many}
-                          {:db/ident :friend :db/valueType :db.type/ref :db/cardinality :db.cardinality/one}])
-        (d/transact conn [{:db/id 100 :name "alice" :nick "al" :score 10 :tag [:red :blue] :friend 101}
-                          {:db/id 101 :name "bob" :score 20 :tag [:blue]}
-                          {:db/id 102 :name "carol" :nick "cc" :score 30 :friend 100}
-                          {:db/id 103 :name "dave" :tag [:red]}
-                          {:db/id 104 :name "eve" :score 20 :friend 103}
-                          {:db/id 105 :name "frank" :nick "f" :tag [:green :red] :score 5}])
+                          {:db/ident :friend :db/valueType :db.type/ref :db/cardinality :db.cardinality/one}
+                          ;; unique, so an :in binding can arrive as a LOOKUP REF
+                          {:db/ident :uid :db/valueType :db.type/string
+                           :db/unique :db.unique/identity :db/cardinality :db.cardinality/one}])
+        (d/transact conn [{:db/id 100 :uid "u100" :name "alice" :nick "al" :score 10 :tag [:red :blue] :friend 101}
+                          {:db/id 101 :uid "u101" :name "bob" :score 20 :tag [:blue]}
+                          {:db/id 102 :uid "u102" :name "carol" :nick "cc" :score 30 :friend 100}
+                          {:db/id 103 :uid "u103" :name "dave" :tag [:red]}
+                          {:db/id 104 :uid "u104" :name "eve" :score 20 :friend 103}
+                          {:db/id 105 :uid "u105" :name "frank" :nick "f" :tag [:green :red] :score 5}])
         (d/transact conn [[:db/retract 101 :score 20]])
         (d/transact conn [[:db/add 101 :score 25]])
         (d/db conn)))))
@@ -116,6 +119,27 @@
                               [2 (gen/return :as-of)]
                               [1 (gen/return :history)]])
    :in-coll?  gen/boolean                                    ;; bind ?e via :in [?e ...]
+   ;; ---------------------------------------------------------------------
+   ;; :in binding SHAPES. The generator used to bind only `[?e ...]`, `%`
+   ;; and `$2`, which left the whole scalar-const dimension ungenerated —
+   ;; and a scalar :in is folded into the clauses before planning, so it is
+   ;; the input that makes the planner and the base engine see different
+   ;; clause text. Every divergence in the #901 family needed one.
+   ;; ---------------------------------------------------------------------
+   ;; scalar :in for a value var — :unused binds a var no clause mentions,
+   ;; the shape that proves a post-fold decision cannot be cached safely
+   :in-scalar (gen/elements [:none :none :tag :score :name :unused])
+   :in-tuple?  gen/boolean                                   ;; bind [?t ?s] as a tuple
+   :in-rel?    gen/boolean                                   ;; bind [[?t]] as a relation
+   :in-lookup? gen/boolean                                   ;; bind ?e from a lookup ref
+   ;; a rule called with a GROUND argument: :in-arg drives magic-set demand
+   ;; from the input side, :out-arg from the output side (opposite seeding)
+   :rule-ground (gen/elements [:none :none :in-arg :out-arg])
+   ;; result-shaping options. No :limit/:offset: with ties in the sort key
+   ;; the row SET at a cut-off is genuinely ambiguous, so a disagreement
+   ;; there would not be a bug. :order-by is compared as a multiset for the
+   ;; same reason — it still catches wrong or missing rows.
+   :result-mod (gen/elements [:none :none :with :order-by])
    ;; rules: a rule clause added to the body, rule set passed via :in %
    :rules     (gen/frequency [[5 (gen/return :none)]
                               [1 (gen/return :plain)]
@@ -137,17 +161,52 @@
                              :coll-primary :agg-count :agg-min :agg-count-primary
                              :consumer-only])))
 
+(def ^:private rule-out-vars
+  "The var each rule clause BINDS — nil for the unary rule, which binds none.
+   Grounding that argument removes the var from the query, so `primary` must
+   not pick it."
+  {:plain '?rn2 :fn-body '?ru :recursive '?r :mutual '?r :with-not nil})
+
+(defn- ground-rule-clause
+  "Rewrite a rule call to ground one argument. :out-arg grounds the rule's
+   output — the direction that seeds magic-set demand from the wrong side —
+   and :in-arg grounds its input. The unary rule has no output to ground."
+  [clause rules ground]
+  (let [args (vec (rest clause))]
+    (case ground
+      :none clause
+      :in-arg (apply list (first clause) 100 (rest args))
+      :out-arg (if (or (nil? (get rule-out-vars rules)) (< (count args) 2))
+                 clause
+                 (apply list (first clause) (first args)
+                        (case rules
+                          :plain ["alice"]
+                          :fn-body ["ALICE"]
+                          [103]))))))
+
 (defn- build-query
-  "Assemble a valid query + extra args from a spec. Returns [query args]."
+  "Assemble a valid query + extra args from a spec.
+   Returns [query args opts], where opts is the map-form extras (:order-by)."
   [{:keys [score? tag? friend? modifiers pred-const shuffle-seed shuffle?
-           in-coll? rules multi use2? find]}]
+           in-coll? rules multi use2? find
+           in-scalar in-tuple? in-rel? in-lookup? rule-ground result-mod]}]
   (let [;; :recursive/:mutual rule clauses walk :friend — force the pattern in
         friend? (or friend? (#{:recursive :mutual} rules))
+        rule-ground (if (= :none rules) :none rule-ground)
+        rule-cl (when (not= :none rules)
+                  (ground-rule-clause (get rule-clause rules) rules rule-ground))
+        ;; grounding the output removes that var from the query
+        rule-var (when (and (not= :none rules)
+                            (not= rule-cl (get rule-clause rules))
+                            (= :out-arg rule-ground))
+                   ::grounded)
+        rule-out (when (and (not= :none rules) (nil? rule-var))
+                   (get rule-out-vars rules))
         patterns (cond-> '[[?e :name ?n]]
                    score? (conj '[?e :score ?s])
                    tag? (conj '[?e :tag ?t])
                    friend? (conj '[?e :friend ?f] '[?f :name ?fn])
-                   (not= :none rules) (conj (get rule-clause rules))
+                   (not= :none rules) (conj rule-cl)
                    (= :join-name multi) (conj '[$2 ?e :name ?n2])
                    (= :join-score multi) (conj '[$2 ?e :score ?s2]))
         ;; modifiers that need ?s degrade when score? is absent
@@ -189,9 +248,7 @@
         primary (cond
                   (and use2? (= :join-name multi)) '?n2
                   (and use2? (= :join-score multi)) '?s2
-                  (and use2? (= :fn-body rules)) '?ru
-                  (and use2? (#{:recursive :mutual} rules)) '?r
-                  (and use2? (= :plain rules)) '?rn2
+                  (and use2? rule-out) rule-out
                   score? '?s tag? '?t friend? '?fn :else '?n)
         find-part (case find
                     :e ['?e]
@@ -205,19 +262,46 @@
                     ;; only the consumer group's var; degrades to [?n] without
                     ;; the friend join (single group — no producer/consumer split)
                     :consumer-only [(if friend? '?fn '?n)])
-        ;; :in order must match arg order: $ [$2] [%] [coll]
-        in-part (when (or in-coll? (not= :none rules) (not= :none multi))
-                  (vec (concat '[$]
-                               (when (not= :none multi) '[$2])
-                               (when (not= :none rules) '[%])
-                               (when in-coll? '[[?e ...]]))))
-        args (vec (concat (when (not= :none multi) [::db2])
-                          (when (not= :none rules) [(get rule-sets rules)])
-                          (when in-coll? [[100 101 102 103 104 105]])))]
+        ;; ?e comes from a collection OR a lookup ref, never both
+        e-binding (cond in-coll? ['[?e ...] [100 101 102 103 104 105]]
+                        in-lookup? ['?e [:uid "u100"]])
+        ;; A scalar wins over the tuple/relation shapes for the same vars, so
+        ;; no var is ever bound twice.
+        scalar-binding (case in-scalar
+                         :tag ['?t :red]
+                         :score ['?s 20]
+                         :name ['?n "alice"]
+                         :unused ['?unused 42]
+                         nil)
+        tuple-binding (when (and in-tuple? (= :none in-scalar))
+                        ['[?t ?s] [:red 20]])
+        rel-binding (when (and in-rel? (= :none in-scalar) (not in-tuple?))
+                      ['[[?t]] [[:red] [:blue]]])
+        ;; :in and args are assembled from ONE ordered list of pairs, so the
+        ;; two can never drift out of correspondence.
+        bindings (cond-> []
+                   (not= :none multi) (conj ['$2 ::db2])
+                   (not= :none rules) (conj ['% (get rule-sets rules)])
+                   e-binding (conj e-binding)
+                   scalar-binding (conj scalar-binding)
+                   tuple-binding (conj tuple-binding)
+                   rel-binding (conj rel-binding))
+        in-part (when (seq bindings)
+                  (into '[$] (map first) bindings))
+        args (mapv second bindings)
+        ;; :with needs plain-var find shapes; :order-by needs a symbol as the
+        ;; first find element. Both degrade to :none rather than build an
+        ;; invalid query.
+        with-part (when (and (= :with result-mod) (#{:e :e+primary} find))
+                    '[?n])
+        order-by (when (and (= :order-by result-mod) (symbol? (first find-part)))
+                   [(first find-part) :asc])]
     [(vec (concat [:find] find-part
+                  (when with-part (cons :with with-part))
                   (when in-part (cons :in in-part))
                   [:where] clauses))
-     args]))
+     args
+     (cond-> {} order-by (assoc :order-by order-by))]))
 
 (defn- normalize
   "Order-insensitive, duplicate-preserving comparison form: collection finds
@@ -228,11 +312,15 @@
     (sequential? r) (frequencies r)
     :else r))
 
-(defn- run-engine [disable? query db args]
+(defn- run-engine [disable? query db args opts]
   (try
     (binding [q/*disable-planner* disable?]
-      (normalize (apply d/q query db
-                        (map (fn [a] (if (= ::db2 a) @test-db2 a)) args))))
+      (let [args' (into [db] (map (fn [a] (if (= ::db2 a) @test-db2 a))) args)]
+        (normalize
+         (if (seq opts)
+           ;; map form — the only way to pass :order-by
+           (d/q (assoc opts :query query :args args'))
+           (apply d/q query args')))))
     (catch Exception _ ::raised)))
 
 (defn- wrap-db [db temporal]
@@ -244,13 +332,14 @@
 (defspec base-and-planner-agree-on-generated-queries
   {:num-tests num-cases :seed 1721160000042}
   (prop/for-all [spec gen-spec]
-                (let [[query args] (build-query spec)
+                (let [[query args opts] (build-query spec)
                       db (wrap-db @test-db (:temporal spec))
-                      base (run-engine true query db args)
-                      planner (run-engine false query db args)]
+                      base (run-engine true query db args opts)
+                      planner (run-engine false query db args opts)]
                   (is (= base planner)
                       (str "engines diverge on " (pr-str query)
-                           " args " (pr-str args) " temporal " (:temporal spec)
+                           " args " (pr-str args) " opts " (pr-str opts)
+                           " temporal " (:temporal spec)
                            "\n  base:    " (pr-str base)
                            "\n  planner: " (pr-str planner)))
                   (= base planner))))

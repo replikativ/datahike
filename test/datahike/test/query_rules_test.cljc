@@ -1,7 +1,7 @@
 (ns datahike.test.query-rules-test
   (:require
-   #?(:cljs [cljs.test    :as t :refer-macros [is deftest testing]]
-      :clj  [clojure.test :as t :refer        [is deftest testing]])
+   #?(:cljs [cljs.test    :as t :refer-macros [are is deftest testing]]
+      :clj  [clojure.test :as t :refer        [are is deftest testing]])
    [clojure.core.async :refer [<!]]
    [datahike.api :as d]
    [datahike.db :as db]
@@ -351,3 +351,34 @@
       (is (= #{["root"] ["b"] ["c"] ["z"]} (d/q query db rules "Anchor" #{"link" "skip"}))))
     (testing "an empty set leaves only the anchored base case"
       (is (= #{["root"]} (d/q query db rules "Anchor" #{}))))))
+(deftest test-recursive-rule-ground-output-arg
+  ;; A recursive rule called with the ground argument on the OUTPUT side —
+  ;; "who reaches X?" rather than "what does X reach?". Magic-set seeding fed
+  ;; the demand value into the EAVT ENTITY slot, which walks edges the wrong
+  ;; way: it looked up the target's OUTGOING edges and, finding none, seeded
+  ;; an empty relation and the fixpoint died at iteration 0. Only the general
+  ;; demand-restricted base evaluation handles this direction.
+  (let [rules '[[(reach ?a ?b) [?a :friend ?b]]
+                [(reach ?a ?b) [?a :friend ?x] (reach ?x ?b)]]
+        db (d/db-with (db/empty-db {:friend {:db/valueType :db.type/ref
+                                             :db/cardinality :db.cardinality/many}})
+                      [{:db/id 1 :friend [2]}
+                       {:db/id 2 :friend [3 6]}
+                       {:db/id 3 :friend [4]}
+                       {:db/id 4 :friend [5]}
+                       {:db/id 5}
+                       {:db/id 6}])]
+    (testing "ground output arg — including the chain end, which has no outgoing edge"
+      (are [target res] (= res (set (d/q '[:find [?a ...] :in $ % ?B :where (reach ?a ?B)]
+                                         db rules target)))
+        2 #{1}
+        3 #{1 2}
+        5 #{1 2 3 4}
+        6 #{1 2}))
+
+    (testing "ground input arg keeps taking the point-lookup path"
+      (are [source res] (= res (set (d/q '[:find [?b ...] :in $ % ?A :where (reach ?A ?b)]
+                                         db rules source)))
+        1 #{2 3 4 5 6}
+        4 #{5}
+        5 #{}))))

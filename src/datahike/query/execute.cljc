@@ -2103,6 +2103,33 @@
     (or (some #{var-sym} scan-clause)
         (some (fn [mc] (some #{var-sym} mc)) merge-clauses))))
 
+(declare sub-plan-bound-vars)
+
+(defn- op-bound-vars
+  "Vars one sub-plan op binds. A disjunction binds only what EVERY branch
+   binds — a var only some branch produces is not guaranteed at all.
+   Deliberately conservative: an op shape not listed contributes nothing, so
+   the plan falls back to the Relation engine rather than anti-joining on a var
+   the sub-plan may never produce. `:not`/`:not-join` bind nothing by
+   definition; the rule ops are opaque to the fused probe."
+  [op]
+  (case (:op op)
+    (:entity-group :pattern-scan) (:vars op)
+    (:function :external-engine) (filter analyze/free-var?
+                                         (analyze/extract-vars (:binding op)))
+    (:or :or-join) (let [branch-vars (map sub-plan-bound-vars (:branches op))]
+                     (if (seq branch-vars)
+                       (reduce clojure.set/intersection branch-vars)
+                       #{}))
+    nil))
+
+(defn- sub-plan-bound-vars
+  "Vars a NOT-JOIN's sub-plan binds on its own. Omitting the disjunction ops
+   here cost a measured ~3x on negated disjunctions and negated rules (a rule
+   lowers to an `:or`), because those plans lost the fused path entirely."
+  [sub-plan]
+  (into #{} (mapcat op-bound-vars) (:ops sub-plan)))
+
 (defn can-direct-fuse?
   "Check if a plan can use the direct-to-HashSet execution path.
    Public: query/explain mirrors the execution dispatch with it.
@@ -2115,6 +2142,15 @@
         groups (filterv #(#{:entity-group :pattern-scan} (:op %)) ops)]
     (and ;; Structural eligibility (shared with plan-time pre-check)
      (plan/structurally-fusable? ops)
+         ;; EVERY group must produce a column. A fully ground group — every
+         ;; position a constant, typically after the :in fold — is a pure
+         ;; existence test, and the fused scan emits one tuple per emitted var,
+         ;; so with no vars it emits nothing whether or not the datoms exist.
+         ;; That reads as "no solution" and silently empties the result. Testing
+         ;; the UNION over all groups was not enough: one ground group beside a
+         ;; column-producing one still annihilated the answer. The Relation
+         ;; engine models the satisfied case as one empty tuple; leave these to it.
+     (every? #(seq (:vars %)) groups)
          ;; Find-var coverage: groups + function outputs + consts
      (let [group-vars (into #{} (mapcat :vars) groups)
            fn-ops (filterv #(= :function (:op %)) ops)
@@ -2131,6 +2167,26 @@
        (every? #(or (and consts (contains? consts %))
                     (contains? all-available-vars %))
                find-vars))
+         ;; NOT-JOIN join-var coverage, both sides of the anti-join (#901).
+         ;; OUTER: post-filter-not-joins probes each join var out of the wide
+         ;; tuple (group vars) or the const map; a var bound anywhere else —
+         ;; a function output, applied only AFTER the anti-join — has no slot.
+         ;; INNER: the sub-plan runs with NO outer bindings ({:rels [] …}), so
+         ;; it must bind every join var itself. One it merely READS (a body
+         ;; predicate over an outer var) comes back unbound, the negation
+         ;; relation ends up empty, and the anti-join silently excludes
+         ;; nothing. A const join var satisfies both sides: its value is
+         ;; folded into the sub-plan's clauses, which is why it legitimately
+         ;; drops out of the exclusion key.
+     (let [group-vars (into #{} (mapcat :vars) groups)]
+       (every? (fn [op]
+                 (or (not= :not-join (:op op))
+                     (let [inner (sub-plan-bound-vars (:sub-plan op))]
+                       (every? #(or (and consts (contains? consts %))
+                                    (and (contains? group-vars %)
+                                         (contains? inner %)))
+                               (:join-vars op)))))
+               ops))
          ;; Multi-group: probe vars resolvable; find-vars from any group or consts
      (every? (fn [[gi {:keys [producer-idx probe-vars]}]]
                (let [consumer-g (nth groups gi)
@@ -2256,7 +2312,12 @@
 (defn- post-filter-not-joins
   "Apply NOT-JOIN anti-probe filtering on result-list.
    For each NOT-JOIN op, executes its sub-plan to get exclusion values,
-   builds a HashSet of join-var tuples, and removes matching result tuples."
+   builds a HashSet of join-var tuples, and removes matching result tuples.
+
+   A join var supplied as a scalar :in binding needs no handling here: the fold
+   plants its VALUE in the sub-plan's body clauses, so the var is absent from
+   the negation relation and drops out of the exclusion key below — the key
+   degenerates to the remaining join vars, which is exactly right."
   [result-list not-join-ops var-index db]
   (doseq [nj-op not-join-ops]
     (let [join-vars (:join-vars nj-op)
@@ -2268,7 +2329,11 @@
       (when (and neg-rel (pos? (count (:tuples neg-rel))))
         ;; Build exclusion set from the negation result
         (let [neg-attrs (:attrs neg-rel)
-              jv-vec (vec join-vars)
+              ;; Only join vars the negation actually binds constrain the
+              ;; anti-join. One the sub-plan never binds is vacuously agreed
+              ;; on; keying on it would read nil out of every negation tuple
+              ;; and match nothing.
+              jv-vec (filterv #(contains? neg-attrs %) join-vars)
               n-jv (count jv-vec)
               neg-key (fn [tuple]
                         (if (= 1 n-jv)
@@ -2285,14 +2350,28 @@
                                  (reduce (fn [s tuple] (conj! s (neg-key tuple)))
                                          (transient #{}) (:tuples neg-rel))))]
           ;; Filter result-list: remove tuples whose join-var values are in the exclusion set
-          (let [jv-indices (mapv #(int (get var-index %)) jv-vec)
+          (let [jv-getters (mapv (fn [v]
+                                   ;; Every surviving join var HAS a column: a const
+                                   ;; one was folded into the sub-plan's body, so it
+                                   ;; is absent from neg-attrs and `jv-vec` already
+                                   ;; dropped it above. Raise rather than invent a
+                                   ;; value — a silent fallback here is how #901
+                                   ;; produced a wrong answer in the first place.
+                                   (let [idx (int (or (get var-index v)
+                                                      (log/raise
+                                                       "NOT-JOIN join variable has no column: " v
+                                                       {:error :query/where
+                                                        :var v
+                                                        :clause (:clause nj-op)})))]
+                                     (fn [^objects tuple] (aget tuple idx))))
+                                 jv-vec)
                 n (result-list-size result-list)]
             (loop [read-i (int 0) write-i (int 0)]
               (if (< read-i n)
                 (let [^objects tuple (result-list-get result-list read-i)
                       probe (if (= 1 n-jv)
-                              (aget tuple (int (first jv-indices)))
-                              (mapv #(aget tuple (int %)) jv-indices))
+                              ((first jv-getters) tuple)
+                              (mapv #(% tuple) jv-getters))
                       excluded? #?(:clj (.contains ^java.util.HashSet excl-set probe)
                                    :cljs (contains? excl-set probe))]
                   (if excluded?
@@ -2911,19 +2990,29 @@
    cancel: optional IDeref; see execute-plan-direct.
    Returns nil if the plan can't be fused."
   [plan db cancel]
-  (let [ops (:ops plan)]
+  (let [ops (:ops plan)
+        groups (filterv #(#{:entity-group :pattern-scan} (:op %)) ops)]
+    ;; Every ineligibility test is a GATE, not a thrown signal: the caller wraps
+    ;; this in a broad catch that turns any exception into "not fusable", so a
+    ;; throw here is indistinguishable from a genuine fused-scan failure — which
+    ;; would then surface as an unexplained slowdown instead of an error.
     (when (and (not (:has-passthrough? plan))
                ;; direct-rel only handles pure group plans — no predicates/functions
                ;; (unlike execute-plan-direct which has post-filter machinery)
                (seq ops)
                (every? #(#{:entity-group :pattern-scan} (:op %)) ops)
-               (not-any? :source ops))
-      ;; Collect ALL vars produced by all groups
-      (let [groups (filterv #(#{:entity-group :pattern-scan} (:op %)) ops)
-            all-vars (vec (distinct (mapcat :vars groups)))
-            ;; For single-group plans only (multi-group needs more work)
-            _ (when (> (count groups) 1)
-                (throw (ex-info "multi-group direct-rel not yet supported" {})))]
+               (not-any? :source ops)
+               ;; single-group only (multi-group needs more work)
+               (= 1 (count groups))
+               ;; A group with no free var (every position ground, typically
+               ;; because :in consts were folded in) is a pure existence test.
+               ;; The fused scan emits one tuple PER EMITTED VAR, so with none
+               ;; it emits nothing whether or not the datom exists — a
+               ;; zero-tuple relation, which reads as "no solution" and
+               ;; annihilates the result. Hand those to execute-plan, which
+               ;; represents the satisfied case as one empty tuple.
+               (every? #(seq (:vars %)) groups))
+      (let [all-vars (vec (distinct (mapcat :vars groups)))]
         (when (= 1 (count groups))
           (let [g (first groups)
                 scan-op (entity-group-scan-op g)
@@ -3164,16 +3253,29 @@
         find-vars   (vec (distinct (filter #(and (symbol? %) (analyze/free-var? %))
                                            (concat scan-clause
                                                    (mapcat :clause merge-ops)))))
+        ;; A group with no free var at all — every position ground, typically
+        ;; after the :in fold — is a pure EXISTENCE test. The fused scan emits
+        ;; one tuple per emitted var, so with none it emitted nothing whether
+        ;; or not the datoms were there, and the group read as unsatisfied:
+        ;; `(not [100 :tag :red])` failed to exclude under as-of/history where
+        ;; it excludes correctly on the current db. The collect-set fires once
+        ;; per full match, BEFORE the var-gated emit, so it answers the only
+        ;; question a column-less group has: did anything match?
+        ground-only? (empty? find-vars)
+        exists-set  (when ground-only? (make-probe-set 4))
         result-list (make-result-list 4000)]
     (execute-group-direct db scan-op merge-ops find-vars nil
                           result-list
                           (when probe (:values probe)) (if probe (int (:field probe)) (int 0))
-                          nil 0 -1 nil
+                          exists-set 0 -1 nil
                           :temporal temporal :pipeline (:pipeline op)
                           :cancel (:cancel context))
     (let [attrs   (into {} (map-indexed (fn [i v] [v i]) find-vars))
-          out-rel (rel/->Relation attrs #?(:clj  (vec (.toArray ^java.util.ArrayList result-list))
-                                           :cljs (vec result-list)))
+          out-rel (if ground-only?
+                    ;; unit relation when satisfied, empty when not
+                    (if (pos? (probe-set-size exists-set)) (rel/unit-rel) (rel/empty-rel))
+                    (rel/->Relation attrs #?(:clj  (vec (.toArray ^java.util.ArrayList result-list))
+                                             :cljs (vec result-list))))
           merged  (binding [rel/*implicit-source* db
                             rel/*lookup-attrs* (lookup-attrs-for-clauses db scan-clause merge-ops)]
                     (rel/collapse-rels (:rels context) out-rel))]
@@ -3183,37 +3285,86 @@
 ;; ---------------------------------------------------------------------------
 ;; OR / NOT execution (Relation-based fallback)
 
+(def ^:private branch-true
+  "A branch that constrains none of the OR's visible vars but HAS a solution:
+   it holds for every outer row, so the whole disjunction does."
+  ::branch-true)
+
+(def ^:private branch-false
+  "A branch that constrains none of the OR's visible vars and has NO solution:
+   it contributes nothing, and if every branch is like this the disjunction
+   is false for every outer row."
+  ::branch-false)
+
+(defn- or-branch-rel
+  "Run one or/or-join branch and reduce it to a relation over `vars`, or to
+   branch-true / branch-false when it has no column among them. nil means the
+   branch could not run at all.
+
+   The boolean cases are the ones the const fold creates: `(or-join [?E] [?E
+   :tag :green])` with ?E supplied through :in becomes the fully-ground
+   `[101 :tag :green]`, whose relation has no columns. rel/limit-rel maps
+   BOTH outcomes to nil, and nil read as \"no such branch\" — so an
+   unsatisfied branch silently made the disjunction TRUE."
+  [db sub-plan branch-ctx vars]
+  (when-let [result-ctx (execute-plan sub-plan branch-ctx db)]
+    (let [rels (:rels result-ctx)]
+      (if (empty? rels)
+        ;; Nothing bound and nothing failed — vacuously satisfied. (Also keeps
+        ;; `reduce rel/hash-join` off an empty seq, which throws on arity 0.)
+        branch-true
+        (let [joined (reduce rel/hash-join rels)]
+          (or (rel/limit-rel joined vars)
+              (if (pos? (count (:tuples joined)))
+                branch-true
+                branch-false)))))))
+
+(defn- combine-or-branches
+  "Fold branch outcomes back into ctx. Any satisfied column-less branch makes
+   the disjunction hold everywhere; otherwise the column-bearing branches
+   union as before; failing that, an all-false disjunction annihilates the
+   context via a zero-tuple relation — the same shape the base engine builds
+   for an unsatisfied ground clause."
+  [ctx op branch-rels]
+  ;; A Relation is a record, so `map?` separates it from the two keywords
+  ;; and from nil without needing the type imported on both platforms.
+  (let [valid (filterv map? branch-rels)]
+    ;; A column-less branch beside a column-bearing one means some branch fails
+    ;; to bind a declared var — an ill-formed disjunction. The base engine says
+    ;; so ("Can't sum relations with different attrs"); short-circuiting on the
+    ;; column-less one instead would fabricate nils for the declared var.
+    (when (and (seq valid) (some #{branch-true branch-false} branch-rels))
+      (log/raise "Can't sum relations with different attrs in " (:clause op)
+                 {:error :query/where :form (:clause op)}))
+    (cond
+      (some #(= branch-true %) branch-rels) ctx
+      (seq valid) (update ctx :rels rel/collapse-rels (reduce rel/sum-rel valid))
+      (some #(= branch-false %) branch-rels)
+      (update ctx :rels rel/collapse-rels (rel/empty-rel))
+      :else ctx)))
+
 (defn- execute-or [db op ctx]
-  (let [or-vars (:vars op)
-        branch-rels (mapv (fn [sub-plan]
-                            (let [branch-ctx (assoc ctx :rels (:rels ctx))
-                                  result-ctx (execute-plan sub-plan branch-ctx db)]
-                              (when result-ctx
-                                (let [joined (reduce rel/hash-join (:rels result-ctx))]
-                                  ;; Project to OR's visible vars — critical for rules where
-                                  ;; branches introduce auto-generated temp vars
-                                  (rel/limit-rel joined or-vars)))))
-                          (:branches op))
-        valid (filterv some? branch-rels)
-        union (when (seq valid) (reduce rel/sum-rel valid))]
-    (if union (update ctx :rels rel/collapse-rels union) ctx)))
+  ;; Project to OR's visible vars — critical for rules where branches
+  ;; introduce auto-generated temp vars.
+  (combine-or-branches
+   ctx op
+   (mapv #(or-branch-rel db % (assoc ctx :rels (:rels ctx)) (:vars op))
+         (:branches op))))
 
 (defn- execute-or-join [db op ctx]
   (let [join-vars (:join-vars op)
-        limited-ctx (rel/limit-context ctx join-vars)
-        branch-rels (mapv (fn [sub-plan]
-                            (let [result-ctx (execute-plan sub-plan limited-ctx db)]
-                              (when result-ctx
-                                (let [joined (reduce rel/hash-join (:rels result-ctx))]
-                                  (rel/limit-rel joined join-vars)))))
-                          (:branches op))
-        valid (filterv some? branch-rels)
-        union (when (seq valid) (reduce rel/sum-rel valid))]
-    (if union (update ctx :rels rel/collapse-rels union) ctx)))
+        limited-ctx (rel/limit-context ctx join-vars)]
+    (combine-or-branches
+     ctx op
+     (mapv #(or-branch-rel db % limited-ctx join-vars) (:branches op)))))
 
 (defn- execute-not [db op ctx]
-  (if (empty? (:rels ctx))
-    ctx
+  ;; No relations bound yet — every var the query mentions came from :in as a
+  ;; scalar — does NOT mean "nothing to constrain": the negation is still a gate
+  ;; over the single (empty) row the query has so far. Bailing out here dropped
+  ;; the clause and returned rows it should have excluded. The unit relation is
+  ;; hash-join's identity, so seeding it leaves the normal path untouched.
+  (let [ctx (cond-> ctx (empty? (:rels ctx)) (assoc :rels [(rel/unit-rel)]))]
     (let [join-rel (reduce rel/hash-join (:rels ctx))
           neg-ctx (execute-plan (:sub-plan op) (assoc ctx :rels [join-rel]) db)
           neg-join (when (and neg-ctx (seq (:rels neg-ctx)))
@@ -3222,17 +3373,31 @@
       (assoc ctx :rels [result]))))
 
 (defn- execute-not-join [db op ctx]
-  (if (empty? (:rels ctx))
-    ctx
+  ;; See execute-not: an all-const context is one empty row, not "no rows".
+  (let [ctx (cond-> ctx (empty? (:rels ctx)) (assoc :rels [(rel/unit-rel)]))]
     (let [join-vars (:join-vars op)
           join-rel (reduce rel/hash-join (:rels ctx))
           limited-ctx (rel/limit-context (assoc ctx :rels [join-rel]) join-vars)
           neg-ctx (execute-plan (:sub-plan op) limited-ctx db)
-          neg-ctx (when neg-ctx (rel/limit-context neg-ctx join-vars))
-          neg-join (when (and neg-ctx (seq (:rels neg-ctx)))
-                     (reduce rel/hash-join (:rels neg-ctx)))
-          result (if neg-join (rel/subtract-rel join-rel neg-join) join-rel)]
-      (assoc ctx :rels [result]))))
+          neg-rels (:rels neg-ctx)
+          neg-limited (when neg-ctx (rel/limit-context neg-ctx join-vars))
+          neg-join (when (and neg-limited (seq (:rels neg-limited)))
+                     (reduce rel/hash-join (:rels neg-limited)))]
+      (cond
+        ;; Normal case: the join-var columns say WHICH rows to exclude.
+        neg-join
+        (assoc ctx :rels [(rel/subtract-rel join-rel neg-join)])
+
+        ;; No join-var column survived — `(not-join [?e] [?e :nick _])` with ?e
+        ;; supplied through :in folds to the fully-ground `[100 :nick _]`, whose
+        ;; relation has no columns at all. Then the negation is a BOOLEAN over
+        ;; every row, and limiting to the join vars dropped it: the clause
+        ;; silently stopped constraining anything. Satisfied (every relation
+        ;; non-empty, so the product has a tuple) excludes every row.
+        (and (seq neg-rels) (every? #(pos? (count (:tuples %))) neg-rels))
+        (assoc ctx :rels [(rel/->Relation (:attrs join-rel) [])])
+
+        :else (assoc ctx :rels [join-rel])))))
 
 ;; ---------------------------------------------------------------------------
 ;; Recursive rule execution (semi-naive fixpoint with clause versions)
@@ -3608,8 +3773,17 @@
                   (map (fn [rn]
                          (let [{:keys [head-vars base-plans]} (get scc-rule-plans rn)
                                base-rel (cond
-                                  ;; Magic, single ref-edge base: EAVT point lookups for the seed
-                                          (and magic-demand base-scan-attr (= rn rule-name))
+                                  ;; Magic, single ref-edge base: EAVT point lookups for the seed.
+                                  ;; ONLY when the ground arg is the rule's INPUT (position 0):
+                                  ;; magic-base-scan feeds the demand value into the EAVT ENTITY
+                                  ;; slot and maps [entity value] onto the head vars, so with the
+                                  ;; ground arg on the OUTPUT side it walks edges the wrong way —
+                                  ;; `(reach ?a 104)` looked up 104's OUTGOING edges and, finding
+                                  ;; none, seeded an empty relation and the fixpoint died at
+                                  ;; iteration 0. The general path handles either direction; its
+                                  ;; own docstring already named this hazard.
+                                          (and magic-demand base-scan-attr (= rn rule-name)
+                                               (zero? (long magic-ground-pos)))
                                           (or (magic-base-scan db head-vars base-scan-attr seed-batch)
                                               (rel/->Relation (zipmap head-vars (range)) []))
                                   ;; Magic, any other base shape: demand-restricted base branches
@@ -3683,8 +3857,13 @@
                                   ;; demanded last round (each scanned exactly once).
                                            magic-base-rel
                                            (cond
-                                  ;; Single ref-edge fast path
-                                             (and magic-demand base-scan-attr (= rn rule-name))
+                                  ;; Single ref-edge fast path — same restriction as
+                                  ;; the seed above: magic-base-scan feeds the demand
+                                  ;; value into the EAVT entity slot, so it is only
+                                  ;; the right direction when the ground argument is
+                                  ;; the rule's INPUT.
+                                             (and magic-demand base-scan-attr (= rn rule-name)
+                                                  (zero? (long magic-ground-pos)))
                                              (magic-base-scan db head-vars base-scan-attr batch)
                                   ;; General demand-restricted base for newly demanded entities
                                              (and magic-demand (= rn rule-name))
