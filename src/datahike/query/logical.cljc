@@ -59,21 +59,41 @@
 ;; ---------------------------------------------------------------------------
 ;; NOT → anti-scan folding
 
+(defn- anti-fold-vars-local?
+  "The anti-merge drops everything but the entity: `(not [?e :tag ?t])` folds
+   to \"?e has no :tag datom\". That is only what the clause MEANS while ?t is
+   local to the negation. Bind ?t outside — `:in [?t ...]`, or another clause
+   — and the clause means \"?e has no :tag whose value is ?t\", a per-binding
+   test the fused anti-merge cannot express: it would exclude every entity
+   holding ANY value of the attribute. The merge also contributes no column
+   for ?t, so the group advertises one it never writes and the all-nil column
+   annihilates the join against the outer binding."
+  [sub-ci not-idx bound-vars var->clause-idxs]
+  (every? (fn [v]
+            (and (not (contains? bound-vars v))
+                 (empty? (disj (get var->clause-idxs v #{}) not-idx))))
+          (->> (:vars sub-ci)
+               (filter analyze/free-var?)
+               (remove #{(:e sub-ci)}))))
+
 (defn- foldable-not?
   "A NOT clause can fold into an entity group's anti-scans when:
    1. It is a plain NOT (not NOT-JOIN)
    2. It has exactly one sub-clause that is a data pattern
    3. The pattern's entity var has a scan group
-   4. No source prefix (same default source)"
-  [not-entry scan-groups]
-  (let [{:keys [ci type source]} not-entry]
+   4. No source prefix (same default source)
+   5. Its non-entity vars are local to the negation (see above)"
+  [not-entry scan-groups bound-vars var->clause-idxs]
+  (let [{:keys [ci type source source-idx]} not-entry]
     (and (= type :not)
          (nil? source)
          (= 1 (count (:sub-clauses ci)))
          (let [sub-ci (analyze/classify-clause (first (:sub-clauses ci)))]
            (and (= :pattern (:type sub-ci))
                 (analyze/free-var? (:e sub-ci))
-                (contains? scan-groups [(:e sub-ci) nil]))))))
+                (contains? scan-groups [(:e sub-ci) nil])
+                (anti-fold-vars-local? sub-ci source-idx bound-vars
+                                       var->clause-idxs))))))
 
 ;; ---------------------------------------------------------------------------
 ;; Main builder
@@ -168,7 +188,16 @@
                            ;; the bound value — the two engines diverge). Fall
                            ;; through to LBind, whose generic fn-call path resolves
                            ;; the default var exactly like the base engine.
-                           (not (analyze/free-var? (nth (:args ci) 3 nil))))
+                           (not (analyze/free-var? (nth (:args ci) 3 nil)))
+                           ;; A GROUND entity — written literally, or a var the
+                           ;; :in fold replaced with its value — leaves the scan
+                           ;; with no entity var, so it lowers to a STANDALONE
+                           ;; pattern-scan instead of an entity-group merge. Only
+                           ;; the merge path honours :optional?, so a miss emitted
+                           ;; nothing where the default was due. Fall through to
+                           ;; LBind, whose generic path defaults like the base
+                           ;; engine.
+                           (analyze/free-var? (nth (:args ci) 1 nil)))
                     ;; Recognize get-else as an optional scan:
                     ;; [(get-else $ ?e :attr default) ?v]
                     ;; args = ($ ?e :attr default), binding = ?v
@@ -294,12 +323,21 @@
          blank-counter (atom 0)
          scan-groups (group-by #(entity-group-key % blank-counter) scans)
 
+         ;; var → indices of the clauses that mention it, so a fold candidate
+         ;; can tell its own local vars from ones the query shares.
+         var->clause-idxs
+         (reduce (fn [m [idx ci]]
+                   (reduce (fn [m v] (update m v (fnil conj #{}) idx))
+                           m (filter analyze/free-var? (:vars ci))))
+                 {}
+                 (map-indexed vector classified))
+
          ;; Identify foldable NOTs (single-pattern NOT on a grouped entity var)
          foldable-nots
          (reduce
           (fn [acc not-entry]
             (if (and (nil? (:ir-node not-entry))  ;; not already an IR node from AND flattening
-                     (foldable-not? not-entry scan-groups))
+                     (foldable-not? not-entry scan-groups bound-vars var->clause-idxs))
               (let [sub-ci (analyze/classify-clause (first (:sub-clauses (:ci not-entry))))
                     anti-scan (make-scan sub-ci nil)]
                 (update acc [(:e sub-ci) nil] (fnil conj [])
