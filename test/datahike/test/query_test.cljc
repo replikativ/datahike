@@ -156,6 +156,33 @@
       (is (= #{[[:uid "u100"] "alice"]}
              (d/q '[:find ?e ?n :in $ ?e :where [?e :name ?n]] db [:uid "u100"]))))))
 
+(deftest test-source-prefixed-pattern-uses-its-own-schema
+  ;; A source-prefixed pattern runs against a different database than the one
+  ;; the plan was built from. Index selection read `:db/index`-ness off the
+  ;; PRIMARY db: `:name` is unique there, so the scan was planned for :avet —
+  ;; an index the other source does not populate for that attribute. It read
+  ;; an empty index and the query returned nothing.
+  (let [db1 (d/db-with (db/empty-db {:name {:db/unique :db.unique/identity
+                                            :db/cardinality :db.cardinality/one}})
+                       [{:db/id 1 :name "alice"}
+                        {:db/id 2 :name "bob"}])
+        db2 (d/db-with (db/empty-db)          ;; :name NOT unique/indexed here
+                       [{:db/id 1 :name "alice-2"}
+                        {:db/id 2 :name "bob-2"}])]
+    (is (= #{[1]}
+           (d/q '[:find ?e :in $ $2 :where [$2 ?e :name "alice-2"]] db1 db2))
+        "ground value on a non-indexed attribute of the secondary source")
+
+    (is (= #{[1]}
+           (d/q '[:find ?e :in $ $2 :where [$2 ?e :name ?n] [(= ?n "alice-2")]]
+                db1 db2))
+        "same via a pushed-down predicate")
+
+    (is (= #{[1]}
+           (d/q '[:find ?e :in $ $2 :where [$ ?e :name "alice"] [$2 ?e :name "alice-2"]]
+                db1 db2))
+        "joined across both sources")))
+
 (deftest test-bindings
   (let [db (-> (db/empty-db)
                (d/db-with [{:db/id 1, :name "Ivan", :age 15}
