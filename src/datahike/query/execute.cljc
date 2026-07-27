@@ -2114,7 +2114,15 @@
    definition; the rule ops are opaque to the fused probe."
   [op]
   (case (:op op)
-    (:entity-group :pattern-scan) (:vars op)
+    (:entity-group :pattern-scan)
+    ;; An OPTIONAL scan (a fused `get-else`) does not BIND its entity var — it
+    ;; needs one bound to look up, and emits the default on a miss. Counting it
+    ;; as bound let a negation whose body is a `get-else` over the join var take
+    ;; the fused path, where the sub-plan has no relations and the entity is
+    ;; unbound: "Cannot resolve any more clauses".
+    (if (or (:optional? op) (some :optional? (:merge-ops op)))
+      (remove #{(first (:clause op))} (:vars op))
+      (:vars op))
     (:function :external-engine) (filter analyze/free-var?
                                          (analyze/extract-vars (:binding op)))
     (:or :or-join) (let [branch-vars (map sub-plan-bound-vars (:branches op))]
@@ -2317,13 +2325,20 @@
    A join var supplied as a scalar :in binding needs no handling here: the fold
    plants its VALUE in the sub-plan's body clauses, so the var is absent from
    the negation relation and drops out of the exclusion key below — the key
-   degenerates to the remaining join vars, which is exactly right."
-  [result-list not-join-ops var-index db]
+   degenerates to the remaining join vars, which is exactly right.
+
+   `outer-ctx` carries the query's non-relational context. The sub-plan runs
+   with no relations, but MUST keep the source bindings and the cancel flag: a
+   `$2`-prefixed pattern in the negation resolved against the default db
+   instead (logging :datahike/source-not-found) and silently excluded the wrong
+   rows, a `get-else` over a foreign source raised outright, and a long
+   negation scan ignored cancellation."
+  [result-list not-join-ops var-index db outer-ctx]
   (doseq [nj-op not-join-ops]
     (let [join-vars (:join-vars nj-op)
           sub-plan (:sub-plan nj-op)
           ;; Execute the NOT-JOIN's sub-plan via the Relation engine
-          neg-ctx (execute-plan sub-plan {:rels [] :sources {}} db)
+          neg-ctx (execute-plan sub-plan (rel/sub-context outer-ctx []) db)
           neg-rel (when (and neg-ctx (seq (:rels neg-ctx)))
                     (reduce rel/hash-join (:rels neg-ctx)))]
       (when (and neg-rel (pos? (count (:tuples neg-rel))))
@@ -2513,8 +2528,10 @@
    consts: map of var-sym → constant value for scalar :in bindings.
    cancel: optional IDeref/Volatile; when its value is truthy the query
      raises :datahike/canceled at the next check point.
+   outer-ctx: the query context, so a NOT-JOIN's sub-plan keeps its sources and
+     cancel flag (see post-filter-not-joins).
    Returns the HashSet, or nil if the plan can't be executed directly."
-  [plan db find-vars max-results consts cancel]
+  [plan db find-vars max-results consts cancel outer-ctx]
   (let [ops (:ops plan)
         temporal (temporal-info db)]
     (when (and (not (:has-passthrough? plan))
@@ -2908,7 +2925,7 @@
             (when (seq pred-ops)
               (post-filter-preds result-list pred-ops var-index))
             (when (seq not-join-ops)
-              (post-filter-not-joins result-list not-join-ops var-index db))
+              (post-filter-not-joins result-list not-join-ops var-index db outer-ctx))
             (let [var-index (if (seq fn-ops)
                               (post-apply-fns result-list fn-ops var-index)
                               var-index)]
@@ -3461,7 +3478,22 @@
   ([db plans ctx output-vars]
    (execute-branch-plans db plans ctx output-vars nil))
   ([db plans ctx output-vars pass-through-rels]
-   (let [branch-rels
+   (let [;; A rule body communicates with its caller ONLY through the head vars.
+         ;; Every other relation in the caller's context belongs to the caller's
+         ;; SCOPE, and a recursive rule's head vars are not renamed — so an outer
+         ;; relation over a var that merely SHARES a name with a head var used to
+         ;; be hash-joined into the branch as if it were the same variable.
+         ;; `[:find ?e ?r :in $ % :where (reach ?e ?r) [?e :nick ?a]]` against
+         ;; `[(reach ?a ?b) …]` joined the caller's ?a (nick strings) with the
+         ;; rule's ?a (entity ids) and returned nothing at all.
+         ;;
+         ;; Relations over head vars only are kept: that is the rule's declared
+         ;; interface — the magic-set demand relation and the pass-through
+         ;; relations for head vars no branch body binds.
+         head-var? (set output-vars)
+         ctx (rel/sub-context ctx (filterv #(every? head-var? (keys (:attrs %)))
+                                           (:rels ctx)))
+         branch-rels
          (into []
                (keep (fn [plan]
                        (let [ctx' (reduce (fn [c v]
@@ -3484,15 +3516,21 @@
    Returns nil if magic sets are not applicable (no ground args, mutual recursion,
    or non-binary rule). When applicable, returns:
    {:ground-positions {pos value}, :head-vars [...], :propagation-pos int}"
-  [call-args head-vars scc-rule-names]
+  [call-args head-vars scc-rule-names demand-sound?]
   ;; Magic-set optimization is JVM-only — the magic-base-scan / demand-set machinery
   ;; (java.util.HashSet, ArrayList) has :cljs nil bodies, so activating it on cljs
   ;; collapses recursive rules to an EMPTY rel (silently incomplete results). Return
   ;; nil on cljs so they take the correct (slower) full base-branch fixpoint instead.
   #?(:cljs nil
      :clj
-     ;; Only apply magic sets to single-rule SCCs with binary head vars
-     (when (and (= 1 (count scc-rule-names))
+     ;; Only apply magic sets to single-rule SCCs with binary head vars, and
+     ;; only when demand may soundly be read back out of the derived head tuples
+     ;; (`lower/demand-covered-by-base?`). Where it may not, the demand set stops
+     ;; growing at values the recursion never navigates to and the fixpoint
+     ;; terminates early — answers missing, no error. The plain semi-naive
+     ;; fixpoint below assumes nothing about the rule's shape.
+     (when (and demand-sound?
+                (= 1 (count scc-rule-names))
                 (= 2 (count head-vars)))
        (let [ground-positions (into {}
                                     (keep-indexed (fn [i arg]
@@ -3727,7 +3765,7 @@
    Each rule has its own accumulator."
   [db op ctx]
   (let [{:keys [scc-rule-plans scc-rule-names call-args head-vars rule-name
-                base-scan-attr]} op
+                base-scan-attr magic-demand-sound? delta-driven-sound?]} op
         ;; Head vars no branch body binds take their value from the call site
         ;; (#897). When one has no caller binding either, the fixpoint cannot
         ;; produce a well-formed tuple for it — hand the whole rule to the
@@ -3745,7 +3783,8 @@
       ;; Uses mutable HashSet for deduplication (avoids PersistentVector allocation)
       (let [;; Magic set detection — only for single-rule SCCs with binary head vars
             ;; and at least one ground call-arg
-            magic-info (compute-magic-info call-args head-vars scc-rule-names)
+            magic-info (compute-magic-info call-args head-vars scc-rule-names
+                                           magic-demand-sound?)
             magic-ground-pos (when magic-info (ffirst (:ground-positions magic-info)))
             magic-prop-pos (when magic-info (:propagation-pos magic-info))
             ;; The demand relation: membership index + seed delta (the ground value)
@@ -3922,7 +3961,24 @@
                                            ;; (delta-driven-expand has a :cljs nil
                                            ;; body); false on cljs → the correct
                                            ;; non-delta recursive scan below.
+                                  ;; …and only when the recursive body actually
+                                  ;; traverses `base-scan-attr`. The shortcut
+                                  ;; reverse-scans THAT attribute, so a rule
+                                  ;; whose recursion walks a different edge than
+                                  ;; its base case —
+                                  ;;   [(p ?a ?b) [?a :follows ?b]]
+                                  ;;   [(p ?a ?b) [?a :knows ?x] (p ?x ?b)]
+                                  ;; — had its :knows step silently replaced by a
+                                  ;; :follows lookup, losing every answer that
+                                  ;; needed the recursion. This shortcut REPLACES
+                                  ;; the step, so it needs the step to BE the base
+                                  ;; relation, not merely be contained in it as
+                                  ;; the magic-set use requires — hence the
+                                  ;; stricter `delta-driven-sound?`. Unlike the
+                                  ;; magic-set use, this one bites with NO ground
+                                  ;; argument.
                                            use-delta-driven? (and #?(:cljs false :clj base-scan-attr)
+                                                                  delta-driven-sound?
                                                                   rec-has-db-pattern?
                                                                   rec-shape-simple?
                                                                   (= rn rule-name)

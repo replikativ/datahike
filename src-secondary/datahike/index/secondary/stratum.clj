@@ -134,10 +134,19 @@
 
 (def stratum-agg-ops
   "Map from datahike built-in aggregate symbols to stratum agg op keywords.
-   Since stratum 0.1.45, min/max on int64 columns return Long (type-preserving)."
+   Since stratum 0.1.45, min/max on int64 columns return Long (type-preserving).
+
+   A fast path may only claim an aggregate it provably computes to datahike's
+   contract (see `built-in-aggregates`). Mapping by NAME alone is what let the
+   columnar path answer 82.667 where the reference answers 62, and ##NaN for a
+   one-element group: stratum's `:variance`/`:stddev` are the SAMPLE estimator
+   (÷n−1), and passing `{:sample? false}` in the agg spec has no effect. Its
+   `:variance-pop`/`:stddev-pop` ops are the population form datahike specifies,
+   and they are total — a one-element group gives 0.0, not NaN. Same name,
+   different statistic, so the mapping must be explicit rather than identity."
   {:avg :avg, :sum :sum, :count :count, :min :min, :max :max,
-   :variance :variance, :stddev :stddev, :count-distinct :count-distinct,
-   :median :median})
+   :variance :variance-pop, :stddev :stddev-pop,
+   :count-distinct :count-distinct, :median :median})
 
 (defn stratum-compatible-aggs?
   "Check if all aggregate specs can be handled by stratum."
@@ -171,6 +180,8 @@
                               agg-specs stratum-aggs)]
     ;; Stratum returns Doubles for numeric aggregates. For min/max/sum on Long
     ;; columns, coerce back to Long to preserve type semantics.
+    ;; min/max/sum preserve the column's type; the central-tendency aggregates
+    ;; (avg, median, variance, stddev) are real-valued and stay doubles.
     (let [long-coerce-agg? #{:min :max :sum}
           coerce-fns (mapv (fn [spec]
                              (let [agg-op (first spec)
