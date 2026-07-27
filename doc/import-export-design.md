@@ -323,3 +323,29 @@ maintainers.
 3. Is `datahike.migrate` the right home, or should this land under the Wanderung
    umbrella whilo mentioned for 1.0?
 4. Target branch — `development` vs `main` (docs disagree in places).
+
+---
+
+## 14. Implementation status (what has landed vs. what this doc designs)
+
+The committed implementation delivers the correctness core end-to-end — flat and
+chunked EDN formats, type-exact codec (fixing #633), history + attribute-refs
+round-trip, manifest + per-chunk SHA-256 + semantic digest, `verify`,
+`finalize-import!`, config/emptiness/format guards, closed-reader + path-validation
++ owner-only perms, and legacy-CBOR read compatibility — with a green kaocha suite
+(`test/datahike/test/migrate_test.clj`) across the persistent-set and
+hitchhiker-tree indices and under spec instrumentation.
+
+Three pieces are landed in a simpler form than §§5–9 describe and are the natural
+follow-ups, called out so nothing is silently overclaimed:
+
+- **In-memory sort, not external merge sort (§8).** Export currently holds the
+  record set in memory to order it. This meets correctness but not the G5 40M-datom
+  bounded-memory target; an external merge-sort (spill sorted runs, k-way merge)
+  slots behind `export-records` without changing the format.
+- **`verify` tiers 0–1 only (§7).** Checksums + counts are implemented; the
+  id-independent multiset digest (tier 2) and sampled `pull` diff (tier 3) are
+  designed but not yet wired.
+- **`:on-error :collect` is batch-granular.** `load-entities` applies a batch
+  atomically, so a bad datom currently drops its whole tx-batch rather than the
+  single datom; finer granularity needs a per-datom retry path.
