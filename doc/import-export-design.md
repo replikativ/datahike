@@ -316,13 +316,13 @@ maintainers.
 
 ---
 
-## 13. Open questions for maintainers
+## 13. Open question for maintainers
 
-1. **Codec: CBOR-fixed vs EDN-lines** (§5.3) — the main fork.
-2. Chunked-directory format acceptable, or prefer single-file only?
-3. Is `datahike.migrate` the right home, or should this land under the Wanderung
-   umbrella whilo mentioned for 1.0?
-4. Target branch — `development` vs `main` (docs disagree in places).
+**Codec: EDN-lines vs CBOR** (§5.3) — the one real fork. EDN-lines as
+implemented is type-exact by construction, deterministic (byte-identical
+re-export ⇒ signable dumps), and drops the clj-cbor write dependency; CBOR is
+more compact and faster to parse at scale. Either plugs into the same
+`write-record`/`read-record` seam.
 
 ---
 
