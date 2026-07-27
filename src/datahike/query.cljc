@@ -3551,8 +3551,18 @@
                  agg-ops (into [] (keep (fn [fe]
                                           (when (instance? Aggregate fe)
                                             [(keyword (name (.-symbol ^PlainSymbol (.-fn ^Aggregate fe))))])))
-                               find-elements)]
-             (when (and best-idx stratum-compat? (stratum-compat? agg-ops))
+                               find-elements)
+                 ;; `(min N ?x)` / `(max N ?x)` return the N smallest/largest as
+                 ;; a COLLECTION — a different function from the scalar namesake
+                 ;; this path computes. `agg-ops` above carries only the NAME, so
+                 ;; the count argument was invisible to the compatibility check
+                 ;; and the query answered a scalar. Decline and let the relation
+                 ;; path, which implements both, handle it.
+                 simple-arity? (every? (fn [fe]
+                                         (or (not (instance? Aggregate fe))
+                                             (<= (count (.-args ^Aggregate fe)) 1)))
+                                       find-elements)]
+             (when (and best-idx stratum-compat? simple-arity? (stratum-compat? agg-ops))
                ;; Determine which sub-ops provide values needed by :find vs which are filter-only
                (let [col-agg-fn sec/-columnar-aggregate
                      stratum-agg-ops (resolve-stratum-fn 'stratum-agg-ops)
@@ -3595,8 +3605,40 @@
                                                             sub-ops)))))
                                           find-vars)
                      ;; All value-providing columns must be in the index
-                     all-find-attrs-covered? (every? indexed-attrs find-col-attrs)]
-                 (when all-find-attrs-covered?
+                     all-find-attrs-covered? (every? indexed-attrs find-col-attrs)
+                     ;; A Datalog aggregate applies to the DEDUPLICATED find
+                     ;; projection — the answer set — not to the raw datoms. This
+                     ;; path aggregates inside the index, over columns, and so
+                     ;; counts a repeated value once per datom: `(count ?x)` over
+                     ;; values 10, 10, 40 answered 3 where the projection has two
+                     ;; members. It may therefore only claim aggregates that are
+                     ;; INSENSITIVE to duplicates, unless the projection is
+                     ;; duplicate-free anyway because :find carries an entity var
+                     ;; (one row per entity).
+                     dup-insensitive? #{:min :max :count-distinct}
+                     find-plain-vars (into #{}
+                                           (keep (fn [fe]
+                                                   (when (instance? Variable fe)
+                                                     (.-symbol ^Variable fe))))
+                                           find-elements)
+                     projection-distinct? (some (fn [v] (= :eid (get var->col v)))
+                                                find-plain-vars)
+                     dup-safe? (or projection-distinct?
+                                   (every? (fn [op] (dup-insensitive? (first op))) agg-ops))
+                     ;; STILL OPEN: a value aggregate over a non-numeric column
+                     ;; comes back as argmin-style ROW INDICES — `(min ?x)` over
+                     ;; "b","a","c" answers 0 — and over an untyped column
+                     ;; holding fractions it truncates (1.5 -> 1). The fused
+                     ;; columnar path guards this with `type-safe?`, which tests
+                     ;; the EXTRACTED array's type; this path never materializes
+                     ;; the column, so it has nothing to test. Gating on a
+                     ;; declared `:db/valueType` instead does not work: the
+                     ;; `empty-db` schema shorthand does not accept one, so that
+                     ;; would disable the fast path for most real usage rather
+                     ;; than for the unsafe cases. The fix is to ask the delegate
+                     ;; for its column type.
+                     ]
+                 (when (and all-find-attrs-covered? dup-safe?)
                    ;; Split sub-ops: covered (in index) vs uncovered (need PSS)
                    (let [covered-ops (filterv (fn [sub-op]
                                                 (let [a (resolve-attr (or (:attr sub-op) (get-in sub-op [:schema-info :attr])))]
