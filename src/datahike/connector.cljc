@@ -86,6 +86,35 @@
 (s/def ::connection #(and (instance? Connection %)
                           (not= @(:wrapped-atom %) :released)))
 
+(defn- version-unknown?
+  "A version string we cannot order against another. Either it is absent —
+   `get-version` reads Maven `pom.properties`, which a `:local/root` source
+   checkout does not carry, so every dependency resolved from a sibling
+   checkout reports `nil` — or it is an explicit development build.
+
+   Unknown must never read as OLDER. Comparing `nil`/\"DEVELOPMENT\" against a
+   release string made a store written by released konserve unopenable from any
+   source checkout of the stack, which is precisely the cross-repo development
+   setup this project is built for."
+  [v]
+  (or (nil? v) (= v "DEVELOPMENT")))
+
+(defn- check-version!
+  "Raise when the store was written by a NEWER `label` than the one loaded.
+   Skipped whenever either side is unknown (see `version-unknown?`) — one rule
+   for all four dependencies, instead of the three different ad-hoc guards this
+   replaced (DEVELOPMENT-aware for datahike, nil-safe for hitchhiker-tree,
+   neither for persistent-sorted-set and konserve)."
+  [label err-type stored now config]
+  (when-not (or (version-unknown? stored)
+                (version-unknown? now)
+                (>= (compare now stored) 0))
+    (log/raise (str "Database was written with newer " label " version.")
+               {:type err-type
+                :stored stored
+                :now now
+                :config config})))
+
 (defn version-check [{:keys [meta config] :as db}]
   (let [{dh-stored :datahike/version
          hh-stored :hitchhiker.tree/version
@@ -95,33 +124,14 @@
          hh-now :hitchhiker.tree/version
          pss-now :persistent.set/version
          ksv-now :konserve/version} (meta-data)]
-    (when-not (or (= dh-now "DEVELOPMENT")
-                  (= dh-stored "DEVELOPMENT")
-                  (>= (compare dh-now dh-stored) 0))
-      (log/raise "Database was written with newer Datahike version."
-                 {:type :db-was-written-with-newer-datahike-version
-                  :stored dh-stored
-                  :now dh-now
-                  :config config}))
-    (when (and hh-stored hh-now
-               (not (>= (compare hh-now hh-stored) 0)))
-      (log/raise "Database was written with newer hitchhiker-tree version."
-                 {:type :db-was-written-with-newer-hht-version
-                  :stored hh-stored
-                  :now hh-now
-                  :config config}))
-    (when-not (>= (compare pss-now pss-stored) 0)
-      (log/raise "Database was written with newer persistent-sorted-set version."
-                 {:type :db-was-written-with-newer-pss-version
-                  :stored pss-stored
-                  :now pss-now
-                  :config config}))
-    (when-not (>= (compare ksv-now ksv-stored) 0)
-      (log/raise "Database was written with newer konserve version."
-                 {:type   :db-was-written-with-newer-konserve-version
-                  :stored ksv-stored
-                  :now    ksv-now
-                  :config config}))))
+    (check-version! "Datahike" :db-was-written-with-newer-datahike-version
+                    dh-stored dh-now config)
+    (check-version! "hitchhiker-tree" :db-was-written-with-newer-hht-version
+                    hh-stored hh-now config)
+    (check-version! "persistent-sorted-set" :db-was-written-with-newer-pss-version
+                    pss-stored pss-now config)
+    (check-version! "konserve" :db-was-written-with-newer-konserve-version
+                    ksv-stored ksv-now config)))
 
 (defn ensure-stored-config-consistency [config stored-config]
   (let [;; Remove runtime parameters and creation-time parameters. Value-size
