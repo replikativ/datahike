@@ -2282,6 +2282,62 @@
   [sub-plan]
   (into #{} (mapcat op-bound-vars) (:ops sub-plan)))
 
+(defn- all-group-equalities-enforced?
+  "Does the fused multi-group loop enforce EVERY equality the query implies
+   between entity groups? If not, the plan is unsound on the direct path.
+
+   The fused loop joins each consumer group to ONE producer group on ONE
+   probe variable: `find-probe-info` takes `(first probe-vars)` and the
+   executor threads a single probe-set/probe-map keyed by
+   [producer-idx probe-var]. `detect-inter-group-joins` likewise keeps only
+   the EARLIEST producer per consumer. So for a consumer that shares
+   - two or more variables with its producer (a 2-cycle, e.g.
+     `[?a :e ?b] [?b :e ?a]`), or
+   - variables with two or more earlier groups (a triangle, e.g.
+     `[?a :e ?b] [?b :e ?c] [?c :e ?a]`),
+   the surplus equalities are silently DROPPED. The first shape returns
+   extra tuples; the second additionally emits a nil column, because
+   `combo-plan` finds no source for the unjoined variable and falls to
+   [:const nil].
+
+   Worse, which of the two shapes you hit depended on the NAMES of the
+   variables: `(first probe-vars)` reads a hash-set, so
+   `[?a :e ?u] [?a :f ?w] [?b :f ?u] [?b :e ?w]` picked a probe var that is
+   not in the consumer's scan clause (find-probe-info → nil → Relation path,
+   correct), while the same query spelled with ?x/?y picked one that is
+   (direct path, wrong answer).
+
+   Rather than teach the hot loop composite probe keys, decline: these plans
+   run on the Relation engine, which enforces all of them. A brute-force
+   sweep of every 2- and 3-pattern query over four variables and two ref
+   attributes (2300 queries, 1468 of them on the direct path) found that
+   every plan this declines is one the direct path answers WRONGLY today —
+   measured fast-path loss zero.
+
+   Note the check is deliberately EXACT, not a \"looks cyclic\" heuristic: a
+   star (one producer feeding several consumers on distinct vars, the
+   multi-consumer path) shares nothing between the consumers and stays fused."
+  [groups group-joins]
+  (let [gvars (mapv #(or (:output-vars %) (:vars %)) groups)]
+    (every?
+     (fn [i]
+       (let [{:keys [producer-idx probe-vars]} (get group-joins i)
+             sharers (into {}
+                           (for [j (range i)
+                                 :let [common (clojure.set/intersection (nth gvars i)
+                                                                        (nth gvars j))]
+                                 :when (seq common)]
+                             [j common]))]
+         (or (empty? sharers)
+             (and (= 1 (count sharers))
+                  (= producer-idx (key (first sharers)))
+                  (= 1 (count (val (first sharers))))
+                  ;; Redundant with the line above while probe-vars IS that
+                  ;; intersection, but it is the set the executor actually
+                  ;; reads, so assert it directly.
+                  (= 1 (count probe-vars))))))
+     (range (count groups)))))
+
 (defn can-direct-fuse?
   "Check if a plan can use the direct-to-HashSet execution path.
    Public: query/explain mirrors the execution dispatch with it.
@@ -2349,7 +2405,9 @@
                                    (group-provides-var? consumer-g %)
                                    (group-provides-var? producer-g %))
                               find-vars))))
-             (:group-joins plan)))))
+             (:group-joins plan))
+         ;; EVERY implied cross-group equality must actually be enforced.
+     (all-group-equalities-enforced? groups (:group-joins plan)))))
 
 ;; ---------------------------------------------------------------------------
 ;; Post-processing on fused result tuples
