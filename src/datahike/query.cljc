@@ -89,6 +89,159 @@
 
 (declare built-in-rule-names auto-inject-built-in-rules)
 
+;; ---------------------------------------------------------------------------
+;; Repeated-variable normalisation
+;;
+;; A variable mentioned TWICE inside ONE data pattern is a self-join:
+;; `[?a :e ?a]` means "?a has an :e edge to itself". Neither engine unified it
+;; — the planner's `build-find-source-array` projects the FIRST position that
+;; mentions the var, and the base engine's `var-mapping` is an `(into {} ...)`
+;; over [var index] pairs, so the LAST position wins. Both produced "every ?a
+;; with any :e datom", from opposite ends of the pattern.
+;;
+;; Fixing it here, on the shared normalisation seam, fixes both engines at once
+;; and needs no per-engine guard: `[?a :e ?a]` is rewritten to
+;; `[?a :e ?a__1] [(= ?a ?a__1)]`, an ordinary two-column pattern plus an
+;; ordinary predicate. The predicate also makes the clause non-fusable through
+;; the existing `has-post-ops?` rule, so multi-group plans stay correct by
+;; construction.
+;;
+;; `=` is the right test: both engines join on Clojure `=` / Java `.equals`
+;; (base engine hashes tuple keys into Clojure maps, planner into a
+;; java.util.HashSet), so the self-join agrees with an ordinary join on the
+;; same values — scale-sensitive for BigDecimal, identity for byte arrays.
+;;
+;; Scope — data patterns in :where, and in plain `not` bodies. NOT rewritten:
+;;   * function/predicate clauses `[(f ?x ?x) ?y]` — a repeated var there is an
+;;     ordinary argument, not a self-join;
+;;   * `not-join` / `or` / `or-join` bodies — the base engine already unifies
+;;     repeated vars there, and the planner mishandles var/var predicates
+;;     inside those scopes (a PRE-EXISTING bug, reproducible without any
+;;     rewrite, e.g. `(not-join [?a] [?a :e ?b] [(= ?a ?b)])`), so rewriting
+;;     into them would trade one wrong planner answer for another;
+;;   * rule bodies — rules arrive as `:in %` arguments, not as :where clauses,
+;;     and never reach this seam.
+
+(defn- repeated-var-pattern?
+  "Does `pattern` mention some free variable more than once? This runs on EVERY
+   query, so the negative path allocates nothing: `symbol?` and the duplicate
+   scan come first, and `free-var?` (which seqs over the symbol's name) only
+   runs on the rare symbol that actually repeats — so `[_ :e _]` costs one extra
+   call, not one per element."
+  [pattern]
+  (let [n (count pattern)]
+    (loop [i 1]
+      (if (>= i n)
+        false
+        (let [x (nth pattern i)]
+          (if (and (symbol? x)
+                   (loop [j 0]
+                     (cond (>= j i)             false
+                           (= x (nth pattern j)) true
+                           :else                (recur (inc j))))
+                   (analyze/free-var? x))
+            true
+            (recur (inc i))))))))
+
+(defn- source-prefixed-clause?
+  "`[$2 ?e :a ?v]` — a data pattern naming its source. Checked before the plain
+   data-pattern test because it is also a vector."
+  [clause]
+  (and (sequential? clause)
+       (symbol? (first clause))
+       (= \$ (first (name (first clause))))))
+
+(defn- data-pattern-clause?
+  "`[e a v tx added]`, possibly with a lookup ref in e. A function/predicate
+   clause `[(f ?x) ?y]` has a seq head and is excluded."
+  [clause]
+  (and (vector? clause)
+       (not (seq? (first clause)))))
+
+(defn- where-has-repeated-var?
+  "Cheap pre-scan mirroring `normalize-repeated-var-clause`'s scope."
+  [clauses]
+  (boolean
+   (some (fn [clause]
+           (cond
+             (source-prefixed-clause? clause) (repeated-var-pattern? (vec (rest clause)))
+             (data-pattern-clause? clause)    (repeated-var-pattern? clause)
+             (and (seq? clause) (#{'not 'and} (first clause)))
+             (where-has-repeated-var? (rest clause))
+             :else false))
+         clauses)))
+
+(defn- fresh-var-fn
+  "Deterministic fresh-variable generator that never collides with a symbol
+   already present in the query. Deterministic so that the same query text
+   always normalises to the same clauses, keeping the plan cache stable."
+  [taken]
+  (let [taken (volatile! taken)]
+    (fn [base]
+      (loop [i 1]
+        (let [candidate (symbol (str base "__" i))]
+          (if (contains? @taken candidate)
+            (recur (inc i))
+            (do (vswap! taken conj candidate) candidate)))))))
+
+(defn- rewrite-repeated-pattern
+  "Rename the 2nd..nth occurrence of every repeated var in `pattern`.
+   Returns `[pattern' equality-clauses]`."
+  [pattern fresh!]
+  (let [n (count pattern)]
+    (loop [i 0 seen #{} out [] preds []]
+      (if (= i n)
+        [out preds]
+        (let [x (nth pattern i)]
+          (cond
+            (not (analyze/free-var? x)) (recur (inc i) seen (conj out x) preds)
+            (contains? seen x)          (let [nv (fresh! x)]
+                                          (recur (inc i) seen (conj out nv)
+                                                 (conj preds [(list '= x nv)])))
+            :else                       (recur (inc i) (conj seen x) (conj out x) preds)))))))
+
+(declare normalize-repeated-var-clauses)
+
+(defn- normalize-repeated-var-clause
+  "Returns the SEQ of clauses that replaces `clause`."
+  [clause fresh!]
+  (cond
+    (source-prefixed-clause? clause)
+    (let [pattern (vec (rest clause))]
+      (if (and (data-pattern-clause? pattern) (repeated-var-pattern? pattern))
+        (let [[pattern' preds] (rewrite-repeated-pattern pattern fresh!)]
+          (cons (into [(first clause)] pattern') preds))
+        [clause]))
+
+    (data-pattern-clause? clause)
+    (if (repeated-var-pattern? clause)
+      (let [[pattern' preds] (rewrite-repeated-pattern clause fresh!)]
+        (cons pattern' preds))
+      [clause])
+
+    ;; A repeated var inside a negation body is still a self-join. `and` is the
+    ;; grouping form inside or-branches; harmless to recurse through.
+    (and (seq? clause) (#{'not 'and} (first clause)))
+    [(cons (first clause) (normalize-repeated-var-clauses (rest clause) fresh!))]
+
+    :else [clause]))
+
+(defn- normalize-repeated-var-clauses [clauses fresh!]
+  (into [] (mapcat #(normalize-repeated-var-clause % fresh!)) clauses))
+
+(defn normalize-repeated-vars
+  "Rewrite every data pattern that mentions a variable twice into a pattern of
+   distinct variables plus an explicit `=` join predicate. Returns `query`
+   UNCHANGED (identical object) when no pattern repeats a variable, so the plan
+   and result caches are not perturbed for queries this does not affect."
+  [query]
+  (let [where (:where query)]
+    (if (and (seq where) (where-has-repeated-var? where))
+      (let [taken  (into #{} (filter symbol?) (tree-seq coll? seq query))
+            fresh! (fresh-var-fn taken)]
+        (assoc query :where (normalize-repeated-var-clauses where fresh!)))
+      query)))
+
 (defn normalize-q-input
   "Turns input to q into a map with :query and :args fields.
    Also normalizes the query into a map representation."
@@ -104,7 +257,7 @@
                    (:args query-input))
                arg-inputs)
         extra-ks [:offset :limit :order-by :stats? :count-fns? :settings :cancel]]
-    (-> (cond-> {:query (apply dissoc query extra-ks)
+    (-> (cond-> {:query (normalize-repeated-vars (apply dissoc query extra-ks))
                  :args args}
           (map? query-input)
           (merge (select-keys query-input extra-ks)))
