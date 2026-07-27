@@ -61,9 +61,9 @@ core*, not choices this branch made:
   "import is not resumable, recreate-and-restart" policy.
 
 **Review questions**
-- §13 lists the three calls that belong to the maintainer: codec (EDN vs CBOR),
-  home (`datahike.migrate` vs Wanderung), target branch. These are genuinely
-  open — the branch implements one defensible answer to each.
+- §13 states the one call that belongs to the maintainer: the codec (EDN-lines
+  vs CBOR). It is genuinely open — the branch implements one defensible answer,
+  behind a seam that accepts the other.
 - §14 is the claims-vs-implementation ledger. Check it against the code as you
   go; anything overclaimed there is a review finding.
 
@@ -267,17 +267,13 @@ manual harness and integration test respectively).
 
 ---
 
-## 8. The decisions that are yours (recap)
+## 8. The open question (recap)
 
-1. **Codec** — EDN-lines (implemented) vs CBOR (smaller/faster; loses
-   determinism-for-signing and type-exactness-by-construction). Seam exists
-   either way.
-2. **Home** — `datahike.migrate` (implemented, additive, `^:no-doc` today) vs
-   the Wanderung umbrella for 1.0.
-3. **Target branch** — `development` vs `main`.
-4. **`:sort? false` guard level** — documentation (current) vs detect-and-refuse.
-5. **Chunk-key layout / value type** in the store medium, before it becomes a
-   de-facto format.
+**Codec** — EDN-lines (implemented) vs CBOR (smaller/faster; loses
+determinism-for-signing and type-exactness-by-construction). Seam exists either
+way. This is the one design fork; the smaller review-level questions
+(`:sort? false` guard level, store chunk-key layout, merge re-parse cost) are
+raised inline at their stops above (§4, §5, §6a).
 
 If the preferred outcome is a reimplementation rather than a merge, the pieces
 with the highest reuse value are: the §2 grounding facts (transactor order
