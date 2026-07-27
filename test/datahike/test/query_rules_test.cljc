@@ -5,6 +5,7 @@
    [clojure.core.async :refer [<!]]
    [datahike.api :as d]
    [datahike.db :as db]
+   [datahike.query :as dq]
    [datahike.test.utils :as du]
    [datahike.test.async #?(:clj :refer :cljs :refer-macros) [deftest-async]]))
 
@@ -497,7 +498,11 @@
            rules '[[(ehop ?a ?b) [?a :friend ?b]]
                    [(ehop ?a ?b) [?a :friend ?x] (ohop ?x ?b)]
                    [(ohop ?a ?b) [?a :friend ?x] (ehop ?x ?b)]]
-           run (fn [q] (let [f (future (set (d/q q db rules)))
+           ;; Pin the engine: the base-engine CI job sets
+           ;; DATAHIKE_QUERY_PLANNER=false, which would otherwise run these on
+           ;; the very engine that does not terminate here.
+           run (fn [q] (let [f (future (binding [dq/*disable-planner* false]
+                                         (set (d/q q db rules))))
                              r (deref f 15000 ::timeout)]
                          (when (= r ::timeout) (future-cancel f))
                          r))]
@@ -530,7 +535,11 @@
                          [{:db/id 1 :friend 2} {:db/id 2 :friend 3} {:db/id 3}])
            rules '[[(rr ?a ?b) [?a :friend ?b]]
                    [(rr ?a ?b) (rr ?a ?x) [?x :friend ?b]]]
-           run (fn [q] (let [f (future (set (d/q q db rules)))
+           ;; Pin the engine: the base-engine CI job sets
+           ;; DATAHIKE_QUERY_PLANNER=false, which would otherwise run these on
+           ;; the very engine that does not terminate here.
+           run (fn [q] (let [f (future (binding [dq/*disable-planner* false]
+                                         (set (d/q q db rules))))
                              r (deref f 15000 ::timeout)]
                          (when (= r ::timeout) (future-cancel f))
                          r))]
