@@ -475,3 +475,38 @@
     ;; reachable from 1. 2->3 directly, and 3 inactive stops there.
     (is (= #{2 3} (set (d/q '[:find [?b ...] :in $ % :where (p 1 ?b)] db rules))))
     (is (= #{3} (set (d/q '[:find [?b ...] :in $ % :where (p 2 ?b)] db rules))))))
+
+#?(:clj
+   (deftest test-mutual-recursion-over-a-cycle
+     ;; Mutual recursion over CYCLIC data. The compiled planner's semi-naive
+     ;; fixpoint dedups per rule and converges; the reference engine's rule
+     ;; solver does not terminate at all here, so it is asserted only on the
+     ;; planner and run on a bounded thread.
+     ;;
+     ;; Found by widening the differential generator's dataset axis: its one
+     ;; dataset was acyclic on :friend, so every mutual-recursion case
+     ;; terminated and this was invisible. It matters because the reference
+     ;; engine is both the differential oracle and the permanent fallback for
+     ;; shapes the planner declines — a user on DATAHIKE_QUERY_PLANNER=false
+     ;; hangs rather than gets a wrong answer.
+     (let [db (d/db-with (db/empty-db {:friend {:db/valueType :db.type/ref
+                                                :db/cardinality :db.cardinality/one}})
+                         [{:db/id 100 :friend 101}
+                          {:db/id 101 :friend 102}
+                          {:db/id 102 :friend 100}])
+           rules '[[(ehop ?a ?b) [?a :friend ?b]]
+                   [(ehop ?a ?b) [?a :friend ?x] (ohop ?x ?b)]
+                   [(ohop ?a ?b) [?a :friend ?x] (ehop ?x ?b)]]
+           run (fn [q] (let [f (future (set (d/q q db rules)))
+                             r (deref f 15000 ::timeout)]
+                         (when (= r ::timeout) (future-cancel f))
+                         r))]
+       ;; every pair is reachable in a 3-cycle
+       (is (= #{[100 100] [100 101] [100 102]
+                [101 100] [101 101] [101 102]
+                [102 100] [102 101] [102 102]}
+              (run '[:find ?a ?b :in $ % :where (ehop ?a ?b)]))
+           "planner terminates on mutual recursion over a cycle")
+       (is (= #{100 101 102}
+              (run '[:find [?b ...] :in $ % :where (ehop 100 ?b)]))
+           "…and with a ground argument"))))

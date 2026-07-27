@@ -4859,7 +4859,16 @@
                                            :var agg-var
                                            :col-key (when agg-var (keyword (name agg-var)))
                                            :col-idx col-idx
-                                           :find-idx _fi})))
+                                           :find-idx _fi
+                                           ;; `(min N ?x)` / `(max N ?x)` return the
+                                           ;; N smallest/largest as a COLLECTION —
+                                           ;; a different contract from scalar
+                                           ;; min/max. Only the last arg is read
+                                           ;; here, so a leading count was silently
+                                           ;; dropped and the query answered `10`
+                                           ;; where it should answer `[10]`. Record
+                                           ;; the arity so this path can decline.
+                                           :extra-args? (> (count agg-args) 1)})))
                                     find-elements))
 
                   ;; Datalog aggregation operates on the DEDUPLICATED projection
@@ -4976,8 +4985,13 @@
                                           (or (nil? col-key)
                                               (#{:count :count-distinct} agg-op)
                                               (numeric-array? (get column-map col-key))))
-                                        agg-cols)]
+                                        agg-cols)
+                  ;; An aggregate with a count argument is a different function
+                  ;; than its scalar namesake; this path computes only the
+                  ;; scalar. Fall through to the relation path, which
+                  ;; implements both.
+                     arity-safe? (not-any? :extra-args? agg-cols)]
 
               ;; Call the external aggregate engine
-                 (when type-safe?
+                 (when (and type-safe? arity-safe?)
                    (aggregate-fn column-map group-keys agg-specs))))))))))
