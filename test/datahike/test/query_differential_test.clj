@@ -45,11 +45,14 @@
                           {:db/ident :score :db/valueType :db.type/long :db/cardinality :db.cardinality/one}
                           {:db/ident :tag :db/valueType :db.type/keyword :db/cardinality :db.cardinality/many}
                           {:db/ident :friend :db/valueType :db.type/ref :db/cardinality :db.cardinality/one}
+                          ;; a SECOND ref relation, so a recursive rule's step can
+                          ;; traverse something other than its base case's edge
+                          {:db/ident :colleague :db/valueType :db.type/ref :db/cardinality :db.cardinality/one}
                           ;; unique, so an :in binding can arrive as a LOOKUP REF
                           {:db/ident :uid :db/valueType :db.type/string
                            :db/unique :db.unique/identity :db/cardinality :db.cardinality/one}])
-        (d/transact conn [{:db/id 100 :uid "u100" :name "alice" :nick "al" :score 10 :tag [:red :blue] :friend 101}
-                          {:db/id 101 :uid "u101" :name "bob" :score 20 :tag [:blue]}
+        (d/transact conn [{:db/id 100 :uid "u100" :name "alice" :nick "al" :score 10 :tag [:red :blue] :friend 101 :colleague 102}
+                          {:db/id 101 :uid "u101" :name "bob" :score 20 :tag [:blue] :colleague 103}
                           {:db/id 102 :uid "u102" :name "carol" :nick "cc" :score 30 :friend 100}
                           {:db/id 103 :uid "u103" :name "dave" :tag [:red]}
                           {:db/id 104 :uid "u104" :name "eve" :score 20 :friend 103}
@@ -100,6 +103,7 @@
                           {:db/ident :score :db/valueType :db.type/long :db/cardinality :db.cardinality/one}
                           {:db/ident :tag :db/valueType :db.type/keyword :db/cardinality :db.cardinality/many}
                           {:db/ident :friend :db/valueType :db.type/ref :db/cardinality :db.cardinality/one}
+                          {:db/ident :colleague :db/valueType :db.type/ref :db/cardinality :db.cardinality/one}
                           {:db/ident :uid :db/valueType :db.type/string
                            :db/unique :db.unique/identity :db/cardinality :db.cardinality/one}])
         ;; ACYCLIC on :friend, deliberately. A cycle here makes the reference
@@ -107,8 +111,8 @@
         ;; query-rules-test/test-mutual-recursion-over-a-cycle), and a generator
         ;; must not contain a combination known to hang — that belongs in a
         ;; pinned test, not as a landmine every future run steps on.
-        (d/transact conn [{:db/id 100 :uid "u100" :name "alice" :nick "dup" :score 20 :tag [:red :blue] :friend 101}
-                          {:db/id 101 :uid "u101" :name "alice" :nick "dup" :score 20 :tag [:blue] :friend 102}
+        (d/transact conn [{:db/id 100 :uid "u100" :name "alice" :nick "dup" :score 20 :tag [:red :blue] :friend 101 :colleague 103}
+                          {:db/id 101 :uid "u101" :name "alice" :nick "dup" :score 20 :tag [:blue] :friend 102 :colleague 104}
                           {:db/id 102 :uid "u102" :name "alice" :score 20 :tag [:red :blue]}
                           {:db/id 103 :uid "u103" :name "bob" :nick "dup" :score 5 :tag [:red]}
                           {:db/id 104 :uid "u104" :name "bob" :score 5 :tag [:red :blue] :friend 103}
@@ -133,10 +137,12 @@
                            :db/unique :db.unique/identity :db/cardinality :db.cardinality/one}
                           {:db/ident :friend :db/valueType :db.type/ref
                            :db/cardinality :db.cardinality/one}
+                          {:db/ident :colleague :db/valueType :db.type/ref
+                           :db/cardinality :db.cardinality/one}
                           {:db/ident :tag :db/valueType :db.type/keyword
                            :db/cardinality :db.cardinality/many}])
-        (d/transact conn [{:db/id 100 :uid "u100" :name "alice" :nick "al" :score 10 :tag [:red :blue] :friend 101}
-                          {:db/id 101 :uid "u101" :name "bob" :score 2.5 :tag [:blue]}
+        (d/transact conn [{:db/id 100 :uid "u100" :name "alice" :nick "al" :score 10 :tag [:red :blue] :friend 101 :colleague 102}
+                          {:db/id 101 :uid "u101" :name "bob" :score 2.5 :tag [:blue] :colleague 103}
                           {:db/id 102 :uid "u102" :name "carol" :nick "cc" :score "thirty" :friend 100}
                           {:db/id 103 :uid "u103" :name "dave" :score 7 :tag [:red]}
                           {:db/id 104 :uid "u104" :name 42 :score 7 :friend 103}
@@ -159,14 +165,30 @@
    :mutual    '[[(ehop ?a ?b) [?a :friend ?b]]
                 [(ehop ?a ?b) [?a :friend ?x] (ohop ?x ?b)]
                 [(ohop ?a ?b) [?a :friend ?x] (ehop ?x ?b)]]
-   :with-not  '[[(unred ?e) [?e :name ?rn] (not [?e :tag :red])]]})
+   :with-not  '[[(unred ?e) [?e :name ?rn] (not [?e :tag :red])]]
+   ;; Axis: RULE SHAPE. The five sets above are all closures of the SAME
+   ;; relation their base case walks, which is the one shape the recursive fast
+   ;; paths assume. The three below break that assumption in the three ways that
+   ;; matter, and each has already been a wrong answer:
+   ;;   - the step traverses a DIFFERENT relation than the base case;
+   ;;   - the step is a SUBSET of it (filtered traversal);
+   ;;   - the recursion is right-linear rather than left-linear.
+   :rec-changes-edge '[[(xreach ?a ?b) [?a :friend ?b]]
+                       [(xreach ?a ?b) [?a :colleague ?x] (xreach ?x ?b)]]
+   :rec-filtered     '[[(freach ?a ?b) [?a :friend ?b]]
+                       [(freach ?a ?b) [?a :friend ?x] [?x :tag :blue] (freach ?x ?b)]]
+   :rec-right        '[[(rreach ?a ?b) [?a :friend ?b]]
+                       [(rreach ?a ?b) (rreach ?a ?x) [?x :friend ?b]]]})
 
 (def ^:private rule-clause
   {:plain     '(named ?e ?rn2)
    :fn-body   '(upper-name ?e ?ru)
    :recursive '(reach ?e ?r)
    :mutual    '(ehop ?e ?r)
-   :with-not  '(unred ?e)})
+   :with-not  '(unred ?e)
+   :rec-changes-edge '(xreach ?e ?r)
+   :rec-filtered     '(freach ?e ?r)
+   :rec-right        '(rreach ?e ?r)})
 
 (def ^:private gen-spec
   (gen/hash-map
@@ -218,7 +240,14 @@
                               [1 (gen/return :fn-body)]
                               [1 (gen/return :recursive)]
                               [1 (gen/return :mutual)]
-                              [1 (gen/return :with-not)]])
+                              [1 (gen/return :with-not)]
+                              [1 (gen/return :rec-changes-edge)]
+                              [1 (gen/return :rec-filtered)]])
+   ;; :rec-right is DEFINED above but deliberately not generated: the reference
+   ;; engine does not terminate on a rule whose body leads with the recursive
+   ;; call, so it cannot serve as the oracle for that shape. Pinned instead in
+   ;; query-rules-test/test-right-recursive-rule — a generator must not contain
+   ;; a combination known to hang.
    ;; multi-source: a $2 clause joining ?e across databases
    :multi     (gen/frequency [[4 (gen/return :none)]
                               [1 (gen/return :join-name)]
@@ -248,7 +277,8 @@
   "The var each rule clause BINDS — nil for the unary rule, which binds none.
    Grounding that argument removes the var from the query, so `primary` must
    not pick it."
-  {:plain '?rn2 :fn-body '?ru :recursive '?r :mutual '?r :with-not nil})
+  {:plain '?rn2 :fn-body '?ru :recursive '?r :mutual '?r :with-not nil
+   :rec-changes-edge '?r :rec-filtered '?r :rec-right '?r})
 
 (defn- ground-rule-clause
   "Rewrite a rule call to ground one argument. :out-arg grounds the rule's
@@ -274,7 +304,8 @@
            in-coll? rules multi use2? find
            in-scalar in-tuple? in-rel? in-lookup? rule-ground result-mod]}]
   (let [;; :recursive/:mutual rule clauses walk :friend — force the pattern in
-        friend? (or friend? (#{:recursive :mutual} rules))
+        friend? (or friend? (#{:recursive :mutual :rec-changes-edge
+                               :rec-filtered :rec-right} rules))
         rule-ground (if (= :none rules) :none rule-ground)
         rule-cl (when (not= :none rules)
                   (ground-rule-clause (get rule-clause rules) rules rule-ground))

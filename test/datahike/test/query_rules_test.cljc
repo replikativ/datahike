@@ -510,3 +510,31 @@
        (is (= #{100 101 102}
               (run '[:find [?b ...] :in $ % :where (ehop 100 ?b)]))
            "…and with a ground argument"))))
+
+#?(:clj
+   (deftest test-right-recursive-rule
+     ;; A right-linear transitive closure — the recursive call comes FIRST in
+     ;; the body:
+     ;;   [(rr ?a ?b) [?a :friend ?b]]
+     ;;   [(rr ?a ?b) (rr ?a ?x) [?x :friend ?b]]
+     ;; The planner's semi-naive fixpoint evaluates this bottom-up and converges.
+     ;; The reference engine expands the leading rule call before anything binds
+     ;; it and does not terminate — on a THREE-entity ACYCLIC graph, so this is
+     ;; not about cycles or size. Asserted on the planner only, on a bounded
+     ;; thread.
+     ;;
+     ;; Found by adding a rule-shape axis to the differential generator: its five
+     ;; rule sets were all left-linear, so this whole shape was untested.
+     (let [db (d/db-with (db/empty-db {:friend {:db/valueType :db.type/ref
+                                                :db/cardinality :db.cardinality/one}})
+                         [{:db/id 1 :friend 2} {:db/id 2 :friend 3} {:db/id 3}])
+           rules '[[(rr ?a ?b) [?a :friend ?b]]
+                   [(rr ?a ?b) (rr ?a ?x) [?x :friend ?b]]]
+           run (fn [q] (let [f (future (set (d/q q db rules)))
+                             r (deref f 15000 ::timeout)]
+                         (when (= r ::timeout) (future-cancel f))
+                         r))]
+       (is (= #{[1 2] [2 3] [1 3]} (run '[:find ?a ?b :in $ % :where (rr ?a ?b)]))
+           "planner terminates on a right-recursive rule")
+       (is (= #{2 3} (run '[:find [?b ...] :in $ % :where (rr 1 ?b)]))
+           "…and with a ground argument"))))
