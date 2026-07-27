@@ -606,14 +606,19 @@
 ;;                             population — and it is the only total choice: a
 ;;                             one-element group gives 0.0, where the sample
 ;;                             estimator gives NaN (Datomic: 0.0).
-;;   median                 -> DOUBLE, like avg. This is a DELIBERATE departure
-;;                             from Datomic, which returns 2 for the median of
-;;                             [1 2 3 4] because it averages the two middle
-;;                             values in their own numeric type. A median is a
-;;                             central-tendency statistic and real-valued in
-;;                             general; truncating it to 2 is a wart, and it
-;;                             would be inconsistent with avg, which Datomic
-;;                             itself returns as a double.
+;;   median                 -> DOUBLE for numbers, whether the count is odd or
+;;                             even. A DELIBERATE departure from Datomic, which
+;;                             returns 2 for the median of [1 2 3 4] because it
+;;                             averages the two middle values in their own
+;;                             numeric type: a median is a central-tendency
+;;                             statistic and real-valued in general, and
+;;                             truncating it would be inconsistent with avg,
+;;                             which Datomic itself returns as a double. The odd
+;;                             case is a double too, so the TYPE does not depend
+;;                             on how many rows happened to match — and so the
+;;                             columnar delegate, which computes in doubles, can
+;;                             answer it. A non-numeric median (instants, say)
+;;                             has no real-valued reading and is returned as is.
 ;;   sum, min, max, count   -> exact / type-preserving.
 ;; Any fast path may only claim an aggregate it provably computes this way.
 (def built-in-aggregates
@@ -626,7 +631,8 @@
                   med (bit-shift-right size 1)]
               (if (even? size)
                 (double (/ (+ (nth terms (dec med)) (nth terms med)) 2))
-                (nth terms med))))
+                (let [m (nth terms med)]
+                  (if (number? m) (double m) m)))))
           (variance
             [coll]
             (let [mean (avg coll)
@@ -3060,30 +3066,60 @@
    and that row silently vanished. Nothing makes row 0 representative — a
    collection binding may mix entity ids and lookup refs freely."
   [context-in skip-vars]
-  (some (fn [rel]
-          (let [cols (rel-lookup-ref-cols rel skip-vars)]
-            (when (seq cols)
-              (some (fn [tuple]
-                      (some (fn [[_sym idx]] (lookup-ref-value? (tuple-val tuple idx)))
-                            cols))
-                    (:tuples rel)))))
-        (:rels context-in)))
+  ;; Hot: this runs for every planner query, and the common answer is "no", which
+  ;; cannot exit early — it has to look at every value. Written as an indexed
+  ;; loop over a pre-extracted index vector rather than nested `some` over the
+  ;; :attrs map, which re-seq'd the columns and destructured a MapEntry per row.
+  (boolean
+   (some (fn [rel]
+           (let [idxs (mapv second (rel-lookup-ref-cols rel skip-vars))
+                 n (count idxs)]
+             (when (pos? n)
+               (reduce (fn [_ t]
+                         (let [arr? (da/array? t)]
+                           (if (loop [i 0]
+                                 (cond
+                                   (>= i n) false
+                                   (lookup-ref-value?
+                                    (let [idx (nth idxs i)]
+                                      (if arr? (aget ^objects t idx) (get t idx))))
+                                   true
+                                   :else (recur (inc i))))
+                             (reduced true)
+                             false)))
+                       false
+                       (:tuples rel)))))
+         (:rels context-in))))
 
 (defn- foreign-source-vars
-  "The :in vars that some clause reads from a source other than `$`.
+  "The :in vars that some clause may read from a source other than `$`.
 
    Their lookup refs cannot be resolved against the primary db — `[:uid \"u1\"]`
    denotes a different entity in a different database — so they are left alone
-   for the per-source path to handle at match time. Every OTHER var resolves
-   normally, even in a multi-source query: previously the mere presence of a
-   second source disabled lookup-ref resolution for the whole query, including
-   vars that only ever touch `$`, and their raw vectors silently matched no rows."
-  [where-clauses]
-  (into #{}
-        (comp (filter #(and (sequential? %) (source? (first %)) (not= '$ (first %))))
-              (mapcat rest)
-              (filter free-var?))
-        (tree-seq sequential? seq where-clauses)))
+   for the target source to resolve at match time. Every OTHER var resolves
+   normally, even in a multi-source query: the mere presence of a second source
+   used to disable lookup-ref resolution for the whole query, including vars that
+   only ever touch `$`, and their raw vectors then silently matched no rows.
+
+   A clause counts as foreign if a foreign source symbol appears ANYWHERE in it,
+   not just in head position. Datahike's source-taking *functions* carry it as an
+   argument — `[(get-else $2 ?e :name \"x\") ?n]`, `[(missing? $2 ?e :name)]`,
+   a nested `q` over `$2` — and a head-position-only test resolved `?e` against
+   the primary db and handed the wrong entity id to the other source.
+
+   Over-collecting is safe: a var that is skipped merely goes unresolved, which
+   is what the whole query used to do. Under-collecting is a wrong answer. So
+   when rules are in play this returns `:all` — a rule body can read a foreign
+   source and never appears in `:where`, so no clause scan can see it."
+  [where-clauses in-spec]
+  (let [foreign? (fn [x] (and (symbol? x) (source? x) (not= '$ x)))
+        parts (fn [clause] (tree-seq coll? seq (list clause)))]
+    (if (some #(= '% %) in-spec)
+      :all
+      (into #{}
+            (comp (filter (fn [c] (some foreign? (parts c))))
+                  (mapcat (fn [c] (filter free-var? (parts c)))))
+            where-clauses))))
 
 (defn- resolve-lookup-ref-bindings
   "Resolve lookup-ref values in :in binding relations to entity IDs for joining.
@@ -4222,9 +4258,11 @@
           ;; database, so those are left for per-source resolution at match time.
           ;; Scoping this per var rather than per query matters: any second
           ;; source, used or not, used to disable resolution wholesale.
-          (resolve-lookup-ref-bindings
-           primary-db context-in
-           (when multi-source? (foreign-source-vars (:where query))))
+          (let [skip (when multi-source?
+                       (foreign-source-vars (:where query) (:in query)))]
+            (if (= :all skip)
+              [context-in nil]
+              (resolve-lookup-ref-bindings primary-db context-in skip)))
           [context-in nil])
         ;; Before the const fold and before the Cartesian split, so the whole
         ;; query is judged once with the bindings the user supplied.

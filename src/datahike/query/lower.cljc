@@ -229,29 +229,39 @@
        join-vars? (assoc :join-vars join-vars)))))
 
 (defn- canonical-body
-  "Body clauses as a comparable form: `subst` is applied first, head vars keep
-   their identity (they are the rule's interface), every other variable is
-   renumbered by first appearance, and clause order is discarded.
+  "Body clauses as a comparable set: `subst` is applied first, head vars are
+   renumbered POSITIONALLY, every other variable is renumbered by first
+   appearance, and clause order is discarded.
 
-   Two bodies with the same canonical form compute the same relation between the
-   head vars, whatever their local variables happen to be called."
-  [clauses head-var? subst]
-  (let [ren (volatile! {})
+   Head vars go by position rather than by name because each branch declares its
+   own — `[(p ?a ?b) …]` and `[(p ?x ?y) …]` are the same rule, and comparing
+   them by name would reject an ordinary transitive closure written with
+   different variable names in its two branches.
+
+   Returns nil if the body contains a map or set literal: those are not
+   traversed, so their variables would keep raw names and two unrelated bodies
+   could collide. Refusing to answer is the safe direction."
+  [clauses head-vars subst]
+  (let [head-pos (into {} (map-indexed (fn [i v] [v (symbol (str "?__h" i))])) head-vars)
+        ren (volatile! {})
         n (volatile! 0)
+        bail (volatile! false)
         cv (fn cv [x]
              (cond
                (symbol? x)
                (let [x (get subst x x)]
-                 (if (or (head-var? x) (not (analyze/free-var? x)))
-                   x
-                   (or (get @ren x)
-                       (let [s (symbol (str "?__l" (vswap! n inc)))]
-                         (vswap! ren assoc x s)
-                         s))))
+                 (or (get head-pos x)
+                     (when-not (analyze/free-var? x) x)
+                     (get @ren x)
+                     (let [s (symbol (str "?__l" (vswap! n inc)))]
+                       (vswap! ren assoc x s)
+                       s)))
+               (or (map? x) (set? x)) (do (vreset! bail true) x)
                (vector? x) (mapv cv x)
                (seq? x) (apply list (map cv x))
-               :else x))]
-    (into #{} (map cv) clauses)))
+               :else x))
+        out (into #{} (map cv) clauses)]
+    (when-not @bail out)))
 
 (defn- recursive-link-body
   "For a LINEAR recursive branch, the body that produces the recursive call's
@@ -262,9 +272,16 @@
    base branch of a transitive closure. The propagated local is renamed to the
    call's OTHER (threaded) argument, since both name the far end of one step.
 
-   nil when the shape cannot be identified — non-linear recursion, or a call
-   whose arguments are not one head var plus one body-local var — which the
-   caller must read as \"cannot prove soundness\"."
+   nil when the shape cannot be identified, which the caller must read as
+   \"cannot prove anything\". That includes two conditions on the rename, without
+   which the result would not denote the step at all:
+     * the propagated local must OCCUR in the body — otherwise the branch takes
+       no step, and `[(p ?a ?b) [?a :e ?b] (p ?x ?b)]` (whose ?x is unconstrained)
+       would canonicalize to the base branch and claim to be a closure of it;
+     * the threaded arg must NOT occur in the body — otherwise the rename merges
+       two distinct live variables, as in
+       `[(p ?a ?b) [?a :e ?x] [?a :e ?b] (p ?x ?b)]`.
+   Both shapes are contrived, but both silently produced wrong answers."
   [branch scc-call?]
   (let [[[_ & rule-args] & body] branch
         head-var? (set rule-args)
@@ -272,61 +289,74 @@
     (when (and (= 2 (count rule-args)) (= 1 (count calls)))
       (let [args (vec (rest (first calls)))
             locals (into [] (remove head-var?) args)
-            threaded (into [] (filter head-var?) args)]
-        (when (and (= 1 (count locals)) (= 1 (count threaded)))
-          (canonical-body (remove scc-call? body)
-                          head-var?
-                          {(first locals) (first threaded)}))))))
+            threaded (into [] (filter head-var?) args)
+            rest-body (remove scc-call? body)
+            body-vars (into #{} (filter analyze/free-var?) (tree-seq coll? seq rest-body))]
+        (when (and (= 1 (count locals))
+                   (= 1 (count threaded))
+                   (contains? body-vars (first locals))
+                   (not (contains? body-vars (first threaded))))
+          (canonical-body rest-body rule-args {(first locals) (first threaded)}))))))
 
-(defn- magic-demand-sound?
-  "Can magic-set demand be harvested from the derived head tuples?
+(defn- base-bodies
+  "Canonical forms of the rule's base branches — the relation the base case
+   derives between the head vars."
+  [base-branches]
+  (into #{}
+        (keep (fn [b]
+                (let [[[_ & rule-args] & body] b]
+                  (when (= 2 (count rule-args))
+                    (canonical-body body rule-args {})))))
+        base-branches))
 
-   `extract-demand-values` reads the next round's demand out of the delta at the
-   head's OTHER position. That is a specialization which holds only when the
-   values sitting in that column are the same ones the recursive call navigates
-   to. A transitive closure makes it true — base `[?a :friend ?b]` and link
-   `[?a :friend ?x]` are the same relation, so the base case's `?b` values ARE
-   the `?x` the recursion needs next.
+;; Two recursive-rule fast paths assume the rule is a linear transitive closure,
+;; i.e. that the base case and the recursive step traverse the SAME relation.
+;; They need DIFFERENT strengths of that assumption, so they get one predicate
+;; each rather than sharing the stricter one:
+;;
+;;   demand-covered-by-base? — magic-set demand is harvested from the derived
+;;     head tuples at the head's other position. It only has to be a SUPERSET of
+;;     the demand the recursion actually needs: a superset costs work, a disjoint
+;;     set loses answers. So it suffices that the step's edges are among the base
+;;     case's edges, which syntactically means the base body's clauses are a
+;;     SUBSET of the step's (more constraints = fewer edges). That keeps the
+;;     common filtered traversal
+;;       [(p ?a ?b) [?a :e ?b]]
+;;       [(p ?a ?b) [?a :e ?x] [?x :active true] (p ?x ?b)]
+;;     on the fast path, where an equality test would needlessly reject it.
+;;
+;;   step-equals-base? — delta-driven expansion REPLACES the recursive step with
+;;     a reverse index scan of `base-scan-attr`, so here the step must be exactly
+;;     the base relation, not merely contained in it.
+;;
+;; Both require a single-rule SCC. Under mutual recursion the step is restated
+;; around a call to a DIFFERENT rule and compared against this rule's base
+;; branches, which says nothing at all; both consumers independently require a
+;; single-rule SCC today, so this only makes the flag honest on its own terms.
 
-   It is false in general. For
-
-     [(sc ?a ?b) [?a :city ?b]]
-     [(sc ?a ?b) [?a :follows ?t] (sc ?t ?b)]
-
-   the harvested column holds city NAMES while the recursion navigates
-   `:follows` between entities, so demand was seeded with strings, matched
-   nothing, and the fixpoint died with answers still underived — a silently
-   incomplete result, not a slow one.
-
-   The condition: every recursive branch's single step, restated in the base
-   case's vocabulary (`recursive-link-body`), must BE one of the base branches.
-   Then the base case derives at least the values the recursion navigates to, so
-   the harvested column is a superset of the demand actually needed — a superset
-   only costs work, a disjoint set loses answers.
-
-   Compared STRUCTURALLY rather than by attribute, because the link need not be
-   a single pattern: a reified edge
-
-     [(reaches ?a ?b) [?r :edge/from ?a] [?r :edge/to ?b]]
-     [(reaches ?a ?b) [?r :edge/from ?a] [?r :edge/to ?c] (reaches ?c ?b)]
-
-   joins the head vars through an intermediate entity and is a perfectly
-   ordinary transitive closure. An attribute-level test rejects it and costs the
-   optimization on the shape that needs it most.
-
-   Unprovable shapes return false and take the plain semi-naive fixpoint, which
-   needs no such assumption."
-  [base-branches rec-branches scc-call?]
-  (let [base-forms (into #{}
-                         (keep (fn [b]
-                                 (let [[[_ & rule-args] & body] b]
-                                   (when (= 2 (count rule-args))
-                                     (canonical-body body (set rule-args) {})))))
-                         base-branches)]
+(defn- demand-covered-by-base?
+  "May magic-set demand be harvested from the derived head tuples? See above."
+  [base-branches rec-branches scc-call? scc-rule-names]
+  (let [bases (base-bodies base-branches)]
     (boolean
-     (and (seq base-forms)
+     (and (= 1 (count scc-rule-names))
+          (seq bases)
           (seq rec-branches)
-          (every? #(contains? base-forms (recursive-link-body % scc-call?))
+          (every? (fn [b]
+                    (when-let [link (recursive-link-body b scc-call?)]
+                      (some (fn [base] (every? link base)) bases)))
+                  rec-branches)))))
+
+(defn- step-equals-base?
+  "May the recursive step be replaced by a reverse scan of the base attribute?
+   See above."
+  [base-branches rec-branches scc-call? scc-rule-names]
+  (let [bases (base-bodies base-branches)]
+    (boolean
+     (and (= 1 (count scc-rule-names))
+          (seq bases)
+          (seq rec-branches)
+          (every? #(contains? bases (recursive-link-body % scc-call?))
                   rec-branches)))))
 
 (defn- rename-branch-vars
@@ -559,11 +589,17 @@
                                     :base-plans base-ps
                                     :rec-clause-versions rec-cvs
                                     ;; Computed from the branch CLAUSES, before
-                                    ;; renaming: the condition compares attributes
-                                    ;; and head-var membership, both invariant
-                                    ;; under renaming of body-local vars.
+                                    ;; renaming: `canonical-body` renumbers head
+                                    ;; vars positionally and locals by first
+                                    ;; appearance, so the comparison does not
+                                    ;; depend on what either branch calls its
+                                    ;; variables.
                                     :magic-demand-sound?
-                                    (magic-demand-sound? base-bs rec-bs is-scc-call?)}])))
+                                    (demand-covered-by-base? base-bs rec-bs is-scc-call?
+                                                             scc-rule-names)
+                                    :delta-driven-sound?
+                                    (step-equals-base? base-bs rec-bs is-scc-call?
+                                                       scc-rule-names)}])))
                       scc-rule-names)
                 ;; Note: an earlier `has-scanless-base?` guard nilled out
                 ;; `scc-rule-plans` whenever a base case lacked an
@@ -645,10 +681,11 @@
              :rec-clause-versions (when scc-rule-plans (:rec-clause-versions (get scc-rule-plans rule-name)))
              :base-scan-attr base-scan-attr
              ;; Whether demand may be harvested from the derived head tuples at
-             ;; all — see `magic-demand-sound?`. Without it the fixpoint can
-             ;; terminate with answers still underived.
-             :magic-demand-sound? (when scc-rule-plans
-                                    (:magic-demand-sound? (get scc-rule-plans rule-name)))
+             ;; all — see `demand-covered-by-base?`. Without it the fixpoint can
+             ;; terminate with answers still underived. `:delta-driven-sound?` is
+             ;; the stricter form the reverse-scan shortcut needs.
+             :magic-demand-sound? (:magic-demand-sound? (get scc-rule-plans rule-name))
+             :delta-driven-sound? (:delta-driven-sound? (get scc-rule-plans rule-name))
              :vars (:vars clause-info)
              :estimated-card nil})
           ;; Non-recursive — expand to OR

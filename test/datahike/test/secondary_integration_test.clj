@@ -573,11 +573,15 @@
     ;; reference returns the population one, and ##NaN for a one-element group.
     ;; stratum's population ops are named :variance-pop / :stddev-pop, so the
     ;; adapter must translate rather than pass the name through.
-    ;; Keep this test honest: if the delegate declined every aggregate, the
-    ;; comparison below would pass vacuously by running the reference twice.
+    ;; Keep this test honest. Asserting that the MAPPING TABLE claims these
+    ;; aggregates is not enough — it says nothing about whether the query
+    ;; reaches the delegate. It did not: the query below was written with a
+    ;; `.` (FindScalar) and `columnar-eligible?` requires a FindRel, so both
+    ;; bindings ran the reference engine and every assertion compared it to
+    ;; itself. Record the delegate's actual invocations instead.
     (is (datahike.index.secondary.stratum/stratum-compatible-aggs?
          [[:variance :num/v] [:stddev :num/v] [:median :num/v] [:avg :num/v]])
-        "the columnar path must actually claim these aggregates")
+        "the columnar path must claim these aggregates")
     (doseq [{:keys [agg in expect note]} aggregate-contract]
       (let [schema {:num/v {}
                     :idx/analytics {:db.secondary/type :stratum
@@ -586,10 +590,29 @@
             stratum-idx (sec/create-index :stratum {:attrs #{:num/v}} empty-db)
             db (-> (assoc empty-db :secondary-indices {:idx/analytics stratum-idx})
                    (d/db-with (vec (map-indexed (fn [i v] {:db/id (inc i) :num/v v}) in))))
-            query {:find [(list agg '?x) '.] :where '[[?e :num/v ?x]]}
+            ;; FindRel, NOT FindScalar: `columnar-eligible?` declines a `.`
+            ;; find, which would route this straight past the delegate.
+            query {:find [(list agg '?x)] :where '[[?e :num/v ?x]]}
             label (str "(" agg " " (pr-str in) ")" (when note (str " — " note)))
-            columnar (binding [q/*disable-planner* false] (d/q query db))
-            reference (binding [q/*disable-planner* true] (d/q query db))]
+            used (atom [])
+            real-agg datahike.index.secondary.stratum/columnar-aggregate
+            real-maps datahike.index.secondary.stratum/columnar-aggregate-from-maps
+            ;; The result cache MUST be off. The two calls below are the same
+            ;; query against the same data, so the second one is a cache hit
+            ;; that never executes — the "reference" value would just be the
+            ;; columnar result handed back, and the comparison would again be
+            ;; the fast path against itself.
+            columnar (binding [q/*query-result-cache?* false]
+                       (with-redefs [datahike.index.secondary.stratum/columnar-aggregate
+                                     (fn [& args] (swap! used conj :cols) (apply real-agg args))
+                                     datahike.index.secondary.stratum/columnar-aggregate-from-maps
+                                     (fn [& args] (swap! used conj :maps) (apply real-maps args))]
+                         (ffirst (binding [q/*disable-planner* false] (d/q query db)))))
+            reference (binding [q/*query-result-cache?* false]
+                        (ffirst (binding [q/*disable-planner* true] (d/q query db))))]
+        (is (seq @used)
+            (str label " — the delegate must actually run, or this compares "
+                 "the reference engine to itself"))
         (is (and (number? columnar)
                  (< (abs (- (double expect) (double columnar))) 1e-9))
             (str label " columnar"))

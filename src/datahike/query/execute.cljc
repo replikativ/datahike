@@ -3525,7 +3525,7 @@
      :clj
      ;; Only apply magic sets to single-rule SCCs with binary head vars, and
      ;; only when demand may soundly be read back out of the derived head tuples
-     ;; (`lower/magic-demand-sound?`). Where it may not, the demand set stops
+     ;; (`lower/demand-covered-by-base?`). Where it may not, the demand set stops
      ;; growing at values the recursion never navigates to and the fixpoint
      ;; terminates early — answers missing, no error. The plain semi-naive
      ;; fixpoint below assumes nothing about the rule's shape.
@@ -3765,7 +3765,7 @@
    Each rule has its own accumulator."
   [db op ctx]
   (let [{:keys [scc-rule-plans scc-rule-names call-args head-vars rule-name
-                base-scan-attr magic-demand-sound?]} op
+                base-scan-attr magic-demand-sound? delta-driven-sound?]} op
         ;; Head vars no branch body binds take their value from the call site
         ;; (#897). When one has no caller binding either, the fixpoint cannot
         ;; produce a well-formed tuple for it — hand the whole rule to the
@@ -3970,13 +3970,15 @@
                                   ;;   [(p ?a ?b) [?a :knows ?x] (p ?x ?b)]
                                   ;; — had its :knows step silently replaced by a
                                   ;; :follows lookup, losing every answer that
-                                  ;; needed the recursion. `magic-demand-sound?`
-                                  ;; is that condition: with a single base branch
-                                  ;; it holds exactly when the link attribute IS
-                                  ;; base-scan-attr. Unlike the magic-set use,
-                                  ;; this one bites with NO ground argument.
+                                  ;; needed the recursion. This shortcut REPLACES
+                                  ;; the step, so it needs the step to BE the base
+                                  ;; relation, not merely be contained in it as
+                                  ;; the magic-set use requires — hence the
+                                  ;; stricter `delta-driven-sound?`. Unlike the
+                                  ;; magic-set use, this one bites with NO ground
+                                  ;; argument.
                                            use-delta-driven? (and #?(:cljs false :clj base-scan-attr)
-                                                                  magic-demand-sound?
+                                                                  delta-driven-sound?
                                                                   rec-has-db-pattern?
                                                                   rec-shape-simple?
                                                                   (= rn rule-name)

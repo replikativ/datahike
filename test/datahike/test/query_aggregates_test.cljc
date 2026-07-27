@@ -33,12 +33,14 @@
 ;;     population — it is not a sample drawn from a larger one — so ÷n is the
 ;;     right denominator, and it keeps them total: a singleton group is 0.0,
 ;;     never NaN. Matches Datomic (measured on peer 1.0.7387).
-;;   * The central-tendency aggregates are REAL-VALUED: avg and an even-count
-;;     median return doubles even when the division is exact. `sum`/`min`/`max`
-;;     preserve the column's own type. Datomic truncates an even median to the
-;;     inputs' type (2 for [1 2 3 4]); we deliberately do not — a median is
-;;     real-valued in general, and truncating it would be inconsistent with avg,
-;;     which Datomic itself returns as a double.
+;;   * The central-tendency aggregates are REAL-VALUED: avg and median return
+;;     doubles even when the division is exact, and median does so for an odd
+;;     count too, so the result TYPE never depends on how many rows happened to
+;;     match. `sum`/`min`/`max` preserve the column's own type. Datomic truncates
+;;     an even median to the inputs' type (2 for [1 2 3 4]); we deliberately do
+;;     not — a median is real-valued in general, truncating it would be
+;;     inconsistent with avg (which Datomic itself returns as a double), and a
+;;     columnar delegate computing in doubles could not answer it.
 (def aggregate-contract
   [{:agg 'avg      :in [10 15 20 35 75] :expect 31.0  :real? true
     :note "real-valued even when it divides exactly"}
@@ -50,8 +52,8 @@
     :note "total on a singleton — the sample estimator gives NaN here"}
    {:agg 'stddev   :in [10 15 20 35 75] :expect 23.53720459187964 :real? true}
    {:agg 'stddev   :in [7]              :expect 0.0   :real? true}
-   {:agg 'median   :in [10 15 20 35 75] :expect 20    :real? false
-    :note "odd count -> the middle element itself, in its own type"}
+   {:agg 'median   :in [10 15 20 35 75] :expect 20.0  :real? true
+    :note "odd count is real-valued too — the type must not depend on the row count"}
    {:agg 'median   :in [1 2 3 4]        :expect 2.5   :real? true}
    {:agg 'median   :in [10 20 30 12]    :expect 16.0  :real? true
     :note "even count -> real, not Datomic's truncated 16"}
@@ -143,11 +145,10 @@
              31.0)))
 
     (testing "median aggregate"
-      ;; odd count -> the middle element itself, in its own type
       (is (= (ffirst (d/q '[:find (median ?x)
                             :in [?x ...]]
                           [10 15 20 35 75]))
-             20)))
+             20.0)))
 
     (testing "variance aggregate"
       (is (= (ffirst (d/q '[:find (variance ?x)

@@ -191,7 +191,32 @@
         (is (= #{[[:uid "u100"] "alice" "other"]}
                (d/q '[:find ?e ?n ?m :in $ $2 ?e
                       :where [?e :name ?n] [$2 100 :name ?m]] db db2 [:uid "u100"]))
-            "an unrelated foreign clause does not disable resolution")))))
+            "an unrelated foreign clause does not disable resolution")))
+
+    (testing "a var a foreign source reads is NOT resolved against the primary db"
+      ;; The dangerous direction. `[:uid "u100"]` denotes a different entity in
+      ;; a different database, so resolving it here and handing the primary's
+      ;; entity id to the other source answers the wrong question — silently.
+      ;; A source-taking FUNCTION carries its source as an ARGUMENT, so a test
+      ;; that only looked at the clause head missed every one of these.
+      (let [other (d/db-with (db/empty-db {:uid {:db/unique :db.unique/identity
+                                                 :db/cardinality :db.cardinality/one}
+                                           :name {:db/cardinality :db.cardinality/one}})
+                             [{:db/id 77 :uid "u100" :name "in-other-db"}])]
+        (is (= #{["in-other-db"]}
+               (d/q '[:find ?n :in $ $2 [?e ...]
+                      :where [(get-else $2 ?e :name "MISS") ?n]]
+                    db other [[:uid "u100"]]))
+            "get-else resolves its entity against the source it was given")
+        (is (= #{}
+               (d/q '[:find ?e :in $ $2 [?e ...] :where [(missing? $2 ?e :name)]]
+                    db other [[:uid "u100"]]))
+            "missing? must not report a present datom as absent")
+        (is (= #{[#{["in-other-db"]}]}
+               (d/q '[:find ?r :in $ $2 [?e ...]
+                      :where [(q '[:find ?n :in $ ?e :where [?e :name ?n]] $2 ?e) ?r]]
+                    db other [[:uid "u100"]]))
+            "a nested q over a foreign source resolves against that source")))))
 
 (deftest test-source-prefixed-pattern-uses-its-own-schema
   ;; A source-prefixed pattern runs against a different database than the one
