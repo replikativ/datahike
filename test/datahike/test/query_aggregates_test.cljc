@@ -4,6 +4,7 @@
       :clj  [clojure.test :as t :refer        [is deftest testing]])
    [clojure.core.async :refer [<!]]
    [datahike.api :as d]
+   [datahike.db :as db]
    [datahike.query :as dq]
    [datahike.test.async #?(:clj :refer :cljs :refer-macros) [deftest-async]]))
 
@@ -66,6 +67,44 @@
 (defn- close-enough?
   [expected actual]
   (and (number? actual) (< (abs (- (double expected) (double actual))) 1e-9)))
+
+(deftest test-aggregate-over-a-mixed-type-column
+  ;; The fused aggregate path materializes typed column arrays and used to pick
+  ;; the array type by sampling ROW 0. A column holding 10 then 2.5 was typed
+  ;; long[] and every Double truncated: `(sum ?x)` answered 12 instead of 12.5 —
+  ;; and swapping the two rows made the same query correct, which is the
+  ;; signature of the bug. No secondary index is involved, and an undeclared
+  ;; attribute or `:schema-flexibility :read` makes a mixed column easy to
+  ;; produce, so this reached ordinary queries.
+  (let [db-of (fn [vals]
+                (d/db-with (db/empty-db {})
+                           (vec (map-indexed (fn [i v] {:db/id (inc i) :num/v v}) vals))))
+        agree? (fn [vals query]
+                 (binding [dq/*query-result-cache?* false]
+                   (let [d (db-of vals)
+                         p (binding [dq/*disable-planner* false] (d/q query d))
+                         r (binding [dq/*disable-planner* true] (d/q query d))]
+                     [(= p r) p r])))]
+    (testing "a Double anywhere in the column is not truncated"
+      (doseq [vals [[10 2.5] [2.5 10] [1 2 3.5] [3.5 1 2]]
+              q '[[:find (sum ?x) :where [?e :num/v ?x]]
+                  [:find (min ?x) :where [?e :num/v ?x]]
+                  [:find (avg ?x) :where [?e :num/v ?x]]]]
+        (let [[ok? p r] (agree? vals q)]
+          (is ok? (str q " over " (pr-str vals) " — planner " (pr-str p)
+                       " vs reference " (pr-str r))))))
+
+    (testing "a mixed column used as a GROUP KEY keeps each value's own type"
+      ;; Widening the column instead of declining would answer the group `10`
+      ;; as `10.0` — the projection must return the value as stored.
+      (let [[ok? p r] (agree? [10 2.5] '[:find ?x (count ?e) :where [?e :num/v ?x]])]
+        (is ok? (str "grouped — planner " (pr-str p) " vs reference " (pr-str r)))))
+
+    (testing "homogeneous columns still take the fast path and agree"
+      (doseq [vals [[10 15 20] [1.5 2.5] ["b" "a" "c"]]]
+        (let [[ok? p r] (agree? vals '[:find (min ?x) :where [?e :num/v ?x]])]
+          (is ok? (str "min over " (pr-str vals) " — planner " (pr-str p)
+                       " vs reference " (pr-str r))))))))
 
 (deftest test-aggregate-contract
   (doseq [{:keys [agg in expect real? note]} aggregate-contract

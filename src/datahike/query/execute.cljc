@@ -4921,27 +4921,60 @@
                               (fn ^objects [i] (.get rows i)))
 
                   ;; Extract typed columns from the (possibly deduplicated)
-                  ;; rows. Detect types from the first row.
-                     first-row ^objects (row-at 0)
+                  ;; rows. The column's type is decided by EVERY value in it, not
+                  ;; by a sample of row 0: a column holding 10 then 2.5 is not a
+                  ;; long column, and typing it from the first value truncated
+                  ;; every Double into a long[] — `(sum ?x)` over 10, 2.5
+                  ;; answered 12 instead of 12.5, and swapping the two rows made
+                  ;; the same query correct. Undeclared attributes and
+                  ;; `:schema-flexibility :read` make a mixed column easy to
+                  ;; produce, and this path needs no secondary index to run, so
+                  ;; the truncation reached ordinary queries.
+                  ;;
+                  ;; A column qualifies for a primitive array only when EVERY
+                  ;; value has the same type; anything mixed falls to Object[],
+                  ;; which `type-safe?` below already refuses for a value
+                  ;; aggregate, so the query takes the relation path and is
+                  ;; right. Note it must not merely WIDEN a mixed Long/Double
+                  ;; column to double[]: the same extraction feeds GROUP keys,
+                  ;; and widening turned the group `10` into `10.0` in the
+                  ;; result. The scan is O(rows) over a column this code is
+                  ;; about to materialize anyway.
+                     column-kind
+                     (fn [pos]
+                       (loop [i 0, k nil]
+                         (if (>= i n')
+                           (or k :object)
+                           (let [v (aget ^objects (row-at i) pos)
+                                 vk (cond
+                                      (instance? Long v) :long
+                                      (instance? Double v) :double
+                                      (instance? String v) :string
+                                      :else :object)]
+                             (cond
+                               (= :object vk) :object
+                               (nil? k) (recur (inc i) vk)
+                               (= k vk) (recur (inc i) k)
+                               :else :object)))))
 
                      extract-column
                      (fn [col-idx]
                        (let [pos (int (get idx->pos col-idx))
-                             sample (aget first-row pos)]
+                             kind (if (zero? n') :object (column-kind pos))]
                          (cond
-                           (instance? Long sample)
+                           (= :long kind)
                            (let [arr (long-array n')]
                              (dotimes [i n']
                                (aset arr i (long (aget ^objects (row-at i) pos))))
                              arr)
 
-                           (instance? Double sample)
+                           (= :double kind)
                            (let [arr (double-array n')]
                              (dotimes [i n']
                                (aset arr i (double (aget ^objects (row-at i) pos))))
                              arr)
 
-                           (instance? String sample)
+                           (= :string kind)
                            (let [arr ^"[Ljava.lang.String;" (make-array String n')]
                              (dotimes [i n']
                                (aset arr i ^String (aget ^objects (row-at i) pos)))
