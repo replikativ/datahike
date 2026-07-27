@@ -19,6 +19,7 @@
    [datahike.db.interface :as dbi]
    [datahike.index.interface :as di]
    [datahike.query.analyze :as analyze]
+   [datahike.query.eqcheck :as eqcheck]
    [datahike.query.estimate :as estimate]
    [datahike.query.ir :as ir]
    [datahike.query.logical :as logical]
@@ -1205,9 +1206,12 @@
         ;; const fold — deterministically, and naming the offending clause.
         ]
 
-    {:ops ordered-ops
-     :consumed-preds actual-consumed
-     :classified classified
-     :group-joins group-joins
-     :has-passthrough? (boolean (some #(= :passthrough (:op %)) ordered-ops))
-     :structurally-fusable? (plan/structurally-fusable? ordered-ops)}))
+    ;; Dev/test invariant gate: implied-equalities(plan) == enforced-equalities(plan).
+    ;; No-op unless eqcheck/*check-equalities?* is bound (cf. query/*profile?*).
+    (eqcheck/maybe-check!
+     {:ops ordered-ops
+      :consumed-preds actual-consumed
+      :classified classified
+      :group-joins group-joins
+      :has-passthrough? (boolean (some #(= :passthrough (:op %)) ordered-ops))
+      :structurally-fusable? (plan/structurally-fusable? ordered-ops)})))
