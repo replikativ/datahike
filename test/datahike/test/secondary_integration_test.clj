@@ -622,3 +622,54 @@
         ;; being the wrong answer, so pin the type too
         (is (= (double? reference) (double? columnar))
             (str label " — same numeric type on both paths"))))))
+
+(deftest test-stratum-aggregate-eligibility-gates
+  (testing "the columnar path declines what it cannot compute to the contract"
+    ;; Two entry points reach the columnar aggregate and they did not share
+    ;; guards: the fused one (execute-columnar-aggregate) checks arity and column
+    ;; type, while the secondary-index one (try-secondary-index-aggregate)
+    ;; checked neither, so it answered a different function than the query asked
+    ;; for. Both gates now live on both paths.
+    (let [mk (fn [vals]
+               (let [schema {:num/v {}
+                             :idx/analytics {:db.secondary/type :stratum
+                                             :db.secondary/attrs [:num/v]}}
+                     e (db/empty-db schema)
+                     idx (sec/create-index :stratum {:attrs #{:num/v}} e)]
+                 (-> (assoc e :secondary-indices {:idx/analytics idx})
+                     (d/db-with (vec (map-indexed (fn [i v] {:db/id (inc i) :num/v v}) vals))))))
+          agree? (fn [db query]
+                   ;; the cache must be off, or the second call is a hit that
+                   ;; returns the first engine's answer
+                   (binding [q/*query-result-cache?* false]
+                     (let [c (binding [q/*disable-planner* false] (d/q query db))
+                           r (binding [q/*disable-planner* true] (d/q query db))]
+                       [(= c r) c r])))]
+
+      (testing "an aggregate with a count argument is a different function"
+        ;; `(min 2 ?x)` returns the two smallest as a COLLECTION. Only the last
+        ;; argument was read, so the count was dropped and a scalar returned.
+        (doseq [q ['[:find (min 2 ?x) :where [?e :num/v ?x]]
+                   '[:find (max 2 ?x) :where [?e :num/v ?x]]]]
+          (let [[ok? c r] (agree? (mk [10 15 20 35 75]) q)]
+            (is ok? (str q " — columnar " (pr-str c) " vs reference " (pr-str r))))))
+
+      (testing "an aggregate applies to the DEDUPLICATED find projection"
+        ;; A Datalog aggregate applies to the answer set. Aggregating inside the
+        ;; index counts a repeated value once per datom, so `(count ?x)` over
+        ;; 10,10,40 answered 3 where the projection has two members.
+        (doseq [q ['[:find (count ?x) :where [?e :num/v ?x]]
+                   '[:find (sum ?x) :where [?e :num/v ?x]]
+                   '[:find (avg ?x) :where [?e :num/v ?x]]
+                   '[:find (variance ?x) :where [?e :num/v ?x]]
+                   '[:find (median ?x) :where [?e :num/v ?x]]]]
+          (let [[ok? c r] (agree? (mk [10 10 40]) q)]
+            (is ok? (str q " over duplicates — columnar " (pr-str c)
+                         " vs reference " (pr-str r))))))
+
+      (testing "duplicate-insensitive aggregates keep the fast path"
+        (doseq [q ['[:find (min ?x) :where [?e :num/v ?x]]
+                   '[:find (max ?x) :where [?e :num/v ?x]]
+                   '[:find (count-distinct ?x) :where [?e :num/v ?x]]]]
+          (let [[ok? c r] (agree? (mk [10 10 40]) q)]
+            (is ok? (str q " — columnar " (pr-str c) " vs reference " (pr-str r)))))))))

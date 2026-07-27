@@ -5,6 +5,7 @@
    [clojure.core.async :refer [<!]]
    [datahike.api :as d]
    [datahike.db :as db]
+   [datahike.query :as dq]
    [datahike.test.utils :as du]
    [datahike.test.async #?(:clj :refer :cljs :refer-macros) [deftest-async]]))
 
@@ -475,3 +476,74 @@
     ;; reachable from 1. 2->3 directly, and 3 inactive stops there.
     (is (= #{2 3} (set (d/q '[:find [?b ...] :in $ % :where (p 1 ?b)] db rules))))
     (is (= #{3} (set (d/q '[:find [?b ...] :in $ % :where (p 2 ?b)] db rules))))))
+
+#?(:clj
+   (deftest test-mutual-recursion-over-a-cycle
+     ;; Mutual recursion over CYCLIC data. The compiled planner's semi-naive
+     ;; fixpoint dedups per rule and converges; the reference engine's rule
+     ;; solver does not terminate at all here, so it is asserted only on the
+     ;; planner and run on a bounded thread.
+     ;;
+     ;; Found by widening the differential generator's dataset axis: its one
+     ;; dataset was acyclic on :friend, so every mutual-recursion case
+     ;; terminated and this was invisible. It matters because the reference
+     ;; engine is both the differential oracle and the permanent fallback for
+     ;; shapes the planner declines — a user on DATAHIKE_QUERY_PLANNER=false
+     ;; hangs rather than gets a wrong answer.
+     (let [db (d/db-with (db/empty-db {:friend {:db/valueType :db.type/ref
+                                                :db/cardinality :db.cardinality/one}})
+                         [{:db/id 100 :friend 101}
+                          {:db/id 101 :friend 102}
+                          {:db/id 102 :friend 100}])
+           rules '[[(ehop ?a ?b) [?a :friend ?b]]
+                   [(ehop ?a ?b) [?a :friend ?x] (ohop ?x ?b)]
+                   [(ohop ?a ?b) [?a :friend ?x] (ehop ?x ?b)]]
+           ;; Pin the engine: the base-engine CI job sets
+           ;; DATAHIKE_QUERY_PLANNER=false, which would otherwise run these on
+           ;; the very engine that does not terminate here.
+           run (fn [q] (let [f (future (binding [dq/*disable-planner* false]
+                                         (set (d/q q db rules))))
+                             r (deref f 15000 ::timeout)]
+                         (when (= r ::timeout) (future-cancel f))
+                         r))]
+       ;; every pair is reachable in a 3-cycle
+       (is (= #{[100 100] [100 101] [100 102]
+                [101 100] [101 101] [101 102]
+                [102 100] [102 101] [102 102]}
+              (run '[:find ?a ?b :in $ % :where (ehop ?a ?b)]))
+           "planner terminates on mutual recursion over a cycle")
+       (is (= #{100 101 102}
+              (run '[:find [?b ...] :in $ % :where (ehop 100 ?b)]))
+           "…and with a ground argument"))))
+
+#?(:clj
+   (deftest test-right-recursive-rule
+     ;; A right-linear transitive closure — the recursive call comes FIRST in
+     ;; the body:
+     ;;   [(rr ?a ?b) [?a :friend ?b]]
+     ;;   [(rr ?a ?b) (rr ?a ?x) [?x :friend ?b]]
+     ;; The planner's semi-naive fixpoint evaluates this bottom-up and converges.
+     ;; The reference engine expands the leading rule call before anything binds
+     ;; it and does not terminate — on a THREE-entity ACYCLIC graph, so this is
+     ;; not about cycles or size. Asserted on the planner only, on a bounded
+     ;; thread.
+     ;;
+     ;; Found by adding a rule-shape axis to the differential generator: its five
+     ;; rule sets were all left-linear, so this whole shape was untested.
+     (let [db (d/db-with (db/empty-db {:friend {:db/valueType :db.type/ref
+                                                :db/cardinality :db.cardinality/one}})
+                         [{:db/id 1 :friend 2} {:db/id 2 :friend 3} {:db/id 3}])
+           rules '[[(rr ?a ?b) [?a :friend ?b]]
+                   [(rr ?a ?b) (rr ?a ?x) [?x :friend ?b]]]
+           ;; Pin the engine: the base-engine CI job sets
+           ;; DATAHIKE_QUERY_PLANNER=false, which would otherwise run these on
+           ;; the very engine that does not terminate here.
+           run (fn [q] (let [f (future (binding [dq/*disable-planner* false]
+                                         (set (d/q q db rules))))
+                             r (deref f 15000 ::timeout)]
+                         (when (= r ::timeout) (future-cancel f))
+                         r))]
+       (is (= #{[1 2] [2 3] [1 3]} (run '[:find ?a ?b :in $ % :where (rr ?a ?b)]))
+           "planner terminates on a right-recursive rule")
+       (is (= #{2 3} (run '[:find [?b ...] :in $ % :where (rr 1 ?b)]))
+           "…and with a ground argument"))))
