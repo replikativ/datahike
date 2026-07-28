@@ -26,7 +26,6 @@
    [datahike.query.relation :as rel]
    [datahike.query.plan :as plan]
    [datahike.query.analyze :as analyze]
-   [datahike.query.plan-check :as plan-check]
    #?(:clj [datahike.query.logical :as logical])
    #?(:clj [datahike.query.lower :as lower])
    #?(:cljs [datahike.db :refer [DB AsOfDB SinceDB HistoricalDB]])
@@ -3407,15 +3406,7 @@
         ;; — which would otherwise collide on identical clauses + bound-vars.
         cache-key (scale-sensitive-key [clauses bound-vars (when rules rules)
                                         (not-empty in-cards) schema-hash])]
-    ;; The equality-invariant check runs when a plan is BUILT (lower/maybe-check!),
-    ;; so a warm cache would silently check nothing — a test enabling the flag
-    ;; would pass without having examined a single plan. Under the flag, always
-    ;; rebuild. It is a dev/test switch, so the cost is irrelevant, and this is
-    ;; the difference between a real gate and a decorative one.
-    ;; `when-not`, not `and`: `if-some` tests for non-nil and `false` is non-nil,
-    ;; so an `and` would hand `false` to the executor as the plan.
-    (if-some [cached (when-not plan-check/*check-plan*
-                       (get @plan-cache cache-key nil))]
+    (if-some [cached (get @plan-cache cache-key nil)]
       cached
       (let [plan (create-plan-via-ir db clauses bound-vars rules in-cards)]
         (vswap! plan-cache assoc cache-key plan)

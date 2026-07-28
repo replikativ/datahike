@@ -34,14 +34,16 @@
    [clojure.set]
    [datahike.query.analyze :as analyze]
    [datahike.query.plan :as plan]
-   [datahike.query.plan-check :as plan-check]))
+   [datahike.query.lower :as lower]
+   [datahike.query :as dq]
+   [datahike.lru]))
 
 ;; ---------------------------------------------------------------------------
 ;; Flags
 
 (def ^:dynamic *check-equalities?*
   "When true, every plan the lowering pass builds is validated. Loading this
-   namespace installs the checker into `plan-check/*check-plan*`; this flag turns
+   namespace installs the checker into `lower/*check-plan*`; this flag turns
    it on. Both are needed, so merely having the namespace on the classpath costs
    a nil test per plan."
   false)
@@ -561,7 +563,7 @@
 ;; non-nil whenever the check could fire — hence the flag is read inside the
 ;; installed fn rather than gating installation.
 
-(alter-var-root #'plan-check/*check-plan*
+(alter-var-root #'lower/*check-plan*
                 (constantly
                  (fn [plan]
                    (when *check-equalities?*
@@ -571,3 +573,21 @@
                            (*violation-handler* (assoc report :plan plan))
                            (throw (ex-info "Plan violates the equality-obligation invariant"
                                            (assoc report :explain (vec (explain report))))))))))))
+
+(defn check-plans*
+  "Run `f` with plan checking on. Clears the plan cache first AND after, because
+   the check fires when a plan is BUILT: with a warm cache a caller would enable
+   the flag and silently examine nothing, and plans built while checking would
+   otherwise linger for later callers."
+  [f]
+  (let [cache @#'dq/plan-cache
+        size  @#'dq/lru-cache-size
+        reset! #(vreset! cache (datahike.lru/lru size))]
+    (reset!)
+    (try (binding [*check-equalities?* true] (f))
+         (finally (reset!)))))
+
+(defmacro with-plan-checks
+  "Body runs with the equality-obligation invariant checked on every plan built."
+  [& body]
+  `(check-plans* (fn [] ~@body)))
