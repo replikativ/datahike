@@ -210,3 +210,44 @@
                         :where [?a :p ?x] [?a :q ?x] [?a :s ?z] [?a :e ?y]]
                       db [1 2 3 4]))
           "?y must be an :e ref (2/3/4), never a copy of ?x"))))
+
+(deftest test-repeated-attribute-in-one-entity-group
+  ;; `execute-sorted-merge` walks a group's merges in ATTRIBUTE order, advancing
+  ;; one cursor per attribute. Two clauses on the SAME attribute therefore
+  ;; collapse onto one cursor and the group yields nothing — silently, and only
+  ;; for card-one attributes (a card-many group never takes that path).
+  ;;
+  ;; Such a group now takes the declaration-order :per-cursor-merge path, where
+  ;; every clause has its own cursor. Expectations are hand-derived from the
+  ;; data, not taken from the other engine.
+  (let [db (d/db-with (db/empty-db {:p {:db/valueType :db.type/ref
+                                        :db/cardinality :db.cardinality/one}
+                                    :qq {:db/valueType :db.type/ref
+                                         :db/cardinality :db.cardinality/one}})
+                      [{:db/id 1 :p 1 :qq 2}      ;; 1 :p points at itself
+                       {:db/id 2 :p 3 :qq 1}
+                       {:db/id 3 :p 4 :qq 2}
+                       {:db/id 4 :p 4 :qq 4}])]   ;; 4 :p and :qq both 4
+
+    (testing "two merges on one attribute, plus a third clause"
+      ;; ?x and ?y both range over ?a's single :p value, so they are equal; the
+      ;; third clause additionally demands :qq = that value. Only entity 4
+      ;; satisfies both (:p 4, :qq 4).
+      (is (= #{[4 4 4]}
+             (set (d/q '[:find ?a ?x ?y
+                         :where [?a :p ?x] [?a :p ?y] [?a :qq ?x]] db)))))
+
+    (testing "three clauses on the same attribute"
+      ;; every variable takes ?a's single :p value
+      (is (= #{[1 1 1 1] [2 3 3 3] [3 4 4 4] [4 4 4 4]}
+             (set (d/q '[:find ?a ?x ?y ?z
+                         :where [?a :p ?x] [?a :p ?y] [?a :p ?z]] db)))))
+
+    (testing "a repeated attribute with a constant still works"
+      (is (= #{[3 4] [4 4]}
+             (set (d/q '[:find ?a ?x :where [?a :p 4] [?a :p ?x]] db))))
+      (is (= #{} (set (d/q '[:find ?a :where [?a :p 4] [?a :p 1]] db)))))
+
+    (testing "distinct attributes are untouched — they keep the sorted walk"
+      (is (= #{[1 1 2] [2 3 1] [3 4 2] [4 4 4]}
+             (set (d/q '[:find ?a ?x ?y :where [?a :p ?x] [?a :qq ?y]] db)))))))

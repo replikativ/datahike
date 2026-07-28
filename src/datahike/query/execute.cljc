@@ -1455,6 +1455,26 @@
                (>= (int (aget eq-tx i)) eq-merge-base)
                (recur (inc i)))))))
 
+(defn- repeated-merge-attr?
+  "True when the group scans the SAME attribute more than once — either two
+   merges on it, or a merge repeating the driving scan's attribute.
+
+   `execute-sorted-merge` walks the merges in ATTRIBUTE order, advancing one
+   cursor per attribute, so a repeated attribute collapses two distinct clauses
+   onto one cursor and the group yields NOTHING:
+   `[?a :p ?x] [?a :p ?y] [?a :qq ?x]` over card-one `:p` returned `#{}` where
+   the answer is non-empty. Such a group takes the declaration-order
+   `:per-cursor-merge` path instead, which gives each clause its own cursor."
+  [^objects merge-attrs scan-a]
+  (let [n (alength merge-attrs)]
+    (loop [i 0 seen (if (some? scan-a) #{scan-a} #{})]
+      (if (>= i n)
+        false
+        (let [a (aget merge-attrs i)]
+          (if (contains? seen a)
+            true
+            (recur (inc i) (conj seen a))))))))
+
 (defn- build-common-merge-arrays
   "Build merge arrays shared between temporal and non-temporal dispatchers.
    Returns [merge-v-ground merge-v-vals merge-anti merge-eq-v merge-eq-tx]."
@@ -2015,7 +2035,11 @@
         ;; non-sorted card-one group, and only reachable here for the card-one,
         ;; non-anti, non-optional shape sorted-merge itself requires).
         fused-path (if (and (= fused-path :sorted-merge)
-                            (cross-merge-eq? merge-eq-v merge-eq-tx))
+                            (or (cross-merge-eq? merge-eq-v merge-eq-tx)
+                                ;; …and the same walk cannot separate two clauses
+                                ;; that share an attribute — see
+                                ;; `repeated-merge-attr?`.
+                                (repeated-merge-attr? merge-attrs resolved-a)))
                      :per-cursor-merge
                      fused-path)
 
