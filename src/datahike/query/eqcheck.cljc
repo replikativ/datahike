@@ -178,10 +178,16 @@
 ;; scan clause then every merge clause, handing each not-yet-seen free var the
 ;; NEXT column index — while the tuple grows by one slot per merge that has a
 ;; free v (and one per free tx), including duplicates and excluding antis.
-;; The two walks disagree in exactly two ways, both silent:
-;;   * an ANTI merge's vars get a column index but never a slot  → phantom column
-;;   * a DUPLICATE v/tx var consumes a slot but no index         → every later
-;;                                                                 column shifts
+;; The two walks USED to disagree in two ways, both silent:
+;;   * an ANTI merge's vars got a column index but never a slot → phantom column
+;;   * a DUPLICATE v/tx var consumed a slot but no index        → every later
+;;                                                                column shifted
+;; Both are fixed: `merge-emit-v` / `merge-emit-tx` (execute.cljc) now record
+;; per merge whether a slot is actually appended, using the SAME
+;; `(not (contains? attrs …))` test the index walk uses and skipping anti
+;; merges. This model must mirror that, or it reports a shift for every query
+;; with a repeated merge value var — which is precisely the class the fix
+;; addressed, so the checker would reject the code that repaired it.
 
 (defn group-column-layout
   "Simulate execute-fused-scan-rel's out-attrs vs the tuple it actually builds.
@@ -208,17 +214,24 @@
                                    [attrs idx]
                                    (vec (:clause mop)))]
                        (recur attrs idx more))))
-        ;; actual: 5 fixed slots [e a v tx added] then one slot per emitted field
-        slots (into []
-                    (mapcat (fn [mop]
-                              (when-not (:anti? mop)
-                                (let [c (vec (:clause mop))
-                                      mv (get c 2)
-                                      mtx (get c 3)]
-                                  (cond-> []
-                                    (analyze/free-var? mv) (conj mv)
-                                    (analyze/free-var? mtx) (conj mtx))))))
-                    merges)
+        ;; actual: 5 fixed slots [e a v tx added] then one slot per EMITTED field.
+        ;; A field is emitted only when it is a free var the layout has not
+        ;; already bound — mirroring merge-emit-v / merge-emit-tx, which thread
+        ;; the growing attrs map exactly as the index walk above does.
+        slots (first
+               (reduce (fn [[acc seen] mop]
+                         (if (:anti? mop)
+                           [acc seen]
+                           (let [c (vec (:clause mop))
+                                 step (fn [[acc seen] x]
+                                        (if (and (some? x) (symbol? x)
+                                                 (analyze/free-var? x)
+                                                 (not (contains? seen x)))
+                                          [(conj acc x) (conj seen x)]
+                                          [acc seen]))]
+                             (-> [acc seen] (step (get c 2)) (step (get c 3))))))
+                       [[] (into #{} (keys base))]
+                       merges))
         actual (reduce (fn [m [i v]]
                          (if (contains? m v) m (assoc m v (+ 5 (long i)))))
                        base
@@ -306,8 +319,18 @@
   "Which mechanism, if any, enforces `obligation` on each execution path.
    Returns {:rel <kw|nil> :direct <kw|nil>}.
 
-   Mechanisms (all verified against execute.cljc on 8e5da567):
+   Mechanisms (verified against execute.cljc on this branch — see the drift note below):
      :merge-entity-key    merge lookupGE is keyed on the scan datom's eid
+   THIS IS A HAND-DERIVED MODEL of execute.cljc and it WILL drift — it already
+   did once, in the very PR that introduced it: the layout simulation kept
+   describing the duplicate-slot column shift that the same PR fixed, which made
+   it reject correct queries (18% of tx-var plans) including the PR's own
+   regression test. Whenever an enforcement mechanism in execute.cljc changes,
+   this model must change with it. The durable fix is for the executor to CONSUME
+   declared obligations, after which this becomes a two-sided consistency check
+   rather than a re-derivation.
+
+   Mechanisms:
      :merge-eq-slot       build-common-merge-arrays → merge-eq-slots: an int
                           naming the binding slot an occurrence must equal, so
                           ANY earlier scan/merge position can be the producer

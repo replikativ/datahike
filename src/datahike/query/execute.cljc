@@ -1400,7 +1400,7 @@
    `merge-datoms`, so they are never recorded as a binding slot (they can still
    carry obligations against earlier ones).
 
-   Returns [merge-eq-v merge-eq-tx], two object arrays of int codes."
+   Returns [merge-eq-v merge-eq-tx], two primitive int arrays of codes."
   [merge-ops scan-clause]
   (let [n (count merge-ops)]
     (loop [i 0
