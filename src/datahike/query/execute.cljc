@@ -1455,6 +1455,26 @@
                (>= (int (aget eq-tx i)) eq-merge-base)
                (recur (inc i)))))))
 
+(defn- repeated-merge-attr?
+  "True when the group scans the SAME attribute more than once — either two
+   merges on it, or a merge repeating the driving scan's attribute.
+
+   `execute-sorted-merge` walks the merges in ATTRIBUTE order, advancing one
+   cursor per attribute, so a repeated attribute collapses two distinct clauses
+   onto one cursor and the group yields NOTHING:
+   `[?a :p ?x] [?a :p ?y] [?a :qq ?x]` over card-one `:p` returned `#{}` where
+   the answer is non-empty. Such a group takes the declaration-order
+   `:per-cursor-merge` path instead, which gives each clause its own cursor."
+  [^objects merge-attrs scan-a]
+  (let [n (alength merge-attrs)]
+    (loop [i 0 seen (if (some? scan-a) #{scan-a} #{})]
+      (if (>= i n)
+        false
+        (let [a (aget merge-attrs i)]
+          (if (contains? seen a)
+            true
+            (recur (inc i) (conj seen a))))))))
+
 (defn- build-common-merge-arrays
   "Build merge arrays shared between temporal and non-temporal dispatchers.
    Returns [merge-v-ground merge-v-vals merge-anti merge-eq-v merge-eq-tx]."
@@ -1564,8 +1584,21 @@
       Peek-ahead handles the history cartesian: a singleton entity (next scan datom
       is a different eid) emits directly while walking the cursor (single touch); a
       repeated entity (next scan datom is the same eid — multiple name × age
-      versions) materializes the matched datoms into a small replay buffer once,
-      then replays it for each repeat without moving the cursor."
+      versions) materializes the datoms into a small replay buffer once, then
+      replays it for each repeat without moving the cursor.
+
+      The buffer is shared by every scan datom of the entity, so WHAT it may hold
+      depends on whether the merge's equality obligations read the scan datom.
+      With no such obligation (`eq-none`, or `eq-self-v`, which reads only the
+      merge datom) the match set is a function of the entity alone and the buffer
+      can be pre-filtered once. An obligation naming a scan slot (`eq-scan-v`,
+      `eq-scan-tx`, …) makes the match set vary per scan datom — over history one
+      entity has MANY scan datoms — so the buffer then holds the entity's raw
+      version list and the predicate is re-applied on every replay. Pre-filtering
+      it would freeze the first scan datom's matches and replay them for the rest:
+      `[?e :p ?x ?t] [?e :p ?y ?t]` lost every ?y from a later version, and
+      `[?e :p ?x ?t] [?e :p ?x ?u]` invented rows pairing ?x with the first
+      version's transactions."
      [eavt-pss slice ground-filter strict-filter
       probe-set probe-datom-field
       collect-set collect-datom-field collect-merge-idx
@@ -1590,6 +1623,10 @@
            eq-tx (aget merge-eq-tx 0)
            added-filter (aget merge-added-filter 0)
            ^PersistentSortedSet$ForwardCursor cur (aget temporal-cursors 0)
+           ;; Does either obligation read a field of the SCAN datom? Codes >= 0
+           ;; name scan-e/a/v/tx (4+ names an earlier merge, unreachable at
+           ;; n-merges=1); eq-none (-1) and eq-self-v (-2) do not.
+           scan-dep? (or (>= (int eq-v) 0) (>= (int eq-tx) 0))
            buf (java.util.ArrayList.)]
        (when-let [^java.util.Iterator it (some-> ^Iterable slice .iterator)]
          (loop [^Datom cur-d (when (.hasNext it) (.next it))
@@ -1605,9 +1642,12 @@
                    (if (== eid buffer-eid)
                      ;; replay buffer (same entity, cursor already consumed)
                      (do (dotimes [bi (.size buf)]
-                           (aset merge-datoms 0 ^Datom (.get buf bi))
-                           (emit-tuple scan-d collect-set collect-datom-field collect-merge-idx merge-datoms
-                                       n-find find-source const-vals result-list))
+                           (let [^Datom md (.get buf bi)]
+                             (when (or (not scan-dep?)
+                                       (temporal-merge-datom-match? md eid ra vg? vgv eq-v eq-tx scan-d temporal-tx-filter added-filter merge-datoms))
+                               (aset merge-datoms 0 md)
+                               (emit-tuple scan-d collect-set collect-datom-field collect-merge-idx merge-datoms
+                                           n-find find-source const-vals result-list))))
                          (recur nxt-d buffer-eid))
                      ;; advance cursor to this entity
                      (let [probe (datom eid ra (when vg? vgv) tx0)
@@ -1617,13 +1657,19 @@
                          (do (.clear buf)
                              (loop [^Datom md d0]
                                (when (and md (== (.-e md) eid) (= (.-a md) ra))
-                                 (when (temporal-merge-datom-match? md eid ra vg? vgv eq-v eq-tx scan-d temporal-tx-filter added-filter merge-datoms)
+                                 ;; scan-dep? → keep the raw version list; the
+                                 ;; predicate is re-applied per scan datom below.
+                                 (when (or scan-dep?
+                                           (temporal-merge-datom-match? md eid ra vg? vgv eq-v eq-tx scan-d temporal-tx-filter added-filter merge-datoms))
                                    (.add buf md))
                                  (recur (.next cur))))
                              (dotimes [bi (.size buf)]
-                               (aset merge-datoms 0 ^Datom (.get buf bi))
-                               (emit-tuple scan-d collect-set collect-datom-field collect-merge-idx merge-datoms
-                                           n-find find-source const-vals result-list))
+                               (let [^Datom md (.get buf bi)]
+                                 (when (or (not scan-dep?)
+                                           (temporal-merge-datom-match? md eid ra vg? vgv eq-v eq-tx scan-d temporal-tx-filter added-filter merge-datoms))
+                                   (aset merge-datoms 0 md)
+                                   (emit-tuple scan-d collect-set collect-datom-field collect-merge-idx merge-datoms
+                                               n-find find-source const-vals result-list))))
                              (recur nxt-d eid))
                          ;; singleton -> direct emit (single touch)
                          (do (loop [^Datom md d0]
@@ -2015,7 +2061,11 @@
         ;; non-sorted card-one group, and only reachable here for the card-one,
         ;; non-anti, non-optional shape sorted-merge itself requires).
         fused-path (if (and (= fused-path :sorted-merge)
-                            (cross-merge-eq? merge-eq-v merge-eq-tx))
+                            (or (cross-merge-eq? merge-eq-v merge-eq-tx)
+                                ;; …and the same walk cannot separate two clauses
+                                ;; that share an attribute — see
+                                ;; `repeated-merge-attr?`.
+                                (repeated-merge-attr? merge-attrs resolved-a)))
                      :per-cursor-merge
                      fused-path)
 
