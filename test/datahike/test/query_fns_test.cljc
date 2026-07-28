@@ -685,7 +685,6 @@
                             ['(>= ?a1 ?a2 ?a3)]])
                      db)))))))
 
-
 (deftest test-var-vs-var-predicate-not-pushed-into-index
   ;; A range/equality predicate over TWO variables is not an index bound. The
   ;; pushdown analysis used to treat an already-bound variable as a constant and
