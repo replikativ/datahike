@@ -1,4 +1,4 @@
-(ns datahike.query.eqcheck
+(ns datahike.test.query-eqcheck
   "Plan-level EQUALITY-OBLIGATION invariant checker (dev/test only).
 
    Datalog semantics: every occurrence of a variable denotes the SAME value.
@@ -33,14 +33,17 @@
   (:require
    [clojure.set]
    [datahike.query.analyze :as analyze]
-   [datahike.query.plan :as plan]))
+   [datahike.query.plan :as plan]
+   [datahike.query.plan-check :as plan-check]))
 
 ;; ---------------------------------------------------------------------------
 ;; Flags
 
 (def ^:dynamic *check-equalities?*
-  "When true, `maybe-check!` validates every plan built. Dev/test only —
-   mirrors the `*profile?*` precedent in datahike.query."
+  "When true, every plan the lowering pass builds is validated. Loading this
+   namespace installs the checker into `plan-check/*check-plan*`; this flag turns
+   it on. Both are needed, so merely having the namespace on the classpath costs
+   a nil test per plan."
   false)
 
 (def ^:dynamic *violation-handler*
@@ -550,3 +553,21 @@
           (throw (ex-info "Plan violates the equality-obligation invariant"
                           (assoc report :explain (vec (explain report)))))))))
   plan)
+
+;; ---------------------------------------------------------------------------
+;; Installation. Loading this namespace makes the checker AVAILABLE; it stays
+;; inert until `*check-equalities?*` is bound. `plan-check/*check-plan*` is what
+;; `query/get-or-create-plan` consults to bypass the plan cache, so it must be
+;; non-nil whenever the check could fire — hence the flag is read inside the
+;; installed fn rather than gating installation.
+
+(alter-var-root #'plan-check/*check-plan*
+                (constantly
+                 (fn [plan]
+                   (when *check-equalities?*
+                     (let [report (check-plan plan)]
+                       (when-not (:ok? report)
+                         (if *violation-handler*
+                           (*violation-handler* (assoc report :plan plan))
+                           (throw (ex-info "Plan violates the equality-obligation invariant"
+                                           (assoc report :explain (vec (explain report))))))))))))

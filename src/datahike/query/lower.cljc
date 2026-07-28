@@ -19,7 +19,7 @@
    [datahike.db.interface :as dbi]
    [datahike.index.interface :as di]
    [datahike.query.analyze :as analyze]
-   [datahike.query.eqcheck :as eqcheck]
+   [datahike.query.plan-check :as plan-check]
    [datahike.query.estimate :as estimate]
    [datahike.query.ir :as ir]
    [datahike.query.logical :as logical]
@@ -1207,8 +1207,8 @@
         ]
 
     ;; Dev/test invariant gate: implied-equalities(plan) == enforced-equalities(plan).
-    ;; No-op unless eqcheck/*check-equalities?* is bound (cf. query/*profile?*).
-    (eqcheck/maybe-check!
+    ;; No-op unless a checker is installed — see datahike.query.plan-check.
+    (plan-check/maybe-check!
      {:ops ordered-ops
       :consumed-preds actual-consumed
       :classified classified
