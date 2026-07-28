@@ -867,6 +867,28 @@
 ;; ---------------------------------------------------------------------------
 ;; Main lowering pass
 
+(def ^:dynamic *check-plan*
+  "Function of one plan, called for every plan this pass builds, or nil.
+
+   The only production-side cost of plan checking: a nil test. The checker
+   itself is `datahike.test.query-eqcheck`, which lives under `test/` and
+   installs itself here on load, because it is a hand-derived MODEL of
+   `datahike.query.execute` that must be updated whenever an enforcement
+   mechanism there changes — a maintenance liability worth keeping out of the
+   shipped jar.
+
+   Note the check fires on plan CREATION, and `datahike.query` caches plans, so
+   a caller enabling it must also clear that cache or it will silently examine
+   nothing. `datahike.test.query-eqcheck/with-plan-checks` does both."
+  nil)
+
+(defn- maybe-check!
+  "Hand `plan` to the installed checker, if any. Returns `plan` either way."
+  [plan]
+  (when-let [f *check-plan*]
+    (f plan))
+  plan)
+
 (defn lower
   "Lower a LogicalPlan to a physical plan map.
 
@@ -1205,9 +1227,12 @@
         ;; const fold — deterministically, and naming the offending clause.
         ]
 
-    {:ops ordered-ops
-     :consumed-preds actual-consumed
-     :classified classified
-     :group-joins group-joins
-     :has-passthrough? (boolean (some #(= :passthrough (:op %)) ordered-ops))
-     :structurally-fusable? (plan/structurally-fusable? ordered-ops)}))
+    ;; Dev/test invariant gate: implied-equalities(plan) == enforced-equalities(plan).
+    ;; No-op unless a checker is installed (see `*check-plan*`).
+    (maybe-check!
+     {:ops ordered-ops
+      :consumed-preds actual-consumed
+      :classified classified
+      :group-joins group-joins
+      :has-passthrough? (boolean (some #(= :passthrough (:op %)) ordered-ops))
+      :structurally-fusable? (plan/structurally-fusable? ordered-ops)})))

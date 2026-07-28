@@ -685,3 +685,52 @@
                             ['(>= ?a1 ?a2 ?a3)]])
                      db)))))))
 
+(deftest test-var-vs-var-predicate-not-pushed-into-index
+  ;; A range/equality predicate over TWO variables is not an index bound. The
+  ;; pushdown analysis used to treat an already-bound variable as a constant and
+  ;; hand the SYMBOL to the index: an AVET slice from '?y to '?y matches nothing,
+  ;; and a range operator casts it to Number and throws.
+  ;;
+  ;; Nothing is lost by declining — a variable bound to a SINGLE value is
+  ;; const-folded into the clause before planning, so `[(> ?s ?min)]` with a
+  ;; scalar `:in` still pushes down (asserted at the end). A variable that
+  ;; survives to the pushdown analysis holds a different value per row, which is
+  ;; exactly what an index bound cannot express.
+  (let [db (d/db-with (db/empty-db {:e {:db/valueType :db.type/ref
+                                        :db/cardinality :db.cardinality/many}})
+                      [{:db/id 100 :e [101]}
+                       {:db/id 101 :e [102]}
+                       {:db/id 102 :e [102]}])]   ;; only 102 links to itself
+    (testing "= against a collection-bound :in var"
+      (is (= #{[100] [101] [102]}
+             (d/q '[:find ?x :in $ [?y ...] :where [?x :e ?v] [(= ?y ?v)]]
+                  db [101 102]))))
+
+    (testing "a var/var predicate inside a negation still constrains"
+      ;; 102 is excluded because it DOES have a self-edge
+      (is (= #{[100] [101]}
+             (d/q '[:find ?a :where [?a :e _] (not-join [?a] [?a :e ?b] [(= ?a ?b)])] db))))
+
+    (testing "a var/var predicate inside a disjunction still matches"
+      (is (= #{[102]}
+             (d/q '[:find ?a :where [?a :e _]
+                    (or-join [?a] (and [?a :e ?b] [(= ?a ?b)]))] db))))
+
+    (testing "a RANGE predicate over two vars inside a negation does not throw"
+      ;; used to be: ClassCastException, Symbol cannot be cast to Number
+      (is (= #{[102]}
+             (d/q '[:find ?a :where [?a :e _] (not-join [?a] [?a :e ?b] [(> ?b ?a)])] db))))
+
+    (testing "the same predicate at top level was always correct"
+      (is (= #{[102]} (d/q '[:find ?a :where [?a :e ?b] [(= ?a ?b)]] db)))))
+
+  (testing "a scalar :in var is const-folded, so its pushdown is preserved"
+    (let [db (d/db-with (db/empty-db {:salary {:db/index true}})
+                        (vec (for [i (range 1 50)] {:db/id i :salary (* i 100)})))]
+      (is (= (d/q '[:find ?e :where [?e :salary ?s] [(> ?s 2000)]] db)
+             (d/q '[:find ?e :in $ ?min :where [?e :salary ?s] [(> ?s ?min)]] db 2000)))
+      #?(:clj
+         (is (re-find #"(?i)pushdown|from-v|>="
+                      (str (d/explain '[:find ?e :in $ ?min
+                                        :where [?e :salary ?s] [(> ?s ?min)]] db 2000)))
+             "scalar :in predicate must still reach the index")))))

@@ -192,19 +192,23 @@
                    (not (free-var? arg1)))
               [arg2 arg1 true]
 
-              ;; One var is bound from earlier, treat as const
-              (and (free-var? arg1)
-                   (free-var? arg2)
-                   (contains? bound-vars arg1)
-                   (not (contains? bound-vars arg2)))
-              [arg2 arg1 true]
-
-              (and (free-var? arg1)
-                   (free-var? arg2)
-                   (contains? bound-vars arg2)
-                   (not (contains? bound-vars arg1)))
-              [arg1 arg2 false]
-
+              ;; A var-vs-var comparison is NOT pushable. These two cases used
+              ;; to treat a "bound" var as a constant and hand the SYMBOL to
+              ;; `pushdown-to-bounds`, which wrote it straight into the index
+              ;; bounds: an AVET slice from '?y to '?y matches nothing, and a
+              ;; range op casts it to Number and throws
+              ;; `class clojure.lang.Symbol cannot be cast to class
+              ;; java.lang.Number`. It reached users three ways —
+              ;;   [:find ?x :in $ [?y ...] :where [?x :e ?v] [(= ?y ?v)]]  -> #{}
+              ;;   (not-join [?a] [?a :e ?b] [(= ?a ?b)])   -> negation ignored
+              ;;   (not-join [?a] [?a :e ?b] [(> ?b ?a)])   -> ClassCastException
+              ;; Nothing is lost by declining: a var bound to a single value is
+              ;; const-FOLDED into the clause before planning, so the ordinary
+              ;; `(op ?var const)` branch above already covers `[(> ?s ?min)]`
+              ;; with a scalar `:in`. A var that survives to here is bound to a
+              ;; DIFFERENT value per row — a collection binding, an earlier
+              ;; pattern's variable, an enclosing scope's — which is precisely
+              ;; what an index bound cannot express.
               :else nil)]
         (when var-sym
           ;; Find pattern clauses where var-sym is the value variable
