@@ -1133,3 +1133,54 @@ we query all (parent, child) pairs."
       (is (= (vec (range n)) (vec (take 100 row)))))
     (testing "round-trip through (vec (take k row)) — the pgwire pattern"
       (is (= (vec (range 30)) (vec (take 30 row)))))))
+
+(deftest test-self-join-in-nested-scopes
+  ;; A variable repeated inside ONE clause is a self-join wherever that clause
+  ;; sits. Normalisation originally covered only top-level :where patterns and
+  ;; plain `not` bodies; these scopes were excluded for reasons that no longer
+  ;; hold, and each was silently wrong.
+  (let [db (d/db-with (db/empty-db {:e {:db/valueType :db.type/ref
+                                        :db/cardinality :db.cardinality/many}
+                                    :f {:db/valueType :db.type/ref
+                                        :db/cardinality :db.cardinality/many}})
+                      [{:db/id 1 :e [1 2] :f [3]}     ;; 1 links to itself
+                       {:db/id 2 :e [3] :f [1 4]}
+                       {:db/id 3 :e [3] :f [2]}       ;; 3 links to itself
+                       {:db/id 4 :e [1]}])]
+
+    (testing "inside a not-join body"
+      ;; entities with an :e edge but NO self-edge
+      (is (= #{[2] [4]}
+             (d/q '[:find ?a :where [?a :e _] (not-join [?a] [?a :e ?a])] db))))
+
+    (testing "inside an or-join branch"
+      ;; The rewritten branch must stay ONE form: every element after the var
+      ;; vector is a separate ALTERNATIVE, so appending the equality beside the
+      ;; pattern would turn one conjunctive branch into two disjuncts and match
+      ;; strictly more than was asked.
+      (is (= #{[1] [3]}
+             (d/q '[:find ?a :where [?a :e _] (or-join [?a] [?a :e ?a])] db))))
+
+    (testing "inside a plain or branch"
+      ;; `or` requires every branch to bind the same vars, so a branch that gains
+      ;; a fresh variable is promoted to `or-join` over the ORIGINAL free vars.
+      (is (= #{[1] [3]}
+             (d/q '[:find ?a :where [?a :e _] (or [?a :e ?a])] db))))
+
+    (testing "inside a rule body — the scope where BOTH engines were wrong"
+      ;; Rules arrive as an `:in %` argument and never appear in :where, so
+      ;; normalising the query alone could not reach them. Neither engine could
+      ;; serve as the other's oracle here, which is why differential testing
+      ;; never flagged it.
+      (are [q rules expected] (= expected (set (d/q q db rules)))
+        '[:find ?a :in $ % :where (loopy ?a)]
+        '[[(loopy ?a) [?a :e ?a]]]
+        #{[1] [3]}
+
+        ;; the rule's own body may also be a negation
+        '[:find ?a :in $ % :where [?a :e _] (unlooped ?a)]
+        '[[(unlooped ?a) (not [?a :e ?a])]]
+        #{[2] [4]}))
+
+    (testing "a repeated argument in a function clause is still not a self-join"
+      (is (= #{[2]} (d/q '[:find ?y :in $ [?x ...] :where [(+ ?x ?x) ?y]] db [1]))))))

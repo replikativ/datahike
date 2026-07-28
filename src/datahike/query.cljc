@@ -111,16 +111,23 @@
 ;; java.util.HashSet), so the self-join agrees with an ordinary join on the
 ;; same values — scale-sensitive for BigDecimal, identity for byte arrays.
 ;;
-;; Scope — data patterns in :where, and in plain `not` bodies. NOT rewritten:
+;; Scope — data patterns anywhere in :where, including inside `not`, `not-join`,
+;; `or` and `or-join` bodies. NOT rewritten:
 ;;   * function/predicate clauses `[(f ?x ?x) ?y]` — a repeated var there is an
 ;;     ordinary argument, not a self-join;
-;;   * `not-join` / `or` / `or-join` bodies — the base engine already unifies
-;;     repeated vars there, and the planner mishandles var/var predicates
-;;     inside those scopes (a PRE-EXISTING bug, reproducible without any
-;;     rewrite, e.g. `(not-join [?a] [?a :e ?b] [(= ?a ?b)])`), so rewriting
-;;     into them would trade one wrong planner answer for another;
-;;   * rule bodies — rules arrive as `:in %` arguments, not as :where clauses,
-;;     and never reach this seam.
+;;   * rule bodies — rules arrive as `:in %` arguments, not as :where clauses.
+;;
+;; The negation/disjunction scopes were originally excluded because the planner
+;; mishandled var/var predicates inside them — it pushed the outer variable into
+;; the index bounds as a literal, so an injected `(= ?a ?a__1)` made the negation
+;; stop excluding anything. That was a pre-existing bug, reproducible with a
+;; hand-written predicate and no rewrite at all, and it is fixed (a var-vs-var
+;; comparison is never an index bound), so the rewrite can reach them now.
+;;
+;; A plain `or` is PROMOTED to `or-join` over the branches' original free vars
+;; when a branch is rewritten: every branch of an `or` must bind the same vars,
+;; and a fresh variable would break that. Declaring the ORIGINAL vars keeps the
+;; scope the user wrote and confines the fresh one to its branch.
 
 (defn- repeated-var-pattern?
   "Does `pattern` mention some free variable more than once? This runs on EVERY
@@ -166,8 +173,12 @@
            (cond
              (source-prefixed-clause? clause) (repeated-var-pattern? (vec (rest clause)))
              (data-pattern-clause? clause)    (repeated-var-pattern? clause)
-             (and (seq? clause) (#{'not 'and} (first clause)))
+             (and (seq? clause) (#{'not 'and 'or} (first clause)))
              (where-has-repeated-var? (rest clause))
+             ;; `(not-join [vars] body…)` / `(or-join [vars] branches…)` — the
+             ;; second element is the declared var vector, not a clause.
+             (and (seq? clause) (#{'not-join 'or-join} (first clause)))
+             (where-has-repeated-var? (drop 2 clause))
              :else false))
          clauses)))
 
@@ -200,7 +211,25 @@
                                                  (conj preds [(list '= x nv)])))
             :else                       (recur (inc i) (conj seen x) (conj out x) preds)))))))
 
-(declare normalize-repeated-var-clauses)
+(defn- clause-free-vars
+  "Free variables mentioned anywhere in `form`. Used to promote a plain `or` to
+   an `or-join`: every branch of an `or` binds the same vars, so the vars it
+   mentions ARE the ones that unify with the surrounding query."
+  [form]
+  (into #{} (comp (filter symbol?) (filter analyze/free-var?))
+        (tree-seq coll? seq form)))
+
+(declare normalize-repeated-var-clauses normalize-repeated-var-clause)
+
+(defn- normalize-branch
+  "Rewrite one branch of an `or` / `or-join`, keeping it a SINGLE form. A branch
+   that expands into several clauses is wrapped in `and`, because the elements of
+   a disjunction are alternatives, not a conjunction."
+  [branch fresh!]
+  (let [out (normalize-repeated-var-clause branch fresh!)]
+    (if (= 1 (count out))
+      (first out)
+      (cons 'and out))))
 
 (defn- normalize-repeated-var-clause
   "Returns the SEQ of clauses that replaces `clause`."
@@ -224,10 +253,64 @@
     (and (seq? clause) (#{'not 'and} (first clause)))
     [(cons (first clause) (normalize-repeated-var-clauses (rest clause) fresh!))]
 
+    ;; `(not-join [vars] body…)`: the body is a CONJUNCTION, so the rewritten
+    ;; pattern and its equality can sit side by side. The declared var vector is
+    ;; an interface, not a pattern — a fresh var is body-local and must not join
+    ;; it.
+    (and (seq? clause) (= 'not-join (first clause)))
+    [(concat (take 2 clause)
+             (normalize-repeated-var-clauses (drop 2 clause) fresh!))]
+
+    ;; `(or-join [vars] branches…)`: every element after the vector is a separate
+    ;; BRANCH, so a rewritten branch must stay ONE form — appending the equality
+    ;; alongside would turn one conjunctive branch into two alternatives, which
+    ;; matches strictly more than the user asked for.
+    (and (seq? clause) (= 'or-join (first clause)))
+    [(concat (take 2 clause)
+             (map #(normalize-branch % fresh!) (drop 2 clause)))]
+
+    ;; A plain `or` becomes an `or-join` over the free vars it already had, so
+    ;; the fresh variable stays inside its branch instead of joining the set
+    ;; every branch is required to bind.
+    (and (seq? clause) (= 'or (first clause)))
+    (let [branches (rest clause)
+          rewritten (mapv #(normalize-branch % fresh!) branches)]
+      (if (= (vec branches) rewritten)
+        [clause]
+        [(concat (list 'or-join (vec (clause-free-vars branches))) rewritten)]))
+
     :else [clause]))
 
 (defn- normalize-repeated-var-clauses [clauses fresh!]
   (into [] (mapcat #(normalize-repeated-var-clause % fresh!)) clauses))
+
+(defn- normalize-rule-bodies
+  "Rewrite repeated vars in rule BODIES. Rules arrive as the argument bound to
+   `%`, never as `:where` clauses, so this is the only place the seam can reach
+   them — and it is the one scope where BOTH engines get a self-join wrong, so no
+   differential test can flag it.
+
+   Only bodies are rewritten. A repeated var in a rule HEAD — `[(pair ?a ?a) …]`
+   — is a constraint between the caller's arguments, which the rule-invocation
+   machinery already handles, not a pattern position.
+
+   Returns `rules` unchanged (identical object) when no body repeats a var."
+  [rules taken]
+  (if-not (sequential? rules)
+    rules
+    (let [needs? (some (fn [rule]
+                         (and (sequential? rule)
+                              (where-has-repeated-var? (rest rule))))
+                       rules)]
+      (if-not needs?
+        rules
+        (let [fresh! (fresh-var-fn (into taken (filter symbol?) (tree-seq coll? seq rules)))]
+          (mapv (fn [rule]
+                  (if (sequential? rule)
+                    (into [(first rule)]
+                          (normalize-repeated-var-clauses (rest rule) fresh!))
+                    rule))
+                rules))))))
 
 (defn normalize-repeated-vars
   "Rewrite every data pattern that mentions a variable twice into a pattern of
@@ -241,6 +324,21 @@
             fresh! (fresh-var-fn taken)]
         (assoc query :where (normalize-repeated-var-clauses where fresh!)))
       query)))
+
+(defn- normalize-rules-in-args
+  "Apply `normalize-rule-bodies` to whichever argument is bound to `%`."
+  [query args]
+  (let [in (vec (:in query))
+        idx (first (keep-indexed (fn [i x] (when (= '% x) i)) in))]
+    ;; `args` arrives as a seq from the variadic arity, so index it through a
+    ;; vector rather than requiring one.
+    (if (and idx (sequential? args) (< idx (count args)))
+      (let [av (vec args)
+            taken (into #{} (filter symbol?) (tree-seq coll? seq query))
+            rules (nth av idx)
+            rules' (normalize-rule-bodies rules taken)]
+        (if (identical? rules rules') args (assoc av idx rules')))
+      args)))
 
 (defn normalize-q-input
   "Turns input to q into a map with :query and :args fields.
@@ -258,7 +356,10 @@
                arg-inputs)
         extra-ks [:offset :limit :order-by :stats? :count-fns? :settings :cancel]]
     (-> (cond-> {:query (normalize-repeated-vars (apply dissoc query extra-ks))
-                 :args args}
+                 ;; Rules ride in as the argument bound to `%`; normalise their
+                 ;; bodies too, or a self-join inside a rule stays wrong on BOTH
+                 ;; engines.
+                 :args (normalize-rules-in-args query args)}
           (map? query-input)
           (merge (select-keys query-input extra-ks)))
         auto-inject-built-in-rules)))
