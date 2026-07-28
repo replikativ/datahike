@@ -3695,17 +3695,9 @@
          ;; `[(reach ?a ?b) …]` joined the caller's ?a (nick strings) with the
          ;; rule's ?a (entity ids) and returned nothing at all.
          ;;
-         ;; This filter caught only HALF of that fault: a caller relation over a
-         ;; non-head var was dropped, but one whose vars are ALL head vars still
-         ;; got in — the same capture, and the cause of #911. It is NOT the
-         ;; rule's "declared interface": on the recursive path the head-var
-         ;; names are INTERNAL (branches are renamed to the rule's own declared
-         ;; head vars, `lower.cljc` :463-486, and mapped onto the call args only
-         ;; after the fixpoint), so a caller relation sharing those names is
-         ;; never the caller's to contribute. The recursive path therefore hands
-         ;; in a ctx with no rels at all, and what survives here is only what
-         ;; that path injects deliberately: the magic-set demand relation and
-         ;; the pass-through relations for head vars no branch body binds.
+         ;; Relations over head vars only are kept: that is the rule's declared
+         ;; interface — the magic-set demand relation and the pass-through
+         ;; relations for head vars no branch body binds.
          head-var? (set output-vars)
          ctx (rel/sub-context ctx (filterv #(every? head-var? (keys (:attrs %)))
                                            (:rels ctx)))
@@ -3997,38 +3989,7 @@
           (#?(:clj legacy/solve-rule :cljs (rel/get-legacy-fn :solve-rule)) ctx clause)))
       ;; Semi-naive fixpoint over ALL SCC rules
       ;; Uses mutable HashSet for deduplication (avoids PersistentVector allocation)
-      (let [;; The fixpoint computes the rule's relation INDEPENDENTLY of the call
-            ;; site (constant call-args are applied as a post-filter, and the
-            ;; caller joins on the output vars afterwards). So none of the
-            ;; caller's relations may reach a branch body — not even one over a
-            ;; var that happens to be spelled like a head var.
-            ;;
-            ;; On this path `rename-branch-vars` renames every branch to the
-            ;; rule's OWN declared head vars — not to the call args, which may be
-            ;; constants (`lower.cljc` :463-486) — so those names are INTERNAL,
-            ;; and any caller relation spelled with them collides. The call site
-            ;; need not even mention the variable: `[?x :sym "a"] (r ?p ?q)`
-            ;; against `[(r ?x ?y) …]` collides on the DECLARATION's ?x.
-            ;; `execute-branch-plans` used to keep every caller relation all of
-            ;; whose vars are head vars, which is exactly such a relation, and it
-            ;; was hash-joined into the BASE branch — restricting the ACCUMULATOR,
-            ;; not merely the search. Three wrong answers came out of that one
-            ;; mechanism (#911): a right-recursive body's second hop read an
-            ;; accumulator holding only pairs starting at `a` and the fixpoint
-            ;; stopped after one hop (a strict SUBSET, no error); a caller
-            ;; relation over TWO head-var names joined the rule's whole relation
-            ;; against unrelated values and it returned NOTHING; and at a second
-            ;; call site the first call's result — whose attrs are head-var names
-            ;; — restricted the next rule's accumulator, so `(r ?x ?y) (s ?x ?b)`
-            ;; degenerated `s` into `r ⋈ s`. Restricting the accumulator is sound
-            ;; only with magic-set demand propagation, which is built explicitly
-            ;; below and derives its demand from the rule, not the caller.
-            ;;
-            ;; Head vars a branch body cannot bind are still supplied from the
-            ;; call site — via `pass-rels`, resolved above against the caller's
-            ;; ctx (#897) — so the rule's declared interface is unaffected.
-            body-ctx (assoc ctx :rels [])
-            ;; Magic set detection — only for single-rule SCCs with binary head vars
+      (let [;; Magic set detection — only for single-rule SCCs with binary head vars
             ;; and at least one ground call-arg
             magic-info (compute-magic-info call-args head-vars scc-rule-names
                                            magic-demand-sound?)
@@ -4075,11 +4036,11 @@
                                   ;; Magic, any other base shape: demand-restricted base branches
                                           (and magic-demand (= rn rule-name))
                                           (or (magic-base-scan-general db base-plans head-vars magic-ground-pos
-                                                                       seed-batch body-ctx pass-rels)
+                                                                       seed-batch ctx pass-rels)
                                               (rel/->Relation (zipmap head-vars (range)) []))
                                   ;; No magic: full base branch plan execution
                                           :else
-                                          (execute-branch-plans db base-plans body-ctx head-vars pass-rels))
+                                          (execute-branch-plans db base-plans ctx head-vars pass-rels))
                                delta-rel (rel-dedup-into! base-rel head-vars (get seen-sets rn))]
                   ;; Propagate magic demand from base results
                            (when (and magic-demand (= rn rule-name))
@@ -4124,7 +4085,7 @@
                                             :delta (:delta-rel s)
                                             :output-vars hv}])))
                               states)
-                        base-aug-ctx (assoc body-ctx :rule-accumulators acc-map)
+                        base-aug-ctx (assoc ctx :rule-accumulators acc-map)
                         ;; Push the accumulated demand into the recursive scan so
                         ;; the ground var is pruned BEFORE expansion (not filtered
                         ;; after). O(1) to wrap the incrementally grown tuples.
@@ -4154,7 +4115,7 @@
                                   ;; General demand-restricted base for newly demanded entities
                                              (and magic-demand (= rn rule-name))
                                              (magic-base-scan-general db base-plans head-vars magic-ground-pos
-                                                                      batch body-ctx pass-rels))
+                                                                      batch ctx pass-rels))
                                   ;; Execute recursive clause versions
                                   ;; Optimization: delta-driven expansion for simple binary rules
                                   ;; Instead of full index scan + hash-join, iterate delta tuples

@@ -519,26 +519,6 @@
                           ;; as free (worst-case attribute-total estimate)
                           ;; until the body's own producer op binds them with
                           ;; a known card.
-                          ;;
-                          ;; …but the OUTER scope's bound vars are not the
-                          ;; branch's to assume either. A body is renamed so the
-                          ;; only names it can share with the caller are the head
-                          ;; vars, and on this path those are the RULE's own
-                          ;; declared ones (see `rename-branch-vars` below) — an
-                          ;; outer var spelled the same is a DIFFERENT variable.
-                          ;; Believing it bound put `[(str ?y) ?t]` ahead of the
-                          ;; pattern that binds ?y, which raised "Cannot resolve
-                          ;; any more clauses" at execute time once the branch
-                          ;; stopped inheriting the caller's relations (#911).
-                          ;; This is the plan-time half of that same capture.
-                          ;;
-                          ;; What the call site DOES supply is the pass-through
-                          ;; head vars (#897) — and those are known only after
-                          ;; planning, since they are the head vars the body
-                          ;; turns out not to produce. Hence two passes below:
-                          ;; plan once to learn them, then re-plan believing
-                          ;; exactly those (and nothing else) are bound. Only the
-                          ;; second plan is kept.
                                    branch-bound bound-vars
                                    ;; Rule branch bodies go through the
                                    ;; shared IR-pipeline helper — same
@@ -578,19 +558,9 @@
                                          (seq missing) (assoc :pass-through-vars missing))))
                                    plan-branch (fn plan-branch
                                                  [branch-clauses guarded]
-                                                 ;; Pass 1 only to learn which head vars the body
-                                                 ;; produces itself; its plan is discarded unless
-                                                 ;; the bound set turns out to be right already.
-                                                 (let [p0 (plan-via-ir db branch-clauses branch-bound
-                                                                       rules guarded)
-                                                       produced (plan/branch-produced-vars p0)
-                                                       pass-through (into #{} (remove produced)
-                                                                          free-call-args)]
-                                                   (with-pass-through
-                                                     (if (= pass-through (set branch-bound))
-                                                       p0
-                                                       (plan-via-ir db branch-clauses pass-through
-                                                                    rules guarded)))))
+                                                 (with-pass-through
+                                                   (plan-via-ir db branch-clauses branch-bound
+                                                                rules guarded)))
                                    base-ps (mapv (fn [b]
                                                    (let [renamed (rename-branch-vars b free-call-args seqid db)]
                                                      (plan-branch (vec renamed) nil)))
