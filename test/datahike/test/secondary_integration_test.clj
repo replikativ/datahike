@@ -673,3 +673,46 @@
                    '[:find (count-distinct ?x) :where [?e :num/v ?x]]]]
           (let [[ok? c r] (agree? (mk [10 10 40]) q)]
             (is ok? (str q " — columnar " (pr-str c) " vs reference " (pr-str r)))))))))
+
+(deftest test-building-index-is-not-queried
+  (testing "an index that has not been backfilled must not answer"
+    ;; A schema-declared secondary index is created with status :building and
+    ;; backfilled by the WRITER. Build a db with `d/db-with` and there is no
+    ;; writer, so it stays :building forever and accumulates only the datoms of
+    ;; transactions made AFTER it was declared. Querying it is a silent wrong
+    ;; answer, not a stale one — and the aggregate path never checked the status.
+    (let [schema {:num/v {}
+                  :idx/analytics {:db.secondary/type :stratum
+                                  :db.secondary/attrs [:num/v]}}
+          q '[:find (min ?x) :where [?e :num/v ?x]]
+          agree? (fn [db]
+                   (binding [q/*query-result-cache?* false]
+                     [(binding [q/*disable-planner* false] (d/q q db))
+                      (binding [q/*disable-planner* true] (d/q q db))]))]
+
+      (testing "declared and populated through db-with — the broken route"
+        (let [db (d/db-with (db/empty-db schema)
+                            [{:db/id 1 :num/v 10} {:db/id 2 :num/v 30}])
+              [planner reference] (agree? db)]
+          (is (= :building (get-in db [:schema :idx/analytics :db.secondary/status]))
+              "no writer means the backfill never runs")
+          (is (= reference planner) "must not answer from a partial index")
+          (is (= [[10]] planner))
+
+          (testing "…and still not after a further transaction"
+            ;; the index now holds only the LATER datom, so an unguarded read
+            ;; answered 50
+            (let [db2 (d/db-with db [{:db/id 3 :num/v 50}])
+                  [p2 r2] (agree? db2)]
+              (is (= r2 p2))
+              (is (= [[10]] p2))))))
+
+      (testing "a hand-assembled index is complete by construction and is used"
+        (let [e (db/empty-db schema)
+              idx (sec/create-index :stratum {:attrs #{:num/v}} e)
+              db (-> (assoc e :secondary-indices {:idx/analytics idx})
+                     (d/db-with [{:db/id 1 :num/v 10} {:db/id 2 :num/v 30}]))
+              [planner reference] (agree? db)]
+          (is (nil? (get-in db [:schema :idx/analytics :db.secondary/status])))
+          (is (= reference planner))
+          (is (= [[10]] planner)))))))

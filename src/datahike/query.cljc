@@ -3786,8 +3786,21 @@
                  ;; Find best IColumnarAggregate index — prefer full coverage, accept partial
                  sec-agg-protocol sec/IColumnarAggregate
                  indexed-attrs-fn sec/-indexed-attrs
-                 agg-indices (keep (fn [[_idx-ident idx]]
-                                     (when (satisfies? sec-agg-protocol idx)
+                 ;; An index still BUILDING has not been backfilled, so it holds
+                 ;; only the datoms of transactions since it was declared —
+                 ;; answering from it is a silent wrong answer, not a stale one.
+                 ;; Backfill is the writer's job (`writing/…` sets :ready), so a
+                 ;; db built with `d/db-with` and no connection never leaves
+                 ;; :building: `(min ?x)` returned nil, then the second
+                 ;; transaction's minimum. `nil` status is the hand-assembled
+                 ;; index every existing test uses and is complete by
+                 ;; construction; :disabled matches the transact path's own check.
+                 index-usable? (fn [idx-ident]
+                                 (not (#{:building :disabled}
+                                       (get-in db [:schema idx-ident :db.secondary/status]))))
+                 agg-indices (keep (fn [[idx-ident idx]]
+                                     (when (and (satisfies? sec-agg-protocol idx)
+                                                (index-usable? idx-ident))
                                        (let [indexed (indexed-attrs-fn idx)
                                              covered (clojure.set/intersection all-attrs indexed)]
                                          {:idx idx :indexed indexed :covered covered
