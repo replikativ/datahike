@@ -308,8 +308,10 @@
 
    Mechanisms (all verified against execute.cljc on 8e5da567):
      :merge-entity-key    merge lookupGE is keyed on the scan datom's eid
-     :merge-check-scan-v  build-common-merge-arrays → merge-check-scan-v
-     :merge-check-scan-tx build-common-merge-arrays → merge-check-scan-tx
+     :merge-eq-slot       build-common-merge-arrays → merge-eq-slots: an int
+                          naming the binding slot an occurrence must equal, so
+                          ANY earlier scan/merge position can be the producer
+                          (superseded the merge-check-scan-v/tx booleans)
      :collapse-rels       rel/collapse-rels hash-joins on shared attrs
      :group-join-probe    the plan's :group-joins probe (direct path)
      :ctx-var-lookup      a predicate/function arg resolved by var name"
@@ -327,10 +329,15 @@
             m (cond
                 ;; merge's entity position ≡ the scan's entity: structural
                 (and merge? (= 0 cp) (= :scan pl) (= 0 pp)) :merge-entity-key
-                ;; merge value var ≡ scan value var
-                (and merge? (= 2 cp) (= :scan pl) (= 2 pp)) :merge-check-scan-v
-                ;; merge tx var ≡ scan tx var
-                (and merge? (= 3 cp) (= :scan pl) (= 3 pp)) :merge-check-scan-tx
+                ;; Every other intra-group value/tx equality is carried by
+                ;; `merge-eq-slots`, which assigns each occurrence the slot it
+                ;; must equal in one left-to-right walk over scan e/a/v/tx then
+                ;; each merge's v/tx. It therefore covers merge→scan (the old
+                ;; merge-check-scan-v/tx booleans) AND merge→merge, which those
+                ;; booleans could not express.
+                (and merge? (#{2 3} cp) (#{2 3} pp)
+                     (or (= :scan pl) (and (vector? pl) (= :merge (first pl)))))
+                :merge-eq-slot
                 :else nil)]
         {:rel m :direct m})
       ;; ---------------- inter-op ----------------
@@ -371,7 +378,15 @@
 (defn- direct-path-plausible?
   "Would this plan even be offered to execute-plan-direct? (Structural part of
    can-direct-fuse?; the runtime part — find-var coverage — is not visible from
-   the plan alone.)"
+   the plan alone.)
+
+   Must mirror `can-direct-fuse?`, INCLUDING its requirement that every implied
+   cross-group equality is actually enforced. Without that clause this reports
+   plans as direct-plausible which the gate now declines to the Relation engine,
+   producing :missing-direct findings for queries that are in fact correct —
+   i.e. the checker's model of the executor drifts the moment the executor is
+   fixed. That drift is why the executor should eventually CONSUME declared
+   obligations instead of the checker re-deriving them."
   [plan]
   (let [ops (vec (:ops plan))
         g-ops (filterv group-op? ops)
@@ -382,6 +397,11 @@
            (plan/structurally-fusable? ops))
          (not (:has-passthrough? plan))
          (seq g-ops)
+         ;; …and the gate's own cross-group clause. CALL it, never re-implement
+         ;; it: a private copy here would keep reporting "declined" if the real
+         ;; gate were ever weakened, and the checker would silently stop
+         ;; catching the very bug it exists for.
+         (plan/all-group-equalities-enforced? g-ops (:group-joins plan))
          ;; can-direct-fuse? rejects a plan whose recorded probe cannot resolve
          (every? (fn [[cg {:keys [producer-idx probe-vars]}]]
                    (let [c-op (nth ops (get oi-of cg))
