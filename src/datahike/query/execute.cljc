@@ -1072,8 +1072,8 @@
         ^objects merge-v-vals (aget ^objects merge-ctx 2)
         ^objects merge-anti (aget ^objects merge-ctx 3)
         ^objects merge-card-many (aget ^objects merge-ctx 4)
-        ^objects merge-eq-v (aget ^objects merge-ctx 5)
-        ^objects merge-eq-tx (aget ^objects merge-ctx 6)
+        ^ints merge-eq-v (aget ^objects merge-ctx 5)
+        ^ints merge-eq-tx (aget ^objects merge-ctx 6)
         ^objects merge-cursors (aget ^objects merge-ctx 7)
         ^objects merge-optional (when (> (alength ^objects merge-ctx) 8) (aget ^objects merge-ctx 8))
         ^objects merge-defaults (when (> (alength ^objects merge-ctx) 9) (aget ^objects merge-ctx 9))
@@ -1243,8 +1243,8 @@
            ^objects sorted-attrs-obj (aget ^objects sorted-ctx 3)
            ^objects merge-v-ground (aget ^objects sorted-ctx 4)
            ^objects merge-v-vals (aget ^objects sorted-ctx 5)
-           ^objects merge-eq-v (aget ^objects sorted-ctx 6)
-           ^objects merge-eq-tx (aget ^objects sorted-ctx 7)
+           ^ints merge-eq-v (aget ^objects sorted-ctx 6)
+           ^ints merge-eq-tx (aget ^objects sorted-ctx 7)
            ^objects merge-datoms merge-datoms
            ^ints find-source find-source
            ^objects const-vals const-vals]
@@ -1293,8 +1293,8 @@
         ^objects merge-v-vals (aget ^objects merge-ctx 2)
         ^objects merge-anti (aget ^objects merge-ctx 3)
         ^objects merge-cursors (aget ^objects merge-ctx 4)
-        ^objects merge-eq-v (aget ^objects merge-ctx 5)
-        ^objects merge-eq-tx (aget ^objects merge-ctx 6)
+        ^ints merge-eq-v (aget ^objects merge-ctx 5)
+        ^ints merge-eq-tx (aget ^objects merge-ctx 6)
         ^objects merge-optional (when (> (alength ^objects merge-ctx) 7) (aget ^objects merge-ctx 7))
         ^objects merge-defaults (when (> (alength ^objects merge-ctx) 8) (aget ^objects merge-ctx 8))
         ^objects merge-datoms merge-datoms
@@ -1414,7 +1414,12 @@
                          {}
                          [[0 eq-scan-e] [1 eq-scan-a] [2 eq-scan-v] [3 eq-scan-tx]])]
       (if (>= i n)
-        [(to-array (persistent! vs)) (to-array (persistent! txs))]
+        ;; PRIMITIVE int[]: `eq-ok?` does `(int code)` on every merge for every
+        ;; scanned datom, and on an Object[] that is an RT.intCast unbox in the
+        ;; hottest loop in the engine. A history scan sees every version of every
+        ;; datom, so the cost is multiplied there — it showed up as
+        ;; `History: name+age join` taking 19.1ms against 8.4ms before.
+        [(int-array (persistent! vs)) (int-array (persistent! txs))]
         (let [op (nth merge-ops i)
               c (:clause op)
               mv (get c 2)
@@ -1442,7 +1447,7 @@
   "True when some obligation references a MERGE slot rather than a scan slot.
    Such a group must be evaluated in merge declaration order, which rules out
    `execute-sorted-merge` (attribute-ordered walk)."
-  [^objects eq-v ^objects eq-tx]
+  [^ints eq-v ^ints eq-tx]
   (let [n (alength eq-v)]
     (loop [i 0]
       (and (< i n)
@@ -1570,8 +1575,8 @@
            ^objects merge-v-ground (aget ^objects temporal-ctx 1)
            ^objects merge-v-vals (aget ^objects temporal-ctx 2)
            ^objects merge-added-filter (aget ^objects temporal-ctx 5)
-           ^objects merge-eq-v (aget ^objects temporal-ctx 6)
-           ^objects merge-eq-tx (aget ^objects temporal-ctx 7)
+           ^ints merge-eq-v (aget ^objects temporal-ctx 6)
+           ^ints merge-eq-tx (aget ^objects temporal-ctx 7)
            ^objects temporal-cursors (aget ^objects temporal-ctx 11)
            temporal-tx-filter (aget ^objects temporal-ctx 13)
            scan-added-val (aget ^objects temporal-ctx 14)
@@ -1671,8 +1676,8 @@
         ^objects merge-anti (aget ^objects temporal-ctx 3)
         ^objects merge-card-many (aget ^objects temporal-ctx 4)
         ^objects merge-added-filter (aget ^objects temporal-ctx 5)
-        ^objects merge-eq-v (aget ^objects temporal-ctx 6)
-        ^objects merge-eq-tx (aget ^objects temporal-ctx 7)
+        ^ints merge-eq-v (aget ^objects temporal-ctx 6)
+        ^ints merge-eq-tx (aget ^objects temporal-ctx 7)
         ^objects merge-temporal-only (aget ^objects temporal-ctx 8)
         ^objects merge-cursor-cache (aget ^objects temporal-ctx 9)
         temporal-eavt-pss (aget ^objects temporal-ctx 10)
@@ -1945,8 +1950,8 @@
         ^objects merge-v-ground merge-v-ground*
         ^objects merge-v-vals merge-v-vals*
         ^objects merge-anti merge-anti*
-        ^objects merge-eq-v merge-eq-v*
-        ^objects merge-eq-tx merge-eq-tx*
+        ^ints merge-eq-v merge-eq-v*
+        ^ints merge-eq-tx merge-eq-tx*
         merge-card-many (to-array (mapv (fn [op]
                                           ;; History normally forces every merge card-many so all
                                           ;; versions surface. `get-else` (`:optional?`) is a
@@ -3247,7 +3252,7 @@
                                      merge-ops))
         merge-anti (to-array (mapv #(boolean (:anti? %)) merge-ops))
         ;; Shared-variable equality obligations (see the `eq-none` block).
-        [^objects merge-eq-v ^objects merge-eq-tx] (merge-eq-slots merge-ops clause)
+        [^ints merge-eq-v ^ints merge-eq-tx] (merge-eq-slots merge-ops clause)
         ;; Merge datoms of the CURRENT partial row, so an obligation can name an
         ;; earlier merge's slot. `process-merges` descends depth-first writing
         ;; slot mi before recursing, so slots < mi are always current.
