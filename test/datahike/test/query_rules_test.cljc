@@ -597,7 +597,21 @@
                         [(r ?x ?y) [?x :direct ?m] (r ?m ?y)]]
         reified-rules '[[(r ?x ?y) [?e :edge/from ?x] [?e :edge/to ?y]]
                         [(r ?x ?y) [?e :edge/from ?x] [?e :edge/to ?m] (r ?m ?y)]]
-        syms (fn [q rules] (set (d/q q db rules)))]
+        ;; Pin the engine, as the two right-recursive tests above do: the
+        ;; base-engine CI job sets DATAHIKE_QUERY_PLANNER=false, and the
+        ;; relational engine expands a right-recursive rule call before
+        ;; anything binds it, so it does not terminate on these shapes. This
+        ;; fix is in the planner, so the planner is what must answer here.
+        ;; Bounded on a future (clj) so a regression fails instead of hanging
+        ;; the job; cljs has the planner on by default and no futures.
+        syms (fn [q rules]
+               #?(:clj (let [f (future (binding [dq/*disable-planner* false]
+                                         (set (d/q q db rules))))
+                             r (deref f 15000 ::timeout)]
+                         (when (= r ::timeout) (future-cancel f))
+                         r)
+                  :cljs (binding [dq/*disable-planner* false]
+                          (set (d/q q db rules)))))]
     ;; The reified-edge encoding is asserted on the JVM only. On cljs the
     ;; planner answers a reified-edge recursive rule with a single all-nil
     ;; tuple — `(r ?a ?b)` over a→b→c→d gives `[[nil nil]]` where the base
@@ -682,9 +696,12 @@
                        [(reach ?anchor ?eps ?o)
                         (reach ?anchor ?eps ?s) [?s :direct ?o] [(contains? ?eps ?o)]]]]
         (is (= #{"b" "c"}
-               (set (d/q '[:find [?s ...] :in $ % ?eps
-                           :where (reach 1 ?eps ?n) [?n :sym ?s]]
-                         db pt-rules #{2 3})))
+               ;; pinned for the same reason as `syms` above — the recursive
+               ;; call leads this branch too
+               (binding [dq/*disable-planner* false]
+                 (set (d/q '[:find [?s ...] :in $ % ?eps
+                             :where (reach 1 ?eps ?n) [?n :sym ?s]]
+                           db pt-rules #{2 3}))))
             "a pass-through head var is still supplied by the caller")))
     (testing "a second call site does not inherit the first call's result"
       ;; `(r …)`'s result relation is itself spelled with head-var names, so it
