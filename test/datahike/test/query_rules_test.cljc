@@ -547,3 +547,172 @@
            "planner terminates on a right-recursive rule")
        (is (= #{2 3} (run '[:find [?b ...] :in $ % :where (rr 1 ?b)]))
            "…and with a ground argument"))))
+
+(deftest test-recursive-rule-does-not-inherit-caller-relations
+  ;; A rule's fixpoint computes the rule's relation INDEPENDENTLY of its call
+  ;; site — the caller joins on the output vars afterwards. Letting a caller
+  ;; relation into a branch body therefore does not merely restrict the search,
+  ;; it restricts the ACCUMULATOR, and a right-recursive body reading that
+  ;; accumulator for its second hop finds it empty and stops after one (#911).
+  ;;
+  ;; It is triggered by a NAME collision, but not with the call args: on the
+  ;; recursive path every branch is renamed to the rule's OWN declared head vars
+  ;; (`lower.cljc`, "we use the rule head vars … NOT the call-args"), so those
+  ;; names are internal and ANY caller variable spelled like them is captured —
+  ;; the call site need not mention it. `[?x :sym "a"] (r ?p ?q)` against
+  ;; `[(r ?x ?y) …]` collides on the DECLARATION's ?x and was wrong; rename that
+  ;; anchor and the same query was correct. That is why every existing rule test
+  ;; missed it: they all happen to spell the caller differently, or pass a
+  ;; ground argument. Both spellings are asserted below, so a name-dependent
+  ;; regression cannot hide behind either one.
+  ;;
+  ;; One mechanism, three wrong answers — all asserted here, because a fix that
+  ;; addressed only the first would look complete:
+  ;;   * a right-recursive rule truncated to its first hop (a strict subset);
+  ;;   * a caller relation over TWO head-var names made the rule return nothing;
+  ;;   * at a second call site, the first call's result restricted the next
+  ;;     rule's accumulator, degenerating `(r ?x ?y) (s ?x ?b)` into `r ⋈ s`.
+  ;;
+  ;; The answers are hand-written transitive closures, not another engine's
+  ;; output: the wrong answer here is a strict SUBSET with no error raised, so
+  ;; an oracle that shares the fault would agree with it.
+  (let [db (d/db-with (db/empty-db {:sym {:db/cardinality :db.cardinality/one}
+                                    :direct {:db/valueType :db.type/ref
+                                             :db/cardinality :db.cardinality/many}
+                                    :edge/from {:db/valueType :db.type/ref
+                                                :db/cardinality :db.cardinality/one}
+                                    :edge/to {:db/valueType :db.type/ref
+                                              :db/cardinality :db.cardinality/one}})
+                      ;; a->b->c->d, plus the same edges reified as edge entities
+                      [{:db/id 1 :sym "a" :direct [2]}
+                       {:db/id 2 :sym "b" :direct [3]}
+                       {:db/id 3 :sym "c" :direct [4]}
+                       {:db/id 4 :sym "d"}
+                       {:db/id 11 :edge/from 1 :edge/to 2}
+                       {:db/id 12 :edge/from 2 :edge/to 3}
+                       {:db/id 13 :edge/from 3 :edge/to 4}])
+        ;; right-recursive: the recursive call is LAST, so the second hop is the
+        ;; one that reads the accumulator
+        direct-rules  '[[(r ?x ?y) [?x :direct ?y]]
+                        [(r ?x ?y) [?x :direct ?m] (r ?m ?y)]]
+        reified-rules '[[(r ?x ?y) [?e :edge/from ?x] [?e :edge/to ?y]]
+                        [(r ?x ?y) [?e :edge/from ?x] [?e :edge/to ?m] (r ?m ?y)]]
+        ;; Pin the engine, as the two right-recursive tests above do: the
+        ;; base-engine CI job sets DATAHIKE_QUERY_PLANNER=false, and the
+        ;; relational engine expands a right-recursive rule call before
+        ;; anything binds it, so it does not terminate on these shapes. This
+        ;; fix is in the planner, so the planner is what must answer here.
+        ;; Bounded on a future (clj) so a regression fails instead of hanging
+        ;; the job; cljs has the planner on by default and no futures.
+        syms (fn [q rules]
+               #?(:clj (let [f (future (binding [dq/*disable-planner* false]
+                                         (set (d/q q db rules))))
+                             r (deref f 15000 ::timeout)]
+                         (when (= r ::timeout) (future-cancel f))
+                         r)
+                  :cljs (binding [dq/*disable-planner* false]
+                          (set (d/q q db rules)))))]
+    ;; The reified-edge encoding is asserted on the JVM only. On cljs the
+    ;; planner answers a reified-edge recursive rule with a single all-nil
+    ;; tuple — `(r ?a ?b)` over a→b→c→d gives `[[nil nil]]` where the base
+    ;; engine gives the six correct pairs — and that is PRE-EXISTING, not
+    ;; something this fix introduces: it reproduces identically on the parent
+    ;; commit. The direct-edge encoding below is asserted on both platforms and
+    ;; covers the same fault, so nothing about #911 goes untested on cljs.
+    (doseq [[label rules] [["direct edge" direct-rules]
+                           #?@(:clj [["reified edge" reified-rules]])]]
+      (testing label
+        ;; the caller's ?x collides with the rule's head var ?x
+        (is (= #{"b" "c" "d"}
+               (syms '[:find [?s ...] :in $ %
+                       :where [?x :sym "a"] (r ?x ?y) [?y :sym ?s]]
+                     rules))
+            (str label " — full closure when the caller's var collides with a head var"))
+        ;; …the same query with the caller's vars renamed. Both spellings must
+        ;; agree; on the bug only this one was right.
+        (is (= #{"b" "c" "d"}
+               (syms '[:find [?s ...] :in $ %
+                       :where [?p :sym "a"] (r ?p ?q) [?q :sym ?s]]
+                     rules))
+            (str label " — …and the variable-renamed twin agrees"))
+        ;; the rule call comes FIRST, so nothing has bound ?x when it runs
+        (is (= #{"b" "c" "d"}
+               (syms '[:find [?s ...] :in $ %
+                       :where (r ?x ?y) [?y :sym ?s] [?x :sym "a"]]
+                     rules))
+            (str label " — full closure when the call precedes what binds it"))
+        ;; the rule's own relation, unrestricted: every reachable pair
+        (is (= #{["a" "b"] ["a" "c"] ["a" "d"]
+                 ["b" "c"] ["b" "d"] ["c" "d"]}
+               (syms '[:find ?sx ?sy :in $ %
+                       :where (r ?x ?y) [?x :sym ?sx] [?y :sym ?sy]]
+                     rules))
+            (str label " — the whole relation"))
+        ;; THE ACTUAL TRIGGER: the anchor is spelled like the rule's DECLARED
+        ;; head var ?x while the call args are ?p/?q, so the call site never
+        ;; mentions the colliding variable. The renamed twin above renames the
+        ;; anchor too and so does not cover this.
+        (is (= #{"b" "c" "d"}
+               (syms '[:find [?s ...] :in $ %
+                       :where [?x :sym "a"] (r ?p ?q) [?q :sym ?s]]
+                     rules))
+            (str label " — a caller var colliding with a DECLARED head var,"
+                 " though the call site never names it"))
+        ;; a caller relation over TWO head-var names: joined against the rule's
+        ;; whole relation, this returned nothing at all
+        (is (= #{"b" "c" "d"}
+               (syms '[:find [?s ...] :in $ %
+                       :where [?x :sym ?y] (r ?a ?b) [?b :sym ?s]]
+                     rules))
+            (str label " — a two-column caller relation over both head-var names"))))
+    (testing "a branch body is not planned believing outer variables are bound"
+      ;; The plan-time half of the same capture. A body's ops were ordered
+      ;; believing the OUTER scope's bindings held, and a head var spelled like
+      ;; an outer var looked bound from clause zero — so `[(str ?y) ?t]` was
+      ;; cost-ordered AHEAD of the pattern that binds ?y. While bodies still
+      ;; inherited caller relations that belief was accidentally satisfied;
+      ;; once they stopped, it raised "Cannot resolve any more clauses" at
+      ;; execute time. A branch is now planned believing only the head vars the
+      ;; call site actually supplies — the pass-through ones.
+      (let [fn-rules '[[(r ?x ?y) [?x :direct ?y] [(str ?y) ?t] [(some? ?t)]]
+                       [(r ?x ?y) [?x :direct ?m] (r ?m ?y) [(str ?y) ?t] [(some? ?t)]]]]
+        (is (= #{"a" "b" "c"}
+               (syms '[:find [?s ...] :in $ %
+                       :where [?y :sym "d"] (r ?p ?y) [?p :sym ?s]]
+                     fn-rules))
+            "a function op on a head var spelled like an outer var")
+        (is (= #{"a" "b" "c"}
+               (syms '[:find [?s ...] :in $ %
+                       :where [?w :sym "d"] (r ?p ?w) [?p :sym ?s]]
+                     fn-rules))
+            "…and the non-colliding spelling agrees")))
+    (testing "a caller-supplied parameter still reaches the body"
+      ;; The counterweight: pass-through head vars (#897) ARE bound from the
+      ;; call site, so narrowing what a branch believes must not narrow them
+      ;; away — `?eps` is bound by no body, and a predicate over it has to stay
+      ;; placeable.
+      (let [pt-rules '[[(reach ?anchor ?eps ?n)
+                        [?anchor :direct ?n] [(contains? ?eps ?n)]]
+                       [(reach ?anchor ?eps ?o)
+                        (reach ?anchor ?eps ?s) [?s :direct ?o] [(contains? ?eps ?o)]]]]
+        (is (= #{"b" "c"}
+               ;; pinned for the same reason as `syms` above — the recursive
+               ;; call leads this branch too
+               (binding [dq/*disable-planner* false]
+                 (set (d/q '[:find [?s ...] :in $ % ?eps
+                             :where (reach 1 ?eps ?n) [?n :sym ?s]]
+                           db pt-rules #{2 3}))))
+            "a pass-through head var is still supplied by the caller")))
+    (testing "a second call site does not inherit the first call's result"
+      ;; `(r …)`'s result relation is itself spelled with head-var names, so it
+      ;; was captured by the NEXT rule's branch bodies: `s` was restricted to
+      ;; pairs already in `r` rather than computing its own relation.
+      (let [two-rules '[[(r ?x ?y) [?x :direct ?y]]
+                        [(r ?x ?y) [?x :direct ?m] (r ?m ?y)]
+                        [(s ?x ?y) [?x :direct ?y]]
+                        [(s ?x ?y) [?x :direct ?m] (s ?m ?y)]]]
+        (is (= #{"b" "c" "d"}
+               (syms '[:find [?s ...] :in $ %
+                       :where [?x :sym "a"] (r ?x ?y) (s ?x ?b) [?b :sym ?s]]
+                     two-rules))
+            "the second rule computes its own relation")))))
