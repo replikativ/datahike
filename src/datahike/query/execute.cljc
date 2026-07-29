@@ -3989,6 +3989,20 @@
   [db op ctx]
   (let [{:keys [scc-rule-plans scc-rule-names call-args head-vars rule-name
                 base-scan-attr magic-demand-sound? delta-driven-sound?]} op
+        ;; Bound OUTSIDE the fixpoint loop (see `check-cancel!`): the loop then
+        ;; costs one deref per round.
+        ;;
+        ;; The fixpoint had no cancellation check at all, so a rule whose
+        ;; recursion is unbounded could not be interrupted by anything —
+        ;; `d/q`'s `:cancel` reaches every other scan in this namespace but not
+        ;; this loop. That matters most for rules the engine accepts but
+        ;; Datalog would not: a head var no body binds (#897) makes the rule
+        ;; UNSAFE (its relation is infinite in that argument), and a body that
+        ;; CONSTRUCTS the value it recurses on — `[(dec ?budget) ?b2]` — can
+        ;; derive new values forever. Termination is then undecidable in
+        ;; general, so the honest guarantee is not "we always finish" but
+        ;; "you can always stop us".
+        cancel (:cancel ctx)
         ;; Head vars no branch body binds take their value from the call site
         ;; (#897). When one has no caller binding either, the fixpoint cannot
         ;; produce a well-formed tuple for it — hand the whole rule to the
@@ -4116,7 +4130,8 @@
             (loop [states rule-states
                    batch init-batch
                    demand-tuples init-demand-tuples]
-              (let [any-delta? (some (fn [[_ s]] (seq (:tuples (:delta-rel s)))) states)]
+              (let [_ (check-cancel! cancel)
+                    any-delta? (some (fn [[_ s]] (seq (:tuples (:delta-rel s)))) states)]
                 (if (not any-delta?)
                   states
                   (let [;; The demand delta produced this round, consumed next round

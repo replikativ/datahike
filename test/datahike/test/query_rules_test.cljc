@@ -770,3 +770,38 @@
                        :where [?x :sym "a"] (r ?x ?y) (s ?x ?b) [?b :sym ?s]]
                      two-rules))
             "the second rule computes its own relation")))))
+
+(deftest test-recursive-rule-fixpoint-is-cancelable
+  ;; The semi-naive fixpoint had no cancellation check, so `:cancel` — which
+  ;; every other scan in `query.execute` consults — could not stop a recursive
+  ;; rule. Nothing could: a rule whose recursion is unbounded wedged the caller
+  ;; with no way out.
+  ;;
+  ;; That matters because the engine accepts rules Datalog would reject. A head
+  ;; var no body binds (#897) makes a rule UNSAFE — its relation is infinite in
+  ;; that argument — and a body that CONSTRUCTS the value it recurses on
+  ;; (`[(dec ?budget) ?b2]`) can derive new values forever. Termination is then
+  ;; undecidable, so the guarantee cannot be "we always finish"; it has to be
+  ;; "you can always stop us".
+  ;;
+  ;; Asserted with a pre-set flag rather than a racing watchdog so it cannot
+  ;; flake in CI. (Interruption mid-fixpoint was verified separately: a closure
+  ;; taking 189 ms warm was cancelled at 8 ms and raised in 9 ms.)
+  (let [db (d/db-with (db/empty-db {:next {:db/valueType :db.type/ref
+                                           :db/cardinality :db.cardinality/many}})
+                      (mapv (fn [i] {:db/id (inc i) :next (+ i 2)}) (range 8)))
+        rules '[[(tc ?a ?b) [?a :next ?b]]
+                [(tc ?a ?b) [?a :next ?m] (tc ?m ?b)]]
+        q '[:find (count ?b) :in $ % :where (tc ?a ?b)]
+        pairs-q '[:find ?a ?b :in $ % :where (tc ?a ?b)]]
+    (testing "a pre-set cancel flag stops the fixpoint"
+      (is (thrown-with-msg?
+           #?(:clj clojure.lang.ExceptionInfo :cljs js/Error) #"canceled"
+           (dq/q {:query q :args [db rules] :cancel (volatile! true)}))))
+    (testing "…and without one the rule still answers"
+      ;; chain of 9 nodes ⇒ the transitive closure is every ordered pair
+      ;; i<j, i.e. C(9,2) = 36. (`(count ?b)` alone would count DISTINCT
+      ;; ?b values — 8 — since a bare aggregate projects onto its own var.)
+      (is (= 36 (count (dq/q {:query pairs-q :args [db rules]}))))
+      (is (= [[8]] (dq/q {:query q :args [db rules]}))
+          "…and the bare aggregate counts the 8 distinct reachable nodes"))))
