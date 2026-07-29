@@ -548,6 +548,61 @@
        (is (= #{2 3} (run '[:find [?b ...] :in $ % :where (rr 1 ?b)]))
            "…and with a ground argument"))))
 
+(deftest test-recursive-rule-branch-body-with-several-clauses
+  ;; A recursive rule whose BRANCH BODY has more than one clause takes the
+  ;; fused scan+merge path, which emits its tuples as VECTORS (the scan
+  ;; datom's five fields, extended by `conj` per merge) rather than as arrays
+  ;; like a single-clause body does. The JVM projection dispatches on the
+  ;; tuple's shape; the ClojureScript one used `aget` unconditionally, and
+  ;; `aget` of a PersistentVector on JS is `undefined` rather than an error.
+  ;; So on cljs every head var projected to nil and the rule answered
+  ;; `[[nil nil]]` — a silent wrong answer on the DEFAULT engine there, since
+  ;; the planner is on by default in ClojureScript.
+  ;;
+  ;; The clause count is what matters, not the encoding: a reified edge
+  ;; (`[?e :edge/from ?x] [?e :edge/to ?y]`) and two independent clauses fail
+  ;; identically, while the one-clause direct edge was always fine — which is
+  ;; why this shape survived so long. Asserted on both platforms, against
+  ;; hand-written closures.
+  (let [db (d/db-with (db/empty-db {:sym {:db/cardinality :db.cardinality/one}
+                                    :direct {:db/valueType :db.type/ref
+                                             :db/cardinality :db.cardinality/many}
+                                    :edge/from {:db/valueType :db.type/ref
+                                                :db/cardinality :db.cardinality/one}
+                                    :edge/to {:db/valueType :db.type/ref
+                                              :db/cardinality :db.cardinality/one}})
+                      [{:db/id 1 :sym "a" :direct [2]}
+                       {:db/id 2 :sym "b" :direct [3]}
+                       {:db/id 3 :sym "c" :direct [4]}
+                       {:db/id 4 :sym "d"}
+                       {:db/id 11 :edge/from 1 :edge/to 2}
+                       {:db/id 12 :edge/from 2 :edge/to 3}
+                       {:db/id 13 :edge/from 3 :edge/to 4}])
+        closure #{[1 2] [1 3] [1 4] [2 3] [2 4] [3 4]}
+        run (fn [q rules]
+              (binding [dq/*disable-planner* false]
+                (set (d/q q db rules))))]
+    (testing "a two-clause (reified) branch body projects its head vars"
+      (is (= closure
+             (run '[:find ?a ?b :in $ % :where (r ?a ?b)]
+                  '[[(r ?x ?y) [?e :edge/from ?x] [?e :edge/to ?y]]
+                    [(r ?x ?y) [?e :edge/from ?x] [?e :edge/to ?m] (r ?m ?y)]]))))
+    (testing "…with a ground argument, which post-filters the projected tuples"
+      (is (= #{2 3 4}
+             (run '[:find [?b ...] :in $ % :where (r 1 ?b)]
+                  '[[(r ?x ?y) [?e :edge/from ?x] [?e :edge/to ?y]]
+                    [(r ?x ?y) [?e :edge/from ?x] [?e :edge/to ?m] (r ?m ?y)]]))))
+    (testing "two INDEPENDENT clauses fail the same way — it is the count, not reification"
+      (is (= closure
+             (run '[:find ?a ?b :in $ % :where (r ?a ?b)]
+                  '[[(r ?x ?y) [?x :direct ?y] [?x :sym _]]
+                    [(r ?x ?y) [?x :direct ?m] (r ?m ?y)]]))))
+    (testing "the one-clause body that always worked still does"
+      (is (= closure
+             (run '[:find ?a ?b :in $ % :where (r ?a ?b)]
+                  '[[(r ?x ?y) [?x :direct ?y]]
+                    [(r ?x ?y) [?x :direct ?m] (r ?m ?y)]]))))))
+
 (deftest test-recursive-rule-does-not-inherit-caller-relations
   ;; A rule's fixpoint computes the rule's relation INDEPENDENTLY of its call
   ;; site — the caller joins on the output vars afterwards. Letting a caller
@@ -612,15 +667,14 @@
                          r)
                   :cljs (binding [dq/*disable-planner* false]
                           (set (d/q q db rules)))))]
-    ;; The reified-edge encoding is asserted on the JVM only. On cljs the
-    ;; planner answers a reified-edge recursive rule with a single all-nil
-    ;; tuple — `(r ?a ?b)` over a→b→c→d gives `[[nil nil]]` where the base
-    ;; engine gives the six correct pairs — and that is PRE-EXISTING, not
-    ;; something this fix introduces: it reproduces identically on the parent
-    ;; commit. The direct-edge encoding below is asserted on both platforms and
-    ;; covers the same fault, so nothing about #911 goes untested on cljs.
+    ;; Both encodings are asserted on both platforms. The reified one was
+    ;; JVM-only for a while: on cljs the planner answered a reified-edge
+    ;; recursive rule with a single all-nil tuple, because a branch body with
+    ;; more than one clause emits VECTOR tuples and the cljs projection read
+    ;; them with `aget` (which is `undefined`, not an error, on a
+    ;; PersistentVector). Fixed — see `execute-recursive-rule`.
     (doseq [[label rules] [["direct edge" direct-rules]
-                           #?@(:clj [["reified edge" reified-rules]])]]
+                           ["reified edge" reified-rules]]]
       (testing label
         ;; the caller's ?x collides with the rule's head var ?x
         (is (= #{"b" "c" "d"}
