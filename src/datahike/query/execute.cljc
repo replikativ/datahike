@@ -3654,9 +3654,16 @@
                                                   (aget ^objects tuple idx)
                                                   (nth tuple idx)))))
                                 arr)
-                         :cljs (let [arr (make-array n-vars)]
+                         ;; Dispatch on the tuple's shape as the JVM branch
+                         ;; does: a fused scan+merge branch body emits VECTOR
+                         ;; tuples, and `aget` of a PersistentVector on JS is
+                         ;; `undefined` rather than an error, so the whole
+                         ;; accumulator would fill with nils.
+                         :cljs (let [arr (make-array n-vars)
+                                     arr? (array? tuple)]
                                  (dotimes [j n-vars]
-                                   (aset arr j (aget tuple (nth indices j))))
+                                   (let [idx (nth indices j)]
+                                     (aset arr j (if arr? (aget tuple idx) (nth tuple idx)))))
                                  arr))
             wrapper #?(:clj (ArrayWrapper. projected (java.util.Arrays/hashCode projected))
                        :cljs projected)]
@@ -4287,7 +4294,9 @@
                                      (= #?(:clj (if (instance? object-array-class tuple)
                                                   (aget ^objects tuple (int i))
                                                   (nth tuple i))
-                                           :cljs (aget tuple i))
+                                           :cljs (if (array? tuple)
+                                                   (aget tuple i)
+                                                   (nth tuple i)))
                                         expected))
                                    const-filters))
                          (:tuples main-rel))))
@@ -4312,9 +4321,21 @@
                                       (let [idx (aget output-indices j)]
                                         (aset a j (if oa? (aget ^objects tuple idx) (nth tuple idx)))))
                                     a)
-                             :cljs (let [a (make-array n-out)]
+                             ;; Tuples reach here in BOTH shapes, so the read has
+                             ;; to dispatch on the shape exactly as the JVM branch
+                             ;; does. A single-clause branch body emits array
+                             ;; tuples, but the fused scan+merge path builds a
+                             ;; VECTOR (`[(.-e scan-d) …]` extended by `conj` per
+                             ;; merge), and on JS `aget` of a PersistentVector is
+                             ;; `undefined`, not an error — so a recursive rule
+                             ;; whose branch body had more than one clause
+                             ;; projected every head var to nil and answered
+                             ;; `[[nil nil]]` instead of its relation.
+                             :cljs (let [a (make-array n-out)
+                                         arr? (array? tuple)]
                                      (dotimes [j n-out]
-                                       (aset a j (aget tuple (nth output-indices j))))
+                                       (let [idx (nth output-indices j)]
+                                         (aset a j (if arr? (aget tuple idx) (nth tuple idx)))))
                                      a))
                       wrapper #?(:clj (ArrayWrapper. arr (java.util.Arrays/hashCode arr))
                                  :cljs (str (vec arr)))]
