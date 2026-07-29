@@ -573,9 +573,93 @@
                                    with-pass-through
                                    (fn [p]
                                      (let [produced (plan/branch-produced-vars p)
-                                           missing (into #{} (remove produced) free-call-args)]
+                                           missing (into #{} (remove produced) free-call-args)
+                                           ;; A pass-through head var is bound from OUTSIDE the
+                                           ;; body, so the accumulator's column for it holds
+                                           ;; whatever the caller supplied — one value. If a
+                                           ;; self-call passes a DIFFERENT var at that position,
+                                           ;; the value it asks the accumulator for is not the
+                                           ;; value the accumulator was filled with, and the
+                                           ;; lookup matches nothing (#918). Record the call-arg
+                                           ;; vars at those positions so the fixpoint can treat
+                                           ;; them as DEMAND rather than as a fixed binding —
+                                           ;; they are precisely the input positions of a
+                                           ;; magic-set adornment.
+                                           ;; ALL input positions, because seeding a base
+                                           ;; branch needs the whole input tuple — not only the
+                                           ;; positions that change.
+                                           demand-of
+                                           (fn [call-args]
+                                             (into []
+                                                   (comp (map-indexed
+                                                          (fn [i a]
+                                                            (let [hv (nth free-call-args i nil)]
+                                                              (when (and hv (contains? missing hv))
+                                                                [i a hv]))))
+                                                         (remove nil?))
+                                                   call-args))
+                                           ;; Bottom-up demand only terminates if the
+                                           ;; CONSTRUCTED values are bounded. `(dec ?budget)`
+                                           ;; can fire for any budget, so without a comparison
+                                           ;; constraining that var the demand set is infinite
+                                           ;; — 8,7,6,… forever, long after the facts stop
+                                           ;; growing. Top-down evaluation escapes this because
+                                           ;; it is goal-directed: its proof tree is bounded by
+                                           ;; the data (each step needs a real edge), so the
+                                           ;; relational engine terminates where a magic-set
+                                           ;; fixpoint cannot. So take the demand path only with
+                                           ;; evidence of a bound, and otherwise leave the rule
+                                           ;; to the engine that can finish it.
+                                           bounded-var?
+                                           (fn [v]
+                                             (boolean
+                                              (some (fn [op]
+                                                      (and (= :predicate (:op op))
+                                                           (contains? '#{< > <= >= = == not= !=}
+                                                                      (:fn-sym op))
+                                                           (some #{v} (plan/args-free-vars (:args op)))))
+                                                    (:ops p))))
+                                           annotate-lookups
+                                           (fn [ops]
+                                             (mapv (fn [op]
+                                                     (if (= :rule-lookup (:op op))
+                                                       (let [d (demand-of (:call-args op))]
+                                                         (cond-> op
+                                                           (seq d)
+                                                           (assoc :demand-positions (mapv first d)
+                                                                  :demand-vars (mapv second d)
+                                                                  :demand-head-vars (mapv #(nth % 2) d)
+                                                                  ;; The unsoundness trigger: an input
+                                                                  ;; position whose argument is NOT the
+                                                                  ;; head var it fills. Passing the same
+                                                                  ;; var through is fine — the value the
+                                                                  ;; accumulator holds IS the value asked
+                                                                  ;; for.
+                                                                  :demand-transformed?
+                                                                  (boolean
+                                                                   (some (fn [[_ a hv]]
+                                                                           (and (not= a hv)
+                                                                                (bounded-var? hv)))
+                                                                         d))
+                                                                  ;; Transformed but with nothing
+                                                                  ;; bounding it: no bottom-up
+                                                                  ;; evaluation of this rule can
+                                                                  ;; terminate, and the fixpoint's
+                                                                  ;; answer would be a silent
+                                                                  ;; subset. Hand it to the
+                                                                  ;; goal-directed engine, whose
+                                                                  ;; proof tree the DATA bounds.
+                                                                  :demand-unbounded?
+                                                                  (boolean
+                                                                   (some (fn [[_ a hv]]
+                                                                           (and (not= a hv)
+                                                                                (not (bounded-var? hv))))
+                                                                         d)))))
+                                                       op))
+                                                   ops))]
                                        (cond-> p
-                                         (seq missing) (assoc :pass-through-vars missing))))
+                                         (seq missing) (assoc :pass-through-vars missing)
+                                         (seq missing) (update :ops annotate-lookups))))
                                    plan-branch (fn plan-branch
                                                  [branch-clauses guarded]
                                                  ;; Pass 1 only to learn which head vars the body

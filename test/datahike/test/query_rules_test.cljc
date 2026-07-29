@@ -795,9 +795,17 @@
         q '[:find (count ?b) :in $ % :where (tc ?a ?b)]
         pairs-q '[:find ?a ?b :in $ % :where (tc ?a ?b)]]
     (testing "a pre-set cancel flag stops the fixpoint"
-      (is (thrown-with-msg?
-           #?(:clj clojure.lang.ExceptionInfo :cljs js/Error) #"canceled"
-           (dq/q {:query q :args [db rules] :cancel (volatile! true)}))))
+      ;; Asserted on BOTH engines. The planner's semi-naive fixpoint and the
+      ;; relational engine's top-down rule solver each had no cancellation
+      ;; check, and both need one: the planner declines rules whose recursion it
+      ;; cannot bound TO the relational solver, so an uninterruptible solver
+      ;; would just move the wedge rather than remove it.
+      (doseq [disable-planner? [false true]]
+        (is (thrown-with-msg?
+             #?(:clj clojure.lang.ExceptionInfo :cljs js/Error) #"canceled"
+             (binding [dq/*disable-planner* disable-planner?]
+               (dq/q {:query q :args [db rules] :cancel (volatile! true)})))
+            (str "cancelable with *disable-planner* " disable-planner?))))
     (testing "…and without one the rule still answers"
       ;; chain of 9 nodes ⇒ the transitive closure is every ordered pair
       ;; i<j, i.e. C(9,2) = 36. (`(count ?b)` alone would count DISTINCT

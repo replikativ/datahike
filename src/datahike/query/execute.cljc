@@ -3635,6 +3635,45 @@
        (and (instance? ArrayWrapper that)
             (java.util.Arrays/equals a ^objects (.-a ^ArrayWrapper that))))))
 
+(defn- tuple-nth
+  "Read position `i` of a relation tuple, whichever shape it has.
+
+   Tuples are arrays on most paths but VECTORS out of the fused scan+merge
+   path (the scan datom's fields, extended by `conj` per merge). On the JVM
+   reading the wrong shape throws; on JS `aget` of a PersistentVector is
+   `undefined`, so it silently yields nil — which is how #917 turned a
+   recursive rule into a row of nils. Dispatch, always."
+  [tuple i]
+  #?(:clj (if (instance? object-array-class tuple)
+            (aget ^objects tuple (int i))
+            (nth tuple i))
+     :cljs (if (array? tuple)
+             (aget tuple i)
+             (nth tuple i))))
+
+(defn- ctx-demand-tuples
+  "Distinct value tuples that `ctx` currently binds for `demand-vars`, or nil
+   when it does not bind all of them.
+
+   This is the demand a `:rule-lookup` is about to place on the accumulator:
+   by the time the op runs, the ops before it in the branch have bound its
+   call arguments, so the tuple it is ASKING FOR is already in the context.
+   That is the whole trick — the magic-set supplementary rule
+   `magic(inputs') :- magic(inputs), body-prefix` is already being evaluated
+   as part of the branch, so its result can simply be read off rather than
+   derived a second time."
+  [rels demand-vars]
+  (let [needed (set demand-vars)
+        carrying (filterv (fn [r] (some needed (keys (:attrs r)))) rels)]
+    (when (seq carrying)
+      (let [joined (reduce rel/hash-join carrying)
+            attrs (:attrs joined)]
+        (when (every? #(contains? attrs %) demand-vars)
+          (let [idxs (mapv #(get attrs %) demand-vars)]
+            (into #{}
+                  (map (fn [t] (mapv (fn [i] (tuple-nth t i)) idxs)))
+                  (:tuples joined))))))))
+
 (defn- rel-dedup-into!
   "Add tuples from rel (projected to head-vars) into seen-set.
    Returns a new Relation containing only the NEW tuples (not already in seen).
@@ -3775,6 +3814,22 @@
                           (doto #?(:clj (object-array 1) :cljs (make-array 1))
                             (aset 0 v)))
                         values)))
+
+(defn- tuples-rel
+  "Relation binding `vars` positionally to each tuple in `tuples`.
+
+   The n-column sibling of `values-rel`: array tuples, because that is what the
+   join path expects. Used to inject a DEMAND relation over a rule's input head
+   vars, so a branch body evaluates once per demanded input tuple instead of
+   once for the caller's single binding."
+  [vars tuples]
+  (rel/->Relation (zipmap vars (range))
+                  (mapv (fn [t]
+                          (let [n (count t)
+                                a #?(:clj (object-array n) :cljs (make-array n))]
+                            (dotimes [i n] (aset a i (nth t i)))
+                            a))
+                        tuples)))
 
 (defn- call-arg-rel
   "The caller's binding for a rule head var, as a one-column Relation named by
@@ -4010,8 +4065,44 @@
         ;; call args.
         pass-rels (when scc-rule-plans
                     (resolve-pass-through-rels ctx scc-rule-plans rule-name
-                                               call-args head-vars))]
-    (if (or (nil? scc-rule-plans) (= :unresolvable pass-rels))
+                                               call-args head-vars))
+        ;; #918. A pass-through head var is bound from the call site, so the
+        ;; accumulator's column for it holds exactly the value the caller
+        ;; supplied. When a self-call passes a DIFFERENT value at that position
+        ;; — `(reachable ?head ?prev ?b2)` where `?b2` is `(dec ?budget)` — the
+        ;; lookup asks the accumulator for a value it was never filled with, so
+        ;; it matches nothing and the recursion stops. Measured: at most ONE
+        ;; level unrolls, whatever the data.
+        ;;
+        ;; The rule is unsafe Datalog (a head var in no body atom), so its
+        ;; relation is infinite in that argument and a bottom-up evaluator can
+        ;; only compute a DEMAND-driven slice of it. So for these rules the
+        ;; pass-through vars stop being a fixed binding and become demand: the
+        ;; call site supplies the FIRST demand tuple, each lookup contributes
+        ;; the next, and the base branches are re-seeded per demand tuple.
+        demand-lookup (when scc-rule-plans
+                        (some (fn [rn]
+                                (some (fn [plan]
+                                        (some (fn [op]
+                                                (when (:demand-transformed? op) op))
+                                              (:ops plan)))
+                                      (:rec-clause-versions (get scc-rule-plans rn))))
+                              scc-rule-names))
+        demand-head-vars (:demand-head-vars demand-lookup)
+        demand-driven? (boolean (seq demand-head-vars))
+        ;; A self-call that transforms an input var with NOTHING bounding it has
+        ;; no terminating bottom-up evaluation: demand grows forever, long after
+        ;; the facts stop. The relational engine is goal-directed, so its proof
+        ;; tree is bounded by the DATA (every step needs a real edge) and it
+        ;; answers such a rule correctly. Decline instead of returning a subset.
+        demand-unbounded? (boolean
+                           (when scc-rule-plans
+                             (some (fn [rn]
+                                     (some (fn [plan]
+                                             (some :demand-unbounded? (:ops plan)))
+                                           (:rec-clause-versions (get scc-rule-plans rn))))
+                                   scc-rule-names)))]
+    (if (or (nil? scc-rule-plans) (= :unresolvable pass-rels) demand-unbounded?)
       ;; No pre-built plans — fall back to legacy
       (let [clause (:clause op)]
         (binding [rel/*implicit-source* (get (:sources ctx) '$)]
@@ -4073,6 +4164,41 @@
             ;; The demand delta produced while seeding, consumed by iteration 1
             init-batch (when magic-demand
                          #?(:clj (java.util.ArrayList. 16) :cljs nil))
+            ;; #918 demand seeding. The caller's binding for the transformed
+            ;; input vars is the FIRST demand tuple; every later one is harvested
+            ;; at a `:rule-lookup` (see `ctx-demand-tuples`).
+            demand-seen (when demand-driven?
+                          (volatile!
+                           (or (some-> (ctx-demand-tuples
+                                        (into [] (keep #(get pass-rels %)) demand-head-vars)
+                                        demand-head-vars))
+                               #{})))
+            demand-sink (when demand-driven? (volatile! #{}))
+            ;; Pass-through no longer supplies the demand vars: it would join the
+            ;; branch back down to the caller's single value and undo the whole
+            ;; mechanism. The demand relation supplies them instead.
+            eff-pass-rels (if demand-driven?
+                            (apply dissoc pass-rels demand-head-vars)
+                            pass-rels)
+            demand-ctx (fn [c tuples]
+                         (if (and demand-driven? (seq tuples))
+                           (-> c
+                               ;; The caller's CONSTS must not reach a demand var.
+                               ;; #915 cleared the caller's :rels from a branch body
+                               ;; but left :consts, and a rule's head vars are its
+                               ;; own — so a caller that happens to name an :in var
+                               ;; `?budget`, like the rule's head var, had 8 folded
+                               ;; in as a constant everywhere inside the body. The
+                               ;; demand relation was then joined against a constant
+                               ;; and collapsed straight back to the call-site value:
+                               ;; the recursion advanced one level and stopped, which
+                               ;; looks exactly like the bug being fixed. Rename the
+                               ;; caller's var and it worked — the tell of a name
+                               ;; collision, not a demand failure.
+                               (update :consts #(apply dissoc % demand-head-vars))
+                               (update :rels rel/collapse-rels (tuples-rel demand-head-vars tuples))
+                               (assoc :rule-demand-sink demand-sink))
+                           (cond-> c demand-driven? (assoc :rule-demand-sink demand-sink))))
             ;; Execute base branches for each SCC rule
             ;; With magic sets: use demand-driven base scan (point lookups only)
             rule-states
@@ -4098,9 +4224,15 @@
                                           (or (magic-base-scan-general db base-plans head-vars magic-ground-pos
                                                                        seed-batch body-ctx pass-rels)
                                               (rel/->Relation (zipmap head-vars (range)) []))
-                                  ;; No magic: full base branch plan execution
+                                  ;; No magic: full base branch plan execution.
+                                  ;; Demand-driven (#918): the base runs once per
+                                  ;; demanded input tuple, so it is evaluated with
+                                  ;; the demand relation injected rather than with
+                                  ;; the caller's single pass-through binding.
                                           :else
-                                          (execute-branch-plans db base-plans body-ctx head-vars pass-rels))
+                                          (execute-branch-plans db base-plans
+                                                                (demand-ctx body-ctx (when demand-seen @demand-seen))
+                                                                head-vars eff-pass-rels))
                                delta-rel (rel-dedup-into! base-rel head-vars (get seen-sets rn))]
                   ;; Propagate magic demand from base results
                            (when (and magic-demand (= rn rule-name))
@@ -4131,7 +4263,39 @@
                    batch init-batch
                    demand-tuples init-demand-tuples]
               (let [_ (check-cancel! cancel)
-                    any-delta? (some (fn [[_ s]] (seq (:tuples (:delta-rel s)))) states)]
+                    ;; Demand harvested during the previous round that is new.
+                    ;; A round with no fact delta may still have produced demand
+                    ;; whose base facts are not derived yet, so the fixpoint has
+                    ;; to iterate on demand growth too — stopping on `any-delta?`
+                    ;; alone would truncate exactly the answers #918 loses.
+                    fresh-demand (when demand-driven?
+                                   (let [drained @demand-sink
+                                         new (into #{} (remove @demand-seen) drained)]
+                                     (vreset! demand-sink #{})
+                                     (when (seq new)
+                                       (vswap! demand-seen into new)
+                                       new)))
+                    any-delta? (some (fn [[_ s]] (seq (:tuples (:delta-rel s)))) states)
+                    ;; Base facts for the newly demanded input tuples. Without
+                    ;; these the next round's lookup has nothing to match.
+                    states (if (seq fresh-demand)
+                             (into {}
+                                   (map (fn [[rn st]]
+                                          (let [{:keys [head-vars base-plans]} (get scc-rule-plans rn)
+                                                seeded (execute-branch-plans
+                                                        db base-plans
+                                                        (demand-ctx body-ctx fresh-demand)
+                                                        head-vars eff-pass-rels)
+                                                d (rel-dedup-into! seeded head-vars (get seen-sets rn))]
+                                            [rn (if (seq (:tuples d))
+                                                  (-> st
+                                                      (update :main-rel rel/sum-rel d)
+                                                      (update :delta-rel rel/sum-rel d))
+                                                  st)])))
+                                   states)
+                             states)
+                    any-delta? (or any-delta?
+                                   (some (fn [[_ s]] (seq (:tuples (:delta-rel s)))) states))]
                 (if (not any-delta?)
                   states
                   (let [;; The demand delta produced this round, consumed next round
@@ -4146,7 +4310,9 @@
                                             :delta (:delta-rel s)
                                             :output-vars hv}])))
                               states)
-                        base-aug-ctx (assoc body-ctx :rule-accumulators acc-map)
+                        base-aug-ctx (-> body-ctx
+                                         (assoc :rule-accumulators acc-map)
+                                         (demand-ctx (when demand-seen @demand-seen)))
                         ;; Push the accumulated demand into the recursive scan so
                         ;; the ground var is pruned BEFORE expansion (not filtered
                         ;; after). O(1) to wrap the incrementally grown tuples.
@@ -4266,8 +4432,14 @@
                                             ;; Normal: full branch plan execution
                                             ;; (ground var already pruned by the
                                             ;; injected demand in aug-ctx).
+                                                     ;; `eff-pass-rels`, not `pass-rels`: for a
+                                                     ;; demand var the caller's binding is a SINGLE
+                                                     ;; value, so joining it in here would collapse
+                                                     ;; the injected demand back to that value and
+                                                     ;; the recursion would advance exactly one
+                                                     ;; level — the #918 symptom, half-fixed.
                                                      (execute-branch-plans db rec-clause-versions aug-ctx head-vars
-                                                                           pass-rels))
+                                                                           eff-pass-rels))
                                   ;; Union base and rec results
                                            new-rel (if (and magic-base-rel (seq (:tuples magic-base-rel)))
                                                      (rel/sum-rel magic-base-rel rec-rel)
@@ -5024,7 +5196,15 @@
                 :not-join (recur (execute-not-join op-db op ctx) plan (inc idx))
 
                 :rule-lookup
-                (let [acc-map (get-in ctx [:rule-accumulators (:rule-name op)])
+                (let [;; Harvest the demand this lookup places on the accumulator
+                      ;; (see `ctx-demand-tuples`). The sink is installed by
+                      ;; `execute-recursive-rule` only when some input position is
+                      ;; transformed, so an unaffected rule pays one map lookup.
+                      _ (when-let [sink (:rule-demand-sink ctx)]
+                          (when-let [dvars (:demand-vars op)]
+                            (when-let [ts (ctx-demand-tuples (:rels ctx) dvars)]
+                              (vswap! sink into ts))))
+                      acc-map (get-in ctx [:rule-accumulators (:rule-name op)])
                       acc-rel (when acc-map
                                 (get acc-map (:mode op)))
                     ;; Map accumulator output-vars to call-args vars
