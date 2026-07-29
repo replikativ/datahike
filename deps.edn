@@ -82,7 +82,7 @@
                                ;; secondary index integrations (for testing)
                                org.replikativ/proximum       {:mvn/version "0.1.25"}
                                org.replikativ/scriptum       {:mvn/version "0.1.27"}
-                               org.replikativ/stratum        {:mvn/version "0.3.69"}
+                               org.replikativ/stratum        {:mvn/version "0.3.77"}
 
                                ;; kabel integration for distributed datahike
                                org.replikativ/kabel          {:mvn/version "0.3.100"}
@@ -167,7 +167,7 @@
                                         ;; slf4j-reload4j binding: with datomic's log4j-over-slf4j
                                         ;; on the same classpath the two form an org.apache.log4j.MDC
                                         ;; bridge loop (StackOverflowError on Datomic init).
-                                        org.replikativ/stratum {:mvn/version "0.3.69"
+                                        org.replikativ/stratum {:mvn/version "0.3.77"
                                                                 :exclusions [org.slf4j/slf4j-reload4j
                                                                              ch.qos.reload4j/reload4j]}
                                         com.clojure-goes-fast/clj-async-profiler {:mvn/version "1.6.1"}
