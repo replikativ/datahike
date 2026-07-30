@@ -563,16 +563,20 @@
 ;; non-nil whenever the check could fire — hence the flag is read inside the
 ;; installed fn rather than gating installation.
 
-(alter-var-root #'lower/*check-plan*
-                (constantly
-                 (fn [plan]
-                   (when *check-equalities?*
-                     (let [report (check-plan plan)]
-                       (when-not (:ok? report)
-                         (if *violation-handler*
-                           (*violation-handler* (assoc report :plan plan))
-                           (throw (ex-info "Plan violates the equality-obligation invariant"
-                                           (assoc report :explain (vec (explain report))))))))))))
+;; Installed through `add-plan-check!`, NOT `(alter-var-root … (constantly …))`:
+;; the slot holds one function, so a `constantly` install silently evicts every
+;; check already there — and an evicted checker reports a clean sweep while
+;; examining nothing.
+(defonce ^:private installed
+  (lower/add-plan-check!
+   (fn [plan]
+     (when *check-equalities?*
+       (let [report (check-plan plan)]
+         (when-not (:ok? report)
+           (if *violation-handler*
+             (*violation-handler* (assoc report :plan plan))
+             (throw (ex-info "Plan violates the equality-obligation invariant"
+                             (assoc report :explain (vec (explain report))))))))))))
 
 (defn check-plans*
   "Run `f` with plan checking on. Clears the plan cache first AND after, because

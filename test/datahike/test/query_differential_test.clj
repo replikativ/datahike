@@ -17,11 +17,12 @@
    A failure prints the offending query; with the fixed seed it reproduces
    deterministically, and test.check shrinks it to a minimal spec."
   (:require
-   [clojure.test :refer [is]]
+   [clojure.test :refer [is deftest testing]]
    [clojure.test.check.clojure-test :refer [defspec]]
    [clojure.test.check.generators :as gen]
    [clojure.test.check.properties :as prop]
    [datahike.api :as d]
+   [datahike.oracle :as o]
    [datahike.query :as q]))
 
 (def ^:private num-cases
@@ -271,7 +272,27 @@
    ;; Axis: THE DATA — see the dataset defs above.
    :dataset   (gen/frequency [[3 (gen/return :tidy)]
                               [2 (gen/return :dup)]
-                              [2 (gen/return :loose)]])))
+                              [2 (gen/return :loose)]])
+   ;; ---------------------------------------------------------------------
+   ;; Axis: OUTPUT-VAR REBINDING. A function/get-else clause writes its result
+   ;; into a variable a PRECEDING pattern already bound, e.g.
+   ;;   [?e :name ?n] [(clojure.string/upper-case ?n) ?n]
+   ;; which asks for the entities whose name is already upper-case. Datomic
+   ;; unifies here, as datahike itself does for repeated vars inside one clause
+   ;; (#912/#913); overwriting instead asserts a fact the database does not
+   ;; contain. Measured on this axis alone: 47% of cases answer wrongly and 19%
+   ;; are wrong on BOTH engines, i.e. structurally invisible to base-vs-planner
+   ;; comparison — which is exactly why the axis never existed and the bug
+   ;; survived. It needs the oracle to be visible at all.
+   :rebind?   (gen/frequency [[3 (gen/return false)] [1 (gen/return true)]])
+   ;; ---------------------------------------------------------------------
+   ;; Axis: FIND-VECTOR ORDER, varied INDEPENDENTLY of clause order. The
+   ;; generator has always permuted :where clauses, but derived the :find
+   ;; vector from them, so `[:find ?e ?v]` and `[:find ?v ?e]` over identical
+   ;; clauses were never both generated. The fused multi-group projection is
+   ;; sensitive to precisely that: with >=2 entity groups and a post-op it
+   ;; emits the columns in set-iteration order rather than :find order.
+   :find-perm? gen/boolean))
 
 (def ^:private rule-out-vars
   "The var each rule clause BINDS — nil for the unary rule, which binds none.
@@ -302,7 +323,8 @@
    Returns [query args opts], where opts is the map-form extras (:order-by)."
   [{:keys [score? tag? friend? modifiers pred-const shuffle-seed shuffle?
            in-coll? rules multi use2? find
-           in-scalar in-tuple? in-rel? in-lookup? rule-ground result-mod]}]
+           in-scalar in-tuple? in-rel? in-lookup? rule-ground result-mod
+           rebind? find-perm?]}]
   (let [;; :recursive/:mutual rule clauses walk :friend — force the pattern in
         friend? (or friend? (#{:recursive :mutual :rec-changes-edge
                                :rec-filtered :rec-right} rules))
@@ -334,10 +356,26 @@
             :pred-lt       [[[(list '< '?s pred-const)]] nil]
             :pred-gt       [[[(list '> '?s pred-const)]] nil]
             :pred-two-vars [['[(< ?s 100)] '[(not= ?s 11)]] nil]
-            :fn-upper      [['[(clojure.string/upper-case ?n) ?u]] '?u]
+            ;; With :rebind?, the output var is `?n` — already bound by the
+            ;; always-present [?e :name ?n]. The clause then CONSTRAINS rather
+            ;; than binds: `[(upper-case ?n) ?n]` selects the already-upper-case
+            ;; names (none, in these datasets), and `[(get-else $ ?e :nick _) ?n]`
+            ;; selects the entities whose nick equals their name. An engine that
+            ;; overwrites instead answers with every row, which is the divergence
+            ;; this axis exists to expose.
+            :fn-upper      [(if rebind?
+                              ['[(clojure.string/upper-case ?n) ?n]]
+                              ['[(clojure.string/upper-case ?n) ?u]])
+                            (if rebind? '?n '?u)]
             :fn-chain      [['[(clojure.string/upper-case ?n) ?u]
-                             '[(clojure.string/lower-case ?u) ?l]] '?l]
-            :get-else      [['[(get-else $ ?e :nick "none") ?v]] '?v]
+                             (if rebind?
+                               '[(clojure.string/lower-case ?u) ?n]
+                               '[(clojure.string/lower-case ?u) ?l])]
+                            (if rebind? '?n '?l)]
+            :get-else      [(if rebind?
+                              ['[(get-else $ ?e :nick "none") ?n]]
+                              ['[(get-else $ ?e :nick "none") ?v]])
+                            (if rebind? '?n '?v)]
             :get-else-long [['[(get-else $ ?e :score 0) ?gs]] '?gs]
             :missing-nick  [['[(missing? $ ?e :nick)]] nil]
             :not-tag       [['(not [?e :tag :red])] nil]
@@ -426,6 +464,14 @@
         ;; invalid query.
         with-part (when (and (= :with result-mod) (#{:e :e+primary} find))
                     '[?n])
+        ;; Vary :find ORDER independently of clause order. Reversal is enough to
+        ;; separate [E V] from [V E], which is the axis the fused multi-group
+        ;; projection is sensitive to, and it stays deterministic under the
+        ;; fixed seed. Applied before :with/:order-by derive from find-part, so
+        ;; those stay consistent with whatever order we ended up with.
+        find-part (if (and find-perm? (> (count find-part) 1))
+                    (vec (reverse find-part))
+                    find-part)
         order-by (when (and (= :order-by result-mod) (symbol? (first find-part)))
                    [(first find-part) :asc])]
     [(vec (concat [:find] find-part
@@ -478,18 +524,171 @@
     :as-of (d/as-of db (:max-tx db))
     :history (d/history db)))
 
+;; ---------------------------------------------------------------------------
+;; Third engine: the naive oracle (datahike.oracle)
+;;
+;; base-vs-planner has a structural blind spot — when both engines share a
+;; wrong assumption they AGREE, and this spec passes. Measured on one extra
+;; generator axis (rebinding a function output to an already-bound var): 47% of
+;; cases wrong, and 19% wrong in a way NO two-engine comparison can see. The
+;; oracle is a third implementation written for obviousness, so it breaks the
+;; tie. It costs ~1.1 ms/case against the planner's ~7.8, i.e. it is the
+;; cheapest of the three.
+
+(def ^:private oracle-mode
+  "strict — an oracle disagreement fails the build (the goal state).
+   report — collect and print disagreements without failing. Use while a known
+            shared-wrong class is still being fixed, so the axis stays covered
+            instead of being switched off and forgotten.
+   off    — skip the oracle entirely."
+  (or (System/getenv "DATAHIKE_ORACLE") "strict"))
+
+(def ^:private oracle-reports (atom []))
+
+(def ^:private oracle-stats
+  "How many generated cases the oracle actually compared, vs skipped as a shape
+   it does not cover. An oracle that skips everything reports no disagreements,
+   which reads exactly like a clean sweep — so this is asserted, not logged."
+  (atom {:checked 0 :skipped 0}))
+
+(defn- run-oracle [query db args]
+  (let [thunk (fn []
+                (try
+                  (let [args' (into [db] (map (fn [a] (if (= ::db2 a) @test-db2 a))) args)]
+                    (normalize (apply o/q query args')))
+                  (catch clojure.lang.ExceptionInfo e
+                    ;; A shape the oracle does not cover is a SKIP, never a
+                    ;; mismatch — otherwise its gaps would masquerade as bugs.
+                    (if (:oracle/unsupported (ex-data e)) ::unsupported ::raised))
+                  (catch Exception _ ::raised)))
+        fut (future (thunk))
+        r (deref fut case-timeout-ms ::timeout)]
+    (when (= r ::timeout) (future-cancel fut))
+    r))
+
+(def ^:private known-shared-wrong
+  "Classes where BOTH engines are known to answer wrongly, so the oracle
+   disagreeing is expected until the class is fixed.
+
+   This is an ALLOWLIST, not a mute switch: a disagreement outside these
+   classes still fails the build immediately, and `known-shared-wrong-is-still-
+   needed` fails when an entry stops matching — so the change that fixes a
+   class is forced to delete its entry rather than leave it accumulating."
+  [{:id :output-var-rebind
+    :why (str "an output binding whose target var is already bound must UNIFY "
+              "(Datomic; and datahike already unifies for repeated vars inside "
+              "one clause, #912/#913). Today get-else ignores the obligation on "
+              "the planner and the base engine overwrites it; tuple bindings "
+              "overwrite on both. Fixed by the binding-seam work — delete this "
+              "entry then.")
+    :match? (fn [spec] (boolean (:rebind? spec)))}])
+
+(def ^:private oracle-known (atom {}))
+
+(defn- check-oracle!
+  "Compare the oracle against the engines' agreed answer. Returns true unless
+   strict mode has found a real disagreement."
+  [query args opts spec base planner oracle]
+  (if (or (#{::unsupported ::timeout} oracle)
+          ;; opts carries :order-by/:limit/:offset, which the oracle declines
+          (seq opts)
+          ;; when the engines already disagree, that failure is reported above
+          ;; and is the one to fix first
+          (not= base planner))
+    (do (swap! oracle-stats update :skipped inc) true)
+    (let [_ (swap! oracle-stats update :checked inc)
+          agree? (= base oracle)
+          known (when-not agree?
+                  (first (filter (fn [e] ((:match? e) spec)) known-shared-wrong)))]
+      (when-not agree?
+        (swap! oracle-reports conj
+               {:query query :args args :spec (select-keys spec [:dataset :temporal])
+                :engines base :oracle oracle :known (:id known)
+                ;; the verdict that matters: both engines agree AND are wrong
+                :verdict (if known :known-shared-wrong :oracle-vs-both)}))
+      (when known (swap! oracle-known update (:id known) (fnil inc 0)))
+      (if (and known (not agree?))
+        true
+        (if (= "strict" oracle-mode)
+          (do (is agree?
+                  (str "both engines agree but the oracle disagrees — a shared "
+                       "wrong assumption is invisible to differential testing\n"
+                       "  query:   " (pr-str query) "\n"
+                       "  args:    " (pr-str args) "\n"
+                       "  engines: " (pr-str base) "\n"
+                       "  oracle:  " (pr-str oracle)))
+              agree?)
+          true)))))
+
 (defspec base-and-planner-agree-on-generated-queries
   {:num-tests num-cases :seed 1721160000042}
   (prop/for-all [spec gen-spec]
                 (let [[query args opts] (build-query spec)
                       db (wrap-db (dataset-db (:dataset spec)) (:temporal spec))
                       base (run-engine true query db args opts)
-                      planner (run-engine false query db args opts)]
-                  (is (= base planner)
-                      (str "engines diverge on " (pr-str query)
-                           " args " (pr-str args) " opts " (pr-str opts)
-                           " temporal " (:temporal spec)
-                           " dataset " (:dataset spec)
-                           "\n  base:    " (pr-str base)
-                           "\n  planner: " (pr-str planner)))
-                  (= base planner))))
+                      planner (run-engine false query db args opts)
+                      oracle (when (not= "off" oracle-mode)
+                               (run-oracle query db args))
+                      ;; The rebind axis violates ONE law (an output binding
+                      ;; whose target is already bound must unify) and that law
+                      ;; is broken in two directions at once: the planner
+                      ;; ignores the obligation while the base engine
+                      ;; overwrites it, so the SAME class shows up here as a
+                      ;; planner-vs-base divergence and, where both overwrite,
+                      ;; as an oracle-vs-both one. Both are allowlisted
+                      ;; together and both disappear with the same fix — see
+                      ;; known-shared-wrong.
+                      known-rebind? (and (not= base planner)
+                                         (:rebind? spec)
+                                         (some (fn [e] ((:match? e) spec))
+                                               known-shared-wrong))]
+                  (when known-rebind?
+                    (swap! oracle-known update :output-var-rebind (fnil inc 0)))
+                  (if known-rebind?
+                    true
+                    (do
+                      (is (= base planner)
+                          (str "engines diverge on " (pr-str query)
+                               " args " (pr-str args) " opts " (pr-str opts)
+                               " temporal " (:temporal spec)
+                               " dataset " (:dataset spec)
+                               "\n  base:    " (pr-str base)
+                               "\n  planner: " (pr-str planner)))
+                      (and (= base planner)
+                           (or (nil? oracle)
+                               (check-oracle! query args opts spec base planner oracle))))))))
+
+(deftest oracle-coverage-is-not-silent
+  (testing "the oracle actually ran — a skip-everything oracle reports no
+            disagreements, which is indistinguishable from a clean sweep"
+    (let [{:keys [checked skipped]} @oracle-stats
+          reports @oracle-reports]
+      (if (= "off" oracle-mode)
+        (is (zero? checked) "DATAHIKE_ORACLE=off must not run the oracle")
+        (do
+          ;; A file, not stdout/stderr: kaocha replaces both streams (and the
+          ;; System/err field) before test namespaces load, replaying them only
+          ;; on FAILURE — but these numbers are wanted on a passing run, and CI
+          ;; needs to read them mechanically.
+          (let [f (java.io.File. "target/oracle-stats.edn")]
+            (.mkdirs (.getParentFile f))
+            (spit f (pr-str {:mode oracle-mode :checked checked :skipped skipped
+                             :known @oracle-known
+                             :disagreements (mapv #(select-keys % [:verdict :known :query :engines :oracle])
+                                                  (take 20 reports))})))
+          (is (pos? checked)
+              (str "the oracle compared " checked " cases and skipped " skipped
+                   " — if checked is 0 the third engine is decorative")))))))
+
+(deftest known-shared-wrong-is-still-needed
+  (testing "every allowlisted both-engines-wrong class still reproduces"
+    ;; An allowlist that outlives its bug is worse than no allowlist: it keeps
+    ;; a whole class of divergence permanently unreported. So a class that has
+    ;; stopped diverging FAILS here, and the fix is to delete the entry.
+    (if (= "off" oracle-mode)
+      (is (= "off" oracle-mode) "oracle disabled — allowlist not exercised")
+      (doseq [{:keys [id why]} known-shared-wrong]
+        (is (pos? (get @oracle-known id 0))
+            (str "no generated case still diverges for known-wrong class " id
+                 " — if it is fixed, DELETE the entry from known-shared-wrong "
+                 "so the class is enforced again. Context: " why))))))
