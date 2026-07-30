@@ -206,6 +206,62 @@ way CBOR's float encoding does.)
 > pluggable codec seam so CBOR can remain a variant. **This is the main thing to
 > settle before the big PR.**
 
+### 5.3.1 Codec evidence (measured, not preference)
+
+The §5.3 note above says EDN tags fix #633 "the way CBOR's float encoding does
+[not]". That is true of *shortest-form* float encoding — which RFC 8949's own
+deterministic profile prescribes — but it is an **encoder policy, not a property
+of CBOR**. Measured against `clj-cbor` 1.1.1, which encodes floats by class
+(`codec.clj`: `(instance? Float n)` → `writeFloat`, else `writeDouble`):
+
+| value | bytes | note |
+|---|---|---|
+| `(double 1.5)` | `fb 3ff8000000000000` | f64 |
+| `(double 2.0)` | `fb 4000000000000000` | f64 **even though 2.0 fits f32 exactly** — shortest-form would narrow it here |
+| `(float 1.5)` | `fa 3fc00000` | f32 |
+| `(bigint 1234…890)` | `c2 4d …` | tag 2, arbitrary precision |
+| `1.50M` | `c4 82 21 1896` | tag 4 = `[-2 150]` — **scale preserved** |
+| `1.5M` | `c4 82 20 0f` | tag 4 = `[-1 15]` — distinct from `1.50M` |
+| `#inst "2026-01-01"` | `c1 1a 6955b900` | tag 1, epoch |
+| `#uuid "…0001"` | `d825 50 …` | tag 37 |
+| `(byte-array [0 1 127 -1])` | `44 00017fff` | major type 2, no base64 wrapper |
+
+**Cross-language check.** Those exact bytes were read with Python `cbor2`:
+
+```
+bigdec  → Decimal('1.50')                      scale intact
+instant → datetime(2026,1,1, tzinfo=utc)        native
+uuid    → UUID('…0001')                         native
+bytes   → b'\x00\x01\x7f\xff'                native
+bigint  → 123456789012345678901234567890        exact
+```
+
+This is the argument for CBOR that size and speed do not make: **a foreign reader
+produces native values while knowing nothing about datahike.** The EDN encoding
+in §5.3 routes every non-trivial type through a `#datahike/*` tag, which is
+portable in principle and Clojure-only in practice — and the scenario a dump
+exists for is precisely the one where datahike is unavailable or not trusted.
+
+**One measured gap, and it is narrow.** `clj-cbor` encodes zero, NaN and
+±Infinity as f16 regardless of class, and f16 decodes to `Float` — so a `Double`
+0.0 round-trips as a `Float`. That is #633 surviving for exactly three values. It
+does **not** affect the dump as implemented (EDN-lines): a full export/import of
+`:db.type/double` values 0.0, 1.5 and 2.0 restores all three as `Double`. It is
+the one thing a move to CBOR must address, with a width-preserving float policy.
+
+All of the above is pinned as byte-level vectors in
+`test/datahike/test/migrate_codec_test.clj`, so it is a contract rather than a
+finding: any codec — `clj-cbor`, a cross-platform successor — has to satisfy the
+same octets, which makes the *format* the commitment and the *library* an
+implementation detail.
+
+**Recommendation.** Freeze the format (tag table, float policy, canonical map
+ordering) in this document and in those vectors; keep the codec behind the
+pluggable seam §5.3 already provides. Then the library can be swapped on
+evidence, and a dump written today stays readable by anything conformant.
+
+---
+
 ### 5.4 `manifest.edn`
 
 Fixed key order (determinism). Carries: `format-version`, informational
