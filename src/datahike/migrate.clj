@@ -22,6 +22,7 @@
             [datahike.db.interface :as dbi]
             [datahike.db.utils :as dbu]
             [datahike.schema :as ds]
+            [datahike.tools :as dt]
             [datahike.migrate.edn :as medn]
             [datahike.migrate.digest :as dig]
             [datahike.migrate.sort :as msort]
@@ -141,6 +142,71 @@
   [db]
   (into {} (filter (fn [[k v]] (and (keyword? k) (map? v))) (:schema db))))
 
+(def ^:private base-capabilities
+  "Capabilities every dump reader is assumed to have. Anything beyond these must
+   be declared, so an older reader can refuse precisely."
+  #{:datahike.migrate/edn-lines})
+
+(defn- dump-requires
+  "The capability set needed to INTERPRET this dump.
+
+   Version alone is too blunt for a dump. `connector/version-check` refuses a
+   STORE written by a newer datahike, and that is right — the on-disk index is
+   not forward compatible. A dump is different: it is logical, and a v3 dump that
+   happens to use no v3-only feature is perfectly readable by v2. Refusing it on
+   the version stamp would work against datahike's own commitment to backwards
+   compatibility, while accepting a dump whose features we cannot represent would
+   silently drop data. So the dump declares what it NEEDS, and the reader
+   compares that against what it HAS.
+
+   Value-type capabilities are derived from the schema rather than hand-listed:
+   a type added in a later version appears here automatically, and an older
+   reader — whose `ds/builtin-value-types` does not contain it — refuses by
+   construction rather than by anyone remembering to update a table."
+  [db {:keys [history?]} blob-plan]
+  (into base-capabilities
+        cat
+        [(when history? [:datahike.migrate/history])
+         (when (seq (:carried blob-plan)) [:datahike.migrate/store-ref-blobs])
+         (when (seq (:external blob-plan)) [:datahike.migrate/external-blobs])
+         (when (:attribute-refs? (dbi/-config db)) [:datahike.migrate/attribute-refs])
+         ;; every declared value type in play
+         (into #{}
+               (keep (fn [[_ attr]] (:db/valueType attr)))
+               (dbi/-schema db))]))
+
+(def ^:private supported-capabilities
+  "What THIS version can interpret. Derived, so it tracks the schema."
+  (into (conj base-capabilities
+              :datahike.migrate/history
+              :datahike.migrate/store-ref-blobs
+              :datahike.migrate/external-blobs
+              :datahike.migrate/attribute-refs)
+        ds/builtin-value-types))
+
+(defn check-capabilities!
+  "Raise unless every capability the dump declares is one we can honour.
+
+   Names the specific missing capabilities: \"this dump requires
+   :db.type/double-array\" is actionable, where \"version mismatch\" is not. A
+   dump with no `:requires` predates the declaration and is read as before."
+  [manifest]
+  (when-let [required (:requires manifest)]
+    (let [missing (remove supported-capabilities required)]
+      (when (seq missing)
+        (throw (ex-info (str "This dump requires capabilities this version of datahike "
+                             "cannot interpret: " (pr-str (vec (sort missing)))
+                             ". It was written by datahike "
+                             (or (get-in manifest [:datahike/meta :datahike/version])
+                                 (:datahike-version manifest) "?")
+                             "; upgrade to import it, or re-export from a database that "
+                             "does not use these features.")
+                        {:error :import/unsupported-capabilities
+                         :missing (vec (sort missing))
+                         :required (vec (sort required))
+                         :supported (vec (sort supported-capabilities))})))))
+  nil)
+
 (defn- build-manifest [db {:keys [history?] :as _opts} digest chunks]
   (let [cfg (dbi/-config db)]
     (array-map
@@ -148,6 +214,14 @@
      :datahike-version               (try (System/getProperty "datahike.version") (catch Throwable _ nil))
      :history?                       (boolean history?)
      :serialization                  :edn-lines
+     ;; Provenance in the SAME shape the store carries (`datahike.tools/meta-data`,
+     ;; which `connector/version-check` enforces), so a dump and a store can be
+     ;; reasoned about with one vocabulary.
+     :datahike/meta                  (dt/meta-data)
+     ;; …and, separately, what is needed to READ this dump. See `dump-requires`:
+     ;; provenance is for diagnostics, capabilities are for the accept/reject
+     ;; decision, and conflating them is what makes a version stamp too blunt.
+     :requires                       (vec (sort (dump-requires db _opts (::blob-plan _opts))))
      :source-config                  (into (array-map :store-backend (get-in cfg [:store :backend]))
                                            (map (fn [k] [k (get cfg k)]))
                                            (sort source-config-allowlist))
@@ -726,6 +800,7 @@
          (try
            (let [manifest (mstore/read-manifest m)
                  mem (estimate-from-manifest manifest (manifest-total-bytes manifest nil) batch-size)]
+             (check-capabilities! manifest)
              (restore-blobs! conn manifest source opts)
              (run-import conn manifest mem
                          (fn [rf init] (mstore/reduce-lines m manifest rf init)) opts))
@@ -735,6 +810,7 @@
            (import-db-legacy conn source)
            (let [manifest (:manifest dump)
                  mem (estimate-from-manifest manifest (manifest-total-bytes manifest (:files dump)) batch-size)]
+             (check-capabilities! manifest)
              (restore-blobs! conn manifest source opts)
              (run-import conn manifest mem
                          (fn [rf init] (reduce-dump-lines dump rf init)) opts))))))))
