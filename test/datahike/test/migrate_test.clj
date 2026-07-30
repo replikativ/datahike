@@ -630,3 +630,51 @@
   (let [db (d/db-with (datahike.db/empty-db {:name {:db/cardinality :db.cardinality/one}})
                       [{:name "no blobs here"}])]
     (is (false? (mblobs/schema-has-store-refs? db)))))
+
+;; ---------------------------------------------------------------------------
+;; provenance + capabilities
+
+(deftest dump-declares-capabilities-test
+  ;; A version stamp is the right check for a STORE — `connector/version-check`
+  ;; refuses one written by a newer datahike, because the on-disk index is not
+  ;; forward compatible. A dump is logical, so a v3 dump using no v3-only feature
+  ;; IS readable by v2, and refusing it on the stamp would work against
+  ;; datahike's backwards-compat commitment. So the dump declares what it NEEDS,
+  ;; and the reader compares against what it HAS.
+  (let [{:keys [conn id]} (blob-fixture)
+        dump (str "/tmp/dh-cap-dump-" (java.util.UUID/randomUUID))]
+    (d/transact conn [{:db/ident :doc/vec :db/valueType :db.type/double-array
+                       :db/cardinality :db.cardinality/one}])
+    (d/transact conn [{:doc/name "vec" :doc/vec (double-array [1.5 2.5])}])
+    (.mkdirs (io/file dump))
+    (let [manifest (m/export-db @conn dump {})
+          requires (set (:requires manifest))]
+      (testing "provenance rides in the same shape the store uses"
+        (is (contains? (:datahike/meta manifest) :datahike/version))
+        (is (contains? (:datahike/meta manifest) :konserve/version)))
+      (testing "capabilities are derived from what the dump actually uses"
+        (is (contains? requires :datahike.migrate/history))
+        (is (contains? requires :datahike.migrate/store-ref-blobs))
+        ;; value types come from the schema, not a hand-maintained list — so a
+        ;; type added later shows up here automatically
+        (is (contains? requires :db.type/double-array))
+        (is (contains? requires :db.type/store-ref)))
+      (testing "and this version can honour its own dump"
+        (is (nil? (m/check-capabilities! manifest)))
+        (is (= [id] (:carried (:store-refs manifest))))))))
+
+(deftest unsupported-capability-is-refused-precisely-test
+  ;; The point of a capability set over a version number: say WHICH feature is
+  ;; missing. "requires :db.type/double-array" is actionable; "newer version" is
+  ;; not — and silently importing everything else would drop that attribute.
+  (testing "an unknown capability is named"
+    (let [e (is (thrown-with-msg?
+                 clojure.lang.ExceptionInfo #"cannot interpret"
+                 (m/check-capabilities!
+                  {:requires [:db.type/string :datahike.migrate/quantum-index]
+                   :datahike/meta {:datahike/version "99.0"}})))]
+      (is (= [:datahike.migrate/quantum-index] (:missing (ex-data e)))
+          "only the unknown capability is reported, not the ones we support")))
+  (testing "a dump predating capability declaration reads as before"
+    (is (nil? (m/check-capabilities! {})))
+    (is (nil? (m/check-capabilities! {:requires []})))))
