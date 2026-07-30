@@ -26,8 +26,12 @@
             [datahike.migrate.digest :as dig]
             [datahike.migrate.sort :as msort]
             [datahike.migrate.store :as mstore]
+            [datahike.migrate.blobs :as mblobs]
             [clojure.java.io :as io]
             [clojure.edn :as edn]
+            [clojure.core.async :as async]
+            [konserve.core :as k]
+            [superv.async :refer [<?? S]]
             [clj-cbor.core :as cbor])
   (:import [datahike.migrate.edn SysRef]
            [java.io File BufferedReader]
@@ -155,6 +159,15 @@
                                       :max-eid     (:max-eid db)
                                       :max-tx      (:max-tx db)}
      :semantic-digest                digest
+     ;; Which `:db.type/store-ref` blobs this dump carries, and which it could
+     ;; not. A store-ref names an object without saying where the bytes live, so
+     ;; a dump is self-contained only for blobs that were IN the source store;
+     ;; anything held in a raw bucket the browser PUT to never transits our JVM
+     ;; and cannot be copied. Recording both halves means an import can refuse a
+     ;; dump whose referents it cannot place, instead of restoring datoms that
+     ;; name objects which are not there.
+     :store-refs                     (when-let [p (::blob-plan _opts)]
+                                       (mblobs/manifest-entry p))
      :chunks                         (vec chunks))))
 
 (def chunk-re #"^datoms-\d{6}\.edn$")
@@ -218,6 +231,58 @@
                (conj chunks {:file fname :count cnt :bytes (.length final) :sha256 sha})
                dacc')))))
 
+(defn- blob-dir
+  "The directory carried blobs live in for a filesystem dump.
+
+   Only a DIRECTORY dump can carry blobs: a flat single-file dump has nowhere to
+   put them, and silently dropping them would produce a dump whose datoms name
+   objects it does not contain."
+  ^File [target]
+  (io/file target mblobs/dir-name))
+
+(defn- blob-writer
+  "`(fn [id bytes])` writing one blob into `target`'s blob area."
+  [target opts]
+  (cond
+    (mstore/store-target? target)
+    (let [m (mstore/open target)]
+      (fn [id bytes]
+        (try (<?? S (k/bassoc (:store m) [mblobs/dir-name id] bytes))
+             (finally nil))))
+
+    (= :flat (:format opts))
+    (fn [_ _]
+      (throw (ex-info (str "This database has :db.type/store-ref blobs, which a flat "
+                           "single-file dump cannot carry. Export to a directory so the "
+                           "bytes can be written under " mblobs/dir-name "/.")
+                      {:error :export/flat-with-blobs})))
+
+    :else
+    (let [dir (doto (blob-dir target) (.mkdirs))]
+      (fn [id bytes]
+        (with-open [out (io/output-stream (io/file dir (str id)))]
+          (.write out ^bytes bytes))))))
+
+(defn- blob-reader
+  "`(fn [id]) -> bytes-or-nil` reading one blob back out of a dump."
+  [source]
+  (if (mstore/store-target? source)
+    (let [m (mstore/open source)]
+      (fn [id]
+        (<?? S (k/bget (:store m) [mblobs/dir-name id]
+                       (fn [{:keys [input-stream]}]
+                         (async/go
+                           (when input-stream
+                             (let [bos (java.io.ByteArrayOutputStream.)]
+                               (io/copy input-stream bos)
+                               (.toByteArray bos)))))))))
+    (fn [id]
+      (let [f (io/file (blob-dir source) (str id))]
+        (when (.exists f)
+          (let [bos (java.io.ByteArrayOutputStream.)]
+            (with-open [in (io/input-stream f)] (io/copy in bos))
+            (.toByteArray bos)))))))
+
 (defn export-db
   "Export a database (or connection) to `target`.
 
@@ -258,6 +323,20 @@
                           :sort-buffer 1000000
                           :sort? true}
                          opts)
+         ;; Only walk for blobs when the schema can actually have them. Two
+         ;; reasons, and the second is not an optimisation:
+         ;;   * `reachable-store-refs` is a full reachability mark — pointless
+         ;;     when no attribute is a `:db.type/store-ref`;
+         ;;   * it walks index ADDRESSES, so it requires a flushed index and
+         ;;     raises "Index needs to be properly flushed before marking" on an
+         ;;     unflushed in-memory db. Plenty of legitimate exports are of such
+         ;;     a db (`db-with`, a `:memory` store mid-test), and those cannot
+         ;;     hold in-store blobs anyway.
+         blob-plan (when (mblobs/schema-has-store-refs? db)
+                     (mblobs/plan db (:store db)))
+         opts     (cond-> opts
+                    (seq (:carried blob-plan)) (assoc ::blob-plan blob-plan)
+                    (seq (:external blob-plan)) (assoc ::blob-plan blob-plan))
          progress (or (:progress-fn opts) (constantly nil))
          write-to! (fn [lines]
                      (cond
@@ -278,6 +357,13 @@
                          (if (= :flat fmt)
                            (write-flat! db opts (io/file target) lines progress)
                            (write-chunked! db opts (io/file target) lines (:chunk-size opts) progress)))))]
+     ;; Blob carriage. Planned BEFORE anything is written so the manifest can
+     ;; declare it, and the bytes are written before the manifest — which is the
+     ;; commit marker — so a dump that has a manifest has its blobs. Same
+     ;; ordering the konserve-sync walker needs when it ships blobs ahead of the
+     ;; branch head: nothing may name an object that is not there yet.
+     (when-let [plan (::blob-plan opts)]
+       (mblobs/copy-out! (:store db) plan (blob-writer target opts)))
      (if (:sort? opts)
        (let [records (export-records db opts)
              ^File tmp-dir (.toFile (Files/createTempDirectory
@@ -596,6 +682,26 @@
        :recommended-heap (:recommended-heap mem)
        :errors      errors})))
 
+(defn- restore-blobs!
+  "Put the dump's carried `:db.type/store-ref` bytes into the target store, before
+   any datom that names them is loaded.
+
+   Order matters and is the same rule the sync walker follows: a reference must
+   never exist without its referent, or a reader between the two steps sees a
+   dangling pointer. Blobs are content-addressed, so restoring one twice is
+   idempotent and a re-run cannot corrupt anything.
+
+   A dump that declares blobs it could NOT carry (`:external` — bytes that lived
+   outside the source store, e.g. a bucket a browser PUT to directly) is refused
+   unless the caller passes `:accept-external-blobs? true`. The restored database
+   would name objects this import did not place, and that has to be a decision
+   rather than something discovered later by a failing read."
+  [conn manifest source opts]
+  (when-let [store-refs (:store-refs manifest)]
+    (mblobs/check-importable store-refs opts)
+    (when (seq (:carried store-refs))
+      (mblobs/copy-in! (:store @conn) store-refs (blob-reader source)))))
+
 (defn import-db
   "Import a dump produced by `export-db` into connection `conn`.
 
@@ -620,6 +726,7 @@
          (try
            (let [manifest (mstore/read-manifest m)
                  mem (estimate-from-manifest manifest (manifest-total-bytes manifest nil) batch-size)]
+             (restore-blobs! conn manifest source opts)
              (run-import conn manifest mem
                          (fn [rf init] (mstore/reduce-lines m manifest rf init)) opts))
            (finally (mstore/close m))))
@@ -628,6 +735,7 @@
            (import-db-legacy conn source)
            (let [manifest (:manifest dump)
                  mem (estimate-from-manifest manifest (manifest-total-bytes manifest (:files dump)) batch-size)]
+             (restore-blobs! conn manifest source opts)
              (run-import conn manifest mem
                          (fn [rf init] (reduce-dump-lines dump rf init)) opts))))))))
 

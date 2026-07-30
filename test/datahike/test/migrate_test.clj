@@ -9,6 +9,12 @@
             [datahike.db.utils :as dbu]
             [datahike.migrate :as m]
             [datahike.migrate.edn :as medn]
+            [datahike.migrate.blobs :as mblobs]
+            [datahike.blob :as blob]
+            [datahike.db]
+            [konserve.core :as k]
+            [clojure.core.async :refer [go]]
+            [superv.async :refer [<?? S]]
             [clojure.string :as str]
             [konserve.store :as ks]
             [datahike.test.utils :as utils]))
@@ -531,3 +537,96 @@
         (is (= Float  (class (v tgt "Alice" :ratio))) "float stays Float without schema"))
       (teardown src)
       (teardown tgt))))
+
+;; ---------------------------------------------------------------------------
+;; store-ref blobs
+
+(defn- blob-fixture
+  "A file-backed db with one in-store blob, plus one store-ref whose bytes were
+   never written here — i.e. a blob living outside this store, which is the case
+   a dump cannot carry."
+  []
+  (let [path (str "/tmp/dh-blob-test-" (java.util.UUID/randomUUID))
+        cfg  {:store {:backend :file :path path :id (java.util.UUID/randomUUID)}
+              :schema-flexibility :write :keep-history? true}
+        _    (d/create-database cfg)
+        conn (d/connect cfg)]
+    (d/transact conn [{:db/ident :doc/name :db/valueType :db.type/string
+                       :db/cardinality :db.cardinality/one}
+                      {:db/ident :doc/file :db/valueType :db.type/store-ref
+                       :db/cardinality :db.cardinality/one}])
+    (let [payload (.getBytes "the actual blob payload" "UTF-8")
+          id      (blob/blob-id payload)
+          ext-id  (blob/blob-id (.getBytes "lives in a raw bucket" "UTF-8"))]
+      (<?? S (k/bassoc (:store @conn) id payload))
+      (d/transact conn [{:doc/name "carried" :doc/file id}])
+      {:conn conn :cfg cfg :payload payload :id id :ext-id ext-id})))
+
+(defn- read-blob-from-store [store id]
+  (<?? S (k/bget store id
+                 (fn [{:keys [input-stream]}]
+                   (go (when input-stream
+                         (let [bos (java.io.ByteArrayOutputStream.)]
+                           (io/copy input-stream bos)
+                           (.toByteArray bos))))))))
+
+(deftest store-ref-blobs-are-carried-test
+  ;; A store-ref datom holds a content id; exporting it exports the REFERENCE.
+  ;; Without carrying the bytes the datom restores perfectly and names an object
+  ;; that is not in the target store — a backup that silently lost its blobs.
+  (let [{:keys [conn payload id]} (blob-fixture)
+        dump (str "/tmp/dh-blob-dump-" (java.util.UUID/randomUUID))]
+    (.mkdirs (io/file dump))
+    (let [manifest (m/export-db @conn dump {})]
+      (testing "the manifest declares what it carries"
+        (is (= true (:self-contained? (:store-refs manifest))))
+        (is (= 1 (:carried-count (:store-refs manifest))))
+        (is (= [id] (:carried (:store-refs manifest)))))
+      (testing "the bytes are in the dump, named by their content id"
+        ;; the file name IS the checksum, so verification needs no side table
+        (is (.exists (io/file dump mblobs/dir-name (str id))))))
+    (let [path2 (str "/tmp/dh-blob-target-" (java.util.UUID/randomUUID))
+          cfg2  {:store {:backend :file :path path2 :id (java.util.UUID/randomUUID)}
+                 :schema-flexibility :write :keep-history? true}
+          _     (d/create-database cfg2)
+          conn2 (d/connect cfg2)
+          rep   (m/import-db conn2 dump {})]
+      (testing "datoms and blobs both arrive"
+        (is (:verified? rep))
+        (is (= #{["carried" id]}
+               (d/q '[:find ?n ?f :where [?e :doc/name ?n] [?e :doc/file ?f]] (d/db conn2))))
+        (is (= (seq payload) (seq (read-blob-from-store (:store @conn2) id)))
+            "the referent must be present, not merely the reference")))))
+
+(deftest store-ref-blobs-outside-the-store-test
+  ;; `:db.type/store-ref` says WHAT an object is, never where it lives: bytes in a
+  ;; raw bucket a browser PUT to never transit this JVM. We cannot copy those, so
+  ;; the dump must say so rather than appear complete.
+  (let [{:keys [conn ext-id]} (blob-fixture)]
+    (d/transact conn [{:doc/name "external" :doc/file ext-id}])
+    (let [plan (mblobs/plan @conn (:store @conn))]
+      (is (= [ext-id] (:external plan)))
+      (is (false? (:self-contained? plan)))
+      (testing "import refuses a dump it cannot fully honour"
+        (is (thrown-with-msg? clojure.lang.ExceptionInfo #"not self-contained"
+                              (mblobs/check-importable plan {}))))
+      (testing "…unless the operator accepts it explicitly"
+        (is (nil? (mblobs/check-importable plan {:accept-external-blobs? true})))))))
+
+(deftest store-ref-blob-corruption-is-detected-test
+  ;; Blobs are content-addressed, so a wrong object under a content-addressed key
+  ;; would be trusted by every later reader. Verify on the way in.
+  (let [{:keys [conn id]} (blob-fixture)]
+    (is (thrown-with-msg? clojure.lang.ExceptionInfo #"does not match its content id"
+                          (mblobs/copy-in! (:store @conn) {:carried [id]}
+                                           (fn [_] (.getBytes "tampered" "UTF-8")))))
+    (is (thrown-with-msg? clojure.lang.ExceptionInfo #"missing a blob it declares"
+                          (mblobs/copy-in! (:store @conn) {:carried [id]} (fn [_] nil))))))
+
+(deftest store-ref-walk-is-skipped-without-store-ref-attrs-test
+  ;; The reachability walk needs a FLUSHED index, and plenty of legitimate
+  ;; exports are of an unflushed in-memory db. Gating on the schema keeps those
+  ;; working — and makes the common case pay nothing.
+  (let [db (d/db-with (datahike.db/empty-db {:name {:db/cardinality :db.cardinality/one}})
+                      [{:name "no blobs here"}])]
+    (is (false? (mblobs/schema-has-store-refs? db)))))
