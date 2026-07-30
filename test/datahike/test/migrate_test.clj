@@ -678,3 +678,35 @@
   (testing "a dump predating capability declaration reads as before"
     (is (nil? (m/check-capabilities! {})))
     (is (nil? (m/check-capabilities! {:requires []})))))
+
+(deftest verify-covers-blobs-test
+  ;; Blobs verify at the SAME tier as the datom chunks. The case that matters is
+  ;; a dump whose datoms are perfect and whose `store-refs/` is short: counts
+  ;; match, the semantic digest matches, every pre-existing tier passes — and the
+  ;; dump is unrestorable. Reporting :ok? true there is exactly the reassurance
+  ;; nobody should get.
+  (let [{:keys [conn id]} (blob-fixture)
+        dump (str "/tmp/dh-verify-blob-" (java.util.UUID/randomUUID))]
+    (.mkdirs (io/file dump))
+    (m/export-db @conn dump {})
+    (testing "an intact dump verifies, and says what it checked"
+      (let [v (m/verify dump)]
+        (is (:ok? v))
+        (is (= 1 (:declared (:blobs v))))
+        (is (= 1 (:verified (:blobs v))))
+        (is (empty? (:missing (:blobs v)))))
+      (is (:ok? (m/verify @conn dump))))
+    (testing "a missing blob fails verification even though every other tier passes"
+      (io/delete-file (io/file dump mblobs/dir-name (str id)))
+      (let [v (m/verify @conn dump)]
+        (is (false? (:ok? v)))
+        (is (true? (:match? (:tier1 v))) "datom counts still match")
+        (is (true? (:match? (:tier2 v))) "the semantic digest still matches")
+        (is (false? (:ok? (:blobs v))) "…and the blob tier is what fails")
+        (is (= [id] (:missing (:blobs v))))))
+    (testing "a blob with the right name and the wrong bytes is corrupt"
+      ;; only detectable because the file NAME is the content hash
+      (spit (io/file dump mblobs/dir-name (str id)) "tampered")
+      (let [v (m/verify dump)]
+        (is (false? (:ok? v)))
+        (is (= [id] (:corrupt (:blobs v))))))))
