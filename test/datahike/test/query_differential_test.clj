@@ -18,6 +18,7 @@
    deterministically, and test.check shrinks it to a minimal spec."
   (:require
    [clojure.test :refer [is deftest testing]]
+   [clojure.walk]
    [clojure.test.check.clojure-test :refer [defspec]]
    [clojure.test.check.generators :as gen]
    [clojure.test.check.properties :as prop]
@@ -203,7 +204,17 @@
                (gen/elements [:pred-lt :pred-gt :fn-upper :fn-chain
                               :get-else :get-else-long :missing-nick
                               :not-tag :not-join-nick :or-tag :or-and
-                              :pred-two-vars])
+                              :pred-two-vars
+                              ;; A predicate on the CONSUMER group's value var
+                              ;; (?fn, from the friend join). Every other
+                              ;; predicate here sits on ?s or ?n, i.e. on the
+                              ;; PRODUCER — and the two are not interchangeable:
+                              ;; a consumer-side predicate is attached to the
+                              ;; consumer group, which makes it emit wide tuples
+                              ;; while leaving has-post-ops? false, the exact
+                              ;; combination under which the fused path skipped
+                              ;; its projection and returned raw wide tuples.
+                              :pred-consumer])
                {:min-elements 0 :max-elements 3})
    :pred-const (gen/choose -5 40)
    ;; deterministic clause permutation — both engines must tolerate ANY
@@ -261,7 +272,7 @@
    ;; whenever ?s exists it dominates `primary`.
    :find      (gen/elements [:e :e+primary :e+modifier :primary+modifier
                              :coll-primary :agg-count :agg-min :agg-count-primary
-                             :consumer-only
+                             :consumer-only :consumer-pair
                              ;; Axis: THE AGGREGATE. Only `count` and `min` were
                              ;; generated — the two type-PRESERVING ones, which
                              ;; is why the population-vs-sample variance split
@@ -292,7 +303,19 @@
    ;; clauses were never both generated. The fused multi-group projection is
    ;; sensitive to precisely that: with >=2 entity groups and a post-op it
    ;; emits the columns in set-iteration order rather than :find order.
-   :find-perm? gen/boolean))
+   :find-perm? gen/boolean
+   ;; ---------------------------------------------------------------------
+   ;; Axis: VARIABLE NAMES. Alpha-renaming cannot change a query's meaning,
+   ;; so an engine whose answer depends on it is wrong by construction — and
+   ;; the fused path DID depend on it: a group emits its wide tuple as
+   ;; `(vec :output-vars)`, i.e. in SET-ITERATION order, which is a function
+   ;; of the variable symbols' hashes. `#{?e ?en}` iterates as [?en ?e] while
+   ;; the alpha-equivalent `#{?f ?fn}` iterates as [?f ?fn]. With fixed names
+   ;; the corpus therefore could not see the missing projection at ANY case
+   ;; count — it was deterministically invisible, not merely unlikely.
+   ;; Renaming is injective (a constant prefix on every var), so distinct
+   ;; variables stay distinct and the meaning is untouched.
+   :var-rename (gen/elements [:none :none :prefix-z :prefix-q9 :suffix-1])))
 
 (def ^:private rule-out-vars
   "The var each rule clause BINDS — nil for the unary rule, which binds none.
@@ -346,9 +369,12 @@
                    (= :join-name multi) (conj '[$2 ?e :name ?n2])
                    (= :join-score multi) (conj '[$2 ?e :score ?s2]))
         ;; modifiers that need ?s degrade when score? is absent
-        modifiers (mapv (fn [m] (if (and (#{:pred-lt :pred-gt :pred-two-vars} m)
-                                         (not score?))
-                                  :fn-upper m))
+        modifiers (mapv (fn [m]
+                          (cond
+                            (and (#{:pred-lt :pred-gt :pred-two-vars} m) (not score?)) :fn-upper
+                            ;; ?fn only exists when the friend join is present
+                            (and (= :pred-consumer m) (not friend?)) :fn-upper
+                            :else m))
                         (distinct modifiers))
         mod->clauses
         (fn [m]
@@ -356,6 +382,7 @@
             :pred-lt       [[[(list '< '?s pred-const)]] nil]
             :pred-gt       [[[(list '> '?s pred-const)]] nil]
             :pred-two-vars [['[(< ?s 100)] '[(not= ?s 11)]] nil]
+            :pred-consumer [['[(not= ?fn "zzz")]] nil]
             ;; With :rebind?, the output var is `?n` — already bound by the
             ;; always-present [?e :name ?n]. The clause then CONSTRAINS rather
             ;; than binds: `[(upper-case ?n) ?n]` selects the already-upper-case
@@ -414,6 +441,13 @@
                     ;; only the consumer group's var; degrades to [?n] without
                     ;; the friend join (single group — no producer/consumer split)
                     :consumer-only [(if friend? '?fn '?n)]
+                    ;; BOTH vars of the consumer group, entity var first. The
+                    ;; consumer emits its own wide tuple as a `vec` of its
+                    ;; :output-vars SET, so this is the projection that has to
+                    ;; reorder columns — and with only one consumer var
+                    ;; projected (:consumer-only) a wrong layout is invisible,
+                    ;; because a 1-tuple cannot be permuted.
+                    :consumer-pair (if friend? '[?f ?fn] ['?e '?n])
                     ;; the value aggregates need a numeric-ish column; without
                     ;; :score they degrade to counting rather than build a query
                     ;; whose divergence would only be about the wrong column
@@ -480,6 +514,24 @@
                   [:where] clauses))
      args
      (cond-> {} order-by (assoc :order-by order-by))]))
+
+(defn- rename-vars
+  "Alpha-rename every query variable. Injective, so the query's meaning is
+   unchanged and any answer difference is a bug — see the :var-rename axis."
+  [form style]
+  (if (= :none style)
+    form
+    (let [ren (fn [sym]
+                (let [n (name sym)]
+                  (case style
+                    :prefix-z  (symbol (str "?z" (subs n 1)))
+                    :prefix-q9 (symbol (str "?q9" (subs n 1)))
+                    :suffix-1  (symbol (str n "_1")))))]
+      (clojure.walk/postwalk
+       (fn [x] (if (and (symbol? x) (= \? (first (name x))) (> (count (name x)) 1))
+                 (ren x)
+                 x))
+       form))))
 
 (defn- normalize
   "Order-insensitive, duplicate-preserving comparison form: collection finds
@@ -623,7 +675,18 @@
 (defspec base-and-planner-agree-on-generated-queries
   {:num-tests num-cases :seed 1721160000042}
   (prop/for-all [spec gen-spec]
-                (let [[query args opts] (build-query spec)
+                (let [[query0 args opts0] (build-query spec)
+                      ;; The two axes must not overlap. Rebinding is a KNOWN
+                      ;; broken class whose wrong answer is itself hash-order
+                      ;; dependent (an overwrite's winner depends on var order),
+                      ;; so a renamed rebind case fails the metamorphic property
+                      ;; for a reason we have already catalogued — and would
+                      ;; mask every OTHER renaming bug in those shapes. Keep
+                      ;; renaming for the shapes whose answers are meant to be
+                      ;; stable; rebinding is still covered on its own.
+                      rename-style (if (:rebind? spec) :none (:var-rename spec))
+                      query (rename-vars query0 rename-style)
+                      opts (rename-vars opts0 rename-style)
                       db (wrap-db (dataset-db (:dataset spec)) (:temporal spec))
                       base (run-engine true query db args opts)
                       planner (run-engine false query db args opts)
@@ -638,12 +701,35 @@
                       ;; as an oracle-vs-both one. Both are allowlisted
                       ;; together and both disappear with the same fix — see
                       ;; known-shared-wrong.
-                      known-rebind? (and (not= base planner)
-                                         (:rebind? spec)
-                                         (some (fn [e] ((:match? e) spec))
-                                               known-shared-wrong))]
+                      ;; METAMORPHIC: alpha-renaming cannot change an answer.
+                      ;; Asserted for every renamed case rather than hoping the
+                      ;; rare shape/name combination is drawn — the fused path's
+                      ;; wide tuple is `(vec :output-vars)`, i.e. set-iteration
+                      ;; order, so renaming-sensitivity is a whole BUG CLASS and
+                      ;; not one query. One extra planner run on the renamed
+                      ;; fraction buys coverage no case count could.
+                      orig-planner (when (not= :none rename-style)
+                                     (run-engine false query0 db args opts0))
+                      ;; Keyed on the SPEC, not on the divergence: the class
+                      ;; shows up three ways — planner-vs-base, oracle-vs-both,
+                      ;; and (because an overwrite's outcome depends on var hash
+                      ;; order) alpha-renaming — and all three are the same bug.
+                      known-class (first (filter (fn [e] ((:match? e) spec))
+                                                 known-shared-wrong))
+                      diverged? (or (not= base planner)
+                                    (and orig-planner (not= orig-planner planner)))
+                      known-rebind? (boolean (and known-class diverged?))]
                   (when known-rebind?
-                    (swap! oracle-known update :output-var-rebind (fnil inc 0)))
+                    (swap! oracle-known update (:id known-class) (fnil inc 0)))
+                  (when orig-planner
+                    (is (= orig-planner planner)
+                        (str "alpha-renaming changed the planner's answer — "
+                             "the query means the same thing with either set of "
+                             "variable names\n"
+                             "  original: " (pr-str query0) "\n"
+                             "  renamed:  " (pr-str query) "\n"
+                             "  original answer: " (pr-str orig-planner) "\n"
+                             "  renamed answer:  " (pr-str planner))))
                   (if known-rebind?
                     true
                     (do
