@@ -912,6 +912,44 @@
                    [] picks)]
         {:sampled (count picks) :ok? (empty? diffs) :diffs (vec (take 5 diffs))}))))
 
+(defn- verify-blobs
+  "Check that a dump holds every blob it declares, and that each one's bytes hash
+   to the id it is filed under.
+
+   Blobs are verified at the SAME tier as the datom chunks, not reported
+   alongside: a dump whose `store-refs/` is short is incomplete, and a
+   verification that says `:ok? true` about it would be exactly the reassurance
+   nobody should get. Because the file name IS the content hash, this needs
+   nothing from the manifest beyond the id — and it catches a truncated or torn
+   object, which a count could not.
+
+   `:external` ids are counted, never checked: those bytes were never ours to
+   carry (see `datahike.migrate.blobs`). They make a dump not self-contained,
+   which the manifest states, and it is the operator who must place them."
+  [manifest source]
+  (if-let [store-refs (:store-refs manifest)]
+    (let [read-blob (blob-reader source)
+          declared  (vec (:carried store-refs))
+          results   (mapv (fn [id]
+                            (let [bytes (read-blob id)]
+                              (cond
+                                (nil? bytes)                    [:missing id]
+                                (not (mblobs/verify-blob id bytes)) [:corrupt id]
+                                :else                           [:ok id])))
+                          declared)
+          missing   (mapv second (filter #(= :missing (first %)) results))
+          corrupt   (mapv second (filter #(= :corrupt (first %)) results))]
+      {:ok?            (and (empty? missing) (empty? corrupt))
+       :declared       (count declared)
+       :verified       (count (filter #(= :ok (first %)) results))
+       :missing        missing
+       :corrupt        corrupt
+       :external       (count (:external store-refs))
+       :self-contained? (boolean (:self-contained? store-refs))})
+    ;; no store-refs section: either no blobs, or a dump predating blob carriage
+    {:ok? true :declared 0 :verified 0 :missing [] :corrupt []
+     :external 0 :self-contained? true}))
+
 (defn verify
   "Compare a dump against its own manifest (integrity) and, given a live db/conn,
    against that database (id-independent semantic equivalence). Returns a tiered
@@ -923,9 +961,11 @@
                               (let [m (mstore/open source)]
                                 (try {:manifest (mstore/read-manifest m)} (finally (mstore/close m))))
                               (open-dump source))]
-     {:ok? true
-      :tier0 {:checksums :ok :format (get manifest manifest-key)}
-      :tier1 {:manifest-count (:count (:semantic-digest manifest))}}))
+     (let [blobs (verify-blobs manifest source)]
+       {:ok? (:ok? blobs)
+        :tier0 {:checksums :ok :format (get manifest manifest-key)}
+        :tier1 {:manifest-count (:count (:semantic-digest manifest))}
+        :blobs blobs})))
   ([conn-or-db source]
    (let [db    (->db conn-or-db)]
      (with-source-lines source
@@ -952,15 +992,18 @@
                            (= (:ref-counts dump-fp) (:ref-counts live-fp))
                            (= (:out-degree dump-fp) (:out-degree live-fp)))
                ;; tier 3 — sampled structural diff
-               t3     (verify-sample manifest reduce-lines db ref? 25)]
-           {:ok? (and (= dump-count live-count) t2-ok (:ok? t3))
+               t3     (verify-sample manifest reduce-lines db ref? 25)
+               ;; blobs — same tier as the chunks, and part of :ok?
+               blobs  (verify-blobs manifest source)]
+           {:ok? (and (= dump-count live-count) t2-ok (:ok? t3) (:ok? blobs))
             :tier0 {:checksums :ok :format (get manifest manifest-key)}
             :tier1 {:manifest-count dump-count :live-count live-count :match? (= dump-count live-count)}
             :tier2 {:match? t2-ok
                     :value-digest-match? (= (:digest dump-fp) (:digest live-fp))
                     :ref-counts-match? (= (:ref-counts dump-fp) (:ref-counts live-fp))
                     :out-degree-match? (= (:out-degree dump-fp) (:out-degree live-fp))}
-            :tier3 t3}))))))
+            :tier3 t3
+            :blobs blobs}))))))
 
 ;; ---------------------------------------------------------------------------
 ;; legacy CBOR path (backward compatibility for old dumps)
