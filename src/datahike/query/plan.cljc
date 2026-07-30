@@ -598,9 +598,15 @@
         (if (seq candidates)
           (apply min-key :cost candidates)
           ;; Fallback: if no valid scan/merge partitioning exists (multiple variable-attr ops),
-          ;; pick lowest BOUND-AWARE cardinality as scan
-          (let [sorted (sort-by scan-cost-of pattern-ops)]
-            {:scan (first sorted) :merges (vec (rest sorted))}))))))
+          ;; pick lowest BOUND-AWARE cardinality as scan — but never an OPTIONAL op while a
+          ;; non-optional one is available. The candidate loop above already refuses to let a
+          ;; `get-else` drive a scan (a driving scan walks its attribute's index, so an entity
+          ;; lacking the attribute is never visited and its default is lost); this fallback
+          ;; skipped that rule and could hand the group's scan slot to the `get-else`.
+          (let [drivable (or (seq (remove :optional? pattern-ops)) pattern-ops)
+                scan (first (sort-by scan-cost-of drivable))
+                sorted (sort-by scan-cost-of (remove #(identical? % scan) pattern-ops))]
+            {:scan scan :merges (vec sorted)}))))))
 
 ;; ---------------------------------------------------------------------------
 ;; Pipeline construction
@@ -776,6 +782,14 @@
    Allows groups (entity-group, pattern-scan) plus predicates, functions, and
    simple NOT-JOINs for single-group plans only.
    Functions that reference source symbols ($) are excluded.
+   A STANDALONE optional scan (a `get-else` whose entity var carries no other
+   pattern to fuse with) is excluded: the fused executor implements left-outer
+   only for optional MERGES inside an entity group, where execute-group-direct
+   emits the default on a lookup miss. A standalone optional scan is instead
+   joined to its producer group by probing the consumer's scan field — an INNER
+   join, which silently drops exactly the rows the default is FOR (#920). The
+   Relation engine routes these through bind-by-fn(get-else) (#884), so leave
+   such plans to it.
    This is a necessary but not sufficient condition — runtime still checks find-var coverage."
   [ops]
   (let [groups (filterv #(#{:entity-group :pattern-scan} (:op %)) ops)
@@ -783,6 +797,14 @@
     (and (seq ops)
          (every? #(#{:entity-group :pattern-scan :predicate :function :not-join} (:op %)) ops)
          (not-any? :source ops)
+         (not-any? #(or (and (= :pattern-scan (:op %)) (:optional? %))
+                        ;; …and an entity group whose DRIVING scan is optional. Normally
+                        ;; unreachable (dp-order-fuse-ops refuses to let a `get-else` drive),
+                        ;; but a group with two variable-attribute patterns admits no valid
+                        ;; scan/merge partitioning at all and falls back to cost order. Belt
+                        ;; and braces: this is the invariant, so assert it where it is used.
+                        (:optional? (:scan-op %)))
+                   ops)
          ;; Post-ops only supported for single-group plans
          (or (not has-post-ops?)
              (= 1 (count groups)))
