@@ -548,13 +548,18 @@
          report' (-> report
                      (update-in [:db-after] update-fn datom)
                      (update-in [:tx-data] conj datom))]
-     (if (dbu/tuple-source? db a)
-       (let [e      (:e datom)
-             v      (if (datom-added datom) (:v datom) nil)
-             queue  (or (-> report' ::queued-tuples (get e)) {})
-             tuples (get (dbi/-attrs-by db :db/attrTuples) a)
-             queue' (queue-tuples queue tuples db e v)]
-         (update report' ::queued-tuples assoc e queue'))
+     ;; ONE resolving lookup, not a resolving predicate plus a raw lookup.
+     ;; `tuple-source?` resolved `a` ref→ident and answered yes; the `get` that
+     ;; followed did not, so under `:attribute-refs?` (where `a` is a numeric
+     ;; ref and `:db/attrTuples` is ident-keyed) it found nil and `queue-tuples`
+     ;; reduced over nothing — composite tuples were silently never derived,
+     ;; and with them uniqueness on the composite silently unenforced. Asking
+     ;; once for the value cannot disagree with itself.
+     (if-let [tuples (dbu/attr-props db a :db/attrTuples)]
+       (let [e     (:e datom)
+             v     (if (datom-added datom) (:v datom) nil)
+             queue (or (-> report' ::queued-tuples (get e)) {})]
+         (update report' ::queued-tuples assoc e (queue-tuples queue tuples db e v)))
        report'))))
 
 (defn- check-upsert-conflict [entity acc]
@@ -1018,7 +1023,16 @@
 
 (defn check-tuple [db op-vec]
   (let [[op _ a v] op-vec
-        attr-schema (-> db dbi/-schema (get a))]
+        ;; By IDENT. `schema` is dual-keyed under `:attribute-refs?`, but the ref
+        ;; key holds a POINTER — `update-schema` stores `[:schema e] → v-ident` —
+        ;; so a raw numeric `a` returned a keyword here, every branch below was
+        ;; false, and tuple validation silently did nothing: a composite could be
+        ;; written by hand past the guard at the bottom, and an arity- or
+        ;; type-invalid heterogeneous tuple was accepted. Resolving first is also
+        ;; why `attr-schema` must be a MAP; anything else means the lookup missed.
+        a-ident (dbu/attr-ident db a)
+        attr-schema (let [s (-> db dbi/-schema (get a-ident))]
+                      (when (map? s) s))]
     (cond (:db/tupleType attr-schema)
           (cond (> (count v) 8)
                 (log/raise "Cannot store more than 8 values for homogeneous tuple: " op-vec
@@ -1028,7 +1042,9 @@
                 (log/raise "Cannot store homogeneous tuple with values of different type: " op-vec
                            {:error :transact/syntax, :tx-data op-vec})
 
-                (not (s/valid? (-> db dbi/-schema a :db/tupleType) (first v)))
+                ;; `attr-schema` already IS this lookup; the re-fetch used the raw
+                ;; `a` AS A FUNCTION, which throws outright on a numeric ref.
+                (not (s/valid? (:db/tupleType attr-schema) (first v)))
                 (log/raise "Cannot store homogeneous tuple. Values are of wrong type: " op-vec
                            {:error :transact/syntax, :tx-data op-vec}))
           (:db/tupleTypes attr-schema)
