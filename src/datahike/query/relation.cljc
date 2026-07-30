@@ -247,8 +247,13 @@
 
 (defn sub-context
   "The context a SUB-PLAN runs in: everything non-relational the caller had —
-   `:sources`, `:consts`, `:cancel`, `:settings`, `:rules` — with exactly the
-   relations the caller chose to expose.
+   `:sources`, `:consts`, `:cancel`, `:settings`, `:rules`, the rule
+   accumulators and the rule demand sink — with exactly the relations the
+   caller chose to expose.
+
+   NOTE the key list is an ALLOW-LIST: a new non-relational context key is
+   dropped from every sub-plan until it is added here, and dropping one fails
+   silently. Both bugs below were that.
 
    Sub-plan execution sites used to improvise this, and improvised differently:
    one passed `{:rels [] :sources {}}` and so lost the source bindings (a
@@ -262,7 +267,13 @@
    the only way a sub-plan may be constructed."
   [context rels]
   (-> (select-keys context [:sources :consts :cancel :settings :rules
-                            :rule-accumulators :entity-filters])
+                            :rule-accumulators :entity-filters
+                            ;; The recursive fixpoint's demand sink: a
+                            ;; `:rule-lookup` inside a branch SUB-PLAN is where
+                            ;; demand is harvested, so dropping it here loses
+                            ;; every demand tuple and the fixpoint silently
+                            ;; stops after the base case (#918).
+                            :rule-demand-sink])
       (assoc :rels (vec rels))))
 
 ;; ---------------------------------------------------------------------------

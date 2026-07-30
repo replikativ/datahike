@@ -1586,6 +1586,14 @@
                         :clause clause})
            rel (rel/->Relation final-attrs-map [])
            tmp-stats []]
+      ;; The relational rule solver expands subgoals top-down and had no
+      ;; cancellation check, so a rule with no finite proof tree — a cycle plus
+      ;; an unbounded counter, say — could not be interrupted. That matters more
+      ;; now: the planner DECLINES rules whose recursion it cannot bound to this
+      ;; solver, so this is where such a rule ends up.
+      (when-let [c (:cancel context)]
+        (when @c
+          (log/raise "query canceled" {:error :query/canceled})))
       (if-some [frame (first stack)]
         (let [[clauses [rule-clause & next-clauses]] (split-with #(not (rule? context %)) (:clauses frame))]
           (if (nil? rule-clause)
