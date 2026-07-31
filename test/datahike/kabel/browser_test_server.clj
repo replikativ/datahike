@@ -12,10 +12,9 @@
    (stop-test-server!)   ; Stop server"
   (:require [datahike.api :as d]
             [datahike.kabel.handlers :as handlers]
-            [datahike.kabel.fressian-handlers :as fh]
+            [datahike.kabel.boring-handlers :as bh]
             [kabel.peer :as peer]
             [kabel.http-kit :refer [create-http-kit-handler!]]
-            [kabel.middleware.fressian :refer [fressian]]
             [konserve-sync.core :as sync]
             [is.simm.distributed-scope :refer [remote-middleware]]
             [superv.async :refer [S go-try <?]]
@@ -57,20 +56,18 @@
       (doseq [file (reverse (file-seq dir))]
         (.delete file)))))
 
-(defn datahike-fressian-middleware
-  "Fressian middleware with Datahike type handlers."
-  [peer-config]
-  (fressian (atom fh/read-handlers)
-            (atom fh/write-handlers)
-            peer-config))
+(def datahike-serialization-middleware
+  "boring (CBOR) middleware with Datahike type handlers -- frame 14."
+  bh/datahike-boring-middleware)
 
 (defn server-store-config-fn
   "Create server-side store config for a given store-id.
    Uses file backend since client's TieredStore won't work on JVM.
-   IMPORTANT: Must use client's :id for sync/fressian matching to work."
+   IMPORTANT: Must use client's :id -- it is the key the index-
+   reconstruction registry resolves a synced root's storage by."
   [_scope-id client-config]
   (let [base-path (:temp-dir @server-state)
-        ;; Use client's store :id - this is required for fressian handlers
+        ;; Use client's store :id - the index-reconstruction registry keys on it
         ;; and konserve-sync to match the correct store
         store-id (-> client-config :store :id)]
     {:backend :file
@@ -105,7 +102,7 @@
                  ;; 2. sync/server-middleware - konserve-sync for store replication
                 (comp (sync/server-middleware)
                       remote-middleware)
-                datahike-fressian-middleware)]
+                datahike-serialization-middleware)]
 
     ;; Start the server
     (<!! (go-try S (<? S (peer/start server))))

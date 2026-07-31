@@ -15,7 +15,7 @@
   (:require [datahike.writer :as writer :refer [PWriter]]
             [datahike.writing :as dw]
             [datahike.query :as dq]
-            [datahike.kabel.fressian-handlers :as fh]
+            [datahike.boring :as dboring]
             [datahike.tools :refer [throwable-promise]]
             [is.simm.distributed-scope :as ds]
             [superv.async :refer [<?-]]
@@ -69,7 +69,7 @@
 (defrecord KabelWriter
            [peer-id        ; UUID of the remote peer that owns the database
             store-id       ; UUID identifying the store/database (from store :id)
-            store-config   ; Store config for fressian handler registry cleanup
+            store-config   ; Store config for index-registry cleanup on shutdown
             pending-txs    ; atom: {expected-max-tx -> {:tx-report ... :ch promise-chan}}
             current-max-tx ; atom: current synced max-tx from konserve-sync
             listeners      ; atom: set of listen! callbacks to fire on tx completion
@@ -142,9 +142,9 @@
       (doseq [[max-tx {:keys [ch]}] @pending-txs]
         (put! ch shutdown-error))
       (reset! pending-txs {})
-      ;; Unregister store from fressian handlers
+      ;; Drop the store from the index-reconstruction registry
       (when store-config
-        (fh/unregister-store! store-config))
+        (dboring/unregister-store! store-config))
       ;; Return closed channel to signal completion
       (let [ch (promise-chan)]
         (put! ch true)
@@ -257,7 +257,7 @@
    Parameters:
    - peer-id: UUID of the remote peer that owns the database
    - store-id: UUID identifying the store/database (extracted from store :id)
-   - store-config: Store config for fressian handler registry cleanup on shutdown
+   - store-config: Store config for index-registry cleanup on shutdown
 
    Returns a KabelWriter instance."
   [peer-id store-id store-config]

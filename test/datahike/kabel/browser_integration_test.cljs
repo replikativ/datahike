@@ -18,7 +18,7 @@
             [datahike.api :as d]
             [datahike.kabel.connector]  ;; registers -connect* :kabel multimethod
             [datahike.kabel.writer]     ;; registers create-database/delete-database :kabel multimethods
-            [datahike.kabel.fressian-handlers :refer [datahike-fressian-middleware]]
+            [datahike.kabel.boring-handlers :refer [datahike-boring-middleware]]
             [is.simm.distributed-scope :as ds]
             [kabel.peer :as peer]
             [konserve-sync.core :as sync]
@@ -52,8 +52,8 @@
                       ;; 2. sync/client-middleware - konserve-sync for store replication
                      (comp ds/remote-middleware
                            (sync/client-middleware))
-                      ;; Fressian serialization with Datahike type handlers
-                     datahike-fressian-middleware)
+                      ;; boring (CBOR) serialization with Datahike type handlers
+                     datahike-boring-middleware)
           ;; Start the invocation loop for handling remote calls
           _ (ds/invoke-on-peer peer-atom)]
       (reset! client-peer peer-atom)
