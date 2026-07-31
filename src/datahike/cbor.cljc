@@ -1,6 +1,11 @@
-(ns datahike.boring
-  "Datahike's boring (CBOR) codec: how a Datom, a DB and a TxReport go on the
-  wire and into a store.
+(ns datahike.cbor
+  "Datahike's CBOR codec: how a Datom, a DB and a TxReport go on the wire and
+  into a store.
+
+  Named for the FORMAT. These tag-27 shapes are exactly what a Rust, Python or
+  JavaScript reader needs in order to read a datahike dump, so naming them after
+  our Clojure implementation (org.replikativ/boring) would be parochial for the
+  one thing here that is meant to cross languages.
 
   This lives in `src/`, not `src-kabel/`, deliberately. The same encoding has to
   serve two consumers — the kabel wire middleware and konserve's
@@ -51,7 +56,7 @@
             [datahike.datom :as dd]
             [datahike.db.utils :as dbu]
             [datahike.writing :as dw]
-            [org.replikativ.persistent-sorted-set.boring :as pss-boring]
+            [org.replikativ.persistent-sorted-set.cbor :as pss-cbor]
             [org.replikativ.persistent-sorted-set.impl.nodes :as pss-nodes]
             #?(:cljs [datahike.db :refer [DB TxReport]]))
   #?(:clj (:import [datahike.datom Datom]
@@ -139,16 +144,16 @@
       (boring/register-record tx-report-name identity)))
 
 (defn install
-  "The full datahike boring registry: PSS nodes and roots, plus datahike's own
+  "The full datahike CBOR registry: PSS nodes and roots, plus datahike's own
   element and record handlers. Returns a NEW registry.
 
-  `opts` are `pss-boring/install`'s. The wire default resolves storage and
+  `opts` are `pss-cbor/install`'s. The wire default resolves storage and
   comparator through the shared registry, which is what a peer wants; a
   single-store serializer passes lexical closures instead."
   ([reg] (install reg {}))
   ([reg opts]
    (-> reg
-       (pss-boring/install
+       (pss-cbor/install
         (merge {:default-bf      DEFAULT_BRANCHING_FACTOR
                 :resolve-storage (fn [m] (some-> (pss-nodes/registered-storage
                                                   (get m pss-nodes/storage-id-key))

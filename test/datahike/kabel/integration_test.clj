@@ -11,7 +11,7 @@
    4. Server executes transaction, syncs store
    5. Client receives sync, transaction completes
 
-   Uses boring (CBOR) serialization with Datahike handlers."
+   Uses CBOR serialization with Datahike handlers."
   (:require [clojure.test :refer [deftest testing is]]
             [clojure.java.io :as io]
             [datahike.api :as d]
@@ -20,7 +20,7 @@
             [datahike.connector :refer [release]]
             [hasch.core :as hasch]
             [datahike.kabel.handlers :as handlers]
-            [datahike.kabel.boring-handlers :as bh]
+            [datahike.kabel.cbor-handlers :as ch]
             [kabel.peer :as peer]
             [kabel.http-kit :refer [create-http-kit-handler!]]
             ;; konserve-sync for store replication
@@ -68,11 +68,11 @@
         (.delete file)))))
 
 (def datahike-serialization-middleware
-  "boring (CBOR) middleware with Datahike type handlers -- frame 14.
+  "CBOR middleware with Datahike type handlers -- frame 14.
 
   A def rather than a local redefinition: the middleware is one call now, so
   wrapping it in a test-local fn would only hide which format is under test."
-  bh/datahike-boring-middleware)
+  ch/datahike-cbor-middleware)
 
 ;; =============================================================================
 ;; Schema
