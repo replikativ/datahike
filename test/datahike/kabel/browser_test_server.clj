@@ -12,7 +12,7 @@
    (stop-test-server!)   ; Stop server"
   (:require [datahike.api :as d]
             [datahike.kabel.handlers :as handlers]
-            [datahike.kabel.boring-handlers :as bh]
+            [datahike.kabel.cbor-handlers :as ch]
             [kabel.peer :as peer]
             [kabel.http-kit :refer [create-http-kit-handler!]]
             [konserve-sync.core :as sync]
@@ -57,8 +57,8 @@
         (.delete file)))))
 
 (def datahike-serialization-middleware
-  "boring (CBOR) middleware with Datahike type handlers -- frame 14."
-  bh/datahike-boring-middleware)
+  "CBOR middleware with Datahike type handlers -- frame 14."
+  ch/datahike-cbor-middleware)
 
 (defn server-store-config-fn
   "Create server-side store config for a given store-id.

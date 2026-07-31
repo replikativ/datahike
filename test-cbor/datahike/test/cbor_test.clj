@@ -1,5 +1,5 @@
-(ns datahike.test.boring-test
-  "The datahike boring (CBOR) codec.
+(ns datahike.test.cbor-test
+  "The datahike CBOR codec.
 
   Codec-level, on purpose: this is where the encoding decisions are made, so
   this is where they are pinned. The peer/wire behaviour is
@@ -13,12 +13,12 @@
             [boring.core :as boring]
             [boring.data :as bdata]
             [datahike.api :as d]
-            [datahike.boring :as dboring]
+            [datahike.cbor :as dcbor]
             [datahike.datom :as dd]
             [datahike.writing :as dw]))
 
 (def ^:private test-dir
-  (str (System/getProperty "java.io.tmpdir") "/datahike-boring-codec-test"))
+  (str (System/getProperty "java.io.tmpdir") "/datahike-cbor-codec-test"))
 
 ;; The store :id is not incidental here: it is the key the shared
 ;; persistent-sorted-set storage registry uses, and it is what a flushed root
@@ -44,7 +44,7 @@
 ;; ---------------------------------------------------------------------------
 
 (deftest datom-round-trips
-  (let [reg (dboring/registry)]
+  (let [reg (dcbor/registry)]
     (doseq [d [(dd/datom 1 :name "Alice" 536870913 true)
                (dd/datom 2 :age 42 536870914 true)
                (dd/datom 3 :friend 1 536870915 false)
@@ -62,7 +62,7 @@
             the wire, which is the only way to assert framing rather than
             round-trip luck."
     (let [d (dd/datom 1 :name "Alice" 536870913 true)
-          raw (boring/decode (boring/encode d {:registry (dboring/registry)}) {})]
+          raw (boring/decode (boring/encode d {:registry (dcbor/registry)}) {})]
       (is (bdata/unknown-record? raw))
       (is (= "datahike.datom.Datom" (bdata/record-type raw)))
       (is (= [1 :name "Alice" 536870913 true] (vec (bdata/record-fields raw)))))))
@@ -71,7 +71,7 @@
   (testing "the measurement the encoding decision rests on. If a future change
             makes a field map competitive, this fails and the decision should be
             revisited — that is the point of asserting it."
-    (let [reg (dboring/registry)
+    (let [reg (dcbor/registry)
           attrs [:person/name :person/age :person/email :person/friend :person/city]
           datoms (vec (for [i (range 512)]
                         (dd/datom (+ 100000 i)
@@ -99,11 +99,11 @@
             never heard of datahike, and it is the reason for tag 27 over a
             private tag number."
     (let [d (dd/datom 7 :attr "v" 536870920 true)
-          raw (boring/decode (boring/encode d {:registry (dboring/registry)}) {})]
+          raw (boring/decode (boring/encode d {:registry (dcbor/registry)}) {})]
       (is (some? raw))
       (is (= 7 (nth (vec (bdata/record-fields raw)) 0)))
       (testing "and it re-encodes to the identical bytes, so passthrough is lossless"
-        (is (= (vec (boring/encode d {:registry (dboring/registry)}))
+        (is (= (vec (boring/encode d {:registry (dcbor/registry)}))
                (vec (boring/encode raw {}))))))))
 
 ;; ---------------------------------------------------------------------------
@@ -134,9 +134,9 @@
           db (d/db conn)
           store (:store @conn)
           store-config (get-in (:config @conn) [:store])]
-      (dboring/register-store! store-config store)
+      (dcbor/register-store! store-config store)
       (try
-        (let [reg (dboring/registry)
+        (let [reg (dcbor/registry)
               bs (boring/encode db {:registry reg})
               back (boring/decode bs {:registry reg})]
           (is (some? back))
@@ -150,7 +150,7 @@
             (is (> (count (:eavt @conn)) 512)
                 "more datoms than one leaf holds")))
         (finally
-          (dboring/unregister-store! store-config)
+          (dcbor/unregister-store! store-config)
           (d/release conn))))))
 
 (deftest a-db-without-a-registered-store-degrades-to-its-stored-map
@@ -159,7 +159,7 @@
             fallback is easy to turn into a raise during a refactor."
     (let [conn (with-db)
           db (d/db conn)
-          reg (dboring/registry)
+          reg (dcbor/registry)
           bs (boring/encode db {:registry reg})]
       (try
         (let [back (boring/decode bs {:registry reg})]
@@ -170,10 +170,10 @@
 (deftest tx-report-carries-both-dbs-in-stored-form
   (let [conn (with-db)
         store-config (get-in (:config @conn) [:store])]
-    (dboring/register-store! store-config (:store @conn))
+    (dcbor/register-store! store-config (:store @conn))
     (try
       (let [report (d/transact conn [{:name "Dave" :age 19}])
-            reg (dboring/registry)
+            reg (dcbor/registry)
             back (boring/decode (boring/encode report {:registry reg}) {:registry reg})]
         (is (map? back) "a TxReport stays a plain map on read — the writer
                          reconstructs it once sync completes")
@@ -183,7 +183,7 @@
         (is (every? #(instance? datahike.datom.Datom %) (:tx-data back))
             "tx-data datoms come back as Datoms, not as vectors"))
       (finally
-        (dboring/unregister-store! store-config)
+        (dcbor/unregister-store! store-config)
         (d/release conn)))))
 
 (deftest tx-report-survives-a-non-db-stub
@@ -191,7 +191,7 @@
             exactly this. db->stored raises on that, so the projection is
             guarded; without the guard a serialisation concern surfaces as an
             unrelated test failure."
-    (let [reg (dboring/registry)
+    (let [reg (dcbor/registry)
           stub (datahike.db.TxReport. {:max-tx 0} {:max-tx 1} [] {} nil)
           back (boring/decode (boring/encode stub {:registry reg}) {:registry reg})]
       (is (= {:max-tx 0} (:db-before back)))

@@ -7,7 +7,7 @@
             [datahike.config :as dc]
             [datahike.connections :refer [add-connection!]]
             [datahike.connector :refer [->Connection]]
-            [datahike.boring :as dboring]
+            [datahike.cbor :as dcbor]
             [datahike.kabel.writer :as kw]
             [datahike.store :as ds]
             [datahike.writer :as w]
@@ -181,7 +181,7 @@
           ;; than nodes, and a root resolves its storage by :pss/storage-id.
           ;; The registry belongs to persistent-sorted-set and is not tied to a
           ;; serialization format.
-         _ (dboring/register-store! store-config store)
+         _ (dcbor/register-store! store-config store)
          _ (log/trace "Store registered for index reconstruction")
 
           ;; 1d. Check if we already have the branch key in cache (for tiered stores)

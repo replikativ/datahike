@@ -15,7 +15,7 @@
   (:require [datahike.writer :as writer :refer [PWriter]]
             [datahike.writing :as dw]
             [datahike.query :as dq]
-            [datahike.boring :as dboring]
+            [datahike.cbor :as dcbor]
             [datahike.tools :refer [throwable-promise]]
             [is.simm.distributed-scope :as ds]
             [superv.async :refer [<?-]]
@@ -144,7 +144,7 @@
       (reset! pending-txs {})
       ;; Drop the store from the index-reconstruction registry
       (when store-config
-        (dboring/unregister-store! store-config))
+        (dcbor/unregister-store! store-config))
       ;; Return closed channel to signal completion
       (let [ch (promise-chan)]
         (put! ch true)

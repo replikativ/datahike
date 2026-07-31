@@ -93,20 +93,22 @@
                                org.replikativ/konserve-s3    {:mvn/version "0.1.35"}
                                http-kit/http-kit             {:mvn/version "2.8.1"}}}
 
-           ;; The boring (CBOR) codec: datahike.boring plus the kabel wire
+           ;; The CBOR codec: datahike.cbor plus the kabel wire
            ;; middleware. Everything it needs is on a branch at the time of
-           ;; writing -- persistent-sorted-set's boring module, kabel's frame 14
+           ;; writing -- persistent-sorted-set's cbor module, kabel's frame 14
            ;; middleware, konserve's serializer byte 3 -- so it lives in its own
            ;; alias with :override-deps rather than moving the main graph.
            ;; Once all three are released this folds into :test.
            ;;
-           ;;   clj -M:test:boring -m kaocha.runner --focus datahike.test.boring-test
-           :boring {:extra-paths ["test-boring"]
-                    :override-deps
-                    {org.replikativ/persistent-sorted-set {:local/root "../persistent-sorted-set"}
-                     org.replikativ/kabel                 {:local/root "../kabel"}
-                     org.replikativ/konserve               {:local/root "../konserve"}}
-                    :extra-deps {org.replikativ/boring {:local/root "../boring"}}}
+           ;;   clj -M:test:cbor -m kaocha.runner --config-file tests-cbor.edn
+           :cbor {:extra-paths ["test-cbor"]
+                  :override-deps
+                  {org.replikativ/persistent-sorted-set {:local/root "../persistent-sorted-set"}
+                   org.replikativ/kabel                 {:local/root "../kabel"}
+                   org.replikativ/konserve              {:local/root "../konserve"}}
+                  ;; org.replikativ/boring is the IMPLEMENTATION of the format;
+                  ;; the namespaces above are named for the format itself.
+                  :extra-deps {org.replikativ/boring {:local/root "../boring"}}}
 
            :datomic {:extra-deps {com.datomic/datomic-free {:mvn/version "0.9.5703"}}}
 
