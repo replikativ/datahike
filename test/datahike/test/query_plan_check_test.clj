@@ -13,6 +13,7 @@
   (:require
    [clojure.test :refer [deftest is testing]]
    [datahike.api :as d]
+   [datahike.query :as q]
    [datahike.query.lower :as lower]
    [datahike.test.query-eqcheck :as eqcheck]))
 
@@ -35,10 +36,16 @@
       (try
         (lower/add-plan-check! (fn [_plan] (swap! a inc)))
         (lower/add-plan-check! (fn [_plan] (swap! b inc)))
-        ;; with-plan-checks clears the plan cache, so a plan is really BUILT —
-        ;; with a warm cache the checks would legitimately see nothing.
+        ;; Two preconditions for a check to see anything, and BOTH have to be
+        ;; forced: with-plan-checks clears the plan cache (a warm cache builds
+        ;; no plan), and the planner must be on (the base engine builds no plan
+        ;; at all). CI runs the whole suite a second time with
+        ;; DATAHIKE_QUERY_PLANNER=false, where the unbound version of this test
+        ;; failed for that second reason — the mechanism was fine, the test was
+        ;; asserting against an engine that has no plans to check.
         (eqcheck/with-plan-checks
-          (d/q '[:find ?e ?n :where [?e :name ?n]] (fresh-db)))
+          (binding [q/*disable-planner* false]
+            (d/q '[:find ?e ?n :where [?e :name ?n]] (fresh-db))))
         (is (pos? @a) "the first-installed check must still run")
         (is (pos? @b) "the second-installed check must run")
         (is (= @a @b) "both checks see the same plans")
