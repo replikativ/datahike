@@ -662,6 +662,46 @@
                   acc (:tuples rel2)))
         (transient []) (:tuples rel1)))))))
 
+(defn unify-rel
+  "Like `prod-rel`, except that a variable present in BOTH relations is an
+   equality obligation rather than a second column: the pair is kept only when
+   the two values agree, and the result carries one column for it.
+
+   `prod-rel` builds its attr map with `(zipmap (concat attrs1 attrs2) (range))`,
+   so a repeated variable resolves to the SECOND relation's column — the later
+   binding silently overwrites the earlier one. That is wrong wherever the
+   variable was already bound: `[?e :name ?v] [(get-else $ ?e :nick \"zzz\") ?v]`
+   asks for the entities whose nick equals their name, and overwriting answers
+   with every entity instead, asserting a `?v` the database never contained.
+   Datomic unifies here, and datahike already unifies for a variable repeated
+   inside a single clause (#912/#913).
+
+   Falls through to `prod-rel` when nothing is shared, which is the common case."
+  [rel1 rel2]
+  (let [attrs1 (:attrs rel1)
+        attrs2 (:attrs rel2)
+        shared (filterv #(contains? attrs1 %) (keys attrs2))]
+    (if (empty? shared)
+      (prod-rel rel1 rel2)
+      (let [keys1 (vec (keys attrs1))
+            only2 (filterv #(not (contains? attrs1 %)) (keys attrs2))
+            idxs1 (to-array (map attrs1 keys1))
+            idxs2 (to-array (map attrs2 only2))
+            ;; [index in rel1, index in rel2] for every shared variable
+            obligations (mapv (fn [v] [(attrs1 v) (attrs2 v)]) shared)]
+        (rel/->Relation
+         (zipmap (concat keys1 only2) (range))
+         (persistent!
+          (reduce
+           (fn [acc t1]
+             (reduce (fn [acc t2]
+                       (if (every? (fn [[i1 i2]] (= (get t1 i1) (get t2 i2)))
+                                   obligations)
+                         (conj! acc (join-tuples t1 idxs1 t2 idxs2))
+                         acc))
+                     acc (:tuples rel2)))
+           (transient []) (:tuples rel1))))))))
+
 ;; built-ins
 
 (defn- translate-for [db a]
@@ -1466,12 +1506,16 @@
                             rels (for [tuple (:tuples production)
                                        :let [val (tuple-fn tuple)]
                                        :when (not (nil? val))]
-                                   (prod-rel (rel/->Relation (:attrs production) [tuple])
-                                             (in->rel binding val)))]
+                                   ;; unify-rel, not prod-rel: when the binding
+                                   ;; names a variable this tuple already binds,
+                                   ;; the clause CONSTRAINS it — the tuple
+                                   ;; survives only if the computed value agrees.
+                                   (unify-rel (rel/->Relation (:attrs production) [tuple])
+                                              (in->rel binding val)))]
                         (if (empty? rels)
-                          (prod-rel production (empty-rel binding))
+                          (unify-rel production (empty-rel binding))
                           (reduce sum-rel rels)))
-                      (prod-rel (assoc production :tuples []) (empty-rel binding)))
+                      (unify-rel (assoc production :tuples []) (empty-rel binding)))
             idx->const (reduce-kv (fn [m k v]
                                     (if-let [c (k (:consts context))]
                                       (assoc m v c) ;; different value at v for each tuple
