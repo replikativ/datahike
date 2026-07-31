@@ -768,13 +768,39 @@
 
 (deftest known-shared-wrong-is-still-needed
   (testing "every allowlisted both-engines-wrong class still reproduces"
-    ;; An allowlist that outlives its bug is worse than no allowlist: it keeps
-    ;; a whole class of divergence permanently unreported. So a class that has
+    ;; An allowlist that outlives its bug is worse than no allowlist: it keeps a
+    ;; whole class of divergence permanently unreported. So a class that has
     ;; stopped diverging FAILS here, and the fix is to delete the entry.
-    (if (= "off" oracle-mode)
-      (is (= "off" oracle-mode) "oracle disabled — allowlist not exercised")
+    ;;
+    ;; Checked with a DETERMINISTIC canary rather than by counting hits in the
+    ;; generated corpus. The counting version passed locally and failed on CI:
+    ;; a generated case that would have diverged can instead hit the per-case
+    ;; timeout on a slower machine, so "no hits" meant "too slow" as often as
+    ;; "fixed". A canary is a fixed query with a fixed answer — it cannot be
+    ;; timed out into a false verdict.
+    (let [cfg {:store {:backend :memory :id (random-uuid)}
+               :schema-flexibility :write}
+          _ (d/create-database cfg)
+          conn (d/connect cfg)
+          _ (d/transact conn [{:db/ident :name :db/valueType :db.type/string
+                               :db/cardinality :db.cardinality/one}
+                              {:db/ident :nick :db/valueType :db.type/string
+                               :db/cardinality :db.cardinality/one}])
+          _ (d/transact conn [{:db/id 1 :name "alice" :nick "al"}])
+          db (d/db conn)
+          ;; `?v` is bound by the pattern; the get-else writes into it. Under
+          ;; the law this selects the entities whose nick equals their name —
+          ;; alice's does not — so an answer with any row IS the bug.
+          ;;
+          ;; Deliberately NOT a plain function output: the planner already
+          ;; unifies those, so a canary built on one reports "fixed" while
+          ;; get-else is still broken.
+          canary '[:find ?e ?v :where
+                   [?e :name ?v] [(get-else $ ?e :nick "zzz") ?v]]
+          answer (binding [q/*disable-planner* false q/*query-result-cache?* false]
+                   (set (d/q canary db)))]
       (doseq [{:keys [id why]} known-shared-wrong]
-        (is (pos? (get @oracle-known id 0))
-            (str "no generated case still diverges for known-wrong class " id
-                 " — if it is fixed, DELETE the entry from known-shared-wrong "
-                 "so the class is enforced again. Context: " why))))))
+        (is (seq answer)
+            (str "the canary for known-wrong class " id " now answers correctly — "
+                 "DELETE the entry from known-shared-wrong so the class is "
+                 "enforced again, and drop this canary with it. Context: " why))))))
