@@ -1,0 +1,5 @@
+#kaocha/v1
+{:tests [{:id         :boring
+          :test-paths ["test-boring"]
+          :ns-patterns ["datahike.test."]}]
+ :reporter kaocha.report/documentation}

@@ -69,13 +69,17 @@ pydatahike/src/datahike/generated.py
 !.clj-kondo/config.edn
 !.clj-kondo/babashka/
 
-# Development symlinks (not needed in repo)
-distributed-scope
-fress
-kabel
-konserve
-konserve-sync
-persistent-sorted-set
+# Development symlinks (not needed in repo).
+# ANCHORED with a leading slash: unanchored, `kabel` matches any directory
+# component with that name, so src-kabel/datahike/kabel/ was ignored too and a
+# new file there vanished from `git add` without a word. The existing files in
+# that directory only survive because they predate the rule.
+/distributed-scope
+/fress
+/kabel
+/konserve
+/konserve-sync
+/persistent-sorted-set
 /.agent-shell/
 
 # Local-only tooling/scratch artefacts
