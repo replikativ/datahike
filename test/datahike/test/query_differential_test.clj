@@ -745,26 +745,38 @@
                                (check-oracle! query args opts spec base planner oracle))))))))
 
 (deftest oracle-coverage-is-not-silent
-  (testing "the oracle actually ran — a skip-everything oracle reports no
+  (testing "the oracle actually compares — a skip-everything oracle reports no
             disagreements, which is indistinguishable from a clean sweep"
-    (let [{:keys [checked skipped]} @oracle-stats
-          reports @oracle-reports]
-      (if (= "off" oracle-mode)
-        (is (zero? checked) "DATAHIKE_ORACLE=off must not run the oracle")
-        (do
-          ;; A file, not stdout/stderr: kaocha replaces both streams (and the
-          ;; System/err field) before test namespaces load, replaying them only
-          ;; on FAILURE — but these numbers are wanted on a passing run, and CI
-          ;; needs to read them mechanically.
-          (let [f (java.io.File. "target/oracle-stats.edn")]
-            (.mkdirs (.getParentFile f))
-            (spit f (pr-str {:mode oracle-mode :checked checked :skipped skipped
-                             :known @oracle-known
-                             :disagreements (mapv #(select-keys % [:verdict :known :query :engines :oracle])
-                                                  (take 20 reports))})))
-          (is (pos? checked)
-              (str "the oracle compared " checked " cases and skipped " skipped
-                   " — if checked is 0 the third engine is decorative")))))))
+    ;; SELF-CONTAINED on purpose. This used to assert on the counter the
+    ;; generative spec fills in, which made it depend on TEST ORDER: locally I
+    ;; always passed --no-randomize and it passed, while CI randomizes and ran
+    ;; this before the spec, so `checked` was 0 and the run went red. An
+    ;; order-dependent assertion is a coin flip, not a check.
+    ;;
+    ;; It now runs its own fixed cases, so it answers exactly one question:
+    ;; is the third engine wired up and able to compare? Corpus coverage is
+    ;; reported separately in target/oracle-stats.edn, which is data rather
+    ;; than an assertion and cannot fail spuriously.
+    (if (= "off" oracle-mode)
+      (is (= "off" oracle-mode) "oracle disabled by DATAHIKE_ORACLE=off")
+      (let [db @test-db
+            cases '[[:find ?e ?n :where [?e :name ?n]]
+                    [:find ?e :where [?e :score ?s] [(> ?s 15)]]
+                    [:find ?n ?v :where [?e :name ?n] [(get-else $ ?e :nick "none") ?v]]]
+            compared (reduce
+                      (fn [n query]
+                        (let [base (run-engine true query db [] nil)
+                              oracle (run-oracle query db [])]
+                          (if (#{::unsupported ::timeout ::raised} oracle)
+                            n
+                            (do (is (= base oracle)
+                                    (str "oracle disagrees with the base engine on a "
+                                         "shape it claims to support: " (pr-str query)))
+                                (inc n)))))
+                      0 cases)]
+        (is (pos? compared)
+            (str "the oracle supported none of " (count cases) " basic shapes — "
+                 "it is wired in but decorative"))))))
 
 (deftest known-shared-wrong-is-still-needed
   (testing "every allowlisted both-engines-wrong class still reproduces"
