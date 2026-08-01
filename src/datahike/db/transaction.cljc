@@ -1311,12 +1311,17 @@
                   (log/raise (str "Invalid schema state for " ident " after transaction")
                              {:error :transact/schema :attribute ident
                               :invalid-updates invalid}))
-                ;; "Used" means datoms existed BEFORE this transaction:
-                ;; datoms co-transacted with the schema change are written
-                ;; under the new definition and are consistent with it.
+                ;; "Used" is evaluated on the RESULTING state: retracting an
+                ;; attribute's datoms and removing its schema entry in ONE
+                ;; transaction is the legitimate drop-table pattern, so
+                ;; datoms retracted by this very transaction must not block
+                ;; it. History datoms still count (db-after's history
+                ;; includes the just-retracted datoms), so history-keeping
+                ;; databases keep their protection; and a valueType change
+                ;; with surviving datoms is still rejected.
                 (when (and (contains? data-checks :attr-used?)
-                           (or (seq (schema-attr-current-datoms db-before ident))
-                               (seq (schema-attr-history-datoms db-before ident))))
+                           (or (seq (schema-attr-current-datoms db-after ident))
+                               (seq (schema-attr-history-datoms db-after ident))))
                   (log/raise (str "Schema change on " ident " requires the attribute to be unused,"
                                   " but it has existing (or history) datoms. Migrate the data to a"
                                   " new attribute instead.")
