@@ -84,8 +84,14 @@
                                org.replikativ/scriptum       {:mvn/version "0.1.27"}
                                org.replikativ/stratum        {:mvn/version "0.3.77"}
 
-                               ;; kabel integration for distributed datahike
+                               ;; kabel integration for distributed datahike.
+                               ;; boring comes with it: src-kabel's connector
+                               ;; requires datahike.cbor, which is the wire
+                               ;; format the kabel peers now speak, so the
+                               ;; whole :test suite fails to LOAD without it --
+                               ;; not just the CBOR tests.
                                org.replikativ/kabel          {:mvn/version "0.3.100"}
+                               org.replikativ/boring         {:mvn/version "0.1.5"}
                                is.simm/distributed-scope     {:mvn/version "0.1.6"}
                                org.replikativ/konserve-sync  {:mvn/version "0.1.35"}
 
@@ -98,17 +104,23 @@
            ;; writing -- persistent-sorted-set's cbor module, kabel's frame 14
            ;; middleware, konserve's serializer byte 3 -- so it lives in its own
            ;; alias with :override-deps rather than moving the main graph.
-           ;; Once all three are released this folds into :test.
+           ;;
+           ;; boring and konserve are released now -- boring 0.1.4 on Clojars,
+           ;; and konserve 0.9.364 carries the byte-3 serializer
+           ;; (replikativ/konserve#160, merged). persistent-sorted-set and kabel
+           ;; stay :local/root until their PRs land
+           ;; (replikativ/persistent-sorted-set#21, replikativ/kabel#15); when
+           ;; they do, this folds into :test.
            ;;
            ;;   clj -M:test:cbor -m kaocha.runner --config-file tests-cbor.edn
            :cbor {:extra-paths ["test-cbor"]
                   :override-deps
                   {org.replikativ/persistent-sorted-set {:local/root "../persistent-sorted-set"}
                    org.replikativ/kabel                 {:local/root "../kabel"}
-                   org.replikativ/konserve              {:local/root "../konserve"}}
+                   org.replikativ/konserve              {:mvn/version "0.9.364"}}
                   ;; org.replikativ/boring is the IMPLEMENTATION of the format;
                   ;; the namespaces above are named for the format itself.
-                  :extra-deps {org.replikativ/boring {:local/root "../boring"}}}
+                  :extra-deps {org.replikativ/boring {:mvn/version "0.1.5"}}}
 
            :datomic {:extra-deps {com.datomic/datomic-free {:mvn/version "0.9.5703"}}}
 
