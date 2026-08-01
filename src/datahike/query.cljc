@@ -2951,7 +2951,17 @@
       ;; the DB changed but we can't determine which queries are safe to keep.
       (let [user-attrs (disj modified-attrs :db/txInstant)]
         (when (seq user-attrs)
-          (let [parent-entries (get @query-result-cache parent-key)]
+          (let [parent-entries (get @query-result-cache parent-key)
+                ;; Selective invalidation scans every cached entry, making
+                ;; each COMMIT O(cache size): after a parameterized read
+                ;; burst fills a bucket with tens of thousands of entries,
+                ;; write throughput collapses (measured: pgbench tpcb
+                ;; 70 -> 27 tps). Above this bound, drop the cache for the
+                ;; child instead of carrying it — reads re-warm, writes
+                ;; stay O(write-set).
+                parent-entries (when (and parent-entries
+                                          (<= (count parent-entries) 4096))
+                                 parent-entries)]
             (when (seq parent-entries)
               (let [removed (volatile! 0)
                     child-entries (reduce-kv
