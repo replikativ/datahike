@@ -117,7 +117,7 @@
                   :override-deps
                   {org.replikativ/persistent-sorted-set {:local/root "../persistent-sorted-set"}
                    org.replikativ/kabel                 {:local/root "../kabel"}
-                   org.replikativ/konserve              {:mvn/version "0.9.364"}}
+                   org.replikativ/konserve {:mvn/version "0.9.365"}}
                   ;; org.replikativ/boring is the IMPLEMENTATION of the format;
                   ;; the namespaces above are named for the format itself.
                   :extra-deps {org.replikativ/boring {:mvn/version "0.1.6"}}}
