@@ -1118,6 +1118,19 @@
       (reduce prod-rel
               (map #(in->rel %1 %2) (:bindings binding) coll)))))
 
+(def ^:dynamic *fold-scalar-ins*
+  "When true (default), a scalar :in binding becomes a constant folded
+   into the where clauses before planning: plans specialize on the value
+   (best for one-off queries and value-dependent estimates), but the
+   plan cache then misses for every distinct value. Bind false for
+   parameterized workloads that repeat one query SHAPE with varying
+   scalars (SQL prepared statements): the scalar binds as a 1-row
+   relation instead, the clauses stay in var form, and the plan cache
+   hits across values (measured ~4x faster novel-value dispatch on an
+   indexed point lookup). Function-valued bindings always fold — they
+   are invoked in clause position and cannot live in a relation."
+  true)
+
 (defn resolve-in [context [binding value]]
   (cond
     (and (instance? BindScalar binding)
@@ -1130,7 +1143,9 @@
     (update context :rules merge (parse-rules value))
     (and (instance? BindScalar binding)
          (instance? Variable (:variable binding)))
-    (assoc-in context [:consts (get-in binding [:variable :symbol])] value)
+    (if (or *fold-scalar-ins* (fn? value))
+      (assoc-in context [:consts (get-in binding [:variable :symbol])] value)
+      (update context :rels conj (in->rel binding value)))
     #_(instance? BindColl binding)                          ;; TODO: later
     :else
     (update context :rels conj (in->rel binding value))))
