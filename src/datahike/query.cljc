@@ -3146,6 +3146,50 @@
     (try (dbu/entid db v)
          (catch #?(:clj Exception :cljs :default) _ nil))))
 
+(declare substitute-consts-with-lookup-refs*)
+
+(defn- clauses-have-lookup-candidates?
+  "Structure-only pre-scan: could `resolve-pattern-lookup-refs` change anything
+   in these clauses? True when any data-pattern e/v/tx slot holds a keyword or
+   collection (ident / lookup-ref candidate). Conservative on unknown forms.
+   Schema-independent, so the answer is memoizable per clause form."
+  [clauses]
+  (letfn [(pattern? [c] (and (vector? c) (not (sequential? (first c)))))
+          (candidate-e? [x] (not (or (nil? x) (symbol? x) (number? x))))
+          (candidate-v? [x] (or (keyword? x) (coll? x)))
+          (scan-pattern [c]
+            (let [c (if (and (symbol? (first c)) (= \$ (first (name (first c)))))
+                      (vec (rest c))
+                      c)]
+              (or (candidate-e? (get c 0))
+                  (candidate-v? (get c 2))
+                  (coll? (get c 3)))))
+          (scan-clause [c]
+            (cond
+              (pattern? c) (scan-pattern c)
+              ;; [[:ident v] :attr ?v] — inline lookup-ref in e position IS a
+              ;; data pattern (vector first element); only a SEQ first element
+              ;; ((f …) call form) marks a predicate/function clause.
+              (and (vector? c) (vector? (first c))) true
+              ;; predicate/function vector [(f …) …] — untouched by the walk
+              (vector? c) false
+              (sequential? c)
+              (let [h (first c)]
+                (cond
+                  (not (symbol? h)) true
+                  (#{'not 'and} h) (boolean (some scan-clause (rest c)))
+                  (#{'not-join 'or-join} h) (boolean (some scan-clause (drop 2 c)))
+                  (= 'or h) (boolean (some (fn [b]
+                                             (if (and (sequential? b) (sequential? (first b)))
+                                               (some scan-clause b)
+                                               (scan-clause b)))
+                                           (rest c)))
+                  (= \$ (first (name h))) (scan-pattern (vec c))
+                  ;; rule call — const substitution only, no-op with empty consts
+                  :else false))
+              :else true))]
+    (boolean (some scan-clause clauses))))
+
 (defn- substitute-consts-with-lookup-refs
   "Like substitute-consts but also resolves lookup refs in pattern positions.
    Used by the query planner which needs patterns normalized before planning.
@@ -3154,6 +3198,16 @@
    against its own db."
   ([db where-clauses consts] (substitute-consts-with-lookup-refs db where-clauses consts nil))
   ([db where-clauses consts sources]
+   (if (and (empty? consts) (nil? sources)
+            (not (and (dbu/db? db) (:attribute-refs? (dbi/-config db))))
+            (not (form-memo [::lookup-candidates where-clauses]
+                            #(clauses-have-lookup-candidates? where-clauses))))
+     ;; Nothing to substitute and nothing resolvable — the walk is an identity.
+     where-clauses
+     (substitute-consts-with-lookup-refs* db where-clauses consts sources))))
+
+(defn- substitute-consts-with-lookup-refs*
+  [db where-clauses consts sources]
    (letfn [(resolve-clause
              ([clause] (resolve-clause db clause))
              ([resolve-db clause]
@@ -3291,7 +3345,7 @@
                             :else x))
                         clause)
                   clause))))]
-     (mapv resolve-clause where-clauses))))
+     (mapv resolve-clause where-clauses)))
 
 ;; ---------------------------------------------------------------------------
 ;; Pre-fold clause-binding validation (the planner's shared oracle).
@@ -3630,7 +3684,12 @@
                             (scale-sensitive-key (conj key-prefix schema-hash))))]
     (if-some [cached (get @plan-cache cache-key nil)]
       cached
-      (let [plan (create-plan-via-ir db clauses bound-vars rules in-cards)]
+      (let [plan (-> (create-plan-via-ir db clauses bound-vars rules in-cards)
+                     ;; per-plan compiled-program slot: the direct executor
+                     ;; caches its per-[find-vars consts-keys] compilation here
+                     ;; (see execute/direct-program), so repeated executions of
+                     ;; a cached plan skip fuse checks and shape analysis.
+                     (assoc :datahike.query.execute/program-cache (atom {})))]
         (vswap! plan-cache assoc cache-key plan)
         plan))))
 
@@ -4571,17 +4630,20 @@
                               (not qreturnmaps)
                               (not (:with query))
                               (not-any? #(instance? Aggregate %) find-elements)
-                              (not-any? #(instance? Pull %) find-elements)
-                              (empty? (:rels context-in)))]
+                              (not-any? #(instance? Pull %) find-elements))]
     (when direct-eligible?
       ;; requiring-resolve is cheap after first call: just a ns-map lookup via resolve,
       ;; since the namespace is already loaded. No need to cache the resolved var.
-      (let [exec-direct #?(:clj (requiring-resolve 'datahike.query.execute/execute-plan-direct)
-                           :cljs execute/execute-plan-direct)
+      ;; Scalar/tuple :in bindings kept as single-tuple rels (so the plan cache
+      ;; key stays value-free) are absorbed as per-call consts inside
+      ;; execute-plan-prepared — the prepared-query path: one cached plan (and
+      ;; one compiled program), any parameter value, still direct execution.
+      (let [exec-prepared #?(:clj (requiring-resolve 'datahike.query.execute/execute-plan-prepared)
+                             :cljs execute/execute-plan-prepared)
             find-var-syms (mapv (fn [^Variable el] (.-symbol el)) (:elements qfind))]
         ;; pass the context so a NOT-JOIN sub-plan keeps its sources and cancel flag
-        (exec-direct plan db find-var-syms nil (:consts context-in) (:cancel context-in)
-                     context-in)))))
+        (exec-prepared plan db find-var-syms (:rels context-in) (:consts context-in)
+                       nil (:cancel context-in) context-in)))))
 
 (defn- post-process-result
   "Shared post-processing pipeline for both planned-relation and legacy paths.

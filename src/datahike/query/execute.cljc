@@ -2722,6 +2722,275 @@
     (vec (or (:output-vars group) (:vars group)))
     target-vars))
 
+;; ---------------------------------------------------------------------------
+;; Prepared-plan rebinding: plans are cached value-free (scalar :in vars stay
+;; symbols in the clauses so one plan serves every parameter value). The fused
+;; executors, however, derive all grounding from the clause literals
+;; (compute-slice-bounds, build-common-merge-arrays, merge-eq-slots). These
+;; helpers substitute the per-call constants into a copy of the plan's op
+;; clauses so the cached plan can take the direct path.
+
+(defn- subst-slot [consts x]
+  (if (and (symbol? x) (analyze/free-var? x) (contains? consts x))
+    (get consts x)
+    x))
+
+(defn- subst-clause
+  "Substitute consts into a clause vector. The first element of a fn/pred
+   clause is a seq (the call form) — substitute inside it, preserving seq-ness."
+  [consts clause]
+  (mapv (fn [el]
+          (if (seq? el)
+            (apply list (map #(subst-slot consts %) el))
+            (subst-slot consts el)))
+        clause))
+
+(defn- upgrade-scan-index
+  "After substitution a scan whose value slot became ground on an AVET-covered
+   attr should point-seek AVET instead of walking the whole attr on AEVT —
+   the index the planner would have chosen had the value been inline."
+  [op]
+  (let [{:keys [clause index]} op
+        [e _ v] clause]
+    (if (and (= index :aevt)
+             (symbol? e) (analyze/free-var? e)
+             (some? v) (not (symbol? v))
+             (:indexed? (:schema-info op)))
+      (assoc op :index :avet)
+      op)))
+
+(defn- bind-pattern-op [consts op scan?]
+  (let [op (if (:clause op) (assoc op :clause (subst-clause consts (:clause op))) op)]
+    (if scan? (upgrade-scan-index op) op)))
+
+(defn bind-plan-consts
+  "Rebind a cached value-free plan with per-call constants: substitute `consts`
+   into every op clause (scan, merges, predicates, functions, pipeline steps),
+   upgrading scans whose value slot became ground to AVET where covered.
+   Returns the rebound plan, or nil when the plan contains ops the rebinding
+   cannot reach soundly (not-join sub-plans, a function whose output var is
+   itself a const, a const landing in an e/tx slot as a non-number) — callers
+   fall back to the relation path."
+  [plan consts]
+  (let [sound? (volatile! true)
+        pattern-ok? (fn [clause]
+                      ;; e and tx slots must stay symbols or numbers — idents /
+                      ;; lookup-refs are resolved on the relation path only.
+                      (let [e (get clause 0) tx (get clause 3)]
+                        (and (or (symbol? e) (nil? e) (number? e))
+                             (or (symbol? tx) (nil? tx) (number? tx)))))
+        bind-op
+        (fn bind-op [op]
+          (case (:op op)
+            :entity-group
+            (let [scan-op' (bind-pattern-op consts (:scan-op op) true)
+                  merge-ops' (mapv #(bind-pattern-op consts % false) (:merge-ops op))
+                  preds' (mapv #(assoc % :clause (subst-clause consts (:clause %))
+                                       :args (map (fn [a] (subst-slot consts a)) (:args %)))
+                               (:attached-preds op))
+                  pipeline (:pipeline op)
+                  steps' (when pipeline
+                           (mapv (fn [step]
+                                   (cond-> step
+                                     (:clause step) (assoc :clause (subst-clause consts (:clause step)))
+                                     (:index step)  (assoc :index (:index scan-op'))))
+                                 (:steps pipeline)))]
+              (when-not (and (pattern-ok? (:clause scan-op'))
+                             (every? #(pattern-ok? (:clause %)) merge-ops'))
+                (vreset! sound? false))
+              (cond-> (assoc op :scan-op scan-op' :merge-ops merge-ops' :attached-preds preds')
+                pipeline (assoc :pipeline (assoc pipeline :steps steps'))))
+
+            :pattern-scan
+            (let [op' (bind-pattern-op consts op true)]
+              (when-not (pattern-ok? (:clause op')) (vreset! sound? false))
+              op')
+
+            :predicate
+            (assoc op :clause (subst-clause consts (:clause op))
+               :args (map #(subst-slot consts %) (:args op)))
+
+            :function
+            (let [binding-vars (filter analyze/free-var? (analyze/extract-vars (:binding op)))]
+              (when (some #(contains? consts %) binding-vars)
+                (vreset! sound? false))
+              (assoc op :clause (subst-clause consts (:clause op))
+                 :args (map #(subst-slot consts %) (:args op))))
+
+            :not-join
+            (do (vreset! sound? false) op)
+
+            op))
+        ops' (mapv bind-op (:ops plan))]
+    (when @sound?
+      (assoc plan :ops ops'))))
+
+(defn single-tuple-rel-consts
+  "When every rel binds exactly one tuple (scalar/tuple :in bindings kept as
+   rels to keep plan-cache keys value-free), return their bindings as a
+   var→value const map; nil when any rel is not single-tuple or binds nil
+   (nil can't round-trip through contains?-based const checks soundly for
+   clause grounding)."
+  [rels]
+  (reduce
+   (fn [m rel]
+     (let [tuples (:tuples rel)
+           n (if (instance? java.util.Collection tuples)
+               (.size ^java.util.Collection tuples)
+               (count tuples))]
+       (if (not= 1 n)
+         (reduced nil)
+         (let [t (if (instance? java.util.List tuples)
+                   (.get ^java.util.List tuples 0)
+                   (first tuples))
+               cell (fn [i]
+                      (cond (instance? clojure.lang.Indexed t) (.nth ^clojure.lang.Indexed t (int i))
+                            #?@(:clj [(.isArray (class t)) (aget ^objects t (int i))])
+                            (sequential? t) (nth t i)
+                            :else (get t i)))
+               entries (map (fn [[var idx]] [var (cell idx)]) (:attrs rel))]
+           (if (some (fn [[_ v]] (nil? v)) entries)
+             (reduced nil)
+             (into m entries))))))
+   {}
+   rels))
+
+(defn- finalize-direct-result
+  "Convert a filled result-list into the final query result under the given
+   dedup strategy (:hash, :adjacent, or nil for the no-duplicates fast path)."
+  [result-list dedup-strategy]
+  #?(:clj
+     (case dedup-strategy
+       :hash
+       (let [n (result-list-size result-list)]
+         (persistent!
+          (loop [i (int 0) s (transient #{})]
+            (if (< i n)
+              (recur (unchecked-inc-int i)
+                     (conj! s (adopt-vector (result-list-get result-list i))))
+              s))))
+
+       :adjacent
+       ;; Adjacent dedup: history card-one duplicates are adjacent in scan order.
+       ;; Returns PHS for consistent set behavior and iteration order.
+       (let [n (result-list-size result-list)]
+         (persistent!
+          (loop [i (int 0)
+                 ^objects prev nil
+                 s (transient #{})]
+            (if (< i n)
+              (let [^objects cur (result-list-get result-list i)]
+                (if (or (nil? prev)
+                        (not (java.util.Arrays/equals prev cur)))
+                  (recur (unchecked-inc-int i) cur
+                         (conj! s (adopt-vector cur)))
+                  (recur (unchecked-inc-int i) cur s)))
+              s))))
+
+       ;; nil — Fast path: no duplicates, use QueryResult
+       (let [n (result-list-size result-list)
+             out (object-array n)]
+         (loop [i (int 0)]
+           (when (< i n)
+             (aset out i (adopt-vector (result-list-get result-list i)))
+             (recur (unchecked-inc-int i))))
+         (datahike.java.QueryResult. out n)))
+     :cljs
+     (let [n (result-list-size result-list)]
+       (persistent!
+        (loop [i 0 s (transient #{})]
+          (if (< i n)
+            (recur (inc i) (conj! s (adopt-vector (result-list-get result-list i))))
+            s))))))
+
+(defn- try-point-group
+  "Point-shape fast path: a single entity group whose (rebound) scan is an
+   AVET ground-value seek and whose merges are all card-one same-entity EAVT
+   point lookups. Fills `result-list` with tuples in `emit-vars` order and
+   returns true; returns false to fall back to the generic fused executor.
+   The generic path compiles per-call merge/eq/find arrays — for a unique
+   point lookup that compilation dwarfs the index work itself."
+  [db g emit-vars consts result-list max-results]
+  (let [scan-op (entity-group-scan-op g)
+        merge-ops (entity-group-merge-ops g)
+        [se sa sv stx] (:clause scan-op)
+        avet (:avet db)
+        eavt (:eavt db)
+        merge-vars (into #{} (comp (map #(get (:clause %) 2))
+                                   (filter #(and (symbol? %) (analyze/free-var? %))))
+                         merge-ops)]
+    (if-not (and (= :avet (:index scan-op))
+                 (every? #(or (= % se)
+                              (contains? merge-vars %)
+                              (and consts (contains? consts %)))
+                         emit-vars)
+                 (keyword? sa)
+                 (symbol? se) (analyze/free-var? se)
+                 (some? sv) (not (symbol? sv))
+                 (nil? stx)
+                 avet eavt
+                 (pss-instance? avet) (pss-instance? eavt)
+                 #?(:clj (not (:attribute-refs? (dbi/-config db))) :cljs true)
+                 (seq emit-vars)
+                 (empty? (get scan-op :pushdown-preds))
+                 (every? (fn [op]
+                           (let [[me ma mv mtx] (:clause op)]
+                             (and (= me se) (keyword? ma) (nil? mtx)
+                                  (not (:anti? op))
+                                  (get-in op [:schema-info :card-one?] false)
+                                  (empty? (get op :pushdown-preds))
+                                  ;; optional (get-else) merges must bind a var
+                                  (or (not (:optional? op))
+                                      (and (symbol? mv) (analyze/free-var? mv))))))
+                         merge-ops))
+      false
+      (let [from (datom e0 sa sv tx0)
+            to (datom emax sa sv txmax)
+            n-merges (count merge-ops)]
+        (loop [ds (seq (di/-slice avet from to :avet))
+               emitted 0]
+          (if (or (nil? ds)
+                  (and max-results (>= emitted (long max-results))))
+            true
+            (let [^Datom d (first ds)
+                  e (.-e d)
+                  ;; resolve merges: var bindings accumulate; ground values check
+                  binds (loop [i 0 binds {se e}]
+                          (if (>= i n-merges)
+                            binds
+                            (let [op (nth merge-ops i)
+                                  [_ ma mv] (:clause op)
+                                  md (first (di/-slice eavt (datom e ma nil tx0)
+                                                       (datom e ma nil txmax) :eavt))
+                                  var? (and (symbol? mv) (analyze/free-var? mv))]
+                              (cond
+                                ;; ground value: existence + equality check
+                                (not var?)
+                                (when (and md (val-eq? (.-v ^Datom md) mv))
+                                  (recur (inc i) binds))
+
+                                ;; missing, non-optional → entity fails
+                                (and (nil? md) (not (:optional? op)))
+                                nil
+
+                                :else
+                                (let [v (if md (.-v ^Datom md) (:default-value op))]
+                                  (if (contains? binds mv)
+                                    (when (val-eq? (get binds mv) v)
+                                      (recur (inc i) binds))
+                                    (recur (inc i) (assoc binds mv v))))))))]
+              (if (nil? binds)
+                (recur (next ds) emitted)
+                (let [n (count emit-vars)
+                      ^objects out #?(:clj (object-array n) :cljs (make-array n))]
+                  (dotimes [vi n]
+                    (let [var (nth emit-vars vi)]
+                      (if (contains? binds var)
+                        (aset out vi (get binds var))
+                        (aset out vi (get consts var)))))
+                  (result-list-add result-list out)
+                  (recur (next ds) (inc emitted)))))))))))
+
 (defn execute-plan-direct
   "Execute a fully-fusable plan directly to a PersistentHashSet.
    Supports single-group and multi-group (value join via hash-probe) plans.
@@ -2753,7 +3022,9 @@
                              (vec (distinct (mapcat :vars groups))))
             emit-vars (if has-post-ops? all-group-vars find-vars)
             n-groups (count groups)
-            result-list (make-result-list 4000)]
+            ;; ArrayList grows amortized-O(1); a small initial capacity avoids
+            ;; a 4000-slot backing array per point query.
+            result-list (make-result-list 64)]
 
         (if (= 1 n-groups)
           ;; Single group — fused scan+merge
@@ -2764,11 +3035,13 @@
                 g-emit (if (seq g-attached)
                          (group-emit-vars g emit-vars)
                          emit-vars)]
-            (execute-group-direct db scan-op merge-ops g-emit consts
-                                  result-list nil 0 nil 0 -1
-                                  max-results
-                                  :temporal temporal :pipeline (:pipeline g)
-                                  :cancel cancel)
+            (when-not (and (nil? temporal)
+                           (try-point-group db g g-emit consts result-list max-results))
+              (execute-group-direct db scan-op merge-ops g-emit consts
+                                    result-list nil 0 nil 0 -1
+                                    max-results
+                                    :temporal temporal :pipeline (:pipeline g)
+                                    :cancel cancel))
             (when (seq g-attached)
               (apply-attached-preds result-list g-attached
                                     (vec (or (:output-vars g) (:vars g)))
@@ -3183,49 +3456,174 @@
                                has-card-many-dupes? :hash
                                is-historical? :adjacent
                                :else nil)]
-          #?(:clj
-             (case dedup-strategy
-               :hash
-               (let [n (result-list-size result-list)]
-                 (persistent!
-                  (loop [i (int 0) s (transient #{})]
-                    (if (< i n)
-                      (recur (unchecked-inc-int i)
-                             (conj! s (adopt-vector (result-list-get result-list i))))
-                      s))))
+          (finalize-direct-result result-list dedup-strategy))))))
 
-               :adjacent
-               ;; Adjacent dedup: history card-one duplicates are adjacent in scan order.
-               ;; Returns PHS for consistent set behavior and iteration order.
-               (let [n (result-list-size result-list)]
-                 (persistent!
-                  (loop [i (int 0)
-                         ^objects prev nil
-                         s (transient #{})]
-                    (if (< i n)
-                      (let [^objects cur (result-list-get result-list i)]
-                        (if (or (nil? prev)
-                                (not (java.util.Arrays/equals prev cur)))
-                          (recur (unchecked-inc-int i) cur
-                                 (conj! s (adopt-vector cur)))
-                          (recur (unchecked-inc-int i) cur s)))
-                      s))))
+;; ---------------------------------------------------------------------------
+;; Compiled direct programs — the prepared-query execution record.
+;;
+;; A cached plan is value-free; everything the direct executor derives from it
+;; per call (fuse verdict, shape analysis, merge specs, emit resolution) is a
+;; pure function of (plan, find-vars, const KEYSET) and is compiled once into
+;; a program stored on the plan's :datahike.query.execute/program-cache atom.
+;; Per call only the constant VALUES differ: the point program seeks AVET with
+;; (get consts var) directly — no plan rebinding, no per-call eligibility work.
 
-               ;; nil — Fast path: no duplicates, use QueryResult
-               (let [n (result-list-size result-list)
-                     out (object-array n)]
-                 (loop [i (int 0)]
-                   (when (< i n)
-                     (aset out i (adopt-vector (result-list-get result-list i)))
-                     (recur (unchecked-inc-int i))))
-                 (datahike.java.QueryResult. out n)))
-             :cljs
-             (let [n (result-list-size result-list)]
-               (persistent!
-                (loop [i 0 s (transient #{})]
-                  (if (< i n)
-                    (recur (inc i) (conj! s (adopt-vector (result-list-get result-list i))))
-                    s))))))))))
+(defn- compile-point-program
+  "Compile a value-free single-entity-group plan into a point-execution
+   program for `find-vars` under the given const keyset. Returns nil when the
+   shape doesn't qualify (caller falls back to the generic direct executor)."
+  [plan find-vars consts-keys]
+  (let [ops (:ops plan)]
+    (when (and (:structurally-fusable? plan)
+               (not (:has-passthrough? plan))
+               (empty? (:group-joins plan))
+               (= 1 (count ops))
+               (= :entity-group (:op (first ops))))
+      (let [g (first ops)
+            scan-op (entity-group-scan-op g)
+            merge-ops (entity-group-merge-ops g)
+            [se sa sv stx] (:clause scan-op)
+            ck (set consts-keys)
+            free? #(and (symbol? %) (analyze/free-var? %))
+            sv-src (cond
+                     (free? sv) (when (contains? ck sv) [:const sv])
+                     (some? sv) [:lit sv]
+                     :else nil)]
+        (when (and (keyword? sa) (free? se) (nil? stx) sv-src
+                   (:indexed? (:schema-info scan-op))
+                   (empty? (get scan-op :pushdown-preds)))
+          (let [merges
+                (reduce
+                 (fn [acc op]
+                   (let [[me ma mv mtx] (:clause op)
+                         spec (when (and (= me se) (keyword? ma) (nil? mtx)
+                                         (not (:anti? op))
+                                         (get-in op [:schema-info :card-one?] false)
+                                         (empty? (get op :pushdown-preds)))
+                                (cond
+                                  (and (free? mv) (:optional? op))
+                                  (when-not (contains? ck mv)
+                                    {:attr ma :mode :optional :var mv
+                                     :default (:default-value op)})
+                                  (and (free? mv) (contains? ck mv))
+                                  {:attr ma :mode :cval :var mv}
+                                  (free? mv) {:attr ma :mode :bind :var mv}
+                                  (some? mv) {:attr ma :mode :lit :val mv}
+                                  :else nil))]
+                     (if spec (conj acc spec) (reduced nil))))
+                 [] merge-ops)]
+            (when merges
+              (let [find-vars (vec find-vars)
+                    bind-vars (into #{} (keep #(when (#{:bind :optional} (:mode %)) (:var %))) merges)
+                    g-attached (not-empty (:attached-preds g))
+                    group-vars (vec (or (:output-vars g) (:vars g)))
+                    emit-vars (if g-attached group-vars find-vars)
+                    resolvable? (every? #(or (= % se)
+                                             (contains? bind-vars %)
+                                             (contains? ck %))
+                                        emit-vars)]
+                (when (and resolvable?
+                           (can-direct-fuse? plan find-vars
+                                             (zipmap consts-keys (repeat true))))
+                  {:se se :sa sa :sv-src sv-src :merges merges
+                   :attached g-attached :group-vars group-vars
+                   :emit-vars emit-vars :find-vars find-vars
+                   :dedup (if (some #{se} find-vars) nil :hash)})))))))))
+
+(defn- run-point-program
+  "Execute a compiled point program with per-call consts: one AVET ground-value
+   seek plus card-one same-entity EAVT lookups, straight into the final result."
+  [prog db consts max-results]
+  (let [{:keys [se sa sv-src merges attached group-vars emit-vars find-vars dedup]} prog
+        [src x] sv-src
+        sv (if (= :lit src) x (get consts x))
+        result-list (make-result-list 8)]
+    (when (some? sv)
+      (let [avet (:avet db)
+            eavt (:eavt db)
+            n-merges (count merges)
+            from (datom e0 sa sv tx0)
+            to (datom emax sa sv txmax)]
+        (loop [ds (seq (di/-slice avet from to :avet))
+               emitted 0]
+          (when-not (or (nil? ds)
+                        (and max-results (>= emitted (long max-results))))
+            (let [^Datom d (first ds)
+                  e (.-e d)
+                  binds
+                  (loop [i 0 binds {se e}]
+                    (if (>= i n-merges)
+                      binds
+                      (let [{:keys [attr mode var val default]} (nth merges i)
+                            md (first (di/-slice eavt (datom e attr nil tx0)
+                                                 (datom e attr nil txmax) :eavt))]
+                        (case mode
+                          :lit (when (and md (val-eq? (.-v ^Datom md) val))
+                                 (recur (inc i) binds))
+                          :cval (let [cv (get consts var)]
+                                  (when (and md (some? cv)
+                                             (val-eq? (.-v ^Datom md) cv))
+                                    (recur (inc i) binds)))
+                          :bind (when md
+                                  (let [v (.-v ^Datom md)]
+                                    (if (contains? binds var)
+                                      (when (val-eq? (get binds var) v)
+                                        (recur (inc i) binds))
+                                      (recur (inc i) (assoc binds var v)))))
+                          :optional (let [v (if md (.-v ^Datom md) default)]
+                                      (if (contains? binds var)
+                                        (when (val-eq? (get binds var) v)
+                                          (recur (inc i) binds))
+                                        (recur (inc i) (assoc binds var v))))))))]
+              (when binds
+                (let [n (count emit-vars)
+                      ^objects out #?(:clj (object-array n) :cljs (make-array n))]
+                  (dotimes [vi n]
+                    (let [vv (nth emit-vars vi)]
+                      (if (contains? binds vv)
+                        (aset out vi (get binds vv))
+                        (aset out vi (get consts vv)))))
+                  (result-list-add result-list out)))
+              (recur (next ds) (if binds (inc emitted) emitted)))))))
+    (when attached
+      (apply-attached-preds result-list attached group-vars find-vars consts))
+    (finalize-direct-result result-list dedup)))
+
+(defn- direct-program
+  "Look up (or compile and cache) the plan's point program for
+   [find-vars consts-keys]. Returns the program, or ::none."
+  [plan find-vars consts-keys]
+  (let [cache (:datahike.query.execute/program-cache plan)
+        k [find-vars consts-keys]]
+    (if cache
+      (or (get @cache k)
+          (let [p (or (compile-point-program plan find-vars consts-keys) ::none)]
+            (when (< (count @cache) 8)
+              (swap! cache assoc k p))
+            p))
+      (or (compile-point-program plan find-vars consts-keys) ::none))))
+
+(defn execute-plan-prepared
+  "Prepared-execution entry for raw-q*: absorb single-tuple rels (scalar/tuple
+   :in bindings kept value-free for the plan cache) as per-call consts, run the
+   plan's compiled point program when it applies, else rebind the plan and run
+   the generic direct executor. Returns the result, or nil when this binding
+   shape must fall back to the relation engine."
+  [plan db find-vars rels base-consts max-results cancel outer-ctx]
+  (let [rel-consts (when (seq rels) (single-tuple-rel-consts rels))]
+    (when (or (empty? rels) (seq rel-consts))
+      (let [consts (if (seq rel-consts) (merge base-consts rel-consts) base-consts)
+            ckeys (into #{} (keys consts))
+            prog (direct-program plan find-vars ckeys)]
+        (if (and (not (identical? ::none prog))
+                 (pss-instance? (:avet db))
+                 (pss-instance? (:eavt db))
+                 #?(:clj (not (:attribute-refs? (dbi/-config db))) :cljs true))
+          (run-point-program prog db consts max-results)
+          (let [plan' (if (seq rel-consts) (bind-plan-consts plan rel-consts) plan)]
+            (when plan'
+              (execute-plan-direct plan' db find-vars max-results consts
+                                   cancel outer-ctx))))))))
 
 (defn execute-plan-direct-rel
   "Execute a fusable plan using the fast direct path, but return a Relation
