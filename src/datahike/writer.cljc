@@ -42,8 +42,22 @@
 (def ^:const DEFAULT_COMMIT_WAIT_TIME 0) ;; in ms
 
 (defn create-thread
-  "Creates new transaction thread"
-  [connection write-fn-map transaction-queue-size commit-queue-size commit-wait-time]
+  "Creates new transaction thread.
+
+   `sync-commit?` (default true): when false, the caller's callback is
+   delivered as soon as the transaction has been APPLIED in memory —
+   the connection advances immediately and the commit loop persists
+   asynchronously (still draining the queue in batches, so store
+   writes, commit-id hashing and root flushes amortize across pending
+   transactions). Semantically this is PostgreSQL's
+   synchronous_commit=off: a crash can lose the tail of acknowledged
+   transactions but never corrupts; for the :memory backend there is no
+   durability difference at all. The JFR-measured cost of the
+   synchronous path is ~50x the transaction's own processing (channel
+   hops + per-commit hashing + konserve round-trips), so write-heavy
+   OLTP workloads gain roughly that factor."
+  [connection write-fn-map transaction-queue-size commit-queue-size commit-wait-time
+   sync-commit?]
   (let [transaction-queue-buffer    (buffer transaction-queue-size)
         transaction-queue           (chan transaction-queue-buffer)
         commit-queue-buffer         (buffer commit-queue-size)
@@ -107,7 +121,17 @@
                                 (when (> (count commit-queue-buffer) (/ commit-queue-size 2))
                                   (log/warn :datahike/commit-queue-pressure "Commit queue buffer >50% full" {:count (count commit-queue-buffer) :size commit-queue-size})
                                   (<! (timeout 50)))
-                                (put! commit-queue [res callback])
+                                (if sync-commit?
+                                  (put! commit-queue [res callback])
+                                  ;; ack-after-processing: advance the
+                                  ;; connection and unblock the caller now;
+                                  ;; the commit loop persists asynchronously
+                                  ;; (nil callback → nothing to deliver
+                                  ;; there, and it must not rewind the
+                                  ;; connection to the older commit-db).
+                                  (do (reset! connection (:db-after res))
+                                      (put! callback res)
+                                      (put! commit-queue [res nil])))
                                 (recur (:db-after res)))
                               :else
                               (recur old))))
@@ -140,9 +164,14 @@
                                  :as commit-db} (<?- (w/commit! db merge-parents false last-cid))
                                 commit-time (- (get-time-ms) start-ts)]
                             (log/trace :datahike/commit-time {:duration-ms commit-time})
-                            (reset! connection commit-db)
+                            ;; ack-after-processing mode already advanced the
+                            ;; connection to the newest PROCESSED db —
+                            ;; resetting to commit-db here would rewind it.
+                            (when sync-commit?
+                              (reset! connection commit-db))
                     ;; notify all processes that transaction is complete
-                            (doseq [[tx-report callback] txs]
+                            (doseq [[tx-report callback] txs
+                                    :when callback]
                               (let [tx-report (-> tx-report
                                                   (assoc-in [:tx-meta :db/commitId] commit-id)
                                                   (assoc :db-after commit-db))]
@@ -158,7 +187,8 @@
                             ;; closed queue and fail loudly (:writer-shut-down).
                             (close! commit-queue)
                             (close! transaction-queue)
-                            (doseq [[_ callback] txs]
+                            (doseq [[_ callback] txs
+                                    :when callback]
                               (put! callback e))
                             (log/error :datahike/writer-shutdown {:error e})
                             ;; Re-throw Errors (AssertionError, OutOfMemoryError, etc.) to crash the writer
@@ -196,7 +226,9 @@
     (:backend writer-config)))
 
 (defmethod create-writer :self
-  [{:keys [transaction-queue-size commit-queue-size write-fn-map commit-wait-time]} connection]
+  [{:keys [transaction-queue-size commit-queue-size write-fn-map commit-wait-time
+           sync-commit?]
+    :or {sync-commit? true}} connection]
   (let [transaction-queue-size (or transaction-queue-size DEFAULT_QUEUE_SIZE)
         commit-queue-size (or commit-queue-size DEFAULT_QUEUE_SIZE)
         commit-wait-time (or commit-wait-time DEFAULT_COMMIT_WAIT_TIME)
@@ -206,7 +238,8 @@
                               write-fn-map)
                        transaction-queue-size
                        commit-queue-size
-                       commit-wait-time)]
+                       commit-wait-time
+                       sync-commit?)]
     (map->LocalWriter
      {:transaction-queue transaction-queue
       :transaction-queue-size transaction-queue-size
