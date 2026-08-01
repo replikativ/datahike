@@ -2835,19 +2835,24 @@
   (reduce
    (fn [m rel]
      (let [tuples (:tuples rel)
-           n (if (instance? java.util.Collection tuples)
-               (.size ^java.util.Collection tuples)
-               (count tuples))]
+           n #?(:clj (if (instance? java.util.Collection tuples)
+                       (.size ^java.util.Collection tuples)
+                       (count tuples))
+                :cljs (count tuples))]
        (if (not= 1 n)
          (reduced nil)
-         (let [t (if (instance? java.util.List tuples)
-                   (.get ^java.util.List tuples 0)
-                   (first tuples))
+         (let [t #?(:clj (if (instance? java.util.List tuples)
+                           (.get ^java.util.List tuples 0)
+                           (first tuples))
+                    :cljs (first tuples))
                cell (fn [i]
-                      (cond (instance? clojure.lang.Indexed t) (.nth ^clojure.lang.Indexed t (int i))
-                            #?@(:clj [(.isArray (class t)) (aget ^objects t (int i))])
-                            (sequential? t) (nth t i)
-                            :else (get t i)))
+                      #?(:clj (cond (instance? clojure.lang.Indexed t) (.nth ^clojure.lang.Indexed t (int i))
+                                    (.isArray (class t)) (aget ^objects t (int i))
+                                    (sequential? t) (nth t i)
+                                    :else (get t i))
+                         :cljs (cond (array? t) (aget t i)
+                                     (sequential? t) (nth t i)
+                                     :else (get t i))))
                entries (map (fn [[var idx]] [var (cell idx)]) (:attrs rel))]
            (if (some (fn [[_ v]] (nil? v)) entries)
              (reduced nil)
