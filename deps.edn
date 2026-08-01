@@ -120,7 +120,7 @@
                    org.replikativ/konserve              {:mvn/version "0.9.364"}}
                   ;; org.replikativ/boring is the IMPLEMENTATION of the format;
                   ;; the namespaces above are named for the format itself.
-                  :extra-deps {org.replikativ/boring {:mvn/version "0.1.5"}}}
+                  :extra-deps {org.replikativ/boring {:mvn/version "0.1.6"}}}
 
            :datomic {:extra-deps {com.datomic/datomic-free {:mvn/version "0.9.5703"}}}
 
