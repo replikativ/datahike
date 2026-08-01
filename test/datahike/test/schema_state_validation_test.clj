@@ -52,15 +52,20 @@
       (d/transact conn [{:email "a@y.z"}])
       ;; raw add — an entity map would UPSERT rather than violate uniqueness
       (is (thrown? Exception (d/transact conn [[:db/add 999 :email "a@y.z"]])))))
-  (testing "unique on a USED attribute is rejected even without duplicates:
-            pre-existing datoms are absent from AVET, so validate-datom could
-            never see them — the constraint would be silently unenforceable
-            against old values"
+  (testing "unique on a USED attribute (no duplicates) is accepted and the
+            index-backfill migration makes it enforceable against the
+            PRE-EXISTING values: validate-datom consults AVET, which the
+            backfill populated"
     (let [conn (fresh-conn)]
       (d/transact conn [{:db/ident :email :db/valueType :db.type/string
                          :db/cardinality :db.cardinality/one}])
       (d/transact conn [{:email "a@y.z"} {:email "b@y.z"}])
-      (is (schema-error? #(d/transact conn [[:db/add :email :db/unique :db.unique/identity]]))))))
+      (is (d/transact conn [[:db/add :email :db/unique :db.unique/identity]]))
+      ;; old value is now visible to uniqueness enforcement (raw add — an
+      ;; entity map would UPSERT rather than violate)
+      (is (thrown? Exception (d/transact conn [[:db/add 999 :email "a@y.z"]])))
+      ;; and lookup refs resolve through the backfilled AVET
+      (is (some? (d/entity (d/db conn) [:email "b@y.z"]))))))
 
 (deftest raw-vector-valuetype-change-with-data-rejected
   (let [conn (fresh-conn)]
