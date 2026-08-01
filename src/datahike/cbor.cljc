@@ -50,8 +50,19 @@
   keeps its map.
 
   The cost of positional is on the fallback path and is worth stating: an
-  UNREGISTERED reader sees the Datom's five values but cannot ask for `:e` by
-  name. That is why only the one dominant type pays it."
+  UNREGISTERED reader gets a `clojure.lang.TaggedLiteral` carrying the type
+  name and the five values, and cannot ask for `:e` by name — `(:e frame)` is
+  nil, and map operations fail as ordinary \"not a map\" errors because a
+  TaggedLiteral never claims to be one. Read the values with
+  `boring.data/frame-payload`, which works for either fallback shape.
+
+  Until boring split the fallback by payload shape this was worse than
+  documented: a positional frame decoded to an `UnknownRecord`, which claims
+  IPersistentMap and then threw raw ClassCastException from `keys` and
+  IllegalArgumentException from `assoc`/`into`. A DB keeps its map, so it
+  degrades to an UnknownRecord and every field stays reachable by name.
+
+  That is why only the one dominant type pays it."
   (:require [boring.core :as boring]
             [datahike.datom :as dd]
             [datahike.db.utils :as dbu]

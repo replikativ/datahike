@@ -63,9 +63,15 @@
             round-trip luck."
     (let [d (dd/datom 1 :name "Alice" 536870913 true)
           raw (boring/decode (boring/encode d {:registry (dcbor/registry)}) {})]
-      (is (bdata/unknown-record? raw))
-      (is (= "datahike.datom.Datom" (bdata/record-type raw)))
-      (is (= [1 :name "Alice" 536870913 true] (vec (bdata/record-fields raw)))))))
+      ;; A positional payload decodes to a TaggedLiteral, not an
+      ;; UnknownRecord: the latter presents its payload as a map, which is
+      ;; sound only over a map. It used to be returned for every shape, so a
+      ;; Datom frame claimed IPersistentMap and then threw from keys/assoc.
+      ;; `frame-name`/`frame-payload` read either shape without branching.
+      (is (bdata/tagged-frame? raw))
+      (is (tagged-literal? raw))
+      (is (= "datahike.datom.Datom" (bdata/frame-name raw)))
+      (is (= [1 :name "Alice" 536870913 true] (vec (bdata/frame-payload raw)))))))
 
 (deftest positional-datoms-are-half-the-size-of-a-field-map
   (testing "the measurement the encoding decision rests on. If a future change
@@ -101,7 +107,7 @@
     (let [d (dd/datom 7 :attr "v" 536870920 true)
           raw (boring/decode (boring/encode d {:registry (dcbor/registry)}) {})]
       (is (some? raw))
-      (is (= 7 (nth (vec (bdata/record-fields raw)) 0)))
+      (is (= 7 (nth (vec (bdata/frame-payload raw)) 0)))
       (testing "and it re-encodes to the identical bytes, so passthrough is lossless"
         (is (= (vec (boring/encode d {:registry (dcbor/registry)}))
                (vec (boring/encode raw {}))))))))
