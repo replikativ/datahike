@@ -91,13 +91,16 @@
             args argsets]
       (let [legacy (binding [dq/*disable-planner* true]
                      (apply d/q q db args))
-            planner (binding [dq/*query-result-cache?* false]
+            planner (binding [dq/*disable-planner* false
+                              dq/*query-result-cache?* false]
                       (apply d/q q db args))
-            prepared (binding [execute/*prepared-execution* true
+            prepared (binding [dq/*disable-planner* false
+                               execute/*prepared-execution* true
                                dq/*fold-scalar-ins* false
                                dq/*query-result-cache?* false]
                        (apply d/q q db args))
-            prepared-rc (binding [execute/*prepared-execution* true
+            prepared-rc (binding [dq/*disable-planner* false
+                                  execute/*prepared-execution* true
                                   dq/*fold-scalar-ins* false]
                           (apply d/q q db args))]
         (is (= legacy planner prepared prepared-rc)
@@ -113,7 +116,8 @@
     (let [db (test-db)
           q '{:find [?v] :in [$ ?id]
               :where [[?e :t/id ?id] [(get-else $ ?e :t/v -1) ?v]]}]
-      (binding [execute/*prepared-execution* true
+      (binding [dq/*disable-planner* false
+                execute/*prepared-execution* true
                 dq/*fold-scalar-ins* false]
         (doseq [i (range 200)]
           (is (= #{[(* 2 i)]} (d/q q db i))))
@@ -136,7 +140,8 @@
     (let [db (test-db)
           q '{:find [?v] :in [$ ?id]
               :where [[?e :t/id ?id] [(get-else $ ?e :t/v -1) ?v]]}]
-      (binding [execute/*prepared-execution* true
+      (binding [dq/*disable-planner* false
+                execute/*prepared-execution* true
                 dq/*fold-scalar-ins* false
                 dq/*query-result-cache?* false]
         ;; warm: compile the point program
