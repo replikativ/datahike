@@ -3736,6 +3736,51 @@
               [op]))
           (:ops plan)))
 
+(def ^:private secondary-index-unsupported-modifiers
+  "Op attributes that CHANGE WHAT A PLAN MEANS and that the secondary-index
+   aggregate path does not implement.
+
+   That path flattens the plan (`plan-sub-ops`) and reads each sub-op's attr
+   and ground value, i.e. it treats every sub-op as a positive equality
+   constraint. Anything that negates, defaults, filters or re-sources a sub-op
+   is therefore invisible to it, and silently changes the answer:
+
+     :anti?          a folded negation became a POSITIVE `[:= col v]`, so
+                     `(min ?s)` with `(not [?e :dept \"eng\"])` aggregated over
+                     exactly the EXCLUDED rows;
+     :optional?      a `get-else` lost its default;
+     :default-value  ditto;
+     :pushdown-preds a range predicate folded into the scan is neither a
+                     standalone :predicate op nor in :attached-preds, so the
+                     filter was dropped and `(min ?s)` with `[(> ?s 60000)]`
+                     answered 50000;
+     :source         a clause against a NAMED source was read as if it were
+                     against this one;
+     :join-vars      the op was dropped outright.
+
+   Declining is free: the caller falls back to the ordinary aggregate paths,
+   which implement all of these. The list is deliberately about MEANING, not
+   about performance hints — an attribute that only affects HOW a sub-op is
+   evaluated does not belong here."
+  #{:anti? :optional? :default-value :pushdown-preds :source :join-vars})
+
+(defn- secondary-index-plan-supported?
+  "True when every op in `plan` is a shape the secondary-index aggregate path
+   actually implements. See `secondary-index-unsupported-modifiers`.
+
+   Also rejects op TYPES the flattening cannot represent at all: a negation,
+   disjunction or rule op is not a positive constraint on a column, and
+   `plan-sub-ops` passes it through as if it were one."
+  [plan]
+  (let [ops (:ops plan)
+        sub-ops (plan-sub-ops plan)]
+    (and (every? #(#{:entity-group :pattern-scan :predicate} (:op %)) ops)
+         (not-any? (fn [op]
+                     (some (fn [k] (let [v (get op k)]
+                                     (if (coll? v) (seq v) (some? v))))
+                           secondary-index-unsupported-modifiers))
+                   sub-ops))))
+
 #?(:clj
    (def ^:private pred-sym->stratum-op
      "Map from Clojure predicate symbols to stratum WHERE operators."
@@ -3779,7 +3824,12 @@
      [db plan find-elements]
      (try
        (let [sec-indices (:secondary-indices db)]
-         (when (seq sec-indices)
+         (when (and (seq sec-indices)
+                    ;; Decline any plan carrying meaning this path does not
+                    ;; implement, instead of flattening it into positive
+                    ;; equality constraints and answering confidently. The
+                    ;; caller falls back to the ordinary aggregate paths.
+                    (secondary-index-plan-supported? plan))
            (let [ref->ident (:ref-ident-map db)
                  resolve-attr (fn [a] (if (and ref->ident (number? a))
                                         (get ref->ident a a)
