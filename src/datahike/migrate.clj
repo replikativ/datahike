@@ -56,7 +56,20 @@
 (def ^:private manifest-key :datahike.migrate/format-version)
 
 (def ^:private source-config-allowlist
+  "Source config recorded in the manifest, for diagnostics and for the
+   compatibility check below."
   #{:attribute-refs? :keep-history? :schema-flexibility :index})
+
+(def ^:private config-must-match
+  "The subset of `source-config-allowlist` an import REFUSES to cross.
+
+   `:index` is deliberately absent, and that absence used to be silent — the
+   allowlist listed four keys and the check looped over three, so a reader had
+   to diff them to discover the difference was intentional. It is: a dump holds
+   datoms, and `load-entities` builds whatever index the target was created
+   with, so importing a persistent-set dump into a hitchhiker-tree database is
+   a supported thing to do. The other three change what the datoms MEAN."
+  [:attribute-refs? :keep-history? :schema-flexibility])
 
 ;; ---------------------------------------------------------------------------
 ;; small helpers
@@ -599,17 +612,27 @@
         idmap    (long (* (+ entities txs) idmap-bytes-per-entry))
         ;; a batch plus the tx-report / index-delta churn it drives (~3x)
         batch    (long (* batch-size avg-rec 3))
-        recommend (max (* 512 1024 1024) (long (* 1.6 (+ idmap batch))))
+        ;; What this import actually needs...
+        required (long (* 1.6 (+ idmap batch)))
+        ;; ...and what to ASK for, which is never less than a working heap. The
+        ;; floor belongs to the advice, not to the test: `:sufficient?` used to
+        ;; compare the heap against `recommend`, so a three-datom import
+        ;; "needed" 512 MB and any JVM below that got a stderr warning about a
+        ;; dump it could import a thousand times over. A warning that fires on
+        ;; trivial input is a warning people learn to ignore.
+        recommend (max (* 512 1024 1024) required)
         maxheap  (.maxMemory (Runtime/getRuntime))]
     {:datoms datoms
      :entities entities
      :id-map-bytes idmap
      :batch-bytes batch
+     :required-heap-bytes required
+     :required-heap (bytes->human required)
      :recommended-heap-bytes recommend
      :recommended-heap (bytes->human recommend)
      :current-max-heap-bytes maxheap
      :current-max-heap (bytes->human maxheap)
-     :sufficient? (>= maxheap recommend)}))
+     :sufficient? (>= maxheap required)}))
 
 (defn- manifest-total-bytes
   "Total dump bytes from the manifest's chunk `:bytes` (present in v1 dumps); falls
@@ -740,7 +763,7 @@
 (defn- config-compat! [manifest conn]
   (let [tgt (dbi/-config @conn)
         src (:source-config manifest)]
-    (doseq [k [:attribute-refs? :keep-history? :schema-flexibility]]
+    (doseq [k config-must-match]
       (when (and (contains? src k) (not= (get src k) (get tgt k)))
         (throw (ex-info (str "Config mismatch on " k
                              ": dump=" (get src k) " target=" (get tgt k))
@@ -1209,7 +1232,16 @@
   [db datoms]
   (assoc db :max-tx (reduce #(max %1 (nth %2 3)) (:max-tx db 0) datoms)))
 
-(defn- instance-to-date [v]
+(defn- instance-to-date
+  "Coerce a `java.time.Instant` to `java.util.Date`.
+
+   Belt and braces, and known to be so: boring decodes CBOR tag 1 to `Date`
+   already — `legacy-instant-is-normalised-test` pins exactly that — so this is
+   an identity on every value it currently sees. It is kept rather than deleted
+   because it guards the LEGACY reader, whose whole job is to cope with bytes
+   written by software we no longer control, and one `instance?` per value is
+   not a cost worth trading for the certainty."
+  [v]
   (if (instance? java.time.Instant v) (java.util.Date/from v) v))
 
 (defn- import-db-legacy
