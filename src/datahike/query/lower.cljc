@@ -993,8 +993,44 @@
 
    Note the check fires on plan CREATION, and `datahike.query` caches plans, so
    a caller enabling it must also clear that cache or it will silently examine
-   nothing. `datahike.test.query-eqcheck/with-plan-checks` does both."
+   nothing. `datahike.test.query-eqcheck/with-plan-checks` does both.
+
+   Install through `add-plan-check!`, never by `alter-var-root` with
+   `constantly`: this is ONE slot, so a second `constantly` install silently
+   evicts the first and both checkers then report a clean sweep while one of
+   them examines nothing."
   nil)
+
+(def plan-check-stats
+  "How many plans the installed checks have actually seen, as {:plans n}.
+
+   A checker's failure mode is SILENCE: an install that was evicted, a warm
+   plan cache, or a suite that never builds a plan all look exactly like `no
+   violations`. CI asserts this counter is non-zero, which is what tells the
+   two apart. Only touched when a check is installed, so production pays
+   nothing for it."
+  (atom {:plans 0}))
+
+(defn add-plan-check!
+  "Install `f` (a function of one plan) alongside any check already installed,
+   and return the composed function now in the slot.
+
+   Composition is folded at install time rather than kept in a list, so the
+   hot path stays exactly what it was before any checker existed: one var
+   deref and one nil test."
+  [f]
+  (alter-var-root
+   #'*check-plan*
+   (fn [installed]
+     (if installed
+       (fn [plan] (installed plan) (f plan))
+       (fn [plan] (swap! plan-check-stats update :plans inc) (f plan))))))
+
+(defn clear-plan-checks!
+  "Remove every installed plan check and reset the coverage counter."
+  []
+  (alter-var-root #'*check-plan* (constantly nil))
+  (reset! plan-check-stats {:plans 0}))
 
 (defn- maybe-check!
   "Hand `plan` to the installed checker, if any. Returns `plan` either way."
