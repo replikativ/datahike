@@ -413,6 +413,16 @@
        (let [{:keys [manifest files]} (manifest-of source)]
          (estimate-from-manifest manifest (manifest-total-bytes manifest files) batch-size))))))
 
+(defn- fs-read-chunk
+  "The records of ONE chunk file. The filesystem counterpart to
+   `migrate.store/read-chunk` — same unit, so the importer's loop does not care
+   which medium it is reading."
+  [manifest file opts]
+  (async+sync
+   (:sync? opts) *default-sync-translation*
+   (go-try-
+    (mcbor/decode-records-from (chunk-bytes file (codec-of manifest))))))
+
 (defn- reduce-dump-records
   "Reduce `rf` over every record of the dump, one CHUNK at a time.
 
@@ -596,16 +606,31 @@
 
 (defn- run-import
   "Medium-agnostic import core. `reduce-lines` is (fn [rf init] -> acc) that streams
-   the dump's record lines with resource scoping (filesystem or store). `mem` is the
-   memory estimate. Handles guards, attribute-refs seeding, the tx-aligned batcher,
-   verification, finalization, and the report."
-  [conn manifest mem reduce-lines opts]
+   the dump's records a CHUNK at a time: `{:chunks [descriptor…] :read (fn
+   [descriptor opts] -> records)}`, supplied by whichever medium the source names.
+   `mem` is the memory estimate. Handles guards, attribute-refs seeding, the
+   tx-aligned batcher, verification, finalization, and the report.
+
+   ## Why chunks and not a reducer
+
+   The old seam was `reduce-lines`, `(fn [rf init] -> acc)`: the medium drove the
+   fold and the caller supplied a reducing function. That works only while `rf`
+   is PURE, and this one is not — it writes datoms. A reducing function is a
+   closure, and the `go` state machine does not enter one, so an async import
+   could never have been expressed through it. Yielding chunks instead puts the
+   read AND the write at statement positions the state machine can see.
+
+   `verify` still uses `reduce-lines`, because its folds really are pure."
+  [conn manifest mem chunk-src opts]
   (let [opts     (merge {:batch-size default-batch-size :verify? true
-                         :on-error :abort :finalize? true} opts)
+                         :on-error :abort :finalize? true :sync? true} opts)
         progress (or (:progress-fn opts) (constantly nil))
         translate (:translate opts)
         batch-size (:batch-size opts)
         on-error (:on-error opts)]
+    (async+sync
+     (:sync? opts) *default-sync-translation*
+     (go-try-
     ;; ---- heap preflight: tell the operator how much RAM to give this ----
     (when-not (:sufficient? mem)
       (binding [*out* *err*]
@@ -632,29 +657,46 @@
     ;; transaction whichever call it arrives in — but it is why the transaction
     ;; count is taken from the id map rather than from the batcher.
     (let [sref-db @conn
-          final (reduce-lines
-                 (fn [acc record]
-                   ;; `:translate` runs AFTER sysref resolution, so a user
-                   ;; function sees a plain [e a v t op] with real ids and never
-                   ;; an internal SysRef. Returning nil DROPS the record.
-                   (if-let [rec (let [r (resolve-sysrefs sref-db record)]
-                                  (if translate (translate r) r))]
-                     (let [t   (nth rec 3)
-                           acc (if (and (>= (long (:n acc)) batch-size)
-                                        (not= t (:last-t acc)))
-                                 (-> acc
-                                     (update :errors into
-                                             (flush-batch! conn (:batch acc) on-error progress {:sync? true}))
-                                     (assoc :batch [] :n 0))
-                                 acc)]
-                       (-> acc
-                           (update :batch conj rec)
-                           (update :n inc)
-                           (assoc :last-t t)))
-                     (update acc :dropped inc)))
-                 {:batch [] :n 0 :last-t ::start :errors [] :dropped 0})
+          ;; TWO NESTED LOOPS, not a reduce. The outer reads one chunk, the inner
+          ;; batches its records and flushes — and both the read and the flush are
+          ;; awaits, which must sit at statement positions the `go` state machine
+          ;; can see. A reducing function would hide the flush inside a closure.
+          ;;
+          ;; Memory is unchanged: one chunk (bounded by `:chunk-size`) plus one
+          ;; batch (bounded by `:batch-size`), exactly as before.
+          final (loop [cs (seq (:chunks chunk-src))
+                       acc {:batch [] :n 0 :last-t ::start :errors [] :dropped 0}]
+                  (if (nil? cs)
+                    acc
+                    (let [records (<?- ((:read chunk-src) (first cs) opts))]
+                      (recur
+                       (next cs)
+                       (loop [rs (seq records) acc acc]
+                         (if (nil? rs)
+                           acc
+                           ;; `:translate` runs AFTER sysref resolution, so a user
+                           ;; function sees a plain [e a v t op] with real ids and
+                           ;; never an internal SysRef. Returning nil DROPS it.
+                           (let [rec (let [r (resolve-sysrefs sref-db (first rs))]
+                                       (if translate (translate r) r))]
+                             (if rec
+                               (let [t (nth rec 3)
+                                     acc (if (and (>= (long (:n acc)) batch-size)
+                                                  (not= t (:last-t acc)))
+                                           (-> acc
+                                               (update :errors into
+                                                       (<?- (flush-batch! conn (:batch acc)
+                                                                          on-error progress opts)))
+                                               (assoc :batch [] :n 0))
+                                           acc)]
+                                 (recur (next rs)
+                                        (-> acc
+                                            (update :batch conj rec)
+                                            (update :n inc)
+                                            (assoc :last-t t))))
+                               (recur (next rs) (update acc :dropped inc))))))))))
           errors (into (:errors final)
-                       (flush-batch! conn (:batch final) on-error progress {:sync? true}))
+                       (<?- (flush-batch! conn (:batch final) on-error progress opts)))
           hist?  (boolean (:history? manifest))
           live   (long (user-datom-count @conn hist?))
           dropped (long (:dropped final))
@@ -717,7 +759,7 @@
        :verified?   verified?
        :finalized?  (boolean (and (:finalize? opts) (not (false? verified?))))
        :recommended-heap (:recommended-heap mem)
-       :errors      errors})))
+       :errors      errors})))))
 
 (defn- restore-blobs!
   "Put the dump's carried `:db.type/store-ref` bytes into the target store, before
@@ -797,7 +839,10 @@
              (check-target! conn manifest)
              (restore-blobs! conn manifest source opts)
              (run-import conn manifest mem
-                         (fn [rf init] (mstore/reduce-records m manifest rf init)) opts))
+                         {:manifest manifest
+                          :chunks (:chunks manifest)
+                          :read (fn [c o] (mstore/read-chunk m manifest c o))}
+                         opts))
            (finally (mstore/close m))))
        (let [dump (open-dump source)]
          (if (:legacy? dump)
@@ -808,7 +853,10 @@
              (check-target! conn manifest)
              (restore-blobs! conn manifest source opts)
              (run-import conn manifest mem
-                         (fn [rf init] (reduce-dump-records dump rf init)) opts))))))))
+                         {:manifest manifest
+                          :chunks (:files dump)
+                          :read (fn [f o] (fs-read-chunk manifest f o))}
+                         opts))))))))
 
 (defn finalize-import!
   "Clear import bookkeeping (:migration id map) from the db after a successful,

@@ -194,32 +194,48 @@
   ([{:keys [store prefix]} opts]
    (k/get store (ckey prefix "manifest") nil opts)))
 
-(defn reduce-records
-  "Reduce `rf` over every record of the dump, verifying each chunk's SHA-256
-   (a whole chunk at a time — bounded by chunk-size) before use.
+(defn read-chunk
+  "The records of ONE chunk, verified. `async+sync`.
 
-   A `loop` and not a `reduce` over `(:chunks manifest)`, deliberately: see the
-   namespace docstring. `rf` itself must be pure — it is applied inside the loop
-   body, so any IO it performed would be invisible to the go block."
+   The unit both consumers work in. `reduce-records` folds a pure `rf` over the
+   whole dump with it; the IMPORTER cannot use that shape, because its per-record
+   work writes to the database — and IO inside a reducing function is a closure
+   the `go` state machine does not enter. Handing back a chunk at a time lets the
+   importer keep the read and the write at statement positions where the state
+   machine sees both.
+
+   Memory is bounded by `:chunk-size`, which is what bounds it either way."
+  ([medium manifest chunk] (read-chunk medium manifest chunk {:sync? true}))
+  ([{:keys [store prefix]} manifest {:keys [file sha256]} opts]
+   (async+sync
+    (:sync? opts) *default-sync-translation*
+    (go-try-
+     (let [codec (get manifest :compression :none)
+           stored (<?- (k/bget store (ckey prefix file) (kb/to-bytes opts) opts))]
+       (when (nil? stored)
+         (throw (ex-info (str "Missing chunk in store: " file)
+                         {:error :import/checksum-failed :file file})))
+       ;; Decompress BEFORE hashing: `:sha256` is over the records, so that a
+       ;; dump compares equal however it was stored (see `migrate.compress`).
+       (let [content (mz/decompress-bytes codec stored {:file file})]
+         (when (and sha256 (not= sha256 (dig/sha256-hex content)))
+           (throw (ex-info (str "Checksum mismatch for chunk " file)
+                           {:error :import/checksum-failed :file file})))
+         (mcbor/decode-records-from content)))))))
+
+(defn reduce-records
+  "Reduce a PURE `rf` over every record of the dump, one verified chunk at a time.
+
+   `rf` must not perform IO: it is applied inside the loop body, where the go
+   block cannot see it. The importer therefore uses `read-chunk` directly; this
+   is for `verify`, whose folds are pure."
   ([medium manifest rf init] (reduce-records medium manifest rf init {:sync? true}))
-  ([{:keys [store prefix]} manifest rf init opts]
+  ([medium manifest rf init opts]
    (async+sync
     (:sync? opts) *default-sync-translation*
     (go-try-
      (loop [cs (seq (:chunks manifest)) acc init]
        (if (nil? cs)
          acc
-         (let [{:keys [file sha256]} (first cs)
-               codec (get manifest :compression :none)
-               stored (<?- (k/bget store (ckey prefix file) (kb/to-bytes opts) opts))]
-           (when (nil? stored)
-             (throw (ex-info (str "Missing chunk in store: " file)
-                             {:error :import/checksum-failed :file file})))
-           ;; Decompress BEFORE hashing: `:sha256` is over the records, so that a
-           ;; dump compares equal however it was stored (see `migrate.compress`).
-           (let [content (mz/decompress-bytes codec stored {:file file})]
-             (when (and sha256 (not= sha256 (dig/sha256-hex content)))
-               (throw (ex-info (str "Checksum mismatch for chunk " file)
-                               {:error :import/checksum-failed :file file})))
-             (recur (next cs)
-                    (reduce rf acc (mcbor/decode-records-from content)))))))))))
+         (recur (next cs)
+                (reduce rf acc (<?- (read-chunk medium manifest (first cs) opts))))))))))
