@@ -187,16 +187,16 @@
                             ;; saw the "dead" writer accept a further write).
                             ;; Closing first makes that transact observe the
                             ;; closed queue and fail loudly (:writer-shut-down).
-                            (close! commit-queue)
-                            (close! transaction-queue)
-                            (doseq [[_ callback] txs
-                                    :when callback]
-                              (put! callback e))
-                            (log/error :datahike/writer-shutdown {:error e})
+                                  (close! commit-queue)
+                                  (close! transaction-queue)
+                                  (doseq [[_ callback] txs
+                                          :when callback]
+                                    (put! callback e))
+                                  (log/error :datahike/writer-shutdown {:error e})
                             ;; Re-throw Errors (AssertionError, OutOfMemoryError, etc.) to crash the writer
-                            #?(:clj (when (instance? Error e)
-                                      (throw e)))
-                            nil))]
+                                  #?(:clj (when (instance? Error e)
+                                            (throw e)))
+                                  nil))]
                           (<! (timeout commit-wait-time))
                           ;; Thread the JUST-COMMITTED id as the next parent.
                           ;; In async mode @connection holds the newest
