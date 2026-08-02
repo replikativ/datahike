@@ -39,6 +39,7 @@
             [datahike.tools :as dt]
             [datahike.migrate.cbor :as mcbor]
             [datahike.migrate.digest :as dig]
+            [datahike.migrate.compress :as mz]
             [datahike.migrate.fs :as fs]
             [datahike.migrate.sort :as msort]
             [datahike.migrate.store :as mstore]
@@ -246,7 +247,11 @@
    spelled `(:batch-size (merge {:batch-size 100000} opts))`."
   100000)
 
-(def ^:private chunk-re #"^datoms-\d{6}\.cbor$")
+(def ^:private chunk-re
+  "A chunk file name. The optional suffix is the compression codec's, so a dump
+   directory says what it holds — `datoms-000001.cbor.gz` is a gzip file to every
+   tool on the machine."
+  #"^datoms-\d{6}\.cbor(\.gz)?$")
 
 (def ^:private chunk-name
   "One spelling for both media — see `datahike.migrate.store/chunk-name`."
@@ -262,17 +267,30 @@
    sequence, so the framing is a property of the encoding rather than something
    this loop maintains. The same bytes feed the file, the chunk hash and the
    semantic digest, so all three agree by construction."
-  [p records limit dacc]
+  [p records limit dacc codec]
   (let [md (dig/sha256-accumulator)
-        sink (fs/open-sink p)]
+        sink (fs/open-sink p)
+        ;; The digest is fed the RAW record bytes, before compression — see
+        ;; `migrate.compress`. Records accumulate into a block and the block is
+        ;; compressed as a unit, so memory is bounded by the block rather than
+        ;; by the chunk, on both runtimes and with one implementation.
+        flush-block! (fn [block n]
+                       (when (pos? (long n))
+                         (fs/write! sink (mz/compress-bytes codec (mcbor/concat-records block)))))]
     (try
-      (loop [rs (seq records) c 0 da dacc]
+      (loop [rs (seq records) c 0 da dacc block [] bn 0]
         (if (and rs (< c limit))
-          (let [bs (mcbor/encode-record (first rs))]
-            (fs/write! sink bs)
+          (let [bs (mcbor/encode-record (first rs))
+                len (alength ^bytes bs)
+                bn' (+ (long bn) (long len))
+                block' (conj block bs)]
             (dig/sha256-update! md bs)
-            (recur (next rs) (inc c) (dig/add-record da bs)))
-          [rs c (dig/sha256-finalize md) da]))
+            (if (>= bn' mz/default-block-size)
+              (do (flush-block! block' bn')
+                  (recur (next rs) (inc c) (dig/add-record da bs) [] 0))
+              (recur (next rs) (inc c) (dig/add-record da bs) block' bn')))
+          (do (flush-block! block bn)
+              [rs c (dig/sha256-finalize md) da])))
       (finally (fs/close-sink! sink)))))
 
 (defn- write-chunked! [db opts dir sorted-records chunk-size progress]
@@ -281,17 +299,23 @@
     (throw (ex-info (str "Could not create the dump directory " dir)
                     {:error :export/mkdir-failed :dir (str dir)})))
   (fs/restrict-perms! dir true)
-  (loop [ls (seq sorted-records) n 1 chunks [] dacc (dig/accumulator)]
+  (let [codec (get opts :compression mz/default-codec)]
+   (loop [ls (seq sorted-records) n 1 chunks [] dacc (dig/accumulator)]
     (if (nil? ls)
-      (let [manifest (build-manifest db opts (dig/finalize dacc) chunks)]
+      ;; `:compression` is stamped by the WRITER, so the codec recorded is the
+      ;; one that was used. See `migrate.store/write-chunks!` for why that
+      ;; matters: a manifest that disagrees with the bytes reports corruption on
+      ;; an intact dump.
+      (let [manifest (assoc (build-manifest db opts (dig/finalize dacc) chunks)
+                            :compression codec)]
         (fs/spit-text! (fs/join dir "manifest.edn") (pr-str manifest))
         (fs/restrict-perms! (fs/join dir "manifest.edn") false)
         (progress {:phase :done :datoms (:count (dig/finalize dacc))})
         manifest)
-      (let [fname (chunk-name n)
+      (let [fname (str (chunk-name n) (mz/extension codec))
             tmp   (fs/join dir (str fname ".tmp"))
             final (fs/join dir fname)
-            [rem cnt sha dacc'] (write-chunk-stream! tmp ls chunk-size dacc)]
+            [rem cnt sha dacc'] (write-chunk-stream! tmp ls chunk-size dacc codec)]
         (when-not (fs/rename! tmp final)
           (throw (ex-info (str "Could not move the finished chunk into place: "
                                tmp " -> " final ". The manifest would name a file "
@@ -301,7 +325,7 @@
         (progress {:phase :chunk :datoms cnt})
         (recur (seq rem) (inc n)
                (conj chunks {:file fname :count cnt :bytes (fs/file-size final) :sha256 sha})
-               dacc')))))
+               dacc'))))))
 
 (defn- blob-dir
   "The directory carried blobs live in for a filesystem dump."
@@ -359,6 +383,9 @@
    Writes a DIRECTORY: `manifest.edn`, `datoms-NNNNNN.cbor`, and `store-refs/`
    when the database has `:db.type/store-ref` blobs. Opts:
      :history?     false        include full history (asserts+retracts+tx entities)
+     :compression  :gzip         :gzip or :none. gzip is ~7x on a real dump and
+                                needs no dependency on any runtime; see
+                                `datahike.migrate.compress` for why not zstd.
      :chunk-size   1000000      datoms per chunk file (50000 for store targets —
                                 a store chunk is held in memory as one value)
      :sort-buffer  1000000      datoms per in-memory external-sort run
@@ -390,6 +417,7 @@
                           ;; line and never holds a chunk in memory).
                           :chunk-size (if (mstore/store-target? target) 50000 1000000)
                           :sort-buffer 1000000
+                          :compression mz/default-codec
                           :sort? true}
                          opts)
          ;; Only walk for blobs when the schema can actually have them. Two
@@ -415,7 +443,8 @@
                          (try
                            (mstore/write-chunks! m lines (:chunk-size opts)
                                                  (fn [digest chunks] (build-manifest db opts digest chunks))
-                                                 progress)
+                                                 progress {:sync? true}
+                                                 (get opts :compression mz/default-codec))
                            (finally (mstore/close m))))
 
                        :else
@@ -447,19 +476,43 @@
 ;; ---------------------------------------------------------------------------
 ;; reading dumps
 
-(defn- sha256-of-file
-  "Streaming hex SHA-256 of a file — bounded memory, so a multi-gigabyte chunk
-   verifies without being held. Composed from the seam and the incremental
-   digest rather than living in `migrate.digest`, which has no business knowing
-   what a file is."
-  [p]
-  (let [{:keys [pull close]} (fs/puller p)]
-    (try
-      (loop [acc (dig/sha256-accumulator)]
-        (if-let [b (pull)]
-          (recur (dig/sha256-update! acc b))
-          (dig/sha256-finalize acc)))
-      (finally (close)))))
+(defn- chunk-bytes
+  "The UNCOMPRESSED records of a chunk file.
+
+   Bounded by one chunk, which `:chunk-size` already bounds. Streaming inside a
+   chunk was possible while chunks were stored verbatim; a compressed chunk is
+   read whole because neither runtime offers a streaming synchronous gunzip, and
+   the bound is the same either way."
+  [p codec]
+  (if (= :none codec)
+    (fs/read-bytes p)
+    (mz/decompress-bytes codec (fs/read-bytes p) {:file (fs/file-name p)})))
+
+(defn- sha256-of-chunk
+  "Hex SHA-256 of a chunk's RECORDS — not of the file.
+
+   The manifest's `:sha256` is over uncompressed bytes so that the codec stays a
+   transport detail (see `migrate.compress`), which means verification has to
+   decompress before hashing. An uncompressed chunk streams, so a dump written
+   with `:compression :none` still verifies in memory bounded by one block."
+  [p codec]
+  (if (= :none codec)
+    (let [{:keys [pull close]} (fs/puller p)]
+      (try
+        (loop [acc (dig/sha256-accumulator)]
+          (if-let [b (pull)]
+            (recur (dig/sha256-update! acc b))
+            (dig/sha256-finalize acc)))
+        (finally (close))))
+    (dig/sha256-hex (chunk-bytes p codec))))
+
+(defn- codec-of
+  "The compression codec a manifest declares. `:none` when absent — dumps written
+   before compression existed have no such key and are stored verbatim."
+  [manifest]
+  (let [c (get manifest :compression :none)]
+    (mz/check-supported! c)
+    c))
 
 (defn- read-manifest-map [^String s]
   ;; The manifest is plain EDN — no #datahike/* tags survive the move to CBOR,
@@ -515,7 +568,7 @@
       (doseq [{:keys [file sha256]} (:chunks (:manifest dump))
               :when sha256
               :let [cf (validate-chunk-file (str source) file)]]
-        (when (not= sha256 (sha256-of-file cf))
+        (when (not= sha256 (sha256-of-chunk cf (codec-of (:manifest dump))))
           (throw (ex-info (str "Checksum mismatch for chunk " file)
                           {:error :import/checksum-failed :file file})))))
     dump))
@@ -594,14 +647,18 @@
   "Reduce `rf` over every record of the dump, with each file's stream scoped to
    its inner reduction (no lazy seq escapes an open handle). Flat dumps skip the
    manifest header line first. Returns the final accumulator."
-  [{:keys [files]} rf init]
-  (reduce (fn [acc file]
-            (let [{:keys [pull close]} (fs/puller file)]
-              (try
-                (reduce rf acc (mcbor/decode-records-pulled pull))
-                (finally (close)))))
-          init
-          files))
+  [{:keys [files manifest]} rf init]
+  (let [codec (codec-of manifest)]
+    (reduce (fn [acc file]
+              (if (= :none codec)
+                ;; verbatim: stream inside the chunk too
+                (let [{:keys [pull close]} (fs/puller file)]
+                  (try
+                    (reduce rf acc (mcbor/decode-records-pulled pull))
+                    (finally (close))))
+                (reduce rf acc (mcbor/decode-records-from (chunk-bytes file codec)))))
+            init
+            files)))
 
 ;; ---------------------------------------------------------------------------
 ;; import

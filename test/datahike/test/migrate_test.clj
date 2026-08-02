@@ -10,6 +10,8 @@
             [datahike.migrate :as m]
             [datahike.migrate.cbor :as mcbor]
             [datahike.migrate.blobs :as mblobs]
+            [datahike.migrate.compress :as mz]
+            [datahike.migrate.digest :as dig]
             [datahike.blob :as blob]
             [datahike.db]
             [konserve.core :as k]
@@ -244,7 +246,10 @@
           _   (do (d/transact src [{:db/ident :n :db/valueType :db.type/string :db/cardinality :db.cardinality/one}])
                   (d/transact src [{:n "alpha"} {:n "beta"}]))
           dir (str (System/getProperty "java.io.tmpdir") "/dh-tamper-" (utils/get-time))
-          _   (m/export-db src dir {})
+          ;; `:compression :none` because this test edits the CBOR itself. The
+          ;; property under test is the codec's, not the container's; the
+          ;; compressed path has its own tamper test below.
+          _   (m/export-db src dir {:compression :none})
           chunk (io/file dir "datoms-000001.cbor")
           content (let [bos (java.io.ByteArrayOutputStream.)]
                     (with-open [in (io/input-stream chunk)] (io/copy in bos))
@@ -288,8 +293,11 @@
           _   (populate-rich! src)
           d1  (str (System/getProperty "java.io.tmpdir") "/dh-det1-" (utils/get-time))
           d2  (str (System/getProperty "java.io.tmpdir") "/dh-det2-" (utils/get-time))
-          m1  (m/export-db src d1 {:history? true :chunk-size 5})
-          m2  (m/export-db src d2 {:history? true :chunk-size 5})]
+          ;; `:compression :none` — this asserts that :archival makes the BYTES
+          ;; a function of the data. Compressed determinism is a property of the
+          ;; gzip encoder and is covered separately.
+          m1  (m/export-db src d1 {:history? true :chunk-size 5 :compression :none})
+          m2  (m/export-db src d2 {:history? true :chunk-size 5 :compression :none})]
       (is (= (:semantic-digest m1) (:semantic-digest m2)))
       (is (= (mapv :sha256 (:chunks m1)) (mapv :sha256 (:chunks m2))))
       (let [rd (fn [f] (let [bos (java.io.ByteArrayOutputStream.)]
@@ -583,13 +591,22 @@
           ;; :on-error behaviour it exists to exercise. (The flat format skipped
           ;; chunk verification, which is how it went unnoticed that this fixture
           ;; was producing a dump that did not describe itself.)
-          _    (let [chunk (io/file path (:file (last (:chunks man))))]
+          ;; A gzip chunk is a sequence of MEMBERS, and concatenated members are
+          ;; one valid stream, so the bad record is appended as its own member —
+          ;; which is exactly how the writer appends a block.
+          _    (let [chunk (io/file path (:file (last (:chunks man))))
+                     codec (:compression man)
+                     bad (mcbor/encode-record [9999 42 "x" 536870914 true])]
                  (with-open [out (java.io.FileOutputStream. chunk true)]
-                   (.write out ^bytes (mcbor/encode-record [9999 42 "x" 536870914 true])))
+                   (.write out ^bytes (mz/compress-bytes codec bad)))
                  (let [mf (io/file path "manifest.edn")
                        m0 (read-string (slurp mf))
                        last-ix (dec (count (:chunks m0)))
-                       sha (#'m/sha256-of-file (str chunk))]
+                       ;; :sha256 is over the RECORDS, so hash the decompressed
+                       ;; content rather than the file
+                       sha (dig/sha256-hex (mz/decompress-bytes
+                                            codec
+                                            (java.nio.file.Files/readAllBytes (.toPath chunk))))]
                    (spit mf (pr-str (-> m0
                                         (assoc-in [:chunks last-ix :sha256] sha)
                                         (assoc-in [:chunks last-ix :bytes] (.length chunk)))))))]
@@ -866,19 +883,20 @@
               "an intact store dump verifies")
           (k/bassoc store ["datahike.migrate" "vt" (:file (first (:chunks man)))]
                     (byte-array (map unchecked-byte (repeat 40 0x77))) {:sync? true})
-          (is (= :import/checksum-failed
-                 (try (m/verify target) nil
-                      (catch clojure.lang.ExceptionInfo e (:error (ex-data e)))))
-              "a corrupted store dump is refused")))
+          (is (contains? #{:import/checksum-failed :import/corrupt-chunk}
+                         (try (m/verify target) nil
+                              (catch clojure.lang.ExceptionInfo e (:error (ex-data e)))))
+              "a corrupted store dump is refused, by a NAMED datahike error —
+               which one depends on whether the damage survives decompression")))
       (testing "filesystem medium, same corruption"
         (let [path (str (System/getProperty "java.io.tmpdir") "/dh-vfs-" (utils/get-time))
               man (m/export-db src path {:history? true :chunk-size 2})
               chunk (io/file path (:file (first (:chunks man))))]
           (with-open [o (java.io.FileOutputStream. chunk)]
             (.write o (byte-array (map unchecked-byte (repeat 40 0x77)))))
-          (is (= :import/checksum-failed
-                 (try (m/verify path) nil
-                      (catch clojure.lang.ExceptionInfo e (:error (ex-data e))))))))
+          (is (contains? #{:import/checksum-failed :import/corrupt-chunk}
+                         (try (m/verify path) nil
+                              (catch clojure.lang.ExceptionInfo e (:error (ex-data e))))))))
       (teardown src))))
 
 (deftest a-non-empty-target-is-refused-before-any-blob-is-written
@@ -912,3 +930,97 @@
         (d/release conn2)
         (d/delete-database cfg2))
       (d/release conn))))
+
+;; ---------------------------------------------------------------------------
+;; compression
+
+(deftest gzip-is-the-default-and-round-trips
+  (testing "a dump compresses by default, names its chunks `.gz`, and restores
+            identically. Measured on a real database: ~7x, because the
+            redundancy is ACROSS records — repeated attribute idents, sequential
+            entity ids, shared transaction ids — which CBOR's own stringref
+            cannot reach at one-record-per-item granularity."
+    (let [src (utils/setup-db (mem-cfg {:history? true}))
+          _   (populate-rich! src)
+          dir (str (System/getProperty "java.io.tmpdir") "/dh-gz-" (utils/get-time))
+          man (m/export-db src dir {:history? true})]
+      (is (= :gzip (:compression man)) "gzip without being asked")
+      (is (every? #(re-find #"\.cbor\.gz$" (:file %)) (:chunks man))
+          "chunk files say what they are, so `gzip -d` works on them")
+      (is (every? #(.exists (io/file dir (:file %))) (:chunks man)))
+      (let [tgt (utils/setup-db (mem-cfg {:history? true}))
+            rep (m/import-db tgt dir {})]
+        (is (:verified? rep))
+        (is (= (user-triples src) (user-triples tgt)))
+        (teardown tgt))
+      (teardown src))))
+
+(deftest the-digest-is-over-records-so-codecs-compare-equal
+  (testing "THE property that makes compression a transport detail.
+
+            `:sha256` and the semantic digest cover the uncompressed records, so
+            the same database exported with and without gzip produces the same
+            hashes. Without this a dump would only verify against one written by
+            an identical encoder — and compressed output is not stable even
+            within one runtime (nodejs/node#58392), let alone across JVM and
+            Node."
+    (let [src (utils/setup-db (mem-cfg {:history? true}))
+          _   (populate-rich! src)
+          d1  (str (System/getProperty "java.io.tmpdir") "/dh-cz-none-" (utils/get-time))
+          d2  (str (System/getProperty "java.io.tmpdir") "/dh-cz-gzip-" (utils/get-time))
+          m1  (m/export-db src d1 {:history? true :chunk-size 5 :compression :none})
+          m2  (m/export-db src d2 {:history? true :chunk-size 5 :compression :gzip})]
+      (is (= (:semantic-digest m1) (:semantic-digest m2))
+          "the semantic digest does not depend on the codec")
+      (is (= (mapv :sha256 (:chunks m1)) (mapv :sha256 (:chunks m2)))
+          "nor do the per-chunk hashes")
+      (is (not= (mapv :bytes (:chunks m1)) (mapv :bytes (:chunks m2)))
+          "while :bytes DOES describe what was stored, so a restore can be sized")
+      (testing "and each imports into the other's shape"
+        (doseq [d [d1 d2]]
+          (let [tgt (utils/setup-db (mem-cfg {:history? true}))]
+            (is (:verified? (m/import-db tgt d {})))
+            (is (= (user-triples src) (user-triples tgt)))
+            (teardown tgt))))
+      (teardown src))))
+
+(deftest a-tampered-gzip-chunk-is-caught
+  (testing "corruption is caught whether it survives decompression or not — a
+            flipped byte usually breaks the gzip member itself, and if it does
+            not, the record hash catches it."
+    (let [src (utils/setup-db (mem-cfg {}))
+          _   (do (d/transact src [{:db/ident :n :db/valueType :db.type/string
+                                    :db/cardinality :db.cardinality/one}])
+                  (d/transact src [{:n "alpha"} {:n "beta"}]))
+          dir (str (System/getProperty "java.io.tmpdir") "/dh-gztamper-" (utils/get-time))
+          man (m/export-db src dir {})
+          chunk (io/file dir (:file (first (:chunks man))))
+          content (java.nio.file.Files/readAllBytes (.toPath chunk))]
+      ;; flip a byte in the deflate payload, past the 10-byte gzip header
+      (aset-byte content 15 (byte (bit-xor (aget content 15) 0x5a)))
+      (with-open [out (io/output-stream chunk)] (.write out content))
+      (let [tgt (utils/setup-db (mem-cfg {}))]
+        (is (contains? #{:import/checksum-failed :import/corrupt-chunk}
+                       (try (m/import-db tgt dir {}) nil
+                            (catch clojure.lang.ExceptionInfo e (:error (ex-data e)))))
+            "a corrupted compressed chunk is refused by a NAMED error, not a
+             raw ZipException")
+        (teardown tgt))
+      (teardown src))))
+
+(deftest an-unknown-codec-is-refused-by-name
+  (testing "a dump written by a future datahike with a codec we do not have must
+            say so, rather than failing inside a decoder."
+    (let [src (utils/setup-db (mem-cfg {}))
+          _   (d/transact src [{:db/ident :n :db/valueType :db.type/string
+                                :db/cardinality :db.cardinality/one}])
+          dir (str (System/getProperty "java.io.tmpdir") "/dh-codec-" (utils/get-time))
+          _   (m/export-db src dir {})
+          mf  (io/file dir "manifest.edn")]
+      (spit mf (pr-str (assoc (read-string (slurp mf)) :compression :brotli)))
+      (let [tgt (utils/setup-db (mem-cfg {}))]
+        (is (= :import/unsupported-compression
+               (try (m/import-db tgt dir {}) nil
+                    (catch clojure.lang.ExceptionInfo e (:error (ex-data e))))))
+        (teardown tgt))
+      (teardown src))))

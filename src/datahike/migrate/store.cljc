@@ -52,6 +52,7 @@
             ;; a ClassCastException that points at `go-try-` and explains nothing.
             #?(:cljs [clojure.core.async :refer-macros [go]])
             [datahike.migrate.cbor :as mcbor]
+            [datahike.migrate.compress :as mz]
             [datahike.migrate.digest :as dig]))
 
 (def ^:private ns-tag "datahike.migrate")
@@ -81,12 +82,14 @@
    filesystem dump\" false in the one field a reader looks at first.
 
    Written out rather than with `format`, which ClojureScript does not have."
-  [n]
-  (let [s (str n)
-        pad (- 6 (count s))]
-    (str "datoms-" (apply str (repeat (max 0 pad) "0")) s ".cbor")))
+  ([n] (chunk-name n :none))
+  ([n codec]
+   (let [s (str n)
+         pad (- 6 (count s))]
+     (str "datoms-" (apply str (repeat (max 0 pad) "0")) s ".cbor"
+          (mz/extension codec)))))
 
-(defn- chunk-key [prefix n] (ckey prefix (chunk-name n)))
+(defn- chunk-key [prefix n codec] (ckey prefix (chunk-name n codec)))
 
 (defn blob-key
   "Where a carried `:db.type/store-ref` blob lives in a store dump.
@@ -145,25 +148,39 @@
    value: it is EDN, small, and read before the codec is known."
   ([medium sorted-records chunk-size manifest-fn progress]
    (write-chunks! medium sorted-records chunk-size manifest-fn progress {:sync? true}))
-  ([{:keys [store prefix]} sorted-records chunk-size manifest-fn progress opts]
+  ([medium sorted-records chunk-size manifest-fn progress opts]
+   (write-chunks! medium sorted-records chunk-size manifest-fn progress opts
+                  mz/default-codec))
+  ([{:keys [store prefix]} sorted-records chunk-size manifest-fn progress opts codec]
    (async+sync
     (:sync? opts) *default-sync-translation*
     (go-try-
      (loop [rs (seq sorted-records) n 1 chunks [] dacc (dig/accumulator)]
        (if (nil? rs)
-         (let [manifest (manifest-fn (dig/finalize dacc) chunks)]
+         ;; The writer stamps `:compression`, not the caller's `manifest-fn`.
+         ;; They are two different places that both "know" the codec, and when
+         ;; they disagree the dump is unreadable: the reader decompresses
+         ;; according to the manifest, so a manifest saying `:none` over gzipped
+         ;; bytes fails the chunk hash and reports corruption on an intact dump.
+         ;; Stamping here means the recorded codec IS the one that was used.
+         (let [manifest (assoc (manifest-fn (dig/finalize dacc) chunks)
+                               :compression codec)]
            (<?- (k/assoc store (ckey prefix "manifest") manifest opts))
            (progress {:phase :done :datoms (:count (dig/finalize dacc))})
            manifest)
          (let [part (into [] (take chunk-size) rs)
                encs (mapv mcbor/encode-record part)
-               content (mcbor/concat-records encs)]
-           (<?- (k/bassoc store (chunk-key prefix n) content opts))
+               content (mcbor/concat-records encs)
+               ;; The hash is over the RECORDS, the stored bytes are compressed —
+               ;; see `migrate.compress`. `:bytes` describes what was stored, so
+               ;; an operator sizing a restore reads the transfer cost.
+               stored (mz/compress-bytes codec content)]
+           (<?- (k/bassoc store (chunk-key prefix n codec) stored opts))
            (progress {:phase :chunk :datoms (count part)})
            (recur (seq (drop chunk-size rs)) (inc n)
-                  (conj chunks {:file (chunk-name n) :count (count part)
-                                :bytes #?(:clj (alength ^bytes content)
-                                          :cljs (.-length content))
+                  (conj chunks {:file (chunk-name n codec) :count (count part)
+                                :bytes #?(:clj (alength ^bytes stored)
+                                          :cljs (.-length stored))
                                 :sha256 (dig/sha256-hex content)})
                   (reduce dig/add-record dacc encs)))))))))
 
@@ -188,12 +205,16 @@
        (if (nil? cs)
          acc
          (let [{:keys [file sha256]} (first cs)
-               content (<?- (k/bget store (ckey prefix file) (kb/to-bytes opts) opts))]
-           (when (nil? content)
+               codec (get manifest :compression :none)
+               stored (<?- (k/bget store (ckey prefix file) (kb/to-bytes opts) opts))]
+           (when (nil? stored)
              (throw (ex-info (str "Missing chunk in store: " file)
                              {:error :import/checksum-failed :file file})))
-           (when (and sha256 (not= sha256 (dig/sha256-hex content)))
-             (throw (ex-info (str "Checksum mismatch for chunk " file)
-                             {:error :import/checksum-failed :file file})))
-           (recur (next cs)
-                  (reduce rf acc (mcbor/decode-records-from content))))))))))
+           ;; Decompress BEFORE hashing: `:sha256` is over the records, so that a
+           ;; dump compares equal however it was stored (see `migrate.compress`).
+           (let [content (mz/decompress-bytes codec stored {:file file})]
+             (when (and sha256 (not= sha256 (dig/sha256-hex content)))
+               (throw (ex-info (str "Checksum mismatch for chunk " file)
+                               {:error :import/checksum-failed :file file})))
+             (recur (next cs)
+                    (reduce rf acc (mcbor/decode-records-from content)))))))))))
