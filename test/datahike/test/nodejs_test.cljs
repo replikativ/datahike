@@ -61,7 +61,10 @@
             ;; estimate, norm-val's typed arrays. Nothing on cljs REQUIRED
             ;; `migrate.manifest`, so none of its cljs branches were even
             ;; compiled until this.
-            [datahike.test.migrate-manifest-test]))
+            [datahike.test.migrate-manifest-test]
+            ;; Blob content ids must be IDENTICAL across platforms — the id is
+            ;; the datom value, the konserve key AND the dump filename.
+            [datahike.test.blob-identity-test]))
 
 ;; Hook cljs.test's end-of-run callback so the Node process exits with
 ;; status 0 only when all tests pass. The previous setup always exited
@@ -740,6 +743,7 @@
                'datahike.test.migrate-store-test
                'datahike.test.migrate-fs-test
                'datahike.test.migrate-manifest-test
+               'datahike.test.blob-identity-test
                'datahike.test.nodejs-test
                'datahike.test.index-test
                'datahike.test.cljs-tiered-storage-test
