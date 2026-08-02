@@ -692,6 +692,26 @@
 
 (declare import-db-legacy finalize-import!)
 
+(defn- check-target!
+  "Refuse an import this target cannot accept — BEFORE anything is written.
+
+   Split out of `run-import`, which performed these checks under a comment
+   reading \"guard rails (all before touching the db)\" while `import-db` had
+   already called `restore-blobs!`. Importing a blob-carrying dump into a
+   non-empty database therefore wrote every blob into the target store and only
+   then refused. The objects are content-addressed and unreferenced, so the GC
+   reclaims them eventually, but the refusal should come first — and on a large
+   blob set that is gigabytes written to be told the target was never eligible."
+  [conn manifest]
+  (when-let [fv (get manifest manifest-key)]
+    (when (> fv format-version)
+      (throw (ex-info (str "Unsupported dump format-version " fv)
+                      {:error :import/format-version :version fv}))))
+  (config-compat! manifest conn)
+  (when (pos? (user-datom-count @conn))
+    (throw (ex-info "Target database is not empty; import is not resumable — recreate and restart."
+                    {:error :import/non-empty-target}))))
+
 (defn- run-import
   "Medium-agnostic import core. `reduce-lines` is (fn [rf init] -> acc) that streams
    the dump's record lines with resource scoping (filesystem or store). `mem` is the
@@ -710,25 +730,25 @@
         (println (format "[datahike.migrate] heap warning: importing %d datoms (~%d entities) needs about %s; this JVM's -Xmx is %s. Raise -Xmx (the id-remap map is held until finalize) or expect OutOfMemoryError."
                          (:datoms mem) (:entities mem)
                          (:recommended-heap mem) (:current-max-heap mem)))))
-    ;; ---- guard rails (all before touching the db) ----
-    (when-let [fv (get manifest manifest-key)]
-      (when (> fv format-version)
-        (throw (ex-info (str "Unsupported dump format-version " fv)
-                        {:error :import/format-version :version fv}))))
-    (config-compat! manifest conn)
-    (when (pos? (user-datom-count @conn))
-      (throw (ex-info "Target database is not empty; import is not resumable — recreate and restart."
-                      {:error :import/non-empty-target})))
+    ;; Guard rails already ran in `check-target!`, before any blob was written.
     ;; ---- attribute-refs: seed system-entity identity so refs to system
     ;; entities are translated, not re-allocated (#508) ----
     (when (attribute-refs? @conn)
       (swap! conn update :migration
              (fn [m] (update (or m {}) :eids merge (system-eid-seed @conn)))))
     ;; ---- stream records through a tx-aligned batcher (bounded memory) ----
-    ;; System-entity idents are stable across the import, so resolve #sysref against
-    ;; a captured db value. A transaction is never split across a batch flush; a tx
-    ;; spanning chunk boundaries is still kept whole, because the batcher state
-    ;; carries across chunks/files.
+    ;; System-entity idents are stable across the import, so resolve #sysref
+    ;; against a captured db value.
+    ;;
+    ;; The batcher only flushes at a `t` boundary, so a RUN of one transaction's
+    ;; records is never split — including across a chunk or file boundary, since
+    ;; the batcher state carries over. That is not the same as "a transaction is
+    ;; never split", which this used to claim: under `:sort? false` a
+    ;; transaction's records arrive in two separate runs (schema/meta in the
+    ;; first :eavt pass, data in the second) and a flush can land between them.
+    ;; Harmless for content — the id-remap maps a source `t` to the same target
+    ;; transaction whichever call it arrives in — but it is why the transaction
+    ;; count is taken from the id map rather than from the batcher.
     (let [sref-db @conn
           final (reduce-lines
                  (fn [acc record]
@@ -748,10 +768,9 @@
                        (-> acc
                            (update :batch conj rec)
                            (update :n inc)
-                           (update :tx-count + (if (= t (:last-t acc)) 0 1))
                            (assoc :last-t t)))
                      (update acc :dropped inc)))
-                 {:batch [] :n 0 :last-t ::start :tx-count 0 :errors [] :dropped 0})
+                 {:batch [] :n 0 :last-t ::start :errors [] :dropped 0})
           errors (into (:errors final)
                        (flush-batch! conn (:batch final) on-error progress))
           hist?  (boolean (:history? manifest))
@@ -773,7 +792,20 @@
                                            :dropped-by-translate dropped
                                            :expected-count expected
                                            :live-count live})))
-                        ok?))]
+                        ok?))
+          ;; The EXACT number of source transactions, taken from the id-remap's
+          ;; `:tids` — one entry per distinct source `t`, already in memory, so
+          ;; this costs nothing. Captured here because `finalize-import!` below
+          ;; drops the map.
+          ;;
+          ;; The batcher's own counter cannot do this. It counts TRANSITIONS
+          ;; between adjacent `t` values, which equals the transaction count only
+          ;; when every transaction's records are contiguous — true for a sorted
+          ;; dump and false for `:sort? false`, where `export-records-streaming`
+          ;; makes two passes over :eavt and emits a transaction's schema/meta
+          ;; datoms in the first and its data datoms in the second. Measured: a
+          ;; 13-transaction database reported 25.
+          tx-count (count (:tids (:migration @conn)))]
       ;; `verified?` is nil when verification was not RUN, and false when it ran
       ;; and failed. Treating nil as failure meant `:verify? false` silently
       ;; disabled `:finalize?`, leaving the O(entities) `:migration` id-map in
@@ -798,7 +830,7 @@
        ;; rather than discover. nil when the dump records no source max-tx.
        :max-tx-drift (when-let [src-max-tx (:max-tx (:stats manifest))]
                        (- (long (:max-tx @conn)) (long src-max-tx)))
-       :tx-count    (:tx-count final)
+       :tx-count    tx-count
        :max-tx      (:max-tx @conn)
        :verified?   verified?
        :finalized?  (boolean (and (:finalize? opts) (not (false? verified?))))
@@ -880,6 +912,7 @@
            (let [manifest (mstore/read-manifest m)
                  mem (estimate-from-manifest manifest (manifest-total-bytes manifest nil) batch-size)]
              (check-capabilities! manifest)
+             (check-target! conn manifest)
              (restore-blobs! conn manifest source opts)
              (run-import conn manifest mem
                          (fn [rf init] (mstore/reduce-records m manifest rf init)) opts))
@@ -890,6 +923,7 @@
            (let [manifest (:manifest dump)
                  mem (estimate-from-manifest manifest (manifest-total-bytes manifest (:files dump)) batch-size)]
              (check-capabilities! manifest)
+             (check-target! conn manifest)
              (restore-blobs! conn manifest source opts)
              (run-import conn manifest mem
                          (fn [rf init] (reduce-dump-records dump rf init)) opts))))))))
@@ -1044,10 +1078,26 @@
    tier2 = multiset digest over `[a v op]` + ref-topology counts, tier3 = sampled
    structural diff of unique entities. `source` may be a path or a konserve store."
   ([source]
-   (let [{:keys [manifest]} (if (mstore/store-target? source)
-                              (let [m (mstore/open source)]
-                                (try {:manifest (mstore/read-manifest m)} (finally (mstore/close m))))
-                              (open-dump source))]
+   (let [{:keys [manifest]}
+         (if (mstore/store-target? source)
+           (let [m (mstore/open source)]
+             (try
+               (let [manifest (mstore/read-manifest m)]
+                 ;; Read every chunk. `mstore/reduce-records` verifies each one's
+                 ;; SHA-256 as it goes, which is what makes the `:checksums :ok`
+                 ;; below true.
+                 ;;
+                 ;; This used to read only the manifest and then report
+                 ;; `:tier0 {:checksums :ok}` regardless — so a store dump with a
+                 ;; corrupted chunk came back `{:ok? true}` from the very call an
+                 ;; operator makes to find out whether a backup is intact. The
+                 ;; same corruption on a filesystem dump threw, because
+                 ;; `open-dump` hashes every chunk. Verified both ways before
+                 ;; changing it.
+                 (mstore/reduce-records m manifest (fn [acc _] acc) nil)
+                 {:manifest manifest})
+               (finally (mstore/close m))))
+           (open-dump source))]
      (let [blobs (verify-blobs manifest source)]
        {:ok? (:ok? blobs)
         :tier0 {:checksums :ok :format (get manifest manifest-key)}

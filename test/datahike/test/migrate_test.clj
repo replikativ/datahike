@@ -807,3 +807,108 @@
       (let [v (m/verify dump)]
         (is (false? (:ok? v)))
         (is (= [id] (:corrupt (:blobs v))))))))
+
+;; ---------------------------------------------------------------------------
+;; three claims the code made about itself that were not true
+
+(deftest tx-count-is-exact-under-both-sort-modes
+  (testing "the reported transaction count must be the number of transactions.
+
+            It used to be the number of TRANSITIONS between adjacent `t` values
+            in the record stream, which equals the transaction count only when
+            every transaction's records are contiguous. Under `:sort? false`
+            they are not: `export-records-streaming` makes two passes over
+            :eavt, emitting a transaction's schema/meta datoms in the first and
+            its data datoms in the second. Measured before the fix: 25 reported
+            for 13 actual.
+
+            The count now comes from the id-remap's `:tids`, which holds one
+            entry per distinct source `t` and is already in memory."
+    (let [src (utils/setup-db (mem-cfg {:history? true}))]
+      (d/transact src [{:db/ident :name :db/valueType :db.type/string
+                        :db/cardinality :db.cardinality/one :db/unique :db.unique/identity}
+                       {:db/ident :n :db/valueType :db.type/long
+                        :db/cardinality :db.cardinality/one}])
+      (doseq [i (range 12)]
+        (d/transact src [{:name (str "e" i) :n i}]))
+      (let [actual (count (distinct (map :tx (d/datoms (d/history @src) :eavt))))]
+        (is (= 13 actual) "precondition: 13 transactions (schema + 12)")
+        (doseq [sort? [true false]]
+          (let [path (str (System/getProperty "java.io.tmpdir") "/dh-txc-"
+                          sort? "-" (utils/get-time))
+                _ (m/export-db src path {:history? true :sort? sort?})
+                tgt (utils/setup-db (mem-cfg {:history? true}))
+                rep (m/import-db tgt path {:verify? false})]
+            (is (= actual (:tx-count rep)) (str ":sort? " sort?))
+            (teardown tgt))))
+      (teardown src))))
+
+(deftest verify-refuses-a-corrupted-store-dump
+  (testing "`verify` on a store dump must check the chunks it says it checked.
+
+            It read only the manifest and then reported
+            `:tier0 {:checksums :ok}` regardless — so a store dump with a
+            corrupted chunk came back `{:ok? true}` from the very call an
+            operator makes to find out whether a backup is intact. The identical
+            corruption on a filesystem dump threw, because `open-dump` hashes
+            every chunk. Both media are pinned here so they cannot drift apart
+            again."
+    (let [src (utils/setup-db (mem-cfg {:history? true}))]
+      (d/transact src [{:db/ident :name :db/valueType :db.type/string
+                        :db/cardinality :db.cardinality/one}])
+      (d/transact src [{:name "x"} {:name "y"}])
+      (testing "store medium"
+        (let [store (ks/create-store {:backend :memory :id (java.util.UUID/randomUUID)}
+                                     {:sync? true})
+              target {:store store :prefix "vt"}
+              man (m/export-db src target {:history? true :chunk-size 2})]
+          (is (= {:ok? true} (select-keys (m/verify target) [:ok?]))
+              "an intact store dump verifies")
+          (k/bassoc store ["datahike.migrate" "vt" (:file (first (:chunks man)))]
+                    (byte-array (map unchecked-byte (repeat 40 0x77))) {:sync? true})
+          (is (= :import/checksum-failed
+                 (try (m/verify target) nil
+                      (catch clojure.lang.ExceptionInfo e (:error (ex-data e)))))
+              "a corrupted store dump is refused")))
+      (testing "filesystem medium, same corruption"
+        (let [path (str (System/getProperty "java.io.tmpdir") "/dh-vfs-" (utils/get-time))
+              man (m/export-db src path {:history? true :chunk-size 2})
+              chunk (io/file path (:file (first (:chunks man))))]
+          (with-open [o (java.io.FileOutputStream. chunk)]
+            (.write o (byte-array (map unchecked-byte (repeat 40 0x77)))))
+          (is (= :import/checksum-failed
+                 (try (m/verify path) nil
+                      (catch clojure.lang.ExceptionInfo e (:error (ex-data e))))))))
+      (teardown src))))
+
+(deftest a-non-empty-target-is-refused-before-any-blob-is-written
+  (testing "the guard rails run before `restore-blobs!`, not after.
+
+            `run-import` performed them under a comment reading \"all before
+            touching the db\" while `import-db` had already restored the blobs —
+            so importing a blob-carrying dump into a non-empty database wrote
+            every blob into the target store and only then refused. Content-
+            addressed and unreferenced, so the GC reclaims them, but on a large
+            blob set that is gigabytes written to be told the target was never
+            eligible."
+    (let [{:keys [conn payload id]} (blob-fixture)
+          dump (str "/tmp/dh-guard-dump-" (java.util.UUID/randomUUID))]
+      (.mkdirs (io/file dump))
+      (m/export-db @conn dump {})
+      (let [path2 (str "/tmp/dh-guard-target-" (java.util.UUID/randomUUID))
+            cfg2  {:store {:backend :file :path path2 :id (java.util.UUID/randomUUID)}
+                   :schema-flexibility :write :keep-history? true}
+            _     (d/create-database cfg2)
+            conn2 (d/connect cfg2)]
+        ;; make the target non-empty
+        (d/transact conn2 [{:db/ident :other :db/valueType :db.type/string
+                            :db/cardinality :db.cardinality/one}])
+        (is (= :import/non-empty-target
+               (try (m/import-db conn2 dump {}) nil
+                    (catch clojure.lang.ExceptionInfo e (:error (ex-data e)))))
+            "the import is refused")
+        (is (nil? (read-blob-from-store (:store @conn2) id))
+            "and the dump's blob was never written into the target store")
+        (d/release conn2)
+        (d/delete-database cfg2))
+      (d/release conn))))
