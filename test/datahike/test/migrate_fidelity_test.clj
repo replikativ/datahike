@@ -93,7 +93,7 @@
   "Export `conn` and import into a fresh database. Returns the target conn."
   [conn]
   (let [path (str (System/getProperty "java.io.tmpdir") "/dh-fid-" (utils/get-time))
-        _ (m/export-db conn path {:format :flat :history? true})
+        _ (m/export-db conn path {:history? true})
         tgt (utils/setup-db (mem-cfg))]
     (m/import-db tgt path {})
     tgt))
@@ -164,14 +164,14 @@
             out."
     (let [src (build-adversarial-db! (utils/setup-db (mem-cfg)))
           path (str (System/getProperty "java.io.tmpdir") "/dh-fid-mt-" (utils/get-time))
-          _ (m/export-db src path {:format :flat :history? true})
+          _ (m/export-db src path {:history? true})
           gen1 (utils/setup-db (mem-cfg))
           rep1 (m/import-db gen1 path {})]
       (is (= 1 (- (:max-tx @gen1) (:max-tx @src))) "exactly +1, not more")
       (is (= 1 (:max-tx-drift rep1)) "and the report says so")
       (testing "a second round trip is stable — the drift does not compound"
         (let [p2 (str (System/getProperty "java.io.tmpdir") "/dh-fid-mt2-" (utils/get-time))
-              _ (m/export-db gen1 p2 {:format :flat :history? true})
+              _ (m/export-db gen1 p2 {:history? true})
               gen2 (utils/setup-db (mem-cfg))
               rep2 (m/import-db gen2 p2 {})]
           (is (= (:max-tx @gen1) (:max-tx @gen2)) "gen2 max-tx equals gen1's")

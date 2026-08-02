@@ -53,28 +53,6 @@
           (is (= ["datoms-000001.cbor"] (fs/list-names d)))
           (is (= (bytes->vec payload) (bytes->vec (fs/read-bytes final)))))))))
 
-(deftest appending-writes-a-manifest-line-then-a-payload
-  (with-tmp
-    (fn [d]
-      (testing "the flat dump's shape: one EDN line, a newline, then the CBOR
-                sequence — written without ever holding either in memory.
-
-                The manifest head stays human-readable on purpose, since it is
-                read before the codec is known."
-        (let [p (fs/join d "dump.cbor")
-              header "{:datahike.migrate/format-version 1}"
-              payload (->bytes [0x83 0x01 0x02 0x03])
-              sink (fs/open-sink p)]
-          (fs/write-text! sink header)
-          (fs/write! sink (->bytes [10]))
-          (fs/write! sink payload)
-          (fs/close-sink! sink)
-          (let [all (bytes->vec (fs/read-bytes p))
-                nl (.indexOf #?(:clj ^java.util.List all :cljs (into-array all)) 10)]
-            (is (= (count header) nl) "the newline sits exactly after the header")
-            (is (= (bytes->vec payload) (subvec all (inc nl)))
-                "and the payload follows it byte for byte")))))))
-
 (deftest text-round-trips-as-utf8
   (with-tmp
     (fn [d]
@@ -93,7 +71,7 @@
     (fn [d]
       (testing "`puller` hands back at most `:chunk-size` bytes at a time and
                 nil at the end — the source shape `boring/decode-seq-from` takes,
-                so a flat dump larger than memory reads through one handle."
+                so a chunk larger than memory reads through one handle."
         (let [p (fs/join d "big.bin")
               payload (->bytes (map #(mod % 256) (range 1000)))
               sink (fs/open-sink p)]
@@ -108,80 +86,6 @@
                 "no piece exceeds the requested size")
             (is (= (bytes->vec payload) (vec (mapcat bytes->vec blocks)))
                 "and reassembling them gives the file back exactly")))))))
-
-(deftest the-puller-can-skip-a-header
-  (with-tmp
-    (fn [d]
-      (testing "a flat dump's records start after the EDN manifest line, and the
-                importer must step over it WITHOUT re-reading the file — which
-                is what `:skip` is for."
-        (let [p (fs/join d "flat.bin")
-              header "{:v 1}"
-              payload (->bytes (range 50))
-              sink (fs/open-sink p)]
-          (fs/write-text! sink header)
-          (fs/write! sink (->bytes [10]))
-          (fs/write! sink payload)
-          (fs/close-sink! sink)
-          (let [{:keys [pull close]} (fs/puller p {:skip (inc (count header))})
-                blocks (loop [acc []] (if-let [b (pull)] (recur (conj acc b)) acc))]
-            (close)
-            (is (= (bytes->vec payload) (vec (mapcat bytes->vec blocks))))))))))
-
-(deftest the-header-line-reports-BYTES-not-characters
-  (with-tmp
-    (fn [d]
-      (testing "the offset a flat dump's records begin at.
-
-                Bytes, not characters, and that distinction is the whole reason
-                this returns an offset at all: a manifest holding a non-ASCII
-                ident is longer in bytes than in characters, so counting
-                characters would land the reader mid-record — and CBOR would
-                then decode garbage rather than fail loudly."
-        (let [p (fs/join d "flat.bin")
-              header "{:name \"Ünïcodé\" :v 1}"
-              payload (->bytes (range 20))
-              sink (fs/open-sink p)]
-          (fs/write-text! sink header)
-          (fs/write! sink (->bytes [10]))
-          (fs/write! sink payload)
-          (fs/close-sink! sink)
-          (let [{:keys [line bytes]} (fs/read-header-line p)]
-            (is (= header line))
-            (is (> bytes (inc (count header)))
-                "the byte offset exceeds the character count for a non-ASCII manifest")
-            (testing "and feeding that offset to the puller lands exactly on the records"
-              (let [{:keys [pull close]} (fs/puller p {:skip bytes})
-                    blocks (loop [acc []] (if-let [b (pull)] (recur (conj acc b)) acc))]
-                (close)
-                (is (= (bytes->vec payload) (vec (mapcat bytes->vec blocks))))))))))))
-
-(deftest a-file-with-no-newline-is-refused-not-read-whole
-  (with-tmp
-    (fn [d]
-      (testing "pointing the header reader at something that is not a flat dump
-                must fail on a bound rather than reading the file into memory."
-        (let [p (fs/join d "notadump.bin")
-              sink (fs/open-sink p)]
-          (fs/write! sink (->bytes (repeat 300 65)))
-          (fs/close-sink! sink)
-          (is (thrown? #?(:clj Exception :cljs js/Error)
-                       (fs/read-header-line p {:max 64}))))))))
-
-(deftest first-byte-identifies-a-dump-cheaply
-  (with-tmp
-    (fn [d]
-      (testing "a flat dump opens with `{`; anything else is legacy. One byte, so
-                this stays cheap on a file that may be gigabytes."
-        (let [edn (fs/join d "edn.bin")
-              other (fs/join d "other.bin")
-              empty-f (fs/join d "empty.bin")]
-          (fs/spit-text! edn "{:a 1}\nrest")
-          (fs/spit-text! other "xyz")
-          (let [s (fs/open-sink empty-f)] (fs/close-sink! s))
-          (is (= 123 (fs/first-byte edn)) "0x7b is {")
-          (is (= 120 (fs/first-byte other)))
-          (is (nil? (fs/first-byte empty-f)) "an empty file has no first byte"))))))
 
 (deftest the-puller-of-an-empty-file-yields-nothing
   (with-tmp

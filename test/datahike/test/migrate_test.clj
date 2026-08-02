@@ -113,15 +113,20 @@
   (d/transact conn [[:db/retractEntity [:name "Bob"]]]))
 
 ;; ---------------------------------------------------------------------------
-;; T-ROUND / T-TYPE — full round-trip of every value type, flat and chunked
+;; T-ROUND / T-TYPE — full round-trip of every value type
+;;
+;; Chunk sizes rather than formats: a dump is a directory, and the only axis
+;; left is how many chunk files it is split into. `4` forces many chunks so the
+;; multi-chunk manifest and the per-chunk hashes are exercised; a large value
+;; puts everything in one.
 
 (deftest roundtrip-all-value-types-test
-  (doseq [fmt [:flat :chunked]]
-    (testing (str "round-trip every value type, history, format " fmt)
+  (doseq [cs [4 1000000]]
+    (testing (str "round-trip every value type, history, chunk-size " cs)
       (let [src (utils/setup-db (mem-cfg {:history? true}))
             _   (populate-rich! src)
-            dir (str (System/getProperty "java.io.tmpdir") "/dh-rt-" (name fmt) "-" (utils/get-time))
-            manifest (m/export-db src dir {:format fmt :history? true :chunk-size 4})
+            dir (str (System/getProperty "java.io.tmpdir") "/dh-rt-" cs "-" (utils/get-time))
+            manifest (m/export-db src dir {:history? true :chunk-size cs})
             tgt (utils/setup-db (mem-cfg {:history? true}))
             report (m/import-db tgt dir {})]
         (is (:verified? report) "post-import verification passes")
@@ -164,7 +169,7 @@
                                {:db/ident :pal :db/valueType :db.type/ref :db/cardinality :db.cardinality/many}])
           _   (d/transact src [{:db/id "a" :name "Alice"} {:db/id "b" :name "Bob" :pal "a"}])
           path (str (System/getProperty "java.io.tmpdir") "/dh-ar-" (utils/get-time))
-          _   (m/export-db src path {:format :flat :history? true})
+          _   (m/export-db src path {:history? true})
           tgt (utils/setup-db (mem-cfg {:history? true :attribute-refs? true}))
           report (m/import-db tgt path {})]
       (is (:verified? report))
@@ -185,7 +190,7 @@
                                     :db/cardinality :db.cardinality/one}])
                   (d/transact src [{:name "x"} {:name "y"}]))
           path (str (System/getProperty "java.io.tmpdir") "/dh-order-" (utils/get-time))
-          _   (m/export-db src path {:format :flat})
+          _   (m/export-db src path {})
           tgt (utils/setup-db (mem-cfg {:history? false}))]
       (is (:verified? (m/import-db tgt path {})))
       (is (= #{["x"] ["y"]} (d/q '[:find ?n :where [?e :name ?n]] @tgt)))
@@ -264,7 +269,7 @@
           _   (do (d/transact src [{:db/ident :n :db/valueType :db.type/string :db/cardinality :db.cardinality/one}])
                   (d/transact src [{:n "a"}]))
           path (str (System/getProperty "java.io.tmpdir") "/dh-nonempty-" (utils/get-time))
-          _   (m/export-db src path {:format :flat})
+          _   (m/export-db src path {})
           tgt (utils/setup-db (mem-cfg {}))]
       (d/transact tgt [{:db/ident :n :db/valueType :db.type/string :db/cardinality :db.cardinality/one}])
       (d/transact tgt [{:n "pre-existing"}])
@@ -406,7 +411,7 @@
       (d/transact src [{:db/id "e3" :a 3 :c "hello"}])
       (d/transact src [[:db/retractEntity [:c "hello"]]])
       (let [path (str (System/getProperty "java.io.tmpdir") "/dh-schema-evo-" (utils/get-time))
-            _   (m/export-db src path {:format :flat :history? true})
+            _   (m/export-db src path {:history? true})
             tgt (utils/setup-db (mem-cfg {:history? true}))
             report (m/import-db tgt path {})]
         (is (:verified? report))
@@ -462,8 +467,8 @@
           big   (make 2000)
           ps    (str (System/getProperty "java.io.tmpdir") "/dh-est-s-" (utils/get-time))
           pb    (str (System/getProperty "java.io.tmpdir") "/dh-est-b-" (utils/get-time))
-          _     (m/export-db small ps {:format :flat :history? true})
-          man-b (m/export-db big pb {:format :flat :history? true})
+          _     (m/export-db small ps {:history? true})
+          man-b (m/export-db big pb {:history? true})
           es    (m/estimate-import-memory ps)
           eb    (m/estimate-import-memory pb)]
       (is (pos? (:recommended-heap-bytes es)))
@@ -509,7 +514,7 @@
     (let [src (utils/setup-db (mem-cfg {:history? true}))
           _   (populate-rich! src)
           path (str (System/getProperty "java.io.tmpdir") "/dh-nosort-" (utils/get-time))
-          _   (m/export-db src path {:format :flat :history? true :sort? false})
+          _   (m/export-db src path {:history? true :sort? false})
           tgt (utils/setup-db (mem-cfg {:history? true}))
           rep (m/import-db tgt path {})]
       (is (:verified? rep) "no-scratch export verifies")
@@ -540,7 +545,7 @@
     (let [src  (utils/setup-db (mem-cfg {:history? true}))
           _    (populate-rich! src)
           path (str (System/getProperty "java.io.tmpdir") "/dh-verify-" (utils/get-time))
-          _    (m/export-db src path {:format :flat :history? true})
+          _    (m/export-db src path {:history? true})
           tgt  (utils/setup-db (mem-cfg {:history? true}))
           _    (m/import-db tgt path {:verify? false})
           ok   (m/verify tgt path)]
@@ -561,19 +566,33 @@
           _    (d/transact src [{:db/ident :age :db/valueType :db.type/long :db/cardinality :db.cardinality/one}])
           _    (d/transact src [{:db/id "a" :age 30}])
           path (str (System/getProperty "java.io.tmpdir") "/dh-collect-" (utils/get-time))
-          man  (m/export-db src path {:format :flat :history? true})
+          man  (m/export-db src path {:history? true})
           good-count (:count (:semantic-digest man))
           ;; inject a datom load-entities rejects — a numeric attribute in a
           ;; non-ref db — INTO the same tx as the good data datoms, so the
           ;; per-tx/per-datom narrowing re-attempts good datoms after the failed
           ;; batch attempt (exercising the writer's failure-atomicity).
-          ;; APPEND the bad record's CBOR bytes. A flat dump is an EDN manifest
-          ;; line followed by a CBOR sequence, and a sequence has no delimiter —
-          ;; so appending one more encoded item is exactly how you add a record.
-          ;; (The EDN version rewrote the file as joined lines; doing that here
-          ;; would corrupt the binary rather than extend it.)
-          _    (with-open [out (java.io.FileOutputStream. ^String path true)]
-                 (.write out ^bytes (mcbor/encode-record [9999 42 "x" 536870914 true])))]
+          ;; APPEND the bad record's CBOR bytes to the last chunk. A CBOR
+          ;; sequence has no delimiter, so appending one more encoded item is
+          ;; exactly how you add a record.
+          ;;
+          ;; The manifest's per-chunk SHA-256 is then recomputed, because it is
+          ;; now a real check: a dump is a directory, and `open-dump` verifies
+          ;; every chunk before the import touches the database. Leaving it stale
+          ;; would make this test fail as a CHECKSUM error and never reach the
+          ;; :on-error behaviour it exists to exercise. (The flat format skipped
+          ;; chunk verification, which is how it went unnoticed that this fixture
+          ;; was producing a dump that did not describe itself.)
+          _    (let [chunk (io/file path (:file (last (:chunks man))))]
+                 (with-open [out (java.io.FileOutputStream. chunk true)]
+                   (.write out ^bytes (mcbor/encode-record [9999 42 "x" 536870914 true])))
+                 (let [mf (io/file path "manifest.edn")
+                       m0 (read-string (slurp mf))
+                       last-ix (dec (count (:chunks m0)))
+                       sha (#'m/sha256-of-file (str chunk))]
+                   (spit mf (pr-str (-> m0
+                                        (assoc-in [:chunks last-ix :sha256] sha)
+                                        (assoc-in [:chunks last-ix :bytes] (.length chunk)))))))]
       (testing ":abort halts with the offending datom"
         (let [t1 (utils/setup-db (mem-cfg {:history? true}))]
           (is (= :import/corrupt-datom
@@ -605,7 +624,7 @@
                                  :blob (byte-array [3 1 4])}
                                 {:db/id 2 :name "Bob" :score 2.5}])
           path (str (System/getProperty "java.io.tmpdir") "/dh-sor-" (utils/get-time))
-          _    (m/export-db src path {:format :flat :history? true})
+          _    (m/export-db src path {:history? true})
           tgt  (utils/setup-db (cfg))
           rep  (m/import-db tgt path {})]
       (is (:verified? rep))
@@ -788,56 +807,3 @@
       (let [v (m/verify dump)]
         (is (false? (:ok? v)))
         (is (= [id] (:corrupt (:blobs v))))))))
-
-;; ---------------------------------------------------------------------------
-;; flat dumps are written ONCE
-
-(deftest flat-dump-reserves-its-header-instead-of-copying
-  (testing "a flat dump used to be written twice — records to a temp file, then
-            copied in behind the finished manifest, because the manifest carries
-            counts only known after writing. A 10 GB dump did 20 GB of IO and
-            needed 10 GB of scratch.
-
-            Now the header is reserved at its maximum width and stamped over
-            afterwards. The padding is the observable evidence that the
-            reservation path was taken rather than the temp-file fallback."
-    (let [src (utils/setup-db (mem-cfg {:history? true}))
-          _   (populate-rich! src)
-          path (str (System/getProperty "java.io.tmpdir") "/dh-flat1-" (utils/get-time))
-          man (m/export-db src path {:format :flat :history? true})
-          header (with-open [r (clojure.java.io/reader path)] (.readLine r))]
-      (is (> (count header) (count (pr-str man)))
-          "the header line is padded, so it was reserved and stamped, not copied")
-      (is (= man (clojure.edn/read-string {:default (fn [t v] (tagged-literal t v))} header))
-          "and the padding does not disturb reading it back")
-      (testing "the recorded chunk size still describes the RECORDS, not the file"
-        (is (= (.length (clojure.java.io/file path))
-               (+ (count (.getBytes ^String header "UTF-8")) 1
-                  (:bytes (first (:chunks man)))))
-            "file = header + newline + records"))
-      (testing "and it still round-trips"
-        (let [tgt (utils/setup-db (mem-cfg {:history? true}))
-              rep (m/import-db tgt path {})]
-          (is (:verified? rep))
-          (is (= (user-triples src) (user-triples tgt)))
-          (teardown tgt)))
-      (teardown src))))
-
-(deftest an-interrupted-flat-export-is-diagnosed-not-misread
-  (testing "the reserved header is a VALID manifest saying the dump is
-            incomplete, not blanks.
-
-            A dump is identified by its first byte — `{` is a flat dump,
-            anything else is legacy — so reserving with spaces would make a
-            half-written dump read as LEGACY, and the legacy path would try to
-            interpret CBOR records as an old format and fail somewhere
-            unrelated. This is the file an export killed partway leaves behind."
-    (let [path (str (System/getProperty "java.io.tmpdir") "/dh-flat-partial-" (utils/get-time))]
-      (spit path (str (pr-str {:datahike.migrate/incomplete true})
-                      (apply str (repeat 200 " ")) "\n"))
-      (let [tgt (utils/setup-db (mem-cfg {:history? true}))
-            e (try (m/import-db tgt path {}) nil (catch Exception e e))]
-        (is (some? e) "an incomplete dump is refused")
-        (is (= :import/incomplete-dump (:error (ex-data e)))
-            "and named as incomplete rather than as a legacy or corrupt dump")
-        (teardown tgt)))))

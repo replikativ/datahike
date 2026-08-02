@@ -26,8 +26,8 @@
 
    * a **sink** is opened, written bytes, and closed. It never holds the file.
    * a **puller** is `(fn [] -> bytes | nil)`, which is exactly the source shape
-     `boring/decode-seq-from` takes on ClojureScript — so a multi-gigabyte flat
-     dump streams through one handle on either runtime.
+     `boring/decode-seq-from` takes on ClojureScript — so a chunk larger than
+     memory streams through one handle on either runtime.
 
    ## Browser
 
@@ -38,7 +38,6 @@
   #?(:clj (:require [clojure.java.io :as io])
      :cljs (:require [datahike.migrate.digest]))
   #?(:clj (:import [java.io File]
-                   [java.nio.charset StandardCharsets]
                    [java.nio.file Files FileSystems]
                    [java.nio.file.attribute PosixFilePermissions])))
 
@@ -103,7 +102,7 @@
 
 (defn directory?
   "True for an existing directory. False — not an error — for a path that does
-   not exist, which is what the export path asks when choosing :flat vs :chunked."
+   not exist."
   [p]
   #?(:clj (.isDirectory (io/file p))
      :cljs (and (.existsSync (fs) (str p))
@@ -207,85 +206,6 @@
              ;; copy rather than hand out a window that later writes may reuse
              (js/Uint8Array. (.-buffer b) (.-byteOffset b) (.-byteLength b)))))
 
-;; `read-header-line` is written in terms of `puller`, which is defined at the
-;; end of the namespace with the rest of the streaming API.
-(declare puller)
-
-(defn first-byte
-  "The first byte of `p`, or nil if it is empty.
-
-   How a dump is identified: a flat dump begins with `{`, the opening brace of
-   its EDN manifest line, and anything else is a legacy dump. One byte, so this
-   stays cheap on a file that may be gigabytes and may not be a dump at all."
-  [p]
-  #?(:clj (with-open [in (io/input-stream (io/file p))]
-            (let [b (.read in)] (when-not (neg? b) b)))
-     :cljs (let [fd (.openSync (fs) (str p) "r")]
-             (try
-               (let [buf (js/Uint8Array. 1)
-                     n (.readSync (fs) fd buf 0 1 0)]
-                 (when (pos? n) (aget buf 0)))
-               (finally (.closeSync (fs) fd))))))
-
-(defn- utf8-string [bs]
-  #?(:clj (String. ^bytes bs "UTF-8")
-     :cljs (.decode (js/TextDecoder. "utf-8") bs)))
-
-(defn read-header-line
-  "The first line of `p` as `{:line <string> :bytes <n>}`, where `n` counts the
-   line AND its newline — the byte offset the records begin at.
-
-   Returning the offset is the point. A flat dump is one EDN manifest line
-   followed by a CBOR sequence, and the importer must step over the line without
-   re-reading the file or guessing its length: `(:bytes …)` goes straight into
-   `puller`'s `:skip`. Counting characters would be wrong the moment a manifest
-   holds a non-ASCII ident.
-
-   `:max` (default 8 MiB) bounds the search, so pointing this at a file with no
-   newline fails rather than reading it all."
-  ([p] (read-header-line p {}))
-  ([p {:keys [max] :or {max (* 8 1024 1024)}}]
-   (let [{:keys [pull close]} (puller p {:chunk-size 65536})]
-     (try
-       (loop [acc [] total 0]
-         (if-let [blk (pull)]
-           (let [n #?(:clj (alength ^bytes blk) :cljs (.-length blk))
-                 idx (loop [i 0]
-                       (cond (>= i n) -1
-                             (= 10 (bit-and #?(:clj (aget ^bytes blk i)
-                                               :cljs (aget blk i)) 0xff)) i
-                             :else (recur (inc i))))]
-             (if (neg? idx)
-               (if (> (+ total n) max)
-                 (throw (ex-info (str "No newline in the first " max " bytes of " p
-                                      " — this does not look like a flat dump.")
-                                 {:error :import/bad-manifest :file (str p)}))
-                 (recur (conj acc blk) (+ total n)))
-               (let [head #?(:clj (java.util.Arrays/copyOf ^bytes blk idx)
-                             :cljs (.slice blk 0 idx))
-                     parts (conj acc head)
-                     joined #?(:clj (let [tot (reduce + (map #(alength ^bytes %) parts))
-                                          out (byte-array tot)]
-                                      (loop [ps (seq parts) off 0]
-                                        (if ps
-                                          (let [^bytes b (first ps)]
-                                            (System/arraycopy b 0 out off (alength b))
-                                            (recur (next ps) (+ off (alength b))))
-                                          out)))
-                                :cljs (let [tot (reduce + (map #(.-length %) parts))
-                                            out (js/Uint8Array. tot)]
-                                        (loop [ps (seq parts) off 0]
-                                          (if ps
-                                            (let [b (first ps)]
-                                              (.set out b off)
-                                              (recur (next ps) (+ off (.-length b))))
-                                            out))))]
-                 {:line (utf8-string joined) :bytes (+ total idx 1)})))
-           (throw (ex-info (str "No newline found in " p
-                                " — this does not look like a flat dump.")
-                           {:error :import/bad-manifest :file (str p)}))))
-       (finally (close))))))
-
 (defn open-sink
   "Open `p` for writing bytes. Use with `write!` and `close-sink!`.
 
@@ -306,42 +226,8 @@
   "Append a UTF-8 string to an open sink — the flat dump's manifest line."
   [sink s]
   #?(:clj (.write ^java.io.OutputStream (:stream sink)
-                  (.getBytes ^String s StandardCharsets/UTF_8))
+                  (.getBytes ^String s "UTF-8"))
      :cljs (.writeSync (fs) (:fd sink) s)))
-
-(defn utf8-length
-  "Byte length of `s` as UTF-8 — not its character count.
-
-   The distinction is the same one `read-header-line` exists for: a manifest
-   holding a non-ASCII ident occupies more bytes than characters, and a reserved
-   header sized in characters would be overrun by exactly that difference."
-  [s]
-  #?(:clj (alength (.getBytes ^String s "UTF-8"))
-     :cljs (.-length (.encode (js/TextEncoder.) s))))
-
-(defn utf8-bytes
-  "`s` as UTF-8 bytes."
-  [s]
-  #?(:clj (.getBytes ^String s "UTF-8")
-     :cljs (.encode (js/TextEncoder.) s)))
-
-(defn write-at!
-  "Overwrite `p` starting at byte `offset`, leaving the rest of the file intact.
-
-   The one operation a sink cannot express, and it exists so a flat dump can be
-   written ONCE: the manifest header is reserved up front, the records stream
-   straight past it, and the finished manifest is stamped back over the
-   reservation."
-  [p offset bs]
-  #?(:clj
-     (with-open [raf (java.io.RandomAccessFile. (io/file p) "rw")]
-       (.seek raf (long offset))
-       (.write raf ^bytes bs))
-     :cljs
-     (let [fd (.openSync (fs) (str p) "r+")]
-       (try
-         (.writeSync (fs) fd bs 0 (.-length bs) offset)
-         (finally (.closeSync (fs) fd))))))
 
 (defn close-sink! [sink]
   #?(:clj (.close ^java.io.OutputStream (:stream sink))
@@ -360,14 +246,9 @@
    it does on the JVM. That is the whole reason a file dump can be portable
    while an arbitrary async source cannot."
   ([p] (puller p {}))
-  ([p {:keys [chunk-size skip] :or {chunk-size 65536 skip 0}}]
+  ([p {:keys [chunk-size] :or {chunk-size 65536}}]
    #?(:clj
       (let [in (io/input-stream (io/file p))]
-        (when (pos? (long skip))
-          (loop [remaining (long skip)]
-            (when (pos? remaining)
-              (let [n (.skip in remaining)]
-                (when (pos? n) (recur (- remaining n)))))))
         {:pull (fn []
                  (let [buf (byte-array chunk-size)
                        n (.read in buf)]
@@ -376,7 +257,7 @@
          :close (fn [] (.close in))})
       :cljs
       (let [fd (.openSync (fs) (str p) "r")
-            pos (atom skip)]
+            pos (atom 0)]
         {:pull (fn []
                  (let [buf (js/Uint8Array. chunk-size)
                        n (.readSync (fs) fd buf 0 chunk-size @pos)]
