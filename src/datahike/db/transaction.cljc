@@ -1268,6 +1268,78 @@
         (.-e d)
         (recur ds (.-e d))))))
 
+(defn- backfill-enabled-indices
+  "Index-backfill migration: for every attribute whose :db/index or
+   :db/unique was ENABLED by this transaction (assess-schema-transition's
+   :index-backfill / :unique-backfill data checks), populate AVET (and
+   :temporal-avet on history dbs) with the attribute's pre-existing
+   datoms, after verifying value uniqueness when :db/unique was added.
+   Runs on the still-transient :db-after right before it is made
+   persistent — the same discipline as finalize-secondary-indices.
+
+   Datoms co-transacted after the schema datom in the same transaction
+   were already AVET-inserted by with-datom (rschema updates mid-tx);
+   re-inserting an identical datom is an idempotent upsert in the index
+   implementations, so the backfill can sweep the full :aevt slice
+   without tracking which datoms arrived when."
+  [{:keys [db-before db-after] :as report}]
+  (let [old-schema (dbi/-schema db-before)
+        new-schema (dbi/-schema db-after)]
+    (if (identical? old-schema new-schema)
+      report
+      (let [indexed-entry? (fn [e] (and (map? e) (or (:db/index e) (:db/unique e))))
+            enabled (into []
+                          (comp (filter keyword?)
+                                (filter (fn [ident]
+                                          (let [o (get old-schema ident)
+                                                n (get new-schema ident)]
+                                            (and (map? o) (indexed-entry? n)
+                                                 (not (indexed-entry? o)))))))
+                          (keys new-schema))]
+        (if (empty? enabled)
+          report
+          (update report :db-after
+                  (fn [db]
+                    (reduce
+                     (fn [db ident]
+                       (let [datoms (schema-attr-current-datoms db ident)
+                             unique? (get-in new-schema [ident :db/unique])]
+                         ;; Uniqueness gate: a duplicate among existing values
+                         ;; makes the constraint unsatisfiable — reject the
+                         ;; transaction (the SQL layer maps :transact/unique
+                         ;; to its duplicate-key error).
+                         (when unique?
+                           ;; Duplicate detection must use the INDEX's value
+                           ;; equality (arr/wrap-comparable gives byte/float
+                           ;; arrays value semantics), not JVM .equals — and
+                           ;; must compile on CLJS (no java.util.HashSet).
+                           (let [seen (volatile! #{})]
+                             (doseq [^Datom d datoms]
+                               (let [k (arr/wrap-comparable (.-v d))]
+                                 (if (contains? @seen k)
+                                   (log/raise (str "Cannot add :db/unique to " ident
+                                                   ": existing duplicate value " (.-v d))
+                                              {:error :transact/schema :attribute ident
+                                               :value (.-v d)})
+                                   (vswap! seen conj k))))))
+                         (as-> db db
+                           (reduce (fn [db ^Datom d]
+                                     (let [op-count (:op-count db)]
+                                       (-> db
+                                           (update :avet #(di/-insert % d :avet op-count))
+                                           (update :op-count inc))))
+                                   db datoms)
+                           (if (dbi/-keep-history? db)
+                             (reduce (fn [db ^Datom d]
+                                       (let [op-count (:op-count db)]
+                                         (-> db
+                                             (update :temporal-avet
+                                                     #(di/-temporal-insert % d :avet op-count))
+                                             (update :op-count inc))))
+                                     db (schema-attr-history-datoms db ident))
+                             db))))
+                     db enabled))))))))
+
 (defn- validate-schema-changes!
   "End-of-transaction schema validation on the RESULTING state.
 
@@ -1332,6 +1404,23 @@
                     (log/raise (str "Cannot narrow " ident " to :db.cardinality/one: entity " e
                                     " holds more than one value.")
                                {:error :transact/schema :attribute ident :entity-id e})))
+                ;; Enabling :db/index or adding :db/unique on a USED attribute
+                ;; requires the end-of-transaction AVET backfill migration,
+                ;; which is opt-in: without :allow-index-backfill? true in the
+                ;; database config the transition keeps its historical
+                ;; rejection. An unused attribute needs no migration and is
+                ;; accepted as before.
+                (when (and (or (contains? data-checks :index-backfill)
+                               (contains? data-checks :unique-backfill))
+                           (not (:allow-index-backfill? (dbi/-config db-after)))
+                           (or (seq (schema-attr-current-datoms db-after ident))
+                               (seq (schema-attr-history-datoms db-after ident))))
+                  (log/raise (str "Schema change on " ident " enables indexing/uniqueness on a"
+                                  " used attribute. Set :allow-index-backfill? true in the"
+                                  " database config to run the backfill migration (Experimental),"
+                                  " or migrate the data to a new attribute.")
+                             {:error :transact/schema :attribute ident
+                              :old old-entry :new new-entry}))
                 ;; Composite tuple definitions: an UNDECLARED referenced
                 ;; attribute is supported (its slot stays nil until declared
                 ;; and asserted), but a reference to an attribute DEFINED as
@@ -1404,6 +1493,10 @@
             ;; (check-schema-update only sees the entity-map path).
             (validate-schema-changes! report)
             (-> report
+                ;; Index-backfill migration for :db/index / :db/unique
+                ;; enabled on existing attributes — must run while
+                ;; :db-after is still transient.
+                backfill-enabled-indices
                 (dissoc ::pending-vt-validation)
                 (assoc-in [:tempids :db/current-tx] (current-tx report))
                 (update-in [:db-after :max-tx] inc)

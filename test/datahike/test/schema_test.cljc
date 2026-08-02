@@ -405,11 +405,18 @@
       (is (update-name-attr :db/isComponent true) "It should be allowed to enable :db/isComponent.")
       (is (update-name-attr :db/isComponent false) "It should be allowed to disable :db/isComponent."))
 
-    (testing "Allow to update :db/unique only if it already exists"
-      (is (thrown-with-msg? Throwable
-                            #"Update not supported for these schema attributes"
-                            (d/transact conn {:tx-data [(assoc name-schema :db/unique :db.unique/value)]}))
-          "It shouldn't be allowed to update :db/unique if it doesn't exist already.")
+    (testing "Allow to add or update :db/unique on a cardinality-one attribute"
+      ;; Adding :db/unique to an existing attribute is supported via the
+      ;; end-of-transaction index-backfill migration (a fresh attribute here
+      ;; so :name stays non-unique for the cardinality tests below).
+      (is (d/transact conn {:tx-data [{:db/ident :nickname
+                                       :db/valueType :db.type/string
+                                       :db/cardinality :db.cardinality/one}]}))
+      (is (d/transact conn {:tx-data [{:db/ident :nickname
+                                       :db/valueType :db.type/string
+                                       :db/cardinality :db.cardinality/one
+                                       :db/unique :db.unique/value}]})
+          "It should be allowed to add :db/unique to a cardinality-one attribute.")
       (is (d/transact conn {:tx-data [(assoc personal-id-schema :db/unique :db.unique/value)]})
           "It should be allowed to update :db/unique if it exists already."))
 

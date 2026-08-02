@@ -76,6 +76,7 @@
 (s/def ::max-float-array-length (s/nilable nat-int?))
 (s/def ::max-double-array-length (s/nilable nat-int?))
 (s/def ::max-tuple-string-length (s/nilable nat-int?))
+(s/def ::allow-index-backfill? boolean?)
 
 (s/def :datahike/config (s/keys :opt-un [:datahike/store
                                          ::index
@@ -86,6 +87,7 @@
                                          ::search-cache-size
                                          ::store-cache-size
                                          ::crypto-hash?
+                                         ::allow-index-backfill?
                                          ::fuse-index-roots?
                                          ::commit-graph?
                                          ::initial-tx
