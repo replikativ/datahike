@@ -38,7 +38,16 @@
 
    JVM only, and only for an EMPTY target. `from-sorted-seq` has no ClojureScript
    counterpart yet, and building indexes directly cannot honour the upsert
-   semantics `load-entities` applies when datoms meet an existing database."
+   semantics `load-entities` applies when datoms meet an existing database.
+
+   `.clj` and not `.cljc` deliberately, and it was `.cljc` by mistake until the
+   extension was checked against what the file actually requires: it pulls in
+   `migrate.sort`, which is `.clj` (java.io.File, PriorityQueue), so a cljs
+   compile would have failed on `No such namespace`. Nothing in the cljs build
+   reaches it, so the mistake was dormant rather than broken — but a `.cljc`
+   extension is a promise, and this file could not keep it. The genuinely
+   portable pieces of the import path are `migrate.cbor`, `migrate.history` and
+   `migrate.ids`, none of which touch IO."
   (:require [datahike.datom :as dd]
             [datahike.index.interface :as di]
             [datahike.migrate.history :as mh]

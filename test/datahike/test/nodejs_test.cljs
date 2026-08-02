@@ -44,7 +44,12 @@
             [datahike.test.lru-weighted-property-test]
             ;; Attribute-value constraints — registry resolution (pure, here)
             ;; and an async enforcement test below.
-            [datahike.test.attr-preds-test]))
+            [datahike.test.attr-preds-test]
+            ;; Dump digests. A dump written on the JVM is verified here, so the
+            ;; SHA-256 and the xor64+sum64 semantic digest must come out
+            ;; bit-identical — and 64-bit arithmetic is exactly what cljs does
+            ;; not have. Pinned against literal constants on both platforms.
+            [datahike.test.migrate-digest-test]))
 
 ;; Hook cljs.test's end-of-run callback so the Node process exits with
 ;; status 0 only when all tests pass. The previous setup always exited
@@ -719,7 +724,8 @@
                (done))))))
 
 (defn -main []
-  (t/run-tests 'datahike.test.nodejs-test
+  (t/run-tests 'datahike.test.migrate-digest-test
+               'datahike.test.nodejs-test
                'datahike.test.index-test
                'datahike.test.cljs-tiered-storage-test
                'datahike.test.cljs-pattern-scan-test
