@@ -33,6 +33,23 @@
   (fn [index-name _store _datoms _index-type _op-count _index-config]
     index-name))
 
+(defmulti init-index-sorted
+  "Creates an index from datoms ALREADY SORTED in `index-type` order, streaming
+   them into the tree rather than materialising them.
+
+   `init-index` takes any order and sorts in memory (`arrays/asort` over the whole
+   array), which makes it O(n) in heap — fine when a database fits in memory,
+   which is exactly the case a bulk restore is not. This variant is the import
+   path's entry: the caller has already produced the right order with an external
+   merge sort, so the index build never needs more than one node per level.
+
+   The caller OWNS the ordering guarantee. Passing a wrongly ordered seq does not
+   raise here; it produces a tree whose invariants are quietly false. The
+   underlying builder checks, so the failure is loud, but it belongs to the
+   caller's contract rather than this one's."
+  (fn [index-name _store _sorted-datoms _index-type _op-count _index-config]
+    index-name))
+
 (defmulti add-konserve-handlers
   "Adds read and write handlers for the index data types."
   (fn [config _store] (:index config)))
