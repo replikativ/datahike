@@ -1,13 +1,21 @@
 (ns ^:no-doc datahike.migrate
   "Robust, type-exact, verifiable export/import for datahike databases.
 
-   The 3-arity `export-db`/`import-db` produce and consume a *type-exact* EDN-lines
-   dump (see `doc/import-export-design.md`) that round-trips full history, every
-   builtin value type (fixing #633), schema ordering (#262), the tx log (#377), and
-   attribute-refs databases (#508) without re-inserting system datoms (#531).
+   The 3-arity `export-db`/`import-db` produce and consume a *type-exact* CBOR
+   dump (see `doc/import-export-design.md` and `datahike.migrate.cbor`) that
+   round-trips full history, every builtin value type (fixing #633), schema
+   ordering (#262), the tx log (#377), and attribute-refs databases (#508)
+   without re-inserting system datoms (#531).
+
+   The dump is a CBOR sequence (RFC 8742): one datom per top-level item, no
+   delimiter, encoded with boring's `:archival` profile — sorted map keys so two
+   exports are byte-identical, and fixed-width floats so a `:db.type/double` does
+   not come back a `Float`. An earlier iteration used EDN-lines, which existed
+   only to work around clj-cbor narrowing three double values; boring removed the
+   reason, and with it the base64 wrapper every binary value used to need.
 
    The legacy 2-arity remains for backward compatibility and additionally still
-   *reads* old CBOR dumps on import. New dumps are EDN. Import runs through
+   *reads* old flat CBOR dumps on import. Import runs through
    `load-entities`, which remaps entity/tx ids while preserving `[e a v t op]`
    structure — a restored db is semantically equivalent, never id-identical.
 
@@ -23,7 +31,7 @@
             [datahike.db.utils :as dbu]
             [datahike.schema :as ds]
             [datahike.tools :as dt]
-            [datahike.migrate.edn :as medn]
+            [datahike.migrate.cbor :as mcbor]
             [datahike.migrate.digest :as dig]
             [datahike.migrate.sort :as msort]
             [datahike.migrate.store :as mstore]
@@ -32,9 +40,8 @@
             [clojure.edn :as edn]
             [clojure.core.async :as async]
             [konserve.core :as k]
-            [superv.async :refer [<?? S]]
-            [clj-cbor.core :as cbor])
-  (:import [datahike.migrate.edn SysRef]
+            [superv.async :refer [<?? S]])
+  (:import [datahike.migrate.cbor SysRef]
            [java.io File BufferedReader]
            [java.security MessageDigest]
            [java.nio.charset StandardCharsets]
@@ -93,7 +100,7 @@
         op (nth datom 4)
         sysref? (fn [val] (when (and (dbu/ref? db a) (contains? sys-ents val))
                             (get sys-idents val)))]
-    [e a (medn/encode-value v sysref?) t op]))
+    [e a (mcbor/encode-value v sysref?) t op]))
 
 (defn- export-records
   "Lazy seq of encoded record vectors for `db` (UNSORTED — the external merge sort
@@ -145,7 +152,7 @@
 (def ^:private base-capabilities
   "Capabilities every dump reader is assumed to have. Anything beyond these must
    be declared, so an older reader can refuse precisely."
-  #{:datahike.migrate/edn-lines})
+  #{:datahike.migrate/cbor-seq})
 
 (defn- dump-requires
   "The capability set needed to INTERPRET this dump.
@@ -213,7 +220,7 @@
      manifest-key                    format-version
      :datahike-version               (try (System/getProperty "datahike.version") (catch Throwable _ nil))
      :history?                       (boolean history?)
-     :serialization                  :edn-lines
+     :serialization                  :cbor-seq
      ;; Provenance in the SAME shape the store carries (`datahike.tools/meta-data`,
      ;; which `connector/version-check` enforces), so a dump and a store can be
      ;; reasoned about with one vocabulary.
@@ -244,50 +251,56 @@
                                        (mblobs/manifest-entry p))
      :chunks                         (vec chunks))))
 
-(def chunk-re #"^datoms-\d{6}\.edn$")
+(def chunk-re #"^datoms-\d{6}\.cbor$")
 
-(defn- chunk-name [n] (format "datoms-%06d.edn" n))
+(defn- chunk-name [n] (format "datoms-%06d.cbor" n))
 
 (defn- write-chunk-stream!
-  "Write up to `limit` lines from the (lazy) seq `lines` to `f`, updating the
-   semantic-digest accumulator `dacc` and computing the chunk SHA-256
-   incrementally — O(1) memory regardless of chunk size. Returns
-   [remaining-lines count sha256-hex dacc']."
-  [^File f lines limit dacc]
-  (let [md (MessageDigest/getInstance "SHA-256")
-        nl (byte-array 1 (byte 10))]
-    (with-open [w (io/writer f)]
-      (loop [ls (seq lines) c 0 da dacc]
-        (if (and ls (< c limit))
-          (let [^String line (first ls)]
-            (.write w line)
-            (.write w "\n")
-            (.update md (.getBytes line StandardCharsets/UTF_8))
-            (.update md nl)
-            (recur (next ls) (inc c) (dig/add-line da line)))
-          [ls c (dig/hex (.digest md)) da])))))
+  "Write up to `limit` records from the (lazy) seq `records` to `f` as a CBOR
+   sequence, updating the semantic-digest accumulator `dacc` and computing the
+   chunk SHA-256 incrementally — O(1) memory regardless of chunk size. Returns
+   [remaining-records count sha256-hex dacc'].
 
-(defn- write-flat! [db opts ^File f sorted-lines progress]
-  (let [tmp (File/createTempFile "dh-flat-" ".edn"
+   No delimiter is written: consecutive top-level CBOR items ARE an RFC 8742
+   sequence, so the framing is a property of the encoding rather than something
+   this loop maintains. The same bytes feed the file, the chunk hash and the
+   semantic digest, so all three agree by construction."
+  [^File f records limit dacc]
+  (let [md (MessageDigest/getInstance "SHA-256")]
+    (with-open [out (io/output-stream f)]
+      (loop [rs (seq records) c 0 da dacc]
+        (if (and rs (< c limit))
+          (let [^bytes bs (mcbor/encode-record (first rs))]
+            (.write out bs)
+            (.update md bs)
+            (recur (next rs) (inc c) (dig/add-record da bs)))
+          [rs c (dig/hex (.digest md)) da])))))
+
+(defn- write-flat! [db opts ^File f sorted-records progress]
+  (let [tmp (File/createTempFile "dh-flat-" ".cbor"
                                  (.getAbsoluteFile (or (.getParentFile (.getAbsoluteFile f))
                                                        (io/file "."))))
-        [_ cnt sha dacc] (write-chunk-stream! tmp sorted-lines Long/MAX_VALUE (dig/accumulator))
+        [_ cnt sha dacc] (write-chunk-stream! tmp sorted-records Long/MAX_VALUE (dig/accumulator))
         digest   (dig/finalize dacc)
         manifest (build-manifest db opts digest
                                  [{:file (.getName f) :count cnt :bytes (.length tmp) :sha256 sha}])]
-    (with-open [w (io/writer f)]
-      (.write w (pr-str manifest))
-      (.write w "\n")
-      (with-open [r (io/reader tmp)] (io/copy r w)))
+    ;; manifest as one EDN line, then the CBOR sequence. The head of a flat dump
+    ;; stays human-readable on purpose: it is read before the codec is known, so
+    ;; it cannot itself be in the codec, and being able to `head -c 2000` a dump
+    ;; you are trying to recover is worth more than the bytes it costs.
+    (with-open [out (io/output-stream f)]
+      (.write out (.getBytes (pr-str manifest) StandardCharsets/UTF_8))
+      (.write out (int 10))
+      (with-open [in (io/input-stream tmp)] (io/copy in out)))
     (.delete tmp)
     (restrict-perms! f false)
     (progress {:phase :done :datoms cnt})
     manifest))
 
-(defn- write-chunked! [db opts ^File dir sorted-lines chunk-size progress]
+(defn- write-chunked! [db opts ^File dir sorted-records chunk-size progress]
   (.mkdirs dir)
   (restrict-perms! dir true)
-  (loop [ls (seq sorted-lines) n 1 chunks [] dacc (dig/accumulator)]
+  (loop [ls (seq sorted-records) n 1 chunks [] dacc (dig/accumulator)]
     (if (nil? ls)
       (let [manifest (build-manifest db opts (dig/finalize dacc) chunks)]
         (spit (io/file dir "manifest.edn") (pr-str manifest))
@@ -449,13 +462,17 @@
              (doseq [^File f (.listFiles tmp-dir)] (.delete f))
              (.delete tmp-dir))))
        ;; no-scratch streaming: no temp dir, no sort
-       (write-to! (map medn/write-record (export-records-streaming db opts)))))))
+       (write-to! (export-records-streaming db opts))))))
 
 ;; ---------------------------------------------------------------------------
 ;; reading dumps
 
 (defn- read-manifest-map [^String s]
-  (edn/read-string {:readers medn/readers :default (fn [t v] (tagged-literal t v))} s))
+  ;; The manifest is plain EDN — no #datahike/* tags survive the move to CBOR,
+  ;; but an unknown tag still degrades to a tagged-literal rather than throwing,
+  ;; so a manifest written by a NEWER datahike stays readable far enough to reach
+  ;; `check-capabilities!` and produce its precise refusal.
+  (edn/read-string {:default (fn [t v] (tagged-literal t v))} s))
 
 (defn- looks-like-edn-manifest? [^File f]
   (with-open [r (io/reader f)]
@@ -579,16 +596,33 @@
        (let [{:keys [manifest files]} (manifest-of source)]
          (estimate-from-manifest manifest (manifest-total-bytes manifest files) batch-size))))))
 
-(defn- reduce-dump-lines
-  "Reduce `rf` over every record-line of the dump, with each file's reader scoped to
+(defn- skip-manifest-line!
+  "Advance `in` past the flat dump's EDN manifest header, leaving the stream
+   positioned at the first CBOR item.
+
+   Byte-level rather than `line-seq` because a flat dump is a text line followed
+   by BINARY: a Reader would decode the CBOR as characters and buffer past the
+   newline, so the bytes could not then be handed to the CBOR decoder. The
+   manifest is `pr-str` of a map, and `pr-str` escapes newlines inside strings as
+   the two characters backslash-n, so the first raw 0x0A is unambiguously the end
+   of the header."
+  [^java.io.InputStream in]
+  (loop []
+    (let [b (.read in)]
+      (cond
+        (neg? b) nil                    ; empty/truncated dump: nothing to skip
+        (= b 10) nil                    ; consumed the newline; positioned at CBOR
+        :else (recur)))))
+
+(defn- reduce-dump-records
+  "Reduce `rf` over every record of the dump, with each file's stream scoped to
    its inner reduction (no lazy seq escapes an open handle). Flat dumps skip the
-   manifest header line. Returns the final accumulator."
+   manifest header line first. Returns the final accumulator."
   [{:keys [files flat?]} rf init]
   (reduce (fn [acc ^File file]
-            (with-open [r (io/reader file)]
-              (let [lines (line-seq r)
-                    lines (if flat? (rest lines) lines)]
-                (reduce rf acc lines))))
+            (with-open [in (io/input-stream file)]
+              (when flat? (skip-manifest-line! in))
+              (reduce rf acc (mcbor/decode-records in))))
           init
           files))
 
@@ -718,8 +752,8 @@
     ;; carries across chunks/files.
     (let [sref-db @conn
           final (reduce-lines
-                 (fn [acc line]
-                   (let [rec (resolve-sysrefs sref-db (medn/read-record line))
+                 (fn [acc record]
+                   (let [rec (resolve-sysrefs sref-db record)
                          t   (nth rec 3)
                          acc (if (and (>= (long (:n acc)) batch-size)
                                       (not= t (:last-t acc)))
@@ -803,7 +837,7 @@
              (check-capabilities! manifest)
              (restore-blobs! conn manifest source opts)
              (run-import conn manifest mem
-                         (fn [rf init] (mstore/reduce-lines m manifest rf init)) opts))
+                         (fn [rf init] (mstore/reduce-records m manifest rf init)) opts))
            (finally (mstore/close m))))
        (let [dump (open-dump source)]
          (if (:legacy? dump)
@@ -813,7 +847,7 @@
              (check-capabilities! manifest)
              (restore-blobs! conn manifest source opts)
              (run-import conn manifest mem
-                         (fn [rf init] (reduce-dump-lines dump rf init)) opts))))))))
+                         (fn [rf init] (reduce-dump-records dump rf init)) opts))))))))
 
 (defn finalize-import!
   "Clear import bookkeeping (:migration id map) from the db after a successful,
@@ -842,7 +876,12 @@
 (defn- fp-step [fp [e a v op] ref?]
   (if (ref? a)
     (-> fp (update-in [:refc a] (fnil inc 0)) (update-in [:outd e] (fnil inc 0)))
-    (update fp :acc dig/add-line (pr-str [a (norm-val v) op]))))
+    ;; Hash the CBOR encoding of the normalised tuple rather than its `pr-str`.
+    ;; This fingerprint compares a DUMP against a LIVE database, so it must be a
+    ;; function of the values alone — and `:archival` gives that by construction,
+    ;; where `pr-str` does not: it renders a Double and a Float identically and
+    ;; differs between JVM and ClojureScript for several types.
+    (update fp :acc dig/add-record (mcbor/encode-record [a (norm-val v) op]))))
 (defn- fp-final [fp]
   {:digest (dig/finalize (:acc fp))
    :ref-counts (:refc fp)
@@ -856,10 +895,10 @@
   (if (mstore/store-target? source)
     (let [m (mstore/open source)]
       (try (let [manifest (mstore/read-manifest m)]
-             (f manifest (fn [rf init] (mstore/reduce-lines m manifest rf init))))
+             (f manifest (fn [rf init] (mstore/reduce-records m manifest rf init))))
            (finally (mstore/close m))))
     (let [dump (open-dump source)]
-      (f (:manifest dump) (fn [rf init] (reduce-dump-lines dump rf init))))))
+      (f (:manifest dump) (fn [rf init] (reduce-dump-records dump rf init))))))
 
 (defn- verify-sample
   "Tier 3 — sampled structural diff. Pick up to `n` entities by a `:db.unique`
@@ -872,8 +911,8 @@
     (if (empty? uniq)
       {:sampled 0 :ok? true :note "no :db.unique attrs — content covered by tiers 1–2"}
       (let [picks (reduce-lines
-                   (fn [acc line]
-                     (let [[e a v _t op] (medn/read-record line)]
+                   (fn [acc record]
+                     (let [[e a v _t op] record]
                        (if (and op (uniq a) (< (count acc) n) (not (contains? acc [a v])))
                          (assoc acc [a v] e) acc)))
                    {})
@@ -881,8 +920,8 @@
             ;; net *current* state per picked entity: asserts add, retracts remove,
             ;; so a fully-retracted entity nets to empty (and is not compared).
             recon (reduce-lines
-                   (fn [acc line]
-                     (let [[e a v _t op] (medn/read-record line)]
+                   (fn [acc record]
+                     (let [[e a v _t op] record]
                        (if (and (contains? pick-es e) (not (ref? a)))
                          (update-in acc [e a] (fnil (if op conj disj) #{}) (norm-val v))
                          acc)))
@@ -978,8 +1017,8 @@
                live-count (long (user-datom-count db hist?))
                ;; tier 2 — id-independent fingerprint, dump vs live
                dump-fp (fp-final (reduce-lines
-                                  (fn [fp line]
-                                    (let [[e a v _t op] (medn/read-record line)]
+                                  (fn [fp record]
+                                    (let [[e a v _t op] record]
                                       (fp-step fp [e a v op] ref?)))
                                   (fp-init)))
                src     (if hist? (api/history db) db)
@@ -1024,10 +1063,27 @@
   (if (instance? java.time.Instant v) (java.util.Date/from v) v))
 
 (defn- import-db-legacy
-  "Legacy import of an old flat CBOR dump via api/transact (unchanged behaviour)."
+  "Legacy import of an old flat CBOR dump via api/transact (unchanged behaviour).
+
+   Read with boring rather than clj-cbor. A legacy dump is already a CBOR
+   sequence of datom vectors, so `decode-records` reads it directly, and the two
+   libraries agree on every construct these dumps contain — verified against
+   bytes clj-cbor actually wrote, in `migrate-legacy-test`.
+
+   The one difference is benign and already handled: clj-cbor decodes tag 1 to
+   `java.time.Instant`, boring to `java.util.Date`, and `instance-to-date` below
+   normalised that even before the swap. It stays as a guard rather than being
+   deleted, since it costs nothing and an Instant reaching here from anywhere
+   else would still be wrong.
+
+   What CANNOT be recovered is what clj-cbor lost on WRITE: it encoded zero, NaN
+   and +-Infinity doubles as float16 and bignums that fit as plain integers, so
+   those values are already narrowed in the bytes. boring reads them exactly as
+   clj-cbor does; no reader can restore information the writer discarded."
   [conn path]
   (println "Preparing legacy CBOR import of" path "in batches of" *import-batch-size*)
-  (let [datoms (->> (cbor/slurp-all path)
+  (let [datoms (->> (with-open [in (io/input-stream path)]
+                      (doall (mcbor/decode-records in)))
                     (map #(-> (apply d/datom %) (update :v instance-to-date))))]
     (reduce (fn [_last-tx batch]
               (let [batch (vec batch)]

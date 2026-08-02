@@ -61,7 +61,7 @@ core*, not choices this branch made:
   "import is not resumable, recreate-and-restart" policy.
 
 **Review questions**
-- §13 states the one call that belongs to the maintainer: the codec (EDN-lines
+- §13 records the one call that belonged to the maintainer, now settled: the codec (EDN-lines
   vs CBOR). It is genuinely open — the branch implements one defensible answer,
   behind a seam that accepts the other.
 - §14 is the claims-vs-implementation ledger. Check it against the code as you
@@ -269,7 +269,7 @@ manual harness and integration test respectively).
 
 ## 8. The open question (recap)
 
-**Codec** — EDN-lines (implemented) vs CBOR (smaller/faster; loses
+**Codec** — SETTLED as CBOR (see design §13). Was: EDN-lines (implemented) vs CBOR (smaller/faster; loses
 determinism-for-signing and type-exactness-by-construction). Seam exists either
 way. This is the one design fork; the smaller review-level questions
 (`:sort? false` guard level, store chunk-key layout, merge re-parse cost) are

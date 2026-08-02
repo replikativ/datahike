@@ -8,7 +8,7 @@
             [datahike.db.interface :as dbi]
             [datahike.db.utils :as dbu]
             [datahike.migrate :as m]
-            [datahike.migrate.edn :as medn]
+            [datahike.migrate.cbor :as mcbor]
             [datahike.migrate.blobs :as mblobs]
             [datahike.blob :as blob]
             [datahike.db]
@@ -139,7 +139,13 @@
 
 (deftest double-zero-regression-test ;; T-TYPE, #633 minimal
   (testing "double 0.0 / NaN round-trip as Double, float stays Float"
-    (let [rt (fn [v] (nth (medn/read-record (medn/write-record [1 :x (medn/encode-value v) 2 true])) 2))]
+    ;; Through the real codec path: encode-value, then a full record encode and
+    ;; decode. Under clj-cbor these three were the values that broke (#633); under
+    ;; boring's :canonical profile they would break again, which is why the dump
+    ;; uses :archival. See datahike.migrate.cbor.
+    (let [rt (fn [v] (nth (mcbor/decode-record
+                           (mcbor/encode-record [1 :x (mcbor/encode-value v) 2 true]))
+                          2))]
       (is (= Double (class (rt 0.0))))
       (is (= 0.0 (rt 0.0)))
       (is (Double/isNaN ^double (rt (Double/NaN))))
@@ -189,16 +195,26 @@
 ;; ---------------------------------------------------------------------------
 ;; Security & integrity
 
-(deftest security-eval-and-unknown-tag-test ;; §4.1
-  (testing "unknown reader tag fails safely, no evaluation"
-    (is (thrown-with-msg? clojure.lang.ExceptionInfo #"Unknown reader tag"
-                          (medn/read-record "[1 :a #evil/tag \"x\" 2 true]")))
-    (is (= :import/unknown-tag
-           (try (medn/read-record "[1 :a #evil/tag \"x\" 2 true]")
-                (catch clojure.lang.ExceptionInfo ex (:error (ex-data ex))))))
-    (testing "the #=(...) eval probe is refused (never evaluated)"
-      (is (thrown? Exception
-                   (medn/read-record "[1 :a #=(java.lang.System/exit 1) 2 true]"))))))
+(deftest security-unknown-tag-test ;; §4.1
+  (testing "a dump cannot execute code, and an unknown tag never becomes a value
+
+            The EDN codec needed a closed `:readers` map with a throwing
+            `:default` to get this, and was tested against `#evil/tag` and the
+            `#=(...)` eval probe. CBOR has no reader-eval to defend against —
+            there is no syntax that can name a constructor — so the `#=` half of
+            that test has no analogue and its absence is not a gap.
+
+            What DOES still matter is the unknown-tag half: a tag this version
+            does not know must not silently decode to something usable. boring
+            surfaces it as an inert TaggedValue rather than guessing, so a datom
+            carrying one is detectable rather than wrong."
+    (let [;; tag 55799 is CBOR's self-describe tag: valid CBOR, not one of ours
+          unknown (byte-array [(unchecked-byte 0xd9) (unchecked-byte 0xd9)
+                               (unchecked-byte 0xf7) (unchecked-byte 0x01)])
+          decoded (mcbor/decode-record unknown)]
+      (is (not (number? decoded))
+          "an unregistered tag must NOT decode to a bare usable value")
+      (is (some? decoded) "…but it is surfaced rather than swallowed"))))
 
 (deftest security-bad-chunk-path-test ;; T-SEC-PATH, §4.2
   (testing "a manifest chunk path outside the dump dir is refused before any read"
@@ -208,7 +224,7 @@
           dir (str (System/getProperty "java.io.tmpdir") "/dh-path-" (utils/get-time))
           manifest (m/export-db src dir {:format :chunked})
           mf (io/file dir "manifest.edn")
-          poisoned (assoc-in (read-string (slurp mf)) [:chunks 0 :file] "../evil.edn")]
+          poisoned (assoc-in (read-string (slurp mf)) [:chunks 0 :file] "../evil.cbor")]
       (spit mf (pr-str poisoned))
       (let [tgt (utils/setup-db (mem-cfg {}))]
         (is (= :import/bad-chunk-path
@@ -224,9 +240,17 @@
                   (d/transact src [{:n "alpha"} {:n "beta"}]))
           dir (str (System/getProperty "java.io.tmpdir") "/dh-tamper-" (utils/get-time))
           _   (m/export-db src dir {:format :chunked})
-          chunk (io/file dir "datoms-000001.edn")
-          content (slurp chunk)]
-      (spit chunk (clojure.string/replace-first content "alpha" "alphX"))
+          chunk (io/file dir "datoms-000001.cbor")
+          content (let [bos (java.io.ByteArrayOutputStream.)]
+                    (with-open [in (io/input-stream chunk)] (io/copy in bos))
+                    (.toByteArray bos))]
+      ;; flip one byte of the CBOR text string "alpha" -> "alphX". A chunk is
+      ;; binary now, so tampering is a byte edit rather than a string replace;
+      ;; the property under test (the manifest SHA-256 catches it) is unchanged.
+      (let [idx (first (for [i (range (- (alength content) 5))
+                             :when (= "alpha" (String. content i 5 "UTF-8"))] i))]
+        (aset-byte content (+ idx 4) (byte (int \X)))
+        (with-open [out (io/output-stream chunk)] (.write out content)))
       (let [tgt (utils/setup-db (mem-cfg {}))]
         (is (= :import/checksum-failed
                (try (m/import-db tgt dir {}) nil
@@ -263,9 +287,58 @@
           m2  (m/export-db src d2 {:format :chunked :history? true :chunk-size 5})]
       (is (= (:semantic-digest m1) (:semantic-digest m2)))
       (is (= (mapv :sha256 (:chunks m1)) (mapv :sha256 (:chunks m2))))
-      (is (= (slurp (io/file d1 "datoms-000001.edn"))
-             (slurp (io/file d2 "datoms-000001.edn"))))
+      (let [rd (fn [f] (let [bos (java.io.ByteArrayOutputStream.)]
+                         (with-open [in (io/input-stream f)] (io/copy in bos))
+                         (vec (.toByteArray bos))))]
+        (is (= (rd (io/file d1 "datoms-000001.cbor"))
+               (rd (io/file d2 "datoms-000001.cbor")))
+            "byte-identical chunks — :archival makes the bytes a function of the data"))
       (teardown src))))
+
+(deftest legacy-bytes-are-read-identically-test
+  ;; The compat oracle for dropping clj-cbor. Legacy dumps in the wild were
+  ;; WRITTEN by clj-cbor, so the question is not "does boring round-trip?" —
+  ;; it is "does boring read clj-cbor's bytes the way clj-cbor does?". The
+  ;; fixture is therefore produced by clj-cbor (test-scope dep) and read by
+  ;; both; writing it with boring would test boring against itself.
+  (testing "boring decodes clj-cbor-written values identically"
+    (let [vals [(double 0.0) (double 1.5) (double 2.0) (double ##Inf) (float 1.5)
+                (bigint 1) (bigint 123456789012345678901234567890N) 1.50M 1.5M
+                "text" :kw 'sym true nil (long 42) [1 2] {:a 1} #{1 2}
+                #uuid "00000000-0000-0000-0000-000000000001"
+                (byte-array [0 1 127 -1])]
+          f (java.io.File/createTempFile "dh-legacy-bytes" ".cbor")]
+      (with-open [out (io/output-stream f)] (cbor/spit-all out vals))
+      (let [via-cbor (with-open [in (io/input-stream f)] (doall (cbor/decode-seq in)))
+            via-bor  (with-open [in (io/input-stream f)] (doall (mcbor/decode-records in)))
+            norm     (fn [x] (if (bytes? x) (vec x) x))]
+        (is (= (count via-cbor) (count via-bor)) "same number of items")
+        (doseq [[i a b] (map vector (range) via-cbor via-bor)]
+          ;; NaN is excluded above on purpose: (= ##NaN ##NaN) is false, so it
+          ;; cannot be compared this way. Its class is covered by the codec test.
+          (is (= (norm a) (norm b)) (str "item " i " value"))
+          (is (= (class a) (class b))
+              (str "item " i " class: " (class a) " vs " (class b)))))
+      (.delete f))))
+
+(deftest legacy-instant-is-normalised-test
+  ;; The ONE construct where the two libraries genuinely differ: clj-cbor decodes
+  ;; tag 1 to java.time.Instant, boring to java.util.Date. `instance-to-date` in
+  ;; the legacy importer already normalised that before the swap, so the swap is
+  ;; a no-op here — but it is the difference most likely to be "fixed" away by
+  ;; someone deleting that conversion, so it is pinned.
+  (testing "a legacy instant arrives as the class :db.type/instant uses"
+    (let [f (java.io.File/createTempFile "dh-legacy-inst" ".cbor")]
+      (with-open [out (io/output-stream f)]
+        (cbor/spit-all out [#inst "2026-01-01T00:00:00.000-00:00"]))
+      (let [via-cbor (first (with-open [in (io/input-stream f)] (doall (cbor/decode-seq in))))
+            via-bor  (first (with-open [in (io/input-stream f)] (doall (mcbor/decode-records in))))]
+        (is (instance? java.time.Instant via-cbor) "clj-cbor gives an Instant")
+        (is (instance? java.util.Date via-bor) "boring gives a Date")
+        (is (= (.toEpochMilli ^java.time.Instant via-cbor)
+               (.getTime ^java.util.Date via-bor))
+            "…and they denote the same moment, which is why the swap is safe"))
+      (.delete f))))
 
 (deftest legacy-cbor-import-test ;; T-LEGACY, G9
   (testing "an old flat CBOR dump still imports via the legacy path"
@@ -494,8 +567,13 @@
           ;; non-ref db — INTO the same tx as the good data datoms, so the
           ;; per-tx/per-datom narrowing re-attempts good datoms after the failed
           ;; batch attempt (exercising the writer's failure-atomicity).
-          lines (vec (line-seq (io/reader path)))
-          _    (spit path (str/join "\n" (conj lines "[9999 42 \"x\" 536870914 true]")))]
+          ;; APPEND the bad record's CBOR bytes. A flat dump is an EDN manifest
+          ;; line followed by a CBOR sequence, and a sequence has no delimiter —
+          ;; so appending one more encoded item is exactly how you add a record.
+          ;; (The EDN version rewrote the file as joined lines; doing that here
+          ;; would corrupt the binary rather than extend it.)
+          _    (with-open [out (java.io.FileOutputStream. ^String path true)]
+                 (.write out ^bytes (mcbor/encode-record [9999 42 "x" 536870914 true])))]
       (testing ":abort halts with the offending datom"
         (let [t1 (utils/setup-db (mem-cfg {:history? true}))]
           (is (= :import/corrupt-datom

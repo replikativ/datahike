@@ -45,7 +45,7 @@ several load-bearing parts. These corrections are normative here:
 1. **There is no `read-string` RCE to fix.** v2's headline "PR-A closes a latent
    remote-code-execution hole" assumed the importer `read-string`s dump lines. It
    does not — it uses `clj-cbor` (`migrate.clj:14,37`). That eval vector was
-   removed when the format moved to CBOR ([#496]). Any EDN-lines codec we
+   removed when the format moved to CBOR ([#496]). Any codec we
    introduce (§5) still uses a **closed** reader map as basic hygiene, but this is
    defense-in-depth, not a fix for a live vuln — and the PR must not claim
    otherwise.
@@ -154,12 +154,17 @@ Consequences that drive the format:
 ```
 my-backup/
   manifest.edn            ; metadata + digests + chunk index (written LAST = commit marker)
-  datoms-000001.edn       ; EDN-lines: one datom record per line, ordered
-  datoms-000002.edn
+  datoms-000001.cbor      ; CBOR sequence (RFC 8742): one datom per top-level item
+  datoms-000002.cbor
   ...
 ```
 
-In-progress chunks are `*.edn.tmp`, renamed on completion; a directory without
+The manifest stays EDN on purpose: it is read *before* the codec is known, so it
+cannot itself be in the codec, and a dump whose head is human-readable is worth
+its bytes when you are recovering one. A flat dump is that EDN line followed by
+the CBOR sequence.
+
+In-progress chunks are `*.cbor.tmp`, renamed on completion; a directory without
 `manifest.edn` is incomplete by definition. A single-file **flat** format remains
 for small dbs and the legacy 2-arity path.
 
@@ -198,13 +203,12 @@ unknown tag ⇒ `:import/unknown-tag`. (This is the #633 fix at root: EDN tagged
 literals carry the exact type, so `double` never silently narrows to `float` the
 way CBOR's float encoding does.)
 
-> **Open question for maintainers (codec):** keep **CBOR** and fix its
-> float handling, or move to **EDN-lines** as above? EDN-lines makes type-exactness,
-> determinism (byte-identical re-export → signable), and closed-reader safety
-> clean, and it *removes* the `clj-cbor` dependency; CBOR is more compact and
-> faster to parse at 40M-datom scale. This doc implements EDN-lines behind a
-> pluggable codec seam so CBOR can remain a variant. **This is the main thing to
-> settle before the big PR.**
+> **SETTLED — see §13.** This was the open question, and the answer is CBOR via
+> boring's `:archival` profile. The §5.3 encoding above is the EDN-lines codec it
+> replaced, kept here because §5.3.1 measures against it and because the reasoning
+> only makes sense with both sides visible. The shipped codec is
+> `datahike.migrate.cbor`; none of the `#datahike/*` tags survive, because CBOR
+> expresses every one of them natively.
 
 ### 5.3.1 Codec evidence (measured, not preference)
 
@@ -245,9 +249,11 @@ exists for is precisely the one where datahike is unavailable or not trusted.
 **One measured gap, and it is narrow.** `clj-cbor` encodes zero, NaN and
 ±Infinity as f16 regardless of class, and f16 decodes to `Float` — so a `Double`
 0.0 round-trips as a `Float`. That is #633 surviving for exactly three values. It
-does **not** affect the dump as implemented (EDN-lines): a full export/import of
-`:db.type/double` values 0.0, 1.5 and 2.0 restores all three as `Double`. It is
-the one thing a move to CBOR must address, with a width-preserving float policy.
+was the one thing a move to CBOR had to address, and it is addressed: boring's
+`:float-policy :preserve-width` encodes by class, so all three round-trip as
+`Double`. The inverted assertion is pinned in
+`test/datahike/test/migrate_codec_test.clj/float-width-survives-test` — a codec
+that reintroduces the narrowing now fails there.
 
 All of the above is pinned as byte-level vectors in
 `test/datahike/test/migrate_codec_test.clj`, so it is a contract rather than a
@@ -372,13 +378,50 @@ maintainers.
 
 ---
 
-## 13. Open question for maintainers
+## 13. Codec: settled
 
-**Codec: EDN-lines vs CBOR** (§5.3) — the one real fork. EDN-lines as
-implemented is type-exact by construction, deterministic (byte-identical
-re-export ⇒ signable dumps), and drops the clj-cbor write dependency; CBOR is
-more compact and faster to parse at scale. Either plugs into the same
-`write-record`/`read-record` seam.
+**Resolved — CBOR, via `org.replikativ/boring` on its `:archival` profile.**
+This section previously posed EDN-lines vs CBOR as the one open fork. It is
+closed, and the reasoning is worth keeping because the fork looked genuinely
+balanced at the time.
+
+EDN-lines was never chosen on its merits. It existed because `clj-cbor` narrows
+zero, NaN and ±Infinity doubles to float16 and reads them back as `Float` — #633
+— and every `#datahike/*` tag it carried was a workaround for something EDN
+cannot express. boring removes the cause, so the workaround goes with it.
+
+What made the decision, in order:
+
+1. **Type exactness is no longer a reason to prefer EDN.** boring's
+   `:float-policy :preserve-width` encodes by class; `(double 0.0)`, NaN and
+   ±Inf all round-trip as `Double`.
+2. **Determinism did not have to be traded away.** The natural CBOR answer,
+   `:canonical`, is *worse* than clj-cbor here — RFC 8949 §4.2.2 mandates
+   shortest-form floats, so it narrows every `Double` that fits. `:archival`
+   (added for this: sorted map keys, fixed-width floats) gives byte-identical
+   re-export *and* type identity.
+3. **Binary values stop being second-class.** `byte[]` is major type 2 and
+   `float[]`/`double[]` are RFC 8746 typed arrays, natively. Under EDN each went
+   through base64 — 33% before compression, and opaque to a foreign reader,
+   which defeats the reason to use a standard codec at all.
+4. **Size and speed**, measured: 1.53× smaller raw, ~9× faster to decode. Under
+   zstd the size margin narrows to ~5%, so this was the weakest argument, not
+   the strongest.
+5. **It removed JVM coupling.** The EDN codec needed `java.util.Base64`,
+   `java.nio.ByteBuffer` and `Float/toString`; `datahike.migrate.cbor` is
+   `.cljc`.
+
+One byte-level vector moved that was not a defect: instants are tag 0 (RFC 3339
+string) rather than tag 1 (epoch integer). Both are registered and
+DATAHIKE-REQUIREMENTS §2 permits either. It costs ~18% compressed on a
+transaction-heavy dump, which is being taken up with boring rather than worked
+around here.
+
+The `write-record`/`read-record` seam this section anticipated turned out to
+cover only *value encoding*, not framing — and framing is exactly what differs
+between a line-oriented and a sequence-oriented codec. The seam is now over
+record streams (`encode-record` / `decode-records`), which is what a second
+codec would actually need.
 
 ---
 

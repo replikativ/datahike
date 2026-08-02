@@ -41,10 +41,16 @@
     (hex (.digest md))))
 
 (defn- record-hash8
-  "First 8 bytes (big-endian) of SHA-256(line-bytes) as a raw 64-bit long (the sign
-   bit is just the top data bit; all arithmetic below treats it as unsigned)."
-  ^long [^String line]
-  (let [d (sha256-bytes (.getBytes line StandardCharsets/UTF_8))]
+  "First 8 bytes (big-endian) of SHA-256(record-bytes) as a raw 64-bit long (the
+   sign bit is just the top data bit; all arithmetic below treats it as unsigned).
+
+   Takes the ENCODED BYTES rather than a string. Under the EDN codec a record was
+   a line and its identity was its UTF-8 text; under CBOR it is a byte array, and
+   `:archival` makes those bytes a function of the record alone. So the digest is
+   now a property of the DATA rather than of the text it happened to be rendered
+   as, which is what lets a dump be compared across codecs at all."
+  ^long [^bytes bs]
+  (let [d (sha256-bytes bs)]
     (areduce d i acc (long 0)
              (if (< i 8) (bit-or (bit-shift-left acc 8) (bit-and (aget d i) 0xff)) acc))))
 
@@ -57,10 +63,10 @@
   "Return a fresh accumulator {:xor long :sum long :count long}."
   [] {:xor 0 :sum 0 :count 0})
 
-(defn add-line
-  "Fold one record line into the accumulator."
-  [acc ^String line]
-  (let [h (record-hash8 line)]
+(defn add-record
+  "Fold one record's encoded bytes into the accumulator."
+  [acc ^bytes bs]
+  (let [h (record-hash8 bs)]
     {:xor   (bit-xor (long (:xor acc)) h)
      :sum   (unchecked-add (long (:sum acc)) h)
      :count (unchecked-inc (long (:count acc)))}))
@@ -73,7 +79,7 @@
    :sum   (format "%016x" (long (:sum acc)))
    :count (:count acc)})
 
-(defn digest-lines
-  "Convenience: fold a seq/reducible of record lines to a finalized digest."
-  [lines]
-  (finalize (reduce add-line (accumulator) lines)))
+(defn digest-records
+  "Convenience: fold a seq/reducible of encoded record bytes to a finalized digest."
+  [records]
+  (finalize (reduce add-record (accumulator) records)))
