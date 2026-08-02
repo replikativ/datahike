@@ -567,6 +567,35 @@
     #?(:clj (set! (.-_storage pset) (:storage store)))
     (with-meta pset (root-meta store index-type))))
 
+#?(:clj
+   (defmethod di/init-index-sorted :datahike.index/persistent-set
+     [_index-name store sorted-datoms index-type _ {:keys [indexed]}]
+     ;; JVM only: `from-sorted-seq` is the streaming builder and has no cljs
+     ;; counterpart yet. The cljs path keeps using init-index, which is correct,
+     ;; just not memory-bounded.
+     (let [xs (if (= index-type :avet)
+                (filter #(contains? indexed (.-a ^Datom %)) sorted-datoms)
+                sorted-datoms)
+           ;; Resolved at CALL time, not compile time: `from-sorted-seq` is not in
+           ;; the released persistent-sorted-set yet
+           ;; (replikativ/persistent-sorted-set#22). A direct reference would make
+           ;; this namespace — and therefore all of datahike — fail to COMPILE
+           ;; against the declared dependency, which is far worse than a clear
+           ;; error from the one caller who asked for the fast path.
+           build (or (requiring-resolve 'org.replikativ.persistent-sorted-set/from-sorted-seq)
+                     (throw (ex-info (str "init-index-sorted needs persistent-sorted-set/from-sorted-seq "
+                                          "(see replikativ/persistent-sorted-set#22); "
+                                          "use init-index instead")
+                                     {:error :datahike/streaming-builder-unavailable})))
+           ^PersistentSortedSet pset
+           (build (index-type->cmp-quick index-type false)
+                  xs
+                  {:branching-factor (:datahike/branching-factor store DEFAULT_BRANCHING_FACTOR)
+                   :diff-buf-size (:datahike/diff-buf-size store 0)
+                   :storage (:storage store)})]
+       (set! (.-_storage pset) (:storage store))
+       (with-meta pset (root-meta store index-type)))))
+
 ;; Datom — datahike's domain ELEMENT type, nested inside node :keys. Its handler recurses through
 ;; the canonical node codec. (vector form `[e a v tx added]`, read back via datom-from-reader.)
 (def ^:private datom-read-handler
