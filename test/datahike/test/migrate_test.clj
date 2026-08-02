@@ -10,6 +10,7 @@
             [datahike.migrate :as m]
             [datahike.migrate.cbor :as mcbor]
             [datahike.migrate.blobs :as mblobs]
+            [datahike.migrate.legacy :as mlegacy]
             [datahike.migrate.compress :as mz]
             [datahike.migrate.digest :as dig]
             [datahike.blob :as blob]
@@ -360,7 +361,7 @@
           conn (utils/setup-db {:store {:backend :memory :id (java.util.UUID/randomUUID)}
                                 :schema-flexibility :read :keep-history? false})]
       (cbor/spit-all path datoms)
-      (binding [m/*import-batch-size* 5]
+      (binding [mlegacy/*import-batch-size* 5]
         (m/import-db conn path))
       (is (= (set (map #(apply datom/datom %) datoms))
              (set (filter #(< (:e %) (:max-tx @conn)) (d/datoms @conn :eavt)))))

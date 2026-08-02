@@ -41,6 +41,7 @@
             [datahike.migrate.digest :as dig]
             [datahike.migrate.compress :as mz]
             [datahike.migrate.fs :as fs]
+            [datahike.migrate.legacy :as mlegacy]
             [datahike.migrate.manifest :as mman
              :refer [->db a-ident attribute-refs? build-manifest
                      chunk-name chunk-re codec-of config-must-match datom->record
@@ -56,7 +57,8 @@
             [clojure.core.async :as async]
             [konserve.core :as k]
             [konserve.binary :as kb]
-            [superv.async :refer [<?? S]])
+            [konserve.utils :refer [async+sync *default-sync-translation*]]
+            [superv.async :refer [<?? S go-try- <?-]])
   (:import [datahike.migrate.cbor SysRef]))
 
 ;; Public names that used to be defined here and now live in
@@ -465,6 +467,26 @@
    (let [src (if history? (api/history db) db)]
      (count (filter #(> (d/datom-tx %) c/tx0) (api/datoms src :eavt))))))
 
+(defn- load-batch!
+  "One `load-entities` call, awaited. `async+sync`: yields the tx-report in sync
+   mode, a channel of it otherwise.
+
+   Its own function because the await must sit where the `go` block can SEE it —
+   a helper that awaited on the caller's behalf would be a closure, and the go
+   state machine does not reach inside one.
+
+   `api/load-entities` returns a datahike promise, which on the JVM implements
+   BOTH `IDeref` and core.async's `ReadPort` (`datahike.tools/throwable-promise`)
+   and on ClojureScript is a `promise-chan`. So the same object can be `@`-ed or
+   parked on; the only platform difference is that cljs has no blocking deref,
+   and `:sync? true` is refused there at the public entry points."
+  [conn batch opts]
+  (async+sync
+   (:sync? opts) *default-sync-translation*
+   (go-try-
+    (let [p (api/load-entities conn batch)]
+      (if (:sync? opts) @p (<?- p))))))
+
 (defn- collect-apply!
   "Apply a tx-aligned batch under :on-error :collect. Fast path applies the whole
    batch; on failure it narrows to per-transaction, then per-datom, so exactly the
@@ -477,45 +499,68 @@
    a successful result reaches the commit queue / `(reset! connection ...)` — on
    Exception it recurs with the old db (src/datahike/writer.cljc:105-112, commit
    at :140-143). So re-attempting a tx/datom after a failed batch cannot
-   double-apply anything. Returns the errors collected."
-  [conn batch progress]
-  (try
-    @(api/load-entities conn batch)
-    (progress {:phase :batch :datoms (count batch)})
-    []
-    (catch Exception _batch-ex
-      (vec
-       (mapcat
-        (fn [tx-group]
-          (let [tx-group (vec tx-group)]
-            (try
-              @(api/load-entities conn tx-group)
-              []
-              (catch Exception _tx-ex
-                (reduce (fn [errs d]
-                          (try @(api/load-entities conn [d]) errs
-                               (catch Exception ex
-                                 (conj errs {:error (or (:error (ex-data ex)) :import/corrupt-datom)
-                                             :datom d :message (ex-message ex)}))))
-                        [] tx-group)))))
-        (partition-by #(nth % 3) batch))))))
+   double-apply anything. Returns the errors collected.
+
+   ## Why this is shaped the way it is
+
+   The narrowing used to live INSIDE the `catch`: catch the batch failure, then
+   `mapcat` over transactions retrying each, then `reduce` over datoms retrying
+   each. Neither survives the move to async, for two independent reasons —
+   core.async cannot park inside a `catch`, and `mapcat`/`reduce` bodies are
+   closures the `go` state machine does not enter.
+
+   So each attempt now records only WHETHER it succeeded, and every retry happens
+   outside the handler in a `loop`. Behaviour is identical; the shape is one the
+   async branch can compile."
+  [conn batch progress opts]
+  (async+sync
+   (:sync? opts) *default-sync-translation*
+   (go-try-
+    (let [ok? (try (<?- (load-batch! conn batch opts)) true
+                   (catch Exception _ false))]
+      (if ok?
+        (do (progress {:phase :batch :datoms (count batch)}) [])
+        (loop [groups (seq (partition-by #(nth % 3) batch)) errs []]
+          (if (nil? groups)
+            errs
+            (let [tx-group (vec (first groups))
+                  tx-ok? (try (<?- (load-batch! conn tx-group opts)) true
+                              (catch Exception _ false))]
+              (if tx-ok?
+                (recur (next groups) errs)
+                (recur (next groups)
+                       (loop [ds (seq tx-group) errs errs]
+                         (if (nil? ds)
+                           errs
+                           (let [d (first ds)
+                                 ex (try (<?- (load-batch! conn [d] opts)) nil
+                                         (catch Exception e e))]
+                             (recur (next ds)
+                                    (if ex
+                                      (conj errs {:error (or (:error (ex-data ex)) :import/corrupt-datom)
+                                                  :datom d :message (ex-message ex)})
+                                      errs)))))))))))))))
 
 (defn- flush-batch!
   "Apply one tx-aligned batch via load-entities. Under :on-error :abort a failure
    throws; under :collect the offending datoms are skipped and returned as errors
    (per-datom granularity, see `collect-apply!`)."
-  [conn batch on-error progress]
-  (if (seq batch)
-    (if (= :collect on-error)
-      (collect-apply! conn batch progress)
-      (try
-        @(api/load-entities conn batch)
-        (progress {:phase :batch :datoms (count batch)})
-        []
-        (catch Exception ex
-          (throw (ex-info (str "Import aborted: " (ex-message ex))
-                          (merge (ex-data ex) {:error :import/corrupt-datom}) ex)))))
-    []))
+  [conn batch on-error progress opts]
+  (async+sync
+   (:sync? opts) *default-sync-translation*
+   (go-try-
+    (if (seq batch)
+      (if (= :collect on-error)
+        (<?- (collect-apply! conn batch progress opts))
+        ;; the failure is captured and RETHROWN outside the handler: core.async
+        ;; cannot park inside a `catch`, and the throw has to follow the await
+        (let [ex (try (<?- (load-batch! conn batch opts)) nil
+                      (catch Exception e e))]
+          (if ex
+            (throw (ex-info (str "Import aborted: " (ex-message ex))
+                            (merge (ex-data ex) {:error :import/corrupt-datom}) ex))
+            (do (progress {:phase :batch :datoms (count batch)}) []))))
+      []))))
 
 (defn- config-compat! [manifest conn]
   (let [tgt (dbi/-config @conn)
@@ -527,7 +572,7 @@
                         {:error :import/config-mismatch :key k
                          :expected (get src k) :actual (get tgt k)}))))))
 
-(declare import-db-legacy finalize-import!)
+(declare finalize-import!)
 
 (defn- check-target!
   "Refuse an import this target cannot accept — BEFORE anything is written.
@@ -599,7 +644,7 @@
                                         (not= t (:last-t acc)))
                                  (-> acc
                                      (update :errors into
-                                             (flush-batch! conn (:batch acc) on-error progress))
+                                             (flush-batch! conn (:batch acc) on-error progress {:sync? true}))
                                      (assoc :batch [] :n 0))
                                  acc)]
                        (-> acc
@@ -609,7 +654,7 @@
                      (update acc :dropped inc)))
                  {:batch [] :n 0 :last-t ::start :errors [] :dropped 0})
           errors (into (:errors final)
-                       (flush-batch! conn (:batch final) on-error progress))
+                       (flush-batch! conn (:batch final) on-error progress {:sync? true}))
           hist?  (boolean (:history? manifest))
           live   (long (user-datom-count @conn hist?))
           dropped (long (:dropped final))
@@ -756,7 +801,7 @@
            (finally (mstore/close m))))
        (let [dump (open-dump source)]
          (if (:legacy? dump)
-           (import-db-legacy conn source)
+           (mlegacy/import-db-legacy conn source)
            (let [manifest (:manifest dump)
                  mem (estimate-from-manifest manifest (manifest-total-bytes manifest (:files dump)) batch-size)]
              (check-capabilities! manifest)
@@ -969,51 +1014,3 @@
 ;; ---------------------------------------------------------------------------
 ;; legacy CBOR path (backward compatibility for old dumps)
 
-(def ^:dynamic *import-batch-size* 10000)
-
-(defn ^:deprecated update-max-tx
-  "DEPRECATED. max-tx is maintained by load-entities; retained for old dumps."
-  [db datoms]
-  (assoc db :max-tx (reduce #(max %1 (nth %2 3)) (:max-tx db 0) datoms)))
-
-(defn- instance-to-date
-  "Coerce a `java.time.Instant` to `java.util.Date`.
-
-   Belt and braces, and known to be so: boring decodes CBOR tag 1 to `Date`
-   already — `legacy-instant-is-normalised-test` pins exactly that — so this is
-   an identity on every value it currently sees. It is kept rather than deleted
-   because it guards the LEGACY reader, whose whole job is to cope with bytes
-   written by software we no longer control, and one `instance?` per value is
-   not a cost worth trading for the certainty."
-  [v]
-  (if (instance? java.time.Instant v) (java.util.Date/from v) v))
-
-(defn- import-db-legacy
-  "Legacy import of an old flat CBOR dump via api/transact (unchanged behaviour).
-
-   Read with boring rather than clj-cbor. A legacy dump is already a CBOR
-   sequence of datom vectors, so `decode-records` reads it directly, and the two
-   libraries agree on every construct these dumps contain — verified against
-   bytes clj-cbor actually wrote, in `migrate-legacy-test`.
-
-   The one difference is benign and already handled: clj-cbor decodes tag 1 to
-   `java.time.Instant`, boring to `java.util.Date`, and `instance-to-date` below
-   normalised that even before the swap. It stays as a guard rather than being
-   deleted, since it costs nothing and an Instant reaching here from anywhere
-   else would still be wrong.
-
-   What CANNOT be recovered is what clj-cbor lost on WRITE: it encoded zero, NaN
-   and +-Infinity doubles as float16 and bignums that fit as plain integers, so
-   those values are already narrowed in the bytes. boring reads them exactly as
-   clj-cbor does; no reader can restore information the writer discarded."
-  [conn path]
-  (println "Preparing legacy CBOR import of" path "in batches of" *import-batch-size*)
-  (let [datoms (->> (with-open [in (io/input-stream path)]
-                      (doall (mcbor/decode-records in)))
-                    (map #(-> (apply d/datom %) (update :v instance-to-date))))]
-    (reduce (fn [_last-tx batch]
-              (let [batch (vec batch)]
-                (swap! conn update-max-tx batch)
-                (api/transact conn batch)))
-            nil
-            (partition-all *import-batch-size* datoms))))
