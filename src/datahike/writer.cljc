@@ -158,25 +158,27 @@
                             db (if merge-parents
                                  (update db :meta dissoc :datahike/merge-parents)
                                  db)]
-                        (try
-                          (let [start-ts (get-time-ms)
-                                {{:keys [datahike/commit-id]} :meta
-                                 :as commit-db} (<?- (w/commit! db merge-parents false last-cid))
-                                commit-time (- (get-time-ms) start-ts)]
-                            (log/trace :datahike/commit-time {:duration-ms commit-time})
-                            ;; ack-after-processing mode already advanced the
-                            ;; connection to the newest PROCESSED db —
-                            ;; resetting to commit-db here would rewind it.
-                            (when sync-commit?
-                              (reset! connection commit-db))
+                        (let [new-cid
+                              (try
+                                (let [start-ts (get-time-ms)
+                                      {{:keys [datahike/commit-id]} :meta
+                                       :as commit-db} (<?- (w/commit! db merge-parents false last-cid))
+                                      commit-time (- (get-time-ms) start-ts)]
+                                  (log/trace :datahike/commit-time {:duration-ms commit-time})
+                                  ;; ack-after-processing mode already advanced the
+                                  ;; connection to the newest PROCESSED db —
+                                  ;; resetting to commit-db here would rewind it.
+                                  (when sync-commit?
+                                    (reset! connection commit-db))
                     ;; notify all processes that transaction is complete
-                            (doseq [[tx-report callback] txs
-                                    :when callback]
-                              (let [tx-report (-> tx-report
-                                                  (assoc-in [:tx-meta :db/commitId] commit-id)
-                                                  (assoc :db-after commit-db))]
-                                (>! callback tx-report))))
-                          (catch #?(:clj Throwable :cljs js/Error) e
+                                  (doseq [[tx-report callback] txs
+                                          :when callback]
+                                    (let [tx-report (-> tx-report
+                                                        (assoc-in [:tx-meta :db/commitId] commit-id)
+                                                        (assoc :db-after commit-db))]
+                                      (>! callback tx-report)))
+                                  commit-id)
+                                (catch #?(:clj Throwable :cljs js/Error) e
                             ;; Close the queues BEFORE delivering the failed
                             ;; callbacks. Delivering first unblocks the caller
                             ;; while the queues are still open, so a subsequent
@@ -193,10 +195,17 @@
                             (log/error :datahike/writer-shutdown {:error e})
                             ;; Re-throw Errors (AssertionError, OutOfMemoryError, etc.) to crash the writer
                             #?(:clj (when (instance? Error e)
-                                      (throw e)))))
-                        (<! (timeout commit-wait-time))
-                        (recur (<?- commit-queue)
-                               (get-in @connection [:meta :datahike/commit-id])))))))))]))
+                                      (throw e)))
+                            nil))]
+                          (<! (timeout commit-wait-time))
+                          ;; Thread the JUST-COMMITTED id as the next parent.
+                          ;; In async mode @connection holds the newest
+                          ;; PROCESSED (not yet committed) db, whose meta can
+                          ;; carry a stale commit id — rereading it here could
+                          ;; mis-thread the commit chain.
+                          (recur (<?- commit-queue)
+                                 (or new-cid
+                                     (get-in @connection [:meta :datahike/commit-id])))))))))))]))
 
 (defn- with-tx-pred
   "Wrap a report-producing write-fn so a store-level tx-pred (if registered)
