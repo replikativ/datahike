@@ -178,9 +178,14 @@
            (<?- (k/bassoc store (chunk-key prefix n codec) stored opts))
            (progress {:phase :chunk :datoms (count part)})
            (recur (seq (drop chunk-size rs)) (inc n)
+                  ;; `:bytes` is what was stored, `:raw-bytes` what it decodes
+                  ;; to — an estimate built on the stored size alone
+                  ;; underestimates heap by the compression ratio.
                   (conj chunks {:file (chunk-name n codec) :count (count part)
                                 :bytes #?(:clj (alength ^bytes stored)
                                           :cljs (.-length stored))
+                                :raw-bytes #?(:clj (alength ^bytes content)
+                                              :cljs (.-length content))
                                 :sha256 (dig/sha256-hex content)})
                   (reduce dig/add-record dacc encs)))))))))
 

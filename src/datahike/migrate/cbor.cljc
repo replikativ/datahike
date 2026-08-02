@@ -143,60 +143,13 @@
 
       JVM only, because streaming decode is: boring's ClojureScript reader takes a
       whole buffer, with no `decode-seq-from` counterpart. That is not a gap the
-      dump path feels: a konserve chunk arrives as one value already bounded by
-      `:chunk-size`, and the filesystem medium streams through
-      `decode-records-pulled`. This arity survives for the LEGACY reader, which
-      is JVM-only and holds an InputStream over an old single-file dump."
+      dump path feels: BOTH media now read one chunk at a time, bounded by
+      `:chunk-size`, because a lazy seq that performs IO cannot be made async
+      (see `migrate/reduce-dump-records`). This arity survives for the LEGACY
+      reader, which is JVM-only and holds an InputStream over an old single-file
+      dump, and for the external sort, which is still JVM-only."
      [in]
      (boring/decode-seq-from in opts)))
-
-(defn decode-records-pulled
-  "Lazily decode a CBOR sequence from a PULL FUNCTION `(fn [] -> bytes | nil)` —
-   what `migrate.fs/puller` returns — in memory bounded by the largest single
-   record plus one block.
-
-   This is the one streaming spelling the dump path uses, so a multi-gigabyte
-   flat dump reads the same way on both runtimes.
-
-   boring's ClojureScript `decode-seq-from` takes a pull function directly. The
-   JVM's takes an `InputStream`, so the function is adapted into one here rather
-   than making the seam hand out a platform-native handle: a `puller` that
-   sometimes also carried a stream would be two abstractions wearing one name,
-   and every caller would eventually learn which platform it was on."
-  [pull]
-  #?(:cljs (boring/decode-seq pull opts)
-     :clj
-     (let [pending (volatile! nil)
-           pos (volatile! 0)
-           in (proxy [java.io.InputStream] []
-                (read
-                  ([]
-                   (let [^bytes cur @pending]
-                     (if (and cur (< ^long @pos (alength cur)))
-                       (let [b (aget cur ^long @pos)]
-                         (vswap! pos inc)
-                         (bit-and b 0xff))
-                       (if-let [^bytes nxt (pull)]
-                         (do (vreset! pending nxt) (vreset! pos 0)
-                             (if (zero? (alength nxt))
-                               -1
-                               (let [b (aget nxt 0)] (vreset! pos 1) (bit-and b 0xff))))
-                         -1))))
-                  ([^bytes dest off len]
-                   (let [^bytes cur @pending
-                         avail (if cur (- (alength cur) ^long @pos) 0)]
-                     (if (pos? avail)
-                       (let [n (min avail len)]
-                         (System/arraycopy cur ^long @pos dest off n)
-                         (vswap! pos + n)
-                         n)
-                       (if-let [^bytes nxt (pull)]
-                         (let [n (min (alength nxt) len)]
-                           (System/arraycopy nxt 0 dest off n)
-                           (vreset! pending nxt) (vreset! pos n)
-                           n)
-                         -1))))))]
-       (boring/decode-seq-from in opts))))
 
 (defn decode-records-from
   "Lazily decode a CBOR sequence held in memory as bytes.

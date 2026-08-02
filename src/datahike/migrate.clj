@@ -255,6 +255,23 @@
                                        (mblobs/manifest-entry p))
      :chunks                         (vec chunks))))
 
+(def ^:private default-chunk-size
+  "Datoms per chunk file, and therefore the import's per-chunk memory: a chunk is
+   read whole (see `reduce-dump-records`), so this is the knob that bounds it.
+
+   100k datoms is roughly 2.7 MB of records. The filesystem medium used to
+   default to 1,000,000 — 25.7 MB — because it streamed within a chunk and never
+   held one; the store medium already used 50,000 because it always did. Now
+   that both read a chunk at a time the two defaults had no reason to differ, and
+   the larger one was the outlier: at 100k entities a 25.7 MB chunk was FOUR
+   TIMES the id-remap map, i.e. the dominant term, in exactly the small-heap
+   setting where that hurts.
+
+   Not smaller than this: chunks are independent gzip streams, so a chunk below
+   ~1 MB starts losing ratio to dictionary resets (measured at +2.4% for 64 KiB
+   blocks against +0.1% for 1 MiB)."
+  100000)
+
 (def ^:private default-batch-size
   "Datoms per `load-entities` call. One definition — it had three, two of them
    spelled `(:batch-size (merge {:batch-size 100000} opts))`."
@@ -273,8 +290,8 @@
 (defn- write-chunk-stream!
   "Write up to `limit` records from the (lazy) seq `records` to `f` as a CBOR
    sequence, updating the semantic-digest accumulator `dacc` and computing the
-   chunk SHA-256 incrementally — O(1) memory regardless of chunk size. Returns
-   [remaining-records count sha256-hex dacc'].
+   chunk SHA-256 incrementally — memory bounded by one compression block. Returns
+   [remaining-records count sha256-hex dacc' raw-bytes].
 
    No delimiter is written: consecutive top-level CBOR items ARE an RFC 8742
    sequence, so the framing is a property of the encoding rather than something
@@ -291,7 +308,7 @@
                        (when (pos? (long n))
                          (fs/write! sink (mz/compress-bytes codec (mcbor/concat-records block)))))]
     (try
-      (loop [rs (seq records) c 0 da dacc block [] bn 0]
+      (loop [rs (seq records) c 0 da dacc block [] bn 0 raw 0]
         (if (and rs (< c limit))
           (let [bs (mcbor/encode-record (first rs))
                 len (alength ^bytes bs)
@@ -300,10 +317,10 @@
             (dig/sha256-update! md bs)
             (if (>= bn' mz/default-block-size)
               (do (flush-block! block' bn')
-                  (recur (next rs) (inc c) (dig/add-record da bs) [] 0))
-              (recur (next rs) (inc c) (dig/add-record da bs) block' bn')))
+                  (recur (next rs) (inc c) (dig/add-record da bs) [] 0 (+ (long raw) (long len))))
+              (recur (next rs) (inc c) (dig/add-record da bs) block' bn' (+ (long raw) (long len)))))
           (do (flush-block! block bn)
-              [rs c (dig/sha256-finalize md) da])))
+              [rs c (dig/sha256-finalize md) da raw])))
       (finally (fs/close-sink! sink)))))
 
 (defn- write-chunked! [db opts dir sorted-records chunk-size progress]
@@ -328,7 +345,7 @@
       (let [fname (str (chunk-name n) (mz/extension codec))
             tmp   (fs/join dir (str fname ".tmp"))
             final (fs/join dir fname)
-            [rem cnt sha dacc'] (write-chunk-stream! tmp ls chunk-size dacc codec)]
+            [rem cnt sha dacc' raw] (write-chunk-stream! tmp ls chunk-size dacc codec)]
         (when-not (fs/rename! tmp final)
           (throw (ex-info (str "Could not move the finished chunk into place: "
                                tmp " -> " final ". The manifest would name a file "
@@ -337,7 +354,13 @@
         (fs/restrict-perms! final false)
         (progress {:phase :chunk :datoms cnt})
         (recur (seq rem) (inc n)
-               (conj chunks {:file fname :count cnt :bytes (fs/file-size final) :sha256 sha})
+               ;; `:bytes` is what was STORED, `:raw-bytes` what it decodes to.
+               ;; Both are needed: the first sizes a transfer, the second sizes
+               ;; the heap — and with compression on they differ by ~7x, so an
+               ;; estimate built on `:bytes` alone underestimates memory by
+               ;; exactly the compression ratio.
+               (conj chunks {:file fname :count cnt :bytes (fs/file-size final)
+                             :raw-bytes raw :sha256 sha})
                dacc'))))))
 
 (defn- blob-dir
@@ -428,7 +451,7 @@
                           ;; single string — so the store default is much smaller
                           ;; than the filesystem default (which streams line by
                           ;; line and never holds a chunk in memory).
-                          :chunk-size (if (mstore/store-target? target) 50000 1000000)
+                          :chunk-size default-chunk-size
                           :sort-buffer 1000000
                           :compression mz/default-codec
                           :sort? true}
@@ -608,12 +631,33 @@
         datoms   (long (or (:datom-count stats) 0))
         entities (long (or (:max-eid stats) datoms 0))
         txs      (long (max 0 (- (long (or (:max-tx stats) c/tx0)) c/tx0)))
-        avg-rec  (if (pos? datoms) (/ (double total-bytes) datoms) 64.0)
+        ;; UNCOMPRESSED bytes per record. `total-bytes` is what is stored, which
+        ;; with gzip on is ~7x smaller than what a batch or a chunk occupies in
+        ;; memory; `:raw-bytes` is recorded per chunk precisely so this term does
+        ;; not silently shrink when someone turns compression on. Dumps written
+        ;; before `:raw-bytes` existed fall back to the stored size.
+        raw-total (reduce + 0 (map (fn [c] (long (or (:raw-bytes c) (:bytes c) 0)))
+                                   (:chunks manifest)))
+        avg-rec  (cond
+                   (and (pos? datoms) (pos? raw-total)) (/ (double raw-total) datoms)
+                   (pos? datoms)                        (/ (double total-bytes) datoms)
+                   :else                                64.0)
         idmap    (long (* (+ entities txs) idmap-bytes-per-entry))
         ;; a batch plus the tx-report / index-delta churn it drives (~3x)
         batch    (long (* batch-size avg-rec 3))
+        ;; ...and the CHUNK held while it is decoded. `reduce-dump-records` reads
+        ;; one chunk at a time, so this is a live term and it was missing: below
+        ;; about a million entities it is the LARGEST of the three, which is
+        ;; precisely the small-heap case the estimate exists to warn about. Taken
+        ;; from the manifest's own chunk records rather than from a default,
+        ;; since the dump states what it actually used. Compressed chunks also
+        ;; hold the compressed copy briefly; `:bytes` covers that.
+        chunk    (long (reduce max 0 (map (fn [c] (+ (long (or (:bytes c) 0))
+                                                     (long (or (:raw-bytes c)
+                                                               (* (or (:count c) 0) avg-rec)))))
+                                          (:chunks manifest))))
         ;; What this import actually needs...
-        required (long (* 1.6 (+ idmap batch)))
+        required (long (* 1.6 (+ idmap batch chunk)))
         ;; ...and what to ASK for, which is never less than a working heap. The
         ;; floor belongs to the advice, not to the test: `:sufficient?` used to
         ;; compare the heap against `recommend`, so a three-datom import
@@ -626,6 +670,7 @@
      :entities entities
      :id-map-bytes idmap
      :batch-bytes batch
+     :chunk-bytes chunk
      :required-heap-bytes required
      :required-heap (bytes->human required)
      :recommended-heap-bytes recommend
@@ -648,11 +693,14 @@
    before running it. Reads only the dump's manifest (no scan, no hashing).
    `source` may be a filesystem path/dir OR a konserve store target.
 
-   The dominant, unavoidable term is the O(entities) id-remap map that
-   `load-entities` holds until `finalize-import!`; the rest is one `:batch-size`
-   worth of records. Returns e.g.
-     {:datoms .. :entities .. :id-map-bytes .. :batch-bytes ..
-      :recommended-heap-bytes .. :recommended-heap \"2.1 GB\"
+   Three terms. The O(entities) id-remap map that `load-entities` holds until
+   `finalize-import!` dominates ABOVE about a million entities; below that the
+   `:chunk-size` worth of records held while a chunk is decoded is the largest,
+   which is why it is counted rather than assumed negligible. The third is one
+   `:batch-size` of records plus the tx-report churn it drives. Returns e.g.
+     {:datoms .. :entities .. :id-map-bytes .. :batch-bytes .. :chunk-bytes ..
+      :required-heap-bytes .. :required-heap \"180 MB\"
+      :recommended-heap-bytes .. :recommended-heap \"512 MB\"
       :current-max-heap-bytes .. :current-max-heap \"512 MB\" :sufficient? bool}"
   ([source] (estimate-import-memory source {}))
   ([source opts]
@@ -667,19 +715,31 @@
          (estimate-from-manifest manifest (manifest-total-bytes manifest files) batch-size))))))
 
 (defn- reduce-dump-records
-  "Reduce `rf` over every record of the dump, with each file's stream scoped to
-   its inner reduction (no lazy seq escapes an open handle). Flat dumps skip the
-   manifest header line first. Returns the final accumulator."
+  "Reduce `rf` over every record of the dump, one CHUNK at a time.
+
+   Memory is bounded by `:chunk-size`, which is the knob for it — see
+   `estimate-import-memory`, which counts this term.
+
+   An uncompressed chunk used to stream record by record through a pull-backed
+   lazy seq, bounded by one 64 KiB block instead of one chunk. That is gone, for
+   three reasons that compound:
+
+   * It only ever applied to `:compression :none`. A compressed chunk cannot
+     stream without a streaming inflater, and Node has none synchronously — so
+     since gzip became the default, the streaming path was the exception.
+   * A lazy seq that performs IO cannot be made async. `async+sync` compiles ONE
+     source into both branches, and the async branch is a `go` block whose state
+     machine does not reach inside a `lazy-seq` body — the same constraint that
+     turned `migrate.store`'s `reduce` into a `loop`.
+   * With the chunk default now sized for it, the saving is ~2.6 MB against
+     terms measured in hundreds. It was buying a second code path.
+
+   `rf` must be pure: it is applied inside the loop, so IO in it would be
+   invisible to the go block when this becomes `.cljc`."
   [{:keys [files manifest]} rf init]
   (let [codec (codec-of manifest)]
     (reduce (fn [acc file]
-              (if (= :none codec)
-                ;; verbatim: stream inside the chunk too
-                (let [{:keys [pull close]} (fs/puller file)]
-                  (try
-                    (reduce rf acc (mcbor/decode-records-pulled pull))
-                    (finally (close))))
-                (reduce rf acc (mcbor/decode-records-from (chunk-bytes file codec)))))
+              (reduce rf acc (mcbor/decode-records-from (chunk-bytes file codec))))
             init
             files)))
 
