@@ -309,6 +309,40 @@
                   (.getBytes ^String s StandardCharsets/UTF_8))
      :cljs (.writeSync (fs) (:fd sink) s)))
 
+(defn utf8-length
+  "Byte length of `s` as UTF-8 — not its character count.
+
+   The distinction is the same one `read-header-line` exists for: a manifest
+   holding a non-ASCII ident occupies more bytes than characters, and a reserved
+   header sized in characters would be overrun by exactly that difference."
+  [s]
+  #?(:clj (alength (.getBytes ^String s "UTF-8"))
+     :cljs (.-length (.encode (js/TextEncoder.) s))))
+
+(defn utf8-bytes
+  "`s` as UTF-8 bytes."
+  [s]
+  #?(:clj (.getBytes ^String s "UTF-8")
+     :cljs (.encode (js/TextEncoder.) s)))
+
+(defn write-at!
+  "Overwrite `p` starting at byte `offset`, leaving the rest of the file intact.
+
+   The one operation a sink cannot express, and it exists so a flat dump can be
+   written ONCE: the manifest header is reserved up front, the records stream
+   straight past it, and the finished manifest is stamped back over the
+   reservation."
+  [p offset bs]
+  #?(:clj
+     (with-open [raf (java.io.RandomAccessFile. (io/file p) "rw")]
+       (.seek raf (long offset))
+       (.write raf ^bytes bs))
+     :cljs
+     (let [fd (.openSync (fs) (str p) "r+")]
+       (try
+         (.writeSync (fs) fd bs 0 (.-length bs) offset)
+         (finally (.closeSync (fs) fd))))))
+
 (defn close-sink! [sink]
   #?(:clj (.close ^java.io.OutputStream (:stream sink))
      :cljs (.closeSync (fs) (:fd sink))))

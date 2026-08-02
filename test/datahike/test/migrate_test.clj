@@ -788,3 +788,56 @@
       (let [v (m/verify dump)]
         (is (false? (:ok? v)))
         (is (= [id] (:corrupt (:blobs v))))))))
+
+;; ---------------------------------------------------------------------------
+;; flat dumps are written ONCE
+
+(deftest flat-dump-reserves-its-header-instead-of-copying
+  (testing "a flat dump used to be written twice — records to a temp file, then
+            copied in behind the finished manifest, because the manifest carries
+            counts only known after writing. A 10 GB dump did 20 GB of IO and
+            needed 10 GB of scratch.
+
+            Now the header is reserved at its maximum width and stamped over
+            afterwards. The padding is the observable evidence that the
+            reservation path was taken rather than the temp-file fallback."
+    (let [src (utils/setup-db (mem-cfg {:history? true}))
+          _   (populate-rich! src)
+          path (str (System/getProperty "java.io.tmpdir") "/dh-flat1-" (utils/get-time))
+          man (m/export-db src path {:format :flat :history? true})
+          header (with-open [r (clojure.java.io/reader path)] (.readLine r))]
+      (is (> (count header) (count (pr-str man)))
+          "the header line is padded, so it was reserved and stamped, not copied")
+      (is (= man (clojure.edn/read-string {:default (fn [t v] (tagged-literal t v))} header))
+          "and the padding does not disturb reading it back")
+      (testing "the recorded chunk size still describes the RECORDS, not the file"
+        (is (= (.length (clojure.java.io/file path))
+               (+ (count (.getBytes ^String header "UTF-8")) 1
+                  (:bytes (first (:chunks man)))))
+            "file = header + newline + records"))
+      (testing "and it still round-trips"
+        (let [tgt (utils/setup-db (mem-cfg {:history? true}))
+              rep (m/import-db tgt path {})]
+          (is (:verified? rep))
+          (is (= (user-triples src) (user-triples tgt)))
+          (teardown tgt)))
+      (teardown src))))
+
+(deftest an-interrupted-flat-export-is-diagnosed-not-misread
+  (testing "the reserved header is a VALID manifest saying the dump is
+            incomplete, not blanks.
+
+            A dump is identified by its first byte — `{` is a flat dump,
+            anything else is legacy — so reserving with spaces would make a
+            half-written dump read as LEGACY, and the legacy path would try to
+            interpret CBOR records as an old format and fail somewhere
+            unrelated. This is the file an export killed partway leaves behind."
+    (let [path (str (System/getProperty "java.io.tmpdir") "/dh-flat-partial-" (utils/get-time))]
+      (spit path (str (pr-str {:datahike.migrate/incomplete true})
+                      (apply str (repeat 200 " ")) "\n"))
+      (let [tgt (utils/setup-db (mem-cfg {:history? true}))
+            e (try (m/import-db tgt path {}) nil (catch Exception e e))]
+        (is (some? e) "an incomplete dump is refused")
+        (is (= :import/incomplete-dump (:error (ex-data e)))
+            "and named as incomplete rather than as a legacy or corrupt dump")
+        (teardown tgt)))))

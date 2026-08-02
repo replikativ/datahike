@@ -48,6 +48,11 @@
 (def format-version 1)
 (def ^:private manifest-key :datahike.migrate/format-version)
 
+(def ^:private incomplete-key
+  "Marks the header a flat export reserves before it knows its own manifest. A
+   dump still carrying it was interrupted; see `write-flat!`."
+  :datahike.migrate/incomplete)
+
 (def ^:private source-config-allowlist
   #{:attribute-refs? :keep-history? :schema-flexibility :index})
 
@@ -262,41 +267,96 @@
    sequence, so the framing is a property of the encoding rather than something
    this loop maintains. The same bytes feed the file, the chunk hash and the
    semantic digest, so all three agree by construction."
-  [p records limit dacc]
-  (let [md (dig/sha256-accumulator)
-        sink (fs/open-sink p)]
-    (try
-      (loop [rs (seq records) c 0 da dacc]
-        (if (and rs (< c limit))
-          (let [bs (mcbor/encode-record (first rs))]
-            (fs/write! sink bs)
-            (dig/sha256-update! md bs)
-            (recur (next rs) (inc c) (dig/add-record da bs)))
-          [rs c (dig/sha256-finalize md) da]))
-      (finally (fs/close-sink! sink)))))
+  ([p records limit dacc] (write-chunk-stream! p records limit dacc false))
+  ([p records limit dacc append?]
+   (let [md (dig/sha256-accumulator)
+         sink (fs/open-sink p append?)]
+     (try
+       (loop [rs (seq records) c 0 da dacc]
+         (if (and rs (< c limit))
+           (let [bs (mcbor/encode-record (first rs))]
+             (fs/write! sink bs)
+             (dig/sha256-update! md bs)
+             (recur (next rs) (inc c) (dig/add-record da bs)))
+           [rs c (dig/sha256-finalize md) da]))
+       (finally (fs/close-sink! sink))))))
 
-(defn- write-flat! [db opts f sorted-records progress]
-  (let [tmp (fs/temp-file! (or (fs/parent f) ".") "dh-flat-" ".cbor")
-        [_ cnt sha dacc] (write-chunk-stream! tmp sorted-records unlimited (dig/accumulator))
-        digest   (dig/finalize dacc)
-        manifest (build-manifest db opts digest
-                                 [{:file (fs/file-name f) :count cnt :bytes (fs/file-size tmp) :sha256 sha}])]
-    ;; manifest as one EDN line, then the CBOR sequence. The head of a flat dump
-    ;; stays human-readable on purpose: it is read before the codec is known, so
-    ;; it cannot itself be in the codec, and being able to `head -c 2000` a dump
-    ;; you are trying to recover is worth more than the bytes it costs.
-    (let [sink (fs/open-sink f)]
-      (try
-        (fs/write-text! sink (pr-str manifest))
-        (fs/write-text! sink "\n")
-        ;; the temp file is copied through in bounded pieces rather than slurped:
-        ;; it holds the WHOLE dump, which is the one thing that cannot fit
-        (let [{:keys [pull close]} (fs/puller tmp)]
-          (try
-            (loop [] (when-let [b (pull)] (fs/write! sink b) (recur)))
-            (finally (close))))
-        (finally (fs/close-sink! sink))))
-    (fs/delete! tmp)
+(defn- write-flat!
+  "Write a single-file dump: one EDN manifest line, then the CBOR sequence.
+
+   Written ONCE. The manifest has to come first — it is read before the codec is
+   known, and being able to `head -c 2000` a dump you are trying to recover is
+   worth more than the bytes it costs — but its `:count`, `:bytes` and `:sha256`
+   are only known after the records have been written. The obvious resolution is
+   to stream the records to a temp file and copy them in behind the finished
+   manifest, and that is what this did: a 10 GB dump performed 20 GB of IO and
+   needed 10 GB of scratch it did not otherwise want.
+
+   Instead the header is RESERVED. A manifest built with every varying field at
+   its maximum width bounds the real one — counts cannot exceed the widest
+   integer, a SHA-256 is always 64 hex characters — so that width is written as
+   blanks, the records stream straight past it, and the finished manifest is
+   stamped back over the reservation with `fs/write-at!`.
+
+   Reserved in BYTES, not characters: a manifest carrying a non-ASCII ident
+   occupies more bytes than characters, and a reservation sized in characters
+   would be overrun by exactly that difference — silently, since the overrun
+   would land on the first record rather than raising.
+
+   If the finished manifest somehow does not fit, this falls back to the
+   temp-file path rather than writing a corrupt dump. That branch should be
+   unreachable; it exists because 'should be unreachable' and 'is unreachable'
+   are different claims, and the failure mode here is a dump nobody can read."
+  [db opts f sorted-records progress]
+  (let [widest    9007199254740991
+        ;; a manifest whose varying fields are all at maximum width, so its
+        ;; length is an upper bound on the real one's
+        placeholder (build-manifest db opts
+                                    {:algo :xor64+sum64
+                                     :xor (apply str (repeat 16 "f"))
+                                     :sum (apply str (repeat 16 "f"))
+                                     :count widest}
+                                    [{:file (fs/file-name f) :count widest :bytes widest
+                                      :sha256 (apply str (repeat 64 "f"))}])
+        reserved  (fs/utf8-length (pr-str placeholder))
+        ;; The reservation is not blanks. It is a VALID manifest saying the dump
+        ;; is incomplete, padded out to the reserved width.
+        ;;
+        ;; A dump is identified by its first byte: `{` means a flat dump,
+        ;; anything else means a legacy one. Reserving with spaces would make a
+        ;; half-written dump — an export killed partway — read as LEGACY, and
+        ;; the legacy path would then try to interpret CBOR records as an old
+        ;; format and fail somewhere unrelated. Reserving with this instead
+        ;; means an interrupted export is diagnosed as exactly what it is.
+        marker    (pr-str {incomplete-key true})
+        _         (let [sink (fs/open-sink f)]
+                    (try
+                      (fs/write-text! sink marker)
+                      (fs/write-text! sink (apply str (repeat (- reserved (fs/utf8-length marker)) " ")))
+                      (fs/write-text! sink "\n")
+                      (finally (fs/close-sink! sink))))
+        [_ cnt sha dacc] (write-chunk-stream! f sorted-records unlimited (dig/accumulator) true)
+        digest    (dig/finalize dacc)
+        manifest  (build-manifest db opts digest
+                                  [{:file (fs/file-name f) :count cnt
+                                    :bytes (- (fs/file-size f) reserved 1) :sha256 sha}])
+        rendered  (pr-str manifest)
+        width     (fs/utf8-length rendered)]
+    (if (<= width reserved)
+      (fs/write-at! f 0 (fs/utf8-bytes (str rendered (apply str (repeat (- reserved width) " ")))))
+      ;; unreachable by construction; see the docstring
+      (let [tmp (fs/temp-file! (or (fs/parent f) ".") "dh-flat-" ".cbor")]
+        (try
+          (write-chunk-stream! tmp sorted-records unlimited (dig/accumulator))
+          (let [sink (fs/open-sink f)]
+            (try
+              (fs/write-text! sink rendered)
+              (fs/write-text! sink "\n")
+              (let [{:keys [pull close]} (fs/puller tmp)]
+                (try (loop [] (when-let [b (pull)] (fs/write! sink b) (recur)))
+                     (finally (close))))
+              (finally (fs/close-sink! sink))))
+          (finally (fs/delete! tmp)))))
     (restrict-perms! f false)
     (progress {:phase :done :datoms cnt})
     manifest))
@@ -526,8 +586,14 @@
       ;; avoid scanning the header twice and because a manifest holding a
       ;; non-ASCII ident is longer in bytes than in characters, so anything that
       ;; counted characters would land mid-record.
-      (let [{:keys [line bytes]} (fs/read-header-line f)]
-        {:manifest (read-manifest-map line) :legacy? false :flat? true
+      (let [{:keys [line bytes]} (fs/read-header-line f)
+            manifest (read-manifest-map line)]
+        (when (get manifest incomplete-key)
+          (throw (ex-info (str "This dump is incomplete: the export that wrote " f
+                               " did not finish, so its manifest was never stamped over "
+                               "the reserved header. Re-export.")
+                          {:error :import/incomplete-dump :file (str f)})))
+        {:manifest manifest :legacy? false :flat? true
          :files [f] :data-offset bytes})
 
       :else
