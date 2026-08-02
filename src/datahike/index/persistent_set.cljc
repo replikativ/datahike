@@ -567,6 +567,65 @@
     #?(:clj (set! (.-_storage pset) (:storage store)))
     (with-meta pset (root-meta store index-type))))
 
+(def ^:const DEFAULT_INDEX_FLUSH_THRESHOLD
+  "Nodes allowed to accumulate in `pending-writes` before a streaming build
+   drains them. ~1000 nodes at the default branching factor is on the order of
+   tens of MB — generous enough that no ordinary build pays for the check, small
+   enough that the bound is a bound."
+  1000)
+
+#?(:clj
+   (defn- flush-pending!
+     "Write out the nodes buffered in `pending-writes` and clear it.
+
+      This is a deliberately torn commit batch, and it is safe for exactly the
+      reason `datahike.writing/commit!` gives for tolerating a torn one:
+      `pending-writes` is a vector and `store` conj'es onto it, so children
+      appear before the parents that address them. A partial write therefore
+      leaves unreachable orphans — which GC collects — and never a reachable
+      node pointing at a value that was never written. The nodes are marked
+      `:immutable?` for the same reason `write-pending-kvs!` marks them: they
+      are content-addressed and write-once.
+
+      Not shared with `datahike.writing` because the dependency runs the other
+      way (writing -> index -> here); this is konserve directly instead."
+     [store]
+     (when-let [pending (-> store :storage :pending-writes)]
+       (let [[kvs _] (swap-vals! pending (constantly []))]
+         (doseq [[k v] kvs]
+           (k/assoc store k v {:immutable? true} {:sync? true}))))))
+
+#?(:clj
+   (defn- flushing-seq
+     "`xs`, but draining `pending-writes` whenever it grows past `threshold`.
+
+      The streaming builder's whole point is that it holds only O(depth x
+      branching-factor) of the tree at once — but `store` merely buffers, so
+      without this the buffer grows to the entire index and the bound is
+      nominal. Measured before this existed: 200k datoms left 524 nodes
+      pending, i.e. every datom still resident.
+
+      Draining is driven from the INPUT seq rather than from `store` itself
+      because `store` serves every write path in datahike; a threshold there
+      would change crash semantics for ordinary transactions to fix a
+      bulk-build problem. Here it is scoped to exactly the build that has it.
+
+      The check is on node count, not datoms consumed, so the bound holds
+      independently of branching factor. It also means the ROOT is never
+      flushed early: it is built after the input is exhausted, so no check
+      fires after it exists, and `commit!` still finds it in `pending-writes`
+      to fuse into the stored db."
+     [store xs]
+     (let [pending  (-> store :storage :pending-writes)
+           threshold (:datahike/index-flush-threshold store DEFAULT_INDEX_FLUSH_THRESHOLD)]
+       (if (or (nil? pending) (not (pos? threshold)))
+         xs
+         (map (fn [x]
+                (when (>= (count @pending) threshold)
+                  (flush-pending! store))
+                x)
+              xs)))))
+
 #?(:clj
    (defmethod di/init-index-sorted :datahike.index/persistent-set
      [_index-name store sorted-datoms index-type _ {:keys [indexed]}]
@@ -576,6 +635,7 @@
      (let [xs (if (= index-type :avet)
                 (filter #(contains? indexed (.-a ^Datom %)) sorted-datoms)
                 sorted-datoms)
+           xs (flushing-seq store xs)
            ;; A direct call now. This was a `requiring-resolve` while
            ;; `from-sorted-seq` was unreleased (replikativ/persistent-sorted-set#22),
            ;; because a compile-time reference would have made all of datahike

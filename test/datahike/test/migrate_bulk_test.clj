@@ -8,32 +8,14 @@
    `persistent-sorted-set/from-sorted-seq`, so the build holds one node per level.
 
    The property that matters is that the two agree: a bulk-built index must be
-   the same index, or the fast path is a different database.
-
-   Requires persistent-sorted-set's streaming builder
-   (replikativ/persistent-sorted-set#22), which is behind the `:bulk` alias until
-   it releases. Without it these SKIP with a message rather than passing
-   vacuously — the same bargain the CBOR and Jetty suites make."
+   the same index, or the fast path is a different database."
   (:require [clojure.test :refer [deftest testing is]]
             [datahike.api :as d]
             [datahike.datom :as dd]
             [datahike.index.interface :as di]
             [datahike.migrate.ids :as ids]
-            [datahike.test.utils :as utils]))
-
-(def ^:private streaming-builder?
-  (try (require 'org.replikativ.persistent-sorted-set)
-       (some? (resolve 'org.replikativ.persistent-sorted-set/from-sorted-seq))
-       (catch Exception _ false)))
-
-(defn- skip!
-  "Print and assert-true. The assertion is not ceremony: kaocha reports a test
-   with zero assertions as a FAILURE, so a bare `println` skip turns an absent
-   optional dependency into a red suite — which is the opposite of skipping."
-  [what]
-  (println "SKIPPED" what "— persistent-sorted-set/from-sorted-seq absent"
-           "(run with the :bulk alias; see persistent-sorted-set#22)")
-  (is true "skipped: streaming builder unavailable"))
+            [datahike.test.utils :as utils]
+            [konserve.core :as k]))
 
 (defn- teardown [conn]
   (let [cfg (:config @conn)] (d/release conn) (d/delete-database cfg)))
@@ -47,56 +29,122 @@
     c))
 
 (deftest bulk-built-index-equals-normally-built
-  (if-not streaming-builder?
-    (skip! "bulk-built-index-equals-normally-built")
-    (testing "same datoms in, same index out — for every index type.
+  (testing "same datoms in, same index out — for every index type.
 
-              Contents equality is the floor, not the ceiling: a tree with the
-              right datoms and the wrong fanout would pass this and then differ
-              under slice and count. The SHAPE equivalence is asserted upstream in
-              persistent-sorted-set's own suite, against `from-sorted-array`; here
-              the question is whether datahike drives it correctly."
-      (let [conn (populated-conn 500)
-            db @conn
-            store (:store db)
-            datoms (vec (d/datoms db :eavt))]
-        (is (pos? (count datoms)) "precondition: there are datoms")
-        (doseq [index-type [:eavt :aevt]]
-          (testing (name index-type)
-            (let [cmp (dd/index-type->cmp-quick index-type false)
-                  sorted (sort cmp datoms)
-                  normal (di/init-index :datahike.index/persistent-set store datoms index-type 0 {})
-                  bulk (di/init-index-sorted :datahike.index/persistent-set store sorted index-type 0 {})]
-              (is (= (count normal) (count bulk)) "same datom count")
-              (is (= (vec normal) (vec bulk)) "same datoms in the same order"))))
-        (teardown conn)))))
+            Contents equality is the floor, not the ceiling: a tree with the
+            right datoms and the wrong fanout would pass this and then differ
+            under slice and count. The SHAPE equivalence is asserted upstream in
+            persistent-sorted-set's own suite, against `from-sorted-array`; here
+            the question is whether datahike drives it correctly."
+    (let [conn (populated-conn 500)
+          db @conn
+          store (:store db)
+          datoms (vec (d/datoms db :eavt))]
+      (is (pos? (count datoms)) "precondition: there are datoms")
+      (doseq [index-type [:eavt :aevt]]
+        (testing (name index-type)
+          (let [cmp (dd/index-type->cmp-quick index-type false)
+                sorted (sort cmp datoms)
+                normal (di/init-index :datahike.index/persistent-set store datoms index-type 0 {})
+                bulk (di/init-index-sorted :datahike.index/persistent-set store sorted index-type 0 {})]
+            (is (= (count normal) (count bulk)) "same datom count")
+            (is (= (vec normal) (vec bulk)) "same datoms in the same order"))))
+      (teardown conn))))
 
 (deftest bulk-built-index-supports-lookup-and-slice
-  (if-not streaming-builder?
-    (skip! "bulk-built-index-supports-lookup-and-slice")
-    (testing "a bulk-built index answers the queries an index exists for.
+  (testing "a bulk-built index answers the queries an index exists for.
 
-              Worth separating from contents equality: the bulk builder produces
-              address-only nodes with no resident children, so every read here
-              exercises the lazy-load path that a normally-built tree does not."
-      (let [conn (populated-conn 300)
-            db @conn
-            store (:store db)
-            datoms (vec (d/datoms db :eavt))
-            cmp (dd/index-type->cmp-quick :eavt false)
-            bulk (di/init-index-sorted :datahike.index/persistent-set store
-                                       (sort cmp datoms) :eavt 0 {})]
-        (is (= (count datoms) (count bulk)))
-        (is (= (vec (sort cmp datoms)) (vec bulk)) "full scan matches")
-        (teardown conn)))))
+            Worth separating from contents equality: the bulk builder produces
+            address-only nodes with no resident children, so every read here
+            exercises the lazy-load path that a normally-built tree does not."
+    (let [conn (populated-conn 300)
+          db @conn
+          store (:store db)
+          datoms (vec (d/datoms db :eavt))
+          cmp (dd/index-type->cmp-quick :eavt false)
+          bulk (di/init-index-sorted :datahike.index/persistent-set store
+                                     (sort cmp datoms) :eavt 0 {})]
+      (is (= (count datoms) (count bulk)))
+      (is (= (vec (sort cmp datoms)) (vec bulk)) "full scan matches")
+      (teardown conn))))
+
+;; ---------------------------------------------------------------------------
+
+(deftest the-streaming-build-is-actually-memory-bounded
+  (testing "the reason `init-index-sorted` exists is that it holds only part of
+            the tree — but `IStorage/store` merely buffers onto `pending-writes`,
+            which nothing drained until commit. So the bound was nominal: the
+            whole index stayed resident and the streaming builder was, in memory
+            terms, exactly the thing it replaced. Measured before the fix, 200k
+            datoms left 524 nodes pending — every datom still in heap.
+
+            Sampling the PEAK rather than the count at the end, because the end
+            is the one moment the buffer is legitimately small."
+    (let [conn (populated-conn 10000)
+          db @conn
+          store (:store db)
+          datoms (vec (d/datoms db :eavt))
+          cmp (dd/index-type->cmp-quick :eavt false)
+          sorted (sort cmp datoms)
+          pending (-> store :storage :pending-writes)
+          threshold 10
+          peak (atom 0)
+          sample (fn [xs] (map (fn [x] (swap! peak max (count @pending)) x) xs))]
+      (reset! pending [])
+      (let [writes-before (:writes @(-> store :storage :stats))
+            keys-before (count (k/keys store {:sync? true}))
+            bulk (di/init-index-sorted :datahike.index/persistent-set
+                                       (assoc store :datahike/index-flush-threshold threshold)
+                                       (sample sorted) :eavt 0 {})
+            ;; the storage's own counter, because peak + leftover cannot see the
+            ;; nodes that were flushed and cleared in between — which is the
+            ;; whole point
+            total-nodes (- (:writes @(-> store :storage :stats)) writes-before)]
+        (is (<= @peak threshold)
+            (str "peak pending-writes " @peak " must stay within the threshold"))
+        (is (> total-nodes (* 3 threshold))
+            (str "precondition: the build must produce enough nodes (" total-nodes
+                 ") for the threshold to actually trip — otherwise this passes vacuously"))
+
+        (testing "and flushing did not corrupt the index"
+          (is (= (count sorted) (count bulk)) "same datom count")
+          (is (= (vec sorted) (vec bulk)) "same datoms in the same order"))
+
+        (testing "the flushed nodes really reached the store DURING the build,
+                  rather than being dropped on the floor — the failure mode a
+                  drain-and-clear has. No commit has run at this point, so
+                  anything in the store got there from the flush."
+          (is (> (count (k/keys store {:sync? true})) keys-before)
+              "the store gained nodes before any commit")))
+      (teardown conn))))
+
+(deftest flushing-can-be-disabled
+  (testing "threshold 0 opts out, for a caller who would rather have the single
+            ordered commit batch than the bound."
+    (let [conn (populated-conn 2000)
+          db @conn
+          store (:store db)
+          datoms (vec (d/datoms db :eavt))
+          cmp (dd/index-type->cmp-quick :eavt false)
+          sorted (sort cmp datoms)
+          pending (-> store :storage :pending-writes)]
+      (reset! pending [])
+      (let [bulk (di/init-index-sorted :datahike.index/persistent-set
+                                       (assoc store :datahike/index-flush-threshold 0)
+                                       sorted :eavt 0 {})]
+        (is (= (vec sorted) (vec bulk)) "still the right index")
+        (is (> (count @pending) 1)
+            "with flushing off, every node is still buffered for commit"))
+      (teardown conn))))
+
+;; ---------------------------------------------------------------------------
 
 (deftest the-pipeline-produces-sortable-records
   (testing "the pre-pass + pure rewrite yields records a bulk build can consume.
 
             This is the join between `datahike.migrate.ids` and the index builder:
             the mapping must be complete BEFORE sorting, because the sort order is
-            over the final ids. Asserted without the builder, so it runs whether
-            or not the :bulk alias is active."
+            over the final ids."
     (let [schema {:name {:db/valueType :db.type/string}
                   :pal {:db/valueType :db.type/ref}}
           records [[3 :name "a" 100 true]
