@@ -3705,7 +3705,12 @@
                      ;; metadata, not a map key: plans are VALUES (compared,
                      ;; printed, potentially serialized) and the compiled-
                      ;; program cache is an identity-scoped accelerator.
-                     (vary-meta assoc :datahike.query.execute/program-cache (atom {})))]
+                     ;; Attached only in prepared mode so stock plans stay
+                     ;; bit-identical (an atom in meta is not serializable);
+                     ;; a plan cached while OFF simply compiles uncached if
+                     ;; the flag flips later.
+                     (cond-> (prepared-execution?)
+                       (vary-meta assoc :datahike.query.execute/program-cache (atom {}))))]
         (vswap! plan-cache assoc cache-key plan)
         plan))))
 

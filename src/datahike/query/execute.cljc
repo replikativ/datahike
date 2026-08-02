@@ -2924,7 +2924,7 @@
    returns true; returns false to fall back to the generic fused executor.
    The generic path compiles per-call merge/eq/find arrays — for a unique
    point lookup that compilation dwarfs the index work itself."
-  [db g emit-vars consts result-list max-results]
+  [db g emit-vars consts result-list max-results cancel]
   (let [scan-op (entity-group-scan-op g)
         merge-ops (entity-group-merge-ops g)
         [se sa sv stx] (:clause scan-op)
@@ -2966,7 +2966,8 @@
           (if (or (nil? ds)
                   (and max-results (>= emitted (long max-results))))
             true
-            (let [^Datom d (first ds)
+            (let [_ (check-cancel! cancel)
+                  ^Datom d (first ds)
                   e (.-e d)
                   ;; resolve merges: var bindings accumulate; ground values check
                   binds (loop [i 0 binds {se e}]
@@ -3052,7 +3053,7 @@
                          emit-vars)]
             (when-not (and *prepared-execution*
                            (nil? temporal)
-                           (try-point-group db g g-emit consts result-list max-results))
+                           (try-point-group db g g-emit consts result-list max-results cancel))
               (execute-group-direct db scan-op merge-ops g-emit consts
                                     result-list nil 0 nil 0 -1
                                     max-results
@@ -3549,7 +3550,7 @@
 (defn- run-point-program
   "Execute a compiled point program with per-call consts: one AVET ground-value
    seek plus card-one same-entity EAVT lookups, straight into the final result."
-  [prog db consts max-results]
+  [prog db consts max-results cancel]
   (let [{:keys [se sa sv-src merges attached group-vars emit-vars find-vars dedup]} prog
         [src x] sv-src
         sv (if (= :lit src) x (get consts x))
@@ -3564,7 +3565,8 @@
                emitted 0]
           (when-not (or (nil? ds)
                         (and max-results (>= emitted (long max-results))))
-            (let [^Datom d (first ds)
+            (let [_ (check-cancel! cancel)
+                  ^Datom d (first ds)
                   e (.-e d)
                   binds
                   (loop [i 0 binds {se e}]
@@ -3635,7 +3637,8 @@
                  (pss-instance? (:avet db))
                  (pss-instance? (:eavt db))
                  #?(:clj (not (:attribute-refs? (dbi/-config db))) :cljs true))
-          (run-point-program prog db consts max-results)
+          (do (check-cancel! cancel)
+              (run-point-program prog db consts max-results cancel))
           (let [plan' (if (seq rel-consts) (bind-plan-consts plan rel-consts) plan)]
             (when plan'
               (execute-plan-direct plan' db find-vars max-results consts

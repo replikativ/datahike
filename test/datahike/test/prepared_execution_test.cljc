@@ -129,3 +129,18 @@
                 dq/*query-result-cache?* false]
         (is (= (binding [dq/*disable-planner* true] (d/q q db 3))
                (d/q q db 3)))))))
+
+(deftest prepared-honors-cancellation
+  (testing "a pre-set :cancel raises :datahike/canceled on the prepared
+            point paths, matching the generic executors"
+    (let [db (test-db)
+          q '{:find [?v] :in [$ ?id]
+              :where [[?e :t/id ?id] [(get-else $ ?e :t/v -1) ?v]]}]
+      (binding [execute/*prepared-execution* true
+                dq/*fold-scalar-ins* false
+                dq/*query-result-cache?* false]
+        ;; warm: compile the point program
+        (is (= #{[8]} (d/q q db 4)))
+        (is (thrown-with-msg?
+             #?(:clj clojure.lang.ExceptionInfo :cljs js/Error) #"(?i)cancel"
+             (d/q {:query q :args [db 4] :cancel (volatile! true)})))))))
