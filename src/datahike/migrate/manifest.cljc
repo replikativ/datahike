@@ -273,6 +273,34 @@
    blocks against +0.1% for 1 MiB)."
   100000)
 
+(def default-sync?
+  "Whether an entry point runs synchronously when the caller does not say.
+
+   True on the JVM, false on ClojureScript — the same platform split
+   `datahike.api`'s versioning operations use (`branches`, `branch!` pass
+   `{:sync? true}` on clj and `{:sync? false}` on cljs). Existing JVM callers
+   keep the blocking behaviour they have; a browser or Node caller gets a
+   channel, because there is nothing else it could get."
+  #?(:clj true :cljs false))
+
+(defn assert-sync-supported!
+  "Refuse `{:sync? true}` where nothing can block.
+
+   ClojureScript has no blocking take and no blocking deref, so a synchronous
+   import cannot be implemented there — `load-batch!` would have to `@` a
+   `promise-chan`. Refusing by name beats failing inside the batcher with
+   something about `IDeref`, and mirrors `api/transact`, which throws
+   \"Synchronous transact not supported in ClojureScript, use transact!
+   instead.\""
+  [opts]
+  #?(:clj (do opts nil)
+     :cljs (when (:sync? opts)
+             (throw (ex-info (str "Synchronous export/import is not supported in "
+                                  "ClojureScript — there is no blocking take. Omit "
+                                  ":sync? (the default here is false) and take from "
+                                  "the returned channel.")
+                             {:error :migrate/sync-not-supported})))))
+
 (def default-batch-size
   "Datoms per `load-entities` call. One definition — it had three, two of them
    spelled `(:batch-size (merge {:batch-size 100000} opts))`."

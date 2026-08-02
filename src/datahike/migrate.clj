@@ -45,7 +45,8 @@
             [datahike.migrate.manifest :as mman
              :refer [->db a-ident attribute-refs? build-manifest
                      chunk-name chunk-re codec-of config-must-match datom->record
-                     default-batch-size default-chunk-size estimate-from-manifest
+                     assert-sync-supported! default-batch-size default-chunk-size
+                     default-sync? estimate-from-manifest
                      export-records export-records-streaming
                      ident-schema manifest-key norm-val read-manifest-map
                      system-idents bytes->human]]
@@ -150,8 +151,8 @@
   (fs/join target mblobs/dir-name))
 
 (defn- with-blob-writer
-  "Call `f` with `(fn [id bytes])` writing one blob into `target`'s blob area,
-   releasing the medium afterwards.
+  "Call `f` with `(fn [id bytes opts])` writing one blob into `target`'s blob
+   area, releasing the medium afterwards.
 
    Takes a callback rather than returning the function because a store target
    has to be OPENED, and the previous shape — return a closure over an open
@@ -163,20 +164,34 @@
   (if (mstore/store-target? target)
     (let [m (mstore/open target)]
       (try
-        (f (fn [id bytes _opts]
-             (<?? S (k/bassoc (:store m) (mstore/blob-key (:prefix m) id) bytes))))
+        ;; `async+sync` rather than `<??`: this closure is called from
+        ;; `mblobs/copy-out!`, which is itself async+sync, so a blocking take
+        ;; here would have pinned the whole blob path to the JVM even though
+        ;; `migrate.blobs` is portable — portability stopping one layer short of
+        ;; where it is used.
+        (f (fn [id bytes o]
+             (async+sync (:sync? o) *default-sync-translation*
+                         (go-try-
+                          (<?- (k/bassoc (:store m) (mstore/blob-key (:prefix m) id)
+                                         bytes o))))))
         (finally (mstore/close m))))
     (let [dir (blob-dir target)]
       (when-not (fs/mkdirs! dir)
         (when-not (fs/directory? dir)
           (throw (ex-info (str "Could not create the blob directory " dir)
                           {:error :export/blob-dir-failed :dir (str dir)}))))
-      (f (fn [id bytes _opts]
-           (let [sink (fs/open-sink (fs/join dir (str id)))]
-             (try (fs/write! sink bytes) (finally (fs/close-sink! sink)))))))))
+      ;; The filesystem writes are synchronous on both runtimes, but the shape
+      ;; still has to match what `copy-out!` awaits — value in sync mode, channel
+      ;; otherwise — or the async branch would await a plain value.
+      (f (fn [id bytes o]
+           (async+sync (:sync? o) *default-sync-translation*
+                       (go-try-
+                        (let [sink (fs/open-sink (fs/join dir (str id)))]
+                          (try (fs/write! sink bytes)
+                               (finally (fs/close-sink! sink)))))))))))
 
 (defn- with-blob-reader
-  "Call `f` with `(fn [id]) -> bytes-or-nil` reading blobs out of a dump,
+  "Call `f` with `(fn [id opts]) -> bytes-or-nil` reading blobs out of a dump,
    releasing the medium afterwards. See `with-blob-writer`."
   [source f]
   (if (mstore/store-target? source)
@@ -186,13 +201,17 @@
         ;; different shapes across backends and platforms, and that knowledge now
         ;; lives in konserve (replikativ/konserve#162) instead of being re-derived
         ;; at every call site — this was one of them.
-        (f (fn [id _opts]
-             (<?? S (k/bget (:store m) (mstore/blob-key (:prefix m) id)
-                            (kb/to-bytes {:sync? false})))))
+        (f (fn [id o]
+             (async+sync (:sync? o) *default-sync-translation*
+                         (go-try-
+                          (<?- (k/bget (:store m) (mstore/blob-key (:prefix m) id)
+                                       (kb/to-bytes o) o))))))
         (finally (mstore/close m))))
-    (f (fn [id _opts]
-         (let [f' (fs/join (blob-dir source) (str id))]
-           (when (fs/exists? f') (fs/read-bytes f')))))))
+    (f (fn [id o]
+         (async+sync (:sync? o) *default-sync-translation*
+                     (go-try-
+                      (let [f' (fs/join (blob-dir source) (str id))]
+                        (when (fs/exists? f') (fs/read-bytes f')))))))))
 
 (defn export-db
   "Export a database (or connection) to `target`.
@@ -632,7 +651,14 @@
      (:sync? opts) *default-sync-translation*
      (go-try-
     ;; ---- heap preflight: tell the operator how much RAM to give this ----
-    (when-not (:sufficient? mem)
+    ;; `false?`, not `when-not`. `:sufficient?` is ABSENT where the runtime has
+    ;; no heap ceiling to report — ClojureScript, see `manifest/max-heap` — and
+    ;; `(when-not nil ...)` fires, so every Node import would have printed a heap
+    ;; warning full of nils through `format` and `*err*`, neither of which exists
+    ;; there. Three cljs-incompatible constructs on one line, reachable only once
+    ;; this file becomes .cljc: a bug placed one commit before the commit that
+    ;; would have detonated it.
+    (when (false? (:sufficient? mem))
       (binding [*out* *err*]
         (println (format "[datahike.migrate] heap warning: importing %d datoms (~%d entities) needs about %s; this JVM's -Xmx is %s. Raise -Xmx (the id-remap map is held until finalize) or expect OutOfMemoryError."
                          (:datoms mem) (:entities mem)
@@ -829,7 +855,9 @@
    Refuses a non-empty target (import is not resumable — recreate and restart)."
   ([conn source] (import-db conn source {}))
   ([conn source opts]
-   (let [batch-size (get opts :batch-size default-batch-size)]
+   (assert-sync-supported! opts)
+   (let [opts (merge {:sync? default-sync?} opts)
+         batch-size (get opts :batch-size default-batch-size)]
      (if (mstore/store-target? source)
        (let [m (mstore/open source)]
          (try
