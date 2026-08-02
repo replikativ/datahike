@@ -49,6 +49,12 @@
   "The set of `[e a v]` triples currently true, given `history-records` as
    `[e a v t added]` tuples.
 
+   NOT MEMORY BOUNDED — it sorts the whole input and accumulates a set of every
+   live datom. That is fine for a test or a small database and wrong for the case
+   a bulk build exists to serve. `current-from-eavt-sorted` is the streaming
+   version; this one stays because it is the obvious, order-independent statement
+   of the rule and therefore the right thing to check the streaming one against.
+
    Returns a SET of triples rather than records: `t` is deliberately dropped,
    because the current set is a question about which facts hold, not about when
    they were asserted. Callers that need the asserting transaction should take it
@@ -60,6 +66,38 @@
           #{}
           (sort-by tx-order history-records)))
 
+(defn current-from-eavt-sorted
+  "STREAMING currentness: given records sorted by `[e a v t]`, return a lazy seq
+   of the records that are currently true, in that same order.
+
+   `derive-current` sorts its whole input and accumulates a set, so it is O(n) in
+   memory — fine for a test or a small database, useless for the case a bulk
+   build exists to serve. This is the version the import path uses.
+
+   The trick is the sort order, not the fold. Sorting by `[e a v t]` puts every
+   record for one `[e a v]` ADJACENT and in transaction order, so deciding
+   whether that datom is current means looking at the last record of the run and
+   nothing else. State is one partial run, not a set of every live datom.
+
+   Requires the input to be sorted by `[e a v t]` with `t` ascending within each
+   `[e a v]`. That is an external sort the import already performs to feed the
+   index builders, so it costs nothing extra."
+  [sorted-records]
+  (letfn [(step [rs]
+            (lazy-seq
+             (when-let [s (seq rs)]
+               (let [r (first s)
+                     k (fn [x] [(nth x 0) (nth x 1) (nth x 2)])
+                     kr (k r)
+                     run (cons r (take-while #(= kr (k %)) (rest s)))
+                     rest-s (drop (count run) s)
+                     ;; last record for this [e a v] wins; current iff it asserted
+                     final (last run)]
+                 (if (nth final 4)
+                   (cons final (step rest-s))
+                   (step rest-s))))))]
+    (step sorted-records)))
+
 (defn split-current
   "Partition `history-records` into `{:current [...] :history [...]}`.
 
@@ -68,8 +106,9 @@
    that ASSERTED it (the latest assertion, since a later retraction would have
    removed the key).
 
-   This is the shape a bulk build wants: one pass over the dump yields both the
-   temporal trees and the current ones, with no second read."
+   NOT MEMORY BOUNDED — it builds on `derive-current` and materialises both
+   halves. Kept for tests and small inputs; the import path composes
+   `current-from-eavt-sorted` with an external sort instead."
   [history-records]
   (let [current (derive-current history-records)
         ;; latest assertion per key — later transactions overwrite earlier ones

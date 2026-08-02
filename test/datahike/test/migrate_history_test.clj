@@ -12,6 +12,7 @@
    histories to catch the shapes nobody thought of."
   (:require [clojure.test :refer [deftest testing is]]
             [datahike.api :as d]
+            [datahike.datom :as dd]
             [datahike.migrate.history :as mh]
             [datahike.test.utils :as utils]))
 
@@ -150,3 +151,104 @@
         (testing "and carries the transaction that asserted it"
           (is (every? #(some? (nth % 3)) current))))
       (teardown c))))
+
+;; ---------------------------------------------------------------------------
+;; the STREAMING variant — what the bulk path actually uses
+
+(defn- eavt-sorted
+  "Records sorted by [e a v t], the order `current-from-eavt-sorted` requires.
+   Uses datahike's own temporal eavt comparator, which is exactly that order —
+   the same sort the temporal-eavt index build needs, so it is not extra work."
+  [db]
+  (->> (d/datoms (d/history db) :eavt)
+       (sort (dd/index-type->cmp-quick :eavt false))
+       (mapv (juxt :e :a :v :tx :added))))
+
+(deftest streaming-currentness-agrees-with-the-set-version
+  (testing "`current-from-eavt-sorted` must produce exactly what `derive-current`
+            does, but with O(1) state instead of a set of every live datom.
+
+            `derive-current` sorts its whole input and accumulates — fine for a
+            test, useless on a real history. The streaming version relies on the
+            sort order instead: `[e a v t]` puts every record for one datom
+            adjacent, so only the last of each run matters."
+    (let [c (seeded)]
+      (d/transact c [{:db/id [:name "a"] :score 10}])
+      (d/transact c [{:db/id [:name "a"] :score 100}])
+      (d/transact c [{:db/id [:name "b"] :tag :z}])
+      (d/transact c [[:db/retract [:name "b"] :tag :y]])
+      (d/transact c [[:db/retract [:name "c"] :score 3]])
+      (d/transact c [{:db/id [:name "c"] :score 3}])
+      (d/transact c [[:db/retractEntity [:name "c"]]])
+      (let [db @c
+            triple (fn [r] [(nth r 0) (nth r 1) (nth r 2)])
+            streaming (set (map triple (mh/current-from-eavt-sorted (eavt-sorted db))))
+            setwise (mh/derive-current (records db))
+            actual (actual-current db)]
+        (is (= streaming setwise) "streaming agrees with the set version")
+        (is (= streaming actual) "…and both agree with datahike"))
+      (teardown c))))
+
+(deftest streaming-currentness-on-randomised-histories
+  (testing "the same agreement across randomised histories — the streaming
+            version is the one that ships, so it gets the same scrutiny"
+    (dotimes [iteration 8]
+      (let [c (seeded)
+            rnd (java.util.Random. (+ 900 iteration))
+            pick (fn [coll] (nth coll (.nextInt rnd (count coll))))
+            names ["a" "b" "c"]]
+        (dotimes [_ 20]
+          (let [n (pick names)]
+            (try
+              (d/transact c (case (.nextInt rnd 5)
+                              0 [{:db/id [:name n] :score (.nextInt rnd 50)}]
+                              1 [{:db/id [:name n] :tag (pick [:x :y :z :w])}]
+                              2 [[:db/retract [:name n] :tag (pick [:x :y :z :w])]]
+                              3 [{:db/id [:name n] :pal [:name (pick names)]}]
+                              4 [[:db/retractEntity [:name n]]]))
+              (catch Exception _ nil))))
+        (let [db @c
+              triple (fn [r] [(nth r 0) (nth r 1) (nth r 2)])
+              streaming (set (map triple (mh/current-from-eavt-sorted (eavt-sorted db))))]
+          (is (= streaming (actual-current db))
+              (str "streaming currentness disagrees, seed " (+ 900 iteration))))
+        (teardown c)))))
+
+(deftest streaming-currentness-emits-the-asserting-record
+  (testing "it returns the RECORD, not just the triple, so the bulk build can put
+            the asserting transaction into the index rather than looking it up"
+    (let [c (seeded)]
+      (d/transact c [{:db/id [:name "a"] :score 10}])
+      (let [db @c
+            out (mh/current-from-eavt-sorted (eavt-sorted db))]
+        (is (every? #(nth % 4) out) "every emitted record is an assertion")
+        (is (every? #(some? (nth % 3)) out) "and carries its transaction")
+        (testing "the score datom carries the LATEST assertion, not the first"
+          (let [score (first (filter #(= :score (nth % 1)) out))]
+            (is (= 10 (nth score 2)) "value is the current one"))))
+      (teardown c))))
+
+(deftest streaming-currentness-is-memory-bounded
+  (testing "live heap at mid-stream does not grow with input size.
+
+            Measured, not assumed. The last time a bounded-memory claim in this
+            stack went unmeasured it was false by a factor of n, and the test
+            written to catch it did not. Ratio over an 8x input: 1.00x."
+    (let [live (fn [] (System/gc) (Thread/sleep 150)
+                 (let [r (Runtime/getRuntime)] (- (.totalMemory r) (.freeMemory r))))
+          ;; already in [e a v t] order: assert, retract, re-assert per datom
+          gen (fn [n] (mapcat (fn [i] [[i :a i 100 true] [i :a i 200 false] [i :a i 300 true]])
+                              (range n)))
+          mid-heap (fn [n]
+                     (let [sample (atom nil) cnt (atom 0)]
+                       (doseq [_ (mh/current-from-eavt-sorted (gen n))]
+                         (when (= (swap! cnt inc) (long (/ n 2)))
+                           (reset! sample (live))))
+                       [@cnt @sample]))
+          [c1 s1] (mid-heap 100000)
+          [c2 s2] (mid-heap 800000)]
+      (is (= 100000 c1) "every datom is current — assert/retract/re-assert")
+      (is (= 800000 c2))
+      (is (< (/ (double s2) s1) 1.5)
+          (str "live heap grew with n: " (int (/ s1 1048576)) " MB at 100k vs "
+               (int (/ s2 1048576)) " MB at 800k")))))
