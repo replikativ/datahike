@@ -161,7 +161,7 @@
   (if (mstore/store-target? target)
     (let [m (mstore/open target)]
       (try
-        (f (fn [id bytes]
+        (f (fn [id bytes _opts]
              (<?? S (k/bassoc (:store m) (mstore/blob-key (:prefix m) id) bytes))))
         (finally (mstore/close m))))
     (let [dir (blob-dir target)]
@@ -169,7 +169,7 @@
         (when-not (fs/directory? dir)
           (throw (ex-info (str "Could not create the blob directory " dir)
                           {:error :export/blob-dir-failed :dir (str dir)}))))
-      (f (fn [id bytes]
+      (f (fn [id bytes _opts]
            (let [sink (fs/open-sink (fs/join dir (str id)))]
              (try (fs/write! sink bytes) (finally (fs/close-sink! sink)))))))))
 
@@ -184,11 +184,11 @@
         ;; different shapes across backends and platforms, and that knowledge now
         ;; lives in konserve (replikativ/konserve#162) instead of being re-derived
         ;; at every call site — this was one of them.
-        (f (fn [id]
+        (f (fn [id _opts]
              (<?? S (k/bget (:store m) (mstore/blob-key (:prefix m) id)
                             (kb/to-bytes {:sync? false})))))
         (finally (mstore/close m))))
-    (f (fn [id]
+    (f (fn [id _opts]
          (let [f' (fs/join (blob-dir source) (str id))]
            (when (fs/exists? f') (fs/read-bytes f')))))))
 
@@ -245,7 +245,7 @@
          ;;     a db (`db-with`, a `:memory` store mid-test), and those cannot
          ;;     hold in-store blobs anyway.
          blob-plan (when (mblobs/schema-has-store-refs? db)
-                     (mblobs/plan db (:store db)))
+                     (mblobs/plan db (:store db) {:sync? true}))
          opts     (cond-> opts
                     (seq (:carried blob-plan)) (assoc mman/blob-plan-key blob-plan)
                     (seq (:external blob-plan)) (assoc mman/blob-plan-key blob-plan))
@@ -270,7 +270,7 @@
      ;; ordering the konserve-sync walker needs when it ships blobs ahead of the
      ;; branch head: nothing may name an object that is not there yet.
      (when-let [plan (get opts mman/blob-plan-key)]
-       (with-blob-writer target #(mblobs/copy-out! (:store db) plan %)))
+       (with-blob-writer target #(mblobs/copy-out! (:store db) plan % {:sync? true})))
      (if (:sort? opts)
        (let [records (export-records db opts)
              tmp-dir (fs/temp-dir! "dh-export")]
@@ -692,7 +692,7 @@
   (when-let [store-refs (:store-refs manifest)]
     (mblobs/check-importable store-refs opts)
     (when (seq (:carried store-refs))
-      (with-blob-reader source #(mblobs/copy-in! (:store @conn) store-refs %)))))
+      (with-blob-reader source #(mblobs/copy-in! (:store @conn) store-refs % {:sync? true})))))
 
 (defn import-db
   "Import a dump produced by `export-db` into connection `conn`.
@@ -858,7 +858,7 @@
   [store-refs read-blob]
   (let [declared (vec (:carried store-refs))
         results  (mapv (fn [id]
-                         (let [bytes (read-blob id)]
+                         (let [bytes (read-blob id {:sync? true})]
                            (cond
                              (nil? bytes)                        [:missing id]
                              (not (mblobs/verify-blob id bytes)) [:corrupt id]

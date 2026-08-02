@@ -1,6 +1,5 @@
 (ns datahike.gc
   (:require [clojure.set :as set]
-            [konserve.utils :as ku]
             [datahike.config :as dc]
             [datahike.constants :as c]
             [datahike.datom :as dd]
@@ -11,14 +10,26 @@
             [konserve.core :as k]
             [konserve.gc :refer [sweep!]]
             [replikativ.logging :as log]
-            [superv.async :refer [<? S go-try <<?]]
+            ;; `async+sync` and the superv operators are MACROS: ClojureScript
+            ;; needs :refer-macros for them, while `S` is an ordinary var needing
+            ;; a plain :refer on both. Written as two whole libspecs rather than
+            ;; with a reader conditional on the OPTION key, because
+            ;; `#?(:clj :refer :cljs :refer-macros)` beside a second `:refer`
+            ;; expands to a duplicate `:refer` on the JVM.
+            #?(:clj  [konserve.utils :as ku :refer [async+sync *default-sync-translation*]]
+               :cljs [konserve.utils :as ku
+                      :refer [*default-sync-translation*]
+                      :refer-macros [async+sync]])
+            #?(:clj  [superv.async :refer [<? S go-try <<? go-try- <?-]]
+               :cljs [superv.async :refer [S]
+                      :refer-macros [<? go-try <<? go-try- <?-]])
             ;; go-loop drives start-background-gc!'s scheduler; it's a MACRO, so
             ;; cljs needs it via :require-macros (mirrors datahike.versioning).
             #?(:clj  [clojure.core.async :as async :refer [go-loop]]
                :cljs [clojure.core.async :as async])
             [datahike.schema-cache :as sc])
   #?(:clj  (:import [java.util Date])
-     :cljs (:require-macros [clojure.core.async :refer [go-loop]])))
+     :cljs (:require-macros [clojure.core.async :refer [go-loop go]])))
 
 ;; meta-data does not get passed in macros
 (defn get-time [d]
@@ -74,9 +85,11 @@
                   taevt (set/union (attr-store-refs taevt attr))))
               #{} attrs))))
 
-(defn- reachable-in-branch [store branch after-date config schema-cache]
-  (go-try S
-          (let [head-cid (<? S (k/get-in store [branch :meta :datahike/commit-id]))]
+(defn- reachable-in-branch [store branch after-date config schema-cache opts]
+  (async+sync
+   (:sync? opts) *default-sync-translation*
+   (go-try-
+          (let [head-cid (<?- (k/get-in store [branch :meta :datahike/commit-id] nil opts))]
             (loop [[to-check & r] [branch]
                    visited        #{}
                    reachable      #{branch head-cid}
@@ -84,7 +97,7 @@
               (if to-check
                 (if (visited to-check) ;; skip
                   (recur r visited reachable refs)
-                  (if-let [record (<? S (k/get store to-check))]
+                  (if-let [record (<?- (k/get store to-check nil opts))]
                     (let [{:keys                         [eavt-key avet-key aevt-key
                                                           temporal-eavt-key temporal-avet-key temporal-aevt-key
                                                           eavt-root aevt-root avet-root
@@ -130,7 +143,7 @@
                             schema-meta (when schema-meta-key
                                           (if-let [cached (get @schema-cache schema-meta-key)]
                                             cached
-                                            (let [sm (<? S (k/get store schema-meta-key))]
+                                            (let [sm (<?- (k/get store schema-meta-key nil opts))]
                                               (swap! schema-cache assoc schema-meta-key sm)
                                               sm)))
                             ;; Mirror stored->db's schema fallback so gc reads the
@@ -174,7 +187,7 @@
                     ;; mark. (Without this guard the nil destructure NPEs at
                     ;; get-time.)
                     (recur r (conj visited to-check) reachable refs)))
-                {:reachable reachable :store-refs refs})))))
+                {:reachable reachable :store-refs refs}))))))
 
 (defn gc-storage!
   "Invokes garbage collection on the database by whitelisting currently known branches.
@@ -239,8 +252,14 @@
                  ;; shared across branches: the schema is content-addressed, so
                  ;; every commit that did not change it names the SAME object
                  schema-cache (atom {})
+                 ;; `{:sync? false}` explicitly: `reachable-in-branch` is
+                 ;; `async+sync` now, and `gc-storage!` is an async-only `go-try`,
+                 ;; so it takes the channel branch. Passing opts is not optional —
+                 ;; omitting it called a 6-arg function with 5 and broke the
+                 ;; collector, which is how `background-gc-test` started hanging.
                  walked (->> branches
-                             (map #(reachable-in-branch store % remove-before config schema-cache))
+                             (map #(reachable-in-branch store % remove-before config
+                                                        schema-cache {:sync? false}))
                              async/merge
                              (<<? S))
                  ;; Store-refs are unioned into the whitelist here. For an object that
@@ -288,17 +307,34 @@
 
    Retention comes for free: pass `remove-before` and objects named only by commits
    older than it drop out of the set, exactly as index nodes do."
-  ([db] (reachable-store-refs db (#?(:clj Date. :cljs js/Date.) 0)))
-  ([db remove-before]
-   (go-try S
-           (let [{:keys [config store]} db
-                 branches (<? S (k/get store :branches))
-                 schema-cache (atom {})
-                 walked (->> branches
-                             (map #(reachable-in-branch store % remove-before config schema-cache))
-                             async/merge
-                             (<<? S))]
-             (apply set/union (map :store-refs walked))))))
+  ([db] (reachable-store-refs db (#?(:clj Date. :cljs js/Date.) 0) {:sync? false}))
+  ([db remove-before] (reachable-store-refs db remove-before {:sync? false}))
+  ([db remove-before opts]
+   ;; `async+sync` so a caller that is ITSELF synchronous — `migrate`'s blob
+   ;; export, which has to run on both platforms — can take the value directly
+   ;; instead of blocking on a channel. The 1- and 2-arities keep the async
+   ;; default, so every existing caller is unaffected.
+   ;;
+   ;; The branch walks are SEQUENTIAL now, where they used to fan out through
+   ;; `async/merge`. One shape has to serve both modes and a channel merge has no
+   ;; synchronous counterpart; the result is identical, and the concurrency was
+   ;; across BRANCHES, of which a database normally has one. If a many-branch
+   ;; collection ever measures slow, the fan-out belongs in the async branch
+   ;; explicitly rather than as an accident of how this was first written.
+   (async+sync
+    (:sync? opts) *default-sync-translation*
+    (go-try-
+     (let [{:keys [config store]} db
+           branches (<?- (k/get store :branches nil opts))
+           schema-cache (atom {})]
+       (loop [bs (seq branches) acc #{}]
+         (if (nil? bs)
+           acc
+           (recur (next bs)
+                  (set/union acc
+                             (:store-refs (<?- (reachable-in-branch
+                                                store (first bs) remove-before
+                                                config schema-cache opts))))))))))))
 
 (defn record-store-refs
   "The store-ref blob keys named by the datom VALUES in a SINGLE stored-db record —

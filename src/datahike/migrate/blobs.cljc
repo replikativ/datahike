@@ -38,15 +38,23 @@
             [datahike.blob :as blob]
             [datahike.gc :as gc]
             [konserve.core :as k]
-            ;; `<??` is a BLOCKING take and exists only on the JVM. Requiring it
-            ;; unconditionally meant this namespace could not even LOAD under
-            ;; ClojureScript, despite its .cljc extension — the same mislabelling
-            ;; `migrate/bulk.cljc` had. The functions that use it are marked
-            ;; `#?(:clj ...)` below; the pure ones (`manifest-entry`,
-            ;; `verify-blob`, `schema-has-store-refs?`, `check-importable`) are
-            ;; available on both platforms, which is what lets
-            ;; `migrate.manifest` be portable.
-            #?(:clj [superv.async :refer [<?? S]])))
+            ;; Fully portable now. This namespace used to refer
+            ;; `superv.async/<??` — a BLOCKING take that exists only on the JVM —
+            ;; so despite its .cljc extension it could not even LOAD under
+            ;; ClojureScript. Every IO function is `async+sync` instead, and
+            ;; `go-try-`/`<?-` park rather than block.
+            [konserve.binary :as kb]
+            ;; `async+sync` and the superv operators are MACROS — ClojureScript
+            ;; needs :refer-macros, and a plain :refer fails with
+            ;; "var konserve.utils/async+sync does not exist".
+            #?(:clj  [konserve.utils :refer [async+sync *default-sync-translation*]]
+               :cljs [konserve.utils :refer [*default-sync-translation*]
+                      :refer-macros [async+sync]])
+            #?(:clj  [superv.async :refer [go-try- <?-]]
+               :cljs [superv.async :refer-macros [go-try- <?-]])
+            ;; `go-try-` expands into `clojure.core.async/go`; on ClojureScript
+            ;; that macro must be referred HERE or the Clojure one is used.
+            #?(:cljs [clojure.core.async :refer-macros [go]])))
 
 (def ^:const dir-name
   "Subdirectory (filesystem) / key segment (store) the blobs live under.
@@ -57,35 +65,22 @@
    hashes."
   "store-refs")
 
-#?(:clj
-   (defn- blob-bytes
-     "The bytes for `id` in `store`, or nil when this store does not hold them.
+(defn- blob-bytes
+  "The bytes for `id` in `store`, or nil when this store does not hold them.
 
-      `k/bget` hands the callback a platform-specific handle — a wrapped
-      `InputStream` on the JVM, a `Blob` in JS — and the callback IS the scope in
-      which that handle is valid: konserve still owns the backing object, and a
-      streaming view is only live until the callback (or the channel it returns)
-      completes. So the read has to finish inside it. Called asynchronously, as
-      datahike's stores are, the callback must synchronously return a CHANNEL;
-      returning the bytes directly makes `bget` hand back a byte array where the
-      caller expects something to take from, which is a confusing failure precisely
-      because it looks like a working call.
+   `konserve.binary/to-bytes` rather than a hand-rolled callback: `bget` hands
+   its callback a handle with four different shapes across backends and
+   platforms, and that knowledge lives in konserve now (replikativ/konserve#162).
 
-      nil is the ordinary answer for a blob that lives outside this store (see the
-      ns docstring), so it must mean exactly that. No catch-all here: reporting a
-      store error as \"external\" would turn a broken store into a dump that looks
-      fine and carries nothing."
-     [store id]
-     (<?? S (k/bget store id
-                    (fn [{:keys [input-stream]}]
-                      (go
-                        (when input-stream
-                          #?(:clj (let [bos (java.io.ByteArrayOutputStream.)]
-                                    (io/copy input-stream bos)
-                                    (.toByteArray bos))
-                             ;; cljs receives a Blob; reading it is async and not
-                             ;; needed until import runs on cljs.
-                             :cljs input-stream))))))))
+   nil is the ordinary answer for a blob that lives outside this store (see the
+   ns docstring), so it must mean exactly that. No catch-all here: reporting a
+   store error as \"external\" would turn a broken store into a dump that looks
+   fine and carries nothing."
+  [store id opts]
+  (async+sync
+   (:sync? opts) *default-sync-translation*
+   (go-try-
+    (<?- (k/bget store id (kb/to-bytes opts) opts)))))
 
 (defn schema-has-store-refs?
   "True when any attribute in `db` is declared `:db.type/store-ref`.
@@ -100,20 +95,32 @@
            (= :db.type/store-ref (:db/valueType attr)))
          (dbi/-schema db))))
 
-#?(:clj
-   (defn plan
-     "Split the database's live store-refs into what this dump can carry and what it
-      cannot.
+(defn plan
+  "Split the database's live store-refs into what this dump can carry and what it
+   cannot.
 
-      Returns `{:carried [id …] :external [id …] :self-contained? bool}`, with ids
-      sorted so the manifest stays deterministic. `:external` is not a failure — it
-      is the operator's half of the contract, and it has to be visible."
-     [db store]
-     (let [live (sort (<?? S (gc/reachable-store-refs db)))
-           {carried true external false} (group-by #(some? (blob-bytes store %)) live)]
-       {:carried (vec (sort carried))
-        :external (vec (sort external))
-        :self-contained? (empty? external)})))
+   Returns `{:carried [id …] :external [id …] :self-contained? bool}`, with ids
+   sorted so the manifest stays deterministic. `:external` is not a failure — it
+   is the operator's half of the contract, and it has to be visible.
+
+   `loop` and not `group-by`: deciding whether a blob is carried means READING
+   it, and a `group-by` predicate is a closure the `go` state machine does not
+   enter. Same rule as `copy-out!` below."
+  [db store opts]
+  (async+sync
+   (:sync? opts) *default-sync-translation*
+   (go-try-
+    (let [live (sort (<?- (gc/reachable-store-refs
+                           db (#?(:clj java.util.Date. :cljs js/Date.) 0) opts)))]
+      (loop [ids (seq live) carried [] external []]
+        (if (nil? ids)
+          {:carried (vec (sort carried))
+           :external (vec (sort external))
+           :self-contained? (empty? external)}
+          (let [id (first ids)]
+            (if (some? (<?- (blob-bytes store id opts)))
+              (recur (next ids) (conj carried id) external)
+              (recur (next ids) carried (conj external id))))))))))
 
 (defn manifest-entry
   "The `:store-refs` section for the manifest.
@@ -137,49 +144,63 @@
   [id bytes]
   (= id (blob/blob-id bytes)))
 
-#?(:clj
-   (defn copy-out!
-     "Copy the carried blobs from the source store to `write-blob!`.
+(defn copy-out!
+  "Copy the carried blobs from the source store to `write-blob!`.
 
-      `write-blob!` is `(fn [id bytes])` and owns the medium — a file under
-      `store-refs/`, a key in a konserve target, an object in a bucket. Returns the
-      number copied.
+   `write-blob!` is `(fn [id bytes opts])` and owns the medium — a file under
+   `store-refs/`, a key in a konserve target, an object in a bucket. Returns the
+   number copied.
 
-      A blob that has vanished between `plan` and here (a concurrent GC, say) is
-      reported rather than skipped: the dump would otherwise be short by one object
-      and still look complete."
-     [store {:keys [carried]} write-blob!]
-     (reduce (fn [n id]
-               (if-let [bytes (blob-bytes store id)]
-                 (do (write-blob! id bytes) (inc n))
-                 (throw (ex-info "Blob disappeared during export; the dump would be incomplete"
-                                 {:error :export/blob-vanished :blob-id id}))))
-             0
-             carried)))
+   A blob that has vanished between `plan` and here (a concurrent GC, say) is
+   reported rather than skipped: the dump would otherwise be short by one object
+   and still look complete.
 
-#?(:clj
-   (defn copy-in!
-     "Restore blobs into the target store, verifying each against its own name.
+   `loop` and not `reduce`: the body performs IO, and a reducing function is a
+   closure the `go` state machine does not enter — the same rule that turned
+   `migrate.store`'s reduce into a loop."
+  [store {:keys [carried]} write-blob! opts]
+  (async+sync
+   (:sync? opts) *default-sync-translation*
+   (go-try-
+    (loop [ids (seq carried) n 0]
+      (if (nil? ids)
+        n
+        (let [id (first ids)
+              bytes (<?- (blob-bytes store id opts))]
+          (when (nil? bytes)
+            (throw (ex-info "Blob disappeared during export; the dump would be incomplete"
+                            {:error :export/blob-vanished :blob-id id})))
+          (<?- (write-blob! id bytes opts))
+          (recur (next ids) (inc n))))))))
 
-      `read-blob` is `(fn [id]) -> bytes-or-nil`. Called BEFORE the datoms are
-      loaded, so nothing ever names an object that is not yet there.
+(defn copy-in!
+  "Restore blobs into the target store, verifying each against its own name.
 
-      A blob whose bytes do not hash to its id is a corrupt dump and raises: writing
-      it anyway would put a wrong object under a content-addressed key, where every
-      later reader would trust it."
-     [store {:keys [carried]} read-blob]
-     (reduce (fn [n id]
-               (let [bytes (read-blob id)]
-                 (when (nil? bytes)
-                   (throw (ex-info "Dump is missing a blob it declares"
-                                   {:error :import/blob-missing :blob-id id})))
-                 (when-not (verify-blob id bytes)
-                   (throw (ex-info "Blob content does not match its content id — dump is corrupt"
-                                   {:error :import/blob-corrupt :blob-id id})))
-                 (<?? S (k/bassoc store id bytes))
-                 (inc n)))
-             0
-             carried)))
+   `read-blob` is `(fn [id opts]) -> bytes-or-nil`. Called BEFORE the datoms are
+   loaded, so nothing ever names an object that is not yet there.
+
+   A blob whose bytes do not hash to its id is a corrupt dump and raises: writing
+   it anyway would put a wrong object under a content-addressed key, where every
+   later reader would trust it.
+
+   `loop` and not `reduce`, for the reason `copy-out!` gives."
+  [store {:keys [carried]} read-blob opts]
+  (async+sync
+   (:sync? opts) *default-sync-translation*
+   (go-try-
+    (loop [ids (seq carried) n 0]
+      (if (nil? ids)
+        n
+        (let [id (first ids)
+              bytes (<?- (read-blob id opts))]
+          (when (nil? bytes)
+            (throw (ex-info "Dump is missing a blob it declares"
+                            {:error :import/blob-missing :blob-id id})))
+          (when-not (verify-blob id bytes)
+            (throw (ex-info "Blob content does not match its content id — dump is corrupt"
+                            {:error :import/blob-corrupt :blob-id id})))
+          (<?- (k/bassoc store id bytes opts))
+          (recur (next ids) (inc n))))))))
 
 (defn check-importable
   "Raise unless a dump's blobs can be honoured by this import.

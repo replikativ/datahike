@@ -718,7 +718,7 @@
   ;; the dump must say so rather than appear complete.
   (let [{:keys [conn ext-id]} (blob-fixture)]
     (d/transact conn [{:doc/name "external" :doc/file ext-id}])
-    (let [plan (mblobs/plan @conn (:store @conn))]
+    (let [plan (mblobs/plan @conn (:store @conn) {:sync? true})]
       (is (= [ext-id] (:external plan)))
       (is (false? (:self-contained? plan)))
       (testing "import refuses a dump it cannot fully honour"
@@ -733,9 +733,11 @@
   (let [{:keys [conn id]} (blob-fixture)]
     (is (thrown-with-msg? clojure.lang.ExceptionInfo #"does not match its content id"
                           (mblobs/copy-in! (:store @conn) {:carried [id]}
-                                           (fn [_] (.getBytes "tampered" "UTF-8")))))
+                                           (fn [_ _] (.getBytes "tampered" "UTF-8"))
+                                           {:sync? true})))
     (is (thrown-with-msg? clojure.lang.ExceptionInfo #"missing a blob it declares"
-                          (mblobs/copy-in! (:store @conn) {:carried [id]} (fn [_] nil))))))
+                          (mblobs/copy-in! (:store @conn) {:carried [id]} (fn [_ _] nil)
+                                           {:sync? true})))))
 
 (deftest store-ref-walk-is-skipped-without-store-ref-attrs-test
   ;; The reachability walk needs a FLUSHED index, and plenty of legitimate
