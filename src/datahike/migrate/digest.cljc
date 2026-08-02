@@ -103,6 +103,40 @@
        (hex (.digest md)))))
 
 ;; ---------------------------------------------------------------------------
+;; incremental SHA-256
+;;
+;; The chunk hash is computed WHILE records stream past, never by re-reading
+;; what was written: a flat dump is one file of unbounded size, and hashing it
+;; afterwards would mean either holding it or reading it twice. Both platforms
+;; have a native incremental digest — `MessageDigest` and `goog.crypt.Sha256` —
+;; with the same update/digest shape, so this is a rename rather than a port.
+;;
+;; Stateful and mutable, unlike the semantic `accumulator` above, which is a
+;; value. That asymmetry is the underlying objects', not a choice: neither
+;; platform offers a persistent digest, and pretending otherwise by copying the
+;; state on every record would cost more than the hash.
+
+(defn sha256-accumulator
+  "A fresh incremental SHA-256. Feed it with `sha256-update!`, finish with
+   `sha256-finalize`. NOT a value — `sha256-update!` mutates and returns it."
+  []
+  #?(:clj (MessageDigest/getInstance "SHA-256")
+     :cljs (Sha256.)))
+
+(defn sha256-update!
+  "Fold `bs` into the digest and return it."
+  [acc bs]
+  #?(:clj (doto ^MessageDigest acc (.update ^bytes bs))
+     :cljs (doto acc (.update bs))))
+
+(defn sha256-finalize
+  "The hex digest. The accumulator must not be used afterwards — on the JVM
+   `.digest` resets it, and relying on that would be relying on a detail."
+  [acc]
+  #?(:clj (hex (.digest ^MessageDigest acc))
+     :cljs (hex (.digest acc))))
+
+;; ---------------------------------------------------------------------------
 ;; 64-bit arithmetic
 ;;
 ;; On the JVM these are primitive longs and the operators are the language's. On

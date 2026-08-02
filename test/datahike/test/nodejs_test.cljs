@@ -52,7 +52,11 @@
             [datahike.test.migrate-digest-test]
             ;; The konserve-store dump medium, async — the only mode that exists
             ;; here, and the branch the JVM suite never exercises.
-            [datahike.test.migrate-store-test]))
+            [datahike.test.migrate-store-test]
+            ;; The filesystem seam. A dump directory is a FORMAT — plain files,
+            ;; byte-identical whoever wrote them — so Node has to produce the
+            ;; same bytes the JVM does, through entirely different code.
+            [datahike.test.migrate-fs-test]))
 
 ;; Hook cljs.test's end-of-run callback so the Node process exits with
 ;; status 0 only when all tests pass. The previous setup always exited
@@ -729,6 +733,7 @@
 (defn -main []
   (t/run-tests 'datahike.test.migrate-digest-test
                'datahike.test.migrate-store-test
+               'datahike.test.migrate-fs-test
                'datahike.test.nodejs-test
                'datahike.test.index-test
                'datahike.test.cljs-tiered-storage-test

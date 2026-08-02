@@ -107,6 +107,25 @@
     (is (= (dig/digest-records corpus)
            (dig/finalize (reduce dig/add-record (dig/accumulator) corpus))))))
 
+(deftest incremental-sha256-equals-the-one-shot
+  (testing "the chunk hash is computed while records stream past, never by
+            re-reading the file — so the incremental digest has to agree with
+            `sha256-hex` over the same bytes concatenated, on both platforms.
+
+            Fed in uneven pieces on purpose: a hasher that only worked when
+            updates were block-aligned would pass a single-update test."
+    (let [pieces [(ba [1]) (ba (range 0 100)) (ba []) (ba [255 254 253])
+                  (ba (range 0 200))]
+          joined (ba (mapcat #?(:clj seq :cljs array-seq) pieces))
+          acc (reduce dig/sha256-update! (dig/sha256-accumulator) pieces)]
+      (is (= (dig/sha256-hex joined) (dig/sha256-finalize acc))))))
+
+(deftest incremental-sha256-of-nothing-is-the-empty-digest
+  (testing "a zero-record chunk still gets a well-formed hash, and it is the
+            published empty-input vector rather than anything special-cased."
+    (is (= "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+           (dig/sha256-finalize (dig/sha256-accumulator))))))
+
 (deftest empty-digest-is-zero-not-nil
   (testing "a dump with no records still gets a well-formed digest, so `verify`
             compares numbers rather than nils."
