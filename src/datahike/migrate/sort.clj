@@ -29,10 +29,28 @@
    eavt/aevt/avet order, and that is a different order over the same data rather
    than a different dump.
 
-   Note `(str a)` for the attribute: a stable total order over idents without
-   requiring them to be mutually Comparable."
+   Note `(str …)` for the attribute AND the value: a stable total order without
+   requiring them to be mutually Comparable. `v` is heterogeneous, so
+   `(compare 3 \"x\")` would throw.
+
+   `op` is the LAST key, retraction before assertion, and it is not decoration.
+   Without `v` and `op` a card-one overwrite's two records TIE — verified:
+   `[1 :score 1 100 false]` and `[1 :score 10 100 true]` compared equal — and
+   `merge-runs` breaks ties by PriorityQueue order, which is not stable. So the
+   dump's within-transaction order was arbitrary run to run, contradicting the
+   'deterministic total order' this docstring claims, and leaving a consumer
+   unable to tell whether the retraction or the assertion came first.
+
+   Retraction first is the meaningful order as well as a deterministic one: it is
+   how datahike itself emits an overwrite, so a reader folding the log sees the
+   old value removed and then the new one asserted."
   [record]
-  [(nth record 3) (if (= (nth record 1) :db/txInstant) 0 1) (nth record 0) (str (nth record 1))])
+  [(nth record 3)
+   (if (= (nth record 1) :db/txInstant) 0 1)
+   (nth record 0)
+   (str (nth record 1))
+   (str (nth record 2))
+   (if (nth record 4) 1 0)])
 
 (def by-sort-key
   "Comparator over RECORDS implementing the export order.

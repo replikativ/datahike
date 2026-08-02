@@ -70,7 +70,15 @@
     (reduce-records
      (fn [acc record]
        (let [[e a v t _op] record
-             meta? (ds/meta-attr? a)
+             ;; `e` names the TRANSACTION exactly when it equals `t`. The earlier
+             ;; test — `ds/meta-attr?` on the attribute — was wrong: that is a
+             ;; closed set of five idents, but `flush-tx-meta` writes ARBITRARY
+             ;; user attributes onto the tx entity. So `{:tx-meta {:author "x"}}`
+             ;; produced [tx :db/txInstant ..] mapped through :tids and
+             ;; [tx :author "x"] mapped through :eids — splitting one entity in
+             ;; two and orphaning the metadata onto an id nothing else references.
+             ;; Comparing e to t is structural and needs no schema.
+             tx-entity? (= e t)
              alloc-e (fn [acc id]
                        (if (or (contains? (:eids acc) id) (contains? sys id))
                          acc
@@ -82,9 +90,15 @@
                    (-> acc
                        (assoc-in [:tids t] (:next-tx acc))
                        (update :next-tx inc)))
-             ;; a tx-entity datom's `e` is its transaction, already handled above
-             acc (if meta? acc (alloc-e acc e))
-             acc (if (and (ref-attr? schema a) (number? v)) (alloc-e acc v) acc)]
+             ;; a tx-entity datom's `e` IS its transaction, already allocated above
+             acc (if tx-entity? acc (alloc-e acc e))
+             ;; a ref value may name a transaction rather than an entity — those
+             ;; live in :tids, and allocating them into :eids would produce a
+             ;; dangling reference to an id nothing was assigned
+             acc (if (and (ref-attr? schema a) (number? v)
+                          (not (contains? (:tids acc) v)))
+                   (alloc-e acc v)
+                   acc)]
          acc))
      {:eids (into {} (map (fn [e] [e e])) sys)
       :tids {}
@@ -101,8 +115,12 @@
    shape of the number."
   [{:keys [eids tids]} schema record]
   (let [[e a v t op] record
-        e' (if (ds/meta-attr? a) (get tids e e) (get eids e e))
-        v' (if (and (ref-attr? schema a) (number? v)) (get eids v v) v)
+        ;; structural, matching `build-mapping`: e names the transaction iff e = t
+        e' (if (= e t) (get tids e e) (get eids e e))
+        ;; a ref may point at a transaction, so :tids is consulted as a fallback
+        v' (if (and (ref-attr? schema a) (number? v))
+             (get eids v (get tids v v))
+             v)
         t' (get tids t t)]
     [e' a v' t' op]))
 

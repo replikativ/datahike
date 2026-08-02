@@ -22,12 +22,15 @@
    Two consequences worth stating, because a hand-written version tends to get
    them wrong in the other direction:
 
-   - **Order within a transaction does not matter.** Each `[e a v]` key is
-     touched at most once per transaction, so the retract and the assert above
-     commute. A rule keyed by `[e a]` would NOT commute — processing the assert
-     first and the retract second would drop the new value — which is exactly the
-     bug that produces a database answering present-tense queries correctly and
-     `as-of` wrongly.
+   - **Order within a transaction is imposed by the sort, not assumed.** An
+     earlier version of this namespace claimed each `[e a v]` key is touched at
+     most once per transaction, so retract and assert commute. That is FALSE:
+     `[[:db/retract 100 :tag :x] [:db/add 100 :tag :x]]` in one transaction
+     produces both `[100 :tag :x t false]` and `[100 :tag :x t true]`, and the
+     fold gave two different answers for the same multiset depending on input
+     order. `tx-order` now sorts retraction before assertion, which both makes
+     the fold deterministic and matches datahike, where the datom ends up
+     present.
    - **Cardinality is irrelevant here.** It matters to the transactor, which
      decides whether to emit the retraction; by the time we see history, that
      decision is already recorded.
@@ -38,12 +41,22 @@
    randomised histories. See `datahike.test.migrate-history-test`.")
 
 (defn- tx-order
-  "Sort key: transaction, then entity, then attribute as a string.
+  "Sort key: transaction, entity, attribute, value, then op with RETRACTION
+   before assertion.
 
-   The attribute is stringified because idents are not mutually Comparable in
-   general, and this only needs a stable total order, not a meaningful one."
+   Attribute and value are stringified because neither is mutually Comparable in
+   general; this needs a stable total order, not a meaningful one.
+
+   `op` last is load-bearing. Without it the sort is stable-but-input-ordered for
+   records that agree on `[t e a]`, and datahike really does produce two such
+   records: transacting `[[:db/retract 100 :tag :x] [:db/add 100 :tag :x]]`
+   yields BOTH `[100 :tag :x t false]` and `[100 :tag :x t true]`. Fed in one
+   order the fold answered `#{}`, in the other `#{[100 :tag :x]}` — for the same
+   multiset. datahike says the datom is present, so retraction must sort first
+   and the assertion wins."
   [datom]
-  [(nth datom 3) (nth datom 0) (str (nth datom 1))])
+  [(nth datom 3) (nth datom 0) (str (nth datom 1)) (str (nth datom 2))
+   (if (nth datom 4) 1 0)])
 
 (defn derive-current
   "The set of `[e a v]` triples currently true, given `history-records` as
