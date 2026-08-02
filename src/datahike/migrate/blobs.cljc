@@ -38,7 +38,15 @@
             [datahike.blob :as blob]
             [datahike.gc :as gc]
             [konserve.core :as k]
-            [superv.async :refer [<?? S]]))
+            ;; `<??` is a BLOCKING take and exists only on the JVM. Requiring it
+            ;; unconditionally meant this namespace could not even LOAD under
+            ;; ClojureScript, despite its .cljc extension — the same mislabelling
+            ;; `migrate/bulk.cljc` had. The functions that use it are marked
+            ;; `#?(:clj ...)` below; the pure ones (`manifest-entry`,
+            ;; `verify-blob`, `schema-has-store-refs?`, `check-importable`) are
+            ;; available on both platforms, which is what lets
+            ;; `migrate.manifest` be portable.
+            #?(:clj [superv.async :refer [<?? S]])))
 
 (def ^:const dir-name
   "Subdirectory (filesystem) / key segment (store) the blobs live under.
@@ -49,34 +57,35 @@
    hashes."
   "store-refs")
 
-(defn- blob-bytes
-  "The bytes for `id` in `store`, or nil when this store does not hold them.
+#?(:clj
+   (defn- blob-bytes
+     "The bytes for `id` in `store`, or nil when this store does not hold them.
 
-   `k/bget` hands the callback a platform-specific handle — a wrapped
-   `InputStream` on the JVM, a `Blob` in JS — and the callback IS the scope in
-   which that handle is valid: konserve still owns the backing object, and a
-   streaming view is only live until the callback (or the channel it returns)
-   completes. So the read has to finish inside it. Called asynchronously, as
-   datahike's stores are, the callback must synchronously return a CHANNEL;
-   returning the bytes directly makes `bget` hand back a byte array where the
-   caller expects something to take from, which is a confusing failure precisely
-   because it looks like a working call.
+      `k/bget` hands the callback a platform-specific handle — a wrapped
+      `InputStream` on the JVM, a `Blob` in JS — and the callback IS the scope in
+      which that handle is valid: konserve still owns the backing object, and a
+      streaming view is only live until the callback (or the channel it returns)
+      completes. So the read has to finish inside it. Called asynchronously, as
+      datahike's stores are, the callback must synchronously return a CHANNEL;
+      returning the bytes directly makes `bget` hand back a byte array where the
+      caller expects something to take from, which is a confusing failure precisely
+      because it looks like a working call.
 
-   nil is the ordinary answer for a blob that lives outside this store (see the
-   ns docstring), so it must mean exactly that. No catch-all here: reporting a
-   store error as \"external\" would turn a broken store into a dump that looks
-   fine and carries nothing."
-  [store id]
-  (<?? S (k/bget store id
-                 (fn [{:keys [input-stream]}]
-                   (go
-                     (when input-stream
-                       #?(:clj (let [bos (java.io.ByteArrayOutputStream.)]
-                                 (io/copy input-stream bos)
-                                 (.toByteArray bos))
-                          ;; cljs receives a Blob; reading it is async and not
-                          ;; needed until import runs on cljs.
-                          :cljs input-stream)))))))
+      nil is the ordinary answer for a blob that lives outside this store (see the
+      ns docstring), so it must mean exactly that. No catch-all here: reporting a
+      store error as \"external\" would turn a broken store into a dump that looks
+      fine and carries nothing."
+     [store id]
+     (<?? S (k/bget store id
+                    (fn [{:keys [input-stream]}]
+                      (go
+                        (when input-stream
+                          #?(:clj (let [bos (java.io.ByteArrayOutputStream.)]
+                                    (io/copy input-stream bos)
+                                    (.toByteArray bos))
+                             ;; cljs receives a Blob; reading it is async and not
+                             ;; needed until import runs on cljs.
+                             :cljs input-stream))))))))
 
 (defn schema-has-store-refs?
   "True when any attribute in `db` is declared `:db.type/store-ref`.
@@ -91,19 +100,20 @@
            (= :db.type/store-ref (:db/valueType attr)))
          (dbi/-schema db))))
 
-(defn plan
-  "Split the database's live store-refs into what this dump can carry and what it
-   cannot.
+#?(:clj
+   (defn plan
+     "Split the database's live store-refs into what this dump can carry and what it
+      cannot.
 
-   Returns `{:carried [id …] :external [id …] :self-contained? bool}`, with ids
-   sorted so the manifest stays deterministic. `:external` is not a failure — it
-   is the operator's half of the contract, and it has to be visible."
-  [db store]
-  (let [live (sort (<?? S (gc/reachable-store-refs db)))
-        {carried true external false} (group-by #(some? (blob-bytes store %)) live)]
-    {:carried (vec (sort carried))
-     :external (vec (sort external))
-     :self-contained? (empty? external)}))
+      Returns `{:carried [id …] :external [id …] :self-contained? bool}`, with ids
+      sorted so the manifest stays deterministic. `:external` is not a failure — it
+      is the operator's half of the contract, and it has to be visible."
+     [db store]
+     (let [live (sort (<?? S (gc/reachable-store-refs db)))
+           {carried true external false} (group-by #(some? (blob-bytes store %)) live)]
+       {:carried (vec (sort carried))
+        :external (vec (sort external))
+        :self-contained? (empty? external)})))
 
 (defn manifest-entry
   "The `:store-refs` section for the manifest.
@@ -127,47 +137,49 @@
   [id bytes]
   (= id (blob/blob-id bytes)))
 
-(defn copy-out!
-  "Copy the carried blobs from the source store to `write-blob!`.
+#?(:clj
+   (defn copy-out!
+     "Copy the carried blobs from the source store to `write-blob!`.
 
-   `write-blob!` is `(fn [id bytes])` and owns the medium — a file under
-   `store-refs/`, a key in a konserve target, an object in a bucket. Returns the
-   number copied.
+      `write-blob!` is `(fn [id bytes])` and owns the medium — a file under
+      `store-refs/`, a key in a konserve target, an object in a bucket. Returns the
+      number copied.
 
-   A blob that has vanished between `plan` and here (a concurrent GC, say) is
-   reported rather than skipped: the dump would otherwise be short by one object
-   and still look complete."
-  [store {:keys [carried]} write-blob!]
-  (reduce (fn [n id]
-            (if-let [bytes (blob-bytes store id)]
-              (do (write-blob! id bytes) (inc n))
-              (throw (ex-info "Blob disappeared during export; the dump would be incomplete"
-                              {:error :export/blob-vanished :blob-id id}))))
-          0
-          carried))
+      A blob that has vanished between `plan` and here (a concurrent GC, say) is
+      reported rather than skipped: the dump would otherwise be short by one object
+      and still look complete."
+     [store {:keys [carried]} write-blob!]
+     (reduce (fn [n id]
+               (if-let [bytes (blob-bytes store id)]
+                 (do (write-blob! id bytes) (inc n))
+                 (throw (ex-info "Blob disappeared during export; the dump would be incomplete"
+                                 {:error :export/blob-vanished :blob-id id}))))
+             0
+             carried)))
 
-(defn copy-in!
-  "Restore blobs into the target store, verifying each against its own name.
+#?(:clj
+   (defn copy-in!
+     "Restore blobs into the target store, verifying each against its own name.
 
-   `read-blob` is `(fn [id]) -> bytes-or-nil`. Called BEFORE the datoms are
-   loaded, so nothing ever names an object that is not yet there.
+      `read-blob` is `(fn [id]) -> bytes-or-nil`. Called BEFORE the datoms are
+      loaded, so nothing ever names an object that is not yet there.
 
-   A blob whose bytes do not hash to its id is a corrupt dump and raises: writing
-   it anyway would put a wrong object under a content-addressed key, where every
-   later reader would trust it."
-  [store {:keys [carried]} read-blob]
-  (reduce (fn [n id]
-            (let [bytes (read-blob id)]
-              (when (nil? bytes)
-                (throw (ex-info "Dump is missing a blob it declares"
-                                {:error :import/blob-missing :blob-id id})))
-              (when-not (verify-blob id bytes)
-                (throw (ex-info "Blob content does not match its content id — dump is corrupt"
-                                {:error :import/blob-corrupt :blob-id id})))
-              (<?? S (k/bassoc store id bytes))
-              (inc n)))
-          0
-          carried))
+      A blob whose bytes do not hash to its id is a corrupt dump and raises: writing
+      it anyway would put a wrong object under a content-addressed key, where every
+      later reader would trust it."
+     [store {:keys [carried]} read-blob]
+     (reduce (fn [n id]
+               (let [bytes (read-blob id)]
+                 (when (nil? bytes)
+                   (throw (ex-info "Dump is missing a blob it declares"
+                                   {:error :import/blob-missing :blob-id id})))
+                 (when-not (verify-blob id bytes)
+                   (throw (ex-info "Blob content does not match its content id — dump is corrupt"
+                                   {:error :import/blob-corrupt :blob-id id})))
+                 (<?? S (k/bassoc store id bytes))
+                 (inc n)))
+             0
+             carried)))
 
 (defn check-importable
   "Raise unless a dump's blobs can be honoured by this import.

@@ -1,0 +1,153 @@
+(ns datahike.test.migrate-manifest-test
+  "The parts of a dump that are a pure function of a manifest — capability
+   checking, the memory estimate, value normalisation, codec resolution.
+
+   These run on BOTH platforms deliberately. When `datahike.migrate.manifest` was
+   extracted it acquired ClojureScript branches — typed arrays instead of
+   `Class/forName \"[F\"`, no provenance macro, no heap ceiling — and nothing on
+   cljs required the namespace, so none of them were compiled, let alone run. A
+   portable namespace nobody loads on the other platform is untested portability
+   wearing the word `.cljc`.
+
+   Everything here works on a manifest MAP rather than a database, which is what
+   makes it runnable without a store, a filesystem, or an async writer."
+  (:require #?(:clj [clojure.test :refer [deftest testing is]]
+               :cljs [cljs.test :refer [deftest testing is]])
+            [datahike.migrate.manifest :as mman]))
+
+;; ---------------------------------------------------------------------------
+
+(deftest blob-plan-key-is-namespace-independent
+  (testing "the constant that replaced an auto-resolved `::blob-plan`.
+
+            `build-manifest` moved namespaces and `::blob-plan` silently became
+            `:datahike.migrate.manifest/blob-plan` while the writer still set
+            `:datahike.migrate/blob-plan`. The plan stopped being seen, the
+            manifest declared no `:store-refs` and no blob capabilities, and
+            `verify` reported `:ok? true` for a dump missing its blobs. Pinning
+            the literal keeps it from drifting on the next move."
+    (is (= :datahike.migrate/blob-plan mman/blob-plan-key))))
+
+(deftest capabilities-are-checked-by-name
+  (testing "a dump declaring something we cannot interpret is refused, and the
+            error names WHICH capability — actionable where a version mismatch
+            is not."
+    (is (nil? (mman/check-capabilities! {})) "no :requires — a dump predating them")
+    (is (nil? (mman/check-capabilities!
+               {:requires [:datahike.migrate/cbor-seq :datahike.migrate/history]}))
+        "capabilities we have")
+    (let [e (try (mman/check-capabilities!
+                  {:requires [:datahike.migrate/cbor-seq :datahike.migrate/warp-drive]})
+                 nil
+                 (catch #?(:clj clojure.lang.ExceptionInfo :cljs js/Error) e e))]
+      (is (some? e))
+      (is (= :import/unsupported-capabilities (:error (ex-data e))))
+      (is (= [:datahike.migrate/warp-drive] (:missing (ex-data e)))
+          "only the capability we lack, not the whole list"))))
+
+(deftest value-types-are-capabilities
+  (testing "value-type capabilities are derived from `ds/builtin-value-types`, so
+            a type this version knows is accepted without anyone maintaining a
+            table — and one it does not know is refused by construction."
+    (is (nil? (mman/check-capabilities! {:requires [:db.type/string :db.type/ref]})))
+    (is (thrown? #?(:clj clojure.lang.ExceptionInfo :cljs js/Error)
+                 (mman/check-capabilities! {:requires [:db.type/quaternion]})))))
+
+;; ---------------------------------------------------------------------------
+
+(deftest byte-sizes-render-without-format
+  (testing "`format` does not exist in ClojureScript, so this is hand-rolled —
+            which means it needs pinning on both platforms rather than trusting
+            a format string."
+    (is (= "512 KB" (mman/bytes->human (* 512 1024))))
+    (is (= "1 MB" (mman/bytes->human (* 1024 1024))))
+    (is (= "512 MB" (mman/bytes->human (* 512 1024 1024))))
+    (is (= "1.5 GB" (mman/bytes->human (long (* 1.5 1024 1024 1024)))))
+    (is (= "0 KB" (mman/bytes->human 0)))))
+
+(deftest the-estimate-counts-the-chunk-and-uses-uncompressed-sizes
+  (testing "the two bugs the estimate had.
+
+            It counted the id-map and the batch but not the CHUNK held while
+            decoding — below about a million entities the largest of the three.
+            And it derived bytes-per-record from the STORED size, so turning gzip
+            on silently shrank the estimate by the compression ratio. Chunks now
+            carry `:raw-bytes` beside `:bytes`."
+    (let [compressed {:stats {:datom-count 1000 :max-eid 500 :max-tx 536870920}
+                      :chunks [{:count 1000 :bytes 1000 :raw-bytes 7000}]}
+          verbatim   {:stats {:datom-count 1000 :max-eid 500 :max-tx 536870920}
+                      :chunks [{:count 1000 :bytes 7000 :raw-bytes 7000}]}
+          ec (mman/estimate-from-manifest compressed 1000 100)
+          ev (mman/estimate-from-manifest verbatim 7000 100)]
+      (is (pos? (:chunk-bytes ec)) "the chunk is a counted term")
+      (is (= (:batch-bytes ec) (:batch-bytes ev))
+          "compression does not change the heap a batch needs — it is the same
+           records either way, and deriving from :bytes made it look 7x smaller")
+      (is (= (:id-map-bytes ec) (:id-map-bytes ev)))
+      (testing "a dump predating :raw-bytes falls back to the stored size"
+        (let [old {:stats {:datom-count 1000 :max-eid 500}
+                   :chunks [{:count 1000 :bytes 7000}]}]
+          (is (pos? (:chunk-bytes (mman/estimate-from-manifest old 7000 100)))))))))
+
+(deftest the-heap-ceiling-is-absent-where-there-is-none
+  (testing "`Runtime.maxMemory` has no browser counterpart, and Node measures
+            something else. Rather than invent a number, the estimate simply does
+            not carry `:sufficient?` off the JVM — a diagnostic that guesses
+            under the same key name as one that measures is worse than no
+            diagnostic."
+    (let [e (mman/estimate-from-manifest
+             {:stats {:datom-count 10 :max-eid 5} :chunks [{:count 10 :bytes 100 :raw-bytes 100}]}
+             100 10)]
+      (is (pos? (:required-heap-bytes e)) "the requirement is computed everywhere")
+      (is (string? (:required-heap e)))
+      #?(:clj (is (contains? e :sufficient?) "the JVM can answer this")
+         :cljs (is (not (contains? e :sufficient?)) "and ClojureScript does not pretend to")))))
+
+;; ---------------------------------------------------------------------------
+
+(deftest norm-val-distinguishes-array-kinds
+  (testing "array values must compare structurally, not by identity, and keep
+            their kind distinct — `[:farray …]` and `[:darray …]` must not
+            collide. On the JVM these are `Class/forName \"[F\"`; here they are
+            the typed arrays ClojureScript uses for the same value types."
+    (is (= 42 (mman/norm-val 42)) "a scalar is itself")
+    (is (= "x" (mman/norm-val "x")))
+    (let [bs #?(:clj (byte-array [1 2 3]) :cljs (js/Uint8Array.from #js [1 2 3]))
+          fs #?(:clj (float-array [1.0 2.0]) :cljs (js/Float32Array.from #js [1.0 2.0]))
+          ds #?(:clj (double-array [1.0 2.0]) :cljs (js/Float64Array.from #js [1.0 2.0]))]
+      (is (= [:bytes [1 2 3]] (mman/norm-val bs)))
+      (is (= :farray (first (mman/norm-val fs))))
+      (is (= :darray (first (mman/norm-val ds))))
+      (is (not= (mman/norm-val fs) (mman/norm-val ds))
+          "same numbers, different kinds — they must not hash alike"))))
+
+(deftest codec-resolution-and-refusal
+  (testing "a manifest with no `:compression` predates it and is stored verbatim;
+            one naming a codec we lack is refused by name rather than failing
+            inside a decoder."
+    (is (= :none (mman/codec-of {})))
+    (is (= :gzip (mman/codec-of {:compression :gzip})))
+    (is (= :none (mman/codec-of {:compression :none})))
+    (is (= :import/unsupported-compression
+           (try (mman/codec-of {:compression :brotli}) nil
+                (catch #?(:clj clojure.lang.ExceptionInfo :cljs js/Error) e
+                  (:error (ex-data e))))))))
+
+(deftest chunk-names-carry-their-codec
+  (testing "one spelling for both media, and the suffix says what the file is —
+            `datoms-000001.cbor.gz` is a gzip file to every tool on the machine."
+    (is (= "datoms-000001.cbor" (mman/chunk-name 1 :none)))
+    (is (= "datoms-000001.cbor.gz" (mman/chunk-name 1 :gzip)))
+    (is (= "datoms-123456.cbor.gz" (mman/chunk-name 123456 :gzip)))
+    (is (re-matches mman/chunk-re (mman/chunk-name 1 :gzip)))
+    (is (re-matches mman/chunk-re (mman/chunk-name 1 :none)))
+    (is (nil? (re-matches mman/chunk-re "../evil.cbor"))
+        "and the pattern is what stops a manifest naming a path outside the dump")))
+
+(deftest a-manifest-with-an-unknown-tag-still-reads
+  (testing "a manifest written by a NEWER datahike must stay readable far enough
+            to reach `check-capabilities!` and produce its precise refusal, so an
+            unknown reader tag degrades to a tagged-literal instead of throwing."
+    (let [m (mman/read-manifest-map "{:a 1 :b #some/future-tag [1 2]}")]
+      (is (= 1 (:a m)))
+      (is (tagged-literal? (:b m))))))
