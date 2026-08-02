@@ -146,20 +146,23 @@
              (recur (next es) (+ off (.-length e))))
            out)))))
 
-#?(:clj
-   (defn decode-records
-     "Lazily decode a CBOR sequence from an InputStream into records, in memory
-      bounded by the largest single item. The caller owns and closes the stream.
+(defn decode-records
+  "Lazily decode a CBOR sequence into records, in memory bounded by the largest
+   single item. The caller owns and closes the source.
 
-      JVM only, because streaming decode is: boring's ClojureScript reader takes a
-      whole buffer, with no `decode-seq-from` counterpart. That is not a gap the
-      dump path feels: BOTH media now read one chunk at a time, bounded by
-      `:chunk-size`, because a lazy seq that performs IO cannot be made async
-      (see `migrate/reduce-dump-records`). This arity survives for the LEGACY
-      reader, which is JVM-only and holds an InputStream over an old single-file
-      dump, and for the external sort, which is still JVM-only."
-     [in]
-     (boring/decode-seq-from in opts)))
+   `source` is whatever `fs/reader` returned for this runtime — an
+   `InputStream` on the JVM, a pull function on ClojureScript. boring's
+   `decode-seq-from` takes each on its own platform, so this needs no reader
+   conditional of its own.
+
+   It was JVM-only while boring's ClojureScript reader took a whole buffer and
+   had no `decode-seq-from`; it has one now, which is what makes the external
+   sort portable. The dump path itself does not use this — both media read a
+   chunk at a time, bounded by `:chunk-size`, because a lazy seq that performs
+   IO cannot be made async (see `migrate/reduce-dump-records`). The callers are
+   the external sort and the JVM-only legacy reader, neither of which is async."
+  [source]
+  (boring/decode-seq-from source opts))
 
 (defn decode-records-from
   "Lazily decode a CBOR sequence held in memory as bytes.

@@ -41,10 +41,8 @@
             [datahike.migrate.digest :as dig]
             [datahike.migrate.compress :as mz]
             [datahike.migrate.fs :as fs]
-            ;; JVM-only by nature, both of them. The legacy single-file reader
-            ;; can only meet a dump written by an old JVM datahike; the external
-            ;; merge sort's k-way merge is a lazy seq over open files, which
-            ;; cannot pull from async IO.
+            ;; JVM-only by nature: a legacy single-file dump can only have been
+            ;; written by an old JVM datahike.
             #?(:clj [datahike.migrate.legacy :as mlegacy])
             [datahike.migrate.manifest :as mman
              :refer [->db a-ident attribute-refs? build-manifest
@@ -54,7 +52,7 @@
                      export-records export-records-streaming
                      ident-schema manifest-key norm-val read-manifest-map
                      system-idents bytes->human]]
-            #?(:clj [datahike.migrate.sort :as msort])
+            [datahike.migrate.sort :as msort]
             [datahike.migrate.store :as mstore]
             [datahike.migrate.blobs :as mblobs]
             [clojure.edn :as edn]
@@ -301,22 +299,18 @@
          ;; the branch head: nothing may name an object that is not there yet.
          (when-let [plan (get opts mman/blob-plan-key)]
            (<?- (with-blob-writer target #(mblobs/copy-out! (:store db) plan % opts))))
-         ;; The records to write. `:sort? true` uses the external merge sort,
-         ;; which is JVM-only — its k-way merge is a lazy seq over open files and
-         ;; cannot pull from async IO — so a portable export means `:sort? false`.
-         ;; Refused by name rather than failing inside `msort`.
-         ;; `:sort? true` uses the external merge sort, which is JVM-only — its
-         ;; k-way merge is a lazy seq over open files and cannot pull from async
-         ;; IO. When this file becomes .cljc the cljs branch refuses it by name;
-         ;; `:sort? false` needs no scratch space at all and is portable.
+         ;; The records to write. `:sort? true` spills sorted runs to local temp
+         ;; files and k-way merges them; `:sort? false` needs no scratch at all
+         ;; but cannot order a same-transaction card-one replacement, because it
+         ;; makes two passes over `:eavt` instead of sorting.
+         ;;
+         ;; Both are portable now. The sort was JVM-only while it spoke
+         ;; `java.io.File` and `java.util.PriorityQueue`; the seq-over-open-files
+         ;; shape it was ALSO blamed for was never the obstacle, since every read
+         ;; in the merge is a synchronous local file read and no channel op ever
+         ;; occurs inside it.
          (let [records (if (:sort? opts)
-                         #?(:clj (export-records db opts)
-                            :cljs (throw (ex-info (str ":sort? true needs the external merge sort, "
-                                                       "which is JVM-only — its k-way merge is a lazy "
-                                                       "seq over open files and cannot pull from async "
-                                                       "IO. Pass :sort? false; it needs no scratch "
-                                                       "space at all.")
-                                                  {:error :export/sort-not-portable})))
+                         (export-records db opts)
                          (export-records-streaming db opts))
                tmp-dir (when (:sort? opts) (fs/temp-dir! "dh-export"))]
            (try
@@ -325,9 +319,7 @@
              ;; — the same rule that reshaped the importer. Inlined so the awaits
              ;; sit at statement positions.
              (let [sorted (if (:sort? opts)
-                            #?(:clj (msort/external-sort records (:sort-buffer opts)
-                                                         (clojure.java.io/file tmp-dir))
-                               :cljs records)
+                            (msort/external-sort records (:sort-buffer opts) tmp-dir)
                             records)]
                (if (mstore/store-target? target)
                  (let [m (<?- (mstore/open target opts))]

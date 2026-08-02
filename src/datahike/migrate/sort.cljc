@@ -11,11 +11,21 @@
    codec it carried line strings and re-parsed each one to get its sort key,
    which meant every record was decoded twice on every merge pass; a record is
    no larger in memory than the string it came from, so carrying it is both
-   simpler and strictly less work."
-  (:require [clojure.java.io :as io]
-            [datahike.migrate.cbor :as mcbor])
-  (:import [java.io File]
-           [java.util PriorityQueue Comparator]))
+   simpler and strictly less work.
+
+   ## Portability
+
+   This runs on Node as well as the JVM, which it did not when it was `sort.clj`.
+   Nothing about the ALGORITHM was the obstacle, and the comments claiming a lazy
+   seq made it JVM-only were wrong about the reason: the hazard those comments
+   describe — a lazy seq performing IO cannot live inside a core.async go block —
+   is about CHANNEL IO, and there is none here. Every read is a synchronous local
+   file read (`.read` on the JVM, `fs.readSync` on Node), so the seq realises on
+   the calling stack exactly as it always did, and the sort never touches
+   konserve. The actual obstacles were `java.io.File` and `java.util.PriorityQueue`,
+   and both have portable spellings."
+  (:require [datahike.migrate.cbor :as mcbor]
+            [datahike.migrate.fs :as fs]))
 
 (defn sort-key
   "EXPORT ordering: transaction first (schema/refs before use, causal history),
@@ -35,9 +45,9 @@
 
    `op` is the LAST key, retraction before assertion, and it is not decoration.
    Without `v` and `op` a card-one overwrite's two records TIE — verified:
-   `[1 :score 1 100 false]` and `[1 :score 10 100 true]` compared equal — and
-   `merge-runs` breaks ties by PriorityQueue order, which is not stable. So the
-   dump's within-transaction order was arbitrary run to run, contradicting the
+   `[1 :score 1 100 false]` and `[1 :score 10 100 true]` compared equal — and a
+   merge that breaks ties by cursor arrival order is not stable. So the dump's
+   within-transaction order was arbitrary run to run, contradicting the
    'deterministic total order' this docstring claims, and leaving a consumer
    unable to tell whether the retraction or the assertion came first.
 
@@ -57,10 +67,10 @@
 
    A comparator rather than a key function, because index orders cannot be
    expressed as a Comparable key: an eavt key would be `[e a v t]`, and `v` is
-   heterogeneous, so `(compare [1 :a \"x\" 5] [1 :a 7 5])` throws
-   ClassCastException. datahike's own index comparators (`datom/index-type->cmp-quick`)
-   exist for exactly that reason, and a bulk index build will pass one of those
-   here — over Datoms — rather than a key function.
+   heterogeneous, so `(compare [1 :a \"x\" 5] [1 :a 7 5])` throws. datahike's own
+   index comparators (`datom/index-type->cmp-quick`) exist for exactly that
+   reason, and a bulk index build will pass one of those here — over Datoms —
+   rather than a key function.
 
    The export path keeps a precomputed key because `sort-key` IS Comparable and
    precomputing is cheaper than recomputing per comparison."
@@ -69,54 +79,69 @@
 (defn spill-runs
   "Consume a (lazy) seq of records in windows of `run-size`, sort each window with
    `cmp`, and write it to a temp run file under `tmp-dir`. Returns the vector of
-   run `File`s. Memory is bounded by one window."
-  ([records run-size ^File tmp-dir] (spill-runs records run-size tmp-dir by-sort-key))
-  ([records run-size ^File tmp-dir cmp]
+   run paths. Memory is bounded by one window."
+  ([records run-size tmp-dir] (spill-runs records run-size tmp-dir by-sort-key))
+  ([records run-size tmp-dir cmp]
    (loop [rs (seq records) files []]
      (if (nil? rs)
        files
        (let [window (into [] (take run-size) rs)
-             f (File/createTempFile "dh-run-" ".cbor" tmp-dir)]
-         (with-open [out (io/output-stream f)]
+             f (fs/temp-file! tmp-dir "dh-run-" ".cbor")
+             sink (fs/open-sink f)]
+         (try
            (doseq [r (sort cmp window)]
-             (.write out ^bytes (mcbor/encode-record r))))
+             (fs/write! sink (mcbor/encode-record r)))
+           (finally (fs/close-sink! sink)))
          (recur (seq (drop run-size rs)) (conj files f)))))))
 
 (defn- record-seq-closing
-  "Lazy seq of records from a CBOR-sequence run file, closing the stream when
-   exhausted. `decode-seq-from` is bounded by the largest single item, so a run
+  "Lazy seq of records from a CBOR-sequence run file, closing the source when
+   exhausted. `decode-records` is bounded by the largest single item, so a run
    file larger than the heap still merges."
-  [^File f]
-  (let [in (io/input-stream f)]
+  [p]
+  (let [{:keys [source close]} (fs/reader p)]
     ((fn step [rs]
        (lazy-seq
         (if-let [s (seq rs)]
           (cons (first s) (step (rest s)))
-          (do (.close in) nil))))
-     (mcbor/decode-records in))))
+          (do (close) nil))))
+     (mcbor/decode-records source))))
 
 (defn merge-runs
   "K-way merge of sorted run files into a single lazy seq of RECORDS, globally
-   ordered by `key-fn`. Memory is bounded by the number of runs."
+   ordered by `cmp`. Memory is bounded by the number of runs.
+
+   A `sorted-set-by` over cursors rather than a priority queue: it is the
+   portable spelling, it is O(log k) like the queue it replaces, and — because a
+   sorted set must totally order its elements — it forces the tie-break the
+   `PriorityQueue` version silently lacked. Ties now break by RUN INDEX, so two
+   records comparing equal under `cmp` come out in a deterministic order instead
+   of whichever cursor the heap happened to surface. That is the instability
+   `sort-key` documents as a defect, fixed rather than worked around.
+
+   The index is also what keeps the set from swallowing cursors: without it two
+   cursors holding equal records would compare equal, and `conj` would discard
+   one along with everything behind it. Exactly one entry per cursor is resident
+   at a time, so the index is unique across the set."
   ([run-files] (merge-runs run-files by-sort-key))
   ([run-files cmp]
-   (let [^Comparator pq-cmp (reify Comparator
-                              (compare [_ a b] (cmp (:record a) (:record b))))
-         cursors (keep (fn [f]
-                         (let [rs (seq (record-seq-closing f))]
-                           (when rs
-                             {:record (first rs)
-                              :rest (rest rs)})))
-                       run-files)
-         pq (PriorityQueue. (max 1 (count run-files)) pq-cmp)]
-     (doseq [c cursors] (.add pq c))
-     ((fn step []
+   (let [cursor-cmp (fn [a b]
+                      (let [c (cmp (:record a) (:record b))]
+                        (if (zero? c) (compare (:idx a) (:idx b)) c)))
+         cursors (keep-indexed (fn [i f]
+                                 (when-let [rs (seq (record-seq-closing f))]
+                                   {:record (first rs) :rest (rest rs) :idx i}))
+                               run-files)]
+     ((fn step [pq]
         (lazy-seq
-         (when-not (.isEmpty pq)
-           (let [{:keys [record rest]} (.poll pq)]
-             (when-let [nr (first rest)]
-               (.add pq {:record nr :rest (next rest)}))
-             (cons record (step))))))))))
+         (when-let [c (first pq)]
+           (let [{:keys [record rest idx]} c
+                 pq' (disj pq c)
+                 pq' (if-let [nr (first rest)]
+                       (conj pq' {:record nr :rest (next rest) :idx idx})
+                       pq')]
+             (cons record (step pq'))))))
+      (into (sorted-set-by cursor-cmp) cursors)))))
 
 (def ^:private max-fanin
   "Maximum run files merged at once, so a run never opens more file descriptors than
@@ -126,22 +151,24 @@
 (defn- merge-into-file
   "Merge a group of sorted run files into one new sorted run file, deleting the
    inputs. Opens at most (count run-files) descriptors."
-  [run-files ^File tmp-dir cmp]
-  (let [out (File/createTempFile "dh-merge-" ".cbor" tmp-dir)]
-    (with-open [os (io/output-stream out)]
+  [run-files tmp-dir cmp]
+  (let [out (fs/temp-file! tmp-dir "dh-merge-" ".cbor")
+        sink (fs/open-sink out)]
+    (try
       (doseq [r (merge-runs run-files cmp)]
-        (.write os ^bytes (mcbor/encode-record r))))
-    (doseq [^File f run-files] (.delete f))
+        (fs/write! sink (mcbor/encode-record r)))
+      (finally (fs/close-sink! sink)))
+    (doseq [f run-files] (fs/delete! f))
     out))
 
 (defn external-sort
   "Given a lazy seq of records, return a lazy seq of RECORDS globally
-   ordered by `sort-key`, using external merge sort bounded by `run-size`. When the
+   ordered by `cmp`, using external merge sort bounded by `run-size`. When the
    number of runs exceeds `max-fanin`, they are merged in passes so no single merge
    opens more than `max-fanin` files. Spill files are created under `tmp-dir`; the
    caller cleans up `tmp-dir` after the returned seq is fully consumed."
-  ([records run-size ^File tmp-dir] (external-sort records run-size tmp-dir by-sort-key))
-  ([records run-size ^File tmp-dir cmp]
+  ([records run-size tmp-dir] (external-sort records run-size tmp-dir by-sort-key))
+  ([records run-size tmp-dir cmp]
    (loop [runs (spill-runs records run-size tmp-dir cmp)]
      (if (<= (count runs) max-fanin)
        (merge-runs runs cmp)
@@ -149,7 +176,7 @@
 
 (defn external-sort-to-file
   "As `external-sort`, but collapse the result to ONE sorted CBOR-sequence file
-   and return it. The caller owns the file and should delete it.
+   and return its path. The caller owns the file and should delete it.
 
    `external-sort` returns a lazy seq backed by open run files, which
    `record-seq-closing` closes on exhaustion — so it can be consumed exactly
@@ -158,18 +185,20 @@
    takes the subset surviving `history/current-from-eavt-sorted`. Sorting twice
    would double the most expensive step for no reason.
 
-   Reading the returned file with `read-sorted-file` is a fresh stream each time,
+   Reading the returned file with `read-sorted-file` is a fresh source each time,
    still bounded by one record."
-  ([records run-size ^File tmp-dir] (external-sort-to-file records run-size tmp-dir by-sort-key))
-  ([records run-size ^File tmp-dir cmp]
-   (let [out (File/createTempFile "dh-sorted-" ".cbor" tmp-dir)]
-     (with-open [os (io/output-stream out)]
+  ([records run-size tmp-dir] (external-sort-to-file records run-size tmp-dir by-sort-key))
+  ([records run-size tmp-dir cmp]
+   (let [out (fs/temp-file! tmp-dir "dh-sorted-" ".cbor")
+         sink (fs/open-sink out)]
+     (try
        (doseq [r (external-sort records run-size tmp-dir cmp)]
-         (.write os ^bytes (mcbor/encode-record r))))
+         (fs/write! sink (mcbor/encode-record r)))
+       (finally (fs/close-sink! sink)))
      out)))
 
 (defn read-sorted-file
   "Lazy seq of records from a file written by `external-sort-to-file`, closing the
-   stream when exhausted. Bounded by one record; callable repeatedly."
-  [^File f]
-  (record-seq-closing f))
+   source when exhausted. Bounded by one record; callable repeatedly."
+  [p]
+  (record-seq-closing p))

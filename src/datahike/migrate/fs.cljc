@@ -147,6 +147,25 @@
                 prefix (make-array java.nio.file.attribute.FileAttribute 0)))
      :cljs (str (.mkdtempSync (fs) (join (.tmpdir (os*)) prefix)))))
 
+(defonce ^:private temp-seq (atom 0))
+
+(defn temp-file!
+  "A fresh, unused path under `dir`. Does NOT create the file — the caller does
+   that by opening a sink on it.
+
+   `File/createTempFile` both names and creates; only the naming is portable,
+   and the two callers here open a sink immediately anyway. The random component
+   is not superstition: `dir` is not guaranteed private to one process, so a
+   bare counter would collide between two exports sharing a temp directory."
+  [dir prefix suffix]
+  (loop [tries 0]
+    (let [p (join dir (str prefix (swap! temp-seq inc) "-" (rand-int 1000000000) suffix))]
+      (cond
+        (not (exists? p)) p
+        (< tries 100)     (recur (inc tries))
+        :else (throw (ex-info "Could not find an unused temp file name."
+                              {:error :datahike.migrate/temp-file :dir dir}))))))
+
 (defn restrict-perms!
   "Make `p` owner-only: `rwx------` for a directory, `rw-------` for a file.
 
@@ -247,3 +266,19 @@
                      (swap! pos + n)
                      (if (= n chunk-size) buf (.slice buf 0 n)))))
          :close (fn [] (.closeSync (fs) fd))}))))
+
+(defn reader
+  "Open `p` as the source `boring/decode-seq-from` takes on THIS runtime, as
+   `{:source … :close (fn [])}`.
+
+   The two runtimes genuinely differ here — boring streams from an
+   `InputStream` on the JVM and from a pull function on ClojureScript — and
+   this is the seam that exists to hold exactly that kind of difference. A
+   caller wanting a lazily-decoded file writes one spelling and never learns
+   which it got; wrapping the pull function in a proxied `InputStream` would
+   have bought the same uniformity at the price of a fake stream."
+  [p]
+  #?(:clj (let [in (io/input-stream (io/file p))]
+            {:source in :close (fn [] (.close in))})
+     :cljs (let [{:keys [pull close]} (puller p)]
+             {:source pull :close close})))

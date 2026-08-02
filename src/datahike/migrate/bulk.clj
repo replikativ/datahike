@@ -40,14 +40,15 @@
    counterpart yet, and building indexes directly cannot honour the upsert
    semantics `load-entities` applies when datoms meet an existing database.
 
-   `.clj` and not `.cljc` deliberately, and it was `.cljc` by mistake until the
-   extension was checked against what the file actually requires: it pulls in
-   `migrate.sort`, which is `.clj` (java.io.File, PriorityQueue), so a cljs
-   compile would have failed on `No such namespace`. Nothing in the cljs build
-   reaches it, so the mistake was dormant rather than broken — but a `.cljc`
-   extension is a promise, and this file could not keep it. The genuinely
-   portable pieces of the import path are `migrate.cbor`, `migrate.history` and
-   `migrate.ids`, none of which touch IO."
+   `.clj` and not `.cljc` deliberately. It used to be `.cljc` by mistake, caught
+   by checking the extension against what the file actually requires — at the
+   time `migrate.sort` was `.clj` (`java.io.File`, `PriorityQueue`) and a cljs
+   compile would have failed on `No such namespace`.
+
+   The sort is portable now (`sort.cljc`), so only ONE thing still pins this
+   file to the JVM: `di/init-index-sorted`, whose `from-sorted-seq` has no
+   ClojureScript counterpart. When that lands, this becomes `.cljc` by deleting
+   nothing — which is the point of having moved the sort first."
   (:require [datahike.datom :as dd]
             [datahike.index.interface :as di]
             [datahike.migrate.history :as mh]
@@ -88,7 +89,7 @@
 
    `:avet` holds only indexed attributes; that filter is applied HERE, before the
    builder sees the stream, so nothing indexes a datom it will discard."
-  [store index-name index-type ^java.io.File sorted-file
+  [store index-name index-type sorted-file
    {:keys [indexed no-history] :as index-config}]
   (let [avet? (= index-type :avet)
         keep? (if avet?

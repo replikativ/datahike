@@ -65,6 +65,9 @@
             ;; Blob content ids must be IDENTICAL across platforms — the id is
             ;; the datom value, the konserve key AND the dump filename.
             [datahike.test.blob-identity-test]
+            ;; the external merge sort, which runs here now that it no longer
+            ;; speaks java.io.File and java.util.PriorityQueue.
+            [datahike.test.migrate-sort-test]
             ;; export/import ON NODE — the point of the whole conversion.
             [datahike.test.migrate-node-test]))
 
@@ -746,6 +749,7 @@
                'datahike.test.migrate-fs-test
                'datahike.test.migrate-manifest-test
                'datahike.test.blob-identity-test
+               'datahike.test.migrate-sort-test
                'datahike.test.migrate-node-test
                'datahike.test.nodejs-test
                'datahike.test.index-test
