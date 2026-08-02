@@ -349,12 +349,35 @@
    volatile+lru discipline as query-cache/plan-cache."
   (volatile! (datahike.lru/lru lru-cache-size)))
 
+#?(:clj (declare ^:private key-has-bigdec?))
+(declare scale-sensitive-key)
+
 (defn- form-memo [k f]
-  (if-some [v (get @form-analysis-cache k nil)]
-    v
-    (let [v (f)]
-      (vswap! form-analysis-cache assoc k v)
-      v)))
+  ;; Clojure's =/hash on BigDecimal are scale-INSENSITIVE, so forms
+  ;; differing only in constant scale (1.0M vs 1.00M) would alias one
+  ;; memo entry. Canonicalize such keys with scale-sensitive-key. The
+  ;; bigdec presence check is itself memoized under the scale-insensitive
+  ;; key — that collision is harmless because scale variants answer it
+  ;; identically. CLJS has no BigDecimal.
+  #?(:clj
+     (let [k (if (if-some [clean? (get @form-analysis-cache [::bd-free k] nil)]
+                   clean?
+                   (let [clean? (not (key-has-bigdec? k))]
+                     (vswap! form-analysis-cache assoc [::bd-free k] clean?)
+                     clean?))
+               k
+               (scale-sensitive-key k))]
+       (if-some [v (get @form-analysis-cache k nil)]
+         v
+         (let [v (f)]
+           (vswap! form-analysis-cache assoc k v)
+           v)))
+     :cljs
+     (if-some [v (get @form-analysis-cache k nil)]
+       v
+       (let [v (f)]
+         (vswap! form-analysis-cache assoc k v)
+         v))))
 
 (defn normalize-q-input
   "Turns input to q into a map with :query and :args fields.
@@ -4858,8 +4881,13 @@
 
           ;; Try paths in order of preference:
           ;; 1. Direct HashSet (non-aggregate simple queries)
-            (if-let [direct-result (execute-planned-direct
-                                    plan db qfind find-elements context-in query stats? qreturnmaps)]
+            ;; Lookup-ref :in bindings were rewritten to eids in the rels
+            ;; (resolve-lookup-ref-bindings); only the relation path knows to
+            ;; project the ORIGINAL lookup-ref value back out via
+            ;; lookup-ref-reverse-map. The direct paths would leak raw eids.
+            (if-let [direct-result (when-not lookup-ref-reverse-map
+                                     (execute-planned-direct
+                                      plan db qfind find-elements context-in query stats? qreturnmaps))]
               (let [result (apply-result-transforms direct-result order-spec offset limit qreturnmaps)]
                 #?(:clj
                    (when *profile?*
