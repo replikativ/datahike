@@ -2788,10 +2788,17 @@
     :else             1))
 
 (defn- bucket-weight
-  "Total cached-tuple weight of one DB-snapshot bucket — sums the
-   per-entry :weight precomputed at cache-put time (see `result-weight`)."
+  "Total cached-tuple weight of one DB-snapshot bucket. The running
+   total is maintained incrementally in the bucket's metadata by
+   result-cache-put! / propagate-query-cache — the weighted-lru calls
+   this on EVERY assoc (both cache puts and LRU touches on hits), so a
+   reduce over the bucket made each cache interaction O(bucket size):
+   35% of CPU under a pgbench point-query workload, growing with every
+   distinct parameter value. The reduce remains only as a fallback for
+   buckets built before the metadata existed."
   [bucket]
-  (reduce-kv (fn [acc _ entry] (+ acc (:weight entry 0))) 0 bucket))
+  (or (::weight (meta bucket))
+      (reduce-kv (fn [acc _ entry] (+ acc (:weight entry 0))) 0 bucket)))
 
 (defonce ^{:doc "Global weighted LRU query result cache. Keys are [hash max-tx max-eid]
    identifying a DB snapshot. Values are maps of {cache-key -> {:result r :attrs #{...}}}.
@@ -2925,15 +2932,22 @@
         entry))))
 
 (defn- result-cache-put!
-  "Store a query result in the cache for the given DB."
+  "Store a query result in the cache for the given DB. Maintains the
+   bucket's running weight total in its metadata (see bucket-weight)."
   [db cache-key result attr-deps]
-  (let [dk (db-cache-key db)]
+  (let [dk (db-cache-key db)
+        w  (result-weight result)]
     (swap! query-result-cache
            (fn [lru]
-             (let [existing (or (get lru dk) {})]
-               (assoc lru dk (assoc existing cache-key
-                                    {:result result :attrs attr-deps
-                                     :weight (result-weight result)})))))))
+             (let [existing (or (get lru dk) {})
+                   old-total (or (::weight (meta existing))
+                                 (bucket-weight existing))
+                   replaced  (get-in existing [cache-key :weight] 0)
+                   bucket (-> existing
+                              (assoc cache-key {:result result :attrs attr-deps
+                                                :weight w})
+                              (vary-meta assoc ::weight (+ (- old-total replaced) w)))]
+               (assoc lru dk bucket))))))
 
 (defn propagate-query-cache
   "Propagate query result cache from parent DB to child DB after a transaction.
@@ -2952,16 +2966,35 @@
       ;; the DB changed but we can't determine which queries are safe to keep.
       (let [user-attrs (disj modified-attrs :db/txInstant)]
         (when (seq user-attrs)
-          (let [parent-entries (get @query-result-cache parent-key)]
+          (let [parent-entries (get @query-result-cache parent-key)
+                ;; Selective invalidation scans every cached entry, making
+                ;; each COMMIT O(cache size): after a parameterized read
+                ;; burst fills a bucket with tens of thousands of entries,
+                ;; write throughput collapses (measured: pgbench tpcb
+                ;; 70 -> 27 tps). Above this bound, drop the cache for the
+                ;; child instead of carrying it — reads re-warm, writes
+                ;; stay O(write-set).
+                parent-entries (when (and parent-entries
+                                          (<= (count parent-entries) 4096))
+                                 parent-entries)]
             (when (seq parent-entries)
-              (let [child-entries (reduce-kv
-                                   (fn [m k {:keys [attrs]}]
+              (let [removed (volatile! 0)
+                    child-entries (reduce-kv
+                                   (fn [m k {:keys [attrs weight]}]
                                      (if (or (= attrs :all)
                                              (some user-attrs attrs))
-                                       (dissoc m k)
+                                       (do (vswap! removed + (or weight 0))
+                                           (dissoc m k))
                                        m))
                                    parent-entries
-                                   parent-entries)]
+                                   parent-entries)
+                    ;; dissoc preserves metadata, so the inherited running
+                    ;; ::weight total must drop by the evicted entries'
+                    ;; weights (see bucket-weight).
+                    child-entries (vary-meta child-entries assoc ::weight
+                                             (- (or (::weight (meta parent-entries))
+                                                    (bucket-weight parent-entries))
+                                                @removed))]
                 (when (seq child-entries)
                   (swap! query-result-cache assoc child-key child-entries))))))))))
 
