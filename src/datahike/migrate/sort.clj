@@ -18,26 +18,51 @@
            [java.util PriorityQueue Comparator]))
 
 (defn sort-key
-  "Ordering key: transaction first (schema/refs before use, causal history),
+  "EXPORT ordering: transaction first (schema/refs before use, causal history),
    `:db/txInstant` first within a tx (tx entity established before its datoms),
-   then `e`,`a` for a deterministic total order."
+   then `e`,`a` for a deterministic total order.
+
+   This is the dump's order and a format guarantee, not an implementation
+   detail — a consumer reading the log benefits from knowing it is causally
+   ordered. It is NOT the order any index wants, which is why the sort takes a
+   COMPARATOR as a parameter: a bulk index build re-sorts the same records into
+   eavt/aevt/avet order, and that is a different order over the same data rather
+   than a different dump.
+
+   Note `(str a)` for the attribute: a stable total order over idents without
+   requiring them to be mutually Comparable."
   [record]
   [(nth record 3) (if (= (nth record 1) :db/txInstant) 0 1) (nth record 0) (str (nth record 1))])
 
+(def by-sort-key
+  "Comparator over RECORDS implementing the export order.
+
+   A comparator rather than a key function, because index orders cannot be
+   expressed as a Comparable key: an eavt key would be `[e a v t]`, and `v` is
+   heterogeneous, so `(compare [1 :a \"x\" 5] [1 :a 7 5])` throws
+   ClassCastException. datahike's own index comparators (`datom/index-type->cmp-quick`)
+   exist for exactly that reason, and a bulk index build will pass one of those
+   here — over Datoms — rather than a key function.
+
+   The export path keeps a precomputed key because `sort-key` IS Comparable and
+   precomputing is cheaper than recomputing per comparison."
+  (fn [a b] (compare (sort-key a) (sort-key b))))
+
 (defn spill-runs
-  "Consume a (lazy) seq of records in windows of `run-size`, sort each window by
-   `sort-key`, and write it to a temp run file under `tmp-dir`. Returns the vector
-   of run `File`s. Memory is bounded by one window."
-  [records run-size ^File tmp-dir]
-  (loop [rs (seq records) files []]
-    (if (nil? rs)
-      files
-      (let [window (into [] (take run-size) rs)
-            f (File/createTempFile "dh-run-" ".cbor" tmp-dir)]
-        (with-open [out (io/output-stream f)]
-          (doseq [r (sort-by sort-key window)]
-            (.write out ^bytes (mcbor/encode-record r))))
-        (recur (seq (drop run-size rs)) (conj files f))))))
+  "Consume a (lazy) seq of records in windows of `run-size`, sort each window with
+   `cmp`, and write it to a temp run file under `tmp-dir`. Returns the vector of
+   run `File`s. Memory is bounded by one window."
+  ([records run-size ^File tmp-dir] (spill-runs records run-size tmp-dir by-sort-key))
+  ([records run-size ^File tmp-dir cmp]
+   (loop [rs (seq records) files []]
+     (if (nil? rs)
+       files
+       (let [window (into [] (take run-size) rs)
+             f (File/createTempFile "dh-run-" ".cbor" tmp-dir)]
+         (with-open [out (io/output-stream f)]
+           (doseq [r (sort cmp window)]
+             (.write out ^bytes (mcbor/encode-record r))))
+         (recur (seq (drop run-size rs)) (conj files f)))))))
 
 (defn- record-seq-closing
   "Lazy seq of records from a CBOR-sequence run file, closing the stream when
@@ -54,28 +79,26 @@
 
 (defn merge-runs
   "K-way merge of sorted run files into a single lazy seq of RECORDS, globally
-   ordered by `sort-key`. Memory is bounded by the number of runs."
-  [run-files]
-  (let [cmp (reify Comparator
-              (compare [_ a b] (compare (:key a) (:key b))))
-        cursors (keep (fn [f]
-                        (let [rs (seq (record-seq-closing f))]
-                          (when rs
-                            {:key (sort-key (first rs))
-                             :record (first rs)
-                             :rest (rest rs)})))
-                      run-files)
-        pq (PriorityQueue. (max 1 (count run-files)) cmp)]
-    (doseq [c cursors] (.add pq c))
-    ((fn step []
-       (lazy-seq
-        (when-not (.isEmpty pq)
-          (let [{:keys [record rest]} (.poll pq)]
-            (when-let [nr (first rest)]
-              (.add pq {:key (sort-key nr)
-                        :record nr
-                        :rest (next rest)}))
-            (cons record (step)))))))))
+   ordered by `key-fn`. Memory is bounded by the number of runs."
+  ([run-files] (merge-runs run-files by-sort-key))
+  ([run-files cmp]
+   (let [^Comparator pq-cmp (reify Comparator
+                              (compare [_ a b] (cmp (:record a) (:record b))))
+         cursors (keep (fn [f]
+                         (let [rs (seq (record-seq-closing f))]
+                           (when rs
+                             {:record (first rs)
+                              :rest (rest rs)})))
+                       run-files)
+         pq (PriorityQueue. (max 1 (count run-files)) pq-cmp)]
+     (doseq [c cursors] (.add pq c))
+     ((fn step []
+        (lazy-seq
+         (when-not (.isEmpty pq)
+           (let [{:keys [record rest]} (.poll pq)]
+             (when-let [nr (first rest)]
+               (.add pq {:record nr :rest (next rest)}))
+             (cons record (step))))))))))
 
 (def ^:private max-fanin
   "Maximum run files merged at once, so a run never opens more file descriptors than
@@ -85,10 +108,10 @@
 (defn- merge-into-file
   "Merge a group of sorted run files into one new sorted run file, deleting the
    inputs. Opens at most (count run-files) descriptors."
-  [run-files ^File tmp-dir]
+  [run-files ^File tmp-dir cmp]
   (let [out (File/createTempFile "dh-merge-" ".cbor" tmp-dir)]
     (with-open [os (io/output-stream out)]
-      (doseq [r (merge-runs run-files)]
+      (doseq [r (merge-runs run-files cmp)]
         (.write os ^bytes (mcbor/encode-record r))))
     (doseq [^File f run-files] (.delete f))
     out))
@@ -99,8 +122,9 @@
    number of runs exceeds `max-fanin`, they are merged in passes so no single merge
    opens more than `max-fanin` files. Spill files are created under `tmp-dir`; the
    caller cleans up `tmp-dir` after the returned seq is fully consumed."
-  [records run-size ^File tmp-dir]
-  (loop [runs (spill-runs records run-size tmp-dir)]
-    (if (<= (count runs) max-fanin)
-      (merge-runs runs)
-      (recur (mapv #(merge-into-file % tmp-dir) (partition-all max-fanin runs))))))
+  ([records run-size ^File tmp-dir] (external-sort records run-size tmp-dir by-sort-key))
+  ([records run-size ^File tmp-dir cmp]
+   (loop [runs (spill-runs records run-size tmp-dir cmp)]
+     (if (<= (count runs) max-fanin)
+       (merge-runs runs cmp)
+       (recur (mapv #(merge-into-file % tmp-dir cmp) (partition-all max-fanin runs)))))))

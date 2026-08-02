@@ -723,6 +723,7 @@
   [conn manifest mem reduce-lines opts]
   (let [opts     (merge {:batch-size 100000 :verify? true :on-error :abort :finalize? true} opts)
         progress (or (:progress-fn opts) (constantly nil))
+        translate (:translate opts)
         batch-size (:batch-size opts)
         on-error (:on-error opts)]
     ;; ---- heap preflight: tell the operator how much RAM to give this ----
@@ -753,36 +754,53 @@
     (let [sref-db @conn
           final (reduce-lines
                  (fn [acc record]
-                   (let [rec (resolve-sysrefs sref-db record)
-                         t   (nth rec 3)
-                         acc (if (and (>= (long (:n acc)) batch-size)
-                                      (not= t (:last-t acc)))
-                               (-> acc
-                                   (update :errors into
-                                           (flush-batch! conn (:batch acc) on-error progress))
-                                   (assoc :batch [] :n 0))
-                               acc)]
-                     (-> acc
-                         (update :batch conj rec)
-                         (update :n inc)
-                         (update :tx-count + (if (= t (:last-t acc)) 0 1))
-                         (assoc :last-t t))))
-                 {:batch [] :n 0 :last-t ::start :tx-count 0 :errors []})
+                   ;; `:translate` runs AFTER sysref resolution, so a user
+                   ;; function sees a plain [e a v t op] with real ids and never
+                   ;; an internal SysRef. Returning nil DROPS the record.
+                   (if-let [rec (let [r (resolve-sysrefs sref-db record)]
+                                  (if translate (translate r) r))]
+                     (let [t   (nth rec 3)
+                           acc (if (and (>= (long (:n acc)) batch-size)
+                                        (not= t (:last-t acc)))
+                                 (-> acc
+                                     (update :errors into
+                                             (flush-batch! conn (:batch acc) on-error progress))
+                                     (assoc :batch [] :n 0))
+                                 acc)]
+                       (-> acc
+                           (update :batch conj rec)
+                           (update :n inc)
+                           (update :tx-count + (if (= t (:last-t acc)) 0 1))
+                           (assoc :last-t t)))
+                     (update acc :dropped inc)))
+                 {:batch [] :n 0 :last-t ::start :tx-count 0 :errors [] :dropped 0})
           errors (into (:errors final)
                        (flush-batch! conn (:batch final) on-error progress))
           hist?  (boolean (:history? manifest))
           live   (long (user-datom-count @conn hist?))
+          dropped (long (:dropped final))
+          ;; A translator that DROPS records makes the dump's own count the wrong
+          ;; expectation — the mismatch is the transformation working, not a
+          ;; failure. Subtracting the drops keeps the check meaningful (records
+          ;; that should have landed and did not are still caught) instead of
+          ;; either failing spuriously or being switched off, which is how people
+          ;; learn to ignore verification output.
+          expected (- (long (or (:count (:semantic-digest manifest)) 0)) dropped)
           verified? (when (:verify? opts)
-                      (let [ok? (= (:count (:semantic-digest manifest)) live)]
+                      (let [ok? (= expected live)]
                         (when (and (not ok?) (not= :collect on-error))
                           (throw (ex-info "Post-import verification failed (datom count mismatch)"
                                           {:error :import/verify-failed
                                            :dump-count (:count (:semantic-digest manifest))
+                                           :dropped-by-translate dropped
+                                           :expected-count expected
                                            :live-count live})))
                         ok?))]
       (when (and (:finalize? opts) verified?)
         (finalize-import! conn))
       {:datom-count live
+       :translated? (boolean translate)
+       :dropped     dropped
        :tx-count    (:tx-count final)
        :max-tx      (:max-tx @conn)
        :verified?   verified?
@@ -820,6 +838,36 @@
      :batch-size   100000   datoms per load-entities call (tx-aligned, never split)
      :verify?      true      run verify after import; throw on mismatch
      :on-error     :abort    :abort | :collect  (never silently skip)
+     :translate    nil       (fn [[e a v t op]] -> record | nil) applied to every
+                             record on the way in. Returning nil DROPS it.
+
+                             This is the general hook rather than a set of special
+                             facilities: attribute renames, value rewrites, unit
+                             conversions, redaction and filtering are all the same
+                             operation, and it costs nothing in the streaming
+                             pipeline because it is per record.
+
+                             Three constraints, all forced rather than chosen:
+
+                             - PURE and deterministic. A future resumable import
+                               re-derives ids from a pre-pass over the same
+                               records; a translator that is not a function makes
+                               the two passes disagree.
+                             - 1 -> 0 or 1 -> 1 only. Emitting several records
+                               would break the manifest counts and the
+                               tx-alignment the batcher depends on.
+                             - It sees a plain [e a v t op] with real ids, AFTER
+                               sysref resolution — no internal types leak into a
+                               user function.
+
+                             Verification stays honest: dropped records are
+                             subtracted from the expected count, so a deliberate
+                             drop is not reported as corruption. The report
+                             carries :translated? and :dropped. Note that
+                             `verify`'s tier-2 digest compares the DUMP against
+                             the live db, so a translated import will differ there
+                             by design — that comparison is not meaningful after a
+                             transformation.
      :finalize?    true      clear the :migration id-map after a verified import
      :progress-fn  nil
    Returns {:datom-count .. :tx-count .. :max-tx .. :verified? .. :errors [..]

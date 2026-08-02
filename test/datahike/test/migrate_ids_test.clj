@@ -151,3 +151,80 @@
           "a long value of 3 stays 3")
       (is (= [1 :pal 99 5 true] (ids/apply-mapping mapping schema [1 :pal 3 5 true]))
           "a ref value of 3 becomes 99"))))
+
+;; ---------------------------------------------------------------------------
+;; :translate — the general import-time rewrite hook
+
+(deftest translate-renames-attributes
+  (testing "an attribute rename is just a translator; no special facility needed.
+
+            Note it must rewrite TWO positions: the attribute of a data datom,
+            and the VALUE of the schema datom [e :db/ident :name] that declares
+            it. Missing the second leaves the dump's own schema pointing at the
+            old name — which is exactly the sort of thing a special-purpose
+            :rename option would hide, and a general hook makes visible."
+    (let [src (source-conn)
+          path (export! src)
+          tgt (utils/setup-db (mem-cfg {}))]
+      (let [rep (m/import-db tgt path
+                             {:verify? false
+                              :translate (fn [[e a v t op]]
+                                           [e
+                                            (if (= a :name) :moniker a)
+                                            (if (and (= a :db/ident) (= v :name)) :moniker v)
+                                            t op])})]
+        (is (true? (:translated? rep)))
+        (is (= #{"a" "b"} (set (map first (d/q '[:find ?n :where [?e :moniker ?n]] @tgt))))
+            "renamed attribute landed")
+        (is (empty? (d/q '[:find ?n :where [?e :name ?n]] @tgt))
+            "and the old name is absent"))
+      (teardown src) (teardown tgt))))
+
+(deftest translate-can-drop-records-without-failing-verification
+  (testing "returning nil drops a record, and the expected count is adjusted.
+
+            The point of the adjustment: a deliberate drop must not be reported
+            as corruption. A verification that cries wolf on correct usage is one
+            people switch off, and then it is not there when it matters."
+    (let [src (source-conn)
+          path (export! src)
+          tgt (utils/setup-db (mem-cfg {}))
+          dropped (atom 0)
+          rep (m/import-db tgt path
+                           {:translate (fn [[_ a _ _ _ :as r]]
+                                         (if (= a :pal)
+                                           (do (swap! dropped inc) nil)
+                                           r))})]
+      (is (pos? @dropped) "precondition: something was dropped")
+      (is (= @dropped (:dropped rep)) "the report counts the drops")
+      (is (true? (:verified? rep))
+          "verification PASSES — the drop is accounted for, not treated as loss")
+      (is (empty? (d/q '[:find ?e ?p :where [?e :pal ?p]] @tgt))
+          "the dropped attribute really is absent")
+      (is (= #{"a" "b"} (set (map first (d/q '[:find ?n :where [?e :name ?n]] @tgt))))
+          "everything else still landed")
+      (teardown src) (teardown tgt))))
+
+(deftest translate-rewrites-values
+  (testing "value rewriting — the other half of a schema migration"
+    (let [src (source-conn)
+          path (export! src)
+          tgt (utils/setup-db (mem-cfg {}))]
+      (m/import-db tgt path
+                   {:verify? false
+                    :translate (fn [[e a v t op]]
+                                 [e a (if (= a :name) (clojure.string/upper-case v) v) t op])})
+      (is (= #{"A" "B"} (set (map first (d/q '[:find ?n :where [?e :name ?n]] @tgt)))))
+      (teardown src) (teardown tgt))))
+
+(deftest untranslated-import-is-unchanged
+  (testing "no :translate ⇒ the report says so and nothing is dropped — the hook
+            must be inert when unused"
+    (let [src (source-conn)
+          path (export! src)
+          tgt (utils/setup-db (mem-cfg {}))
+          rep (m/import-db tgt path {})]
+      (is (false? (:translated? rep)))
+      (is (zero? (:dropped rep)))
+      (is (true? (:verified? rep)))
+      (teardown src) (teardown tgt))))
