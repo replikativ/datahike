@@ -27,7 +27,7 @@
                    [java.io Writer]
                    [java.util Date])))
 
-(declare equiv-db empty-db)
+(declare equiv-db empty-db db-view-hash)
 #?(:cljs (declare pr-db pr-hist-db))
 
 ;; ----------------------------------------------------------------------------
@@ -318,7 +318,16 @@
        (-persistent! [db] (db-persistent! db))]
 
       :clj
+      ;; `equals` must be given explicitly, not inherited. defrecord's
+      ;; generated one delegates to APersistentMap/mapEquals, which walks
+      ;; `(.seq this)` casting each element to Map.Entry — but `seq` here
+      ;; yields Datoms, so it raised a ClassCastException from inside JDK
+      ;; code instead of answering false. That breaks the Object.equals
+      ;; contract and takes down any java.util collection holding a DB
+      ;; (HashMap, HashSet, Objects.equals, List.contains). Delegating to
+      ;; equiv-db also keeps `.equals` and `=` in agreement.
       [Object (hashCode [db] hash)
+       (equals [db other] (equiv-db db other))
        clojure.lang.IHashEq (hasheq [db] hash)
        Seqable (seq [db] (di/-seq eavt))
        IPersistentCollection
@@ -401,7 +410,21 @@
        (-assoc [_ _ _] (throw (js/Error. "-assoc is not supported on FilteredDB")))]
 
       :clj
-      [IPersistentCollection
+      ;; Same reasoning as DB above, and here `hashCode`/`hasheq` are
+      ;; needed too: this view overrides `seq` to yield Datoms but
+      ;; declared no Object impls at all, so the INHERITED mapHash /
+      ;; mapHasheq / mapEquals all walked that seq casting to Map.Entry
+      ;; and threw. A view could not be hashed or put in a HashSet, and
+      ;; `(= view db)` threw while `(= db view)` answered true —
+      ;; asymmetric, which `equals` may never be.
+      [Object
+       (hashCode [db] (db-view-hash db))
+       (equals [db other] (equiv-db db other))
+
+       clojure.lang.IHashEq
+       (hasheq [db] (db-view-hash db))
+
+       IPersistentCollection
        (count [db] (count (dbi/datoms db :eavt [])))
        (equiv [db o] (equiv-db db o))
        (cons [db [k v]] (throw (UnsupportedOperationException. "cons is not supported on FilteredDB")))
@@ -476,7 +499,21 @@
        (-contains-key? [_ _] (throw (js/Error. "-contains-key? is not supported on HistoricalDB")))
        (-assoc [_ _ _] (throw (js/Error. "-assoc is not supported on HistoricalDB")))]
       :clj
-      [IPersistentCollection
+      ;; Same reasoning as DB above, and here `hashCode`/`hasheq` are
+      ;; needed too: this view overrides `seq` to yield Datoms but
+      ;; declared no Object impls at all, so the INHERITED mapHash /
+      ;; mapHasheq / mapEquals all walked that seq casting to Map.Entry
+      ;; and threw. A view could not be hashed or put in a HashSet, and
+      ;; `(= view db)` threw while `(= db view)` answered true —
+      ;; asymmetric, which `equals` may never be.
+      [Object
+       (hashCode [db] (db-view-hash db))
+       (equals [db other] (equiv-db db other))
+
+       clojure.lang.IHashEq
+       (hasheq [db] (db-view-hash db))
+
+       IPersistentCollection
        (count [db] (count (dbi/datoms db :eavt [])))
        (equiv [db o] (equiv-db db o))
        (cons [db [k v]] (throw (UnsupportedOperationException. "cons is not supported on HistoricalDB")))
@@ -541,7 +578,21 @@
        (-contains-key? [_ _] (throw (js/Error. "-contains-key? is not supported on AsOfDB")))
        (-assoc [_ _ _] (throw (js/Error. "-assoc is not supported on AsOfDB")))]
       :clj
-      [IPersistentCollection
+      ;; Same reasoning as DB above, and here `hashCode`/`hasheq` are
+      ;; needed too: this view overrides `seq` to yield Datoms but
+      ;; declared no Object impls at all, so the INHERITED mapHash /
+      ;; mapHasheq / mapEquals all walked that seq casting to Map.Entry
+      ;; and threw. A view could not be hashed or put in a HashSet, and
+      ;; `(= view db)` threw while `(= db view)` answered true —
+      ;; asymmetric, which `equals` may never be.
+      [Object
+       (hashCode [db] (db-view-hash db))
+       (equals [db other] (equiv-db db other))
+
+       clojure.lang.IHashEq
+       (hasheq [db] (db-view-hash db))
+
+       IPersistentCollection
        (count [db] (count (dbi/datoms db :eavt [])))
        (equiv [db o] (equiv-db db o))
        (cons [db [k v]] (throw (UnsupportedOperationException. "cons is not supported on AsOfDB")))
@@ -607,7 +658,21 @@
        (-contains-key? [_ _] (throw (js/Error. "-contains-key? is not supported on SinceDB")))
        (-assoc [_ _ _] (throw (js/Error. "-assoc is not supported on SinceDB")))]
       :clj
-      [IPersistentCollection
+      ;; Same reasoning as DB above, and here `hashCode`/`hasheq` are
+      ;; needed too: this view overrides `seq` to yield Datoms but
+      ;; declared no Object impls at all, so the INHERITED mapHash /
+      ;; mapHasheq / mapEquals all walked that seq casting to Map.Entry
+      ;; and threw. A view could not be hashed or put in a HashSet, and
+      ;; `(= view db)` threw while `(= db view)` answered true —
+      ;; asymmetric, which `equals` may never be.
+      [Object
+       (hashCode [db] (db-view-hash db))
+       (equals [db other] (equiv-db db other))
+
+       clojure.lang.IHashEq
+       (hasheq [db] (db-view-hash db))
+
+       IPersistentCollection
        (count [db] (count (dbi/datoms db :eavt [])))
        (equiv [db o] (equiv-db db o))
        (cons [db [k v]] (throw (UnsupportedOperationException. "cons is not supported on SinceDB")))
@@ -671,10 +736,27 @@
       :else false)))
 
 (defn- equiv-db [db other]
-  (and (or (instance? DB other) (instance? FilteredDB other))
-       (or (not (instance? DB other)) (= (hash db) (hash other)))
-       (= (dbi/-schema db) (dbi/-schema other))
-       (equiv-db-index (dbi/datoms db :eavt []) (dbi/datoms other :eavt []))))
+  ;; The identity case has to come first. Only DB and FilteredDB are
+  ;; comparable by content below, so without it a HistoricalDB / AsOfDB /
+  ;; SinceDB was not even equal to itself — and `equals` is required to
+  ;; be reflexive.
+  (or (identical? db other)
+      (and (or (instance? DB other) (instance? FilteredDB other))
+           (or (not (instance? DB other)) (= (hash db) (hash other)))
+           (= (dbi/-schema db) (dbi/-schema other))
+           (equiv-db-index (dbi/datoms db :eavt []) (dbi/datoms other :eavt [])))))
+
+(defn- db-view-hash
+  "Content hash for the DB views (FilteredDB / HistoricalDB / AsOfDB /
+   SinceDB), which carry no precomputed `:hash` field of their own.
+
+   Deliberately the SAME additive datom-sum DB maintains incrementally
+   (see `:hash` in `new-db`), so a view and a DB holding the same datoms
+   hash alike — `equiv-db` reports those equal, so their hashes must
+   agree. O(n) per call: there is no running sum to read off, the same
+   reason `count` on a view is O(n)."
+  [db]
+  (reduce #(+ %1 (hash %2)) 0 (dbi/datoms db :eavt [])))
 
 #?(:cljs
    (do

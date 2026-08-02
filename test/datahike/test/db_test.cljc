@@ -52,3 +52,69 @@
                                    :db/cardinality :db.cardinality/one
                                    :db/valueType :db.type/string}]
                                  {:schema-flexibility :write}))))))
+
+;; ---------------------------------------------------------------------------
+;; Object.equals / hashCode contract
+;;
+;; DB and the DB views (FilteredDB / HistoricalDB / AsOfDB / SinceDB)
+;; override `seq` to yield Datoms rather than map entries. Any Object
+;; method left to defrecord's generated implementation therefore walked
+;; that seq casting each element to Map.Entry and raised a
+;; ClassCastException from inside APersistentMap — so `.equals` threw
+;; instead of answering false, and the views could not be hashed at all.
+;; Every java.util collection holding a db (HashMap, HashSet,
+;; Objects.equals, List.contains) was affected.
+
+#?(:clj
+   (deftest test-db-equals-contract
+     (let [db1 (d/db-with (db/empty-db) [{:db/id 1 :name "Konrad"}])
+           db2 (d/db-with (db/empty-db) [{:db/id 1 :name "Chrislain"}])]
+       (testing "equals answers false rather than throwing"
+         (is (false? (.equals db1 db2)))
+         (is (true? (.equals db1 db1)))
+         (is (false? (.equals db1 42)))
+         (is (false? (.equals db1 nil)))
+         (is (false? (java.util.Objects/equals db1 db2))))
+
+       (testing "equals agrees with ="
+         (is (= (.equals db1 db2) (= db1 db2)))
+         (is (= (.equals db1 db1) (= db1 db1))))
+
+       (testing "dbs are usable as java.util collection members"
+         (let [s (java.util.HashSet.)]
+           (.add s db1)
+           (.add s db2)
+           (is (= 2 (.size s)))
+           (is (.contains s db1)))))))
+
+#?(:clj
+   (deftest test-db-view-equals-contract
+     ;; history/as-of/since need a temporal db; filter does not, but one
+     ;; db keeps the four views comparable.
+     (let [db  (d/db-with (db/empty-db nil {:keep-history? true})
+                          [{:db/id 1 :name "Konrad"}])
+           f1  (d/filter db (fn [_ _] true))
+           f2  (d/filter db (fn [_ _] true))
+           views {"FilteredDB"   f1
+                  "HistoricalDB" (d/history db)
+                  "AsOfDB"       (d/as-of db (java.util.Date.))
+                  "SinceDB"      (d/since db (java.util.Date. 0))}]
+       (testing "views can be hashed and are reflexive"
+         (doseq [[label v] views]
+           (is (integer? (.hashCode ^Object v)) (str label " .hashCode"))
+           (is (integer? (hash v))              (str label " hash"))
+           (is (true? (.equals ^Object v v))    (str label " reflexive .equals"))
+           (is (= v v)                          (str label " reflexive ="))
+           (let [s (java.util.HashSet.)]
+             (.add s v)
+             (is (.contains s v) (str label " HashSet round trip")))))
+
+       (testing "a pass-through filter equals its db, symmetrically"
+         (is (= db f1))
+         (is (= f1 db))
+         (is (= (.equals f1 db) (.equals ^Object db f1))))
+
+       (testing "equal values hash alike — required by the equals contract"
+         (is (= (hash db) (hash f1)))
+         (is (= f1 f2))
+         (is (= (hash f1) (hash f2)))))))
