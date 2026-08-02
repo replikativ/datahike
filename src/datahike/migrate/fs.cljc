@@ -207,6 +207,85 @@
              ;; copy rather than hand out a window that later writes may reuse
              (js/Uint8Array. (.-buffer b) (.-byteOffset b) (.-byteLength b)))))
 
+;; `read-header-line` is written in terms of `puller`, which is defined at the
+;; end of the namespace with the rest of the streaming API.
+(declare puller)
+
+(defn first-byte
+  "The first byte of `p`, or nil if it is empty.
+
+   How a dump is identified: a flat dump begins with `{`, the opening brace of
+   its EDN manifest line, and anything else is a legacy dump. One byte, so this
+   stays cheap on a file that may be gigabytes and may not be a dump at all."
+  [p]
+  #?(:clj (with-open [in (io/input-stream (io/file p))]
+            (let [b (.read in)] (when-not (neg? b) b)))
+     :cljs (let [fd (.openSync (fs) (str p) "r")]
+             (try
+               (let [buf (js/Uint8Array. 1)
+                     n (.readSync (fs) fd buf 0 1 0)]
+                 (when (pos? n) (aget buf 0)))
+               (finally (.closeSync (fs) fd))))))
+
+(defn- utf8-string [bs]
+  #?(:clj (String. ^bytes bs "UTF-8")
+     :cljs (.decode (js/TextDecoder. "utf-8") bs)))
+
+(defn read-header-line
+  "The first line of `p` as `{:line <string> :bytes <n>}`, where `n` counts the
+   line AND its newline — the byte offset the records begin at.
+
+   Returning the offset is the point. A flat dump is one EDN manifest line
+   followed by a CBOR sequence, and the importer must step over the line without
+   re-reading the file or guessing its length: `(:bytes …)` goes straight into
+   `puller`'s `:skip`. Counting characters would be wrong the moment a manifest
+   holds a non-ASCII ident.
+
+   `:max` (default 8 MiB) bounds the search, so pointing this at a file with no
+   newline fails rather than reading it all."
+  ([p] (read-header-line p {}))
+  ([p {:keys [max] :or {max (* 8 1024 1024)}}]
+   (let [{:keys [pull close]} (puller p {:chunk-size 65536})]
+     (try
+       (loop [acc [] total 0]
+         (if-let [blk (pull)]
+           (let [n #?(:clj (alength ^bytes blk) :cljs (.-length blk))
+                 idx (loop [i 0]
+                       (cond (>= i n) -1
+                             (= 10 (bit-and #?(:clj (aget ^bytes blk i)
+                                               :cljs (aget blk i)) 0xff)) i
+                             :else (recur (inc i))))]
+             (if (neg? idx)
+               (if (> (+ total n) max)
+                 (throw (ex-info (str "No newline in the first " max " bytes of " p
+                                      " — this does not look like a flat dump.")
+                                 {:error :import/bad-manifest :file (str p)}))
+                 (recur (conj acc blk) (+ total n)))
+               (let [head #?(:clj (java.util.Arrays/copyOf ^bytes blk idx)
+                             :cljs (.slice blk 0 idx))
+                     parts (conj acc head)
+                     joined #?(:clj (let [tot (reduce + (map #(alength ^bytes %) parts))
+                                          out (byte-array tot)]
+                                      (loop [ps (seq parts) off 0]
+                                        (if ps
+                                          (let [^bytes b (first ps)]
+                                            (System/arraycopy b 0 out off (alength b))
+                                            (recur (next ps) (+ off (alength b))))
+                                          out)))
+                                :cljs (let [tot (reduce + (map #(.-length %) parts))
+                                            out (js/Uint8Array. tot)]
+                                        (loop [ps (seq parts) off 0]
+                                          (if ps
+                                            (let [b (first ps)]
+                                              (.set out b off)
+                                              (recur (next ps) (+ off (.-length b))))
+                                            out))))]
+                 {:line (utf8-string joined) :bytes (+ total idx 1)})))
+           (throw (ex-info (str "No newline found in " p
+                                " — this does not look like a flat dump.")
+                           {:error :import/bad-manifest :file (str p)}))))
+       (finally (close))))))
+
 (defn open-sink
   "Open `p` for writing bytes. Use with `write!` and `close-sink!`.
 

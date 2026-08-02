@@ -33,6 +33,7 @@
             [datahike.tools :as dt]
             [datahike.migrate.cbor :as mcbor]
             [datahike.migrate.digest :as dig]
+            [datahike.migrate.fs :as fs]
             [datahike.migrate.sort :as msort]
             [datahike.migrate.store :as mstore]
             [datahike.migrate.blobs :as mblobs]
@@ -40,13 +41,9 @@
             [clojure.edn :as edn]
             [clojure.core.async :as async]
             [konserve.core :as k]
+            [konserve.binary :as kb]
             [superv.async :refer [<?? S]])
-  (:import [datahike.migrate.cbor SysRef]
-           [java.io File BufferedReader]
-           [java.security MessageDigest]
-           [java.nio.charset StandardCharsets]
-           [java.nio.file Files]
-           [java.nio.file.attribute PosixFilePermissions]))
+  (:import [datahike.migrate.cbor SysRef]))
 
 (def format-version 1)
 (def ^:private manifest-key :datahike.migrate/format-version)
@@ -75,16 +72,10 @@
           (dbi/-system-entities db))
     {}))
 
-(defn- posix? []
-  (-> (java.nio.file.FileSystems/getDefault) .supportedFileAttributeViews (.contains "posix")))
-
-(defn- restrict-perms! [^File f dir?]
-  (when (posix?)
-    (try
-      (Files/setPosixFilePermissions
-       (.toPath f)
-       (PosixFilePermissions/fromString (if dir? "rwx------" "rw-------")))
-      (catch Throwable _ nil))))
+(defn- restrict-perms!
+  "Make a dump owner-only. Best-effort — see `fs/restrict-perms!`."
+  [p dir?]
+  (fs/restrict-perms! p dir?))
 
 ;; ---------------------------------------------------------------------------
 ;; export
@@ -255,6 +246,12 @@
 
 (defn- chunk-name [n] (format "datoms-%06d.cbor" n))
 
+(def ^:private unlimited
+  "The record limit for a flat dump, which has exactly one chunk: all of them.
+   Named rather than `Long/MAX_VALUE` inline so the value survives the move to
+   .cljc, where there is no Long."
+  9007199254740991)
+
 (defn- write-chunk-stream!
   "Write up to `limit` records from the (lazy) seq `records` to `f` as a CBOR
    sequence, updating the semantic-digest accumulator `dacc` and computing the
@@ -265,57 +262,64 @@
    sequence, so the framing is a property of the encoding rather than something
    this loop maintains. The same bytes feed the file, the chunk hash and the
    semantic digest, so all three agree by construction."
-  [^File f records limit dacc]
-  (let [md (MessageDigest/getInstance "SHA-256")]
-    (with-open [out (io/output-stream f)]
+  [p records limit dacc]
+  (let [md (dig/sha256-accumulator)
+        sink (fs/open-sink p)]
+    (try
       (loop [rs (seq records) c 0 da dacc]
         (if (and rs (< c limit))
-          (let [^bytes bs (mcbor/encode-record (first rs))]
-            (.write out bs)
-            (.update md bs)
+          (let [bs (mcbor/encode-record (first rs))]
+            (fs/write! sink bs)
+            (dig/sha256-update! md bs)
             (recur (next rs) (inc c) (dig/add-record da bs)))
-          [rs c (dig/hex (.digest md)) da])))))
+          [rs c (dig/sha256-finalize md) da]))
+      (finally (fs/close-sink! sink)))))
 
-(defn- write-flat! [db opts ^File f sorted-records progress]
-  (let [tmp (File/createTempFile "dh-flat-" ".cbor"
-                                 (.getAbsoluteFile (or (.getParentFile (.getAbsoluteFile f))
-                                                       (io/file "."))))
-        [_ cnt sha dacc] (write-chunk-stream! tmp sorted-records Long/MAX_VALUE (dig/accumulator))
+(defn- write-flat! [db opts f sorted-records progress]
+  (let [tmp (fs/temp-file! (or (fs/parent f) ".") "dh-flat-" ".cbor")
+        [_ cnt sha dacc] (write-chunk-stream! tmp sorted-records unlimited (dig/accumulator))
         digest   (dig/finalize dacc)
         manifest (build-manifest db opts digest
-                                 [{:file (.getName f) :count cnt :bytes (.length tmp) :sha256 sha}])]
+                                 [{:file (fs/file-name f) :count cnt :bytes (fs/file-size tmp) :sha256 sha}])]
     ;; manifest as one EDN line, then the CBOR sequence. The head of a flat dump
     ;; stays human-readable on purpose: it is read before the codec is known, so
     ;; it cannot itself be in the codec, and being able to `head -c 2000` a dump
     ;; you are trying to recover is worth more than the bytes it costs.
-    (with-open [out (io/output-stream f)]
-      (.write out (.getBytes (pr-str manifest) StandardCharsets/UTF_8))
-      (.write out (int 10))
-      (with-open [in (io/input-stream tmp)] (io/copy in out)))
-    (.delete tmp)
+    (let [sink (fs/open-sink f)]
+      (try
+        (fs/write-text! sink (pr-str manifest))
+        (fs/write-text! sink "\n")
+        ;; the temp file is copied through in bounded pieces rather than slurped:
+        ;; it holds the WHOLE dump, which is the one thing that cannot fit
+        (let [{:keys [pull close]} (fs/puller tmp)]
+          (try
+            (loop [] (when-let [b (pull)] (fs/write! sink b) (recur)))
+            (finally (close))))
+        (finally (fs/close-sink! sink))))
+    (fs/delete! tmp)
     (restrict-perms! f false)
     (progress {:phase :done :datoms cnt})
     manifest))
 
-(defn- write-chunked! [db opts ^File dir sorted-records chunk-size progress]
-  (.mkdirs dir)
+(defn- write-chunked! [db opts dir sorted-records chunk-size progress]
+  (fs/mkdirs! dir)
   (restrict-perms! dir true)
   (loop [ls (seq sorted-records) n 1 chunks [] dacc (dig/accumulator)]
     (if (nil? ls)
       (let [manifest (build-manifest db opts (dig/finalize dacc) chunks)]
-        (spit (io/file dir "manifest.edn") (pr-str manifest))
-        (restrict-perms! (io/file dir "manifest.edn") false)
+        (fs/spit-text! (fs/join dir "manifest.edn") (pr-str manifest))
+        (restrict-perms! (fs/join dir "manifest.edn") false)
         (progress {:phase :done :datoms (:count (dig/finalize dacc))})
         manifest)
       (let [fname (chunk-name n)
-            tmp   (io/file dir (str fname ".tmp"))
-            final (io/file dir fname)
+            tmp   (fs/join dir (str fname ".tmp"))
+            final (fs/join dir fname)
             [rem cnt sha dacc'] (write-chunk-stream! tmp ls chunk-size dacc)]
-        (.renameTo tmp final)
+        (fs/rename! tmp final)
         (restrict-perms! final false)
         (progress {:phase :chunk :datoms cnt})
         (recur (seq rem) (inc n)
-               (conj chunks {:file fname :count cnt :bytes (.length final) :sha256 sha})
+               (conj chunks {:file fname :count cnt :bytes (fs/file-size final) :sha256 sha})
                dacc')))))
 
 (defn- blob-dir
@@ -324,8 +328,8 @@
    Only a DIRECTORY dump can carry blobs: a flat single-file dump has nowhere to
    put them, and silently dropping them would produce a dump whose datoms name
    objects it does not contain."
-  ^File [target]
-  (io/file target mblobs/dir-name))
+  [target]
+  (fs/join target mblobs/dir-name))
 
 (defn- blob-writer
   "`(fn [id bytes])` writing one blob into `target`'s blob area."
@@ -345,30 +349,25 @@
                       {:error :export/flat-with-blobs})))
 
     :else
-    (let [dir (doto (blob-dir target) (.mkdirs))]
+    (let [dir (doto (blob-dir target) (fs/mkdirs!))]
       (fn [id bytes]
-        (with-open [out (io/output-stream (io/file dir (str id)))]
-          (.write out ^bytes bytes))))))
+        (let [sink (fs/open-sink (fs/join dir (str id)))]
+          (try (fs/write! sink bytes) (finally (fs/close-sink! sink))))))))
 
 (defn- blob-reader
   "`(fn [id]) -> bytes-or-nil` reading one blob back out of a dump."
   [source]
   (if (mstore/store-target? source)
     (let [m (mstore/open source)]
+      ;; `to-bytes` rather than a hand-rolled callback: `bget`'s handle has four
+      ;; different shapes across backends and platforms, and that knowledge now
+      ;; lives in konserve (replikativ/konserve#162) instead of being re-derived
+      ;; at every call site — this was one of them.
       (fn [id]
-        (<?? S (k/bget (:store m) [mblobs/dir-name id]
-                       (fn [{:keys [input-stream]}]
-                         (async/go
-                           (when input-stream
-                             (let [bos (java.io.ByteArrayOutputStream.)]
-                               (io/copy input-stream bos)
-                               (.toByteArray bos)))))))))
+        (<?? S (k/bget (:store m) [mblobs/dir-name id] (kb/to-bytes {:sync? false})))))
     (fn [id]
-      (let [f (io/file (blob-dir source) (str id))]
-        (when (.exists f)
-          (let [bos (java.io.ByteArrayOutputStream.)]
-            (with-open [in (io/input-stream f)] (io/copy in bos))
-            (.toByteArray bos)))))))
+      (let [f (fs/join (blob-dir source) (str id))]
+        (when (fs/exists? f) (fs/read-bytes f))))))
 
 (defn export-db
   "Export a database (or connection) to `target`.
@@ -439,11 +438,11 @@
                        :else
                        (let [fmt (cond
                                    (:format opts)                  (:format opts)
-                                   (.isDirectory (io/file target)) :chunked
+                                   (fs/directory? target) :chunked
                                    :else                           :flat)]
                          (if (= :flat fmt)
-                           (write-flat! db opts (io/file target) lines progress)
-                           (write-chunked! db opts (io/file target) lines (:chunk-size opts) progress)))))]
+                           (write-flat! db opts target lines progress)
+                           (write-chunked! db opts target lines (:chunk-size opts) progress)))))]
      ;; Blob carriage. Planned BEFORE anything is written so the manifest can
      ;; declare it, and the bytes are written before the manifest — which is the
      ;; commit marker — so a dump that has a manifest has its blobs. Same
@@ -453,19 +452,37 @@
        (mblobs/copy-out! (:store db) plan (blob-writer target opts)))
      (if (:sort? opts)
        (let [records (export-records db opts)
-             ^File tmp-dir (.toFile (Files/createTempDirectory
-                                     "dh-export"
-                                     (make-array java.nio.file.attribute.FileAttribute 0)))]
+             tmp-dir (fs/temp-dir! "dh-export")]
          (try
-           (write-to! (msort/external-sort records (:sort-buffer opts) tmp-dir))
+           ;; `msort` still takes a java.io.File: the external sort is the one
+           ;; part of the dump path that has not been made portable yet (its
+           ;; k-way merge is a lazy seq over open files, which cannot pull from
+           ;; async IO). A portable export therefore means `:sort? false`.
+           (write-to! (msort/external-sort records (:sort-buffer opts)
+                                           (clojure.java.io/file tmp-dir)))
            (finally
-             (doseq [^File f (.listFiles tmp-dir)] (.delete f))
-             (.delete tmp-dir))))
+             (doseq [n (or (fs/list-names tmp-dir) [])]
+               (fs/delete! (fs/join tmp-dir n)))
+             (fs/delete! tmp-dir))))
        ;; no-scratch streaming: no temp dir, no sort
        (write-to! (export-records-streaming db opts))))))
 
 ;; ---------------------------------------------------------------------------
 ;; reading dumps
+
+(defn- sha256-of-file
+  "Streaming hex SHA-256 of a file — bounded memory, so a multi-gigabyte chunk
+   verifies without being held. Composed from the seam and the incremental
+   digest rather than living in `migrate.digest`, which has no business knowing
+   what a file is."
+  [p]
+  (let [{:keys [pull close]} (fs/puller p)]
+    (try
+      (loop [acc (dig/sha256-accumulator)]
+        (if-let [b (pull)]
+          (recur (dig/sha256-update! acc b))
+          (dig/sha256-finalize acc)))
+      (finally (close)))))
 
 (defn- read-manifest-map [^String s]
   ;; The manifest is plain EDN — no #datahike/* tags survive the move to CBOR,
@@ -474,18 +491,20 @@
   ;; `check-capabilities!` and produce its precise refusal.
   (edn/read-string {:default (fn [t v] (tagged-literal t v))} s))
 
-(defn- looks-like-edn-manifest? [^File f]
-  (with-open [r (io/reader f)]
-    (let [c (.read r)] (= (int \{) c))))
+(defn- looks-like-edn-manifest?
+  "A flat dump opens with `{`, the first byte of its EDN manifest line. One byte,
+   so this stays cheap on a file that may be gigabytes and may not be a dump."
+  [f]
+  (= 123 (fs/first-byte f)))
 
-(defn- validate-chunk-file [^File dir fname]
+(defn- validate-chunk-file [dir fname]
   (when-not (re-matches chunk-re fname)
     (throw (ex-info (str "Illegal chunk file name in manifest: " fname)
                     {:error :import/bad-chunk-path :file fname})))
-  (let [f (io/file dir fname)
-        canon (.getCanonicalFile f)
-        base  (.getCanonicalFile dir)]
-    (when-not (= base (.getParentFile canon))
+  (let [f (fs/join dir fname)
+        canon (fs/canonical f)
+        base  (fs/canonical dir)]
+    (when-not (= base (fs/parent canon))
       (throw (ex-info (str "Chunk path escapes dump directory: " fname)
                       {:error :import/bad-chunk-path :file fname})))
     f))
@@ -494,17 +513,22 @@
   "Return {:manifest m :legacy? bool :flat? bool :files [File...]} WITHOUT hashing —
    reads the manifest and validates chunk paths only. Cheap enough for estimation."
   [source]
-  (let [^File f (io/file source)]
+  (let [f (str source)]
     (cond
-      (.isDirectory f)
-      (let [manifest (read-manifest-map (slurp (io/file f "manifest.edn")))
+      (fs/directory? f)
+      (let [manifest (read-manifest-map (fs/slurp-text (fs/join f "manifest.edn")))
             files    (mapv #(validate-chunk-file f (:file %)) (:chunks manifest))]
         {:manifest manifest :legacy? false :flat? false :files files})
 
       (looks-like-edn-manifest? f)
-      (let [manifest (with-open [^BufferedReader r (io/reader f)]
-                       (read-manifest-map (.readLine r)))]
-        {:manifest manifest :legacy? false :flat? true :files [f]})
+      ;; `:data-offset` is where the records begin — the manifest line plus its
+      ;; newline, in BYTES. Kept here rather than recomputed at read time both to
+      ;; avoid scanning the header twice and because a manifest holding a
+      ;; non-ASCII ident is longer in bytes than in characters, so anything that
+      ;; counted characters would land mid-record.
+      (let [{:keys [line bytes]} (fs/read-header-line f)]
+        {:manifest (read-manifest-map line) :legacy? false :flat? true
+         :files [f] :data-offset bytes})
 
       :else
       {:manifest {manifest-key 0 :serialization :cbor :legacy? true}
@@ -520,8 +544,8 @@
     (when (and (not (:legacy? dump)) (not (:flat? dump)))
       (doseq [{:keys [file sha256]} (:chunks (:manifest dump))
               :when sha256
-              :let [cf (validate-chunk-file (io/file source) file)]]
-        (when (not= sha256 (dig/sha256-file-hex cf))
+              :let [cf (validate-chunk-file (str source) file)]]
+        (when (not= sha256 (sha256-of-file cf))
           (throw (ex-info (str "Checksum mismatch for chunk " file)
                           {:error :import/checksum-failed :file file})))))
     dump))
@@ -571,7 +595,7 @@
   (let [from-manifest (reduce + 0 (keep :bytes (:chunks manifest)))]
     (if (pos? from-manifest)
       from-manifest
-      (reduce + 0 (map #(.length ^File %) (or files []))))))
+      (reduce + 0 (map fs/file-size (or files []))))))
 
 (defn estimate-import-memory
   "Estimate the JVM heap an `import-db` of `source` needs, so you can size `-Xmx`
@@ -596,33 +620,16 @@
        (let [{:keys [manifest files]} (manifest-of source)]
          (estimate-from-manifest manifest (manifest-total-bytes manifest files) batch-size))))))
 
-(defn- skip-manifest-line!
-  "Advance `in` past the flat dump's EDN manifest header, leaving the stream
-   positioned at the first CBOR item.
-
-   Byte-level rather than `line-seq` because a flat dump is a text line followed
-   by BINARY: a Reader would decode the CBOR as characters and buffer past the
-   newline, so the bytes could not then be handed to the CBOR decoder. The
-   manifest is `pr-str` of a map, and `pr-str` escapes newlines inside strings as
-   the two characters backslash-n, so the first raw 0x0A is unambiguously the end
-   of the header."
-  [^java.io.InputStream in]
-  (loop []
-    (let [b (.read in)]
-      (cond
-        (neg? b) nil                    ; empty/truncated dump: nothing to skip
-        (= b 10) nil                    ; consumed the newline; positioned at CBOR
-        :else (recur)))))
-
 (defn- reduce-dump-records
   "Reduce `rf` over every record of the dump, with each file's stream scoped to
    its inner reduction (no lazy seq escapes an open handle). Flat dumps skip the
    manifest header line first. Returns the final accumulator."
-  [{:keys [files flat?]} rf init]
-  (reduce (fn [acc ^File file]
-            (with-open [in (io/input-stream file)]
-              (when flat? (skip-manifest-line! in))
-              (reduce rf acc (mcbor/decode-records in))))
+  [{:keys [files flat? data-offset]} rf init]
+  (reduce (fn [acc file]
+            (let [{:keys [pull close]} (fs/puller file {:skip (if flat? (or data-offset 0) 0)})]
+              (try
+                (reduce rf acc (mcbor/decode-records-pulled pull))
+                (finally (close)))))
           init
           files))
 

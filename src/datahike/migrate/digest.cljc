@@ -36,8 +36,7 @@
    `datahike.test.migrate-digest-test` pins the digests of a fixed corpus as
    literal strings, so the two platforms are checked against the same constants
    rather than against each other."
-  #?(:clj (:require [clojure.java.io :as io])
-     :cljs (:require [goog.crypt :as gcrypt]
+  #?(:cljs (:require [goog.crypt :as gcrypt]
                      [goog.crypt.Sha256]
                      [goog.math.Long :as glong]))
   #?(:clj (:import [java.security MessageDigest]
@@ -85,22 +84,6 @@
           #?(:clj (.getBytes ^String x StandardCharsets/UTF_8)
              :cljs (gcrypt/stringToUtf8ByteArray x))
           x))))
-
-#?(:clj
-   (defn sha256-file-hex
-     "Streaming hex SHA-256 of a file's bytes — bounded memory, for large chunks.
-
-      JVM only, and it is the filesystem dump medium that needs it. The portable
-      medium is a konserve store, where a chunk arrives as one value already
-      bounded by `:chunk-size`, so `sha256-hex` over those bytes is the whole job."
-     [file]
-     (let [md (MessageDigest/getInstance "SHA-256")
-           buf (byte-array 65536)]
-       (with-open [in (io/input-stream file)]
-         (loop []
-           (let [n (.read in buf)]
-             (when (pos? n) (.update md buf 0 n) (recur)))))
-       (hex (.digest md)))))
 
 ;; ---------------------------------------------------------------------------
 ;; incremental SHA-256
