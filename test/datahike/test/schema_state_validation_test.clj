@@ -16,11 +16,16 @@
    [clojure.test :refer [deftest is testing]]
    [datahike.api :as d]))
 
-(defn- fresh-conn []
-  (let [cfg {:store {:backend :memory :id (random-uuid)}
-             :schema-flexibility :write}]
-    (d/create-database cfg)
-    (d/connect cfg)))
+(defn- fresh-conn
+  ([] (fresh-conn {}))
+  ([extra-cfg]
+   (let [cfg (merge {:store {:backend :memory :id (random-uuid)}
+                     :schema-flexibility :write
+                     ;; most tests here exercise the backfill contract
+                     :allow-index-backfill? true}
+                    extra-cfg)]
+     (d/create-database cfg)
+     (d/connect cfg))))
 
 (defn- schema-error? [f]
   (try (f) false
@@ -149,3 +154,18 @@
                             {:db/ident :t3 :db/valueType :db.type/tuple
                              :db/cardinality :db.cardinality/one
                              :db/tupleAttrs [:a :b]}])))))
+
+(deftest backfill-is-opt-in
+  (testing "without :allow-index-backfill? the historical rejection holds:
+            enabling :db/index or :db/unique on a USED attribute is refused;
+            an unused attribute is accepted as before"
+    (let [conn (fresh-conn {:allow-index-backfill? false})]
+      (d/transact conn [{:db/ident :email :db/valueType :db.type/string
+                         :db/cardinality :db.cardinality/one}
+                        {:db/ident :spare :db/valueType :db.type/string
+                         :db/cardinality :db.cardinality/one}])
+      (d/transact conn [{:db/id 1 :email "a@y.z"}])
+      (is (schema-error? #(d/transact conn [[:db/add :email :db/index true]])))
+      (is (schema-error? #(d/transact conn [[:db/add :email :db/unique :db.unique/identity]])))
+      ;; unused attribute: no migration needed, accepted without the flag
+      (is (d/transact conn [[:db/add :spare :db/unique :db.unique/identity]])))))

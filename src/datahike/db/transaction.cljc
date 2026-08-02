@@ -1404,6 +1404,23 @@
                     (log/raise (str "Cannot narrow " ident " to :db.cardinality/one: entity " e
                                     " holds more than one value.")
                                {:error :transact/schema :attribute ident :entity-id e})))
+                ;; Enabling :db/index or adding :db/unique on a USED attribute
+                ;; requires the end-of-transaction AVET backfill migration,
+                ;; which is opt-in: without :allow-index-backfill? true in the
+                ;; database config the transition keeps its historical
+                ;; rejection. An unused attribute needs no migration and is
+                ;; accepted as before.
+                (when (and (or (contains? data-checks :index-backfill)
+                               (contains? data-checks :unique-backfill))
+                           (not (:allow-index-backfill? (dbi/-config db-after)))
+                           (or (seq (schema-attr-current-datoms db-after ident))
+                               (seq (schema-attr-history-datoms db-after ident))))
+                  (log/raise (str "Schema change on " ident " enables indexing/uniqueness on a"
+                                  " used attribute. Set :allow-index-backfill? true in the"
+                                  " database config to run the backfill migration (Experimental),"
+                                  " or migrate the data to a new attribute.")
+                             {:error :transact/schema :attribute ident
+                              :old old-entry :new new-entry}))
                 ;; Composite tuple definitions: an UNDECLARED referenced
                 ;; attribute is supported (its slot stays nil until declared
                 ;; and asserted), but a reference to an attribute DEFINED as
