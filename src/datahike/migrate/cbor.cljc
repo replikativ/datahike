@@ -105,14 +105,60 @@
    SHA-256 and to the semantic digest, and never holds more than one record's
    worth. `:archival` makes the bytes a function of the record alone, so the
    digest is a property of the data rather than of when it was written."
-  ^bytes [record]
+  [record]
   (boring/encode record opts))
 
-(defn decode-records
-  "Lazily decode a CBOR sequence from an InputStream into records, in memory
-   bounded by the largest single item. The caller owns and closes the stream."
-  [in]
-  (boring/decode-seq-from in opts))
+(defn concat-records
+  "Join per-record encodings into one CBOR sequence (RFC 8742) — just the bytes,
+   end to end, since that is what a sequence is.
+
+   Portable because the chunk medium is: a konserve store holds a chunk as one
+   binary value, and `bassoc` wants the whole thing. The filesystem medium does
+   not call this — it writes each record straight to the open stream and never
+   holds a chunk."
+  [encodings]
+  #?(:clj
+     (let [total (reduce + (map alength ^objects (into-array encodings)))
+           out (byte-array total)]
+       (loop [es (seq encodings) off 0]
+         (if es
+           (let [^bytes e (first es)]
+             (System/arraycopy e 0 out off (alength e))
+             (recur (next es) (+ off (alength e))))
+           out)))
+     :cljs
+     (let [total (reduce + (map #(.-length %) encodings))
+           out (js/Uint8Array. total)]
+       (loop [es (seq encodings) off 0]
+         (if es
+           (let [e (first es)]
+             (.set out e off)
+             (recur (next es) (+ off (.-length e))))
+           out)))))
+
+#?(:clj
+   (defn decode-records
+     "Lazily decode a CBOR sequence from an InputStream into records, in memory
+      bounded by the largest single item. The caller owns and closes the stream.
+
+      JVM only, because streaming decode is: boring's ClojureScript reader takes a
+      whole buffer, with no `decode-seq-from` counterpart. That is not a gap the
+      portable dump path feels — a konserve chunk arrives as one value already
+      bounded by `:chunk-size`, so `decode-records-from` over those bytes is the
+      whole job. It is the FILESYSTEM medium, which streams a multi-gigabyte flat
+      dump through one handle, that needs this."
+     [in]
+     (boring/decode-seq-from in opts)))
+
+(defn decode-records-from
+  "Lazily decode a CBOR sequence held in memory as bytes.
+
+   The portable counterpart to `decode-records`: bounded by the byte array it is
+   given rather than by one record, which is the right trade when the caller
+   already holds a whole chunk — as every konserve-store read does."
+  [bs]
+  #?(:clj  (boring/decode-seq-from (java.io.ByteArrayInputStream. bs) opts)
+     :cljs (boring/decode-seq bs opts)))
 
 (defn decode-record
   "Decode a single record from its bytes — for the paths that hold one already."
