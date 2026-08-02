@@ -146,3 +146,30 @@
      (if (<= (count runs) max-fanin)
        (merge-runs runs cmp)
        (recur (mapv #(merge-into-file % tmp-dir cmp) (partition-all max-fanin runs)))))))
+
+(defn external-sort-to-file
+  "As `external-sort`, but collapse the result to ONE sorted CBOR-sequence file
+   and return it. The caller owns the file and should delete it.
+
+   `external-sort` returns a lazy seq backed by open run files, which
+   `record-seq-closing` closes on exhaustion — so it can be consumed exactly
+   once. A bulk index build needs the same sorted order TWICE: once for the
+   temporal tree, which takes every record, and once for the current tree, which
+   takes the subset surviving `history/current-from-eavt-sorted`. Sorting twice
+   would double the most expensive step for no reason.
+
+   Reading the returned file with `read-sorted-file` is a fresh stream each time,
+   still bounded by one record."
+  ([records run-size ^File tmp-dir] (external-sort-to-file records run-size tmp-dir by-sort-key))
+  ([records run-size ^File tmp-dir cmp]
+   (let [out (File/createTempFile "dh-sorted-" ".cbor" tmp-dir)]
+     (with-open [os (io/output-stream out)]
+       (doseq [r (external-sort records run-size tmp-dir cmp)]
+         (.write os ^bytes (mcbor/encode-record r))))
+     out)))
+
+(defn read-sorted-file
+  "Lazy seq of records from a file written by `external-sort-to-file`, closing the
+   stream when exhausted. Bounded by one record; callable repeatedly."
+  [^File f]
+  (record-seq-closing f))
