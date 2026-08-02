@@ -1,7 +1,7 @@
 {:deps {org.clojure/clojure                         {:mvn/version "1.12.4"}
         org.replikativ/hasch                        {:mvn/version "0.4.102"
                                                      :exclusions [org.clojure/clojurescript]}
-        org.replikativ/konserve                     {:mvn/version "0.9.363"
+        org.replikativ/konserve                     {:mvn/version "0.9.365"
                                                      :exclusions [org.clojure/clojurescript
                                                                   org.clojars.mmb90/cljs-cache]}
                                                      
@@ -16,7 +16,7 @@
         ;; published NodeState — a pipelining writer's copies can never observe a torn settle;
         ;; 0.4.137 projects diff-buf diffs onto a COPY of the restored node, so tree versions
         ;; sharing a durable anchor through the node cache can't clobber each other's reads
-        org.replikativ/persistent-sorted-set        {:mvn/version "0.4.137"}
+        org.replikativ/persistent-sorted-set        {:mvn/version "0.4.138"}
         is.simm/partial-cps                         {:mvn/version "0.1.59"}
         environ/environ                             {:mvn/version "1.2.0"}
         nrepl/bencode                               {:mvn/version "1.2.0"}
@@ -25,7 +25,6 @@
         medley/medley                               {:mvn/version "1.4.0"}
         metosin/spec-tools                          {:mvn/version "0.10.8"}
         metosin/malli                               {:mvn/version "0.20.1"}
-        mvxcvi/clj-cbor                             {:mvn/version "1.1.1"}
         org.babashka/http-client                    {:mvn/version "0.4.23"}
         metosin/jsonista                            {:mvn/version "0.3.14"}
         com.github.pkpkpk/cljs-cache                {:mvn/version "1.0.21"}
@@ -67,6 +66,16 @@
                                org.clojure/test.check      {:mvn/version "1.1.1"}
                                orchestra/orchestra         {:mvn/version "2021.01.01-1"}
 
+                               ;; TEST SCOPE ONLY. The dump codec is boring now and
+                               ;; nothing in src/ requires clj-cbor -- but legacy
+                               ;; dumps were WRITTEN by clj-cbor, so the only honest
+                               ;; way to test that boring reads them is to have
+                               ;; clj-cbor produce the bytes. See
+                               ;; `legacy-cbor-import-test`; using boring to write
+                               ;; the fixture would test boring against itself and
+                               ;; prove nothing about the format we must still read.
+                               mvxcvi/clj-cbor             {:mvn/version "1.1.1"}
+
                                ;; hitchhiker-tree index (optional, for testing)
                                io.replikativ/hitchhiker-tree {:mvn/version "0.2.222"
                                                               :exclusions [org.clojure/clojurescript
@@ -84,11 +93,26 @@
                                org.replikativ/scriptum       {:mvn/version "0.1.27"}
                                org.replikativ/stratum        {:mvn/version "0.3.77"}
 
-                               ;; kabel integration for distributed datahike
-                               org.replikativ/kabel          {:mvn/version "0.3.100"}
+                               ;; kabel integration for distributed datahike.
+                               ;; boring comes with it: src-kabel's connector
+                               ;; requires datahike.cbor, which is the wire
+                               ;; format the kabel peers now speak, so the
+                               ;; whole :test suite fails to LOAD without it --
+                               ;; not just the CBOR tests.
+                               org.replikativ/kabel          {:mvn/version "0.3.102"}
+                               org.replikativ/boring         {:mvn/version "0.1.7"}
                                is.simm/distributed-scope     {:mvn/version "0.1.6"}
-                               org.replikativ/konserve-sync  {:mvn/version "0.1.35"}
+                               org.replikativ/konserve-sync  {:mvn/version "0.1.38"}
+
+                               ;; S3-compatible store integration test (migrate-s3-test, needs docker; runs Garage)
+                               org.replikativ/konserve-s3    {:mvn/version "0.1.35"}
                                http-kit/http-kit             {:mvn/version "2.8.1"}}}
+
+           ;; Bulk-build import: needs persistent-sorted-set's streaming
+           ;; `from-sorted-seq` (replikativ/persistent-sorted-set#22). Local root
+           ;; until that releases; the rest of the migrate path does not need it.
+           :bulk {:override-deps
+                  {org.replikativ/persistent-sorted-set {:local/root "../persistent-sorted-set"}}}
 
            :datomic {:extra-deps {com.datomic/datomic-free {:mvn/version "0.9.5703"}}}
 

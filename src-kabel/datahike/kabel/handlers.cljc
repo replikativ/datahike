@@ -100,8 +100,11 @@
               (when-let [peer (get-peer-for-store store-id)]
                 (tx-broadcast/publish-tx-report! peer store-id tx-report request-id))
 
-        ;; Return tx-report - Fressian handlers handle serialization
-              tx-report)
+        ;; Return the tx-report as a plain map. This used to rely on the
+        ;; fressian write handler to strip the live DBs, which made a correct
+        ;; wire representation a property of one codec -- see
+        ;; tx-broadcast/tx-report->wire.
+              (tx-broadcast/tx-report->wire tx-report))
 
             (throw (ex-info "Store not found for store-id"
                             {:store-id store-id

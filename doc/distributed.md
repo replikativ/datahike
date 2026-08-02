@@ -83,6 +83,7 @@ The Kabel writer provides **real-time reactive updates** via WebSockets, complem
 The stack consists of:
 
 - [kabel](https://github.com/replikativ/kabel) - WebSocket transport with middleware support
+- [boring](https://github.com/replikativ/boring) - the CBOR codec on the wire
 - [distributed-scope](https://github.com/replikativ/distributed-scope) - Remote function invocation with Clojure semantics
 - [konserve-sync](https://github.com/replikativ/konserve-sync) - Differential store synchronization (only transmits changed data)
 
@@ -97,7 +98,7 @@ backend and broadcasts updates to connected clients via konserve-sync.
 (ns my-app.server
   (:require [datahike.api :as d]
             [datahike.kabel.handlers :as handlers]
-            [datahike.kabel.fressian-handlers :as fh]
+            [datahike.kabel.cbor-handlers :refer [datahike-cbor-middleware]]
             [kabel.peer :as peer]
             [kabel.http-kit :refer [create-http-kit-handler!]]
             [konserve-sync.core :as sync]
@@ -107,13 +108,6 @@ backend and broadcasts updates to connected clients via konserve-sync.
 
 (def server-id #uuid "aaaaaaaa-0000-0000-0000-000000000001")
 (def server-url "ws://localhost:47296")
-
-;; Fressian middleware with Datahike type handlers for serialization
-(defn datahike-fressian-middleware [peer-config]
-  (kabel.middleware.fressian/fressian
-   (atom fh/read-handlers)
-   (atom fh/write-handlers)
-   peer-config))
 
 ;; Store config factory - maps client store UUID to server-side file store
 ;; Browsers use TieredStore (memory + IndexedDB), but the server uses file backend
@@ -127,13 +121,13 @@ backend and broadcasts updates to connected clients via konserve-sync.
   (let [;; Create kabel server peer with middleware stack:
         ;; - sync/server-middleware: handles konserve-sync replication
         ;; - remote-middleware: handles distributed-scope RPC
-        ;; - datahike-fressian-middleware: serializes Datahike types
+        ;; - datahike-cbor-middleware: serializes Datahike types as CBOR
         server (peer/server-peer
                 S
                 (create-http-kit-handler! S server-url server-id)
                 server-id
                 (comp (sync/server-middleware) remote-middleware)
-                datahike-fressian-middleware)]
+                datahike-cbor-middleware)]
 
     ;; Start server and enable remote function invocation
     (<!! (peer/start server))
@@ -160,7 +154,7 @@ unique UUID with `(random-uuid)` for ephemeral/test databases.
 (ns my-app.client
   (:require [cljs.core.async :refer [<! timeout alts!] :refer-macros [go]]
             [datahike.api :as d]
-            [datahike.kabel.fressian-handlers :refer [datahike-fressian-middleware]]
+            [datahike.kabel.cbor-handlers :refer [datahike-cbor-middleware]]
             [is.simm.distributed-scope :as ds]
             [kabel.peer :as peer]
             [konserve-sync.core :as sync]
@@ -180,7 +174,7 @@ unique UUID with `(random-uuid)` for ephemeral/test databases.
                    S
                    client-id
                    (comp ds/remote-middleware (sync/client-middleware))
-                   datahike-fressian-middleware)]
+                   datahike-cbor-middleware)]
     ;; Start invocation loop for handling remote calls
     (ds/invoke-on-peer peer-atom)
     (reset! client-peer peer-atom)))

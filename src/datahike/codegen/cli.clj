@@ -14,7 +14,7 @@
             [datahike.api :as d]
             [datahike.json :as json]
             [jsonista.core :as j]
-            [clj-cbor.core :as cbor]
+            [boring.core :as boring]
             [malli.core :as m]
             [malli.error :as me])
   (:import [java.util Date]))
@@ -296,7 +296,10 @@
                                 (Date. ^Long (edn/read-string %1)))
    #"asof:(.+):(.+)"  #(d/as-of @(d/connect (edn/read-string (slurp %2)))
                                 (Date. ^Long (edn/read-string %1)))
-   #"cbor:(.+)"       #(cbor/decode (io/input-stream %))
+   #"cbor:(.+)"       #(with-open [in (io/input-stream %)]
+                         (let [bos (java.io.ByteArrayOutputStream.)]
+                           (io/copy in bos)
+                           (boring/decode (.toByteArray bos))))
    #"edn:(.+)"        (comp edn/read-string slurp)
    #"json:(.+)"       (comp #(j/read-value % json/mapper) slurp)})
 

@@ -9,7 +9,9 @@
    - Each database has a topic: :tx-report/<store-id>
    - Uses PubSubOnlyStrategy (no handshake, just receive publishes)
    - Deduplication via request-id (skip own transactions)"
-  (:require [kabel.pubsub :as pubsub]
+  (:require [datahike.db.utils :as dbu]
+            [datahike.writing :as dw]
+            [kabel.pubsub :as pubsub]
             [kabel.pubsub.protocol :as proto]
             [kabel.peer :as peer]
             #?(:clj  [replikativ.logging :refer [debug info warn]]
@@ -68,6 +70,35 @@
     (pubsub/unregister-topic! peer topic)
     topic))
 
+(defn tx-report->wire
+  "Project a TxReport to a plain map fit for the wire.
+
+  `:db-before` / `:db-after` are live DB values holding index roots, a storage
+  handle and schema caches -- none of which may cross a connection. `db->stored`
+  is what strips them, and until now it was called from inside the FRESSIAN
+  WRITE HANDLER, which made a correct wire representation a property of one
+  codec rather than of this namespace.
+
+  Doing it here instead is codec-agnostic and removes a hard blocker: a
+  TxReport is a defrecord, and a serializer that handles records natively (as
+  CBOR tag 27 does) writes the record's raw fields with no opportunity for a
+  write handler to intervene. Under such a codec the stripping would simply
+  never happen, and the live state would go out on the wire with no error.
+
+  The client already expects a plain map here -- `datahike.kabel.writer`'s
+  `reconstruct-tx-report` / `reconstruct-stored-db` branch on stored-map vs
+  live-DB -- so this changes nothing downstream."
+  ;; Only project values that ARE databases. The old fressian handler fired
+  ;; solely on a genuine TxReport record, so it never met anything else; doing
+  ;; this at the publish site means we do, and a caller (a test stub, a
+  ;; partially-built report) may legitimately carry a plain map here. Passing
+  ;; those through unchanged preserves the previous behaviour exactly.
+  [tx-report]
+  (let [->stored (fn [db] (if (dbu/db? db) (second (dw/db->stored db false)) db))]
+    (-> (into {} tx-report)
+        (update :db-before ->stored)
+        (update :db-after ->stored))))
+
 (defn publish-tx-report!
   "Publish a tx-report to all subscribers. Called after each transaction.
 
@@ -82,7 +113,7 @@
    (publish-tx-report! peer store-id tx-report nil))
   ([peer store-id tx-report request-id]
    (let [topic (tx-report-topic store-id)
-         payload {:tx-report tx-report
+         payload {:tx-report (tx-report->wire tx-report)
                   :store-id store-id
                   :request-id request-id}]
      (debug {:event ::publish-tx-report

@@ -11,7 +11,7 @@
    4. Server executes transaction, syncs store
    5. Client receives sync, transaction completes
 
-   Uses Fressian serialization with Datahike handlers."
+   Uses CBOR serialization with Datahike handlers."
   (:require [clojure.test :refer [deftest testing is]]
             [clojure.java.io :as io]
             [datahike.api :as d]
@@ -20,10 +20,9 @@
             [datahike.connector :refer [release]]
             [hasch.core :as hasch]
             [datahike.kabel.handlers :as handlers]
-            [datahike.kabel.fressian-handlers :as fh]
+            [datahike.kabel.cbor-handlers :as ch]
             [kabel.peer :as peer]
             [kabel.http-kit :refer [create-http-kit-handler!]]
-            [kabel.middleware.fressian :refer [fressian]]
             ;; konserve-sync for store replication
             [konserve.core :as k]
             [datahike.versioning :refer [branch! branch-as-db]]
@@ -68,12 +67,12 @@
       (doseq [file (reverse (file-seq dir))]
         (.delete file)))))
 
-(defn datahike-fressian-middleware
-  "Fressian middleware with Datahike type handlers."
-  [peer-config]
-  (fressian (atom fh/read-handlers)
-            (atom fh/write-handlers)
-            peer-config))
+(def datahike-serialization-middleware
+  "CBOR middleware with Datahike type handlers -- frame 14.
+
+  A def rather than a local redefinition: the middleware is one call now, so
+  wrapping it in a test-local fn would only hide which format is under test."
+  ch/datahike-cbor-middleware)
 
 ;; =============================================================================
 ;; Schema
@@ -118,7 +117,7 @@
           server-peer (peer/server-peer S handler server-id
                                         (comp (sync/server-middleware)
                                               ds/remote-middleware)
-                                        datahike-fressian-middleware)
+                                        datahike-serialization-middleware)
           _ (<?? S (peer/start server-peer))
           _ (ds/invoke-on-peer server-peer)
 
@@ -136,7 +135,7 @@
           client-peer (peer/client-peer S client-id
                                         (comp (sync/client-middleware)
                                               ds/remote-middleware)
-                                        datahike-fressian-middleware)
+                                        datahike-serialization-middleware)
           _ (ds/invoke-on-peer client-peer)
           _ (<?? S (peer/connect S client-peer url))
 
@@ -268,7 +267,7 @@
           server-peer (peer/server-peer S handler server-id
                                         (comp (sync/server-middleware)
                                               ds/remote-middleware)
-                                        datahike-fressian-middleware)
+                                        datahike-serialization-middleware)
           _ (<?? S (peer/start server-peer))
           _ (ds/invoke-on-peer server-peer)
           _ (handlers/register-global-handlers! server-peer)
@@ -278,7 +277,7 @@
           client-peer (peer/client-peer S client-id
                                         (comp (sync/client-middleware)
                                               ds/remote-middleware)
-                                        datahike-fressian-middleware)
+                                        datahike-serialization-middleware)
           _ (ds/invoke-on-peer client-peer)
           _ (<?? S (peer/connect S client-peer url))
 
@@ -345,7 +344,7 @@
           server-peer (peer/server-peer S handler server-id
                                         (comp (sync/server-middleware)
                                               ds/remote-middleware)
-                                        datahike-fressian-middleware)
+                                        datahike-serialization-middleware)
           _ (<?? S (peer/start server-peer))
           _ (ds/invoke-on-peer server-peer)
           _ (handlers/register-global-handlers! server-peer)
@@ -355,7 +354,7 @@
           client-peer (peer/client-peer S client-id
                                         (comp (sync/client-middleware)
                                               ds/remote-middleware)
-                                        datahike-fressian-middleware)
+                                        datahike-serialization-middleware)
           _ (ds/invoke-on-peer client-peer)
           _ (<?? S (peer/connect S client-peer url))
 
@@ -428,7 +427,7 @@
           server-peer (peer/server-peer S handler server-id
                                         (comp (sync/server-middleware)
                                               ds/remote-middleware)
-                                        datahike-fressian-middleware)
+                                        datahike-serialization-middleware)
           _ (<?? S (peer/start server-peer))
           _ (ds/invoke-on-peer server-peer)
           _ (handlers/register-global-handlers! server-peer)
@@ -440,7 +439,7 @@
           client-peer-1 (peer/client-peer S client-id
                                           (comp (sync/client-middleware)
                                                 ds/remote-middleware)
-                                          datahike-fressian-middleware)
+                                          datahike-serialization-middleware)
           _ (ds/invoke-on-peer client-peer-1)
           _ (<?? S (peer/connect S client-peer-1 url))
 
@@ -516,7 +515,7 @@
       (let [client-peer-2 (peer/client-peer S #uuid "20000000-0000-0000-0000-000000000003"
                                             (comp (sync/client-middleware)
                                                   ds/remote-middleware)
-                                            datahike-fressian-middleware)
+                                            datahike-serialization-middleware)
             _ (ds/invoke-on-peer client-peer-2)
             _ (<?? S (peer/connect S client-peer-2 url))
 
@@ -575,7 +574,7 @@
           server-peer (peer/server-peer S handler server-id
                                         (comp (sync/server-middleware)
                                               ds/remote-middleware)
-                                        datahike-fressian-middleware)
+                                        datahike-serialization-middleware)
           _ (<?? S (peer/start server-peer))
           _ (ds/invoke-on-peer server-peer)
 
@@ -587,7 +586,7 @@
           client-peer (peer/client-peer S client-id
                                         (comp (sync/client-middleware)
                                               ds/remote-middleware)
-                                        datahike-fressian-middleware)
+                                        datahike-serialization-middleware)
           _ (ds/invoke-on-peer client-peer)
           _ (<?? S (peer/connect S client-peer url))]
 
@@ -668,7 +667,7 @@
           handler (create-http-kit-handler! S url server-id)
           server-peer (peer/server-peer S handler server-id
                                         (comp (sync/server-middleware) ds/remote-middleware)
-                                        datahike-fressian-middleware)
+                                        datahike-serialization-middleware)
           _ (<?? S (peer/start server-peer))
           _ (ds/invoke-on-peer server-peer)
           _ (handlers/register-global-handlers! server-peer)
@@ -676,7 +675,7 @@
 
           client-peer (peer/client-peer S client-id
                                         (comp (sync/client-middleware) ds/remote-middleware)
-                                        datahike-fressian-middleware)
+                                        datahike-serialization-middleware)
           _ (ds/invoke-on-peer client-peer)
           _ (<?? S (peer/connect S client-peer url))
           client-config (assoc base

@@ -7,7 +7,7 @@
             [datahike.config :as dc]
             [datahike.connections :refer [add-connection!]]
             [datahike.connector :refer [->Connection]]
-            [datahike.kabel.fressian-handlers :as fh]
+            [datahike.cbor :as dcbor]
             [datahike.kabel.writer :as kw]
             [datahike.store :as ds]
             [datahike.writer :as w]
@@ -176,10 +176,13 @@
              (<?- (ds/ready-store (assoc store-config :opts opts) store)))
          _ (log/trace "Store handlers ready" {:tiered? is-tiered?})
 
-          ;; 1c. Register store with fressian handlers for BTSet reconstruction
-          ;; This is needed BEFORE subscribing because sync messages contain BTSet addresses
-         _ (fh/register-store! store-config store)
-         _ (log/trace "Store registered with fressian handlers")
+          ;; 1c. Register the store for BTSet reconstruction. Needed BEFORE
+          ;; subscribing, because sync messages carry BTSet addresses rather
+          ;; than nodes, and a root resolves its storage by :pss/storage-id.
+          ;; The registry belongs to persistent-sorted-set and is not tied to a
+          ;; serialization format.
+         _ (dcbor/register-store! store-config store)
+         _ (log/trace "Store registered for index reconstruction")
 
           ;; 1d. Check if we already have the branch key in cache (for tiered stores)
           ;; If so, we can use it immediately instead of waiting for sync
