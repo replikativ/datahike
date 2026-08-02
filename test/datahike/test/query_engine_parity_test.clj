@@ -130,6 +130,51 @@
       (is (= (base standalone db [100 101]) (planner standalone db [100 101]))
           "standalone optional scan keeps left-outer semantics"))))
 
+(deftest multi-group-wide-tuple-is-projected-onto-find
+  (testing "a consumer group that emits WIDE tuples still projects onto :find"
+    ;; A consumer emits its own wide var vector whenever it carries
+    ;; attached-preds or feeds a probe-map. The projection back onto :find was
+    ;; gated on has-post-ops?, which is FALSE for an attached-pred on the
+    ;; CONSUMER (extra-preds harvests attached-preds from PRODUCER groups only),
+    ;; so nothing projected and the raw wide tuple was returned — in the
+    ;; consumer's `(vec :output-vars)` set-iteration order.
+    ;;
+    ;; Silent, and it needs no optional/get-else machinery at all: two entity
+    ;; groups and one predicate on the consumer's value var is enough.
+    (let [conn (fresh-conn)
+          _    (d/transact conn [{:db/ident :name :db/valueType :db.type/string
+                                  :db/cardinality :db.cardinality/one}
+                                 {:db/ident :nick :db/valueType :db.type/string
+                                  :db/cardinality :db.cardinality/one}
+                                 {:db/ident :friend :db/valueType :db.type/ref
+                                  :db/cardinality :db.cardinality/many}])
+          _    (d/transact conn [{:db/id 100 :name "alice" :nick "al" :friend [101 102]}
+                                 {:db/id 101 :name "bob" :friend [100]}
+                                 {:db/id 102 :name "carol" :nick "cc" :friend [100]}])
+          db   (d/db conn)
+          ;; [E V] with a predicate on V: the shape whose columns came back swapped
+          swapped-cols '[:find ?e ?en :where
+                         [?s :name ?n] [?s :friend ?e] [?e :name ?en] [(some? ?en)]]
+          ;; :find order is load-bearing — the reverse order was accidentally
+          ;; "correct" before the fix, so both orders are pinned
+          reverse-order '[:find ?en ?e :where
+                          [?s :name ?n] [?s :friend ?e] [?e :name ?en] [(some? ?en)]]
+          ;; a get-else in the consumer group widens the tuple further: a 2-var
+          ;; :find returned 3-tuples
+          wrong-arity '[:find ?e ?v :where
+                        [?s :name ?n] [?s :friend ?e] [?e :name ?en]
+                        [(get-else $ ?e :nick "none") ?v] [(some? ?v)]]]
+      (is (= #{[100 "alice"] [101 "bob"] [102 "carol"]} (base swapped-cols db)))
+      (is (= (base swapped-cols db) (planner swapped-cols db))
+          "columns must follow :find order, not the consumer group's var order")
+      (is (= (base reverse-order db) (planner reverse-order db))
+          "the reversed :find order must hold too")
+      (is (= #{[100 "al"] [101 "none"] [102 "cc"]} (base wrong-arity db)))
+      (is (= (base wrong-arity db) (planner wrong-arity db))
+          "a 2-var :find must return 2-tuples (BUG: returned 3-tuples)")
+      (is (every? #(= 2 (count %)) (planner wrong-arity db))
+          "arity is part of the contract, not just the values"))))
+
 (deftest get-else-on-joined-entity-var-parity
   (testing "get-else off an entity var bound by a SIBLING clause keeps
             left-outer semantics (issue #920)"

@@ -2796,7 +2796,15 @@
                 has-post-ops? (or (seq pred-ops) (seq fn-ops))
                 all-group-vars (when has-post-ops?
                                  (vec (distinct (mapcat :vars groups))))
-                emit-vars (if has-post-ops? all-group-vars find-vars)]
+                emit-vars (if has-post-ops? all-group-vars find-vars)
+                ;; The layout of the tuples that actually reach result-list.
+                ;; It is NOT always `emit-vars`: a consumer group emits its own
+                ;; wide var vector whenever it carries attached-preds or feeds a
+                ;; probe-map, and the probe-map combine re-lays the tuples out
+                ;; again. Post-processing must index the tuples it really has,
+                ;; so the emitting site records the layout here. Written once
+                ;; per group, never per tuple.
+                emit-layout (volatile! emit-vars)]
             (loop [gi 0
                    probe-sets    {} ;; {[producer-idx probe-var] → HashSet of join-var values}
                    probe-maps    {} ;; {[producer-idx probe-var] → {:map HashMap :p-all-vars [...]}}
@@ -2836,6 +2844,7 @@
                                    c-all-vars
                                    emit-vars)]
                       (when (and pinfo probe-set)
+                        (vreset! emit-layout c-emit)
                         (execute-group-direct db scan-op merge-ops c-emit consts
                                               result-list probe-set
                                               (int (:consumer-scan-field pinfo))
@@ -2870,7 +2879,8 @@
                                                      :else [:const nil]))
                                                  target-vars)
                                 n-consumer (result-list-size result-list)
-                                combined (make-result-list (* 2 n-consumer))]
+                                combined (make-result-list (* 2 n-consumer))
+                                _ (vreset! emit-layout target-vars)]
                             (dotimes [ci n-consumer]
                               (let [^objects c-tuple (result-list-get result-list ci)
                                     probe-val (aget c-tuple c-probe-idx)
@@ -3110,14 +3120,31 @@
                                    probe-sets)
                                  probe-maps
                                  consumed-cgi))))))))
-            ;; Post-processing for multi-group: use potentially augmented pred-ops
-            (when has-post-ops?
-              (let [var-index (into {} (map-indexed (fn [i v] [v i])) all-group-vars)]
-                (when (seq pred-ops)
-                  (post-filter-preds result-list pred-ops var-index))
-                (let [var-index (if (seq fn-ops)
-                                  (post-apply-fns result-list fn-ops var-index)
-                                  var-index)]
+            ;; Post-processing for multi-group. There are TWO independent reasons
+            ;; the tuples sitting in result-list are not the answer yet:
+            ;;
+            ;;   * post-ops (predicates hoisted off producer groups, functions)
+            ;;     still have to be evaluated, and
+            ;;   * the consumer emitted WIDE. It does that whenever it carries
+            ;;     attached-preds or feeds a probe-map — conditions independent
+            ;;     of has-post-ops?, since `extra-preds` harvests attached-preds
+            ;;     from PRODUCER groups only. So the tuples can carry the
+            ;;     consumer's own var order (a `vec` of its :output-vars SET)
+            ;;     while :find asks for something else.
+            ;;
+            ;; Gating the projection on has-post-ops? alone therefore returned
+            ;; the raw wide tuple: `[:find ?e ?en]` came back as [?en ?e], and
+            ;; with a get-else in the consumer group as a 3-tuple from a 2-var
+            ;; :find. Both silent. Project whenever the layout is not already
+            ;; the find layout, and index by the layout the tuples REALLY have.
+            (let [layout @emit-layout
+                  var-index (into {} (map-indexed (fn [i v] [v i])) layout)]
+              (when (and has-post-ops? (seq pred-ops))
+                (post-filter-preds result-list pred-ops var-index))
+              (let [var-index (if (and has-post-ops? (seq fn-ops))
+                                (post-apply-fns result-list fn-ops var-index)
+                                var-index)]
+                (when (or has-post-ops? (not= layout find-vars))
                   (project-tuples result-list find-vars var-index consts))))))
         ;; Post-processing: apply predicates, functions, NOT-JOINs, then project
         ;; (single-group standalone post-ops only — multi-group handled above)
