@@ -3148,6 +3148,18 @@
 
 (declare substitute-consts-with-lookup-refs*)
 
+#?(:clj
+   (def ^:private prepared-execution-var
+     (delay (requiring-resolve 'datahike.query.execute/*prepared-execution*))))
+
+(defn- prepared-execution?
+  "Current value of datahike.query.execute/*prepared-execution* (see its
+   docstring). Resolved lazily on the JVM to keep the load order the rest
+   of this namespace uses for the execute namespace."
+  []
+  #?(:clj (deref (deref prepared-execution-var))
+     :cljs execute/*prepared-execution*))
+
 (defn- clauses-have-lookup-candidates?
   "Structure-only pre-scan: could `resolve-pattern-lookup-refs` change anything
    in these clauses? True when any data-pattern e/v/tx slot holds a keyword or
@@ -3198,7 +3210,8 @@
    against its own db."
   ([db where-clauses consts] (substitute-consts-with-lookup-refs db where-clauses consts nil))
   ([db where-clauses consts sources]
-   (if (and (empty? consts) (nil? sources)
+   (if (and (prepared-execution?)
+            (empty? consts) (nil? sources)
             (not (and (dbu/db? db) (:attribute-refs? (dbi/-config db))))
             (not (form-memo [::lookup-candidates where-clauses]
                             #(clauses-have-lookup-candidates? where-clauses))))
@@ -3689,7 +3702,10 @@
                      ;; caches its per-[find-vars consts-keys] compilation here
                      ;; (see execute/direct-program), so repeated executions of
                      ;; a cached plan skip fuse checks and shape analysis.
-                     (assoc :datahike.query.execute/program-cache (atom {})))]
+                     ;; metadata, not a map key: plans are VALUES (compared,
+                     ;; printed, potentially serialized) and the compiled-
+                     ;; program cache is an identity-scoped accelerator.
+                     (vary-meta assoc :datahike.query.execute/program-cache (atom {})))]
         (vswap! plan-cache assoc cache-key plan)
         plan))))
 
@@ -4621,7 +4637,8 @@
   "Direct HashSet path: write tuples directly, no Relations.
    Returns result set or nil if not eligible."
   [plan db qfind find-elements context-in query stats? qreturnmaps]
-  (let [direct-eligible? (and (instance? FindRel qfind)
+  (let [prepared? (prepared-execution?)
+        direct-eligible? (and (instance? FindRel qfind)
                               (not stats?)
                               ;; the fused HashSet path applies fns via post-apply-fns,
                               ;; which doesn't accumulate :fn-counts — route counting
@@ -4630,20 +4647,30 @@
                               (not qreturnmaps)
                               (not (:with query))
                               (not-any? #(instance? Aggregate %) find-elements)
-                              (not-any? #(instance? Pull %) find-elements))]
+                              (not-any? #(instance? Pull %) find-elements)
+                              ;; Stock mode: input relations disqualify the
+                              ;; direct path (they need the relation engine's
+                              ;; joins). Prepared mode absorbs single-tuple
+                              ;; rels as per-call consts instead.
+                              (or prepared? (empty? (:rels context-in))))]
     (when direct-eligible?
       ;; requiring-resolve is cheap after first call: just a ns-map lookup via resolve,
       ;; since the namespace is already loaded. No need to cache the resolved var.
-      ;; Scalar/tuple :in bindings kept as single-tuple rels (so the plan cache
-      ;; key stays value-free) are absorbed as per-call consts inside
-      ;; execute-plan-prepared — the prepared-query path: one cached plan (and
-      ;; one compiled program), any parameter value, still direct execution.
-      (let [exec-prepared #?(:clj (requiring-resolve 'datahike.query.execute/execute-plan-prepared)
-                             :cljs execute/execute-plan-prepared)
-            find-var-syms (mapv (fn [^Variable el] (.-symbol el)) (:elements qfind))]
-        ;; pass the context so a NOT-JOIN sub-plan keeps its sources and cancel flag
-        (exec-prepared plan db find-var-syms (:rels context-in) (:consts context-in)
-                       nil (:cancel context-in) context-in)))))
+      (let [find-var-syms (mapv (fn [^Variable el] (.-symbol el)) (:elements qfind))]
+        (if prepared?
+          ;; Scalar/tuple :in bindings kept as single-tuple rels (so the plan
+          ;; cache key stays value-free) are absorbed as per-call consts inside
+          ;; execute-plan-prepared — the prepared-query path: one cached plan
+          ;; (and one compiled program), any parameter value, still direct.
+          (let [exec-prepared #?(:clj (requiring-resolve 'datahike.query.execute/execute-plan-prepared)
+                                 :cljs execute/execute-plan-prepared)]
+            ;; pass the context so a NOT-JOIN sub-plan keeps its sources and cancel flag
+            (exec-prepared plan db find-var-syms (:rels context-in) (:consts context-in)
+                           nil (:cancel context-in) context-in))
+          (let [exec-direct #?(:clj (requiring-resolve 'datahike.query.execute/execute-plan-direct)
+                               :cljs execute/execute-plan-direct)]
+            (exec-direct plan db find-var-syms nil (:consts context-in) (:cancel context-in)
+                         context-in)))))))
 
 (defn- post-process-result
   "Shared post-processing pipeline for both planned-relation and legacy paths.

@@ -2722,6 +2722,15 @@
     (vec (or (:output-vars group) (:vars group)))
     target-vars))
 
+(def ^:dynamic *prepared-execution*
+  "Master switch for the prepared-execution machinery (value-free plan
+   reuse for parameterized queries: single-tuple-rel absorption, per-call
+   plan rebinding, compiled point programs, and the point fast path inside
+   the fused executor). Default FALSE — every path behaves exactly as it
+   did before this machinery existed. Parameterized-workload servers (the
+   pgwire surrogate) bind it true together with *fold-scalar-ins* false."
+  false)
+
 ;; ---------------------------------------------------------------------------
 ;; Prepared-plan rebinding: plans are cached value-free (scalar :in vars stay
 ;; symbols in the clauses so one plan serves every parameter value). The fused
@@ -3027,9 +3036,10 @@
                              (vec (distinct (mapcat :vars groups))))
             emit-vars (if has-post-ops? all-group-vars find-vars)
             n-groups (count groups)
-            ;; ArrayList grows amortized-O(1); a small initial capacity avoids
-            ;; a 4000-slot backing array per point query.
-            result-list (make-result-list 64)]
+            ;; Prepared mode: ArrayList grows amortized-O(1), so a small
+            ;; initial capacity avoids a 4000-slot backing array per point
+            ;; query. Stock mode keeps the historical pre-sizing.
+            result-list (make-result-list (if *prepared-execution* 64 4000))]
 
         (if (= 1 n-groups)
           ;; Single group — fused scan+merge
@@ -3040,7 +3050,8 @@
                 g-emit (if (seq g-attached)
                          (group-emit-vars g emit-vars)
                          emit-vars)]
-            (when-not (and (nil? temporal)
+            (when-not (and *prepared-execution*
+                           (nil? temporal)
                            (try-point-group db g g-emit consts result-list max-results))
               (execute-group-direct db scan-op merge-ops g-emit consts
                                     result-list nil 0 nil 0 -1
@@ -3598,7 +3609,7 @@
   "Look up (or compile and cache) the plan's point program for
    [find-vars consts-keys]. Returns the program, or ::none."
   [plan find-vars consts-keys]
-  (let [cache (:datahike.query.execute/program-cache plan)
+  (let [cache (::program-cache (meta plan))
         k [find-vars consts-keys]]
     (if cache
       (or (get @cache k)
