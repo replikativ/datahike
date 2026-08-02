@@ -798,9 +798,23 @@
                         ok?))]
       (when (and (:finalize? opts) verified?)
         (finalize-import! conn))
+      (when-let [src-max-tx (:max-tx (:stats manifest))]
+        (let [drift (- (long (:max-tx @conn)) (long src-max-tx))]
+          (when-not (zero? drift)
+            (binding [*out* *err*]
+              (println (format "[datahike.migrate] max-tx drifted by %+d (source %d, restored %d): the restored database numbers its next transaction differently. Datom content is unaffected."
+                               drift src-max-tx (:max-tx @conn)))))))
       {:datom-count live
        :translated? (boolean translate)
        :dropped     dropped
+       ;; The restored db's max-tx is one HIGHER than the source's, because the
+       ;; import ends via `transact-entities-directly`, which bumps it once more.
+       ;; It does not compound -- a second round trip is stable -- but the restored
+       ;; database numbers its next transaction differently from the one it
+       ;; replaced, and that is the kind of thing an operator should be told
+       ;; rather than discover. nil when the dump records no source max-tx.
+       :max-tx-drift (when-let [src-max-tx (:max-tx (:stats manifest))]
+                       (- (long (:max-tx @conn)) (long src-max-tx)))
        :tx-count    (:tx-count final)
        :max-tx      (:max-tx @conn)
        :verified?   verified?
