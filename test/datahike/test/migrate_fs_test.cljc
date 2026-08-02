@@ -146,14 +146,21 @@
         (let [p (fs/join d "secret.bin")
               sink (fs/open-sink p)]
           (fs/close-sink! sink)
-          (is (contains? #{true false} (fs/restrict-perms! p false)))
-          (is (contains? #{true false} (fs/restrict-perms! d true)))
-          (is (fs/exists? p) "and the file is still there either way"))))))
+          (fs/restrict-perms! p false)
+          (fs/restrict-perms! d true)
+          (is (fs/exists? p) "the file survives the attempt")
+          (is (= 0 (count (fs/list-names p))) "and is still a file, not a directory")
+          ;; On a POSIX filesystem the request is honoured and the file is
+          ;; readable only by its owner; asserting the mode portably is not
+          ;; possible, so this asserts what IS portable — that the call does not
+          ;; destroy or move what it is protecting.
+          (is (some? (fs/read-bytes p)) "and is still readable by us"))))))
 
 (deftest deleting-a-missing-path-is-not-an-error
   (with-tmp
     (fn [d]
       (testing "cleanup runs over paths that may never have been created — a
                 temp file for a chunk that was never written, for instance."
-        (is (contains? #{true false} (fs/delete! (fs/join d "never-existed")))))))
-  )
+        (fs/delete! (fs/join d "never-existed"))
+        (is (not (fs/exists? (fs/join d "never-existed")))
+            "the path is absent afterwards, which is all the caller needs")))))

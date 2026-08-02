@@ -227,7 +227,7 @@
           _   (do (d/transact src [{:db/ident :n :db/valueType :db.type/string :db/cardinality :db.cardinality/one}])
                   (d/transact src [{:n "a"}]))
           dir (str (System/getProperty "java.io.tmpdir") "/dh-path-" (utils/get-time))
-          manifest (m/export-db src dir {:format :chunked})
+          manifest (m/export-db src dir {})
           mf (io/file dir "manifest.edn")
           poisoned (assoc-in (read-string (slurp mf)) [:chunks 0 :file] "../evil.cbor")]
       (spit mf (pr-str poisoned))
@@ -244,7 +244,7 @@
           _   (do (d/transact src [{:db/ident :n :db/valueType :db.type/string :db/cardinality :db.cardinality/one}])
                   (d/transact src [{:n "alpha"} {:n "beta"}]))
           dir (str (System/getProperty "java.io.tmpdir") "/dh-tamper-" (utils/get-time))
-          _   (m/export-db src dir {:format :chunked})
+          _   (m/export-db src dir {})
           chunk (io/file dir "datoms-000001.cbor")
           content (let [bos (java.io.ByteArrayOutputStream.)]
                     (with-open [in (io/input-stream chunk)] (io/copy in bos))
@@ -288,8 +288,8 @@
           _   (populate-rich! src)
           d1  (str (System/getProperty "java.io.tmpdir") "/dh-det1-" (utils/get-time))
           d2  (str (System/getProperty "java.io.tmpdir") "/dh-det2-" (utils/get-time))
-          m1  (m/export-db src d1 {:format :chunked :history? true :chunk-size 5})
-          m2  (m/export-db src d2 {:format :chunked :history? true :chunk-size 5})]
+          m1  (m/export-db src d1 {:history? true :chunk-size 5})
+          m2  (m/export-db src d2 {:history? true :chunk-size 5})]
       (is (= (:semantic-digest m1) (:semantic-digest m2)))
       (is (= (mapv :sha256 (:chunks m1)) (mapv :sha256 (:chunks m2))))
       (let [rd (fn [f] (let [bos (java.io.ByteArrayOutputStream.)]
@@ -439,7 +439,7 @@
       (doseq [batch (partition-all 500 (range n))]
         (d/transact src (mapv (fn [i] {:k i :s (str "v" i)}) batch)))
       (let [dir (str (System/getProperty "java.io.tmpdir") "/dh-scale-" (utils/get-time))
-            manifest (m/export-db src dir {:format :chunked :history? true
+            manifest (m/export-db src dir {:history? true
                                            :sort-buffer 300 :chunk-size 250})
             tgt (utils/setup-db (mem-cfg {:history? true}))
             report (m/import-db tgt dir {:batch-size 200})]

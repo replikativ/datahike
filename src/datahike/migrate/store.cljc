@@ -13,13 +13,13 @@
    differs — the format, per-chunk SHA-256, and semantic digest are identical to
    the filesystem dump.
 
-   ## This is the portable medium
+   ## The browser's only medium
 
-   The filesystem medium is JVM-only and will stay that way: directories, POSIX
-   permissions, path canonicalisation and `.tmp` renames have no counterpart in a
-   browser, and on node a konserve store IS the filesystem when you want it to be
-   (`konserve.node-filestore`). So this namespace is where a ClojureScript export
-   or import goes, and it is `.cljc` accordingly.
+   The filesystem medium works on the JVM and on Node (see `datahike.migrate.fs`)
+   but cannot work in a BROWSER, which has no directories. So this namespace is
+   where a browser export or import goes, and it is `.cljc` accordingly. On Node
+   either medium works, and a konserve store IS the filesystem when you want it
+   to be (`konserve.node-filestore`).
 
    Two things had to change shape for that, and neither is cosmetic:
 
@@ -56,6 +56,12 @@
 
 (def ^:private ns-tag "datahike.migrate")
 
+(def ^:private mblobs-dir
+  "Kept in step with `datahike.migrate.blobs/dir-name`; spelled here rather than
+   required to keep this namespace free of the blob machinery, which is JVM-only
+   while this one is not."
+  "store-refs")
+
 (defn store-target?
   "True if `x` designates a konserve store medium (open store or backend config),
    as opposed to a filesystem path/File."
@@ -64,15 +70,33 @@
 
 (defn- ckey [prefix x] [ns-tag prefix x])
 
-(defn- chunk-name
-  "`datoms-000001`. Written out rather than with `format`, which ClojureScript
-   does not have."
+(defn chunk-name
+  "`datoms-000001.cbor` — the SAME name a filesystem dump uses.
+
+   It used to omit the extension here, so the two media wrote different values
+   into the same manifest field and `migrate/chunk-re` (which validates a chunk
+   name before opening it) matched one and rejected the other. That went
+   unnoticed only because the validation is never applied to a store manifest,
+   and it made this namespace's claim that the format is \"identical to the
+   filesystem dump\" false in the one field a reader looks at first.
+
+   Written out rather than with `format`, which ClojureScript does not have."
   [n]
   (let [s (str n)
         pad (- 6 (count s))]
-    (str "datoms-" (apply str (repeat (max 0 pad) "0")) s)))
+    (str "datoms-" (apply str (repeat (max 0 pad) "0")) s ".cbor")))
 
 (defn- chunk-key [prefix n] (ckey prefix (chunk-name n)))
+
+(defn blob-key
+  "Where a carried `:db.type/store-ref` blob lives in a store dump.
+
+   Under the dump's own prefix, like everything else it owns. Blobs used to sit
+   at `[\"store-refs\" id]` — outside the namespace tag AND outside the prefix —
+   so deleting a dump's prefix orphaned its blobs, and two dumps in one store
+   shared a blob area neither of them named."
+  [prefix id]
+  (ckey prefix (str mblobs-dir "/" id)))
 
 (defn open
   "Open a medium from a target spec. Returns {:store :prefix :owned?}; call `close`.

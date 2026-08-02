@@ -14,16 +14,22 @@
    only to work around clj-cbor narrowing three double values; boring removed the
    reason, and with it the base64 wrapper every binary value used to need.
 
-   The legacy 2-arity remains for backward compatibility and additionally still
-   *reads* old flat CBOR dumps on import. Import runs through
-   `load-entities`, which remaps entity/tx ids while preserving `[e a v t op]`
-   structure — a restored db is semantically equivalent, never id-identical.
+   Old single-file CBOR dumps — the format released datahike wrote — are still
+   READ on import; a dump is chosen by the shape of the source, not by an arity.
+   Import runs through `load-entities`, which remaps entity/tx ids while
+   preserving `[e a v t op]` structure — a restored db is semantically
+   equivalent, never id-identical.
 
-   Import is NOT resumable: the id-remap (`:migration`) is memory-only and dropped
-   on reconnect, so a partial import must be recreated-and-restarted rather than
-   resumed. Export IS resumable (completed chunks are content-addressed). A
-   `:history? true` export resurrects retracted data — see the data-protection note
-   in `import-db`/the backup guide."
+   NEITHER export nor import is resumable. The import's id-remap (`:migration`)
+   is memory-only and dropped on reconnect, so a partial import must be recreated
+   and restarted; a partial export leaves a directory with no manifest, since the
+   manifest is written last as the commit marker, and is restarted the same way.
+   (This used to claim export was resumable because completed chunks were
+   content-addressed. They are not — they are numbered `datoms-NNNNNN`, and
+   `write-chunked!` always restarts at 1.)
+
+   A `:history? true` export resurrects retracted data — see the data-protection
+   note in `import-db`/the backup guide."
   (:require [datahike.api :as api]
             [datahike.constants :as c]
             [datahike.datom :as d]
@@ -71,11 +77,6 @@
           (keep (fn [e] (when-let [i (dbi/-ident-for db e)] [e i])))
           (dbi/-system-entities db))
     {}))
-
-(defn- restrict-perms!
-  "Make a dump owner-only. Best-effort — see `fs/restrict-perms!`."
-  [p dir?]
-  (fs/restrict-perms! p dir?))
 
 ;; ---------------------------------------------------------------------------
 ;; export
@@ -195,8 +196,7 @@
         (throw (ex-info (str "This dump requires capabilities this version of datahike "
                              "cannot interpret: " (pr-str (vec (sort missing)))
                              ". It was written by datahike "
-                             (or (get-in manifest [:datahike/meta :datahike/version])
-                                 (:datahike-version manifest) "?")
+                             (get-in manifest [:datahike/meta :datahike/version] "?")
                              "; upgrade to import it, or re-export from a database that "
                              "does not use these features.")
                         {:error :import/unsupported-capabilities
@@ -205,11 +205,10 @@
                          :supported (vec (sort supported-capabilities))})))))
   nil)
 
-(defn- build-manifest [db {:keys [history?] :as _opts} digest chunks]
+(defn- build-manifest [db {:keys [history?] :as opts} digest chunks]
   (let [cfg (dbi/-config db)]
     (array-map
      manifest-key                    format-version
-     :datahike-version               (try (System/getProperty "datahike.version") (catch Throwable _ nil))
      :history?                       (boolean history?)
      :serialization                  :cbor-seq
      ;; Provenance in the SAME shape the store carries (`datahike.tools/meta-data`,
@@ -219,7 +218,7 @@
      ;; …and, separately, what is needed to READ this dump. See `dump-requires`:
      ;; provenance is for diagnostics, capabilities are for the accept/reject
      ;; decision, and conflating them is what makes a version stamp too blunt.
-     :requires                       (vec (sort (dump-requires db _opts (::blob-plan _opts))))
+     :requires                       (vec (sort (dump-requires db opts (::blob-plan opts))))
      :source-config                  (into (array-map :store-backend (get-in cfg [:store :backend]))
                                            (map (fn [k] [k (get cfg k)]))
                                            (sort source-config-allowlist))
@@ -238,13 +237,20 @@
      ;; and cannot be copied. Recording both halves means an import can refuse a
      ;; dump whose referents it cannot place, instead of restoring datoms that
      ;; name objects which are not there.
-     :store-refs                     (when-let [p (::blob-plan _opts)]
+     :store-refs                     (when-let [p (::blob-plan opts)]
                                        (mblobs/manifest-entry p))
      :chunks                         (vec chunks))))
 
-(def chunk-re #"^datoms-\d{6}\.cbor$")
+(def ^:private default-batch-size
+  "Datoms per `load-entities` call. One definition — it had three, two of them
+   spelled `(:batch-size (merge {:batch-size 100000} opts))`."
+  100000)
 
-(defn- chunk-name [n] (format "datoms-%06d.cbor" n))
+(def ^:private chunk-re #"^datoms-\d{6}\.cbor$")
+
+(def ^:private chunk-name
+  "One spelling for both media — see `datahike.migrate.store/chunk-name`."
+  mstore/chunk-name)
 
 (defn- write-chunk-stream!
   "Write up to `limit` records from the (lazy) seq `records` to `f` as a CBOR
@@ -271,20 +277,27 @@
 
 (defn- write-chunked! [db opts dir sorted-records chunk-size progress]
   (fs/mkdirs! dir)
-  (restrict-perms! dir true)
+  (when-not (fs/directory? dir)
+    (throw (ex-info (str "Could not create the dump directory " dir)
+                    {:error :export/mkdir-failed :dir (str dir)})))
+  (fs/restrict-perms! dir true)
   (loop [ls (seq sorted-records) n 1 chunks [] dacc (dig/accumulator)]
     (if (nil? ls)
       (let [manifest (build-manifest db opts (dig/finalize dacc) chunks)]
         (fs/spit-text! (fs/join dir "manifest.edn") (pr-str manifest))
-        (restrict-perms! (fs/join dir "manifest.edn") false)
+        (fs/restrict-perms! (fs/join dir "manifest.edn") false)
         (progress {:phase :done :datoms (:count (dig/finalize dacc))})
         manifest)
       (let [fname (chunk-name n)
             tmp   (fs/join dir (str fname ".tmp"))
             final (fs/join dir fname)
             [rem cnt sha dacc'] (write-chunk-stream! tmp ls chunk-size dacc)]
-        (fs/rename! tmp final)
-        (restrict-perms! final false)
+        (when-not (fs/rename! tmp final)
+          (throw (ex-info (str "Could not move the finished chunk into place: "
+                               tmp " -> " final ". The manifest would name a file "
+                               "that is not there.")
+                          {:error :export/rename-failed :from (str tmp) :to (str final)})))
+        (fs/restrict-perms! final false)
         (progress {:phase :chunk :datoms cnt})
         (recur (seq rem) (inc n)
                (conj chunks {:file fname :count cnt :bytes (fs/file-size final) :sha256 sha})
@@ -295,42 +308,56 @@
   [target]
   (fs/join target mblobs/dir-name))
 
-(defn- blob-writer
-  "`(fn [id bytes])` writing one blob into `target`'s blob area."
-  [target opts]
-  (cond
-    (mstore/store-target? target)
+(defn- with-blob-writer
+  "Call `f` with `(fn [id bytes])` writing one blob into `target`'s blob area,
+   releasing the medium afterwards.
+
+   Takes a callback rather than returning the function because a store target
+   has to be OPENED, and the previous shape — return a closure over an open
+   store — had nowhere to close it. `blob-writer`, `blob-reader` and
+   `verify-blobs` each leaked one connection per call, so an export plus an
+   import plus a verify against a `{:backend ...}` config opened three stores and
+   released none."
+  [target f]
+  (if (mstore/store-target? target)
     (let [m (mstore/open target)]
-      (fn [id bytes]
-        (try (<?? S (k/bassoc (:store m) [mblobs/dir-name id] bytes))
-             (finally nil))))
+      (try
+        (f (fn [id bytes]
+             (<?? S (k/bassoc (:store m) (mstore/blob-key (:prefix m) id) bytes))))
+        (finally (mstore/close m))))
+    (let [dir (blob-dir target)]
+      (when-not (fs/mkdirs! dir)
+        (when-not (fs/directory? dir)
+          (throw (ex-info (str "Could not create the blob directory " dir)
+                          {:error :export/blob-dir-failed :dir (str dir)}))))
+      (f (fn [id bytes]
+           (let [sink (fs/open-sink (fs/join dir (str id)))]
+             (try (fs/write! sink bytes) (finally (fs/close-sink! sink)))))))))
 
-    :else
-    (let [dir (doto (blob-dir target) (fs/mkdirs!))]
-      (fn [id bytes]
-        (let [sink (fs/open-sink (fs/join dir (str id)))]
-          (try (fs/write! sink bytes) (finally (fs/close-sink! sink))))))))
-
-(defn- blob-reader
-  "`(fn [id]) -> bytes-or-nil` reading one blob back out of a dump."
-  [source]
+(defn- with-blob-reader
+  "Call `f` with `(fn [id]) -> bytes-or-nil` reading blobs out of a dump,
+   releasing the medium afterwards. See `with-blob-writer`."
+  [source f]
   (if (mstore/store-target? source)
     (let [m (mstore/open source)]
-      ;; `to-bytes` rather than a hand-rolled callback: `bget`'s handle has four
-      ;; different shapes across backends and platforms, and that knowledge now
-      ;; lives in konserve (replikativ/konserve#162) instead of being re-derived
-      ;; at every call site — this was one of them.
-      (fn [id]
-        (<?? S (k/bget (:store m) [mblobs/dir-name id] (kb/to-bytes {:sync? false})))))
-    (fn [id]
-      (let [f (fs/join (blob-dir source) (str id))]
-        (when (fs/exists? f) (fs/read-bytes f))))))
+      (try
+        ;; `to-bytes` rather than a hand-rolled callback: `bget`'s handle has four
+        ;; different shapes across backends and platforms, and that knowledge now
+        ;; lives in konserve (replikativ/konserve#162) instead of being re-derived
+        ;; at every call site — this was one of them.
+        (f (fn [id]
+             (<?? S (k/bget (:store m) (mstore/blob-key (:prefix m) id)
+                            (kb/to-bytes {:sync? false})))))
+        (finally (mstore/close m))))
+    (f (fn [id]
+         (let [f' (fs/join (blob-dir source) (str id))]
+           (when (fs/exists? f') (fs/read-bytes f')))))))
 
 (defn export-db
   "Export a database (or connection) to `target`.
 
-   2-arity keeps the legacy surface but writes the type-exact EDN format. 3-arity
-   opts:
+   Writes a DIRECTORY: `manifest.edn`, `datoms-NNNNNN.cbor`, and `store-refs/`
+   when the database has `:db.type/store-ref` blobs. Opts:
      :history?     false        include full history (asserts+retracts+tx entities)
      :chunk-size   1000000      datoms per chunk file (50000 for store targets —
                                 a store chunk is held in memory as one value)
@@ -399,7 +426,7 @@
      ;; ordering the konserve-sync walker needs when it ships blobs ahead of the
      ;; branch head: nothing may name an object that is not there yet.
      (when-let [plan (::blob-plan opts)]
-       (mblobs/copy-out! (:store db) plan (blob-writer target opts)))
+       (with-blob-writer target #(mblobs/copy-out! (:store db) plan %)))
      (if (:sort? opts)
        (let [records (export-records db opts)
              tmp-dir (fs/temp-dir! "dh-export")]
@@ -464,7 +491,17 @@
             files    (mapv #(validate-chunk-file f (:file %)) (:chunks manifest))]
         {:manifest manifest :legacy? false :files files})
 
+      (not (fs/exists? f))
+      (throw (ex-info (str "No dump at " f ". A dump is a DIRECTORY containing "
+                           "manifest.edn and datoms-NNNNNN.cbor.")
+                      {:error :import/no-such-dump :source (str f)}))
+
       :else
+      ;; An existing non-directory: the legacy single-file format released
+      ;; datahike wrote. A path that does not exist at all is caught above, so
+      ;; a typo no longer reaches the legacy reader and surfaces as a bare
+      ;; FileNotFoundException — the one error in this namespace that had no
+      ;; `:error` key.
       {:manifest {manifest-key 0 :serialization :cbor :legacy? true}
        :legacy? true :files []})))
 
@@ -543,7 +580,7 @@
       :current-max-heap-bytes .. :current-max-heap \"512 MB\" :sufficient? bool}"
   ([source] (estimate-import-memory source {}))
   ([source opts]
-   (let [batch-size (:batch-size (merge {:batch-size 100000} opts))]
+   (let [batch-size (get opts :batch-size default-batch-size)]
      (if (mstore/store-target? source)
        (let [m (mstore/open source)]
          (try
@@ -661,7 +698,8 @@
    memory estimate. Handles guards, attribute-refs seeding, the tx-aligned batcher,
    verification, finalization, and the report."
   [conn manifest mem reduce-lines opts]
-  (let [opts     (merge {:batch-size 100000 :verify? true :on-error :abort :finalize? true} opts)
+  (let [opts     (merge {:batch-size default-batch-size :verify? true
+                         :on-error :abort :finalize? true} opts)
         progress (or (:progress-fn opts) (constantly nil))
         translate (:translate opts)
         batch-size (:batch-size opts)
@@ -736,7 +774,12 @@
                                            :expected-count expected
                                            :live-count live})))
                         ok?))]
-      (when (and (:finalize? opts) verified?)
+      ;; `verified?` is nil when verification was not RUN, and false when it ran
+      ;; and failed. Treating nil as failure meant `:verify? false` silently
+      ;; disabled `:finalize?`, leaving the O(entities) `:migration` id-map in
+      ;; the db value forever — on exactly the imports big enough that someone
+      ;; turned verification off to save time.
+      (when (and (:finalize? opts) (not (false? verified?)))
         (finalize-import! conn))
       (when-let [src-max-tx (:max-tx (:stats manifest))]
         (let [drift (- (long (:max-tx @conn)) (long src-max-tx))]
@@ -758,7 +801,7 @@
        :tx-count    (:tx-count final)
        :max-tx      (:max-tx @conn)
        :verified?   verified?
-       :finalized?  (boolean (and (:finalize? opts) verified?))
+       :finalized?  (boolean (and (:finalize? opts) (not (false? verified?))))
        :recommended-heap (:recommended-heap mem)
        :errors      errors})))
 
@@ -780,7 +823,7 @@
   (when-let [store-refs (:store-refs manifest)]
     (mblobs/check-importable store-refs opts)
     (when (seq (:carried store-refs))
-      (mblobs/copy-in! (:store @conn) store-refs (blob-reader source)))))
+      (with-blob-reader source #(mblobs/copy-in! (:store @conn) store-refs %)))))
 
 (defn import-db
   "Import a dump produced by `export-db` into connection `conn`.
@@ -830,7 +873,7 @@
    Refuses a non-empty target (import is not resumable — recreate and restart)."
   ([conn source] (import-db conn source {}))
   ([conn source opts]
-   (let [batch-size (:batch-size (merge {:batch-size 100000} opts))]
+   (let [batch-size (get opts :batch-size default-batch-size)]
      (if (mstore/store-target? source)
        (let [m (mstore/open source)]
          (try
@@ -953,6 +996,26 @@
                    [] picks)]
         {:sampled (count picks) :ok? (empty? diffs) :diffs (vec (take 5 diffs))}))))
 
+(defn- verify-blobs*
+  [store-refs read-blob]
+  (let [declared (vec (:carried store-refs))
+        results  (mapv (fn [id]
+                         (let [bytes (read-blob id)]
+                           (cond
+                             (nil? bytes)                        [:missing id]
+                             (not (mblobs/verify-blob id bytes)) [:corrupt id]
+                             :else                               [:ok id])))
+                       declared)
+        missing  (mapv second (filter #(= :missing (first %)) results))
+        corrupt  (mapv second (filter #(= :corrupt (first %)) results))]
+    {:ok?             (and (empty? missing) (empty? corrupt))
+     :declared        (count declared)
+     :verified        (count (filter #(= :ok (first %)) results))
+     :missing         missing
+     :corrupt         corrupt
+     :external        (count (:external store-refs))
+     :self-contained? (boolean (:self-contained? store-refs))}))
+
 (defn- verify-blobs
   "Check that a dump holds every blob it declares, and that each one's bytes hash
    to the id it is filed under.
@@ -969,24 +1032,7 @@
    which the manifest states, and it is the operator who must place them."
   [manifest source]
   (if-let [store-refs (:store-refs manifest)]
-    (let [read-blob (blob-reader source)
-          declared  (vec (:carried store-refs))
-          results   (mapv (fn [id]
-                            (let [bytes (read-blob id)]
-                              (cond
-                                (nil? bytes)                    [:missing id]
-                                (not (mblobs/verify-blob id bytes)) [:corrupt id]
-                                :else                           [:ok id])))
-                          declared)
-          missing   (mapv second (filter #(= :missing (first %)) results))
-          corrupt   (mapv second (filter #(= :corrupt (first %)) results))]
-      {:ok?            (and (empty? missing) (empty? corrupt))
-       :declared       (count declared)
-       :verified       (count (filter #(= :ok (first %)) results))
-       :missing        missing
-       :corrupt        corrupt
-       :external       (count (:external store-refs))
-       :self-contained? (boolean (:self-contained? store-refs))})
+    (with-blob-reader source #(verify-blobs* store-refs %))
     ;; no store-refs section: either no blobs, or a dump predating blob carriage
     {:ok? true :declared 0 :verified 0 :missing [] :corrupt []
      :external 0 :self-contained? true}))
@@ -1055,11 +1101,6 @@
   "DEPRECATED. max-tx is maintained by load-entities; retained for old dumps."
   [db datoms]
   (assoc db :max-tx (reduce #(max %1 (nth %2 3)) (:max-tx db 0) datoms)))
-
-(defn ^:deprecated update-max-tx-from-file
-  "DEPRECATED no-op wrapper retained for backward compatibility."
-  [db _file]
-  db)
 
 (defn- instance-to-date [v]
   (if (instance? java.time.Instant v) (java.util.Date/from v) v))

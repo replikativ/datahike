@@ -143,10 +143,10 @@
 
       JVM only, because streaming decode is: boring's ClojureScript reader takes a
       whole buffer, with no `decode-seq-from` counterpart. That is not a gap the
-      portable dump path feels — a konserve chunk arrives as one value already
-      bounded by `:chunk-size`, so `decode-records-from` over those bytes is the
-      whole job. It is the FILESYSTEM medium, which streams a multi-gigabyte flat
-      dump through one handle, that needs this."
+      dump path feels: a konserve chunk arrives as one value already bounded by
+      `:chunk-size`, and the filesystem medium streams through
+      `decode-records-pulled`. This arity survives for the LEGACY reader, which
+      is JVM-only and holds an InputStream over an old single-file dump."
      [in]
      (boring/decode-seq-from in opts)))
 

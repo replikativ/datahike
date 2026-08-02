@@ -140,14 +140,6 @@
   #?(:clj (.renameTo (io/file from) (io/file to))
      :cljs (do (.renameSync (fs) (str from) (str to)) true)))
 
-(defn temp-file!
-  "Create an empty file under `dir` and return its path."
-  [dir prefix suffix]
-  #?(:clj (str (File/createTempFile prefix suffix (io/file dir)))
-     :cljs (let [p (join dir (str prefix (.toString (js/Math.floor (* (js/Math.random) 1e12)) 36) suffix))]
-             (.writeFileSync (fs) p (js/Uint8Array. 0))
-             p)))
-
 (defn temp-dir!
   "Create a fresh directory under the system temp location and return its path."
   [prefix]
@@ -190,8 +182,8 @@
 ;; bytes
 
 (defn read-bytes
-  "The whole file. For a CHUNK, which is bounded by `:chunk-size`; never for a
-   flat dump, which is what `puller` is for."
+  "The whole file, as a copy the caller owns. For a CHUNK, which is bounded by
+   `:chunk-size`; use `puller` for anything unbounded."
   [p]
   #?(:clj (let [f (io/file p)
                 bs (byte-array (.length f))]
@@ -201,33 +193,25 @@
                   (when (pos? n) (recur (+ off n))))))
             bs)
      :cljs (let [b (.readFileSync (fs) (str p))]
-             ;; a Node Buffer IS a Uint8Array, but it is a VIEW onto a shared
-             ;; pool — `.slice` on a Buffer copies nothing, so take an explicit
-             ;; copy rather than hand out a window that later writes may reuse
-             (js/Uint8Array. (.-buffer b) (.-byteOffset b) (.-byteLength b)))))
+             ;; A COPY. `readFileSync` draws small buffers from Node's shared
+             ;; pool, so the returned Buffer can be a window onto memory a later
+             ;; read reuses — and `(js/Uint8Array. buffer byteOffset byteLength)`
+             ;; constructs another view onto that same memory rather than
+             ;; copying, which is what this used to do while its comment claimed
+             ;; the opposite. `(js/Uint8Array. b)` copies element-wise.
+             (js/Uint8Array. b))))
 
 (defn open-sink
-  "Open `p` for writing bytes. Use with `write!` and `close-sink!`.
-
-   `append?` is what lets a flat dump write its EDN manifest line first and then
-   stream the CBOR sequence after it, without holding either."
-  ([p] (open-sink p false))
-  ([p append?]
-   #?(:clj {:stream (io/output-stream (io/file p) :append (boolean append?))}
-      :cljs {:fd (.openSync (fs) (str p) (if append? "a" "w"))})))
+  "Open `p` for writing bytes. Use with `write!` and `close-sink!`."
+  [p]
+  #?(:clj {:stream (io/output-stream (io/file p))}
+     :cljs {:fd (.openSync (fs) (str p) "w")}))
 
 (defn write!
   "Append `bs` (bytes) to an open sink."
   [sink bs]
   #?(:clj (.write ^java.io.OutputStream (:stream sink) ^bytes bs)
      :cljs (.writeSync (fs) (:fd sink) bs)))
-
-(defn write-text!
-  "Append a UTF-8 string to an open sink — the flat dump's manifest line."
-  [sink s]
-  #?(:clj (.write ^java.io.OutputStream (:stream sink)
-                  (.getBytes ^String s "UTF-8"))
-     :cljs (.writeSync (fs) (:fd sink) s)))
 
 (defn close-sink! [sink]
   #?(:clj (.close ^java.io.OutputStream (:stream sink))
@@ -238,9 +222,7 @@
 
    `:pull` is exactly the source `boring/decode-seq-from` wants on
    ClojureScript, and wrapping the JVM's `InputStream` in the same shape means
-   `migrate` has ONE spelling for streaming a dump instead of two. `:skip` bytes
-   are dropped first, which is how a flat dump's reader steps over the EDN
-   manifest line without re-reading the file.
+   `migrate` has ONE spelling for streaming a dump instead of two.
 
    `fs.readSync` is genuinely synchronous, so the resulting lazy seq behaves as
    it does on the JVM. That is the whole reason a file dump can be portable
