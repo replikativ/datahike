@@ -16,7 +16,7 @@
         ;; published NodeState — a pipelining writer's copies can never observe a torn settle;
         ;; 0.4.137 projects diff-buf diffs onto a COPY of the restored node, so tree versions
         ;; sharing a durable anchor through the node cache can't clobber each other's reads
-        org.replikativ/persistent-sorted-set        {:mvn/version "0.4.138"}
+        org.replikativ/persistent-sorted-set        {:mvn/version "0.4.139"}
         is.simm/partial-cps                         {:mvn/version "0.1.59"}
         environ/environ                             {:mvn/version "1.2.0"}
         nrepl/bencode                               {:mvn/version "1.2.0"}
@@ -107,12 +107,6 @@
                                ;; S3-compatible store integration test (migrate-s3-test, needs docker; runs Garage)
                                org.replikativ/konserve-s3    {:mvn/version "0.1.35"}
                                http-kit/http-kit             {:mvn/version "2.8.1"}}}
-
-           ;; Bulk-build import: needs persistent-sorted-set's streaming
-           ;; `from-sorted-seq` (replikativ/persistent-sorted-set#22). Local root
-           ;; until that releases; the rest of the migrate path does not need it.
-           :bulk {:override-deps
-                  {org.replikativ/persistent-sorted-set {:local/root "../persistent-sorted-set"}}}
 
            :datomic {:extra-deps {com.datomic/datomic-free {:mvn/version "0.9.5703"}}}
 

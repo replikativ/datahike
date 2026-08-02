@@ -576,23 +576,18 @@
      (let [xs (if (= index-type :avet)
                 (filter #(contains? indexed (.-a ^Datom %)) sorted-datoms)
                 sorted-datoms)
-           ;; Resolved at CALL time, not compile time: `from-sorted-seq` is not in
-           ;; the released persistent-sorted-set yet
-           ;; (replikativ/persistent-sorted-set#22). A direct reference would make
-           ;; this namespace — and therefore all of datahike — fail to COMPILE
-           ;; against the declared dependency, which is far worse than a clear
-           ;; error from the one caller who asked for the fast path.
-           build (or (requiring-resolve 'org.replikativ.persistent-sorted-set/from-sorted-seq)
-                     (throw (ex-info (str "init-index-sorted needs persistent-sorted-set/from-sorted-seq "
-                                          "(see replikativ/persistent-sorted-set#22); "
-                                          "use init-index instead")
-                                     {:error :datahike/streaming-builder-unavailable})))
+           ;; A direct call now. This was a `requiring-resolve` while
+           ;; `from-sorted-seq` was unreleased (replikativ/persistent-sorted-set#22),
+           ;; because a compile-time reference would have made all of datahike
+           ;; fail to load against the declared dependency. Released in 0.4.139,
+           ;; so the indirection — and the `:bulk` local-root alias beside it —
+           ;; are gone.
            ^PersistentSortedSet pset
-           (build (index-type->cmp-quick index-type false)
-                  xs
-                  {:branching-factor (:datahike/branching-factor store DEFAULT_BRANCHING_FACTOR)
-                   :diff-buf-size (:datahike/diff-buf-size store 0)
-                   :storage (:storage store)})]
+           (psset/from-sorted-seq (index-type->cmp-quick index-type false)
+                                  xs
+                                  {:branching-factor (:datahike/branching-factor store DEFAULT_BRANCHING_FACTOR)
+                                   :diff-buf-size (:datahike/diff-buf-size store 0)
+                                   :storage (:storage store)})]
        (set! (.-_storage pset) (:storage store))
        (with-meta pset (root-meta store index-type)))))
 

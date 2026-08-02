@@ -64,7 +64,9 @@
             [datahike.test.migrate-manifest-test]
             ;; Blob content ids must be IDENTICAL across platforms — the id is
             ;; the datom value, the konserve key AND the dump filename.
-            [datahike.test.blob-identity-test]))
+            [datahike.test.blob-identity-test]
+            ;; export/import ON NODE — the point of the whole conversion.
+            [datahike.test.migrate-node-test]))
 
 ;; Hook cljs.test's end-of-run callback so the Node process exits with
 ;; status 0 only when all tests pass. The previous setup always exited
@@ -744,6 +746,7 @@
                'datahike.test.migrate-fs-test
                'datahike.test.migrate-manifest-test
                'datahike.test.blob-identity-test
+               'datahike.test.migrate-node-test
                'datahike.test.nodejs-test
                'datahike.test.index-test
                'datahike.test.cljs-tiered-storage-test

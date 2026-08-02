@@ -41,7 +41,11 @@
             [datahike.migrate.digest :as dig]
             [datahike.migrate.compress :as mz]
             [datahike.migrate.fs :as fs]
-            [datahike.migrate.legacy :as mlegacy]
+            ;; JVM-only by nature, both of them. The legacy single-file reader
+            ;; can only meet a dump written by an old JVM datahike; the external
+            ;; merge sort's k-way merge is a lazy seq over open files, which
+            ;; cannot pull from async IO.
+            #?(:clj [datahike.migrate.legacy :as mlegacy])
             [datahike.migrate.manifest :as mman
              :refer [->db a-ident attribute-refs? build-manifest
                      chunk-name chunk-re codec-of config-must-match datom->record
@@ -50,17 +54,24 @@
                      export-records export-records-streaming
                      ident-schema manifest-key norm-val read-manifest-map
                      system-idents bytes->human]]
-            [datahike.migrate.sort :as msort]
+            #?(:clj [datahike.migrate.sort :as msort])
             [datahike.migrate.store :as mstore]
             [datahike.migrate.blobs :as mblobs]
-            [clojure.java.io :as io]
             [clojure.edn :as edn]
             [clojure.core.async :as async]
             [konserve.core :as k]
             [konserve.binary :as kb]
-            [konserve.utils :refer [async+sync *default-sync-translation*]]
-            [superv.async :refer [go-try- <?-]])
-  (:import [datahike.migrate.cbor SysRef]))
+            #?(:clj  [konserve.utils :refer [async+sync *default-sync-translation*]]
+               :cljs [konserve.utils :refer [*default-sync-translation*]
+                      :refer-macros [async+sync]])
+            #?(:clj  [superv.async :refer [go-try- <?-]]
+               :cljs [superv.async :refer-macros [go-try- <?-]])
+            ;; load-bearing on ClojureScript: `go-try-` expands into
+            ;; `clojure.core.async/go`, and without this refer the compiler picks
+            ;; the CLOJURE macro, whose `go-impl` walks `&env` expecting symbol
+            ;; keys — cljs `&env` is the compiler map, with keyword keys.
+            #?(:cljs [clojure.core.async :refer-macros [go]]))
+  )
 
 ;; Public names that used to be defined here and now live in
 ;; `datahike.migrate.manifest`. Re-exported rather than left to `:refer`, which
@@ -68,6 +79,17 @@
 ;; and `m/check-capabilities!` would have stopped resolving for anyone outside.
 (def format-version mman/format-version)
 (def check-capabilities! mman/check-capabilities!)
+
+(defn- warn!
+  "Operator-facing warning on stderr.
+
+   One helper rather than two hand-written `(binding [*out* *err*] (println
+   (format …)))` forms, because neither `*err*` nor `format` exists in
+   ClojureScript — `console.warn` is the counterpart, and a warning that throws
+   is worse than no warning."
+  [msg]
+  #?(:clj (binding [*out* *err*] (println msg))
+     :cljs (js/console.warn msg)))
 
 (defn- write-chunk-stream!
   "Write up to `limit` records from the (lazy) seq `records` to `f` as a CBOR
@@ -288,7 +310,13 @@
          ;; IO. When this file becomes .cljc the cljs branch refuses it by name;
          ;; `:sort? false` needs no scratch space at all and is portable.
          (let [records (if (:sort? opts)
-                         (export-records db opts)
+                         #?(:clj (export-records db opts)
+                            :cljs (throw (ex-info (str ":sort? true needs the external merge sort, "
+                                                       "which is JVM-only — its k-way merge is a lazy "
+                                                       "seq over open files and cannot pull from async "
+                                                       "IO. Pass :sort? false; it needs no scratch "
+                                                       "space at all.")
+                                                  {:error :export/sort-not-portable})))
                          (export-records-streaming db opts))
                tmp-dir (when (:sort? opts) (fs/temp-dir! "dh-export"))]
            (try
@@ -297,8 +325,9 @@
              ;; — the same rule that reshaped the importer. Inlined so the awaits
              ;; sit at statement positions.
              (let [sorted (if (:sort? opts)
-                            (msort/external-sort records (:sort-buffer opts)
-                                                 (clojure.java.io/file tmp-dir))
+                            #?(:clj (msort/external-sort records (:sort-buffer opts)
+                                                         (clojure.java.io/file tmp-dir))
+                               :cljs records)
                             records)]
                (if (mstore/store-target? target)
                  (let [m (<?- (mstore/open target opts))]
@@ -486,7 +515,7 @@
   "Replace any SysRef value in a record with the target's system-entity eid."
   [db record]
   (let [v (nth record 2)]
-    (if (instance? SysRef v)
+    (if (mcbor/sysref? v)
       (assoc record 2 (dbi/-ref-for db (:ident v)))
       record)))
 
@@ -522,7 +551,10 @@
    (:sync? opts) *default-sync-translation*
    (go-try-
     (let [p (api/load-entities conn batch)]
-      (if (:sync? opts) @p (<?- p))))))
+      ;; ClojureScript has no blocking deref, and `:sync? true` is refused there
+      ;; by `assert-sync-supported!` at the entry points.
+      #?(:clj (if (:sync? opts) @p (<?- p))
+         :cljs (<?- p))))))
 
 (defn- collect-apply!
   "Apply a tx-aligned batch under :on-error :collect. Fast path applies the whole
@@ -554,7 +586,7 @@
    (:sync? opts) *default-sync-translation*
    (go-try-
     (let [ok? (try (<?- (load-batch! conn batch opts)) true
-                   (catch Exception _ false))]
+                   (catch #?(:clj Exception :cljs :default) _ false))]
       (if ok?
         (do (progress {:phase :batch :datoms (count batch)}) [])
         (loop [groups (seq (partition-by #(nth % 3) batch)) errs []]
@@ -562,7 +594,7 @@
             errs
             (let [tx-group (vec (first groups))
                   tx-ok? (try (<?- (load-batch! conn tx-group opts)) true
-                              (catch Exception _ false))]
+                              (catch #?(:clj Exception :cljs :default) _ false))]
               (if tx-ok?
                 (recur (next groups) errs)
                 (recur (next groups)
@@ -571,7 +603,7 @@
                            errs
                            (let [d (first ds)
                                  ex (try (<?- (load-batch! conn [d] opts)) nil
-                                         (catch Exception e e))]
+                                         (catch #?(:clj Exception :cljs :default) e e))]
                              (recur (next ds)
                                     (if ex
                                       (conj errs {:error (or (:error (ex-data ex)) :import/corrupt-datom)
@@ -592,7 +624,7 @@
         ;; the failure is captured and RETHROWN outside the handler: core.async
         ;; cannot park inside a `catch`, and the throw has to follow the await
         (let [ex (try (<?- (load-batch! conn batch opts)) nil
-                      (catch Exception e e))]
+                      (catch #?(:clj Exception :cljs :default) e e))]
           (if ex
             (throw (ex-info (str "Import aborted: " (ex-message ex))
                             (merge (ex-data ex) {:error :import/corrupt-datom}) ex))
@@ -668,10 +700,12 @@
     ;; this file becomes .cljc: a bug placed one commit before the commit that
     ;; would have detonated it.
     (when (false? (:sufficient? mem))
-      (binding [*out* *err*]
-        (println (format "[datahike.migrate] heap warning: importing %d datoms (~%d entities) needs about %s; this JVM's -Xmx is %s. Raise -Xmx (the id-remap map is held until finalize) or expect OutOfMemoryError."
-                         (:datoms mem) (:entities mem)
-                         (:recommended-heap mem) (:current-max-heap mem)))))
+      (warn! (str "[datahike.migrate] heap warning: importing " (:datoms mem)
+                  " datoms (~" (:entities mem) " entities) needs about "
+                  (:recommended-heap mem) "; this runtime's limit is "
+                  (:current-max-heap mem)
+                  ". Raise it (the id-remap map is held until finalize) or"
+                  " expect OutOfMemoryError.")))
     ;; Guard rails already ran in `check-target!`, before any blob was written.
     ;; ---- attribute-refs: seed system-entity identity so refs to system
     ;; entities are translated, not re-allocated (#508) ----
@@ -779,9 +813,11 @@
       (when-let [src-max-tx (:max-tx (:stats manifest))]
         (let [drift (- (long (:max-tx @conn)) (long src-max-tx))]
           (when-not (zero? drift)
-            (binding [*out* *err*]
-              (println (format "[datahike.migrate] max-tx drifted by %+d (source %d, restored %d): the restored database numbers its next transaction differently. Datom content is unaffected."
-                               drift src-max-tx (:max-tx @conn)))))))
+            (warn! (str "[datahike.migrate] max-tx drifted by "
+                        (if (pos? drift) "+" "") drift
+                        " (source " src-max-tx ", restored " (:max-tx @conn)
+                        "): the restored database numbers its next transaction"
+                        " differently. Datom content is unaffected.")))))
       {:datom-count live
        :translated? (boolean translate)
        :dropped     dropped
@@ -900,12 +936,15 @@
                                      :chunks (:chunks manifest)
                                      :read (fn [c o] (mstore/read-chunk m manifest c o))}
                                     opts))
-                   (catch Exception e e))]
+                   (catch #?(:clj Exception :cljs :default) e e))]
          (<?- (mstore/close m opts))
-         (if (instance? Throwable res) (throw res) res))
+         (if (instance? #?(:clj Throwable :cljs js/Error) res) (throw res) res))
        (let [dump (open-dump source)]
          (if (:legacy? dump)
-           (mlegacy/import-db-legacy conn source)
+           #?(:clj (mlegacy/import-db-legacy conn source)
+              :cljs (throw (ex-info (str "This is a legacy single-file dump, readable only on the "
+                                         "JVM — it can only have been written by an old JVM datahike.")
+                                    {:error :import/legacy-not-portable})))
            (let [manifest (:manifest dump)
                  mem (estimate-from-manifest manifest (manifest-total-bytes manifest (:files dump)) batch-size)]
              (check-capabilities! manifest)

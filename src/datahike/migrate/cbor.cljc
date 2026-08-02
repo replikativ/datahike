@@ -50,6 +50,16 @@
 
 (defrecord SysRef [ident])
 
+(defn sysref?
+  "Is `v` a system-entity reference?
+
+   A predicate here rather than `instance?` at the call site, because the two
+   platforms spell the type differently: on the JVM `SysRef` is a class needing
+   an `:import`, on ClojureScript it is a var in this namespace. Inside the
+   namespace that defines the record, the bare symbol works on both."
+  [v]
+  (instance? SysRef v))
+
 (def ^:private sysref-name
   "boring's wire name for the record — the class name with / -> . and - -> _.
    Named explicitly rather than derived so a namespace rename is a visible
