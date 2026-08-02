@@ -383,10 +383,14 @@
   "Turns input to q into a map with :query and :args fields.
    Also normalizes the query into a map representation."
   [query-input arg-inputs]
-  (let [query (form-memo
-               [::qnorm query-input]
-               #(-> query-input
-                    ((fn [q] (or (and (map? q) (:query q)) q)))
+  (let [;; Memo key is the query FORM only — map-form inputs carry :args
+        ;; (including the DB value); keying on the whole input would pin
+        ;; database snapshots in the memo LRU and make every lookup hash
+        ;; the argument values.
+        qform (or (and (map? query-input) (:query query-input)) query-input)
+        query (form-memo
+               [::qnorm qform]
+               #(-> qform
                     ((fn [q] (if (string? q) (edn/read-string q) q)))
                     ((fn [q] (if (= 'quote (first q)) (second q) q)))
                     ((fn [q] (if (sequential? q) (dpi/query->map q) q)))))
