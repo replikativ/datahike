@@ -120,6 +120,18 @@
                            recs))]
       (is (= ["b" "a"] (pal-pair raw)) "precondition: b's pal is a, before mapping")
       (is (= ["b" "a"] (pal-pair mapped)) "…and still after mapping")
+      ;; The above two ALONE pass with `apply-mapping` stubbed to identity — they
+      ;; only assert internal consistency, which the unmapped records already
+      ;; satisfy. Verified by stubbing. So assert the ids actually MOVED, which is
+      ;; the thing the test claims to guard.
+      (testing "and the ids really were rewritten, not passed through"
+        (is (not= (mapv first raw) (mapv first mapped))
+            "entity ids must differ from the source's")
+        (let [ref-raw (some (fn [[_ a v _ op]] (when (and (= a :pal) op) v)) raw)
+              ref-mapped (some (fn [[_ a v _ op]] (when (and (= a :pal) op) v)) mapped)]
+          (is (not= ref-raw ref-mapped) "the ref VALUE must have been rewritten too")
+          (is (= (get (:eids mapping) ref-raw) ref-mapped)
+              "…to exactly what the mapping says")))
       (teardown src) (teardown tgt))))
 
 (deftest mapping-is-deterministic
@@ -135,9 +147,23 @@
                               :db/cardinality :db.cardinality/one}])
           [m1 _ _] (mapping-for tgt path)
           [m2 _ _] (mapping-for tgt path)]
+      ;; Both re-open the dump and re-scan, so this is not `f(x)` twice on one
+      ;; in-memory vector — it is the property resumability needs: re-deriving
+      ;; from the artifact yields the same ids.
       (is (= (:eids m1) (:eids m2)))
       (is (= (:tids m1) (:tids m2)))
       (is (= (:next-eid m1) (:next-eid m2)))
+      (is (seq (:eids m1)) "precondition: the mapping is not vacuously empty")
+      (testing "and a DIFFERENT target maximum yields a different mapping —
+                otherwise the equality above proves nothing"
+        (let [other (utils/setup-db (mem-cfg {}))]
+          (d/transact other [{:db/ident :filler :db/valueType :db.type/string
+                              :db/cardinality :db.cardinality/one}])
+          (d/transact other [{:db/id -1 :filler "pad"}])
+          (let [[m3 _ _] (mapping-for other path)]
+            (is (not= (:eids m1) (:eids m3))
+                "a populated target must allocate different ids"))
+          (teardown other)))
       (teardown src) (teardown tgt))))
 
 (deftest non-ref-longs-are-left-alone
@@ -228,3 +254,45 @@
       (is (zero? (:dropped rep)))
       (is (true? (:verified? rep)))
       (teardown src) (teardown tgt))))
+
+(deftest tx-meta-does-not-split-the-transaction-entity
+  (testing "user :tx-meta attributes land on the SAME entity as :db/txInstant.
+
+            `flush-tx-meta` writes arbitrary user attributes onto the transaction
+            entity, so a rule keyed on `ds/meta-attr?` — a closed set of five
+            idents — sent :db/txInstant through :tids and :author through :eids,
+            splitting one entity in two and orphaning the metadata onto an id
+            nothing else references. Silent. The discriminator is structural:
+            `e` names the transaction exactly when `e` = `t`."
+    (let [c (utils/setup-db (mem-cfg {:schema-flexibility :read}))]
+      (d/transact c {:tx-data [{:db/id 1000 :name "x"}] :tx-meta {:author "alice"}})
+      (let [recs (mapv (juxt :e :a :v :tx :added) (d/datoms @c :eavt))
+            mapping (ids/build-mapping {:schema {} :system-entities #{}
+                                        :max-eid 600000000 :max-tx 900000000}
+                                       (fn [rf init] (reduce rf init recs)))
+            tx-recs (filter (fn [[e _ _ t _]] (= e t)) recs)
+            mapped-es (distinct (map #(first (ids/apply-mapping mapping {} %)) tx-recs))]
+        (is (< 1 (count tx-recs)) "precondition: the tx entity has >1 datom")
+        (is (= 1 (count mapped-es))
+            (str "the transaction entity was SPLIT across " (pr-str mapped-es)))
+        (is (contains? (set (vals (:tids mapping))) (first mapped-es))
+            "and it landed in the transaction id space, not the entity one"))
+      (teardown c))))
+
+(deftest ref-to-a-transaction-is-not-reallocated
+  (testing "a ref VALUE naming a transaction must resolve through :tids.
+
+            Allocating it into :eids produces a reference to an id nothing was
+            assigned — a dangling pointer that no count or digest would notice."
+    (let [schema {:mytx {:db/valueType :db.type/ref}}
+          records [[1 :mytx 536870913 536870913 true]
+                   [536870913 :db/txInstant "now" 536870913 true]]
+          mapping (ids/build-mapping {:schema schema :system-entities #{}
+                                      :max-eid 100 :max-tx 500000000}
+                                     (fn [rf init] (reduce rf init records)))
+          [_ _ v' _ _] (ids/apply-mapping mapping schema (first records))
+          tx-target (get (:tids mapping) 536870913)]
+      (is (= tx-target v')
+          (str "ref to a transaction resolved to " v' " but the tx became " tx-target))
+      (is (not (contains? (:eids mapping) 536870913))
+          "and it was not allocated an entity id at all"))))
