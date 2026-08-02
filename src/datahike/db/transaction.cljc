@@ -1309,13 +1309,19 @@
                          ;; transaction (the SQL layer maps :transact/unique
                          ;; to its duplicate-key error).
                          (when unique?
-                           (let [seen (java.util.HashSet.)]
+                           ;; Duplicate detection must use the INDEX's value
+                           ;; equality (arr/wrap-comparable gives byte/float
+                           ;; arrays value semantics), not JVM .equals — and
+                           ;; must compile on CLJS (no java.util.HashSet).
+                           (let [seen (volatile! #{})]
                              (doseq [^Datom d datoms]
-                               (when-not (.add seen (.-v d))
-                                 (log/raise (str "Cannot add :db/unique to " ident
-                                                 ": existing duplicate value " (.-v d))
-                                            {:error :transact/schema :attribute ident
-                                             :value (.-v d)})))))
+                               (let [k (arr/wrap-comparable (.-v d))]
+                                 (if (contains? @seen k)
+                                   (log/raise (str "Cannot add :db/unique to " ident
+                                                   ": existing duplicate value " (.-v d))
+                                              {:error :transact/schema :attribute ident
+                                               :value (.-v d)})
+                                   (vswap! seen conj k))))))
                          (as-> db db
                            (reduce (fn [db ^Datom d]
                                      (let [op-count (:op-count db)]
