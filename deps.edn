@@ -25,7 +25,6 @@
         medley/medley                               {:mvn/version "1.4.0"}
         metosin/spec-tools                          {:mvn/version "0.10.8"}
         metosin/malli                               {:mvn/version "0.20.1"}
-        mvxcvi/clj-cbor                             {:mvn/version "1.1.1"}
         org.babashka/http-client                    {:mvn/version "0.4.23"}
         metosin/jsonista                            {:mvn/version "0.3.14"}
         com.github.pkpkpk/cljs-cache                {:mvn/version "1.0.21"}
@@ -67,6 +66,16 @@
                                org.clojure/test.check      {:mvn/version "1.1.1"}
                                orchestra/orchestra         {:mvn/version "2021.01.01-1"}
 
+                               ;; TEST SCOPE ONLY. The dump codec is boring now and
+                               ;; nothing in src/ requires clj-cbor -- but legacy
+                               ;; dumps were WRITTEN by clj-cbor, so the only honest
+                               ;; way to test that boring reads them is to have
+                               ;; clj-cbor produce the bytes. See
+                               ;; `legacy-cbor-import-test`; using boring to write
+                               ;; the fixture would test boring against itself and
+                               ;; prove nothing about the format we must still read.
+                               mvxcvi/clj-cbor             {:mvn/version "1.1.1"}
+
                                ;; hitchhiker-tree index (optional, for testing)
                                io.replikativ/hitchhiker-tree {:mvn/version "0.2.222"
                                                               :exclusions [org.clojure/clojurescript
@@ -91,7 +100,7 @@
                                ;; whole :test suite fails to LOAD without it --
                                ;; not just the CBOR tests.
                                org.replikativ/kabel          {:mvn/version "0.3.102"}
-                               org.replikativ/boring         {:mvn/version "0.1.6"}
+                               org.replikativ/boring         {:mvn/version "0.1.7"}
                                is.simm/distributed-scope     {:mvn/version "0.1.6"}
                                org.replikativ/konserve-sync  {:mvn/version "0.1.38"}
 

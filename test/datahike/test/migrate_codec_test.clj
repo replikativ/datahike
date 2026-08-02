@@ -14,16 +14,26 @@
    That is the property that justifies CBOR over an EDN-tagged encoding, where
    every value would need a Clojure reader.
 
-   NOTE the dump currently encodes values as EDN-lines; CBOR is the open
-   alternative (see `doc/import-export-design.md` §5.3) and the legacy reader for
-   pre-existing dumps. These vectors are therefore the CONTRACT a move to CBOR
-   would have to satisfy, and the evidence for making that move — not a
-   description of today's dump."
+   These vectors were originally the CONTRACT a move to CBOR would have to
+   satisfy, measured against clj-cbor while the codec choice was open. The dump
+   now IS CBOR — `datahike.migrate.cbor` over boring's `:archival` profile — so
+   they are asserted against the real codec and describe today's dump.
+
+   Almost every octet is unchanged from when these were measured against
+   clj-cbor — the point of pinning a format rather than a library. Two moved:
+
+     - the three float widths clj-cbor got WRONG (`float-width-survives-test`)
+     - instants, from tag 1 (epoch) to tag 0 (RFC 3339 string), which is a
+       deliberate choice the requirements permit rather than a defect"
   (:require [clojure.test :refer [deftest testing is]]
-            [clj-cbor.core :as cbor]))
+            [datahike.migrate.cbor :as mcbor]
+            [boring.core :as boring]))
+
+(defn- enc ^bytes [x] (boring/encode x mcbor/opts))
+(defn- dec* [^bytes bs] (boring/decode bs mcbor/opts))
 
 (defn- hex [x]
-  (apply str (map #(format "%02x" %) (cbor/encode x))))
+  (apply str (map #(format "%02x" (bit-and % 0xff)) (enc x))))
 
 (deftest float-width-is-preserved-test
   ;; #633 at root: a `:db.type/double` must not come back as a Float. The trap is
@@ -31,10 +41,10 @@
   ;; deterministic profile prescribes exactly that, and it would silently narrow
   ;; every double whose value happens to fit in f32.
   ;;
-  ;; clj-cbor encodes by CLASS instead (`codec.clj`: `(instance? Float n)` →
-  ;; writeFloat, else writeDouble), so the distinction survives. Pinned here
-  ;; because it is a policy, not a format guarantee: a codec that "optimises"
-  ;; floats reintroduces #633.
+  ;; boring's `:float-policy :preserve-width` encodes by CLASS, so the
+  ;; distinction survives. Pinned here because it is a POLICY, not a format
+  ;; guarantee: boring's own `:canonical` profile narrows these, which is exactly
+  ;; why the dump uses `:archival` instead.
   (testing "a double encodes as f64 (0xfb) even when exactly f32-representable"
     (is (= "fb3ff8000000000000" (hex (double 1.5))))
     (is (= "fb4000000000000000" (hex (double 2.0)))
@@ -42,30 +52,29 @@
   (testing "a float encodes as f32 (0xfa)"
     (is (= "fa3fc00000" (hex (float 1.5)))))
   (testing "and the class survives a round trip"
-    (is (instance? Double (cbor/decode (cbor/encode (double 2.0)))))
-    (is (instance? Float (cbor/decode (cbor/encode (float 1.5)))))))
+    (is (instance? Double (dec* (enc (double 2.0)))))
+    (is (instance? Float (dec* (enc (float 1.5)))))))
 
-(deftest zero-and-special-floats-lose-their-width-test
-  ;; KNOWN GAP, asserted so it cannot drift unnoticed. clj-cbor encodes zero,
-  ;; NaN and ±Infinity as f16 (0xf9) regardless of class, and f16 decodes to
-  ;; Float — so a `Double` 0.0 comes back a `Float`. That is #633 surviving for
-  ;; exactly three values.
+(deftest float-width-survives-test
+  ;; This test used to be `zero-and-special-floats-lose-their-width-test`, and it
+  ;; asserted the OPPOSITE: under clj-cbor, zero/NaN/±Infinity encoded as f16
+  ;; (0xf9) regardless of class and decoded back as `Float`, so a `Double` 0.0
+  ;; came back a `Float`. That was #633 surviving for exactly three values, and
+  ;; it was the single measured reason the dump could not use clj-cbor.
   ;;
-  ;; It does NOT affect the dump as it stands: the dump encodes values as
-  ;; EDN-lines, and a full export/import of `:db.type/double` values 0.0, 1.5 and
-  ;; 2.0 restores all three as `Double` (measured). So this is a property of the
-  ;; CBOR codec, recorded here because the codec choice is still open — if the
-  ;; dump moves to CBOR, this is the one case that needs a width-preserving float
-  ;; policy rather than clj-cbor's default, and a codec swap must decide it
-  ;; consciously instead of inheriting it.
-  (testing "zero collapses to f16 for both classes"
-    (is (= "f90000" (hex (double 0.0))))
-    (is (= "f90000" (hex (float 0.0))))
-    (is (instance? Float (cbor/decode (cbor/encode (double 0.0))))
-        "a Double zero decodes as Float — the residue"))
+  ;; boring does not have it. The three values encode as f64 like any other
+  ;; double, so the gap the old test guarded is closed rather than tracked, and
+  ;; the assertion is inverted rather than deleted — a codec that reintroduces
+  ;; the narrowing now fails here.
+  (testing "zero keeps its width in both classes"
+    (is (= "fb0000000000000000" (hex (double 0.0))) "f64, not f16")
+    (is (= "fa00000000" (hex (float 0.0))) "f32, not f16")
+    (is (instance? Double (dec* (enc (double 0.0))))
+        "a Double zero decodes as Double — #633 closed"))
   (testing "NaN and infinity likewise"
-    (is (instance? Float (cbor/decode (cbor/encode (double ##NaN)))))
-    (is (instance? Float (cbor/decode (cbor/encode (double ##Inf)))))))
+    (is (instance? Double (dec* (enc (double ##NaN)))))
+    (is (instance? Double (dec* (enc (double ##Inf)))))
+    (is (instance? Double (dec* (enc (double ##-Inf)))))))
 
 (deftest standard-tags-are-used-test
   ;; The reason a dump is readable elsewhere. Each of these is a tag REGISTERED
@@ -76,31 +85,42 @@
     (is (= "c24d018ee90ff6c373e0ee4e3f0ad2"
            (hex (bigint 123456789012345678901234567890N))))
     (is (= 123456789012345678901234567890N
-           (cbor/decode (cbor/encode (bigint 123456789012345678901234567890N))))))
+           (dec* (enc (bigint 123456789012345678901234567890N))))))
   (testing "tag 4 — decimal fraction, and SCALE is part of the value"
     ;; 1.50M and 1.5M are different values for us; the encoding must distinguish
     ;; them, or a restored bigdec silently changes precision.
     (is (= "c482211896" (hex 1.50M)) "[-2 150]")
     (is (= "c482200f" (hex 1.5M)) "[-1 15]")
     (is (not= (hex 1.50M) (hex 1.5M)))
-    (is (= 1.50M (cbor/decode (cbor/encode 1.50M))))
-    (is (= 2 (.scale ^java.math.BigDecimal (cbor/decode (cbor/encode 1.50M))))))
-  (testing "tag 1 — epoch instant"
-    (is (= "c11a6955b900" (hex #inst "2026-01-01T00:00:00.000-00:00"))))
+    (is (= 1.50M (dec* (enc 1.50M))))
+    (is (= 2 (.scale ^java.math.BigDecimal (dec* (enc 1.50M))))))
+  (testing "tag 0 — RFC 3339 instant"
+    ;; boring emits tag 0 (a date-time STRING) where clj-cbor emitted tag 1 (an
+    ;; epoch integer). Both are registered and both are correct; DATAHIKE-
+    ;; REQUIREMENTS §2 explicitly allows either — "0 is friendlier to non-Clojure
+    ;; readers; 1 is more compact — either, but pick one and document it".
+    ;;
+    ;; This is the one vector the codec swap moved, and it moved by choice rather
+    ;; than by defect. The cost is real and worth stating: 22 bytes against 6, on
+    ;; every :db/txInstant, i.e. once per transaction in the dump.
+    (is (= "c074323032362d30312d30315430303a30303a30305a"
+           (hex #inst "2026-01-01T00:00:00.000-00:00")))
+    (is (instance? java.util.Date (dec* (enc #inst "2026-01-01T00:00:00.000-00:00")))
+        "and it still decodes to the class :db.type/instant uses"))
   (testing "tag 37 — uuid"
     (is (= "d8255000000000000000000000000000000001"
            (hex #uuid "00000000-0000-0000-0000-000000000001"))))
   (testing "major type 2 — byte strings are native, no base64 wrapper"
     (is (= "4400017fff" (hex (byte-array [0 1 127 -1]))))
-    (is (= [0 1 127 -1] (vec (cbor/decode (cbor/encode (byte-array [0 1 127 -1]))))))))
+    (is (= [0 1 127 -1] (vec (dec* (enc (byte-array [0 1 127 -1]))))))))
 
 (deftest integers-and-scalars-test
   (testing "small integers are compact"
     (is (= "182a" (hex (long 42)))))
   (testing "scalars survive"
-    (is (= "text" (cbor/decode (cbor/encode "text"))))
-    (is (= true (cbor/decode (cbor/encode true))))
-    (is (nil? (cbor/decode (cbor/encode nil))))))
+    (is (= "text" (dec* (enc "text"))))
+    (is (= true (dec* (enc true))))
+    (is (nil? (dec* (enc nil))))))
 
 (deftest encoding-is-deterministic-test
   ;; Same input, identical bytes — what makes a dump signable and a re-export
@@ -112,4 +132,11 @@
                  "u" #uuid "00000000-0000-0000-0000-000000000001"
                  "s" "text" "b" true}]
     (is (= (hex fixture) (hex fixture)))
-    (is (= (seq (cbor/encode fixture)) (seq (cbor/encode fixture))))))
+    (is (= (seq (enc fixture)) (seq (enc fixture))))
+    ;; Two maps built in opposite orders encode identically — that is what
+    ;; :archival's sorted keys buy. NOT compared against a sorted-map: boring
+    ;; carries sortedness deliberately, so a sorted-map is a different value that
+    ;; restores with its comparator rather than silently becoming a hash map.
+    (is (= (hex (into {} (reverse (vec fixture))))
+           (hex (into {} (vec fixture))))
+        "insertion order does not change the bytes")))

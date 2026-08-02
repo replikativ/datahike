@@ -16,9 +16,9 @@
    normal container); only the dump lives in the store."
   (:require [konserve.core :as k]
             [konserve.store :as ks]
-            [datahike.migrate.digest :as dig]
-            [clojure.string :as str])
-  (:import [java.nio.charset StandardCharsets]))
+            [datahike.migrate.cbor :as mcbor]
+            [datahike.migrate.digest :as dig])
+  (:import [java.io ByteArrayOutputStream ByteArrayInputStream]))
 
 (def ^:private ns-tag "datahike.migrate")
 
@@ -46,42 +46,65 @@
 (defn- chunk-key [prefix n] (ckey prefix (format "datoms-%06d" n)))
 
 (defn write-chunks!
-  "Stream `sorted-lines` into the store as chunk values of at most `chunk-size`
-   lines each, computing per-chunk SHA-256 and the semantic digest incrementally.
-   `manifest-fn` is (fn [finalized-digest chunks] -> manifest-map). Writes the
-   manifest key LAST. Returns the manifest."
-  [{:keys [store prefix]} sorted-lines chunk-size manifest-fn progress]
-  (loop [ls (seq sorted-lines) n 1 chunks [] dacc (dig/accumulator)]
-    (if (nil? ls)
+  "Stream `sorted-records` into the store as chunk BINARIES of at most
+   `chunk-size` records each, computing per-chunk SHA-256 and the semantic digest
+   incrementally. `manifest-fn` is (fn [finalized-digest chunks] -> manifest-map).
+   Writes the manifest key LAST. Returns the manifest.
+
+   `bassoc` rather than `assoc`: a chunk is now a CBOR sequence, i.e. opaque
+   bytes. Storing it as a konserve VALUE would run those bytes back through
+   konserve's own serializer — encoding an encoding — and would make the stored
+   object's bytes differ from the file a filesystem dump writes, so the same
+   chunk would hash differently depending on the medium. The manifest stays an
+   ordinary value: it is EDN, small, and read before the codec is known."
+  [{:keys [store prefix]} sorted-records chunk-size manifest-fn progress]
+  (loop [rs (seq sorted-records) n 1 chunks [] dacc (dig/accumulator)]
+    (if (nil? rs)
       (let [manifest (manifest-fn (dig/finalize dacc) chunks)]
         (k/assoc store (ckey prefix "manifest") manifest {:sync? true})
         (progress {:phase :done :datoms (:count (dig/finalize dacc))})
         manifest)
-      (let [part    (into [] (take chunk-size) ls)
-            content (str (str/join "\n" part) "\n")
-            bytes   (alength (.getBytes content StandardCharsets/UTF_8))]
-        (k/assoc store (chunk-key prefix n) content {:sync? true})
+      (let [part  (into [] (take chunk-size) rs)
+            encs  (mapv mcbor/encode-record part)
+            bos   (ByteArrayOutputStream.)
+            _     (doseq [^bytes b encs] (.write bos b))
+            ^bytes content (.toByteArray bos)]
+        (k/bassoc store (chunk-key prefix n) content {:sync? true})
         (progress {:phase :chunk :datoms (count part)})
-        (recur (seq (drop chunk-size ls)) (inc n)
+        (recur (seq (drop chunk-size rs)) (inc n)
                (conj chunks {:file (format "datoms-%06d" n) :count (count part)
-                             :bytes bytes :sha256 (dig/sha256-hex content)})
-               (reduce dig/add-line dacc part))))))
+                             :bytes (alength content) :sha256 (dig/sha256-hex content)})
+               (reduce dig/add-record dacc encs))))))
 
 (defn read-manifest [{:keys [store prefix]}]
   (k/get store (ckey prefix "manifest") nil {:sync? true}))
 
-(defn reduce-lines
-  "Reduce `rf` over every record line of the dump, verifying each chunk's SHA-256
-   (streaming a whole chunk value at a time — bounded by chunk-size) before use."
+(defn- chunk-bytes
+  "The bytes of chunk `file`, or nil when absent. Read inside the `bget` callback
+   because that callback IS the scope in which konserve's handle is valid — the
+   same contract `datahike.migrate.blobs` documents."
+  [store prefix file]
+  (k/bget store (ckey prefix file)
+          (fn [{:keys [input-stream]}]
+            (when input-stream
+              (let [bos (ByteArrayOutputStream.)]
+                (clojure.java.io/copy input-stream bos)
+                (.toByteArray bos))))
+          {:sync? true}))
+
+(defn reduce-records
+  "Reduce `rf` over every record of the dump, verifying each chunk's SHA-256
+   (a whole chunk at a time — bounded by chunk-size) before use."
   [{:keys [store prefix]} manifest rf init]
   (reduce (fn [acc {:keys [file sha256]}]
-            (let [content (k/get store (ckey prefix file) nil {:sync? true})]
+            (let [^bytes content (chunk-bytes store prefix file)]
               (when (nil? content)
                 (throw (ex-info (str "Missing chunk in store: " file)
                                 {:error :import/checksum-failed :file file})))
               (when (and sha256 (not= sha256 (dig/sha256-hex content)))
                 (throw (ex-info (str "Checksum mismatch for chunk " file)
                                 {:error :import/checksum-failed :file file})))
-              (reduce rf acc (str/split-lines content))))
+              (with-open [in (ByteArrayInputStream. content)]
+                (reduce rf acc (mcbor/decode-records in)))))
           init
           (:chunks manifest)))
