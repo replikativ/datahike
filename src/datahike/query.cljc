@@ -3208,76 +3208,76 @@
 
 (defn- substitute-consts-with-lookup-refs*
   [db where-clauses consts sources]
-   (letfn [(resolve-clause
-             ([clause] (resolve-clause db clause))
-             ([resolve-db clause]
-              (cond
+  (letfn [(resolve-clause
+            ([clause] (resolve-clause db clause))
+            ([resolve-db clause]
+             (cond
               ;; Source-prefixed clauses ($source pattern...) — must be checked BEFORE
               ;; data patterns because [$1 ?e :attr ?v] is also a vector.
-                (and (sequential? clause) (symbol? (first clause))
-                     (let [s (name (first clause))]
-                       (= \$ (first s))))
-                (let [src-sym (first clause)
-                      src-db (if sources (get sources src-sym resolve-db) resolve-db)
-                      inner-pattern (vec (rest clause))
-                      resolved-inner (resolve-clause src-db inner-pattern)]
-                  (cons src-sym resolved-inner))
+               (and (sequential? clause) (symbol? (first clause))
+                    (let [s (name (first clause))]
+                      (= \$ (first s))))
+               (let [src-sym (first clause)
+                     src-db (if sources (get sources src-sym resolve-db) resolve-db)
+                     inner-pattern (vec (rest clause))
+                     resolved-inner (resolve-clause src-db inner-pattern)]
+                 (cons src-sym resolved-inner))
 
               ;; Data pattern: [e a v ...]
-                (and (vector? clause) (not (sequential? (first clause))))
-                (let [had-consts? (some #(and (symbol? %) (contains? consts %)) clause)
-                      substituted (if had-consts?
-                                    (mapv (fn [x]
-                                            (if (and (symbol? x) (contains? consts x))
-                                              (get consts x)
-                                              x))
-                                          clause)
-                                    clause)
+               (and (vector? clause) (not (sequential? (first clause))))
+               (let [had-consts? (some #(and (symbol? %) (contains? consts %)) clause)
+                     substituted (if had-consts?
+                                   (mapv (fn [x]
+                                           (if (and (symbol? x) (contains? consts x))
+                                             (get consts x)
+                                             x))
+                                         clause)
+                                   clause)
                     ;; Use lenient resolution when consts were substituted (values might be invalid),
                     ;; UNLESS the entity position is a lookup ref — those should throw on missing entities.
-                      has-lookup-ref-entity? (and had-consts?
-                                                  (let [e (first substituted)]
-                                                    (and (sequential? e) (= 2 (count e)) (keyword? (first e)))))
-                      resolved (if (or (not had-consts?) has-lookup-ref-entity?)
-                                 (resolve-pattern-lookup-refs resolve-db substituted)
-                                 (resolve-pattern-lookup-refs-or-nil resolve-db substituted))]
-                  (or resolved substituted))
+                     has-lookup-ref-entity? (and had-consts?
+                                                 (let [e (first substituted)]
+                                                   (and (sequential? e) (= 2 (count e)) (keyword? (first e)))))
+                     resolved (if (or (not had-consts?) has-lookup-ref-entity?)
+                                (resolve-pattern-lookup-refs resolve-db substituted)
+                                (resolve-pattern-lookup-refs-or-nil resolve-db substituted))]
+                 (or resolved substituted))
 
               ;; Data pattern where first elem is a lookup ref
               ;; e.g., [[:name "Ivan"] :age ?v]
-                (and (vector? clause) (vector? (first clause))
-                     (= 2 (count (first clause))))
+               (and (vector? clause) (vector? (first clause))
+                    (= 2 (count (first clause))))
               ;; Inline lookup refs use strict resolution (should throw on missing entities)
-                (resolve-pattern-lookup-refs resolve-db clause)
+               (resolve-pattern-lookup-refs resolve-db clause)
 
               ;; (not ...) / (not-join [...] ...)
-                (and (sequential? clause) (symbol? (first clause))
-                     (#{'not 'not-join} (first clause)))
-                (if (= 'not (first clause))
-                  (cons 'not (mapv (partial resolve-clause resolve-db) (rest clause)))
-                  (let [[_ join-vars & body] clause]
-                    (list* 'not-join join-vars (mapv (partial resolve-clause resolve-db) body))))
+               (and (sequential? clause) (symbol? (first clause))
+                    (#{'not 'not-join} (first clause)))
+               (if (= 'not (first clause))
+                 (cons 'not (mapv (partial resolve-clause resolve-db) (rest clause)))
+                 (let [[_ join-vars & body] clause]
+                   (list* 'not-join join-vars (mapv (partial resolve-clause resolve-db) body))))
 
               ;; (or ...) / (or-join [...] ...)
-                (and (sequential? clause) (symbol? (first clause))
-                     (#{'or 'or-join} (first clause)))
-                (if (= 'or (first clause))
-                  (cons 'or (map (fn [branch]
-                                   (if (and (sequential? branch) (sequential? (first branch)))
-                                     (mapv (partial resolve-clause resolve-db) branch)
-                                     (resolve-clause resolve-db branch)))
-                                 (rest clause)))
-                  (let [[_ join-vars & branches] clause]
-                    (list* 'or-join join-vars
-                           (map (fn [branch]
+               (and (sequential? clause) (symbol? (first clause))
+                    (#{'or 'or-join} (first clause)))
+               (if (= 'or (first clause))
+                 (cons 'or (map (fn [branch]
                                   (if (and (sequential? branch) (sequential? (first branch)))
                                     (mapv (partial resolve-clause resolve-db) branch)
                                     (resolve-clause resolve-db branch)))
-                                branches))))
+                                (rest clause)))
+                 (let [[_ join-vars & branches] clause]
+                   (list* 'or-join join-vars
+                          (map (fn [branch]
+                                 (if (and (sequential? branch) (sequential? (first branch)))
+                                   (mapv (partial resolve-clause resolve-db) branch)
+                                   (resolve-clause resolve-db branch)))
+                               branches))))
 
               ;; (and ...)
-                (and (sequential? clause) (= 'and (first clause)))
-                (cons 'and (mapv (partial resolve-clause resolve-db) (rest clause)))
+               (and (sequential? clause) (= 'and (first clause)))
+               (cons 'and (mapv (partial resolve-clause resolve-db) (rest clause)))
 
               ;; Source-prefixed: already handled at top of cond
 
@@ -3285,24 +3285,24 @@
               ;; Only substitute data values (numbers, strings, keywords, booleans),
               ;; NOT function references (IFn), since those are used as higher-order args
               ;; in rules like (match ?pred ?x ?y) and must resolve at execution time.
-                (and (sequential? clause) (not (vector? clause))
-                     (symbol? (first clause))
+               (and (sequential? clause) (not (vector? clause))
+                    (symbol? (first clause))
                    ;; Not a known special form
-                     (not (#{'not 'not-join 'or 'or-join 'and} (first clause)))
+                    (not (#{'not 'not-join 'or 'or-join 'and} (first clause)))
                    ;; Not source-prefixed
-                     (not (and (string? (name (first clause)))
-                               (= \$ (first (name (first clause)))))))
-                (let [rule-name (first clause)
-                      args (rest clause)
-                      scalar? (fn [v]
-                                (or (number? v) (string? v) (keyword? v)
-                                    (boolean? v) (nil? v) (uuid? v)
-                                    (inst? v)))
-                      substituted-args (map (fn [x]
-                                              (if (and (symbol? x) (contains? consts x))
-                                                (let [v (get consts x)]
-                                                  (cond
-                                                    (scalar? v) v
+                    (not (and (string? (name (first clause)))
+                              (= \$ (first (name (first clause)))))))
+               (let [rule-name (first clause)
+                     args (rest clause)
+                     scalar? (fn [v]
+                               (or (number? v) (string? v) (keyword? v)
+                                   (boolean? v) (nil? v) (uuid? v)
+                                   (inst? v)))
+                     substituted-args (map (fn [x]
+                                             (if (and (symbol? x) (contains? consts x))
+                                               (let [v (get consts x)]
+                                                 (cond
+                                                   (scalar? v) v
                                                     ;; A lookup-ref const has to arrive as
                                                     ;; the ENTITY ID here: `scalar?` rejects
                                                     ;; vectors, so the rule's parameter was
@@ -3314,38 +3314,38 @@
                                                     ;; — so resolve HERE rather than rewriting
                                                     ;; the const itself, which would also
                                                     ;; corrupt its non-entity uses.
-                                                    :else (or (resolved-lookup-ref-eid resolve-db v) x)))
-                                                x))
-                                            args)]
-                  (apply list rule-name substituted-args))
+                                                   :else (or (resolved-lookup-ref-eid resolve-db v) x)))
+                                               x))
+                                           args)]
+                 (apply list rule-name substituted-args))
 
               ;; Anything else (predicates, functions): substitute consts in data args only.
               ;; Don't substitute the function/predicate name (position 0 of the call form)
               ;; since context-resolve-val already handles consts lookup at execution time.
               ;; Only substitute data-position args (non-function variables) so the plan
               ;; can use ground values for index selection.
-                :else
-                (if (and (vector? clause) (not (vector? (first clause))))
-                  (mapv (fn [x]
-                          (cond
-                            (and (symbol? x) (contains? consts x))
-                            (get consts x)
+               :else
+               (if (and (vector? clause) (not (vector? (first clause))))
+                 (mapv (fn [x]
+                         (cond
+                           (and (symbol? x) (contains? consts x))
+                           (get consts x)
                           ;; Recurse into predicate/function call lists like (> ?s ?min_s)
                           ;; but don't substitute the fn name (first element)
-                            (sequential? x)
-                            (let [substituted (map-indexed
-                                               (fn [i y]
-                                                 (if (and (pos? i)
-                                                          (symbol? y)
-                                                          (contains? consts y))
-                                                   (get consts y)
-                                                   y))
-                                               x)]
-                              (if (list? x) (apply list substituted) (vec substituted)))
-                            :else x))
-                        clause)
-                  clause))))]
-     (mapv resolve-clause where-clauses)))
+                           (sequential? x)
+                           (let [substituted (map-indexed
+                                              (fn [i y]
+                                                (if (and (pos? i)
+                                                         (symbol? y)
+                                                         (contains? consts y))
+                                                  (get consts y)
+                                                  y))
+                                              x)]
+                             (if (list? x) (apply list substituted) (vec substituted)))
+                           :else x))
+                       clause)
+                 clause))))]
+    (mapv resolve-clause where-clauses)))
 
 ;; ---------------------------------------------------------------------------
 ;; Pre-fold clause-binding validation (the planner's shared oracle).

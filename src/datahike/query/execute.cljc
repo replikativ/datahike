@@ -2808,14 +2808,14 @@
 
             :predicate
             (assoc op :clause (subst-clause consts (:clause op))
-               :args (map #(subst-slot consts %) (:args op)))
+                   :args (map #(subst-slot consts %) (:args op)))
 
             :function
             (let [binding-vars (filter analyze/free-var? (analyze/extract-vars (:binding op)))]
               (when (some #(contains? consts %) binding-vars)
                 (vreset! sound? false))
               (assoc op :clause (subst-clause consts (:clause op))
-                 :args (map #(subst-slot consts %) (:args op))))
+                     :args (map #(subst-slot consts %) (:args op))))
 
             :not-join
             (do (vreset! sound? false) op)
