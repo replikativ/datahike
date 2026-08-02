@@ -340,15 +340,60 @@
         (if (identical? rules rules') args (assoc av idx rules')))
       args)))
 
+(def ^:private form-analysis-cache
+  "LRU memo for per-call work that is a pure function of the query FORM
+   (normalization, component analysis, clause-binding validation,
+   :in-shape seeds, BigDecimal-key checks). A parameterized workload
+   repeats one form with varying args; before this cache each call
+   re-ran all of it — ~25% of point-query dispatch CPU. Same
+   volatile+lru discipline as query-cache/plan-cache."
+  (volatile! (datahike.lru/lru lru-cache-size)))
+
+#?(:clj (declare ^:private key-has-bigdec?))
+(declare scale-sensitive-key)
+
+(defn- form-memo [k f]
+  ;; Clojure's =/hash on BigDecimal are scale-INSENSITIVE, so forms
+  ;; differing only in constant scale (1.0M vs 1.00M) would alias one
+  ;; memo entry. Canonicalize such keys with scale-sensitive-key. The
+  ;; bigdec presence check is itself memoized under the scale-insensitive
+  ;; key — that collision is harmless because scale variants answer it
+  ;; identically. CLJS has no BigDecimal.
+  #?(:clj
+     (let [k (if (if-some [clean? (get @form-analysis-cache [::bd-free k] nil)]
+                   clean?
+                   (let [clean? (not (key-has-bigdec? k))]
+                     (vswap! form-analysis-cache assoc [::bd-free k] clean?)
+                     clean?))
+               k
+               (scale-sensitive-key k))]
+       (if-some [v (get @form-analysis-cache k nil)]
+         v
+         (let [v (f)]
+           (vswap! form-analysis-cache assoc k v)
+           v)))
+     :cljs
+     (if-some [v (get @form-analysis-cache k nil)]
+       v
+       (let [v (f)]
+         (vswap! form-analysis-cache assoc k v)
+         v))))
+
 (defn normalize-q-input
   "Turns input to q into a map with :query and :args fields.
    Also normalizes the query into a map representation."
   [query-input arg-inputs]
-  (let [query (-> query-input
-                  (#(or (and (map? %) (:query %)) %))
-                  (#(if (string? %) (edn/read-string %) %))
-                  (#(if (= 'quote (first %)) (second %) %))
-                  (#(if (sequential? %) (dpi/query->map %) %)))
+  (let [;; Memo key is the query FORM only — map-form inputs carry :args
+        ;; (including the DB value); keying on the whole input would pin
+        ;; database snapshots in the memo LRU and make every lookup hash
+        ;; the argument values.
+        qform (or (and (map? query-input) (:query query-input)) query-input)
+        query (form-memo
+               [::qnorm qform]
+               #(-> qform
+                    ((fn [q] (if (string? q) (edn/read-string q) q)))
+                    ((fn [q] (if (= 'quote (first q)) (second q) q)))
+                    ((fn [q] (if (sequential? q) (dpi/query->map q) q)))))
         args (if (and (map? query-input) (contains? query-input :args))
                (do (when (seq arg-inputs)
                      (log/warn :datahike/query-input-ignored {:query query}))
@@ -2931,23 +2976,35 @@
                    lru)))
         entry))))
 
+(def ^:dynamic *result-cache-min-weight*
+  "Results with tuple-weight BELOW this are executed but not cached.
+   Default 0 caches everything (existing behavior). A point lookup's
+   1-row result costs more to insert (key build, swap!, LRU generation
+   bookkeeping — ~200us measured) than to recompute once the plan and
+   form-analysis caches are warm, so parameterized OLTP callers bind
+   this to a small positive value and keep the result cache for the
+   queries it actually helps."
+  0)
+
 (defn- result-cache-put!
   "Store a query result in the cache for the given DB. Maintains the
-   bucket's running weight total in its metadata (see bucket-weight)."
+   bucket's running weight total in its metadata (see bucket-weight).
+   No-op for results below *result-cache-min-weight*."
   [db cache-key result attr-deps]
   (let [dk (db-cache-key db)
         w  (result-weight result)]
-    (swap! query-result-cache
-           (fn [lru]
-             (let [existing (or (get lru dk) {})
-                   old-total (or (::weight (meta existing))
-                                 (bucket-weight existing))
-                   replaced  (get-in existing [cache-key :weight] 0)
-                   bucket (-> existing
-                              (assoc cache-key {:result result :attrs attr-deps
-                                                :weight w})
-                              (vary-meta assoc ::weight (+ (- old-total replaced) w)))]
-               (assoc lru dk bucket))))))
+    (when (>= w *result-cache-min-weight*)
+      (swap! query-result-cache
+             (fn [lru]
+               (let [existing (or (get lru dk) {})
+                     old-total (or (::weight (meta existing))
+                                   (bucket-weight existing))
+                     replaced  (get-in existing [cache-key :weight] 0)
+                     bucket (-> existing
+                                (assoc cache-key {:result result :attrs attr-deps
+                                                  :weight w})
+                                (vary-meta assoc ::weight (+ (- old-total replaced) w)))]
+                 (assoc lru dk bucket)))))))
 
 (defn propagate-query-cache
   "Propagate query result cache from parent DB to child DB after a transaction.
@@ -3561,8 +3618,16 @@
         ;; but it distinguishes bindings the bound-var SET cannot — e.g. a tuple
         ;; [?a ?b] (#{?a ?b}, card 1) from a relation [[?a ?b]] (#{?a ?b}, many)
         ;; — which would otherwise collide on identical clauses + bound-vars.
-        cache-key (scale-sensitive-key [clauses bound-vars (when rules rules)
-                                        (not-empty in-cards) schema-hash])]
+        ;; scale-sensitive-key walks the whole key looking for BigDecimals.
+        ;; The [clauses bound-vars rules in-cards] prefix is form-shaped and
+        ;; stable across calls — memoize its cleanliness and only rebuild
+        ;; when it actually contains BigDecimals (folded constants).
+        key-prefix [clauses bound-vars (when rules rules) (not-empty in-cards)]
+        cache-key #?(:cljs (conj key-prefix schema-hash)
+                     :clj (if (form-memo [::bigdec-free key-prefix]
+                                         #(not (key-has-bigdec? key-prefix)))
+                            (conj key-prefix schema-hash)
+                            (scale-sensitive-key (conj key-prefix schema-hash))))]
     (if-some [cached (get @plan-cache cache-key nil)]
       cached
       (let [plan (create-plan-via-ir db clauses bound-vars rules in-cards)]
@@ -3724,7 +3789,7 @@
                clauses (substitute-consts-with-lookup-refs db (:where query) (:consts context-in))
                ;; The SAME cached plan execution will use — create-plan-via-ir
                ;; here could diverge from a previously cached plan.
-               plan (get-or-create-plan plan-db clauses bound-vars rules (in-card-seed qin))
+               plan (get-or-create-plan plan-db clauses bound-vars rules (form-memo [::in-cards qin] #(in-card-seed qin)))
                find-elements (dpip/find-elements qfind)
                has-aggs? (some #(instance? Aggregate %) find-elements)
                has-pull? (some #(instance? Pull %) find-elements)
@@ -4668,8 +4733,12 @@
           [context-in nil])
         ;; Before the const fold and before the Cartesian split, so the whole
         ;; query is judged once with the bindings the user supplied.
+        ;; Memoized on [where bound-var-set]: the check either raises or
+        ;; passes, and both are pure functions of form + binding shape.
         _ (when use-planner?
-            (validate-clause-bindings (:where query) (context-bound-vars context-in)))]
+            (let [bv (context-bound-vars context-in)]
+              (form-memo [::validated (:where query) bv]
+                         #(do (validate-clause-bindings (:where query) bv) true))))]
 
     (if (and limit (zero? limit))
       #{}
@@ -4707,8 +4776,12 @@
                                                    (filter #(> (count %) 1)))
                                              (:rels context-in))
                        {:keys [components post-filters]}
-                       (connected-components (:where query) in-bound-vars find-var-syms
-                                             in-rel-var-sets)]
+                       ;; Pure function of form + binding SHAPE — memoized:
+                       ;; ran on every call before (12% of point-query CPU).
+                       (form-memo [::components (:where query) in-bound-vars
+                                   find-var-syms in-rel-var-sets]
+                                  #(connected-components (:where query) in-bound-vars
+                                                         find-var-syms in-rel-var-sets))]
                    (when (> (count components) 1)
                      ;; Recursively run each component as its own query.
                      ;; Sub-queries with one component will fall through to
@@ -4808,12 +4881,17 @@
                 clauses (substitute-consts-with-lookup-refs db (:where query) (:consts context-in)
                                                             (when multi-source? (:sources context-in)))
                 rules (not-empty (:rules context-in))
-                plan (get-or-create-plan plan-db clauses bound-vars rules (in-card-seed qin))]
+                plan (get-or-create-plan plan-db clauses bound-vars rules (form-memo [::in-cards qin] #(in-card-seed qin)))]
 
           ;; Try paths in order of preference:
           ;; 1. Direct HashSet (non-aggregate simple queries)
-            (if-let [direct-result (execute-planned-direct
-                                    plan db qfind find-elements context-in query stats? qreturnmaps)]
+            ;; Lookup-ref :in bindings were rewritten to eids in the rels
+            ;; (resolve-lookup-ref-bindings); only the relation path knows to
+            ;; project the ORIGINAL lookup-ref value back out via
+            ;; lookup-ref-reverse-map. The direct paths would leak raw eids.
+            (if-let [direct-result (when-not lookup-ref-reverse-map
+                                     (execute-planned-direct
+                                      plan db qfind find-elements context-in query stats? qreturnmaps))]
               (let [result (apply-result-transforms direct-result order-spec offset limit qreturnmaps)]
                 #?(:clj
                    (when *profile?*
@@ -4905,7 +4983,7 @@
                                         (resolve-ins qin args))
                          clauses (substitute-consts-with-lookup-refs db (:where query) (:consts context-in))
                          bound-vars (context-bound-vars context-in)
-                         plan (get-or-create-plan db clauses bound-vars nil (in-card-seed qin))]
+                         plan (get-or-create-plan db clauses bound-vars nil (form-memo [::in-cards qin] #(in-card-seed qin)))]
                      (when (and (empty? (:rels context-in))
                                 (seq (:ops plan)))
                        (when-let [result (try-secondary-index-aggregate db plan find-elements)]
@@ -4930,9 +5008,16 @@
                 ;; scale-sensitive-key: BigDecimal args/consts of equal value but
                 ;; different scale (1.50M vs 1.500M) are `=` with equal hash in
                 ;; Clojure, so they'd share a result-cache entry and return the
-                ;; first-cached scale. Keep them distinct.
-                cache-key (scale-sensitive-key
-                           [query non-db-args offset limit order-by *disable-planner*])
+                ;; first-cached scale. Keep them distinct. The QUERY form's
+                ;; cleanliness is memoized so the per-call walk covers only
+                ;; the args (the form walk was 9% of point-query CPU).
+                cache-key #?(:cljs [query non-db-args offset limit order-by *disable-planner*]
+                             :clj (if (and (form-memo [::bigdec-free-q query]
+                                                      #(not (key-has-bigdec? query)))
+                                           (not (key-has-bigdec? non-db-args)))
+                                    [query non-db-args offset limit order-by *disable-planner*]
+                                    (scale-sensitive-key
+                                     [query non-db-args offset limit order-by *disable-planner*])))
                 entry (result-cache-get db cache-key)]
             (if entry
               (:result entry)
