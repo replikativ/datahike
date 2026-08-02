@@ -59,7 +59,7 @@
             [konserve.core :as k]
             [konserve.binary :as kb]
             [konserve.utils :refer [async+sync *default-sync-translation*]]
-            [superv.async :refer [<?? S go-try- <?-]])
+            [superv.async :refer [go-try- <?-]])
   (:import [datahike.migrate.cbor SysRef]))
 
 ;; Public names that used to be defined here and now live in
@@ -245,69 +245,76 @@
    including retracted (\"deleted\") data — treat it as sensitive."
   ([db-or-conn target] (export-db db-or-conn target {}))
   ([db-or-conn target opts]
+   (assert-sync-supported! opts)
    (let [db       (->db db-or-conn)
          opts     (merge {:history? (boolean (:keep-history? (dbi/-config db)))
-                          ;; A store chunk is one konserve value, materialized as a
-                          ;; single string — so the store default is much smaller
-                          ;; than the filesystem default (which streams line by
-                          ;; line and never holds a chunk in memory).
                           :chunk-size default-chunk-size
                           :sort-buffer 1000000
                           :compression mz/default-codec
+                          :sync? default-sync?
                           :sort? true}
                          opts)
-         ;; Only walk for blobs when the schema can actually have them. Two
-         ;; reasons, and the second is not an optimisation:
-         ;;   * `reachable-store-refs` is a full reachability mark — pointless
-         ;;     when no attribute is a `:db.type/store-ref`;
-         ;;   * it walks index ADDRESSES, so it requires a flushed index and
-         ;;     raises "Index needs to be properly flushed before marking" on an
-         ;;     unflushed in-memory db. Plenty of legitimate exports are of such
-         ;;     a db (`db-with`, a `:memory` store mid-test), and those cannot
-         ;;     hold in-store blobs anyway.
-         blob-plan (when (mblobs/schema-has-store-refs? db)
-                     (mblobs/plan db (:store db) {:sync? true}))
-         opts     (cond-> opts
+         progress (or (:progress-fn opts) (constantly nil))]
+     (async+sync
+      (:sync? opts) *default-sync-translation*
+      (go-try-
+       (let [;; Only walk for blobs when the schema can actually have them. Two
+             ;; reasons, and the second is not an optimisation:
+             ;;   * `reachable-store-refs` is a full reachability mark — pointless
+             ;;     when no attribute is a `:db.type/store-ref`;
+             ;;   * it walks index ADDRESSES, so it requires a flushed index and
+             ;;     raises "Index needs to be properly flushed before marking" on
+             ;;     an unflushed in-memory db. Plenty of legitimate exports are of
+             ;;     such a db (`db-with`, a `:memory` store mid-test), and those
+             ;;     cannot hold in-store blobs anyway.
+             blob-plan (when (mblobs/schema-has-store-refs? db)
+                         (<?- (mblobs/plan db (:store db) opts)))
+             opts (cond-> opts
                     (seq (:carried blob-plan)) (assoc mman/blob-plan-key blob-plan)
-                    (seq (:external blob-plan)) (assoc mman/blob-plan-key blob-plan))
-         progress (or (:progress-fn opts) (constantly nil))
-         write-to! (fn [lines]
-                     (cond
-                       ;; external store (konserve): S3 / S3-compatible / JDBC / ...
-                       (mstore/store-target? target)
-                       (let [m (mstore/open target)]
-                         (try
-                           (mstore/write-chunks! m lines (:chunk-size opts)
-                                                 (fn [digest chunks] (build-manifest db opts digest chunks))
-                                                 progress {:sync? true}
-                                                 (get opts :compression mz/default-codec))
-                           (finally (mstore/close m))))
-
-                       :else
-                       (write-chunked! db opts target lines (:chunk-size opts) progress)))]
-     ;; Blob carriage. Planned BEFORE anything is written so the manifest can
-     ;; declare it, and the bytes are written before the manifest — which is the
-     ;; commit marker — so a dump that has a manifest has its blobs. Same
-     ;; ordering the konserve-sync walker needs when it ships blobs ahead of the
-     ;; branch head: nothing may name an object that is not there yet.
-     (when-let [plan (get opts mman/blob-plan-key)]
-       (with-blob-writer target #(mblobs/copy-out! (:store db) plan % {:sync? true})))
-     (if (:sort? opts)
-       (let [records (export-records db opts)
-             tmp-dir (fs/temp-dir! "dh-export")]
-         (try
-           ;; `msort` still takes a java.io.File: the external sort is the one
-           ;; part of the dump path that has not been made portable yet (its
-           ;; k-way merge is a lazy seq over open files, which cannot pull from
-           ;; async IO). A portable export therefore means `:sort? false`.
-           (write-to! (msort/external-sort records (:sort-buffer opts)
-                                           (clojure.java.io/file tmp-dir)))
-           (finally
-             (doseq [n (or (fs/list-names tmp-dir) [])]
-               (fs/delete! (fs/join tmp-dir n)))
-             (fs/delete! tmp-dir))))
-       ;; no-scratch streaming: no temp dir, no sort
-       (write-to! (export-records-streaming db opts))))))
+                    (seq (:external blob-plan)) (assoc mman/blob-plan-key blob-plan))]
+         ;; Blob carriage. Planned BEFORE anything is written so the manifest can
+         ;; declare it, and the bytes are written before the manifest — which is
+         ;; the commit marker — so a dump that has a manifest has its blobs. Same
+         ;; ordering the konserve-sync walker needs when it ships blobs ahead of
+         ;; the branch head: nothing may name an object that is not there yet.
+         (when-let [plan (get opts mman/blob-plan-key)]
+           (<?- (with-blob-writer target #(mblobs/copy-out! (:store db) plan % opts))))
+         ;; The records to write. `:sort? true` uses the external merge sort,
+         ;; which is JVM-only — its k-way merge is a lazy seq over open files and
+         ;; cannot pull from async IO — so a portable export means `:sort? false`.
+         ;; Refused by name rather than failing inside `msort`.
+         ;; `:sort? true` uses the external merge sort, which is JVM-only — its
+         ;; k-way merge is a lazy seq over open files and cannot pull from async
+         ;; IO. When this file becomes .cljc the cljs branch refuses it by name;
+         ;; `:sort? false` needs no scratch space at all and is portable.
+         (let [records (if (:sort? opts)
+                         (export-records db opts)
+                         (export-records-streaming db opts))
+               tmp-dir (when (:sort? opts) (fs/temp-dir! "dh-export"))]
+           (try
+             ;; NOT a `write-to!` closure any more. It held the konserve write,
+             ;; and a closure is exactly what the `go` state machine cannot enter
+             ;; — the same rule that reshaped the importer. Inlined so the awaits
+             ;; sit at statement positions.
+             (let [sorted (if (:sort? opts)
+                            (msort/external-sort records (:sort-buffer opts)
+                                                 (clojure.java.io/file tmp-dir))
+                            records)]
+               (if (mstore/store-target? target)
+                 (let [m (<?- (mstore/open target opts))]
+                   (try
+                     (<?- (mstore/write-chunks! m sorted (:chunk-size opts)
+                                                (fn [digest chunks]
+                                                  (build-manifest db opts digest chunks))
+                                                progress opts
+                                                (get opts :compression mz/default-codec)))
+                     (finally (<?- (mstore/close m opts)))))
+                 (write-chunked! db opts target sorted (:chunk-size opts) progress)))
+             (finally
+               (when tmp-dir
+                 (doseq [n (or (fs/list-names tmp-dir) [])]
+                   (fs/delete! (fs/join tmp-dir n)))
+                 (fs/delete! tmp-dir)))))))))))
 
 ;; ---------------------------------------------------------------------------
 ;; reading dumps
@@ -462,8 +469,9 @@
    * With the chunk default now sized for it, the saving is ~2.6 MB against
      terms measured in hundreds. It was buying a second code path.
 
-   `rf` must be pure: it is applied inside the loop, so IO in it would be
-   invisible to the go block when this becomes `.cljc`."
+   `rf` must be pure: it is applied inside the reduction, so IO in it would be
+   invisible to the go block. This is `verify`'s path; the importer uses
+   `chunk-src` directly, because its per-record work writes datoms."
   [{:keys [files manifest]} rf init]
   (let [codec (codec-of manifest)]
     (reduce (fn [acc file]
@@ -624,9 +632,10 @@
                     {:error :import/non-empty-target}))))
 
 (defn- run-import
-  "Medium-agnostic import core. `reduce-lines` is (fn [rf init] -> acc) that streams
-   the dump's records a CHUNK at a time: `{:chunks [descriptor…] :read (fn
-   [descriptor opts] -> records)}`, supplied by whichever medium the source names.
+  "Medium-agnostic import core.
+   `chunk-src` yields the dump's records a CHUNK at a time:
+   `{:chunks [descriptor…] :read (fn [descriptor opts] -> records)}`, supplied by
+   whichever medium the source names.
    `mem` is the memory estimate. Handles guards, attribute-refs seeding, the
    tx-aligned batcher, verification, finalization, and the report.
 
@@ -763,6 +772,10 @@
       ;; turned verification off to save time.
       (when (and (:finalize? opts) (not (false? verified?)))
         (finalize-import! conn))
+      ;; Same cljs hazards as the heap warning above — `*err*` and `format` exist
+      ;; on neither path — and this one had no guard at all. Left as-is until the
+      ;; move to .cljc, where both warnings become one portable helper rather
+      ;; than two hand-written `binding` forms.
       (when-let [src-max-tx (:max-tx (:stats manifest))]
         (let [drift (- (long (:max-tx @conn)) (long src-max-tx))]
           (when-not (zero? drift)
@@ -802,10 +815,13 @@
    would name objects this import did not place, and that has to be a decision
    rather than something discovered later by a failing read."
   [conn manifest source opts]
-  (when-let [store-refs (:store-refs manifest)]
-    (mblobs/check-importable store-refs opts)
-    (when (seq (:carried store-refs))
-      (with-blob-reader source #(mblobs/copy-in! (:store @conn) store-refs % {:sync? true})))))
+  (async+sync
+   (:sync? opts) *default-sync-translation*
+   (go-try-
+    (when-let [store-refs (:store-refs manifest)]
+      (mblobs/check-importable store-refs opts)
+      (when (seq (:carried store-refs))
+        (<?- (with-blob-reader source #(mblobs/copy-in! (:store @conn) store-refs % opts))))))))
 
 (defn import-db
   "Import a dump produced by `export-db` into connection `conn`.
@@ -858,20 +874,35 @@
    (assert-sync-supported! opts)
    (let [opts (merge {:sync? default-sync?} opts)
          batch-size (get opts :batch-size default-batch-size)]
+     (async+sync
+      (:sync? opts) *default-sync-translation*
+      (go-try-
      (if (mstore/store-target? source)
-       (let [m (mstore/open source)]
-         (try
-           (let [manifest (mstore/read-manifest m)
-                 mem (estimate-from-manifest manifest (manifest-total-bytes manifest nil) batch-size)]
-             (check-capabilities! manifest)
-             (check-target! conn manifest)
-             (restore-blobs! conn manifest source opts)
-             (run-import conn manifest mem
-                         {:manifest manifest
-                          :chunks (:chunks manifest)
-                          :read (fn [c o] (mstore/read-chunk m manifest c o))}
-                         opts))
-           (finally (mstore/close m))))
+       ;; NOT `try/finally`. `run-import` returns a CHANNEL in async mode, so a
+       ;; `finally` fires the moment it is handed back — before a single chunk
+       ;; has been read. Instrumented, the order was
+       ;; `[:CLOSE :READ :READ :READ …]`: every chunk read against a released
+       ;; store, and the import still reported `:verified? true`. It looked fine
+       ;; only because `:memory` and `:file` release is near-nil; on a pooled
+       ;; backend (JDBC, RocksDB, S3) that is a use-after-release.
+       ;;
+       ;; The close is therefore explicit on both the success and the failure
+       ;; path, INSIDE the go block, since core.async cannot park in a `finally`.
+       (let [m (<?- (mstore/open source opts))
+             manifest (<?- (mstore/read-manifest m opts))
+             mem (estimate-from-manifest manifest (manifest-total-bytes manifest nil) batch-size)
+             res (try
+                   (check-capabilities! manifest)
+                   (check-target! conn manifest)
+                   (<?- (restore-blobs! conn manifest source opts))
+                   (<?- (run-import conn manifest mem
+                                    {:manifest manifest
+                                     :chunks (:chunks manifest)
+                                     :read (fn [c o] (mstore/read-chunk m manifest c o))}
+                                    opts))
+                   (catch Exception e e))]
+         (<?- (mstore/close m opts))
+         (if (instance? Throwable res) (throw res) res))
        (let [dump (open-dump source)]
          (if (:legacy? dump)
            (mlegacy/import-db-legacy conn source)
@@ -880,11 +911,11 @@
              (check-capabilities! manifest)
              (check-target! conn manifest)
              (restore-blobs! conn manifest source opts)
-             (run-import conn manifest mem
-                         {:manifest manifest
-                          :chunks (:files dump)
-                          :read (fn [f o] (fs-read-chunk manifest f o))}
-                         opts))))))))
+             (<?- (run-import conn manifest mem
+                              {:manifest manifest
+                               :chunks (:files dump)
+                               :read (fn [f o] (fs-read-chunk manifest f o))}
+                              opts)))))))))))
 
 (defn finalize-import!
   "Clear import bookkeeping (:migration id map) from the db after a successful,

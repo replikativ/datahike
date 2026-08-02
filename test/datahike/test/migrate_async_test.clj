@@ -22,6 +22,8 @@
             [clojure.java.io :as io]
             [datahike.api :as d]
             [datahike.migrate :as m]
+            [konserve.store :as ks]
+            [datahike.migrate.store :as mstore]
             [datahike.migrate.cbor :as mcbor]
             [datahike.migrate.compress :as mz]
             [datahike.migrate.digest :as dig]
@@ -207,3 +209,95 @@
               (is (= :import/corrupt-datom (:error (ex-data v))))
               (teardown tgt))))
         (teardown src))))
+
+;; ---------------------------------------------------------------------------
+;; export
+
+(deftest export-runs-in-async-mode-too
+  (testing "the other half of the portable path.
+
+            Import was converted first, which left `export-db` blocking on
+            `mblobs/plan`, `copy-out!` and `mstore/write-chunks!` — all of them
+            already `async+sync`, all of them called synchronously. It also held
+            the konserve write inside a `write-to!` CLOSURE, which is exactly
+            what the `go` state machine cannot enter; that is inlined now.
+
+            `:sort? false` on purpose: the external merge sort is JVM-only (a
+            k-way merge over a lazy seq of open files cannot pull from async IO),
+            so the portable export is the no-scratch one."
+    (let [src (utils/setup-db (mem-cfg))]
+      (d/transact src [{:db/ident :name :db/valueType :db.type/string
+                        :db/cardinality :db.cardinality/one}])
+      (d/transact src [{:name "a"} {:name "b"}])
+      (let [store (ks/create-store {:backend :memory :id (java.util.UUID/randomUUID)}
+                                   {:sync? true})
+            target {:store store :prefix "async-export"}
+            r (m/export-db src target {:history? true :sort? false :sync? false})]
+        (is (instance? clojure.core.async.impl.channels.ManyToManyChannel r)
+            "async export returns a channel")
+        (let [man (take-result r)]
+          (is (pos? (count (:chunks man))) "and the dump was written")
+          (testing "and it imports back, also asynchronously — the whole path"
+            (let [tgt (utils/setup-db (mem-cfg))
+                  rep (take-result (m/import-db tgt target {:sync? false}))]
+              (is (= (:count (:semantic-digest man)) (:datom-count rep)))
+              (is (true? (:verified? rep)))
+              (teardown tgt)))))
+      (teardown src))))
+
+(deftest a-filesystem-export-also-runs-async
+  (testing "the same for a directory target, where the writes are synchronous on
+            both runtimes but still have to compose with the awaits around them."
+    (let [src (utils/setup-db (mem-cfg))]
+      (d/transact src [{:db/ident :n :db/valueType :db.type/long
+                        :db/cardinality :db.cardinality/one}])
+      (doseq [i (range 4)] (d/transact src [{:n i}]))
+      (let [path (str (System/getProperty "java.io.tmpdir") "/dh-async-exp-" (utils/get-time))
+            man (take-result (m/export-db src path {:history? true :sort? false
+                                                    :sync? false :chunk-size 2}))
+            tgt (utils/setup-db (mem-cfg))
+            rep (take-result (m/import-db tgt path {:sync? false}))]
+        (is (= (:count (:semantic-digest man)) (:datom-count rep)))
+        (teardown tgt))
+      (teardown src))))
+
+(deftest a-store-source-is-not-released-before-it-is-read
+  (testing "the bug this namespace was written to catch and did not.
+
+            `import-db` closed the source store in a `finally`. In async mode
+            `run-import` returns a CHANNEL immediately, so the `finally` fired
+            before a single chunk had been read — instrumented, the order was
+            `[:CLOSE :READ :READ …]`, every read against a released store, and
+            the import still reported `:verified? true`.
+
+            It went unnoticed because `:memory` and `:file` release is near-nil.
+            On a pooled backend — JDBC, RocksDB, an S3 client — that is a
+            use-after-release that reports success. The earlier tests here missed
+            it because they only used FILESYSTEM sources, so the close was never
+            in play."
+    (let [log (atom [])
+          orig-close mstore/close
+          orig-read mstore/read-chunk]
+      (with-redefs [mstore/close (fn [& a] (swap! log conj :close) (apply orig-close a))
+                    mstore/read-chunk (fn [& a] (swap! log conj :read) (apply orig-read a))]
+        (let [src (utils/setup-db (mem-cfg))]
+          (d/transact src [{:db/ident :n :db/valueType :db.type/long
+                            :db/cardinality :db.cardinality/one}])
+          (doseq [i (range 4)] (d/transact src [{:n i}]))
+          (let [store (ks/create-store {:backend :memory :id (java.util.UUID/randomUUID)}
+                                       {:sync? true})
+                target {:store store :prefix "release-order"}]
+            (m/export-db src target {:history? true :sort? false :chunk-size 2})
+            (doseq [sync? [true false]]
+              (reset! log [])
+              (let [tgt (utils/setup-db (mem-cfg))]
+                (take-result (m/import-db tgt target {:sync? sync?}))
+                (let [l @log]
+                  (is (some #{:read} l) (str "chunks were read, :sync? " sync?))
+                  (is (some #{:close} l) "and the store was released")
+                  (is (< (.indexOf ^java.util.List l :read)
+                         (.indexOf ^java.util.List l :close))
+                      (str "every read must precede the close, :sync? " sync?
+                           " — got " (pr-str l))))
+                (teardown tgt))))
+          (teardown src))))))

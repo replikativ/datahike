@@ -32,9 +32,7 @@
    we restore blobs BEFORE the datoms that reference them; on export we write
    them before the manifest, so a dump without a manifest is incomplete by
    definition and a dump with one has its blobs."
-  (:require [clojure.core.async :refer [go]]
-            [datahike.db.interface :as dbi]
-            #?(:clj [clojure.java.io :as io])
+  (:require [datahike.db.interface :as dbi]
             [datahike.blob :as blob]
             [datahike.gc :as gc]
             [konserve.core :as k]
@@ -52,9 +50,15 @@
                       :refer-macros [async+sync]])
             #?(:clj  [superv.async :refer [go-try- <?-]]
                :cljs [superv.async :refer-macros [go-try- <?-]])
-            ;; `go-try-` expands into `clojure.core.async/go`; on ClojureScript
-            ;; that macro must be referred HERE or the Clojure one is used.
-            #?(:cljs [clojure.core.async :refer-macros [go]])))
+            ;; ClojureScript ONLY, and it is load-bearing despite `go-try-`
+            ;; syntax-quoting `clojure.core.async/go`: without it the compiler
+            ;; resolves the CLOJURE `go`, whose `go-impl` walks `&env` expecting
+            ;; symbol keys, and cljs `&env` is the compiler map with keyword
+            ;; keys. Measured — removing it fails the node build at the first
+            ;; `go-try-`. The JVM refer that used to sit beside it really was
+            ;; dead and is gone.
+            #?(:cljs [clojure.core.async :refer-macros [go]])
+))
 
 (def ^:const dir-name
   "Subdirectory (filesystem) / key segment (store) the blobs live under.
