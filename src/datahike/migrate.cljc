@@ -674,6 +674,23 @@
     (throw (ex-info "Target database is not empty; import is not resumable — recreate and restart."
                     {:error :import/non-empty-target}))))
 
+(defn manifest->source-meta
+  "The three things `run-import` needs from a dump's manifest.
+
+   The whole of the importer's dependency on the dump FORMAT, in one place. A
+   source that is not a datahike dump — a CSV reader, a triple stream,
+   pre-sorted synthetic data — builds this map directly and never produces a
+   manifest at all.
+
+   Every key is optional. Without `:expected-count` the post-import count check
+   has nothing to compare against (so pass `:verify? false`, or supply a count);
+   without `:max-tx` there is no drift warning; `:history?` defaults to false,
+   which is right for any source that has no retractions."
+  [manifest]
+  {:history?       (boolean (:history? manifest))
+   :expected-count (:count (:semantic-digest manifest))
+   :max-tx         (:max-tx (:stats manifest))})
+
 (defn- run-import
   "Medium-agnostic import core.
    `chunk-src` yields the dump's records a CHUNK at a time:
@@ -691,8 +708,28 @@
    could never have been expressed through it. Yielding chunks instead puts the
    read AND the write at statement positions the state machine can see.
 
-   `verify` still uses `reduce-source`, because its folds really are pure."
-  [conn manifest mem chunk-src opts]
+   `verify` still uses `reduce-source`, because its folds really are pure.
+
+   ## Why `source-meta` and not the manifest
+
+   This used to take the dump's manifest and read five keys out of it. Those
+   five are the whole of its dependency on the dump FORMAT — everything else it
+   needs comes from `conn` or `opts` — so it takes them directly now:
+
+     :history?       was `(:history? manifest)`
+     :expected-count was `(:count (:semantic-digest manifest))`
+     :max-tx         was `(:max-tx (:stats manifest))`
+
+   That is what makes a non-dump source possible. A CSV reader, a triple stream
+   or pre-sorted synthetic data can supply `{:chunks … :read …}` plus whatever
+   of those three it knows, and needs no manifest at all. Every one of them is
+   optional here: absent `:expected-count` only means count verification has
+   nothing to compare against, and absent `:max-tx` only means no drift warning.
+
+   The dump-specific checks stay with the CALLER — `check-capabilities!`,
+   `config-compat!` and `restore-blobs!` each already no-op on an absent
+   manifest, so a non-dump caller simply does not call them."
+  [conn source-meta mem chunk-src opts]
   (let [opts     (merge {:batch-size default-batch-size :verify? true
                          :on-error :abort :finalize? true :sync? true} opts)
         progress (or (:progress-fn opts) (constantly nil))
@@ -777,7 +814,7 @@
                                (recur (next rs) (update acc :dropped inc))))))))))
           errors (into (:errors final)
                        (<?- (flush-batch! conn (:batch final) on-error progress opts)))
-          hist?  (boolean (:history? manifest))
+          hist?  (boolean (:history? source-meta))
           live   (long (user-datom-count @conn hist?))
           dropped (long (:dropped final))
           ;; A translator that DROPS records makes the dump's own count the wrong
@@ -786,13 +823,13 @@
           ;; that should have landed and did not are still caught) instead of
           ;; either failing spuriously or being switched off, which is how people
           ;; learn to ignore verification output.
-          expected (- (long (or (:count (:semantic-digest manifest)) 0)) dropped)
+          expected (- (long (or (:expected-count source-meta) 0)) dropped)
           verified? (when (:verify? opts)
                       (let [ok? (= expected live)]
                         (when (and (not ok?) (not= :collect on-error))
                           (throw (ex-info "Post-import verification failed (datom count mismatch)"
                                           {:error :import/verify-failed
-                                           :dump-count (:count (:semantic-digest manifest))
+                                           :dump-count (:expected-count source-meta)
                                            :dropped-by-translate dropped
                                            :expected-count expected
                                            :live-count live})))
@@ -821,7 +858,7 @@
       ;; on neither path — and this one had no guard at all. Left as-is until the
       ;; move to .cljc, where both warnings become one portable helper rather
       ;; than two hand-written `binding` forms.
-      (when-let [src-max-tx (:max-tx (:stats manifest))]
+      (when-let [src-max-tx (:max-tx source-meta)]
         (let [drift (- (long (:max-tx @conn)) (long src-max-tx))]
           (when-not (zero? drift)
             (warn! (str "[datahike.migrate] max-tx drifted by "
@@ -838,7 +875,7 @@
        ;; database numbers its next transaction differently from the one it
        ;; replaced, and that is the kind of thing an operator should be told
        ;; rather than discover. nil when the dump records no source max-tx.
-       :max-tx-drift (when-let [src-max-tx (:max-tx (:stats manifest))]
+       :max-tx-drift (when-let [src-max-tx (:max-tx source-meta)]
                        (- (long (:max-tx @conn)) (long src-max-tx)))
        :tx-count    tx-count
        :max-tx      (:max-tx @conn)
@@ -943,9 +980,8 @@
                    (check-capabilities! manifest)
                    (check-target! conn manifest)
                    (<?- (restore-blobs! conn manifest source opts))
-                   (<?- (run-import conn manifest mem
-                                    {:manifest manifest
-                                     :chunks (:chunks manifest)
+                   (<?- (run-import conn (manifest->source-meta manifest) mem
+                                    {:chunks (:chunks manifest)
                                      :read (fn [c o] (mstore/read-chunk m manifest c o))}
                                     opts))
                    (catch #?(:clj Exception :cljs :default) e e))]
@@ -969,9 +1005,8 @@
              ;; that were never written. The store arm above always awaited this;
              ;; only the filesystem arm did not.
              (<?- (restore-blobs! conn manifest source opts))
-             (<?- (run-import conn manifest mem
-                              {:manifest manifest
-                               :chunks (:files dump)
+             (<?- (run-import conn (manifest->source-meta manifest) mem
+                              {:chunks (:files dump)
                                :read (fn [f o] (fs-read-chunk manifest f o))}
                               opts)))))))))))
 
