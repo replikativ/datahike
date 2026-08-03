@@ -435,7 +435,6 @@
           keep-history? (update-in [:temporal-eavt] #(di/-temporal-insert % prim :eavt (inc op-count)))
           keep-history? (update-in [:temporal-aevt] #(di/-temporal-insert % removing :aevt op-count))
           keep-history? (update-in [:temporal-aevt] #(di/-temporal-insert % prim :aevt (inc op-count)))
-          keep-history? (update :hash + (hash prim))
           (and keep-history? indexing?) (update-in [:temporal-avet] #(di/-temporal-insert % removing :avet op-count))
           (and keep-history? indexing?) (update-in [:temporal-avet] #(di/-temporal-insert % prim :avet (inc op-count)))
           true (update :op-count + (if (or keep-history? indexing?) 2 1)))
@@ -535,6 +534,9 @@
 
       true    (update :op-count inc)
       true    (advance-max-eid (.-e datom))
+      ;; `-upsert` REPLACES `old-datom` rather than adding alongside it, so the
+      ;; running sum has to lose the old term as well as gain the new one.
+      old-datom (update :hash - (hash old-datom))
       true    (update :hash + (hash prim))
       schema? (-> (update-schema datom)
                   update-rschema))))
