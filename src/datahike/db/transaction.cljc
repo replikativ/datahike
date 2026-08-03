@@ -612,6 +612,36 @@
    (some #(get-in db [:schema % :db.secondary/config :valid-time])
          (get-in db [:rschema :db.secondary/index a-ident]))))
 
+(defn- migrated-eid
+  "The target eid for source eid `e`, or nil.
+
+   `:eids` is normally a MAP built up as the import goes. It may instead be a
+   FUNCTION, which is what lets an import state its id policy up front — offset
+   by a constant, or preserve source ids — without materialising an entry per
+   entity. That map is O(entities) and is what `estimate-import-memory` warns
+   about; a function is O(1).
+
+   `:tids` is consulted first and is always a map. Transaction entities are
+   allocated by the tx branch and aliased into `:eids`, so a lookup has to see
+   that allocation rather than route a tx entity through the caller's entity
+   policy.
+
+   Safe with a function because `max-eid` does not depend on this: `with-datom`
+   and `with-datom-upsert` advance it from the datom's own `e`, whatever chose
+   that `e`."
+  [migration-state e]
+  (or (get (:tids migration-state) e)
+      (let [m (:eids migration-state)]
+        (if (fn? m) (m e) (get m e)))))
+
+(defn- remember-eid
+  "Record source eid `e` -> `new-e`, unless `:eids` is a function — a total
+   function has nothing to memoise, and assoc-ing into it would fail."
+  [migration-state e new-e]
+  (if (fn? (:eids migration-state))
+    migration-state
+    (assoc-in migration-state [:eids e] new-e)))
+
 (defn- transact-report
   ([report datom] (transact-report report datom false))
   ([report datom upsert?] (transact-report report datom upsert? ::not-looked-up))
@@ -1736,25 +1766,25 @@
                    entities
                    (-> migration-state
                        (assoc-in [:tids e] new-e)
-                       (assoc-in [:eids e] new-e))))
+                       (remember-eid e new-e))))
 
           ;; tx not added yet
           (nil? (get-in migration-state [:tids t]))
           (recur (update-in report [:db-after :max-tx] inc) es (assoc-in migration-state [:tids t] max-tid))
 
           ;; ref not added yet
-          (and (dbu/ref? db a) (nil? (get-in migration-state [:eids v])))
-          (recur (allocate-eid report max-eid) es (assoc-in migration-state [:eids v] max-eid))
+          (and (dbu/ref? db a) (nil? (migrated-eid migration-state v)))
+          (recur (allocate-eid report max-eid) es (remember-eid migration-state v max-eid))
 
           :else
           (let [new-datom ^Datom (dd/datom
-                                  (or (get-in migration-state [:eids e]) max-eid)
+                                  (or (migrated-eid migration-state e) max-eid)
                                   a
                                   (if (dbu/ref? db a)
-                                    (get-in migration-state [:eids v])
+                                    (migrated-eid migration-state v)
                                     v)
                                   (get-in migration-state [:tids t])
                                   op)
                 upsert? (and (not (dbu/multival? db a-ident))
                              op)]
-            (recur (transact-report report new-datom upsert?) entities (assoc-in migration-state [:eids e] (.-e new-datom)))))))))
+            (recur (transact-report report new-datom upsert?) entities (remember-eid migration-state e (.-e new-datom)))))))))

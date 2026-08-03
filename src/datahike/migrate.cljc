@@ -31,6 +31,7 @@
    A `:history? true` export resurrects retracted data — see the data-protection
    note in `import-db`/the backup guide."
   (:require [datahike.api :as api]
+            [datahike.writer :as dwriter]
             [datahike.constants :as c]
             [datahike.datom :as d]
             [datahike.db.interface :as dbi]
@@ -557,11 +558,15 @@
    and on ClojureScript is a `promise-chan`. So the same object can be `@`-ed or
    parked on; the only platform difference is that cljs has no blocking deref,
    and `:sync? true` is refused there at the public entry points."
-  [conn batch opts]
+  [conn batch migration opts]
   (async+sync
    (:sync? opts) *default-sync-translation*
    (go-try-
-    (let [p (api/load-entities conn batch)]
+    ;; `datahike.writer/load-entities` rather than `api/load-entities`, because
+    ;; the id-mapping seed travels WITH the call and the public arity is pinned
+    ;; at two arguments by its malli spec. See `core/seed-migration` for why the
+    ;; seed cannot ride on the connection instead.
+    (let [p (dwriter/load-entities conn batch migration)]
       ;; ClojureScript has no blocking deref, and `:sync? true` is refused there
       ;; by `assert-sync-supported!` at the entry points.
       #?(:clj (if (:sync? opts) @p (<?- p))
@@ -592,11 +597,11 @@
    So each attempt now records only WHETHER it succeeded, and every retry happens
    outside the handler in a `loop`. Behaviour is identical; the shape is one the
    async branch can compile."
-  [conn batch progress opts]
+  [conn batch migration progress opts]
   (async+sync
    (:sync? opts) *default-sync-translation*
    (go-try-
-    (let [ok? (try (<?- (load-batch! conn batch opts)) true
+    (let [ok? (try (<?- (load-batch! conn batch migration opts)) true
                    (catch #?(:clj Exception :cljs :default) _ false))]
       (if ok?
         (do (progress {:phase :batch :datoms (count batch)}) [])
@@ -604,7 +609,7 @@
           (if (nil? groups)
             errs
             (let [tx-group (vec (first groups))
-                  tx-ok? (try (<?- (load-batch! conn tx-group opts)) true
+                  tx-ok? (try (<?- (load-batch! conn tx-group migration opts)) true
                               (catch #?(:clj Exception :cljs :default) _ false))]
               (if tx-ok?
                 (recur (next groups) errs)
@@ -613,7 +618,7 @@
                          (if (nil? ds)
                            errs
                            (let [d (first ds)
-                                 ex (try (<?- (load-batch! conn [d] opts)) nil
+                                 ex (try (<?- (load-batch! conn [d] migration opts)) nil
                                          (catch #?(:clj Exception :cljs :default) e e))]
                              (recur (next ds)
                                     (if ex
@@ -625,16 +630,16 @@
   "Apply one tx-aligned batch via load-entities. Under :on-error :abort a failure
    throws; under :collect the offending datoms are skipped and returned as errors
    (per-datom granularity, see `collect-apply!`)."
-  [conn batch on-error progress opts]
+  [conn batch on-error migration progress opts]
   (async+sync
    (:sync? opts) *default-sync-translation*
    (go-try-
     (if (seq batch)
       (if (= :collect on-error)
-        (<?- (collect-apply! conn batch progress opts))
+        (<?- (collect-apply! conn batch migration progress opts))
         ;; the failure is captured and RETHROWN outside the handler: core.async
         ;; cannot park inside a `catch`, and the throw has to follow the await
-        (let [ex (try (<?- (load-batch! conn batch opts)) nil
+        (let [ex (try (<?- (load-batch! conn batch migration opts)) nil
                       (catch #?(:clj Exception :cljs :default) e e))]
           (if ex
             (throw (ex-info (str "Import aborted: " (ex-message ex))
@@ -673,6 +678,60 @@
   (when (pos? (user-datom-count @conn))
     (throw (ex-info "Target database is not empty; import is not resumable — recreate and restart."
                     {:error :import/non-empty-target}))))
+
+(defn eid-policy
+  "Resolve the `:eids` option into what `:migration`'s `:eids` slot should hold,
+   or nil to leave the default (allocate fresh ids) alone.
+
+   The lever is `transact-entities-directly`, which does
+   `(or (migrated-eid migration-state e) max-eid)` — a pre-seeded answer wins
+   over allocation. `run-import` already seeds that map for system entities;
+   this generalises it to the caller's own.
+
+     :allocate   (default) fresh target ids; source ids irrelevant.
+     :offset     e -> e + delta, delta above the target's :max-eid, so the two
+                 id spaces cannot overlap. For a database you know to be
+                 disjoint from the dump.
+     :preserve   e -> e. For a dump whose ids are already correct — an exact
+                 restore. Refuses when the target has allocated past `e0`,
+                 because preserving into occupied space would silently merge
+                 two different entities.
+     a map       {source-eid target-eid}, e.g. from `migrate.ids/build-mapping`.
+     a function  (fn [source-eid] -> target-eid).
+
+   `:offset` and `:preserve` are FUNCTIONS, so they cost O(1) rather than the
+   O(entities) map the default builds — which is the memory ceiling
+   `estimate-import-memory` warns about. Nothing else changes: `max-eid` still
+   advances from each datom's own `e` inside `with-datom`.
+
+   Transaction ids are NOT covered. They keep their existing allocation, which
+   starts above the target's `:max-tx`; preserving source tx ids into a
+   populated database is a different problem with its own collision rules."
+  [eids db]
+  (cond
+    (nil? eids) nil
+    (= :allocate eids) nil
+    (= :preserve eids)
+    (do (when (> (long (:max-eid db)) (long c/e0))
+          ;; A WARNING, not a refusal. `:preserve` is the caller asserting that
+          ;; the source ids are correct for this target, and only they can know
+          ;; that. Refusing on `max-eid > e0` would reject every
+          ;; `:schema-flexibility :write` database, since schema attributes are
+          ;; entities and occupy ids — i.e. the common case — while still not
+          ;; proving anything about whether the ranges actually overlap.
+          (warn! (str "[datahike.migrate] :eids :preserve into a target that has "
+                      "allocated entities already (max-eid " (:max-eid db)
+                      "). Source ids are used as-is, so any that collide will "
+                      "MERGE with the existing entity rather than being added. "
+                      "Use :offset if the two id spaces are meant to be disjoint.")))
+        identity)
+    (= :offset eids)
+    (let [delta (- (long (:max-eid db)) (long c/e0))]
+      (fn [e] (+ (long e) delta)))
+    (or (map? eids) (fn? eids)) eids
+    :else (throw (ex-info (str "Unknown :eids strategy " (pr-str eids)
+                               ". Expected :allocate, :offset, :preserve, a map or a function.")
+                          {:error :import/bad-eid-strategy :value eids}))))
 
 (defn manifest->source-meta
   "The three things `run-import` needs from a dump's manifest.
@@ -755,11 +814,27 @@
                   ". Raise it (the id-remap map is held until finalize) or"
                   " expect OutOfMemoryError.")))
     ;; Guard rails already ran in `check-target!`, before any blob was written.
-    ;; ---- attribute-refs: seed system-entity identity so refs to system
-    ;; entities are translated, not re-allocated (#508) ----
-    (when (attribute-refs? @conn)
-      (swap! conn update :migration
-             (fn [m] (update (or m {}) :eids merge (system-eid-seed @conn)))))
+    ;; ---- the id-mapping seed, carried WITH every load-entities call ----
+    ;; Not swapped onto the connection: the writer loop carries its own db value
+    ;; and refreshes only `:max-tx` from it (see the TODO in `datahike.writer`),
+    ;; so a connection-level seed is not reliably visible to the transactor.
+    ;; That is also why the attribute-refs system seed moved here — it had the
+    ;; same exposure, silently.
+    (let [db @conn
+          ;; system-entity identity, so refs to a system entity are TRANSLATED
+          ;; rather than re-allocated (#508)
+          sys (when (attribute-refs? db) (system-eid-seed db))
+          policy (eid-policy (:eids opts) db)
+          eids (cond
+                 ;; A policy is about the caller's OWN entities. System entities
+                 ;; keep their identity regardless, or `:offset` would shift the
+                 ;; targets of system refs and break them.
+                 (and (fn? policy) (seq sys)) (fn [e] (if (contains? sys e) e (policy e)))
+                 (fn? policy) policy
+                 (and policy (seq sys)) (merge sys policy)
+                 policy policy
+                 (seq sys) sys)
+          migration (when eids {:eids eids})]
     ;; ---- stream records through a tx-aligned batcher (bounded memory) ----
     ;; System-entity idents are stable across the import, so resolve #sysref
     ;; against a captured db value.
@@ -803,7 +878,8 @@
                                            (-> acc
                                                (update :errors into
                                                        (<?- (flush-batch! conn (:batch acc)
-                                                                          on-error progress opts)))
+                                                                          on-error migration
+                                                                          progress opts)))
                                                (assoc :batch [] :n 0))
                                            acc)]
                                  (recur (next rs)
@@ -813,7 +889,7 @@
                                             (assoc :last-t t))))
                                (recur (next rs) (update acc :dropped inc))))))))))
           errors (into (:errors final)
-                       (<?- (flush-batch! conn (:batch final) on-error progress opts)))
+                       (<?- (flush-batch! conn (:batch final) on-error migration progress opts)))
           hist?  (boolean (:history? source-meta))
           live   (long (user-datom-count @conn hist?))
           dropped (long (:dropped final))
@@ -882,7 +958,7 @@
        :verified?   verified?
        :finalized?  (boolean (and (:finalize? opts) (not (false? verified?))))
        :recommended-heap (:recommended-heap mem)
-       :errors      errors})))))
+       :errors      errors}))))))
 
 (defn- restore-blobs!
   "Put the dump's carried `:db.type/store-ref` bytes into the target store, before
@@ -947,6 +1023,17 @@
                              the live db, so a translated import will differ there
                              by design — that comparison is not meaningful after a
                              transformation.
+     :eids         :allocate how source entity ids bind to target ones —
+                             :allocate (fresh ids), :offset (e + delta, above the
+                             target's max-eid, for a database known to be
+                             disjoint), :preserve (e as-is, for a dump whose ids
+                             are already correct), or a map/function of your own.
+                             :offset and :preserve are FUNCTIONS and so cost
+                             O(1) rather than the O(entities) map :allocate
+                             builds — the memory ceiling the heap warning above
+                             is about. Transaction ids are not covered; they are
+                             always allocated above the target's :max-tx.
+                             See `eid-policy`.
      :finalize?    true      clear the :migration id-map after a verified import
      :progress-fn  nil
    Returns {:datom-count .. :tx-count .. :max-tx .. :verified? .. :errors [..]

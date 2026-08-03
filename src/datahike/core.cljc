@@ -146,14 +146,40 @@
            _ (dq/propagate-query-cache db (:db-after report) modified-attrs)]
        report))))
 
-(defn load-entities-with [db entities tx-meta]
-  (dbt/transact-entities-directly
-   (db/map->TxReport {:db-before db
-                      :db-after  db
-                      :tx-data   []
-                      :tempids   {}
-                      :tx-meta   tx-meta})
-   entities))
+(defn- seed-migration
+  "Apply an id-mapping seed to `db`'s `:migration` before it becomes
+   `:db-before`. `transact-entities-directly` reads its `migration-state` from
+   there, so this is where a caller's id policy enters.
+
+   Threaded through the CALL rather than swapped onto the connection: the writer
+   loop carries its own db value and refreshes only `:max-tx` from the
+   connection (see the TODO in `datahike.writer`), so a `swap!` on the
+   connection atom is not reliably visible to the transactor.
+
+   A FUNCTION replaces `:eids` outright — it is total, so there is nothing to
+   merge and nothing to accumulate. A MAP merges into whatever ids the import
+   has already allocated, because that map IS the accumulation."
+  [db seed]
+  (if (seq seed)
+    (update db :migration
+            (fn [m]
+              (reduce-kv (fn [acc k v]
+                           (if (fn? v) (assoc acc k v) (update acc k merge v)))
+                         (or m {})
+                         seed)))
+    db))
+
+(defn load-entities-with
+  ([db entities tx-meta] (load-entities-with db entities tx-meta nil))
+  ([db entities tx-meta migration]
+   (let [db' (seed-migration db migration)]
+     (dbt/transact-entities-directly
+      (db/map->TxReport {:db-before db'
+                         :db-after  db'
+                         :tx-data   []
+                         :tempids   {}
+                         :tx-meta   tx-meta})
+      entities))))
 
 (defn db-with
   "Applies transaction to an immutable db value, returning new immutable db value. Same as `(:db-after (with db tx-data))`."

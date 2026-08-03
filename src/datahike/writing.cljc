@@ -908,6 +908,8 @@
   (log/trace :datahike/transact-detail {:tx-data tx-data :tx-meta tx-meta})
   (complete-db-update old (core/with old tx-data tx-meta)))
 
-(defn load-entities [old entities]
-  (log/debug :datahike/load-entities {:entity-count (count entities)})
-  (complete-db-update old (core/load-entities-with old entities nil)))
+(defn load-entities
+  ([old entities] (load-entities old entities nil))
+  ([old entities migration]
+   (log/debug :datahike/load-entities {:entity-count (count entities)})
+   (complete-db-update old (core/load-entities-with old entities nil migration))))
