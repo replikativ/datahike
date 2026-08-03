@@ -79,6 +79,19 @@
           #{}
           (sort-by tx-order history-records)))
 
+(defn- eav-runs
+  "Group records sorted by `[e a v t]` into consecutive runs sharing `[e a v]`.
+
+   The one structural fact both streaming functions below rest on: that sort puts
+   every record for one `[e a v]` ADJACENT and in transaction order, so each is a
+   question about the LAST record of a run and nothing else. Memory is one run,
+   not a set of every live datom.
+
+   `partition-by` rather than a hand-rolled `take-while`/`drop`, which walks each
+   run twice."
+  [sorted-records]
+  (partition-by (fn [r] [(nth r 0) (nth r 1) (nth r 2)]) sorted-records))
+
 (defn current-from-eavt-sorted
   "STREAMING currentness: given records sorted by `[e a v t]`, return a lazy seq
    of the records that are currently true, in that same order.
@@ -87,34 +100,61 @@
    memory — fine for a test or a small database, useless for the case a bulk
    build exists to serve. This is the version the import path uses.
 
-   The trick is the sort order, not the fold. Sorting by `[e a v t]` puts every
-   record for one `[e a v]` ADJACENT and in transaction order, so deciding
-   whether that datom is current means looking at the last record of the run and
-   nothing else. State is one partial run, not a set of every live datom.
-
    Requires the input to be sorted by `[e a v t]` with `t` ascending within each
    `[e a v]`. That is an external sort the import already performs to feed the
    index builders, so it costs nothing extra."
   [sorted-records]
-  (letfn [(step [rs]
-            (lazy-seq
-             (when-let [s (seq rs)]
-               (let [r (first s)
-                     k (fn [x] [(nth x 0) (nth x 1) (nth x 2)])
-                     kr (k r)
-                     run (cons r (take-while #(= kr (k %)) (rest s)))
-                     rest-s (drop (count run) s)
-                     ;; last record for this [e a v] wins; current iff it asserted
-                     final (last run)]
-                 (if (nth final 4)
-                   (cons final (step rest-s))
-                   (step rest-s))))))]
-    (step sorted-records)))
+  (keep (fn [run]
+          ;; last record for this [e a v] wins; current iff it asserted
+          (let [final (last run)]
+            (when (nth final 4) final)))
+        (eav-runs sorted-records)))
+
+(defn temporal-from-eavt-sorted
+  "STREAMING: given records sorted by `[e a v t]`, the subset the TEMPORAL trees
+   hold. `exclude-attr?` names attributes whose LIVE datom never reaches temporal.
+
+   The temporal trees are NOT \"every record\", which is the obvious reading and
+   is wrong. Derived from the transactor rather than assumed — see `with-datom`
+   and `with-datom-upsert`:
+
+     - card-one goes through the upsert path, whose `temporal-upsert` conj's
+       every assertion into temporal INCLUDING the currently-live one;
+     - a plain card-many assertion touches only the current trees;
+     - a retraction puts both the removed assertion and the retraction marker
+       into temporal;
+     - a `:db/noHistory` attribute never reaches temporal at all, because
+       `keep-history?` is `(and (-keep-history? db) (not (no-history? db a)))`.
+
+   So exactly two classes are missing from temporal: the live datom of a
+   `:db/noHistory` attribute and the live datom of a card-many one. That is
+   precisely why `dbu/distinct-datoms` forms the history view as temporal UNION
+   `(current filtered to no-history? OR multival?)` — the union exists to put
+   those two classes back.
+
+   Only the FINAL record of each run is dropped, never every assertion in it.
+   The difference is reachable: a card-many value retracted and then re-asserted
+   has an EARLIER assertion which datahike does keep in temporal (the retraction
+   put it there). Dropping every live-keyed assertion loses it — measured, on a
+   database carrying that shape, as one missing datom out of 37."
+  [exclude-attr? sorted-records]
+  (mapcat (fn [run]
+            (let [final (last run)]
+              (if (and (nth final 4) (exclude-attr? (nth final 1)))
+                (butlast run)
+                run)))
+          (eav-runs sorted-records)))
 
 (defn split-current
   "Partition `history-records` into `{:current [...] :history [...]}`.
 
-   `:history` is every record, unchanged — the temporal indexes hold the lot.
+   `:history` is every record, unchanged. NOTE that this is NOT what the temporal
+   trees hold — they omit the live datom of every `:db/noHistory` and card-many
+   attribute, for which see `temporal-from-eavt-sorted`. This function predates
+   that finding and is kept only for tests and small inputs; a bulk build that
+   fed `:history` to the temporal trees would over-count them (measured: 55
+   records against a real temporal tree of 37).
+
    `:current` is the subset whose `[e a v]` is currently true, keeping the record
    that ASSERTED it (the latest assertion, since a later retraction would have
    removed the key).
