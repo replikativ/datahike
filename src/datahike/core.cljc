@@ -158,15 +158,26 @@
 
    A FUNCTION replaces `:eids` outright — it is total, so there is nothing to
    merge and nothing to accumulate. A MAP merges into whatever ids the import
-   has already allocated, because that map IS the accumulation."
+   has already allocated, because that map IS the accumulation.
+
+   `:reset?` in the seed REPLACES `:migration` instead of merging into it, and
+   is how an import starts from a clean mapping. It has to exist because the
+   obvious alternative does not work: `migrate/finalize-import!` clears
+   `:migration` with a `swap!` on the CONNECTION, which the writer — carrying
+   its own db value — never sees. The map therefore survived, and a second
+   import into the same connection reused the first one's ids, upserting onto
+   its entities instead of adding new ones. Measured: a four-entity dump
+   imported twice produced four entities, not eight."
   [db seed]
   (if (seq seed)
-    (update db :migration
-            (fn [m]
-              (reduce-kv (fn [acc k v]
-                           (if (fn? v) (assoc acc k v) (update acc k merge v)))
-                         (or m {})
-                         seed)))
+    (let [reset? (:reset? seed)
+          seed (dissoc seed :reset?)]
+      (update db :migration
+              (fn [m]
+                (reduce-kv (fn [acc k v]
+                             (if (fn? v) (assoc acc k v) (update acc k merge v)))
+                           (if reset? {} (or m {}))
+                           seed))))
     db))
 
 (defn load-entities-with

@@ -545,6 +545,17 @@
    (let [src (if history? (api/history db) db)]
      (count (filter #(> (d/datom-tx %) c/tx0) (api/datoms src :eavt))))))
 
+(defn- has-user-datoms?
+  "Does `db` hold any user-transaction datom? Stops at the FIRST one.
+
+   `user-datom-count` walks the entire `:eavt` index and boxes a lazy seq of
+   Datoms to answer this. That is free on an empty target — which is the only
+   kind `import-db` used to accept — and becomes the dominant cost of a small
+   import the moment `:merge? true` allows a populated one: a full, cold-cache
+   index read before a single datom is written."
+  [db]
+  (boolean (some #(> (d/datom-tx %) c/tx0) (api/datoms db :eavt))))
+
 (defn- load-batch!
   "One `load-entities` call, awaited. `async+sync`: yields the tx-report in sync
    mode, a channel of it otherwise.
@@ -669,15 +680,20 @@
    then refused. The objects are content-addressed and unreferenced, so the GC
    reclaims them eventually, but the refusal should come first — and on a large
    blob set that is gigabytes written to be told the target was never eligible."
-  [conn manifest]
+  [conn manifest opts]
   (when-let [fv (get manifest manifest-key)]
     (when (> fv format-version)
       (throw (ex-info (str "Unsupported dump format-version " fv)
                       {:error :import/format-version :version fv}))))
   (config-compat! manifest conn)
-  (when (pos? (user-datom-count @conn))
-    (throw (ex-info "Target database is not empty; import is not resumable — recreate and restart."
-                    {:error :import/non-empty-target}))))
+  ;; The format and config checks above are about COMPATIBILITY and apply
+  ;; whatever the target holds. Only emptiness is negotiable.
+  (when-not (:merge? opts)
+    (when (has-user-datoms? @conn)
+      (throw (ex-info (str "Target database is not empty; import is not resumable — "
+                           "recreate and restart, or pass `:merge? true` to ADD this "
+                           "dump to what is already there (append-only; see `import-db`).")
+                      {:error :import/non-empty-target})))))
 
 (defn eid-policy
   "Resolve the `:eids` option into what `:migration`'s `:eids` slot should hold,
@@ -821,6 +837,16 @@
     ;; That is also why the attribute-refs system seed moved here — it had the
     ;; same exposure, silently.
     (let [db @conn
+          ;; Under `:merge?` the count check has to be a DELTA: `expected` is a
+          ;; property of the SOURCE, while the live count is a property of the
+          ;; whole database. Taken before anything is written, and only when it
+          ;; will be used — on an empty target it is 0 and the scan is free,
+          ;; but on a populated one it is a full index read and paying for it
+          ;; when `:verify? false` would be waste.
+          live-before (if (and (:merge? opts) (:verify? opts))
+                        (long (user-datom-count db (boolean (:history? source-meta))))
+                        0)
+          max-eid-before (:max-eid db)
           ;; system-entity identity, so refs to a system entity are TRANSLATED
           ;; rather than re-allocated (#508)
           sys (when (attribute-refs? db) (system-eid-seed db))
@@ -834,7 +860,17 @@
                  (and policy (seq sys)) (merge sys policy)
                  policy policy
                  (seq sys) sys)
-          migration (when eids {:eids eids})]
+          base-migration (if eids {:eids eids} {})
+          ;; The FIRST flush of an import resets `:migration` rather than
+          ;; merging into it, so an import never inherits the id mapping of a
+          ;; previous one. `finalize-import!` cannot do this: it swaps the
+          ;; connection, which the writer does not read.
+          seed-once (atom true)
+          migration-for! (fn []
+                           (if @seed-once
+                             (do (reset! seed-once false)
+                                 (assoc base-migration :reset? true))
+                             (when (seq base-migration) base-migration)))]
     ;; ---- stream records through a tx-aligned batcher (bounded memory) ----
     ;; System-entity idents are stable across the import, so resolve #sysref
     ;; against a captured db value.
@@ -878,7 +914,7 @@
                                            (-> acc
                                                (update :errors into
                                                        (<?- (flush-batch! conn (:batch acc)
-                                                                          on-error migration
+                                                                          on-error (migration-for!)
                                                                           progress opts)))
                                                (assoc :batch [] :n 0))
                                            acc)]
@@ -889,9 +925,11 @@
                                             (assoc :last-t t))))
                                (recur (next rs) (update acc :dropped inc))))))))))
           errors (into (:errors final)
-                       (<?- (flush-batch! conn (:batch final) on-error migration progress opts)))
+                       (<?- (flush-batch! conn (:batch final) on-error (migration-for!) progress opts)))
           hist?  (boolean (:history? source-meta))
-          live   (long (user-datom-count @conn hist?))
+          ;; What this import ADDED. Identical to the whole-database count for
+          ;; the ordinary empty-target import, where `live-before` is 0.
+          live   (- (long (user-datom-count @conn hist?)) live-before)
           dropped (long (:dropped final))
           ;; A translator that DROPS records makes the dump's own count the wrong
           ;; expectation — the mismatch is the transformation working, not a
@@ -934,7 +972,11 @@
       ;; on neither path — and this one had no guard at all. Left as-is until the
       ;; move to .cljc, where both warnings become one portable helper rather
       ;; than two hand-written `binding` forms.
-      (when-let [src-max-tx (:max-tx source-meta)]
+      ;; `max-tx` drift compares the restored database's numbering against the
+      ;; source's. That is a meaningful claim about a RESTORE and a meaningless
+      ;; one about a merge, where the target's numbering was never supposed to
+      ;; match.
+      (when-let [src-max-tx (and (not (:merge? opts)) (:max-tx source-meta))]
         (let [drift (- (long (:max-tx @conn)) (long src-max-tx))]
           (when-not (zero? drift)
             (warn! (str "[datahike.migrate] max-tx drifted by "
@@ -951,8 +993,14 @@
        ;; database numbers its next transaction differently from the one it
        ;; replaced, and that is the kind of thing an operator should be told
        ;; rather than discover. nil when the dump records no source max-tx.
-       :max-tx-drift (when-let [src-max-tx (:max-tx source-meta)]
+       :max-tx-drift (when-let [src-max-tx (and (not (:merge? opts)) (:max-tx source-meta))]
                        (- (long (:max-tx @conn)) (long src-max-tx)))
+       :merged?     (boolean (:merge? opts))
+       ;; Which entity ids this import created, so a caller that merged can find
+       ;; what it just added without diffing the database.
+       :eid-range   (let [after (:max-eid @conn)]
+                      (when (> (long after) (long max-eid-before))
+                        [(inc (long max-eid-before)) (long after)]))
        :tx-count    tx-count
        :max-tx      (:max-tx @conn)
        :verified?   verified?
@@ -1023,6 +1071,24 @@
                              the live db, so a translated import will differ there
                              by design — that comparison is not meaningful after a
                              transformation.
+     :merge?       false     ADD this dump to a target that already holds data,
+                             instead of refusing it. APPEND-ONLY: every source
+                             entity gets a fresh target entity, so importing the
+                             same dump twice DUPLICATES it.
+                             `transact-entities-directly` does not resolve
+                             `:db.unique/identity` (unlike `transact-tx-data`),
+                             so there is no upsert-by-key here and re-importing
+                             is not idempotent. The report carries `:merged?
+                             true` and `:eid-range [from to]` — the ids this
+                             import created — so a caller can find what it just
+                             added. Verification becomes a DELTA (what the
+                             import added, not the whole database), and the
+                             `max-tx` drift warning is suppressed because the
+                             target's numbering was never meant to match the
+                             source's. Refs INSIDE the dump are remapped
+                             consistently; refs from the dump to entities that
+                             were already in the target are not resolved — use
+                             `:eids` for that.
      :eids         :allocate how source entity ids bind to target ones —
                              :allocate (fresh ids), :offset (e + delta, above the
                              target's max-eid, for a database known to be
@@ -1065,7 +1131,7 @@
              mem (estimate-from-manifest manifest (manifest-total-bytes manifest nil) batch-size)
              res (try
                    (check-capabilities! manifest)
-                   (check-target! conn manifest)
+                   (check-target! conn manifest opts)
                    (<?- (restore-blobs! conn manifest source opts))
                    (<?- (run-import conn (manifest->source-meta manifest) mem
                                     {:chunks (:chunks manifest)
@@ -1083,7 +1149,7 @@
            (let [manifest (:manifest dump)
                  mem (estimate-from-manifest manifest (manifest-total-bytes manifest (:files dump)) batch-size)]
              (check-capabilities! manifest)
-             (check-target! conn manifest)
+             (check-target! conn manifest opts)
              ;; AWAITED. `restore-blobs!` is `async+sync`, so under `:sync? false`
              ;; a bare call hands back a channel that nobody takes: every blob
              ;; failure is discarded and the datom import starts anyway. Since

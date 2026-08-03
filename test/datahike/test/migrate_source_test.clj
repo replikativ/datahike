@@ -288,3 +288,117 @@
          (run-import conn {} {} (chunks-of (records 1) 1)
                      {:sync? true :eids :nonsense})))
     (teardown conn)))
+
+;; ---------------------------------------------------------------------------
+;; :merge? — adding a dump to a target that already holds data
+
+(def ^:private check-target! #'m/check-target!)
+
+(deftest a-non-empty-target-is-still-refused-by-default
+  (testing "unchanged. Import is not resumable, and silently adding to a
+            populated database is the wrong default for a restore.
+
+            Against `check-target!` directly: it is `import-db`'s guard, not
+            `run-import`'s, precisely so a blob-carrying dump is refused BEFORE
+            its blobs are written."
+    (let [conn (fresh-conn)]
+      (d/transact conn [{:name "existing"}])
+      (is (thrown-with-msg? Exception #"not empty" (check-target! conn {} {})))
+      (testing "and accepted with :merge? true"
+        (is (nil? (check-target! conn {} {:merge? true}))))
+      (teardown conn))))
+
+(deftest an-empty-target-passes-either-way
+  (let [conn (fresh-conn)]
+    (is (nil? (check-target! conn {} {})))
+    (is (nil? (check-target! conn {} {:merge? true})))
+    (teardown conn)))
+
+(deftest merge-adds-to-what-is-already-there
+  (testing "`:merge? true` is the second case bulk import exists for: adding a
+            data set to a live database rather than restoring one."
+    (let [conn (fresh-conn)
+          _ (d/transact conn (vec (for [i (range 5)] {:name (str "existing" i)})))
+          rs (records 10)
+          rep (run-import conn {:expected-count 10} {} (chunks-of rs 5)
+                          {:sync? true :merge? true})]
+      (is (true? (:merged? rep)))
+      (is (= 10 (:datom-count rep))
+          "the report counts what this import ADDED, not the whole database")
+      (is (true? (:verified? rep))
+          "and verification compares that delta against the source's count")
+      (is (= 15 (count (d/q '[:find ?e :where [?e :name _]] @conn)))
+          "5 pre-existing + 10 imported")
+      (teardown conn))))
+
+(deftest merge-reports-the-eid-range-it-created
+  (testing "so a caller can find what it just added without diffing the
+            database."
+    (let [conn (fresh-conn)
+          _ (d/transact conn [{:name "existing"}])
+          before (:max-eid @conn)
+          rep (run-import conn {:expected-count 3} {} (chunks-of (records 3) 3)
+                          {:sync? true :merge? true})
+          [lo hi] (:eid-range rep)]
+      (is (some? (:eid-range rep)))
+      (is (= lo (inc (long before))) "the range starts just above what existed")
+      (is (= hi (:max-eid @conn)) "and ends at the new maximum")
+      (is (= 3 (inc (- hi lo))) "three entities, three ids")
+      (teardown conn))))
+
+(deftest merging-the-same-data-twice-duplicates-it
+  (testing "APPEND-ONLY, and the docstring says so. `transact-entities-directly`
+            does not resolve `:db.unique/identity` — unlike `transact-tx-data`
+            — so there is no upsert-by-key and a merge is not idempotent.
+
+            Pinned as a TEST rather than left to the docstring, because
+            'importing twice duplicates everything' is the kind of thing a
+            caller discovers in production otherwise."
+    (let [conn (fresh-conn)
+          rs (records 4)]
+      (run-import conn {:expected-count 4} {} (chunks-of rs 4) {:sync? true})
+      (let [after-first (count (d/q '[:find ?e :where [?e :name _]] @conn))
+            rep (run-import conn {:expected-count 4} {} (chunks-of rs 4)
+                            {:sync? true :merge? true})]
+        (is (= 4 after-first))
+        (is (= 4 (:datom-count rep)) "the second import added four more")
+        (is (= 8 (count (d/q '[:find ?e :where [?e :name _]] @conn)))
+            "eight entities, not four — the same source data twice over"))
+      (teardown conn))))
+
+(deftest merge-suppresses-the-max-tx-drift-warning
+  (testing "drift compares the restored database's numbering against the
+            source's — a meaningful claim about a RESTORE and a meaningless one
+            about a merge, where the target's numbering was never supposed to
+            match."
+    (let [conn (fresh-conn)
+          _ (d/transact conn [{:name "existing"}])
+          rep (run-import conn {:expected-count 2 :max-tx 536870999} {}
+                          (chunks-of (records 2) 2)
+                          {:sync? true :merge? true})]
+      (is (nil? (:max-tx-drift rep)) "no drift claim under :merge?")
+      (teardown conn))))
+
+(deftest refs-inside-the-dump-still-resolve-under-merge
+  (testing "a merge remaps the dump's own ids consistently, so a ref between two
+            imported entities points at the imported entity — not at whatever
+            happens to hold that id in the target."
+    (let [conn (utils/setup-db {:store {:backend :memory :id (java.util.UUID/randomUUID)}
+                                :keep-history? false
+                                :schema-flexibility :write})]
+      (d/transact conn [{:db/ident :name :db/valueType :db.type/string
+                         :db/cardinality :db.cardinality/one}
+                        {:db/ident :pal :db/valueType :db.type/ref
+                         :db/cardinality :db.cardinality/one}])
+      (d/transact conn [{:name "pre-existing"}])
+      (let [rs [[500 :name "a" 536870920 true]
+                [600 :name "b" 536870920 true]
+                [600 :pal 500 536870920 true]]
+            _ (run-import conn {:expected-count 3} {} (chunks-of rs 3)
+                          {:sync? true :merge? true :verify? false})
+            [[e v]] (vec (d/q '[:find ?e ?v :where [?e :pal ?v]] @conn))]
+        (is (= #{"b"} (set (map first (d/q '[:find ?n :in $ ?e :where [?e :name ?n]] @conn e))))
+            "the referring entity is the imported one")
+        (is (= #{"a"} (set (map first (d/q '[:find ?n :in $ ?v :where [?v :name ?n]] @conn v))))
+            "and it points at the imported target, not a pre-existing entity"))
+      (teardown conn))))
