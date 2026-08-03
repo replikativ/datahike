@@ -81,6 +81,58 @@
         (let [rs (vec (repeat 200 [1 :name "x" 100 true]))]
           (is (= 200 (count (msort/external-sort rs 3 dir)))))))))
 
+(deftest an-input-that-fits-never-touches-the-filesystem
+  (testing "PostgreSQL only calls `inittapes()` once memory is actually
+            exhausted. Without the same distinction a ten-record sort writes a
+            temp file and reads it straight back, and — because `:sort-buffer`
+            defaults to a million — that was the NORMAL case for any database
+            smaller than the buffer, not a corner."
+    (with-tmp
+      (fn [dir]
+        (let [rs (records 50)]
+          (is (= (sort msort/by-sort-key rs) (vec (msort/external-sort rs 1000 dir)))
+              "still correctly sorted")
+          (is (empty? (or (fs/list-names dir) []))
+              "and no run file was created"))))))
+
+(deftest a-single-run-is-not-copied
+  (testing "`external-sort-to-file` promises one sorted CBOR-sequence file. When
+            the input spills to exactly one run, that run already IS one —
+            decoding and re-encoding it produces byte-identical output at the
+            cost of a full pass over the data, three times over in a bulk build."
+    (with-tmp
+      (fn [dir]
+        (let [rs (records 300)
+              expected (sort msort/by-sort-key rs)
+              f (msort/external-sort-to-file rs 100000 dir)]
+          (is (= 1 (count (fs/list-names dir)))
+              "exactly one file exists — the run, not a copy of it")
+          (is (= expected (vec (msort/read-sorted-file f))) "and it reads back")
+          (is (= expected (vec (msort/read-sorted-file f))) "repeatedly"))))))
+
+(deftest run-files-are-reclaimed-as-the-merge-drains-them
+  (testing "a merge reads each run exactly once and has no use for it after.
+            Holding them all to the end doubles peak scratch space, which for a
+            large dump is an operational limit rather than untidiness."
+    (with-tmp
+      (fn [dir]
+        (let [rs (records 400)
+              out (vec (msort/external-sort rs 20 dir))]
+          (is (= (sort msort/by-sort-key rs) out) "still correct")
+          (is (empty? (or (fs/list-names dir) []))
+              "every run file went away as its cursor drained"))))))
+
+(deftest many-more-runs-than-the-fan-in-cap
+  (testing "the multi-pass path. `(partition-all 64)` on 65 runs gave [64 1] — a
+            full 64-way merge plus a single-file copy, one gratuitous pass over
+            everything. Sizes are chosen around the cap of 64."
+    (with-tmp
+      (fn [dir]
+        (doseq [n [65 70 130 300]]
+          (let [rs (records n)]
+            (is (= (sort msort/by-sort-key rs) (vec (msort/external-sort rs 1 dir)))
+                (str n " runs of one record each"))))))))
+
 (deftest a-custom-comparator-is-honoured
   (testing "the sort takes a comparator because a bulk index build passes an
             index comparator over the same records rather than the export order."
@@ -115,12 +167,40 @@
 
 (deftest the-export-order-puts-txinstant-first-and-retraction-before-assertion
   (testing "`sort-key`'s two deliberate choices, pinned because both are format
-            guarantees a consumer reads the log by."
+            guarantees a consumer reads the log by.
+
+            The retraction cases are chosen so that the VALUES' string order
+            OPPOSES the required order in one of them. An earlier version of this
+            test used 1 and 10 in the one arrangement where `\"1\" < \"10\"` made
+            it pass while `sort-key` compared `v` before `op` — it verified a
+            collation accident and called it a format guarantee. Both
+            arrangements are asserted now, so no ordering of the values can make
+            this pass by luck."
     (let [tx-instant [5 :db/txInstant "t" 100 true]
-          other      [1 :name "a" 100 true]
-          retract    [1 :score 1 100 false]
-          assert*    [1 :score 10 100 true]]
+          other      [1 :name "a" 100 true]]
       (is (= [tx-instant other] (sort msort/by-sort-key [other tx-instant]))
           ":db/txInstant comes first within its transaction")
-      (is (= [retract assert*] (sort msort/by-sort-key [assert* retract]))
-          "a card-one overwrite retracts before it asserts"))))
+
+      (testing "old value sorts BEFORE the new one as a string"
+        (let [retract [1 :score 1 100 false]
+              assert* [1 :score 10 100 true]]
+          (is (= [retract assert*] (sort msort/by-sort-key [assert* retract]))
+              "retracts before it asserts")))
+
+      (testing "old value sorts AFTER the new one as a string — the case that
+                fails whenever `v` is compared before `op`"
+        (let [retract [1 :score 10 100 false]
+              assert* [1 :score 1 100 true]]
+          (is (= [retract assert*] (sort msort/by-sort-key [assert* retract]))
+              "retracts before it asserts, regardless of the values"))))))
+
+(deftest records-differing-only-in-value-do-not-tie
+  (testing "`v` stays in the key, last, so the order is total. Two records alike
+            but for their value must not compare equal — a tie would leave the
+            merge to order them by whichever run surfaced first, which is exactly
+            the instability the key exists to remove."
+    (let [a [1 :score 1 100 true]
+          b [1 :score 2 100 true]]
+      (is (not= 0 (msort/by-sort-key a b)))
+      (is (= (sort msort/by-sort-key [a b]) (sort msort/by-sort-key [b a]))
+          "and the order does not depend on the input order"))))
