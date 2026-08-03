@@ -166,7 +166,12 @@
                                       (throw e)))))
                         (<! (timeout commit-wait-time))
                         (recur (<?- commit-queue)
-                               (get-in @connection [:meta :datahike/commit-id])))))))))]))
+                               ;; Non-throwing read: `@connection` routes through `deref-conn`,
+                               ;; which throws once the connection is released. `release` marks
+                               ;; the connection released before shutting the writer down, so
+                               ;; closing the queue unparks the `<?-` above and this argument
+                               ;; would then deref an already-released connection.
+                               (get-in @(:wrapped-atom connection) [:meta :datahike/commit-id])))))))))]))
 
 (defn- with-tx-pred
   "Wrap a report-producing write-fn so a store-level tx-pred (if registered)
