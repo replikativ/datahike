@@ -190,38 +190,35 @@
       (is (= (:hash overwritten) (:hash direct))
           "and therefore the same hash"))))
 
-(deftest re-asserting-a-present-datom-double-counts
-  "KNOWN GAP, not fixed here — asserts the CURRENT behaviour so that fixing it
-   trips this test rather than passing silently.
+(deftest re-asserting-a-present-datom-counts-it-once
+  (testing "`di/-insert` is idempotent on [e a v], so a redundant card-many
+            assertion must not move the sum either.
 
-   `with-datom`'s assert branch adds `(hash prim)` unconditionally, including
-   when `di/-insert` changed nothing because the datom was already there.
-   Measured: after asserting the same card-many datom twice, `:eavt` holds ONE
-   entry (with the FIRST transaction's tx, so the insert really was a no-op)
-   while `:hash` has gained the term twice.
-
-   This is a third drift source, independent of the two this commit fixes and
-   older than both — it is in the original 2019 assert branch. It is left alone
-   because the fix belongs on the assert hot path: the cheap form compares the
-   index count before and after the insert, which is O(1) for
-   persistent-sorted-set but not obviously so for every index implementation.
-   That deserves its own change and its own benchmark."
-  (testing "the sum over :eavt and the running :hash disagree by exactly one term"
+            This was the third and oldest drift source — the original 2019 assert
+            branch added `(hash prim)` unconditionally, including when the insert
+            changed nothing. It is fixed by reading the index count around the
+            insert; `datahike.test.redundant-assertion-test` covers the rest of
+            what that unconditional chain was doing."
     (doseq [keep-history? [false true]]
       (with-conn keep-history?
         (fn [conn]
           (d/transact conn [{:db/id -1 :name "a" :tag :x}])
-          (let [before (:hash @conn)
-                sum-before (sum-over-eavt @conn)]
-            (is (= before sum-before) "consistent before the duplicate assertion")
+          (let [before (:hash @conn)]
+            (is (= before (sum-over-eavt @conn))
+                "consistent before the duplicate assertion")
             (d/transact conn [{:db/id [:name "a"] :tag :x}])
             (let [db @conn
                   entries (filter #(and (= :tag (:a %)) (= :x (:v %)))
                                   (d/datoms db :eavt))]
               (is (= 1 (count entries))
                   "the index holds the datom once — the insert was a no-op")
-              (is (not= (sum-over-eavt db) (:hash db))
-                  "but :hash counted it twice — REMOVE THIS ASSERTION WHEN FIXED"))))))))
+              (is (= (sum-over-eavt db) (:hash db))
+                  "and the sum counted it once")
+              ;; NOT `(= before (:hash db))`: the transaction is real work and
+              ;; under `:keep-history? true` its tx entity puts a `:db/txInstant`
+              ;; datom into the current tree, which legitimately moves the sum.
+              ;; `redundant-assertion-test` isolates the contribution properly.
+              )))))))
 
 (deftest purge-keeps-the-sum-consistent
   (testing "`with-temporal-datom` subtracts only under `current?`, which is

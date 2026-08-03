@@ -412,16 +412,39 @@
       (log/raise "Attribute " a-ident " is :db.secondary/only but no secondary index covers it — its value would be lost"
                  {:error :transact/secondary-only-uncovered :attribute a-ident :datom datom}))
     (if (datom-added datom)
-      (cond-> db
-        true (update-in [:eavt] #(di/-insert % prim :eavt op-count))
-        true (update-in [:aevt] #(di/-insert % prim :aevt op-count))
-        indexing? (update-in [:avet] #(di/-insert % prim :avet op-count))
-        has-secondary? (update-secondary-indices a-ident datom true)
-        true (advance-max-eid (.-e datom))
-        true (update :hash + (hash prim))
-        schema? (-> (update-schema datom)
-                    update-rschema)
-        true (update :op-count inc))
+      ;; `-insert` is idempotent on [e a v] — asserting a datom the tree already
+      ;; holds returns the receiver untouched. Everything ACCUMULATING alongside
+      ;; it was not, so a redundant assertion moved the derived state while the
+      ;; index stood still. Worst of these is `update-schema`, which `conj`s into
+      ;; the many-valued schema attributes: re-transacting an identical entity
+      ;; spec grew `:db.entity/attrs` from [:name] to [:name :name], and the
+      ;; THIRD such transaction was then refused against the shape the second one
+      ;; wrote — an idempotent schema install failing permanently on boot 3.
+      ;;
+      ;; The count is read BEFORE the insert, not from `(:eavt db)` afterwards:
+      ;; the transaction loop runs over a TRANSIENT index, where `-insert`
+      ;; mutates in place and both reads would see the same object.
+      (let [eavt (:eavt db)
+            n-before (long (di/-count eavt))
+            eavt' (di/-insert eavt prim :eavt op-count)
+            inserted? (> (long (di/-count eavt')) n-before)]
+        (cond-> db
+          true (assoc :eavt eavt')
+          ;; `:aevt`/`:avet` stay UNCONDITIONAL. They are idempotent no-ops in
+          ;; this case, and running them means an index that has somehow skewed
+          ;; from `:eavt` self-heals instead of staying skewed. The gated work
+          ;; below is gated precisely because it is NOT idempotent.
+          true (update-in [:aevt] #(di/-insert % prim :aevt op-count))
+          indexing? (update-in [:avet] #(di/-insert % prim :avet op-count))
+          ;; a secondary index is an external adapter (Lucene, konserve, mmap);
+          ;; a phantom `added?` event is harmless to a set but wrong to anything
+          ;; that counts or appends.
+          (and inserted? has-secondary?) (update-secondary-indices a-ident datom true)
+          true (advance-max-eid (.-e datom))
+          inserted? (update :hash + (hash prim))
+          (and inserted? schema?) (-> (update-schema datom)
+                                      update-rschema)
+          true (update :op-count inc)))
 
       (if-some [removing ^Datom (first (dbi/search db [(.-e prim) (.-a prim) (.-v prim)]))]
         (cond-> db
