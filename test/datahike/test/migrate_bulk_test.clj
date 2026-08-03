@@ -15,6 +15,7 @@
             [datahike.index.interface :as di]
             [datahike.migrate.ids :as ids]
             [datahike.test.utils :as utils]
+            [datahike.writing :as dw]
             [konserve.core :as k]))
 
 (defn- teardown [conn]
@@ -91,11 +92,18 @@
           peak (atom 0)
           sample (fn [xs] (map (fn [x] (swap! peak max (count @pending)) x) xs))]
       (reset! pending [])
-      (let [writes-before (:writes @(-> store :storage :stats))
+      (let [store (assoc store :datahike/index-flush-threshold threshold)
+            writes-before (:writes @(-> store :storage :stats))
             keys-before (count (k/keys store {:sync? true}))
+            ;; The flush is CALLER-SUPPLIED now. The index layer no longer builds
+            ;; one, because draining writes nodes nothing references yet and only
+            ;; a caller can hold the GC guard across the build AND the commit
+            ;; that follows it. A real caller wraps this in
+            ;; `guard/writing!`/`guard/done!`; this test does not commit at all,
+            ;; so there is no window to guard.
             bulk (di/init-index-sorted :datahike.index/persistent-set
-                                       (assoc store :datahike/index-flush-threshold threshold)
-                                       (sample sorted) :eavt 0 {})
+                                       store (sample sorted) :eavt 0
+                                       {:flush-fn (dw/bulk-flush-fn store true)})
             ;; the storage's own counter, because peak + leftover cannot see the
             ;; nodes that were flushed and cleared in between — which is the
             ;; whole point
@@ -118,9 +126,10 @@
               "the store gained nodes before any commit")))
       (teardown conn))))
 
-(deftest flushing-can-be-disabled
-  (testing "threshold 0 opts out, for a caller who would rather have the single
-            ordered commit batch than the bound."
+(deftest without-a-flush-fn-everything-is-buffered-for-commit
+  (testing "the default. A caller that supplies no `:flush-fn` gets the single
+            ordered commit batch, which is what every ordinary write path wants
+            — and what `init-index` has always done."
     (let [conn (populated-conn 2000)
           db @conn
           store (:store db)
@@ -129,12 +138,12 @@
           sorted (sort cmp datoms)
           pending (-> store :storage :pending-writes)]
       (reset! pending [])
-      (let [bulk (di/init-index-sorted :datahike.index/persistent-set
-                                       (assoc store :datahike/index-flush-threshold 0)
-                                       sorted :eavt 0 {})]
+      (let [writes-before (:writes @(-> store :storage :stats))
+            bulk (di/init-index-sorted :datahike.index/persistent-set
+                                       store sorted :eavt 0 {})]
         (is (= (vec sorted) (vec bulk)) "still the right index")
-        (is (> (count @pending) 1)
-            "with flushing off, every node is still buffered for commit"))
+        (is (= (- (:writes @(-> store :storage :stats)) writes-before) (count @pending))
+            "EVERY node stored is still buffered — not merely more than one"))
       (teardown conn))))
 
 ;; ---------------------------------------------------------------------------

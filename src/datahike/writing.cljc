@@ -389,6 +389,77 @@
     (let [pending-ops (mapv (fn [[k v]] (k/assoc store k v {:immutable? true} {:sync? false})) kvs)]
       (go-try- (doseq [op pending-ops] (<?- op))))))
 
+(defn- as-awaitable
+  "Hand `x` back in the shape the streaming index builder's `await` expects.
+
+   Two async worlds meet at this seam and they are not the same one. Everything
+   in datahike's write path is core.async: `write-pending-kvs!` returns a channel
+   under `:sync? false`. persistent-sorted-set's ClojureScript builder is
+   partial-cps, and its `await` wants a continuation — handed a channel it fails
+   with `fexpr.call is not a function` on the very first flush, because a channel
+   is not callable.
+
+   On the JVM the builder is synchronous and never awaits, so the value passes
+   through untouched; only ClojureScript needs the adapter. konserve delivers
+   errors as values, so an error on the channel becomes a rejection rather than a
+   result that looks like success."
+  [x]
+  #?(:clj x
+     :cljs (fn [resolve reject]
+             (if (satisfies? cljs.core.async.impl.protocols/ReadPort x)
+               (async/take! x (fn [v] (if (instance? js/Error v) (reject v) (resolve v))))
+               (resolve x)))))
+
+(def ^:const default-index-flush-threshold
+  "Nodes allowed to accumulate in `pending-writes` before a streaming index build
+   drains them. ~1000 nodes at the default branching factor is on the order of
+   tens of MB — generous enough that no ordinary build pays for the check, small
+   enough that the bound is a bound."
+  1000)
+
+(defn bulk-flush-fn
+  "A `:flush-fn` for `di/init-index-sorted`: drain `pending-writes` once it grows
+   past `threshold`, else do nothing.
+
+   ## The caller MUST hold the GC guard
+
+   This writes index nodes that nothing in the store references yet — the branch
+   head still names the previous snapshot. `datahike.gc-guard` spells out what
+   that means: a mark running in that window classifies them as garbage and a
+   sweep deletes them, after which the commit publishes a root pointing at
+   deleted addresses. The guard must therefore be held across the WHOLE
+   sequence, from the first flush to the commit that makes the root reachable —
+   `(guard/writing! store-id)` before the build, `(guard/done! …)` after the
+   commit.
+
+   It lives here rather than in `datahike.index.persistent-set` for exactly that
+   reason. The index layer cannot hold the guard for the right span, because the
+   span extends past the build into a commit it knows nothing about; and
+   durability policy — when nodes become durable, in what order, under whose
+   guard — already lives in this namespace. An earlier version drained from
+   inside the index layer, unguarded, which is the blind spot `gc_guard`
+   exists to close.
+
+   Writes go through `write-pending-kvs!`, so the flush and the commit share one
+   implementation of the write discipline rather than the index layer keeping a
+   weaker copy.
+
+   nil when there is nothing to drain or flushing is switched off, which lets the
+   builder skip the hook entirely."
+  ([store] (bulk-flush-fn store true))
+  ([store sync?]
+   (let [pending   (-> store :storage :pending-writes)
+         threshold (:datahike/index-flush-threshold store default-index-flush-threshold)]
+     (when (and pending (pos? threshold))
+       (fn []
+         (if (>= (count @pending) threshold)
+           (let [[kvs _] (swap-vals! pending (constantly []))]
+             (cond-> (write-pending-kvs! store kvs sync?)
+               (not sync?) as-awaitable))
+           ;; Nothing to do — but the builder AWAITS this, so the async arm still
+           ;; has to hand back something awaitable.
+           (when-not sync? (as-awaitable nil))))))))
+
 (defn commit!
   ([db parents]
    (commit! db parents true))

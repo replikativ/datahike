@@ -590,99 +590,36 @@
     #?(:clj (set! (.-_storage pset) (:storage store)))
     (with-meta pset (root-meta store index-type))))
 
-(def ^:const DEFAULT_INDEX_FLUSH_THRESHOLD
-  "Nodes allowed to accumulate in `pending-writes` before a streaming build
-   drains them. ~1000 nodes at the default branching factor is on the order of
-   tens of MB — generous enough that no ordinary build pays for the check, small
-   enough that the bound is a bound."
-  1000)
-
-(defn- drain-pending!
-  "Write out the nodes buffered in `pending-writes` and clear it.
-
-   This is a deliberately torn commit batch, and it is safe for exactly the
-   reason `datahike.writing/commit!` gives for tolerating a torn one:
-   `pending-writes` is a vector and `store` conj'es onto it, so children appear
-   before the parents that address them. A partial write therefore leaves
-   unreachable orphans — which GC collects — and never a reachable node pointing
-   at a value that was never written. The nodes are marked `:immutable?` for the
-   same reason `write-pending-kvs!` marks them: they are content-addressed and
-   write-once.
-
-   Not shared with `datahike.writing` because the dependency runs the other way
-   (writing -> index -> here); this is konserve directly instead.
-
-   Returns nil under `sync?`, and a partial-cps expression otherwise — the shape
-   `from-sorted-seq` awaits."
-  [store kvs sync?]
-  (if sync?
-    (doseq [[k v] kvs]
-      (k/assoc store k v {:immutable? true} {:sync? true}))
-    #?(:clj
-       ;; Refused rather than half-written. Parking on the konserve op would have
-       ;; to happen inside a `go` block, and there is none here — the JVM builder
-       ;; is synchronous, so nothing asks for this. Wiring it means giving the
-       ;; builder a go context, not adding a `<?-` at this line.
-       (throw (ex-info (str "init-index-sorted on the JVM has no asynchronous arm: "
-                            "the streaming builder is synchronous there. Pass :sync? true.")
-                       {:error :datahike/bulk-build-async-unsupported}))
-       :cljs
-       ;; Issue every write, then await them all: the writes overlap, the
-       ;; BATCH is what blocks. konserve delivers errors as values, so the
-       ;; first one short-circuits and `chan->async-expr` rejects on it.
-       (let [ops (mapv (fn [[k v]] (k/assoc store k v {:immutable? true} {:sync? false})) kvs)]
-         (chan->async-expr
-          (async/go
-            (loop [ops (seq ops)]
-              (if ops
-                (let [v (async/<! (first ops))]
-                  (if (instance? js/Error v) v (recur (next ops))))
-                :ok))))))))
-
-(defn- flush-fn-for
-  "The `:flush-fn` handed to `from-sorted-seq`: drain `pending-writes` once it
-   grows past `threshold`, else do nothing.
-
-   The builder holds only O(depth x branching-factor) of the TREE, but `store`
-   merely buffers, so without this the buffer grows to the entire index and the
-   bound is nominal. Measured before it existed: 200k datoms left 524 nodes
-   pending, i.e. every datom still resident.
-
-   Called by the builder after each node is stored — not driven from the input
-   seq, which was the earlier JVM-only shape. Seq-wrapping put IO inside a `fn`
-   literal, which partial-cps refuses outright (`await` inside a closure can
-   never suspend), so it could only ever have been synchronous and JVM-only.
-
-   The threshold counts NODES, not datoms consumed, so the bound holds
-   independently of branching factor. It also means the ROOT is never flushed
-   early: it is built after the input is exhausted, so no node is stored after
-   it, and `commit!` still finds it in `pending-writes` to fuse into the stored
-   db.
-
-   nil when there is nothing to drain or flushing is switched off, which lets
-   the builder skip the hook entirely."
-  [store sync?]
-  (let [pending   (-> store :storage :pending-writes)
-        threshold (:datahike/index-flush-threshold store DEFAULT_INDEX_FLUSH_THRESHOLD)]
-    (when (and pending (pos? threshold))
-      (fn []
-        (if (>= (count @pending) threshold)
-          (let [[kvs _] (swap-vals! pending (constantly []))]
-            (drain-pending! store kvs sync?))
-          ;; Nothing to do — but the builder AWAITS this, so the async arm must
-          ;; still hand back something awaitable.
-          #?(:clj nil :cljs (async nil)))))))
-
+;; Streaming bulk index build. `:sync?` picks the arm; the result is a set under
+;; `true` and a continuation otherwise.
+;;
+;; `:flush-fn` is SUPPLIED BY THE CALLER and this namespace never builds one.
+;; That is not tidiness. `IStorage/store` only buffers onto `pending-writes`, so
+;; something must drain it or the caller's buffer grows to the whole index — but
+;; draining means writing nodes that nothing references yet, and
+;; `datahike.gc-guard` states the rule for that: the ENTIRE values-then-pointer
+;; sequence must hold the guard, or a concurrent mark sees unreferenced nodes,
+;; sweeps them, and the eventual commit publishes a root pointing at deleted
+;; addresses.
+;;
+;; That sequence spans this build AND the commit that follows it, so nothing here
+;; can hold the guard for the right span — only the caller can. An earlier
+;; version drained from inside this namespace, unguarded, which is exactly the
+;; blind spot `gc_guard.cljc` was written to close.
+;;
+;; `datahike.writing/bulk-flush-fn` is the supported way to obtain one: it lives
+;; next to `write-pending-kvs!` and the guard, which is where durability policy
+;; belongs.
 (defmethod di/init-index-sorted :datahike.index/persistent-set
   [_index-name store sorted-datoms index-type _
-   {:keys [indexed sync?] :or {sync? #?(:clj true :cljs false)}}]
+   {:keys [indexed sync? flush-fn] :or {sync? #?(:clj true :cljs false)}}]
   (let [xs (if (= index-type :avet)
              (filter #(contains? indexed (.-a ^Datom %)) sorted-datoms)
              sorted-datoms)
         opts {:branching-factor (:datahike/branching-factor store DEFAULT_BRANCHING_FACTOR)
               :diff-buf-size (:datahike/diff-buf-size store 0)
               :storage (:storage store)
-              :flush-fn (flush-fn-for store sync?)
+              :flush-fn flush-fn
               :sync? sync?}
         cmp (index-type->cmp-quick index-type false)]
     #?(:clj

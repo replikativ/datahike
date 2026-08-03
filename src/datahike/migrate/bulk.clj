@@ -1,11 +1,49 @@
 (ns ^:no-doc datahike.migrate.bulk
   "Building datahike's index trees directly from a dump, without transacting.
 
-   `import-db` replays a dump through `load-entities`, which inserts datom by
-   datom. That is correct and it is how a restore has always worked, but it pays
-   B-tree insertion costs for data that is already known in full — the case
-   PostgreSQL's `nbtsort.c` exists to avoid, and the reason `from-sorted-seq` was
-   added to persistent-sorted-set.
+   ## NOT WIRED UP — read this first
+
+   Nothing calls this namespace. `import-db` always replays a dump through
+   `load-entities`, and there is no `:bulk?` option; `build-family!` and
+   `sort-family!` have no callers outside the tests that exercise them directly.
+   Treat it as a working component with a measured payoff, not as a path any
+   user reaches today.
+
+   A caller that wires it up owes two things the tests do NOT demonstrate:
+
+     1. Hold the GC guard across the WHOLE sequence — `(guard/writing! store-id)`
+        before the first build, `(guard/done! …)` after the commit that publishes
+        the root. Bulk-built nodes are written before anything references them,
+        and `datahike.gc-guard` explains what a concurrent mark does to values in
+        that window. `di/init-index-sorted` deliberately does not drain
+        `pending-writes` on its own for exactly this reason — pass
+        `:flush-fn (datahike.writing/bulk-flush-fn store sync?)` to bound memory,
+        having taken the guard.
+     2. Accept that an ABORTED build is now destructive under
+        `:crypto-hash? false`. Flushed nodes may reuse freelist addresses, so a
+        build that fails midway has already overwritten them.
+
+   ## Why it is worth wiring
+
+   `import-db` inserts datom by datom, which pays B-tree insertion costs for data
+   that is already known in full — the case PostgreSQL's `nbtsort.c` exists to
+   avoid, and the reason `from-sorted-seq` was added to persistent-sorted-set.
+
+   Measured on a FILE-backed store, entity ids shuffled so index keys scatter
+   (transact vs external sort + three streaming builds):
+
+     datoms   transact   bulk    speedup   node-write amplification
+       0.6M     26.0 s    6.6 s    3.9x       16.8x
+       1.2M     75.7 s   16.0 s    4.7x       32.6x
+       2.0M    191.6 s   14.6 s   13.1x       51.4x
+
+   The bulk build is order-INDEPENDENT; incremental insertion is not, and its
+   write amplification grows with the database. With ASCENDING ids — every insert
+   landing at the right edge of the tree, which is the best case for incremental
+   and roughly what a monotonic id remapping produces for `eavt` — the same
+   comparison at 0.6M datoms is only 1.4x. So the payoff is governed by key
+   scatter and scale together, not by scale alone, and `aevt`/`avet` are the
+   families that scatter.
 
    ## Three sorts, six trees
 

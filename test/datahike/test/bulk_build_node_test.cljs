@@ -15,7 +15,8 @@
             [clojure.core.async :refer [go <!]]
             [datahike.api :as d]
             [datahike.datom :as dd]
-            [datahike.index.interface :as di]))
+            [datahike.index.interface :as di]
+            [datahike.writing :as dw]))
 
 (defn- populated [n]
   (go
@@ -67,21 +68,33 @@
             default of 1000 nodes this database never trips it."
     (async done
            (go
-             (let [[cfg conn] (<! (populated 400))
+             (let [[cfg conn] (<! (populated 8000))
                    db @conn
-                   store (assoc (:store db) :datahike/index-flush-threshold 2)
+                   store (assoc (:store db) :datahike/index-flush-threshold 4)
                    pending (-> store :storage :pending-writes)
+                   stats (-> store :storage :stats)
                    datoms (vec (d/datoms db :eavt))
                    cmp (dd/index-type->cmp-quick :eavt false)
-                   sorted (sort cmp datoms)]
+                   sorted (sort cmp datoms)
+                   peak (atom 0)
+                   ;; sample the PEAK, not the count at the end — the end is the
+                   ;; one moment the buffer is legitimately small
+                   sampled (map (fn [x] (swap! peak max (count @pending)) x) sorted)
+                   writes-before (:writes @stats)]
                (reset! pending [])
                ((di/init-index-sorted :datahike.index/persistent-set
-                                      store sorted :eavt 0 {})
+                                      store sampled :eavt 0
+                                      {:flush-fn (dw/bulk-flush-fn store false)})
                 (fn [bulk]
-                  (is (= (count datoms) (count bulk)) "the index is still correct")
-                  (is (<= (count @pending) 8)
-                      (str "pending-writes was drained during the build, not left "
-                           "holding the tree — " (count @pending) " nodes remain"))
+                  (let [total (- (:writes @stats) writes-before)]
+                    (is (= (count datoms) (count bulk)) "the index is still correct")
+                    (is (> total 12)
+                        (str "precondition: the build must produce enough nodes ("
+                             total ") for the threshold to trip — an earlier version "
+                             "of this test asserted a bound on a THREE-node tree and "
+                             "so could not fail"))
+                    (is (<= @peak 4)
+                        (str "peak pending-writes " @peak " stayed within the threshold")))
                   (go (<! (d/delete-database cfg)) (done)))
                 (fn [e]
                   (is false (str "bulk build failed: " e))
