@@ -20,9 +20,9 @@ flowchart TD
     E4{":sort?"}
     E5["sorted (default): stream :eavt, encode by class,<br/>spill runs to /tmp, k-way merge<br/>(bounded memory, needs scratch)"]
     E6["no-scratch (:sort? false): two :eavt passes —<br/>schema+tx-entity, then data<br/>(zero temp files, diskless)"]
-    E7["stream lines → chunks<br/>per-chunk SHA-256 + semantic digest"]
+    E7["stream records → chunks<br/>per-chunk SHA-256 + semantic digest"]
     E8{"target"}
-    E9["filesystem<br/>datoms-NNNNNN.edn"]
+    E9["filesystem<br/>datoms-NNNNNN.cbor.gz"]
     E10["konserve store: chunk keys<br/>S3 / R2 / MinIO / JDBC / mem"]
     E11(["manifest written LAST = commit marker"])
     E0-->E1
@@ -49,7 +49,7 @@ flowchart TD
     I4["✗ import/format-version · config-mismatch ·<br/>non-empty-target · checksum-failed"]
     I5{":attribute-refs?"}
     I6["seed :migration system identity<br/>(#508 translate, not insert)"]
-    I7["stream lines → resolve #sysref →<br/>tx-aligned batcher"]
+    I7["stream records → resolve #sysref →<br/>tx-aligned batcher"]
     I8["@load-entities(batch)<br/>remap e/tx ids; id-map O(entities)"]
     I9{":verify?"}
     I10["✗ import/verify-failed"]
@@ -94,12 +94,12 @@ flowchart TD
   │        └──────────────┬───────────────┘                       │
   └───────────────────────┼───────────────────────────────────────┘
                           ▼
-      stream lines → chunks, incremental per-chunk SHA-256 + digest
+      stream records → chunks, incremental per-chunk SHA-256 + digest
                           │
         ┌─────────────────┴──────────── choose TARGET ─────────────┐
         ▼                                                          ▼
    FILESYSTEM (path/dir)                       KONSERVE STORE {:store}/{:backend :s3}
-    datoms-000001.edn (tmp→rename)              key [.. prefix "datoms-000001"]
+    datoms-000001.cbor.gz (tmp→rename)              key [.. prefix "datoms-000001"]
     ...                                         ...  (S3 / R2 / MinIO / JDBC / mem)
         │                                             │
         ▼                                             ▼
@@ -161,10 +161,12 @@ flowchart TD
 (m/export-db conn "/backups/mydb" {:history? true})
 ```
 
-A directory target writes the **chunked** format (`manifest.edn` +
-`datoms-NNNNNN.edn`); a plain-file target writes the **flat** format. The manifest
-is written last and is the commit marker — a dump directory without a
-`manifest.edn` is incomplete. Export holds an immutable db value, so it is
+Export always writes a DIRECTORY: `manifest.edn` plus numbered chunks
+(`datoms-NNNNNN.cbor.gz` — the suffix is the compression codec's, `.cbor` with
+`{:compression :none}`). There is no single-file write path; old flat dumps are
+still READ on import, but nothing produces them. The manifest is written last
+and is the commit marker — a dump directory without a `manifest.edn` is
+incomplete. Export holds an immutable db value, so it is
 consistent even under concurrent writes.
 
 ### Export to an external store (S3 / S3-compatible / no local disk)

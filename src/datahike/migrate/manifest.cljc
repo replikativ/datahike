@@ -3,11 +3,14 @@
    what a dump DECLARES, what it takes to read one, which records it contains,
    and how much heap importing it will want.
 
-   Extracted from `datahike.migrate` because none of it does IO, and therefore
-   none of it needed the async treatment the orchestration does. That split is
-   worth having on its own terms — this is the part with the rules in it, and it
-   is now testable without a filesystem or a store — but the immediate reason is
-   that it made the portable/non-portable boundary visible instead of implied.
+   Extracted from `datahike.migrate` because none of it touches the dump
+   MEDIUM, and therefore none of it needed the async treatment the orchestration
+   does. (`export-records`/`export-records-streaming` do read the database, via
+   `api/datoms` — so the claim is about the filesystem and the store, not about
+   IO in general.) That split is worth having on its own terms — this is the
+   part with the rules in it, and it is testable without a dump — but the
+   immediate reason is that it made the portable/non-portable boundary visible
+   instead of implied.
 
    Two things here are unavoidably platform-specific and are marked as such:
    provenance metadata (`datahike.tools/meta-data` is a JVM-only macro reading

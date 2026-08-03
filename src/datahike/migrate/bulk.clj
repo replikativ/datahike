@@ -103,7 +103,14 @@
   (dd/datom (nth record 0) (nth record 1) (nth record 2)
             (nth record 3) (nth record 4)))
 
-(defn datom->record [d]
+(defn datom->tuple
+  "Datom -> `[e a v t added]`. The inverse of `record->datom` for `t > 0`.
+
+   NOT `datom->record`, which is what it used to be called and which collides
+   with `manifest/datom->record` — a different operation on the same-shaped
+   data: that one resolves attribute idents and translates system-entity refs
+   into `#datahike/sysref`, this one is a raw field read."
+  [d]
   [(.-e ^datahike.datom.Datom d) (.-a ^datahike.datom.Datom d) (.-v ^datahike.datom.Datom d)
    (dd/datom-tx d) (dd/datom-added d)])
 

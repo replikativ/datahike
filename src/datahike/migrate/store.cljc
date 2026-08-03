@@ -36,8 +36,9 @@
      callback a handle with four different shapes across backends and platforms;
      see replikativ/konserve#162, which is where that knowledge now lives.
 
-   The external-sort scratch is still JVM-only local temp files, so a portable
-   export means `:sort? false`. Only the dump lives in the store."
+   The external sort spills to local temp files, which a browser has none of, so
+   a browser export means `:sort? false`. On the JVM and on Node either works —
+   `migrate.sort` is portable. Only the dump lives in the store."
   (:require [konserve.core :as k]
             [konserve.binary :as kb]
             [konserve.store :as ks]
@@ -75,7 +76,7 @@
   "`datoms-000001.cbor` — the SAME name a filesystem dump uses.
 
    It used to omit the extension here, so the two media wrote different values
-   into the same manifest field and `migrate/chunk-re` (which validates a chunk
+   into the same manifest field and `manifest/chunk-re` (which validates a chunk
    name before opening it) matched one and rejected the other. That went
    unnoticed only because the validation is never applied to a store manifest,
    and it made this namespace's claim that the format is \"identical to the
@@ -90,6 +91,23 @@
           (mz/extension codec)))))
 
 (defn- chunk-key [prefix n codec] (ckey prefix (chunk-name n codec)))
+
+(defn chunk-descriptor
+  "One entry of the manifest's `:chunks` vector.
+
+   ONE constructor for both media, because this map is the manifest's public
+   contract and it was previously spelled out independently in
+   `migrate/write-chunked!` and in `write-chunks!` below. `chunk-name`'s
+   docstring records what that costs: the two media already disagreed once on
+   `:file`, silently, and it went unnoticed because the validation that would
+   have caught it is only applied to one of them.
+
+   `:bytes` is what was STORED, `:raw-bytes` what it decodes to. Both are
+   needed — the first sizes a transfer, the second sizes the heap — and with
+   compression on they differ by ~7x, so an estimate built on `:bytes` alone
+   underestimates memory by exactly the compression ratio."
+  [file count bytes raw-bytes sha256]
+  {:file file :count count :bytes bytes :raw-bytes raw-bytes :sha256 sha256})
 
 (defn blob-key
   "Where a carried `:db.type/store-ref` blob lives in a store dump.
@@ -178,15 +196,12 @@
            (<?- (k/bassoc store (chunk-key prefix n codec) stored opts))
            (progress {:phase :chunk :datoms (count part)})
            (recur (seq (drop chunk-size rs)) (inc n)
-                  ;; `:bytes` is what was stored, `:raw-bytes` what it decodes
-                  ;; to — an estimate built on the stored size alone
-                  ;; underestimates heap by the compression ratio.
-                  (conj chunks {:file (chunk-name n codec) :count (count part)
-                                :bytes #?(:clj (alength ^bytes stored)
-                                          :cljs (.-length stored))
-                                :raw-bytes #?(:clj (alength ^bytes content)
-                                              :cljs (.-length content))
-                                :sha256 (dig/sha256-hex content)})
+                  (conj chunks (chunk-descriptor
+                                (chunk-name n codec)
+                                (count part)
+                                #?(:clj (alength ^bytes stored) :cljs (.-length stored))
+                                #?(:clj (alength ^bytes content) :cljs (.-length content))
+                                (dig/sha256-hex content)))
                   (reduce dig/add-record dacc encs)))))))))
 
 (defn read-manifest

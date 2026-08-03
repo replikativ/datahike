@@ -46,7 +46,7 @@
             #?(:clj [datahike.migrate.legacy :as mlegacy])
             [datahike.migrate.manifest :as mman
              :refer [->db a-ident attribute-refs? build-manifest
-                     chunk-name chunk-re codec-of config-must-match datom->record
+                     chunk-re codec-of config-must-match datom->record
                      assert-sync-supported! assert-sizes-positive!
                      default-batch-size default-chunk-size
                      default-sync? estimate-from-manifest
@@ -145,7 +145,7 @@
         (fs/restrict-perms! (fs/join dir "manifest.edn") false)
         (progress {:phase :done :datoms (:count (dig/finalize dacc))})
         manifest)
-      (let [fname (str (chunk-name n) (mz/extension codec))
+      (let [fname (mstore/chunk-name n codec)
             tmp   (fs/join dir (str fname ".tmp"))
             final (fs/join dir fname)
             [rem cnt sha dacc' raw] (write-chunk-stream! tmp ls chunk-size dacc codec)]
@@ -157,13 +157,8 @@
         (fs/restrict-perms! final false)
         (progress {:phase :chunk :datoms cnt})
         (recur (seq rem) (inc n)
-               ;; `:bytes` is what was STORED, `:raw-bytes` what it decodes to.
-               ;; Both are needed: the first sizes a transfer, the second sizes
-               ;; the heap — and with compression on they differ by ~7x, so an
-               ;; estimate built on `:bytes` alone underestimates memory by
-               ;; exactly the compression ratio.
-               (conj chunks {:file fname :count cnt :bytes (fs/file-size final)
-                             :raw-bytes raw :sha256 sha})
+               (conj chunks (mstore/chunk-descriptor
+                             fname cnt (fs/file-size final) raw sha))
                dacc'))))))
 
 (defn- blob-dir
@@ -689,14 +684,14 @@
 
    ## Why chunks and not a reducer
 
-   The old seam was `reduce-lines`, `(fn [rf init] -> acc)`: the medium drove the
+   The old seam was `reduce-source`, `(fn [rf init] -> acc)`: the medium drove the
    fold and the caller supplied a reducing function. That works only while `rf`
    is PURE, and this one is not — it writes datoms. A reducing function is a
    closure, and the `go` state machine does not enter one, so an async import
    could never have been expressed through it. Yielding chunks instead puts the
    read AND the write at statement positions the state machine can see.
 
-   `verify` still uses `reduce-lines`, because its folds really are pure."
+   `verify` still uses `reduce-source`, because its folds really are pure."
   [conn manifest mem chunk-src opts]
   (let [opts     (merge {:batch-size default-batch-size :verify? true
                          :on-error :abort :finalize? true :sync? true} opts)
@@ -1005,10 +1000,10 @@
    :ref-counts (:refc fp)
    :out-degree (frequencies (vals (:outd fp)))})
 
-(defn- with-source-lines
-  "Call `(f manifest reduce-lines)` where `reduce-lines` is `(fn [rf init] -> acc)`
-   streaming the dump's record lines, for either medium (filesystem or store).
-   `reduce-lines` may be invoked several times (each pass re-opens/re-reads)."
+(defn- with-source-records
+  "Call `(f manifest reduce-source)` where `reduce-source` is `(fn [rf init] -> acc)`
+   streaming the dump's records, for either medium (filesystem or store).
+   `reduce-source` may be invoked several times (each pass re-opens/re-reads)."
   [source f]
   (if (mstore/store-target? source)
     (let [m (mstore/open source)]
@@ -1022,13 +1017,13 @@
   "Tier 3 — sampled structural diff. Pick up to `n` entities by a `:db.unique`
    attribute, reconstruct their non-ref attributes from the dump, and diff against
    `pull '[*]'` on the live db."
-  [manifest reduce-lines db ref? n]
+  [manifest reduce-source db ref? n]
   (let [schema (:schema manifest)
         uniq   (set (for [[a m] schema
                           :when (#{:db.unique/identity :db.unique/value} (:db/unique m))] a))]
     (if (empty? uniq)
       {:sampled 0 :ok? true :note "no :db.unique attrs — content covered by tiers 1–2"}
-      (let [picks (reduce-lines
+      (let [picks (reduce-source
                    (fn [acc record]
                      (let [[e a v _t op] record]
                        (if (and op (uniq a) (< (count acc) n) (not (contains? acc [a v])))
@@ -1037,7 +1032,7 @@
             pick-es (set (vals picks))
             ;; net *current* state per picked entity: asserts add, retracts remove,
             ;; so a fully-retracted entity nets to empty (and is not compared).
-            recon (reduce-lines
+            recon (reduce-source
                    (fn [acc record]
                      (let [[e a v _t op] record]
                        (if (and (contains? pick-es e) (not (ref? a)))
@@ -1147,8 +1142,8 @@
         :blobs blobs})))
   ([conn-or-db source]
    (let [db    (->db conn-or-db)]
-     (with-source-lines source
-       (fn [manifest reduce-lines]
+     (with-source-records source
+       (fn [manifest reduce-source]
          (let [schema (:schema manifest)
                ref?   (fn [a] (= :db.type/ref (:db/valueType (get schema a))))
                hist?  (boolean (:history? manifest))
@@ -1156,7 +1151,7 @@
                dump-count (long (or (:count (:semantic-digest manifest)) 0))
                live-count (long (user-datom-count db hist?))
                ;; tier 2 — id-independent fingerprint, dump vs live
-               dump-fp (fp-final (reduce-lines
+               dump-fp (fp-final (reduce-source
                                   (fn [fp record]
                                     (let [[e a v _t op] record]
                                       (fp-step fp [e a v op] ref?)))
@@ -1171,7 +1166,7 @@
                            (= (:ref-counts dump-fp) (:ref-counts live-fp))
                            (= (:out-degree dump-fp) (:out-degree live-fp)))
                ;; tier 3 — sampled structural diff
-               t3     (verify-sample manifest reduce-lines db ref? 25)
+               t3     (verify-sample manifest reduce-source db ref? 25)
                ;; blobs — same tier as the chunks, and part of :ok?
                blobs  (verify-blobs manifest source)]
            {:ok? (and (= dump-count live-count) t2-ok (:ok? t3) (:ok? blobs))

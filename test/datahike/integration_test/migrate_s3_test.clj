@@ -17,8 +17,11 @@
             [konserve-s3.core]  ;; registers the :s3 konserve backend
             [konserve.store :as ks]))
 
-(def ^:private s3-port 3910)
-(def ^:private container "dh-migrate-garage-test")
+;; Both are per-RUN, not fixed. A fixed container name and port made two
+;; concurrent runs — or one run against a container a crashed run left behind —
+;; collide, and the suite is otherwise safe to run in parallel.
+(def ^:private s3-port (+ 3910 (rand-int 1000)))
+(def ^:private container (str "dh-migrate-garage-test-" (random-uuid)))
 ;; Pinned to the exact release this test was validated against.
 (def ^:private image "dxflrs/garage:v2.3.0")
 (def ^:private bucket "dh-migrate-test")
@@ -57,10 +60,19 @@
     (when-not (zero? (:exit (sh "docker" "create" "--name" container
                                 "-p" (str s3-port ":3900") image)))
       (throw (ex-info "could not create garage container" {})))
-    (sh "docker" "cp" (str cfg) (str container ":/etc/garage.toml"))
+    ;; CHECKED. An unchecked `cp` is why a failure here used to surface thirty
+    ;; seconds later as "garage did not become healthy" — garage boots without a
+    ;; config, exits 1, and the health poll simply times out. The copy can fail
+    ;; for reasons that have nothing to do with garage: notably a sandboxed
+    ;; /tmp that the docker daemon cannot see.
+    (when-not (zero? (:exit (sh "docker" "cp" (str cfg) (str container ":/etc/garage.toml"))))
+      (throw (ex-info "could not copy garage config into the container"
+                      {:config (str cfg)
+                       :hint "is java.io.tmpdir visible to the docker daemon?"})))
     (sh "docker" "start" container)
     (when-not (wait-until 60 #(zero? (:exit (garage! "status"))))
-      (throw (ex-info "garage did not become healthy" {})))))
+      (throw (ex-info "garage did not become healthy"
+                      {:logs (:out (sh "docker" "logs" container))})))))
 
 (defn- provision!
   "Assign the single-node layout, create bucket + key, grant access.

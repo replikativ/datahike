@@ -89,8 +89,8 @@
 ;; incremental SHA-256
 ;;
 ;; The chunk hash is computed WHILE records stream past, never by re-reading
-;; what was written: a flat dump is one file of unbounded size, and hashing it
-;; afterwards would mean either holding it or reading it twice. Both platforms
+;; what was written: a chunk is bounded by `:chunk-size` but a DUMP is not, and
+;; hashing after the fact would mean either holding it or reading it twice. Both platforms
 ;; have a native incremental digest — `MessageDigest` and `goog.crypt.Sha256` —
 ;; with the same update/digest shape, so this is a rename rather than a port.
 ;;

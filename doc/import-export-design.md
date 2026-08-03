@@ -161,16 +161,18 @@ my-backup/
 
 The manifest stays EDN on purpose: it is read *before* the codec is known, so it
 cannot itself be in the codec, and a dump whose head is human-readable is worth
-its bytes when you are recovering one. A flat dump is that EDN line followed by
-the CBOR sequence.
+its bytes when you are recovering one.
 
 In-progress chunks are `*.cbor.tmp`, renamed on completion; a directory without
-`manifest.edn` is incomplete by definition. A single-file **flat** format remains
-for small dbs and the legacy 2-arity path.
+`manifest.edn` is incomplete by definition. Export always writes a directory —
+there is no single-file write path. Old flat dumps (a manifest line followed by
+the CBOR sequence) are still READ on import, JVM-only, via
+`datahike.migrate.legacy`; nothing produces them.
 
 ### 5.2 Record
 
-One EDN 5-vector per line: `[e a v t added]`. `a` is **always a keyword ident**
+One CBOR 5-vector per record: `[e a v t added]`, written as a CBOR sequence
+(RFC 8742) with no delimiter — consecutive top-level items ARE the framing. `a` is **always a keyword ident**
 (even for `:attribute-refs? true` sources). Ref values to *system* entities are
 written as `#datahike/sysref :the/ident` and resolved by ident lookup in the
 target's own system table on import (translation, not insertion). `e`/`t` are
@@ -276,7 +278,8 @@ Fixed key order (determinism). Carries: `format-version`, informational
 + backend keyword only — never the store map), `schema` (ident→attr),
 `system-idents` (source system eid→ident, for `#datahike/sysref`), `stats`,
 `semantic-digest` `{:xor :sum :count}`, and `chunks` (each `{:file :count :sha256
-:first-t :last-t}`). Chunk `:file` validated as `^datoms-\d{6}\.edn$`, resolved
+:first-t :last-t}`). Chunk `:file` validated as `^datoms-\d{6}\.cbor(\.gz)?$`
+(`manifest/chunk-re`), resolved
 strictly under the dump dir — no `..`, no absolute, no symlink (`:import/bad-chunk-path`).
 
 ---
@@ -428,12 +431,17 @@ codec would actually need.
 ## 14. Implementation status (what has landed vs. what this doc designs)
 
 The committed implementation delivers the correctness core AND bounded-memory
-streaming end-to-end — flat and chunked EDN formats, type-exact codec (fixing
-#633), history + attribute-refs round-trip, manifest + per-chunk SHA-256 + semantic
-digest, `verify`, `finalize-import!`, config/emptiness/format guards, closed-reader
-+ path-validation + owner-only perms, and legacy-CBOR read compatibility — with a
-green kaocha suite (`test/datahike/test/migrate_test.clj`) across the persistent-set
-and hitchhiker-tree indices and under spec instrumentation.
+streaming end-to-end — the chunked CBOR-sequence format (gzip by default),
+type-exact codec (fixing #633), history + attribute-refs round-trip, manifest +
+per-chunk SHA-256 + semantic digest, `verify`, `finalize-import!`,
+config/emptiness/format guards, closed-reader + path-validation + owner-only
+perms, and legacy-CBOR read compatibility — with a green kaocha suite
+(`test/datahike/test/migrate_test.clj`) across the persistent-set and
+hitchhiker-tree indices and under spec instrumentation.
+
+Export and import both run on ClojureScript/Node as well, sharing one
+implementation under `async+sync`; the external merge sort is portable
+(`migrate/sort.cljc`).
 
 **Streaming is implemented (G5).** Export orders via an external merge sort
 (`datahike.migrate.sort`): datoms stream from the index, spill into sorted runs of
