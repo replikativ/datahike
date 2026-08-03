@@ -95,30 +95,27 @@
           (is (= #{true false} (added-flags entries))
               (str "history must carry both, got " (pr-str entries))))))))
 
-(deftest as-of-still-resolves-a-same-tx-pair-to-present
-  "KNOWN GAP, not fixed here — asserts the CURRENT behaviour so that fixing it
-   trips this test rather than passing silently.
+(deftest as-of-agrees-with-the-current-indices
+  (testing "a fact asserted and retracted in one transaction must be absent from
+            `as-of` too, not just from the current indices.
 
-   Restoring the retraction marker does not by itself make `as-of` agree with
-   the current tree. `db.cljc`'s `assemble-datoms-xform` sorts by `tx` ALONE,
-   and a stable sort on equal keys preserves input order — which comes from the
-   tree, where `added` sorts false before true. So within one transaction the
-   assertion always wins, whichever order the caller wrote the ops in. The
-   cardinality-one branch has the same bias, taking the first ADDED datom at the
-   maximum tx.
-
-   That bias is right for retract-then-add and wrong for add-then-retract, and
-   it is a defect in the query assembly rather than in the index — which is why
-   it is left to a separate change."
-  (testing "the current tree says absent; as-of still says present"
+            Restoring the retraction marker was necessary but not sufficient:
+            `assemble-datoms-xform` sorted by `tx` ALONE, and a stable sort
+            preserves input order on ties, so within one transaction the
+            assertion always won. Now assertions fold before retractions, which
+            makes the retraction win on a tie — a temporal assertion and
+            retraction sharing a tx can only mean the datom was created and
+            removed inside that transaction."
     (with-conn
       (fn [conn e]
         (d/transact conn [[:db/add e :tag :x] [:db/retract e :tag :x]])
         (let [db @conn]
           (is (empty? (d/datoms db :eavt e :tag :x))
-              "the current tree is correct")
-          (is (seq (d/datoms (d/as-of db (:max-tx db)) :eavt e :tag :x))
-              "as-of disagrees with it — REMOVE THIS ASSERTION WHEN FIXED"))))))
+              "the current indices say absent")
+          (is (empty? (d/datoms (d/as-of db (:max-tx db)) :eavt e :tag :x))
+              "and as-of agrees")
+          (is (empty? (d/datoms (d/as-of db (java.util.Date.)) :eavt e :tag :x))
+              "including as-of now"))))))
 
 (deftest a-retract-entity-alongside-a-fresh-assertion
   (testing "the reachable shape: assert an attribute and retract the whole
