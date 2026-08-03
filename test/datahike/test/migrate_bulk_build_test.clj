@@ -270,6 +270,25 @@
 
 ;; ---------------------------------------------------------------------------
 
+(deftest an-unknown-index-family-is-refused-by-name
+  (testing "`dd/index-type->cmp-quick` falls through to the `:eavt` comparator
+            for anything it does not recognise, so a typo'd family would sort by
+            `:eavt`, build a perfectly valid tree, and store it under another
+            index's name. Nothing downstream can notice — every tree involved is
+            a real tree — so the refusal has to happen at this boundary."
+    (doseq [f [:eavtt :temporal-eavt nil "eavt"]]
+      (is (= :bulk/unknown-index-family
+             (try (bulk/sort-family! [] f 10 "/tmp") nil
+                  (catch clojure.lang.ExceptionInfo e (:error (ex-data e)))))
+          (str "sort-family! must refuse " (pr-str f)))
+      (is (= :bulk/unknown-index-family
+             (try (bulk/build-family! nil :datahike.index/persistent-set f nil {} {}) nil
+                  (catch clojure.lang.ExceptionInfo e (:error (ex-data e)))))
+          (str "build-family! must refuse " (pr-str f))))
+    (testing "and the three real families are accepted"
+      (doseq [f bulk/index-families]
+        (is (some #{f} bulk/index-families))))))
+
 (deftest a-record-with-t-zero-decodes-as-a-retraction
   (testing "`dd/datom`'s 5-arity encodes `added` in the SIGN of tx, so t=0 has no
             sign and comes back retracted. Nothing in the import produces t=0 —

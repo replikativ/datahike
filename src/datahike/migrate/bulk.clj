@@ -101,6 +101,25 @@
   "The three sorts. Each yields a `[current temporal]` pair of trees."
   [:eavt :aevt :avet])
 
+(defn- check-family!
+  "Refuse an index family this namespace does not build.
+
+   `dd/index-type->cmp-quick`'s `case` has no default clause — anything that is
+   not `:aevt` or `:avet` falls through to the `:eavt` comparator. That is fine
+   for its 25 callers inside datahike, which pass a family they already hold, and
+   wrong here: a typo would sort by `:eavt`, build a tree that is internally
+   consistent, and store it under the name of a DIFFERENT index. Nothing
+   downstream would notice, because every tree involved is a valid tree.
+
+   Guarded at this boundary rather than in `datom.cljc`, where the fallthrough is
+   long-standing and reached dynamically from across the query engine."
+  [index-type]
+  (when-not (some #{index-type} index-families)
+    (throw (ex-info (str "Unknown index family for bulk build: " (pr-str index-type))
+                    {:error :bulk/unknown-index-family
+                     :index-type index-type
+                     :supported index-families}))))
+
 (defn record->datom
   "`[e a v t added]` -> Datom. The comparators are over Datoms, so records become
    datoms before sorting rather than after."
@@ -126,6 +145,7 @@
    file serves both trees, and its `added` tie-break is what the currentness fold
    requires. Caller owns the file."
   [records index-type run-size tmp-dir]
+  (check-family! index-type)
   (let [cmp (dd/index-type->cmp-quick index-type false)]
     (msort/external-sort-to-file
      records run-size tmp-dir
@@ -156,6 +176,7 @@
    `t`-ascending in all three. The folds only ever ask about one run at a time,
    so a permuted run ORDER is irrelevant to them."
   [store index-name index-type sorted-file index-config rschema]
+  (check-family! index-type)
   (let [no-history (set (:db/noHistory rschema))
         multival   (set (:db.cardinality/many rschema))
         ;; the two classes a live datom of which never reaches temporal
