@@ -301,6 +301,28 @@
                                   "the returned channel.")
                              {:error :migrate/sync-not-supported})))))
 
+(defn assert-sizes-positive!
+  "Refuse non-positive window sizes.
+
+   `:sort-buffer`, `:chunk-size` and `:batch-size` all drive a
+   `take`/`drop` recurrence — `spill-runs`, `write-chunks!`, the import
+   batcher. At zero every pass takes nothing, drops nothing and makes no
+   progress, while still creating an empty run file or writing an empty chunk
+   each time round, so the loop never terminates and the output grows without
+   bound. A negative value does the same.
+
+   Checked at the public entry rather than defended at each recurrence: there
+   are three of them, and a caller who passes 0 wants to hear about it before
+   the export starts, not to watch a directory fill."
+  [opts]
+  (doseq [k [:sort-buffer :chunk-size :batch-size]]
+    (when-let [v (get opts k)]
+      (when-not (and (integer? v) (pos? v))
+        (throw (ex-info (str k " must be a positive integer, got " (pr-str v)
+                             ". A non-positive window makes no progress and would "
+                             "loop forever.")
+                        {:error :migrate/bad-size :option k :value v}))))))
+
 (def default-batch-size
   "Datoms per `load-entities` call. One definition — it had three, two of them
    spelled `(:batch-size (merge {:batch-size 100000} opts))`."

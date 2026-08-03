@@ -47,7 +47,8 @@
             [datahike.migrate.manifest :as mman
              :refer [->db a-ident attribute-refs? build-manifest
                      chunk-name chunk-re codec-of config-must-match datom->record
-                     assert-sync-supported! default-batch-size default-chunk-size
+                     assert-sync-supported! assert-sizes-positive!
+                     default-batch-size default-chunk-size
                      default-sync? estimate-from-manifest
                      export-records export-records-streaming
                      ident-schema manifest-key norm-val read-manifest-map
@@ -179,59 +180,81 @@
    store — had nowhere to close it. `blob-writer`, `blob-reader` and
    `verify-blobs` each leaked one connection per call, so an export plus an
    import plus a verify against a `{:backend ...}` config opened three stores and
-   released none."
-  [target f]
-  (if (mstore/store-target? target)
-    (let [m (mstore/open target)]
-      (try
-        ;; `async+sync` rather than `<??`: this closure is called from
-        ;; `mblobs/copy-out!`, which is itself async+sync, so a blocking take
-        ;; here would have pinned the whole blob path to the JVM even though
-        ;; `migrate.blobs` is portable — portability stopping one layer short of
-        ;; where it is used.
-        (f (fn [id bytes o]
-             (async+sync (:sync? o) *default-sync-translation*
-                         (go-try-
-                          (<?- (k/bassoc (:store m) (mstore/blob-key (:prefix m) id)
-                                         bytes o))))))
-        (finally (mstore/close m))))
-    (let [dir (blob-dir target)]
-      (when-not (fs/mkdirs! dir)
-        (when-not (fs/directory? dir)
-          (throw (ex-info (str "Could not create the blob directory " dir)
-                          {:error :export/blob-dir-failed :dir (str dir)}))))
-      ;; The filesystem writes are synchronous on both runtimes, but the shape
-      ;; still has to match what `copy-out!` awaits — value in sync mode, channel
-      ;; otherwise — or the async branch would await a plain value.
-      (f (fn [id bytes o]
-           (async+sync (:sync? o) *default-sync-translation*
-                       (go-try-
-                        (let [sink (fs/open-sink (fs/join dir (str id)))]
-                          (try (fs/write! sink bytes)
-                               (finally (fs/close-sink! sink)))))))))))
+   released none.
+
+   `opts` carries `:sync?`, and it is load-bearing twice over. This used to call
+   the ONE-arity `mstore/open`/`close`, which force `{:sync? true}` — so against
+   a `{:backend ...}` target it could not connect on Node at all, and worse, the
+   release sat in an ordinary `finally`. `f` returns a CHANNEL in async mode, so
+   that `finally` fired the moment the channel was handed back, releasing the
+   store before a single blob had been written. That is the same use-after-release
+   `import-db` documents twenty lines below; it simply had a second home here.
+   Hence the explicit close on both the success and failure path, INSIDE the go
+   block, since core.async cannot park in a `finally`."
+  [target opts f]
+  (async+sync
+   (:sync? opts) *default-sync-translation*
+   (go-try-
+    (if (mstore/store-target? target)
+      (let [m (<?- (mstore/open target opts))
+            res (try
+                  ;; `async+sync` rather than `<??`: this closure is called from
+                  ;; `mblobs/copy-out!`, which is itself async+sync, so a blocking
+                  ;; take here would have pinned the whole blob path to the JVM
+                  ;; even though `migrate.blobs` is portable — portability
+                  ;; stopping one layer short of where it is used.
+                  (<?- (f (fn [id bytes o]
+                            (async+sync (:sync? o) *default-sync-translation*
+                                        (go-try-
+                                         (<?- (k/bassoc (:store m) (mstore/blob-key (:prefix m) id)
+                                                        bytes o)))))))
+                  (catch #?(:clj Exception :cljs :default) e e))]
+        (<?- (mstore/close m opts))
+        (if (instance? #?(:clj Throwable :cljs js/Error) res) (throw res) res))
+      (let [dir (blob-dir target)]
+        (when-not (fs/mkdirs! dir)
+          (when-not (fs/directory? dir)
+            (throw (ex-info (str "Could not create the blob directory " dir)
+                            {:error :export/blob-dir-failed :dir (str dir)}))))
+        ;; The filesystem writes are synchronous on both runtimes, but the shape
+        ;; still has to match what `copy-out!` awaits — value in sync mode, channel
+        ;; otherwise — or the async branch would await a plain value.
+        (<?- (f (fn [id bytes o]
+                  (async+sync (:sync? o) *default-sync-translation*
+                              (go-try-
+                               (let [sink (fs/open-sink (fs/join dir (str id)))]
+                                 (try (fs/write! sink bytes)
+                                      (finally (fs/close-sink! sink))))))))))))))
 
 (defn- with-blob-reader
   "Call `f` with `(fn [id opts]) -> bytes-or-nil` reading blobs out of a dump,
-   releasing the medium afterwards. See `with-blob-writer`."
-  [source f]
-  (if (mstore/store-target? source)
-    (let [m (mstore/open source)]
-      (try
-        ;; `to-bytes` rather than a hand-rolled callback: `bget`'s handle has four
-        ;; different shapes across backends and platforms, and that knowledge now
-        ;; lives in konserve (replikativ/konserve#162) instead of being re-derived
-        ;; at every call site — this was one of them.
-        (f (fn [id o]
-             (async+sync (:sync? o) *default-sync-translation*
-                         (go-try-
-                          (<?- (k/bget (:store m) (mstore/blob-key (:prefix m) id)
-                                       (kb/to-bytes o) o))))))
-        (finally (mstore/close m))))
-    (f (fn [id o]
-         (async+sync (:sync? o) *default-sync-translation*
-                     (go-try-
-                      (let [f' (fs/join (blob-dir source) (str id))]
-                        (when (fs/exists? f') (fs/read-bytes f')))))))))
+   releasing the medium afterwards. See `with-blob-writer`, including why `opts`
+   and the explicit close are load-bearing rather than tidiness."
+  [source opts f]
+  (async+sync
+   (:sync? opts) *default-sync-translation*
+   (go-try-
+    (if (mstore/store-target? source)
+      (let [m (<?- (mstore/open source opts))
+            res (try
+                  ;; `to-bytes` rather than a hand-rolled callback: `bget`'s handle
+                  ;; has four different shapes across backends and platforms, and
+                  ;; that knowledge now lives in konserve
+                  ;; (replikativ/konserve#162) instead of being re-derived at every
+                  ;; call site — this was one of them.
+                  (<?- (f (fn [id o]
+                            (async+sync (:sync? o) *default-sync-translation*
+                                        (go-try-
+                                         (<?- (k/bget (:store m) (mstore/blob-key (:prefix m) id)
+                                                      (kb/to-bytes o) o)))))))
+                  (catch #?(:clj Exception :cljs :default) e e))]
+        (<?- (mstore/close m opts))
+        (if (instance? #?(:clj Throwable :cljs js/Error) res) (throw res) res))
+      (<?- (f (fn [id o]
+                (async+sync (:sync? o) *default-sync-translation*
+                            (go-try-
+                             (let [f' (fs/join (blob-dir source) (str id))]
+                               (when (fs/exists? f') (fs/read-bytes f'))))))))))))
 
 (defn export-db
   "Export a database (or connection) to `target`.
@@ -266,6 +289,7 @@
   ([db-or-conn target] (export-db db-or-conn target {}))
   ([db-or-conn target opts]
    (assert-sync-supported! opts)
+   (assert-sizes-positive! opts)
    (let [db       (->db db-or-conn)
          opts     (merge {:history? (boolean (:keep-history? (dbi/-config db)))
                           :chunk-size default-chunk-size
@@ -298,7 +322,7 @@
          ;; ordering the konserve-sync walker needs when it ships blobs ahead of
          ;; the branch head: nothing may name an object that is not there yet.
          (when-let [plan (get opts mman/blob-plan-key)]
-           (<?- (with-blob-writer target #(mblobs/copy-out! (:store db) plan % opts))))
+           (<?- (with-blob-writer target opts #(mblobs/copy-out! (:store db) plan % opts))))
          ;; The records to write. `:sort? true` spills sorted runs to local temp
          ;; files and k-way merges them; `:sort? false` needs no scratch at all
          ;; but cannot order a same-transaction card-one replacement, because it
@@ -849,7 +873,7 @@
     (when-let [store-refs (:store-refs manifest)]
       (mblobs/check-importable store-refs opts)
       (when (seq (:carried store-refs))
-        (<?- (with-blob-reader source #(mblobs/copy-in! (:store @conn) store-refs % opts))))))))
+        (<?- (with-blob-reader source opts #(mblobs/copy-in! (:store @conn) store-refs % opts))))))))
 
 (defn import-db
   "Import a dump produced by `export-db` into connection `conn`.
@@ -900,6 +924,7 @@
   ([conn source] (import-db conn source {}))
   ([conn source opts]
    (assert-sync-supported! opts)
+   (assert-sizes-positive! opts)
    (let [opts (merge {:sync? default-sync?} opts)
          batch-size (get opts :batch-size default-batch-size)]
      (async+sync
@@ -941,7 +966,14 @@
                  mem (estimate-from-manifest manifest (manifest-total-bytes manifest (:files dump)) batch-size)]
              (check-capabilities! manifest)
              (check-target! conn manifest)
-             (restore-blobs! conn manifest source opts)
+             ;; AWAITED. `restore-blobs!` is `async+sync`, so under `:sync? false`
+             ;; a bare call hands back a channel that nobody takes: every blob
+             ;; failure is discarded and the datom import starts anyway. Since
+             ;; post-import verification is count-based, `import-db` then reports
+             ;; `:verified? true` for a database whose store-refs point at blobs
+             ;; that were never written. The store arm above always awaited this;
+             ;; only the filesystem arm did not.
+             (<?- (restore-blobs! conn manifest source opts))
              (<?- (run-import conn manifest mem
                               {:manifest manifest
                                :chunks (:files dump)
@@ -1073,7 +1105,10 @@
    which the manifest states, and it is the operator who must place them."
   [manifest source]
   (if-let [store-refs (:store-refs manifest)]
-    (with-blob-reader source #(verify-blobs* store-refs %))
+    ;; `verify` is sync-only (`verify-blobs*` reads with `{:sync? true}`), so the
+    ;; reader is opened in the same mode and hands back a value rather than a
+    ;; channel.
+    (with-blob-reader source {:sync? true} #(verify-blobs* store-refs %))
     ;; no store-refs section: either no blobs, or a dump predating blob carriage
     {:ok? true :declared 0 :verified 0 :missing [] :corrupt []
      :external 0 :self-contained? true}))
