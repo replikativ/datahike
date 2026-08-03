@@ -226,18 +226,21 @@
     (let [conn (fresh-conn)
           rs (vec (for [i (range 500)]
                     [(+ 1000 i) :name (str "n" i) (+ 536870913 i) true]))]
-      (run-import conn {:expected-count 500} {} (chunks-of rs 100)
-                  {:sync? true :eids :preserve :finalize? false})
-      (is (fn? (:eids (:migration @conn)))
-          ":eids is still the policy function — no map was accumulated at all")
+      (let [rep (run-import conn {:expected-count 500} {} (chunks-of rs 100)
+                            {:sync? true :eids :preserve})]
+        (is (zero? (:id-map-size rep))
+            "500 entities imported and not one id remembered"))
 
       (testing "whereas the default remembers every one"
-        (let [c2 (fresh-conn)]
-          (run-import c2 {:expected-count 500} {} (chunks-of rs 100)
-                      {:sync? true :finalize? false})
-          (is (= 500 (count (:eids (:migration @c2))))
-              "one entry per source entity")
+        (let [c2 (fresh-conn)
+              rep (run-import c2 {:expected-count 500} {} (chunks-of rs 100)
+                              {:sync? true})]
+          (is (= 500 (:id-map-size rep)) "one entry per source entity")
           (teardown c2)))
+
+      (testing "and the mapping is not left on the database value either way —
+                it is owned by the import and released when it returns"
+        (is (nil? (:migration @conn))))
       (teardown conn))))
 
 (deftest refs-follow-the-policy

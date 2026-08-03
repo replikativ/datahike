@@ -1725,16 +1725,33 @@
           (log/raise "Bad entity type at " entity ", expected map or vector"
                      {:error :transact/syntax, :tx-data entity}))))))
 
-(defn transact-entities-directly [initial-report initial-es]
+(defn transact-entities-directly
+  "Load `initial-es` (raw `[e a v t op]` records) into `(:db-after
+   initial-report)`, remapping source ids to target ones.
+
+   The id mapping goes IN as `:migration` on the report and comes OUT the same
+   way — it is NOT stored on the database value. An import is many calls and a
+   ref in a late batch may name an entity first seen in an early one, so the
+   mapping has to survive between calls; it used to do that by riding on the db,
+   which is the only thing the writer loop threads forward.
+
+   That was the wrong home and cost three bugs. A db value has two holders — the
+   connection atom and the writer's own loop — so neither is authoritative, and
+   `swap!`ing the connection to seed or clear the mapping never reached the
+   transactor. It also put O(entities) of import bookkeeping inside a value that
+   means \"the database\", which is why clearing it needed a separate
+   `finalize-import!` step at all.
+
+   Now the caller owns it: pass the previous call's `:migration` back in, and
+   the map goes out of scope when the import ends."
+  [initial-report initial-es]
   (loop [report (update initial-report :db-after transient)
          es initial-es
-         migration-state (get-in initial-report [:db-before :migration] {})]
+         migration-state (or (:migration initial-report) {})]
     (if (empty? es)
       (-> report
           (update-in [:db-after :max-tx] inc)
-          (update-in [:db-after :migration] #(if %
-                                               (merge % migration-state)
-                                               migration-state))
+          (assoc :migration migration-state)
           (update :db-after persistent!)
           (update :db-after finalize-secondary-indices))
       (let [[entity & entities] es

@@ -574,9 +574,10 @@
    (:sync? opts) *default-sync-translation*
    (go-try-
     ;; `datahike.writer/load-entities` rather than `api/load-entities`, because
-    ;; the id-mapping seed travels WITH the call and the public arity is pinned
-    ;; at two arguments by its malli spec. See `core/seed-migration` for why the
-    ;; seed cannot ride on the connection instead.
+    ;; the id mapping travels WITH the call and the public arity is pinned at
+    ;; two arguments by its malli spec. The tx-report carries the UPDATED
+    ;; mapping back out; see `transact-entities-directly` for why it does not
+    ;; live on the database value.
     (let [p (dwriter/load-entities conn batch migration)]
       ;; ClojureScript has no blocking deref, and `:sync? true` is refused there
       ;; by `assert-sync-supported!` at the entry points.
@@ -612,30 +613,34 @@
   (async+sync
    (:sync? opts) *default-sync-translation*
    (go-try-
-    (let [ok? (try (<?- (load-batch! conn batch migration opts)) true
-                   (catch #?(:clj Exception :cljs :default) _ false))]
-      (if ok?
-        (do (progress {:phase :batch :datoms (count batch)}) [])
-        (loop [groups (seq (partition-by #(nth % 3) batch)) errs []]
+    ;; Each successful call yields an updated mapping; a FAILED one yields
+    ;; none, because the writer returns the old db and allocates nothing.
+    (let [rep (try (<?- (load-batch! conn batch migration opts))
+                   (catch #?(:clj Exception :cljs :default) _ nil))]
+      (if rep
+        (do (progress {:phase :batch :datoms (count batch)})
+            {:errors [] :migration (:migration rep)})
+        (loop [groups (seq (partition-by #(nth % 3) batch)) errs [] m migration]
           (if (nil? groups)
-            errs
+            {:errors errs :migration m}
             (let [tx-group (vec (first groups))
-                  tx-ok? (try (<?- (load-batch! conn tx-group migration opts)) true
-                              (catch #?(:clj Exception :cljs :default) _ false))]
-              (if tx-ok?
-                (recur (next groups) errs)
-                (recur (next groups)
-                       (loop [ds (seq tx-group) errs errs]
-                         (if (nil? ds)
-                           errs
-                           (let [d (first ds)
-                                 ex (try (<?- (load-batch! conn [d] migration opts)) nil
-                                         (catch #?(:clj Exception :cljs :default) e e))]
-                             (recur (next ds)
-                                    (if ex
-                                      (conj errs {:error (or (:error (ex-data ex)) :import/corrupt-datom)
-                                                  :datom d :message (ex-message ex)})
-                                      errs)))))))))))))))
+                  tx-rep (try (<?- (load-batch! conn tx-group m opts))
+                              (catch #?(:clj Exception :cljs :default) _ nil))]
+              (if tx-rep
+                (recur (next groups) errs (:migration tx-rep))
+                (let [[errs' m'] (loop [ds (seq tx-group) errs errs m m]
+                                   (if (nil? ds)
+                                     [errs m]
+                                     (let [d (first ds)
+                                           r (try {:rep (<?- (load-batch! conn [d] m opts))}
+                                                  (catch #?(:clj Exception :cljs :default) e {:ex e}))]
+                                       (recur (next ds)
+                                              (if-let [ex (:ex r)]
+                                                (conj errs {:error (or (:error (ex-data ex)) :import/corrupt-datom)
+                                                            :datom d :message (ex-message ex)})
+                                                errs)
+                                              (if (:ex r) m (:migration (:rep r)))))))]
+                  (recur (next groups) errs' m')))))))))))
 
 (defn- flush-batch!
   "Apply one tx-aligned batch via load-entities. Under :on-error :abort a failure
@@ -650,13 +655,14 @@
         (<?- (collect-apply! conn batch migration progress opts))
         ;; the failure is captured and RETHROWN outside the handler: core.async
         ;; cannot park inside a `catch`, and the throw has to follow the await
-        (let [ex (try (<?- (load-batch! conn batch migration opts)) nil
-                      (catch #?(:clj Exception :cljs :default) e e))]
-          (if ex
+        (let [r (try {:rep (<?- (load-batch! conn batch migration opts))}
+                     (catch #?(:clj Exception :cljs :default) e {:ex e}))]
+          (if-let [ex (:ex r)]
             (throw (ex-info (str "Import aborted: " (ex-message ex))
                             (merge (ex-data ex) {:error :import/corrupt-datom}) ex))
-            (do (progress {:phase :batch :datoms (count batch)}) []))))
-      []))))
+            (do (progress {:phase :batch :datoms (count batch)})
+                {:errors [] :migration (:migration (:rep r))}))))
+      {:errors [] :migration migration}))))
 
 (defn- config-compat! [manifest conn]
   (let [tgt (dbi/-config @conn)
@@ -827,7 +833,7 @@
                   " datoms (~" (:entities mem) " entities) needs about "
                   (:recommended-heap mem) "; this runtime's limit is "
                   (:current-max-heap mem)
-                  ". Raise it (the id-remap map is held until finalize) or"
+                  ". Raise it (the id-remap map is held for the whole import) or"
                   " expect OutOfMemoryError.")))
     ;; Guard rails already ran in `check-target!`, before any blob was written.
     ;; ---- the id-mapping seed, carried WITH every load-entities call ----
@@ -860,17 +866,15 @@
                  (and policy (seq sys)) (merge sys policy)
                  policy policy
                  (seq sys) sys)
-          base-migration (if eids {:eids eids} {})
-          ;; The FIRST flush of an import resets `:migration` rather than
-          ;; merging into it, so an import never inherits the id mapping of a
-          ;; previous one. `finalize-import!` cannot do this: it swaps the
-          ;; connection, which the writer does not read.
-          seed-once (atom true)
-          migration-for! (fn []
-                           (if @seed-once
-                             (do (reset! seed-once false)
-                                 (assoc base-migration :reset? true))
-                             (when (seq base-migration) base-migration)))]
+          ;; THE id mapping for this import, owned here and threaded through the
+          ;; batcher. It is not on the database value and not on the connection:
+          ;; an import is many `load-entities` calls and a late batch may name an
+          ;; entity from an early one, so the mapping has to survive between
+          ;; calls — but the db value has two holders (the connection atom and
+          ;; the writer's own loop), and putting it there cost three bugs.
+          ;; Owning it here also means it needs no clearing: it goes out of
+          ;; scope when this function returns.
+          migration0 (if eids {:eids eids} {})]
     ;; ---- stream records through a tx-aligned batcher (bounded memory) ----
     ;; System-entity idents are stable across the import, so resolve #sysref
     ;; against a captured db value.
@@ -893,7 +897,8 @@
           ;; Memory is unchanged: one chunk (bounded by `:chunk-size`) plus one
           ;; batch (bounded by `:batch-size`), exactly as before.
           final (loop [cs (seq (:chunks chunk-src))
-                       acc {:batch [] :n 0 :last-t ::start :errors [] :dropped 0}]
+                       acc {:batch [] :n 0 :last-t ::start :errors [] :dropped 0
+                            :migration migration0}]
                   (if (nil? cs)
                     acc
                     (let [records (<?- ((:read chunk-src) (first cs) opts))]
@@ -911,12 +916,13 @@
                                (let [t (nth rec 3)
                                      acc (if (and (>= (long (:n acc)) batch-size)
                                                   (not= t (:last-t acc)))
-                                           (-> acc
-                                               (update :errors into
-                                                       (<?- (flush-batch! conn (:batch acc)
-                                                                          on-error (migration-for!)
-                                                                          progress opts)))
-                                               (assoc :batch [] :n 0))
+                                           (let [r (<?- (flush-batch! conn (:batch acc)
+                                                                       on-error (:migration acc)
+                                                                       progress opts))]
+                                             (-> acc
+                                                 (update :errors into (:errors r))
+                                                 (assoc :migration (:migration r))
+                                                 (assoc :batch [] :n 0)))
                                            acc)]
                                  (recur (next rs)
                                         (-> acc
@@ -924,8 +930,12 @@
                                             (update :n inc)
                                             (assoc :last-t t))))
                                (recur (next rs) (update acc :dropped inc))))))))))
-          errors (into (:errors final)
-                       (<?- (flush-batch! conn (:batch final) on-error (migration-for!) progress opts)))
+          last-flush (<?- (flush-batch! conn (:batch final) on-error (:migration final)
+                                        progress opts))
+          errors (into (:errors final) (:errors last-flush))
+          ;; the mapping the whole import built — the `:tids` half is where the
+          ;; transaction count comes from
+          migration (:migration last-flush)
           hist?  (boolean (:history? source-meta))
           ;; What this import ADDED. Identical to the whole-database count for
           ;; the ordinary empty-target import, where `live-before` is 0.
@@ -948,10 +958,9 @@
                                            :expected-count expected
                                            :live-count live})))
                         ok?))
-          ;; The EXACT number of source transactions, taken from the id-remap's
-          ;; `:tids` — one entry per distinct source `t`, already in memory, so
-          ;; this costs nothing. Captured here because `finalize-import!` below
-          ;; drops the map.
+          ;; The EXACT number of source transactions, taken from the id mapping's
+          ;; `:tids` — one entry per distinct source `t`, already in hand, so
+          ;; this costs nothing.
           ;;
           ;; The batcher's own counter cannot do this. It counts TRANSITIONS
           ;; between adjacent `t` values, which equals the transaction count only
@@ -960,12 +969,13 @@
           ;; makes two passes over :eavt and emits a transaction's schema/meta
           ;; datoms in the first and its data datoms in the second. Measured: a
           ;; 13-transaction database reported 25.
-          tx-count (count (:tids (:migration @conn)))]
+          tx-count (count (:tids migration))]
       ;; `verified?` is nil when verification was not RUN, and false when it ran
-      ;; and failed. Treating nil as failure meant `:verify? false` silently
-      ;; disabled `:finalize?`, leaving the O(entities) `:migration` id-map in
-      ;; the db value forever — on exactly the imports big enough that someone
-      ;; turned verification off to save time.
+      ;; and failed. Treating nil as failure used to mean `:verify? false`
+      ;; silently disabled `:finalize?` and left the O(entities) id map in the
+      ;; db value forever — on exactly the imports big enough that someone
+      ;; turned verification off to save time. The map no longer lives there, so
+      ;; this now only decides what `:finalized?` reports.
       (when (and (:finalize? opts) (not (false? verified?)))
         (finalize-import! conn))
       ;; Same cljs hazards as the heap warning above — `*err*` and `format` exist
@@ -996,6 +1006,12 @@
        :max-tx-drift (when-let [src-max-tx (and (not (:merge? opts)) (:max-tx source-meta))]
                        (- (long (:max-tx @conn)) (long src-max-tx)))
        :merged?     (boolean (:merge? opts))
+       ;; How many entity ids the import had to REMEMBER. Zero under a function
+       ;; policy (`:offset`, `:preserve`), which is the whole reason a function
+       ;; is allowed: the default accumulates one entry per source entity, and
+       ;; that map is what the heap warning above is about. A count rather than
+       ;; the map itself, so reporting it retains nothing.
+       :id-map-size (let [m (:eids migration)] (if (map? m) (count m) 0))
        ;; Which entity ids this import created, so a caller that merged can find
        ;; what it just added without diffing the database.
        :eid-range   (let [after (:max-eid @conn)]
@@ -1100,7 +1116,10 @@
                              is about. Transaction ids are not covered; they are
                              always allocated above the target's :max-tx.
                              See `eid-policy`.
-     :finalize?    true      clear the :migration id-map after a verified import
+     :finalize?    true      vestigial. The id map used to ride in the db value
+                             and needed clearing; it is now owned by the import
+                             and released when the import returns. Kept for
+                             compatibility — see `finalize-import!`.
      :progress-fn  nil
    Returns {:datom-count .. :tx-count .. :max-tx .. :verified? .. :errors [..]
             :recommended-heap ..}. Prints a heap warning if the current -Xmx looks
@@ -1164,8 +1183,20 @@
                               opts)))))))))))
 
 (defn finalize-import!
-  "Clear import bookkeeping (:migration id map) from the db after a successful,
-   verified import. Idempotent. The map is O(entities) and rides in the db value."
+  "Historically: clear the `:migration` id map from the db after a verified
+   import, because it was O(entities) and rode in the db value.
+
+   It no longer rides there. The mapping is threaded through `run-import` and
+   goes out of scope when the import returns, so there is nothing to free and
+   this is a no-op for any database built by the current importer. It stays
+   public, idempotent, and still dissocs, so a db value carried over from an
+   older import is handled too.
+
+   Worth recording why it existed: it could not do its job. `swap!` on the
+   CONNECTION does not reach the writer, which carries its own db value — so the
+   map was never actually freed, and the next import into the same connection
+   inherited it and upserted onto the previous import's entities. Owning the
+   mapping in the caller removes the need for the step rather than fixing it."
   [conn]
   (swap! conn dissoc :migration)
   :finalized)
