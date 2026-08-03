@@ -741,7 +741,14 @@
   ;; SinceDB was not even equal to itself — and `equals` is required to
   ;; be reflexive.
   (or (identical? db other)
-      (and (or (instance? DB other) (instance? FilteredDB other))
+      ;; BOTH sides must be content-comparable kinds, not just `other`. Testing
+      ;; only `other` let a view reach the content branch as the LEFT argument,
+      ;; so `(= (d/history db) db)` answered true while `(= db (d/history db))`
+      ;; answered false — `Object.equals` is required to be symmetric, and a
+      ;; java.util.HashSet holding both then contains two entries for what one
+      ;; side calls the same value. Same one-way asymmetry for AsOfDB and SinceDB.
+      (and (or (instance? DB db) (instance? FilteredDB db))
+           (or (instance? DB other) (instance? FilteredDB other))
            (or (not (instance? DB other)) (= (hash db) (hash other)))
            (= (dbi/-schema db) (dbi/-schema other))
            (equiv-db-index (dbi/datoms db :eavt []) (dbi/datoms other :eavt [])))))
