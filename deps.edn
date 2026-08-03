@@ -16,7 +16,17 @@
         ;; published NodeState — a pipelining writer's copies can never observe a torn settle;
         ;; 0.4.137 projects diff-buf diffs onto a COPY of the restored node, so tree versions
         ;; sharing a durable anchor through the node cache can't clobber each other's reads
-        org.replikativ/persistent-sorted-set        {:mvn/version "0.4.139"}
+        ;; LOCAL ROOT, not a release: the cljs streaming builder and the
+        ;; JVM/ClojureScript split-shape parity fix are unreleased. Restore
+        ;; {:mvn/version "0.4.140"} (or later) before shipping.
+        ;;
+        ;; Here in the top-level :deps and NOT in an alias on purpose. The three
+        ;; test entry points resolve different alias sets — `clojure -M:test`
+        ;; (kaocha) sees :test, `npx shadow-cljs compile node-test` sees
+        ;; :cljs + :test (shadow-cljs.edn:1), and `bb test cljs-node` sees only
+        ;; :cljs — so this is the one placement all three see. The old :bulk
+        ;; alias reached none of the cljs ones.
+        org.replikativ/persistent-sorted-set        {:local/root "../persistent-sorted-set"}
         is.simm/partial-cps                         {:mvn/version "0.1.59"}
         environ/environ                             {:mvn/version "1.2.0"}
         nrepl/bencode                               {:mvn/version "1.2.0"}

@@ -68,6 +68,9 @@
             ;; the external merge sort, which runs here now that it no longer
             ;; speaks java.io.File and java.util.PriorityQueue.
             [datahike.test.migrate-sort-test]
+            ;; the streaming bulk index build, which runs here now that
+            ;; persistent-sorted-set has a cljs `from-sorted-seq`.
+            [datahike.test.bulk-build-node-test]
             ;; export/import ON NODE — the point of the whole conversion.
             [datahike.test.migrate-node-test]))
 
@@ -750,6 +753,7 @@
                'datahike.test.migrate-manifest-test
                'datahike.test.blob-identity-test
                'datahike.test.migrate-sort-test
+               'datahike.test.bulk-build-node-test
                'datahike.test.migrate-node-test
                'datahike.test.nodejs-test
                'datahike.test.index-test

@@ -229,6 +229,21 @@
     (mark pset))
   (-root-node [^PersistentSortedSet pset]
     ;; In-memory top node; populated after -flush set the root/address.
+    ;;
+    ;; The two arms are NOT equivalent, and the difference is now reachable.
+    ;; `.root` on the JVM is the method, which lazily restores from the stored
+    ;; address; `.-root` on ClojureScript is the raw field, which is nil for an
+    ;; ADDRESS-ROOTED set — exactly what `init-index-sorted` produces, since a
+    ;; streaming build stores each node as it fills and keeps only the root
+    ;; address.
+    ;;
+    ;; The consequence is bounded: the only caller is root fusion
+    ;; (`writing/db->stored`), and the restore side is presence-based
+    ;; (`cond-> ... root (-seed-root! root)`), so a nil here costs one storage
+    ;; read for the root and nothing else. Deliberately NOT "fixed" by
+    ;; restoring here: on ClojureScript a sync restore can raise
+    ;; :storage/sync-read-unavailable, which would turn a graceful loss of an
+    ;; optimisation into a failed commit.
     #?(:clj  (.root pset)
        :cljs (.-root pset)))
   (-seed-root! [^PersistentSortedSet pset root-node]
@@ -435,7 +450,15 @@
         (wrapped/evict cache address))
       (swap! pending-writes conj [address node])
       (wrapped/miss cache address node)
-      address))
+      ;; The write itself is synchronous either way — it buffers onto
+      ;; `pending-writes` and the address is derived from the node's content, so
+      ;; no IO happens here. But a caller running under `:sync? false` AWAITS
+      ;; what this returns, and awaiting a raw address is a type error, not a
+      ;; no-op. `restore` just below already honours the flag the same way; this
+      ;; did not, which is why a ClojureScript streaming build failed with
+      ;; "fexpr.call is not a function" the moment it stored its first node.
+      #?(:clj address
+         :cljs (if (false? (:sync? opts)) (async address) address))))
   (accessed [_ address]
     (@cost-center-fn :accessed)
     (log/trace :datahike/index-access {:address address})
@@ -574,82 +597,112 @@
    enough that the bound is a bound."
   1000)
 
-#?(:clj
-   (defn- flush-pending!
-     "Write out the nodes buffered in `pending-writes` and clear it.
+(defn- drain-pending!
+  "Write out the nodes buffered in `pending-writes` and clear it.
 
-      This is a deliberately torn commit batch, and it is safe for exactly the
-      reason `datahike.writing/commit!` gives for tolerating a torn one:
-      `pending-writes` is a vector and `store` conj'es onto it, so children
-      appear before the parents that address them. A partial write therefore
-      leaves unreachable orphans — which GC collects — and never a reachable
-      node pointing at a value that was never written. The nodes are marked
-      `:immutable?` for the same reason `write-pending-kvs!` marks them: they
-      are content-addressed and write-once.
+   This is a deliberately torn commit batch, and it is safe for exactly the
+   reason `datahike.writing/commit!` gives for tolerating a torn one:
+   `pending-writes` is a vector and `store` conj'es onto it, so children appear
+   before the parents that address them. A partial write therefore leaves
+   unreachable orphans — which GC collects — and never a reachable node pointing
+   at a value that was never written. The nodes are marked `:immutable?` for the
+   same reason `write-pending-kvs!` marks them: they are content-addressed and
+   write-once.
 
-      Not shared with `datahike.writing` because the dependency runs the other
-      way (writing -> index -> here); this is konserve directly instead."
-     [store]
-     (when-let [pending (-> store :storage :pending-writes)]
-       (let [[kvs _] (swap-vals! pending (constantly []))]
-         (doseq [[k v] kvs]
-           (k/assoc store k v {:immutable? true} {:sync? true}))))))
+   Not shared with `datahike.writing` because the dependency runs the other way
+   (writing -> index -> here); this is konserve directly instead.
 
-#?(:clj
-   (defn- flushing-seq
-     "`xs`, but draining `pending-writes` whenever it grows past `threshold`.
+   Returns nil under `sync?`, and a partial-cps expression otherwise — the shape
+   `from-sorted-seq` awaits."
+  [store kvs sync?]
+  (if sync?
+    (doseq [[k v] kvs]
+      (k/assoc store k v {:immutable? true} {:sync? true}))
+    #?(:clj
+       ;; Refused rather than half-written. Parking on the konserve op would have
+       ;; to happen inside a `go` block, and there is none here — the JVM builder
+       ;; is synchronous, so nothing asks for this. Wiring it means giving the
+       ;; builder a go context, not adding a `<?-` at this line.
+       (throw (ex-info (str "init-index-sorted on the JVM has no asynchronous arm: "
+                            "the streaming builder is synchronous there. Pass :sync? true.")
+                       {:error :datahike/bulk-build-async-unsupported}))
+       :cljs
+       ;; Issue every write, then await them all: the writes overlap, the
+       ;; BATCH is what blocks. konserve delivers errors as values, so the
+       ;; first one short-circuits and `chan->async-expr` rejects on it.
+       (let [ops (mapv (fn [[k v]] (k/assoc store k v {:immutable? true} {:sync? false})) kvs)]
+         (chan->async-expr
+          (async/go
+            (loop [ops (seq ops)]
+              (if ops
+                (let [v (async/<! (first ops))]
+                  (if (instance? js/Error v) v (recur (next ops))))
+                :ok))))))))
 
-      The streaming builder's whole point is that it holds only O(depth x
-      branching-factor) of the tree at once — but `store` merely buffers, so
-      without this the buffer grows to the entire index and the bound is
-      nominal. Measured before this existed: 200k datoms left 524 nodes
-      pending, i.e. every datom still resident.
+(defn- flush-fn-for
+  "The `:flush-fn` handed to `from-sorted-seq`: drain `pending-writes` once it
+   grows past `threshold`, else do nothing.
 
-      Draining is driven from the INPUT seq rather than from `store` itself
-      because `store` serves every write path in datahike; a threshold there
-      would change crash semantics for ordinary transactions to fix a
-      bulk-build problem. Here it is scoped to exactly the build that has it.
+   The builder holds only O(depth x branching-factor) of the TREE, but `store`
+   merely buffers, so without this the buffer grows to the entire index and the
+   bound is nominal. Measured before it existed: 200k datoms left 524 nodes
+   pending, i.e. every datom still resident.
 
-      The check is on node count, not datoms consumed, so the bound holds
-      independently of branching factor. It also means the ROOT is never
-      flushed early: it is built after the input is exhausted, so no check
-      fires after it exists, and `commit!` still finds it in `pending-writes`
-      to fuse into the stored db."
-     [store xs]
-     (let [pending  (-> store :storage :pending-writes)
-           threshold (:datahike/index-flush-threshold store DEFAULT_INDEX_FLUSH_THRESHOLD)]
-       (if (or (nil? pending) (not (pos? threshold)))
-         xs
-         (map (fn [x]
-                (when (>= (count @pending) threshold)
-                  (flush-pending! store))
-                x)
-              xs)))))
+   Called by the builder after each node is stored — not driven from the input
+   seq, which was the earlier JVM-only shape. Seq-wrapping put IO inside a `fn`
+   literal, which partial-cps refuses outright (`await` inside a closure can
+   never suspend), so it could only ever have been synchronous and JVM-only.
 
-#?(:clj
-   (defmethod di/init-index-sorted :datahike.index/persistent-set
-     [_index-name store sorted-datoms index-type _ {:keys [indexed]}]
-     ;; JVM only: `from-sorted-seq` is the streaming builder and has no cljs
-     ;; counterpart yet. The cljs path keeps using init-index, which is correct,
-     ;; just not memory-bounded.
-     (let [xs (if (= index-type :avet)
-                (filter #(contains? indexed (.-a ^Datom %)) sorted-datoms)
-                sorted-datoms)
-           xs (flushing-seq store xs)
-           ;; A direct call now. This was a `requiring-resolve` while
-           ;; `from-sorted-seq` was unreleased (replikativ/persistent-sorted-set#22),
-           ;; because a compile-time reference would have made all of datahike
-           ;; fail to load against the declared dependency. Released in 0.4.139,
-           ;; so the indirection — and the `:bulk` local-root alias beside it —
-           ;; are gone.
-           ^PersistentSortedSet pset
-           (psset/from-sorted-seq (index-type->cmp-quick index-type false)
-                                  xs
-                                  {:branching-factor (:datahike/branching-factor store DEFAULT_BRANCHING_FACTOR)
-                                   :diff-buf-size (:datahike/diff-buf-size store 0)
-                                   :storage (:storage store)})]
-       (set! (.-_storage pset) (:storage store))
-       (with-meta pset (root-meta store index-type)))))
+   The threshold counts NODES, not datoms consumed, so the bound holds
+   independently of branching factor. It also means the ROOT is never flushed
+   early: it is built after the input is exhausted, so no node is stored after
+   it, and `commit!` still finds it in `pending-writes` to fuse into the stored
+   db.
+
+   nil when there is nothing to drain or flushing is switched off, which lets
+   the builder skip the hook entirely."
+  [store sync?]
+  (let [pending   (-> store :storage :pending-writes)
+        threshold (:datahike/index-flush-threshold store DEFAULT_INDEX_FLUSH_THRESHOLD)]
+    (when (and pending (pos? threshold))
+      (fn []
+        (if (>= (count @pending) threshold)
+          (let [[kvs _] (swap-vals! pending (constantly []))]
+            (drain-pending! store kvs sync?))
+          ;; Nothing to do — but the builder AWAITS this, so the async arm must
+          ;; still hand back something awaitable.
+          #?(:clj nil :cljs (async nil)))))))
+
+(defmethod di/init-index-sorted :datahike.index/persistent-set
+  [_index-name store sorted-datoms index-type _
+   {:keys [indexed sync?] :or {sync? #?(:clj true :cljs false)}}]
+  (let [xs (if (= index-type :avet)
+             (filter #(contains? indexed (.-a ^Datom %)) sorted-datoms)
+             sorted-datoms)
+        opts {:branching-factor (:datahike/branching-factor store DEFAULT_BRANCHING_FACTOR)
+              :diff-buf-size (:datahike/diff-buf-size store 0)
+              :storage (:storage store)
+              :flush-fn (flush-fn-for store sync?)
+              :sync? sync?}
+        cmp (index-type->cmp-quick index-type false)]
+    #?(:clj
+       (let [^PersistentSortedSet pset (psset/from-sorted-seq cmp xs opts)]
+         ;; JVM constructs without storage and attaches it afterwards; the cljs
+         ;; set keeps storage on `.-storage`, set from the `:storage` opt above,
+         ;; which this `set!` would not reach.
+         (set! (.-_storage pset) (:storage store))
+         (with-meta pset (root-meta store index-type)))
+       :cljs
+       ;; Under `:sync? false` the builder returns a partial-cps expression, so
+       ;; the metadata has to be attached inside the continuation. The caller
+       ;; gets a set or an expression according to the `:sync?` it asked for —
+       ;; the same contract every other storage-touching entry point here has.
+       (if sync?
+         (with-meta (psset/from-sorted-seq cmp xs opts) (root-meta store index-type))
+         (fn [resolve reject]
+           ((psset/from-sorted-seq cmp xs opts)
+            (fn [pset] (resolve (with-meta pset (root-meta store index-type))))
+            reject))))))
 
 ;; Datom — datahike's domain ELEMENT type, nested inside node :keys. Its handler recurses through
 ;; the canonical node codec. (vector form `[e a v tx added]`, read back via datom-from-reader.)
