@@ -535,6 +535,27 @@
 
       true    (update :op-count inc)
       true    (advance-max-eid (.-e datom))
+      ;; Drop the superseded value's term only when it survives NOWHERE. With
+      ;; history kept it moves into the temporal index and stays counted — the
+      ;; sum is over everything the database knows about, not over the current
+      ;; index alone. Without history it is gone, and leaving it counted made
+      ;; the sum name a value present in no index and in no dump.
+      ;;
+      ;; The equal-value case subtracts under both settings. No index gained a
+      ;; new [e a v]: `temporal-upsert` stores nothing when the value is
+      ;; unchanged, and `-upsert` REPLACES the existing datom rather than adding
+      ;; one — so the `+` below has to be cancelled.
+      ;;
+      ;; Note the replacement does move the datom's `tx`, which the sum cannot
+      ;; see because `hash-datom` covers [e a v] only. That leaves the current
+      ;; index dating the fact to the later transaction while the temporal index
+      ;; still dates it to the original — an inconsistency in its own right, and
+      ;; one the cardinality-many path does not have. It is out of scope here:
+      ;; this clause is about the sum, not about whether a re-assertion that
+      ;; changes no value should be a transaction at all.
+      (and old-datom (or (not keep-history?)
+                         (= (hash old-datom) (hash prim))))
+      (update :hash - (hash old-datom))
       true    (update :hash + (hash prim))
       schema? (-> (update-schema datom)
                   update-rschema))))
