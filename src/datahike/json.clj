@@ -10,11 +10,10 @@
             [datahike.schema :as s]
             [jsonista.core :as j]
             [jsonista.tagged :as jt])
-  #?(:clj
-     (:import [datahike.datom Datom]
-              [datahike.impl.entity Entity]
-              [com.fasterxml.jackson.core JsonGenerator]
-              [datahike.db HistoricalDB AsOfDB SinceDB])))
+  (:import [datahike.datom Datom]
+           [datahike.impl.entity Entity]
+           [com.fasterxml.jackson.core JsonGenerator]
+           [datahike.db HistoricalDB AsOfDB SinceDB]))
 
 (defn config->store-id [config]
   [(store-identity (:store config))

@@ -1,4 +1,4 @@
-(ns datahike.index.secondary.proximum
+(ns ^:no-doc datahike.index.secondary.proximum
   "Proximum (vector similarity search) integration with Datahike secondary indices.
 
    Require this namespace to register the :proximum index type:

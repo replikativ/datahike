@@ -10,6 +10,7 @@
                     [pod.borkdude.clj-kondo :as clj-kondo]
                     [tools.build :as build]
                     [tools.clj-kondo :as clj-kondo-tools]
+                    [tools.cljdoc :as cljdoc]
                     [tools.deploy :as deploy]
                     [tools.examples :as examples]
                     [tools.npm :as npm]
@@ -42,6 +43,13 @@
          lint {:doc "Run clj-kondo linter"
                :require [[pod.borkdude.clj-kondo :as clj-kondo]]
                :task (clj-kondo/print! (clj-kondo/run! {:lint "."}))}
+
+         cljdoc-check {:doc "Analyze the built jar with cljdoc-analyzer (mirrors the cljdoc.org build)"
+                       :depends [jar]
+                       :task (cljdoc/analyze config (-> config :build :clj))}
+
+         cljdoc-check-installed {:doc "cljdoc-check against the already-installed jar (CI; run after `bb install`)"
+                                 :task (cljdoc/analyze-installed config (-> config :build :clj))}
 
          test {:doc "Run all tests or restrict to 'native-image', 'back-compat' or a kaocha test id (see tests.edn)"
                :depends [jcompile]

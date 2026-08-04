@@ -7,13 +7,12 @@
             [clojure.edn :as edn]
             [datahike.json :refer [json-base-handlers]]
             [datahike.datom :as dd])
-  #?(:clj
-     (:import [clojure.lang IDeref]
-              [datahike.datom Datom]
-              [com.fasterxml.jackson.core JsonGenerator])))
+  (:import [clojure.lang IDeref]
+           [datahike.datom Datom]
+           [com.fasterxml.jackson.core JsonGenerator]))
 
 ;; https://github.com/thi-ng/color/issues/10
-;; fixes lein repl / Cloure 1.10.0 
+;; fixes lein repl / Cloure 1.10.0
 (prefer-method print-method java.util.Map clojure.lang.IDeref)
 
 ;; fixes lein repl / Clojure 1.10.1
@@ -38,20 +37,18 @@
 (defn remote-peer [obj] (-remote-peer obj))
 
 (defrecord RemoteConnection [store-id remote-peer]
-  #?@(:clj
-      [IDeref
-       (deref [conn] (remote-deref conn))
-       PRemotePeer
-       (-remote-peer [_] remote-peer)]))
+  IDeref
+  (deref [conn] (remote-deref conn))
+  PRemotePeer
+  (-remote-peer [_] remote-peer))
 
 (defn remote-connection [store-id]
   (RemoteConnection. store-id *remote-peer*))
 
-#?(:clj
-   (defmethod print-method RemoteConnection
-     [^RemoteConnection conn ^java.io.Writer w]
-     (.write w "#datahike/RemoteConnection")
-     (.write w (pr-str (:store-id conn)))))
+(defmethod print-method RemoteConnection
+  [^RemoteConnection conn ^java.io.Writer w]
+  (.write w "#datahike/RemoteConnection")
+  (.write w (pr-str (:store-id conn))))
 
 (defrecord RemoteDB [store-id max-tx max-eid commit-id remote-peer]
   PRemotePeer
@@ -60,11 +57,10 @@
 (defn remote-db [m]
   (assoc (map->RemoteDB m) :remote-peer *remote-peer*))
 
-#?(:clj
-   (defmethod print-method RemoteDB
-     [^RemoteDB db ^java.io.Writer w]
-     (.write w "#datahike/RemoteDB")
-     (.write w (pr-str  (into {} (dissoc db :remote-peer))))))
+(defmethod print-method RemoteDB
+  [^RemoteDB db ^java.io.Writer w]
+  (.write w "#datahike/RemoteDB")
+  (.write w (pr-str  (into {} (dissoc db :remote-peer)))))
 
 (defrecord RemoteHistoricalDB [origin remote-peer]
   PRemotePeer
@@ -73,11 +69,10 @@
 (defn remote-historical-db [m]
   (assoc (map->RemoteHistoricalDB m) :remote-peer *remote-peer*))
 
-#?(:clj
-   (defmethod print-method RemoteHistoricalDB
-     [^RemoteDB db ^java.io.Writer w]
-     (.write w "#datahike/RemoteHistoricalDB")
-     (.write w (pr-str  (into {} (dissoc db :remote-peer))))))
+(defmethod print-method RemoteHistoricalDB
+  [^RemoteDB db ^java.io.Writer w]
+  (.write w "#datahike/RemoteHistoricalDB")
+  (.write w (pr-str  (into {} (dissoc db :remote-peer)))))
 
 (defrecord RemoteSinceDB [origin time-point remote-peer]
   PRemotePeer
@@ -86,11 +81,10 @@
 (defn remote-since-db [m]
   (assoc (map->RemoteSinceDB m) :remote-peer *remote-peer*))
 
-#?(:clj
-   (defmethod print-method RemoteSinceDB
-     [^RemoteDB db ^java.io.Writer w]
-     (.write w "#datahike/RemoteSinceDB")
-     (.write w (pr-str  (into {} (dissoc db :remote-peer))))))
+(defmethod print-method RemoteSinceDB
+  [^RemoteDB db ^java.io.Writer w]
+  (.write w "#datahike/RemoteSinceDB")
+  (.write w (pr-str  (into {} (dissoc db :remote-peer)))))
 
 (defrecord RemoteAsOfDB [origin time-point remote-peer]
   PRemotePeer
@@ -99,11 +93,10 @@
 (defn remote-as-of-db [m]
   (assoc (map->RemoteAsOfDB m) :remote-peer *remote-peer*))
 
-#?(:clj
-   (defmethod print-method RemoteAsOfDB
-     [^RemoteDB db ^java.io.Writer w]
-     (.write w "#datahike/RemoteAsOfDB")
-     (.write w (pr-str  (into {} (dissoc db :remote-peer))))))
+(defmethod print-method RemoteAsOfDB
+  [^RemoteDB db ^java.io.Writer w]
+  (.write w "#datahike/RemoteAsOfDB")
+  (.write w (pr-str  (into {} (dissoc db :remote-peer)))))
 
 (defrecord RemoteEntity [db eid remote-peer]
   PRemotePeer
@@ -112,11 +105,10 @@
 (defn remote-entity [m]
   (assoc (map->RemoteEntity m) :remote-peer *remote-peer*))
 
-#?(:clj
-   (defmethod print-method RemoteEntity
-     [^RemoteEntity e ^java.io.Writer w]
-     (.write w "#datahike/RemoteEntity")
-     (.write w (pr-str (dissoc (into {} e) :remote-peer)))))
+(defmethod print-method RemoteEntity
+  [^RemoteEntity e ^java.io.Writer w]
+  (.write w "#datahike/RemoteEntity")
+  (.write w (pr-str (dissoc (into {} e) :remote-peer))))
 
 (defn edn-replace-remote-literals [s]
   (reduce (fn [^String s [^String from ^String to]]
