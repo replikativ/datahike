@@ -301,3 +301,69 @@
                            " — got " (pr-str l))))
                 (teardown tgt))))
           (teardown src))))))
+
+(deftest async-export-uses-the-default-sort
+  (testing "the two async-export tests above both pass `:sort? false`, so the
+            EXTERNAL MERGE SORT — which is the default — had never run in async
+            mode. The namespace docstring names the trap this covers: a parked
+            take somewhere the `go` state machine cannot reach works in the sync
+            branch and deadlocks in the async one, and the sort is exactly the
+            kind of place that happens (a k-way merge over a lazy seq of open
+            files).
+
+            `:sort-buffer` is small enough to force multiple runs, so the merge
+            really merges rather than short-circuiting on a single run."
+    (let [src (utils/setup-db (mem-cfg))]
+      (d/transact src [{:db/ident :n :db/valueType :db.type/long
+                        :db/cardinality :db.cardinality/one}])
+      (doseq [batch (partition-all 50 (range 300))]
+        (d/transact src (vec (for [i batch] {:n i}))))
+      ;; overwrite every entity, so history carries supersessions rather than
+      ;; a flat set of assertions
+      (let [eids (mapv :e (d/datoms @src :aevt :n))]
+        (doseq [batch (partition-all 50 eids)]
+          (d/transact src (vec (for [e batch] {:db/id e :n (+ 1000 e)})))))
+      (let [path (str (System/getProperty "java.io.tmpdir") "/dh-async-sort-" (utils/get-time))
+            man  (take-result (m/export-db src path {:history? true :sync? false
+                                                     :sort-buffer 10 :chunk-size 100}))
+            tgt  (utils/setup-db (mem-cfg))
+            rep  (take-result (m/import-db tgt path {:sync? false}))]
+        (is (< 1 (count (:chunks man))) "several chunks, so the merge spanned runs")
+        (is (= (:count (:semantic-digest man)) (:datom-count rep)))
+        (is (true? (:verified? rep)))
+        (testing "and the round trip reproduces :hash, as it does synchronously"
+          (is (= (:hash @src) (:hash @tgt))))
+        (teardown tgt))
+      (teardown src))))
+
+(deftest async-and-sync-export-agree-datom-for-datom
+  (testing "the same database exported both ways must produce the same dump
+            content. Chunk COUNT is asserted rather than chunk bytes: the two
+            modes may batch differently, and it is the datoms that have to
+            match, not the framing."
+    (let [src (utils/setup-db (mem-cfg))]
+      (d/transact src [{:db/ident :name :db/valueType :db.type/string
+                        :db/cardinality :db.cardinality/one
+                        :db/unique :db.unique/identity}
+                       {:db/ident :tag :db/valueType :db.type/keyword
+                        :db/cardinality :db.cardinality/many}])
+      (d/transact src [{:db/id -1 :name "a" :tag :x}])
+      (d/transact src [{:db/id [:name "a"] :tag :y}])
+      (d/transact src [[:db/retract [:name "a"] :tag :x]])
+      (let [base (str (System/getProperty "java.io.tmpdir") "/dh-cmp-" (utils/get-time))
+            s-man (m/export-db src (str base "-sync") {:history? true})
+            a-man (take-result (m/export-db src (str base "-async") {:history? true :sync? false}))
+            load! (fn [p sync?]
+                    (let [tgt (utils/setup-db (mem-cfg))]
+                      (take-result (m/import-db tgt p {:sync? sync?}))
+                      tgt))
+            s-tgt (load! (str base "-sync") true)
+            a-tgt (load! (str base "-async") false)]
+        (is (= (:count (:semantic-digest s-man)) (:count (:semantic-digest a-man)))
+            "both dumps carry the same datom count")
+        (is (= (:hash @s-tgt) (:hash @a-tgt)) "and reimport to the same :hash")
+        (is (= (vec (d/datoms (d/history @s-tgt) :eavt))
+               (vec (d/datoms (d/history @a-tgt) :eavt)))
+            "with identical history, datom for datom")
+        (teardown s-tgt) (teardown a-tgt))
+      (teardown src))))
