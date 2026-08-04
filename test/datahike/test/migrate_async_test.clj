@@ -191,24 +191,24 @@
             the exception as the channel's value, because `go-try-` catches it.
             A caller taking with `<!` instead of `<?` would otherwise treat a
             failed import as a successful one."
-      (let [src (utils/setup-db (mem-cfg))]
-        (d/transact src [{:db/ident :age :db/valueType :db.type/long
-                          :db/cardinality :db.cardinality/one}])
-        (d/transact src [{:db/id "a" :age 30}])
-        (let [[path _] (dump-with-a-bad-datom src)]
-          (testing "sync throws"
-            (let [tgt (utils/setup-db (mem-cfg))]
-              (is (= :import/corrupt-datom
-                     (try (m/import-db tgt path {:sync? true :on-error :abort :verify? false}) nil
-                          (catch clojure.lang.ExceptionInfo e (:error (ex-data e)))))) 
-              (teardown tgt)))
-          (testing "async delivers the exception on the channel"
-            (let [tgt (utils/setup-db (mem-cfg))
-                  v (<!! (m/import-db tgt path {:sync? false :on-error :abort :verify? false}))]
-              (is (instance? Throwable v) "not a report — a failure")
-              (is (= :import/corrupt-datom (:error (ex-data v))))
-              (teardown tgt))))
-        (teardown src))))
+    (let [src (utils/setup-db (mem-cfg))]
+      (d/transact src [{:db/ident :age :db/valueType :db.type/long
+                        :db/cardinality :db.cardinality/one}])
+      (d/transact src [{:db/id "a" :age 30}])
+      (let [[path _] (dump-with-a-bad-datom src)]
+        (testing "sync throws"
+          (let [tgt (utils/setup-db (mem-cfg))]
+            (is (= :import/corrupt-datom
+                   (try (m/import-db tgt path {:sync? true :on-error :abort :verify? false}) nil
+                        (catch clojure.lang.ExceptionInfo e (:error (ex-data e))))))
+            (teardown tgt)))
+        (testing "async delivers the exception on the channel"
+          (let [tgt (utils/setup-db (mem-cfg))
+                v (<!! (m/import-db tgt path {:sync? false :on-error :abort :verify? false}))]
+            (is (instance? Throwable v) "not a report — a failure")
+            (is (= :import/corrupt-datom (:error (ex-data v))))
+            (teardown tgt))))
+      (teardown src))))
 
 ;; ---------------------------------------------------------------------------
 ;; export

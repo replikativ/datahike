@@ -326,6 +326,30 @@
                              "loop forever.")
                         {:error :migrate/bad-size :option k :value v}))))))
 
+(defn assert-codec-supported!
+  "Refuse a `:compression` this version cannot write.
+
+   `mz/supported` was documented as the READ guard — a dump naming an unknown
+   codec is refused by name rather than failing inside the decoder. Writing had
+   no such check, so the value reached `mz/compress-bytes`, a `case` with no
+   default clause, and surfaced as `No matching clause: :zstd` from inside the
+   block compressor. By then the first chunk's `.tmp` file was already on disk.
+
+   `nil` is rejected explicitly rather than treated as \"use the default\":
+   `export-db` merges its defaults BEFORE this runs, so a caller who passed
+   `{:compression nil}` meaning \"whatever you normally do\" has overridden the
+   default with nil, and `No matching clause: ` — with nothing after the colon —
+   is the worst possible way to find that out."
+  [opts]
+  (when (contains? opts :compression)
+    (let [v (:compression opts)]
+      (when-not (contains? mz/supported v)
+        (throw (ex-info (str ":compression " (pr-str v) " is not supported for writing. "
+                             "This version writes " (pr-str (sort mz/supported)) ".")
+                        {:error :migrate/unsupported-codec
+                         :codec v
+                         :supported mz/supported}))))))
+
 (def default-batch-size
   "Datoms per `load-entities` call. One definition — it had three, two of them
    spelled `(:batch-size (merge {:batch-size 100000} opts))`."

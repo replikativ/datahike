@@ -65,7 +65,7 @@
   (is (= records read)
       "every record survives, in order, through CBOR and the store")
   (is (= (long (#?(:clj Math/ceil :cljs js/Math.ceil)
-                 (/ (count records) (double chunk-size))))
+                (/ (count records) (double chunk-size))))
          (count (:chunks manifest)))
       "the manifest names one entry per chunk written")
   (is (= (count records) (:count (:semantic-digest manifest)))

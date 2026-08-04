@@ -1027,3 +1027,65 @@
                     (catch clojure.lang.ExceptionInfo e (:error (ex-data e))))))
         (teardown tgt))
       (teardown src))))
+
+;; ---------------------------------------------------------------------------
+;; Option guards at the public entry
+;;
+;; Both refuse by name before any work starts. That placement is the point: an
+;; export that fails inside the block compressor or the chunk writer has already
+;; created files, and the caller is left with a partial directory and an error
+;; naming neither the option nor the value they passed.
+
+(deftest export-refuses-a-codec-it-cannot-write
+  (testing "`mz/supported` was the READ guard only — a dump naming an unknown
+            codec is refused by name. Writing had no check, so the value reached
+            `mz/compress-bytes`, a `case` with no default, and surfaced as
+            `No matching clause: :zstd` from inside the compressor, with the
+            first chunk's .tmp file already on disk."
+    (let [conn (utils/setup-db (mem-cfg {:history? true}))
+          path (str (System/getProperty "java.io.tmpdir") "/dh-codec-" (utils/get-time))]
+      (try
+        (d/transact conn [{:db/ident :n :db/valueType :db.type/long
+                           :db/cardinality :db.cardinality/one}])
+        (d/transact conn [{:n 1}])
+        (doseq [bad [:zstd :brotli "gzip"]]
+          (testing (str "codec " (pr-str bad))
+            (let [e (try (m/export-db conn path {:compression bad}) nil
+                         (catch clojure.lang.ExceptionInfo ex ex))]
+              (is (some? e) "must throw")
+              (is (= :migrate/unsupported-codec (:error (ex-data e))))
+              (is (= bad (:codec (ex-data e))) "and name the value it was given")
+              (is (not (.exists (io/file path)))
+                  "and refuse before creating the dump directory"))))
+        (testing "nil is refused too, rather than silently meaning `the default`
+                  — `export-db` merges its defaults BEFORE the guard, so an
+                  explicit nil has already overridden `:gzip`"
+          (let [e (try (m/export-db conn path {:compression nil}) nil
+                       (catch clojure.lang.ExceptionInfo ex ex))]
+            (is (= :migrate/unsupported-codec (:error (ex-data e))))))
+        (testing "and both supported codecs are accepted"
+          (doseq [ok [:gzip :none]]
+            (let [p (str path "-" (name ok))]
+              (is (map? (m/export-db conn p {:compression ok}))))))
+        (finally (teardown conn))))))
+
+(deftest export-refuses-a-non-positive-window
+  (testing "`:sort-buffer`, `:chunk-size` and `:batch-size` each drive a
+            take/drop recurrence. At zero every pass takes nothing and makes no
+            progress while still writing an empty run or chunk each time round,
+            so the loop never terminates and the output grows without bound."
+    (let [conn (utils/setup-db (mem-cfg {:history? true}))
+          path (str (System/getProperty "java.io.tmpdir") "/dh-window-" (utils/get-time))]
+      (try
+        (d/transact conn [{:db/ident :n :db/valueType :db.type/long
+                           :db/cardinality :db.cardinality/one}])
+        (d/transact conn [{:n 1}])
+        (doseq [k [:sort-buffer :chunk-size]
+                v [0 -1]]
+          (testing (str k " = " v)
+            (let [e (try (m/export-db conn path {k v}) nil
+                         (catch clojure.lang.ExceptionInfo ex ex))]
+              (is (some? e) "must throw rather than loop")
+              (is (= :migrate/bad-size (:error (ex-data e))))
+              (is (= k (:option (ex-data e)))))))
+        (finally (teardown conn))))))

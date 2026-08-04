@@ -48,7 +48,7 @@
             [datahike.migrate.manifest :as mman
              :refer [->db a-ident attribute-refs? build-manifest
                      chunk-re codec-of config-must-match datom->record
-                     assert-sync-supported! assert-sizes-positive!
+                     assert-sync-supported! assert-sizes-positive! assert-codec-supported!
                      default-batch-size default-chunk-size
                      default-sync? estimate-from-manifest
                      export-records export-records-streaming
@@ -70,8 +70,7 @@
             ;; `clojure.core.async/go`, and without this refer the compiler picks
             ;; the CLOJURE macro, whose `go-impl` walks `&env` expecting symbol
             ;; keys — cljs `&env` is the compiler map, with keyword keys.
-            #?(:cljs [clojure.core.async :refer-macros [go]]))
-  )
+            #?(:cljs [clojure.core.async :refer-macros [go]])))
 
 ;; Public names that used to be defined here and now live in
 ;; `datahike.migrate.manifest`. Re-exported rather than left to `:refer`, which
@@ -134,33 +133,33 @@
                     {:error :export/mkdir-failed :dir (str dir)})))
   (fs/restrict-perms! dir true)
   (let [codec (get opts :compression mz/default-codec)]
-   (loop [ls (seq sorted-records) n 1 chunks [] dacc (dig/accumulator)]
-    (if (nil? ls)
+    (loop [ls (seq sorted-records) n 1 chunks [] dacc (dig/accumulator)]
+      (if (nil? ls)
       ;; `:compression` is stamped by the WRITER, so the codec recorded is the
       ;; one that was used. See `migrate.store/write-chunks!` for why that
       ;; matters: a manifest that disagrees with the bytes reports corruption on
       ;; an intact dump.
-      (let [manifest (assoc (build-manifest db opts (dig/finalize dacc) chunks)
-                            :compression codec)]
-        (fs/spit-text! (fs/join dir "manifest.edn") (pr-str manifest))
-        (fs/restrict-perms! (fs/join dir "manifest.edn") false)
-        (progress {:phase :done :datoms (:count (dig/finalize dacc))})
-        manifest)
-      (let [fname (mstore/chunk-name n codec)
-            tmp   (fs/join dir (str fname ".tmp"))
-            final (fs/join dir fname)
-            [rem cnt sha dacc' raw] (write-chunk-stream! tmp ls chunk-size dacc codec)]
-        (when-not (fs/rename! tmp final)
-          (throw (ex-info (str "Could not move the finished chunk into place: "
-                               tmp " -> " final ". The manifest would name a file "
-                               "that is not there.")
-                          {:error :export/rename-failed :from (str tmp) :to (str final)})))
-        (fs/restrict-perms! final false)
-        (progress {:phase :chunk :datoms cnt})
-        (recur (seq rem) (inc n)
-               (conj chunks (mstore/chunk-descriptor
-                             fname cnt (fs/file-size final) raw sha))
-               dacc'))))))
+        (let [manifest (assoc (build-manifest db opts (dig/finalize dacc) chunks)
+                              :compression codec)]
+          (fs/spit-text! (fs/join dir "manifest.edn") (pr-str manifest))
+          (fs/restrict-perms! (fs/join dir "manifest.edn") false)
+          (progress {:phase :done :datoms (:count (dig/finalize dacc))})
+          manifest)
+        (let [fname (mstore/chunk-name n codec)
+              tmp   (fs/join dir (str fname ".tmp"))
+              final (fs/join dir fname)
+              [rem cnt sha dacc' raw] (write-chunk-stream! tmp ls chunk-size dacc codec)]
+          (when-not (fs/rename! tmp final)
+            (throw (ex-info (str "Could not move the finished chunk into place: "
+                                 tmp " -> " final ". The manifest would name a file "
+                                 "that is not there.")
+                            {:error :export/rename-failed :from (str tmp) :to (str final)})))
+          (fs/restrict-perms! final false)
+          (progress {:phase :chunk :datoms cnt})
+          (recur (seq rem) (inc n)
+                 (conj chunks (mstore/chunk-descriptor
+                               fname cnt (fs/file-size final) raw sha))
+                 dacc'))))))
 
 (defn- blob-dir
   "The directory carried blobs live in for a filesystem dump."
@@ -294,7 +293,8 @@
                           :sync? default-sync?
                           :sort? true}
                          opts)
-         progress (or (:progress-fn opts) (constantly nil))]
+         progress (or (:progress-fn opts) (constantly nil))
+         _        (assert-codec-supported! opts)]
      (async+sync
       (:sync? opts) *default-sync-translation*
       (go-try-
@@ -828,13 +828,13 @@
     ;; there. Three cljs-incompatible constructs on one line, reachable only once
     ;; this file becomes .cljc: a bug placed one commit before the commit that
     ;; would have detonated it.
-    (when (false? (:sufficient? mem))
-      (warn! (str "[datahike.migrate] heap warning: importing " (:datoms mem)
-                  " datoms (~" (:entities mem) " entities) needs about "
-                  (:recommended-heap mem) "; this runtime's limit is "
-                  (:current-max-heap mem)
-                  ". Raise it (the id-remap map is held for the whole import) or"
-                  " expect OutOfMemoryError.")))
+      (when (false? (:sufficient? mem))
+        (warn! (str "[datahike.migrate] heap warning: importing " (:datoms mem)
+                    " datoms (~" (:entities mem) " entities) needs about "
+                    (:recommended-heap mem) "; this runtime's limit is "
+                    (:current-max-heap mem)
+                    ". Raise it (the id-remap map is held for the whole import) or"
+                    " expect OutOfMemoryError.")))
     ;; Guard rails already ran in `check-target!`, before any blob was written.
     ;; ---- the id-mapping seed, carried WITH every load-entities call ----
     ;; Not swapped onto the connection: the writer loop carries its own db value
@@ -842,30 +842,30 @@
     ;; so a connection-level seed is not reliably visible to the transactor.
     ;; That is also why the attribute-refs system seed moved here — it had the
     ;; same exposure, silently.
-    (let [db @conn
+      (let [db @conn
           ;; Under `:merge?` the count check has to be a DELTA: `expected` is a
           ;; property of the SOURCE, while the live count is a property of the
           ;; whole database. Taken before anything is written, and only when it
           ;; will be used — on an empty target it is 0 and the scan is free,
           ;; but on a populated one it is a full index read and paying for it
           ;; when `:verify? false` would be waste.
-          live-before (if (and (:merge? opts) (:verify? opts))
-                        (long (user-datom-count db (boolean (:history? source-meta))))
-                        0)
-          max-eid-before (:max-eid db)
+            live-before (if (and (:merge? opts) (:verify? opts))
+                          (long (user-datom-count db (boolean (:history? source-meta))))
+                          0)
+            max-eid-before (:max-eid db)
           ;; system-entity identity, so refs to a system entity are TRANSLATED
           ;; rather than re-allocated (#508)
-          sys (when (attribute-refs? db) (system-eid-seed db))
-          policy (eid-policy (:eids opts) db)
-          eids (cond
+            sys (when (attribute-refs? db) (system-eid-seed db))
+            policy (eid-policy (:eids opts) db)
+            eids (cond
                  ;; A policy is about the caller's OWN entities. System entities
                  ;; keep their identity regardless, or `:offset` would shift the
                  ;; targets of system refs and break them.
-                 (and (fn? policy) (seq sys)) (fn [e] (if (contains? sys e) e (policy e)))
-                 (fn? policy) policy
-                 (and policy (seq sys)) (merge sys policy)
-                 policy policy
-                 (seq sys) sys)
+                   (and (fn? policy) (seq sys)) (fn [e] (if (contains? sys e) e (policy e)))
+                   (fn? policy) policy
+                   (and policy (seq sys)) (merge sys policy)
+                   policy policy
+                   (seq sys) sys)
           ;; THE id mapping for this import, owned here and threaded through the
           ;; batcher. It is not on the database value and not on the connection:
           ;; an import is many `load-entities` calls and a late batch may name an
@@ -874,7 +874,7 @@
           ;; the writer's own loop), and putting it there cost three bugs.
           ;; Owning it here also means it needs no clearing: it goes out of
           ;; scope when this function returns.
-          migration0 (if eids {:eids eids} {})]
+            migration0 (if eids {:eids eids} {})]
     ;; ---- stream records through a tx-aligned batcher (bounded memory) ----
     ;; System-entity idents are stable across the import, so resolve #sysref
     ;; against a captured db value.
@@ -888,7 +888,7 @@
     ;; Harmless for content — the id-remap maps a source `t` to the same target
     ;; transaction whichever call it arrives in — but it is why the transaction
     ;; count is taken from the id map rather than from the batcher.
-    (let [sref-db @conn
+        (let [sref-db @conn
           ;; TWO NESTED LOOPS, not a reduce. The outer reads one chunk, the inner
           ;; batches its records and flushes — and both the read and the flush are
           ;; awaits, which must sit at statement positions the `go` state machine
@@ -896,68 +896,68 @@
           ;;
           ;; Memory is unchanged: one chunk (bounded by `:chunk-size`) plus one
           ;; batch (bounded by `:batch-size`), exactly as before.
-          final (loop [cs (seq (:chunks chunk-src))
-                       acc {:batch [] :n 0 :last-t ::start :errors [] :dropped 0
-                            :migration migration0}]
-                  (if (nil? cs)
-                    acc
-                    (let [records (<?- ((:read chunk-src) (first cs) opts))]
-                      (recur
-                       (next cs)
-                       (loop [rs (seq records) acc acc]
-                         (if (nil? rs)
-                           acc
+              final (loop [cs (seq (:chunks chunk-src))
+                           acc {:batch [] :n 0 :last-t ::start :errors [] :dropped 0
+                                :migration migration0}]
+                      (if (nil? cs)
+                        acc
+                        (let [records (<?- ((:read chunk-src) (first cs) opts))]
+                          (recur
+                           (next cs)
+                           (loop [rs (seq records) acc acc]
+                             (if (nil? rs)
+                               acc
                            ;; `:translate` runs AFTER sysref resolution, so a user
                            ;; function sees a plain [e a v t op] with real ids and
                            ;; never an internal SysRef. Returning nil DROPS it.
-                           (let [rec (let [r (resolve-sysrefs sref-db (first rs))]
-                                       (if translate (translate r) r))]
-                             (if rec
-                               (let [t (nth rec 3)
-                                     acc (if (and (>= (long (:n acc)) batch-size)
-                                                  (not= t (:last-t acc)))
-                                           (let [r (<?- (flush-batch! conn (:batch acc)
-                                                                       on-error (:migration acc)
-                                                                       progress opts))]
-                                             (-> acc
-                                                 (update :errors into (:errors r))
-                                                 (assoc :migration (:migration r))
-                                                 (assoc :batch [] :n 0)))
-                                           acc)]
-                                 (recur (next rs)
-                                        (-> acc
-                                            (update :batch conj rec)
-                                            (update :n inc)
-                                            (assoc :last-t t))))
-                               (recur (next rs) (update acc :dropped inc))))))))))
-          last-flush (<?- (flush-batch! conn (:batch final) on-error (:migration final)
-                                        progress opts))
-          errors (into (:errors final) (:errors last-flush))
+                               (let [rec (let [r (resolve-sysrefs sref-db (first rs))]
+                                           (if translate (translate r) r))]
+                                 (if rec
+                                   (let [t (nth rec 3)
+                                         acc (if (and (>= (long (:n acc)) batch-size)
+                                                      (not= t (:last-t acc)))
+                                               (let [r (<?- (flush-batch! conn (:batch acc)
+                                                                          on-error (:migration acc)
+                                                                          progress opts))]
+                                                 (-> acc
+                                                     (update :errors into (:errors r))
+                                                     (assoc :migration (:migration r))
+                                                     (assoc :batch [] :n 0)))
+                                               acc)]
+                                     (recur (next rs)
+                                            (-> acc
+                                                (update :batch conj rec)
+                                                (update :n inc)
+                                                (assoc :last-t t))))
+                                   (recur (next rs) (update acc :dropped inc))))))))))
+              last-flush (<?- (flush-batch! conn (:batch final) on-error (:migration final)
+                                            progress opts))
+              errors (into (:errors final) (:errors last-flush))
           ;; the mapping the whole import built — the `:tids` half is where the
           ;; transaction count comes from
-          migration (:migration last-flush)
-          hist?  (boolean (:history? source-meta))
+              migration (:migration last-flush)
+              hist?  (boolean (:history? source-meta))
           ;; What this import ADDED. Identical to the whole-database count for
           ;; the ordinary empty-target import, where `live-before` is 0.
-          live   (- (long (user-datom-count @conn hist?)) live-before)
-          dropped (long (:dropped final))
+              live   (- (long (user-datom-count @conn hist?)) live-before)
+              dropped (long (:dropped final))
           ;; A translator that DROPS records makes the dump's own count the wrong
           ;; expectation — the mismatch is the transformation working, not a
           ;; failure. Subtracting the drops keeps the check meaningful (records
           ;; that should have landed and did not are still caught) instead of
           ;; either failing spuriously or being switched off, which is how people
           ;; learn to ignore verification output.
-          expected (- (long (or (:expected-count source-meta) 0)) dropped)
-          verified? (when (:verify? opts)
-                      (let [ok? (= expected live)]
-                        (when (and (not ok?) (not= :collect on-error))
-                          (throw (ex-info "Post-import verification failed (datom count mismatch)"
-                                          {:error :import/verify-failed
-                                           :dump-count (:expected-count source-meta)
-                                           :dropped-by-translate dropped
-                                           :expected-count expected
-                                           :live-count live})))
-                        ok?))
+              expected (- (long (or (:expected-count source-meta) 0)) dropped)
+              verified? (when (:verify? opts)
+                          (let [ok? (= expected live)]
+                            (when (and (not ok?) (not= :collect on-error))
+                              (throw (ex-info "Post-import verification failed (datom count mismatch)"
+                                              {:error :import/verify-failed
+                                               :dump-count (:expected-count source-meta)
+                                               :dropped-by-translate dropped
+                                               :expected-count expected
+                                               :live-count live})))
+                            ok?))
           ;; The EXACT number of source transactions, taken from the id mapping's
           ;; `:tids` — one entry per distinct source `t`, already in hand, so
           ;; this costs nothing.
@@ -969,15 +969,15 @@
           ;; makes two passes over :eavt and emits a transaction's schema/meta
           ;; datoms in the first and its data datoms in the second. Measured: a
           ;; 13-transaction database reported 25.
-          tx-count (count (:tids migration))]
+              tx-count (count (:tids migration))]
       ;; `verified?` is nil when verification was not RUN, and false when it ran
       ;; and failed. Treating nil as failure used to mean `:verify? false`
       ;; silently disabled `:finalize?` and left the O(entities) id map in the
       ;; db value forever — on exactly the imports big enough that someone
       ;; turned verification off to save time. The map no longer lives there, so
       ;; this now only decides what `:finalized?` reports.
-      (when (and (:finalize? opts) (not (false? verified?)))
-        (finalize-import! conn))
+          (when (and (:finalize? opts) (not (false? verified?)))
+            (finalize-import! conn))
       ;; Same cljs hazards as the heap warning above — `*err*` and `format` exist
       ;; on neither path — and this one had no guard at all. Left as-is until the
       ;; move to .cljc, where both warnings become one portable helper rather
@@ -986,43 +986,43 @@
       ;; source's. That is a meaningful claim about a RESTORE and a meaningless
       ;; one about a merge, where the target's numbering was never supposed to
       ;; match.
-      (when-let [src-max-tx (and (not (:merge? opts)) (:max-tx source-meta))]
-        (let [drift (- (long (:max-tx @conn)) (long src-max-tx))]
-          (when-not (zero? drift)
-            (warn! (str "[datahike.migrate] max-tx drifted by "
-                        (if (pos? drift) "+" "") drift
-                        " (source " src-max-tx ", restored " (:max-tx @conn)
-                        "): the restored database numbers its next transaction"
-                        " differently. Datom content is unaffected.")))))
-      {:datom-count live
-       :translated? (boolean translate)
-       :dropped     dropped
+          (when-let [src-max-tx (and (not (:merge? opts)) (:max-tx source-meta))]
+            (let [drift (- (long (:max-tx @conn)) (long src-max-tx))]
+              (when-not (zero? drift)
+                (warn! (str "[datahike.migrate] max-tx drifted by "
+                            (if (pos? drift) "+" "") drift
+                            " (source " src-max-tx ", restored " (:max-tx @conn)
+                            "): the restored database numbers its next transaction"
+                            " differently. Datom content is unaffected.")))))
+          {:datom-count live
+           :translated? (boolean translate)
+           :dropped     dropped
        ;; The restored db's max-tx is one HIGHER than the source's, because the
        ;; import ends via `transact-entities-directly`, which bumps it once more.
        ;; It does not compound -- a second round trip is stable -- but the restored
        ;; database numbers its next transaction differently from the one it
        ;; replaced, and that is the kind of thing an operator should be told
        ;; rather than discover. nil when the dump records no source max-tx.
-       :max-tx-drift (when-let [src-max-tx (and (not (:merge? opts)) (:max-tx source-meta))]
-                       (- (long (:max-tx @conn)) (long src-max-tx)))
-       :merged?     (boolean (:merge? opts))
+           :max-tx-drift (when-let [src-max-tx (and (not (:merge? opts)) (:max-tx source-meta))]
+                           (- (long (:max-tx @conn)) (long src-max-tx)))
+           :merged?     (boolean (:merge? opts))
        ;; How many entity ids the import had to REMEMBER. Zero under a function
        ;; policy (`:offset`, `:preserve`), which is the whole reason a function
        ;; is allowed: the default accumulates one entry per source entity, and
        ;; that map is what the heap warning above is about. A count rather than
        ;; the map itself, so reporting it retains nothing.
-       :id-map-size (let [m (:eids migration)] (if (map? m) (count m) 0))
+           :id-map-size (let [m (:eids migration)] (if (map? m) (count m) 0))
        ;; Which entity ids this import created, so a caller that merged can find
        ;; what it just added without diffing the database.
-       :eid-range   (let [after (:max-eid @conn)]
-                      (when (> (long after) (long max-eid-before))
-                        [(inc (long max-eid-before)) (long after)]))
-       :tx-count    tx-count
-       :max-tx      (:max-tx @conn)
-       :verified?   verified?
-       :finalized?  (boolean (and (:finalize? opts) (not (false? verified?))))
-       :recommended-heap (:recommended-heap mem)
-       :errors      errors}))))))
+           :eid-range   (let [after (:max-eid @conn)]
+                          (when (> (long after) (long max-eid-before))
+                            [(inc (long max-eid-before)) (long after)]))
+           :tx-count    tx-count
+           :max-tx      (:max-tx @conn)
+           :verified?   verified?
+           :finalized?  (boolean (and (:finalize? opts) (not (false? verified?))))
+           :recommended-heap (:recommended-heap mem)
+           :errors      errors}))))))
 
 (defn- restore-blobs!
   "Put the dump's carried `:db.type/store-ref` bytes into the target store, before
@@ -1134,7 +1134,7 @@
      (async+sync
       (:sync? opts) *default-sync-translation*
       (go-try-
-     (if (mstore/store-target? source)
+       (if (mstore/store-target? source)
        ;; NOT `try/finally`. `run-import` returns a CHANNEL in async mode, so a
        ;; `finally` fires the moment it is handed back — before a single chunk
        ;; has been read. Instrumented, the order was
@@ -1145,30 +1145,30 @@
        ;;
        ;; The close is therefore explicit on both the success and the failure
        ;; path, INSIDE the go block, since core.async cannot park in a `finally`.
-       (let [m (<?- (mstore/open source opts))
-             manifest (<?- (mstore/read-manifest m opts))
-             mem (estimate-from-manifest manifest (manifest-total-bytes manifest nil) batch-size)
-             res (try
-                   (check-capabilities! manifest)
-                   (check-target! conn manifest opts)
-                   (<?- (restore-blobs! conn manifest source opts))
-                   (<?- (run-import conn (manifest->source-meta manifest) mem
-                                    {:chunks (:chunks manifest)
-                                     :read (fn [c o] (mstore/read-chunk m manifest c o))}
-                                    opts))
-                   (catch #?(:clj Exception :cljs :default) e e))]
-         (<?- (mstore/close m opts))
-         (if (instance? #?(:clj Throwable :cljs js/Error) res) (throw res) res))
-       (let [dump (open-dump source)]
-         (if (:legacy? dump)
-           #?(:clj (mlegacy/import-db-legacy conn source)
-              :cljs (throw (ex-info (str "This is a legacy single-file dump, readable only on the "
-                                         "JVM — it can only have been written by an old JVM datahike.")
-                                    {:error :import/legacy-not-portable})))
-           (let [manifest (:manifest dump)
-                 mem (estimate-from-manifest manifest (manifest-total-bytes manifest (:files dump)) batch-size)]
-             (check-capabilities! manifest)
-             (check-target! conn manifest opts)
+         (let [m (<?- (mstore/open source opts))
+               manifest (<?- (mstore/read-manifest m opts))
+               mem (estimate-from-manifest manifest (manifest-total-bytes manifest nil) batch-size)
+               res (try
+                     (check-capabilities! manifest)
+                     (check-target! conn manifest opts)
+                     (<?- (restore-blobs! conn manifest source opts))
+                     (<?- (run-import conn (manifest->source-meta manifest) mem
+                                      {:chunks (:chunks manifest)
+                                       :read (fn [c o] (mstore/read-chunk m manifest c o))}
+                                      opts))
+                     (catch #?(:clj Exception :cljs :default) e e))]
+           (<?- (mstore/close m opts))
+           (if (instance? #?(:clj Throwable :cljs js/Error) res) (throw res) res))
+         (let [dump (open-dump source)]
+           (if (:legacy? dump)
+             #?(:clj (mlegacy/import-db-legacy conn source)
+                :cljs (throw (ex-info (str "This is a legacy single-file dump, readable only on the "
+                                           "JVM — it can only have been written by an old JVM datahike.")
+                                      {:error :import/legacy-not-portable})))
+             (let [manifest (:manifest dump)
+                   mem (estimate-from-manifest manifest (manifest-total-bytes manifest (:files dump)) batch-size)]
+               (check-capabilities! manifest)
+               (check-target! conn manifest opts)
              ;; AWAITED. `restore-blobs!` is `async+sync`, so under `:sync? false`
              ;; a bare call hands back a channel that nobody takes: every blob
              ;; failure is discarded and the datom import starts anyway. Since
@@ -1176,11 +1176,11 @@
              ;; `:verified? true` for a database whose store-refs point at blobs
              ;; that were never written. The store arm above always awaited this;
              ;; only the filesystem arm did not.
-             (<?- (restore-blobs! conn manifest source opts))
-             (<?- (run-import conn (manifest->source-meta manifest) mem
-                              {:chunks (:files dump)
-                               :read (fn [f o] (fs-read-chunk manifest f o))}
-                              opts)))))))))))
+               (<?- (restore-blobs! conn manifest source opts))
+               (<?- (run-import conn (manifest->source-meta manifest) mem
+                                {:chunks (:files dump)
+                                 :read (fn [f o] (fs-read-chunk manifest f o))}
+                                opts)))))))))))
 
 (defn finalize-import!
   "Historically: clear the `:migration` id map from the db after a verified

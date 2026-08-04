@@ -299,14 +299,14 @@
 (defn load-entities
   ([connection entities] (load-entities connection entities nil))
   ([connection entities migration]
-  (let [p (throwable-promise)
-        writer (:writer @(:wrapped-atom connection))]
-    (go
-      (let [tx-report (<! (dispatch! writer
-                                     {:op 'load-entities
-                                      :args [entities migration]}))]
-        (#?(:clj deliver :cljs put!) p tx-report)))
-    p)))
+   (let [p (throwable-promise)
+         writer (:writer @(:wrapped-atom connection))]
+     (go
+       (let [tx-report (<! (dispatch! writer
+                                      {:op 'load-entities
+                                       :args [entities migration]}))]
+         (#?(:clj deliver :cljs put!) p tx-report)))
+     p)))
 
 (defn merge-db!
   "Merge parent branches/commits into the current branch through the writer.

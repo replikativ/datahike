@@ -57,8 +57,7 @@
             ;; keys. Measured — removing it fails the node build at the first
             ;; `go-try-`. The JVM refer that used to sit beside it really was
             ;; dead and is gone.
-            #?(:cljs [clojure.core.async :refer-macros [go]])
-))
+            #?(:cljs [clojure.core.async :refer-macros [go]])))
 
 (def ^:const dir-name
   "Subdirectory (filesystem) / key segment (store) the blobs live under.
