@@ -151,3 +151,25 @@
     (let [m (mman/read-manifest-map "{:a 1 :b #some/future-tag [1 2]}")]
       (is (= 1 (:a m)))
       (is (tagged-literal? (:b m))))))
+
+(deftest chunk-names-past-999999-are-still-legal
+  (testing "`chunk-name` pads to six digits and then lets the number GROW, so
+            chunk 1000000 is `datoms-1000000.cbor`. `chunk-re` demanded exactly
+            six, and it is the read-side guard — so export produced a dump whose
+            own file names its importer refused with \"Illegal chunk file name
+            in manifest\". Silent on write, fatal on read.
+
+            Out of reach at the default `:chunk-size` (10^12 datoms) but
+            `:chunk-size` is a caller option and a small one gets there."
+    (doseq [n [1 999999 1000000 1234567 99999999]
+            codec [:none :gzip]]
+      (let [nm (mman/chunk-name n codec)]
+        (is (some? (re-matches mman/chunk-re nm))
+            (str "chunk " n " (" codec ") -> " nm " must be accepted by chunk-re")))))
+  (testing "and the guard still rejects what it is for — short names, wrong
+            extensions, and anything that could escape the dump directory"
+    (doseq [bad ["datoms-1.cbor" "datoms-00001.cbor" "datoms-000001.txt"
+                 "datoms-abcdef.cbor" "../etc/passwd" "datoms-000001.cbor.zst"
+                 "/abs/datoms-000001.cbor" "datoms-000001.cbor.gz.gz"]]
+      (is (nil? (re-matches mman/chunk-re bad))
+          (str bad " must be rejected")))))

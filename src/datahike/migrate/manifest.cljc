@@ -358,8 +358,19 @@
 (def chunk-re
   "A chunk file name. The optional suffix is the compression codec's, so a dump
    directory says what it holds — `datoms-000001.cbor.gz` is a gzip file to every
-   tool on the machine."
-  #"^datoms-\d{6}\.cbor(\.gz)?$")
+   tool on the machine.
+
+   SIX OR MORE digits, not exactly six. `chunk-name` pads to six and then lets
+   the number grow, so chunk 1000000 is `datoms-1000000.cbor` — which this
+   rejected while the writer happily produced it. Export succeeded and import
+   failed on its own output, with \"Illegal chunk file name in manifest\".
+   Unreachable at the default `:chunk-size` (it would need 10^12 datoms) but
+   `:chunk-size` is a caller option, and a small one reaches it.
+
+   Do not sort chunk files by name past that point — `datoms-1000000` orders
+   before `datoms-999999` lexicographically. Nothing does: the manifest's
+   `:chunks` is an ordered vector and that is the authority."
+  #"^datoms-\d{6,}\.cbor(\.gz)?$")
 
 (def chunk-name
   "One spelling for both media — see `datahike.migrate.store/chunk-name`."
