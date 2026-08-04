@@ -151,24 +151,101 @@
   [time-point]
   (complement (as-of-pred time-point)))
 
+(defn- live-now?
+  "Is this history entry actually the LIVE datom, merged in from the current
+   tree rather than read out of a temporal one?
+
+   `distinct-datoms` unions the current datoms of card-many and `:db/noHistory`
+   attributes into the history stream, and after that merge nothing distinguishes
+   a superseded assertion from a live one — they are both `[e a v tx true]`. The
+   current tree answers it: if it holds this exact `[e a v]` at this exact `tx`,
+   this entry IS the live datom.
+
+   `=` on Datoms compares `[e a v]` only, so the tx has to be compared
+   explicitly."
+  [db ^Datom d]
+  (when-let [^Datom c (first (dbi/search db [(.-e d) (.-a d) (.-v d)]))]
+    (= (datom-tx c) (datom-tx d))))
+
 (defn assemble-datoms-xform [db]
   (mapcat
    (fn [[[_ a] datoms]]
      (if (dbu/multival? db a)
-       (->> datoms
-            (sort-by datom-tx)
-            (reduce (fn [current-datoms ^Datom datom]
-                      (if (datom-added datom)
-                        (assoc current-datoms (.-v datom) datom)
-                        (dissoc current-datoms (.-v datom))))
-                    {})
-            vals)
+       ;; Sorted so that within one transaction ASSERTIONS are folded before
+       ;; RETRACTIONS, which makes the retraction win on a tie. A temporal
+       ;; assertion and retraction sharing a tx can only mean the datom was
+       ;; created and removed inside that transaction, so absent is right.
+       ;;
+       ;; That alone would be wrong for the other order — retract-then-assert,
+       ;; where the re-assertion is live and must survive. It is not in the
+       ;; temporal tree at all; it arrives from the current tree via the merge,
+       ;; and `live-now?` is what tells the two apart. Only values the fold
+       ;; dropped are probed, so the lookup is paid on retracted values only.
+       ;; Sorted so that within one transaction ASSERTIONS fold before
+       ;; RETRACTIONS, which makes the retraction win on a tie. A temporal
+       ;; assertion and retraction sharing a tx can only mean the datom was
+       ;; created and removed inside that transaction, so absent is right.
+       ;;
+       ;; That alone would be wrong for the other order — retract-then-assert,
+       ;; where the re-assertion is live and must survive. It is not in the
+       ;; temporal tree at all; it arrives from the current tree via the merge,
+       ;; and only `live-now?` tells the two apart.
+       ;;
+       ;; The fold itself reports which values need that probe: a `dissoc` whose
+       ;; victim was asserted at the SAME tx is precisely the ambiguous case.
+       ;; Anything else the fold already resolves, so an ordinary retraction
+       ;; costs no lookup. Written with an explicit comparator and no grouping
+       ;; because both allocate per datom on a hot path — with `juxt` keys and a
+       ;; `group-by` this scan measured 30ms against a 19ms baseline.
+       (let [ordered (sort (fn [^Datom a ^Datom b]
+                             (let [c (compare (datom-tx a) (datom-tx b))]
+                               (if (zero? c)
+                                 (compare (if (datom-added a) 0 1)
+                                          (if (datom-added b) 0 1))
+                                 c)))
+                           datoms)
+             ;; a volatile rather than a tuple accumulator: the fold runs per
+             ;; datom and a `[cur amb]` pair allocated on every step, which cost
+             ;; more than the probe it was there to avoid
+             ambiguous (volatile! nil)
+             surviving (reduce (fn [cur ^Datom d]
+                                 (if (datom-added d)
+                                   (assoc cur (.-v d) d)
+                                   (let [^Datom prev (get cur (.-v d))]
+                                     (when (and prev (= (datom-tx prev) (datom-tx d)))
+                                       (vswap! ambiguous conj prev))
+                                     (dissoc cur (.-v d)))))
+                               {}
+                               ordered)
+             ambiguous @ambiguous
+             revived (when ambiguous
+                       (reduce (fn [m ^Datom d]
+                                 (if (live-now? db d) (assoc m (.-v d) d) m))
+                               {} ambiguous))]
+         (vals (if revived (merge surviving revived) surviving)))
+       ;; Cardinality-one, same rule but PER VALUE. The group is keyed by
+       ;; [e a], so a transaction that retracts one value and asserts another
+       ;; — `[[:db/retract e :aka "Tupen"] [:db/add e :aka "Devil"]]` — has both
+       ;; a retraction and an assertion at the latest tx, and only the retracted
+       ;; VALUE may be suppressed by it.
        (let [last-ea-tx (apply max (map datom-tx datoms))
-             current-ea-datom (first (filter #(and (datom-added %) (= last-ea-tx (datom-tx %)))
-                                             datoms))]
-         (if current-ea-datom
-           [current-ea-datom]
-           []))))))
+             at-last (filter #(= last-ea-tx (datom-tx %)) datoms)
+             retracted-at-last (set (map #(.-v ^Datom %) (remove datom-added at-last)))
+             added-at-last (filter datom-added at-last)
+             ;; an assertion whose own value was not retracted in the same tx
+             survivor (first (remove #(contains? retracted-at-last (.-v ^Datom %))
+                                     added-at-last))]
+         (if survivor
+           [survivor]
+           ;; No assertion survived the tx on its own, so every one of them was
+           ;; also retracted in it. Such a value is still live if the retraction
+           ;; came FIRST — retract-then-assert — and only the current indices can
+           ;; say. Deliberately inside this branch: as a `let` binding it ran on
+           ;; every cardinality-one group, one index probe per group, even though
+           ;; a survivor makes the answer irrelevant. That is the common case.
+           (if-let [live (first (filter #(live-now? db %) added-at-last))]
+             [live]
+             [])))))))
 
 (defn temporal-datom-filter [datoms pred db]
   (let [filtered-tx-ids (dbu/filter-txInstant datoms pred db)]
