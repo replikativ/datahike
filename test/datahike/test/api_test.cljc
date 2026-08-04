@@ -18,7 +18,11 @@
              :keep-history? false
              :schema-flexibility :read}
         conn (utils/setup-db cfg)
-        dvec #(vector (:e %) (:a %) (:v %))]
+        dvec #(vector (:e %) (:a %) (:v %))
+        ;; Carries `added` too. Used where a cardinality-one write supersedes a
+        ;; previous value: the retraction is now reported alongside the
+        ;; assertion, and `dvec` alone cannot tell the two apart.
+        dvec+ #(vector (:e %) (:a %) (:v %) (:added %))]
     ;; add a single datom to an existing entity (1)
     (is (= [[1 :name "Ivan"]]
            (map dvec (:tx-data (d/transact conn {:tx-data [[:db/add 1 :name "Ivan"]]})))))
@@ -58,11 +62,14 @@
 
     ;; create an entity and set multiple attributes (in a single transaction
     ;; equal tempids will be replaced with the same unused yet entid)
-    (is (= '([7 :name "Ivan"] [7 :likes "fries"] [7 :likes "pizza"] [7 :friend 296])
-           (map dvec (:tx-data (d/transact conn {:tx-data [[:db/add -1 :name "Ivan"]
-                                                           [:db/add -1 :likes "fries"]
-                                                           [:db/add -1 :likes "pizza"]
-                                                           [:db/add -1 :friend 296]]})))))
+    ;; `:likes` has no schema here, so it is cardinality-one: "pizza"
+    ;; supersedes "fries", and that retraction is part of the report.
+    (is (= '([7 :name "Ivan" true] [7 :likes "fries" true]
+                                   [7 :likes "fries" false] [7 :likes "pizza" true] [7 :friend 296 true])
+           (map dvec+ (:tx-data (d/transact conn {:tx-data [[:db/add -1 :name "Ivan"]
+                                                            [:db/add -1 :likes "fries"]
+                                                            [:db/add -1 :likes "pizza"]
+                                                            [:db/add -1 :friend 296]]})))))
 
     ;; create an entity and set multiple attributes (alternative map form)
     (is (= '([8 :name "Ivan"] [8 :likes ["fries" "pizza"]] [8 :friend 296])
@@ -100,23 +107,25 @@
                                                             :_friend 296}]})))))
 
     ;; equivalent to
-    (is (= '([300 :name "Oleg"] [296 :friend 300])
-           (map dvec (:tx-data (d/transact conn {:tx-data [{:db/id  -1, :name   "Oleg"}
-                                                           {:db/id 296, :friend -1}]})))))
+    (is (= '([300 :name "Oleg" true] [296 :friend 299 false] [296 :friend 300 true])
+           (map dvec+ (:tx-data (d/transact conn {:tx-data [{:db/id  -1, :name   "Oleg"}
+                                                            {:db/id 296, :friend -1}]})))))
 
     ;; deprecated api
-    (is (= '([301 :name "Oleg"] [301 :likes "pie"] [301 :likes "dates"] [301 :friend 297])
-           (map dvec (:tx-data (d/transact conn [[:db/add -1 :name "Oleg"]
-                                                 [:db/add -1 :likes "pie"]
-                                                 [:db/add -1 :likes "dates"]
-                                                 [:db/add -1 :friend 297]])))))
+    (is (= '([301 :name "Oleg" true] [301 :likes "pie" true]
+                                     [301 :likes "pie" false] [301 :likes "dates" true] [301 :friend 297 true])
+           (map dvec+ (:tx-data (d/transact conn [[:db/add -1 :name "Oleg"]
+                                                  [:db/add -1 :likes "pie"]
+                                                  [:db/add -1 :likes "dates"]
+                                                  [:db/add -1 :friend 297]])))))
 
     ;; lazy sequence
-    (is (= '([302 :name "Oleg"] [302 :likes "pie"] [302 :likes "dates"] [302 :friend 297])
-           (map dvec (:tx-data (d/transact conn (take 4 [[:db/add -1 :name "Oleg"]
-                                                         [:db/add -1 :likes "pie"]
-                                                         [:db/add -1 :likes "dates"]
-                                                         [:db/add -1 :friend 297]]))))))
+    (is (= '([302 :name "Oleg" true] [302 :likes "pie" true]
+                                     [302 :likes "pie" false] [302 :likes "dates" true] [302 :friend 297 true])
+           (map dvec+ (:tx-data (d/transact conn (take 4 [[:db/add -1 :name "Oleg"]
+                                                          [:db/add -1 :likes "pie"]
+                                                          [:db/add -1 :likes "dates"]
+                                                          [:db/add -1 :friend 297]]))))))
 
     ;; incorrect arguments
     (is (thrown? clojure.lang.ExceptionInfo (d/transact conn nil)))
@@ -147,7 +156,11 @@
              :keep-history? false
              :schema-flexibility :read}
         conn (utils/setup-db cfg)
-        dvec #(vector (:e %) (:a %) (:v %))]
+        dvec #(vector (:e %) (:a %) (:v %))
+        ;; Carries `added` too. Used where a cardinality-one write supersedes a
+        ;; previous value: the retraction is now reported alongside the
+        ;; assertion, and `dvec` alone cannot tell the two apart.
+        dvec+ #(vector (:e %) (:a %) (:v %) (:added %))]
     (is (d/transact conn [{:db/id 1
                            :name "Ivan"
                            :likes :pizza
@@ -266,7 +279,11 @@
              :keep-history? false
              :schema-flexibility :read}
         conn (utils/setup-db cfg)
-        dvec #(vector (:e %) (:a %) (:v %))]
+        dvec #(vector (:e %) (:a %) (:v %))
+        ;; Carries `added` too. Used where a cardinality-one write supersedes a
+        ;; previous value: the retraction is now reported alongside the
+        ;; assertion, and `dvec` alone cannot tell the two apart.
+        dvec+ #(vector (:e %) (:a %) (:v %) (:added %))]
     ;; add a single datom to an existing entity (1)
     (let [res (d/with @conn {:tx-data [[:db/add 1 :name "Ivan"]]})]
       (is (= #{:db/txInstant}
@@ -422,7 +439,11 @@
                           {:db/id 5 :likes "candy"}
                           {:db/id 5 :likes "pie"}
                           {:db/id 5 :likes "pizza"}])
-        dvec #(vector (:e %) (:a %) (:v %))]
+        dvec #(vector (:e %) (:a %) (:v %))
+        ;; Carries `added` too. Used where a cardinality-one write supersedes a
+        ;; previous value: the retraction is now reported alongside the
+        ;; assertion, and `dvec` alone cannot tell the two apart.
+        dvec+ #(vector (:e %) (:a %) (:v %) (:added %))]
 
     ;; find all datoms for entity id == 1 (any attrs and values)
     ;; sort by attribute, then value
