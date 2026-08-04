@@ -211,7 +211,7 @@
   (-insert [^PersistentSortedSet pset datom index-type _op-count]
     (insert pset datom index-type))
   (-temporal-insert [^PersistentSortedSet pset datom index-type _op-count]
-    (psset/conj pset datom (index-type->cmp-quick index-type)))
+    (temporal-insert pset datom index-type))
   (-upsert [^PersistentSortedSet pset datom index-type _op-count old-datom]
     (upsert pset datom index-type old-datom))
   (-temporal-upsert [^PersistentSortedSet pset datom index-type _op-count old-val]
