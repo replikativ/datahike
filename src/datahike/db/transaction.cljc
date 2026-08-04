@@ -357,25 +357,31 @@
    Per bitemporal-v1, `tx-report` also carries `:tx-meta` — the
    tx-entity's `:db/txInstant` / `:db.valid/from` / `:db.valid/to`
    attrs — so adapters that implement `IValidTimeAware` can persist
-   the tx's valid-time window alongside their content keys."
-  [db a-ident ^Datom datom added?]
-  (let [sec-idx-map (get-in db [:rschema :db.secondary/index a-ident])]
-    (if (seq sec-idx-map)
-      (let [tx-report (cond-> {:datom datom :added? added?}
-                        true (assoc :tx-meta (tx-meta-for-secondary db datom)))]
-        (reduce (fn [db' idx-ident]
-                  (let [status (get-in db' [:schema idx-ident :db.secondary/status])]
+   the tx's valid-time window alongside their content keys.
+
+   `idx-pred`, when given, restricts delivery to the covering indices it
+   accepts — see `notify-vt-aware-indices`."
+  ([db a-ident ^Datom datom added?] (update-secondary-indices db a-ident datom added? any?))
+  ([db a-ident ^Datom datom added? idx-pred]
+   (let [sec-idx-map (get-in db [:rschema :db.secondary/index a-ident])]
+     (if (seq sec-idx-map)
+       (let [tx-report (cond-> {:datom datom :added? added?}
+                         true (assoc :tx-meta (tx-meta-for-secondary db datom)))]
+         (reduce (fn [db' idx-ident]
+                   (let [status (get-in db' [:schema idx-ident :db.secondary/status])]
                     ;; Skip disabled indices — they are no longer maintained
-                    (if (= :disabled status)
-                      db'
-                      (if-let [idx (get-in db' [:secondary-indices idx-ident])]
-                        (if (satisfies? sec/ITransientSecondaryIndex idx)
-                          (do (sec/-transact! idx tx-report) db')
-                          (assoc-in db' [:secondary-indices idx-ident]
-                                    (sec/-transact idx tx-report)))
-                        db'))))
-                db sec-idx-map))
-      db)))
+                     (if (= :disabled status)
+                       db'
+                       (if-let [idx (get-in db' [:secondary-indices idx-ident])]
+                         (cond
+                           (not (idx-pred idx)) db'
+                           (satisfies? sec/ITransientSecondaryIndex idx)
+                           (do (sec/-transact! idx tx-report) db')
+                           :else (assoc-in db' [:secondary-indices idx-ident]
+                                           (sec/-transact idx tx-report)))
+                         db'))))
+                 db sec-idx-map))
+       db))))
 
 (defn secondary-only-hash
   "Content hash (string) of `v`, via hasch — the value the primary indexes hold
@@ -395,60 +401,51 @@
     (dd/datom (.-e datom) (.-a datom) (secondary-only-hash (.-v datom)) (.-tx datom) (datom-added datom))
     datom))
 
-(defn- with-datom
-  "`noop?` is `transact-report`'s `value-present?` verdict, threaded rather than
-   recomputed: the indexes are idempotent for such an assertion, but the state
-   DERIVED alongside them was not, so a re-assertion moved it while the index
-   stood still. Worst of these is `update-schema`, which `conj`s into the
-   many-valued schema attributes — re-transacting an identical entity spec grew
-   `:db.entity/attrs` from [:name] to [:name :name], and the THIRD such
-   transaction was then refused against the shape the second one wrote."
-  ([db ^Datom datom] (with-datom db datom false))
-  ([db ^Datom datom noop?]
-   (validate-datom db datom)
-   (let [{a-ident :ident} (dbu/attr-info db (.-a datom) :error-on-missing)
-         indexing? (dbu/indexing? db a-ident)
-         schema? (or (ds/schema-attr? a-ident) (ds/entity-spec-attr? a-ident)
-                     (ds/secondary-index-attr? a-ident))
-         keep-history? (and (dbi/-keep-history? db) (not (dbu/no-history? db a-ident)))
-         op-count (:op-count db)
-         has-secondary? (seq (get-in db [:rschema :db.secondary/index a-ident]))
-         secondary-only? (dbu/secondary-only? db a-ident)
+(defn- with-datom [db ^Datom datom]
+  (validate-datom db datom)
+  (let [{a-ident :ident} (dbu/attr-info db (.-a datom) :error-on-missing)
+        indexing? (dbu/indexing? db a-ident)
+        schema? (or (ds/schema-attr? a-ident) (ds/entity-spec-attr? a-ident)
+                    (ds/secondary-index-attr? a-ident))
+        keep-history? (and (dbi/-keep-history? db) (not (dbu/no-history? db a-ident)))
+        op-count (:op-count db)
+        has-secondary? (seq (get-in db [:rschema :db.secondary/index a-ident]))
+        secondary-only? (dbu/secondary-only? db a-ident)
         ;; primary indexes hold the content hash for :db.secondary/only attrs;
         ;; the full value goes only to the secondary index (`datom` below).
-         prim ^Datom (project-primary secondary-only? datom)]
-     (when (and secondary-only? (datom-added datom) (not has-secondary?))
-       (log/raise "Attribute " a-ident " is :db.secondary/only but no secondary index covers it — its value would be lost"
-                  {:error :transact/secondary-only-uncovered :attribute a-ident :datom datom}))
-     (if (datom-added datom)
-       (cond-> db
-         true (update-in [:eavt] #(di/-insert % prim :eavt op-count))
-         true (update-in [:aevt] #(di/-insert % prim :aevt op-count))
-         indexing? (update-in [:avet] #(di/-insert % prim :avet op-count))
-         has-secondary? (update-secondary-indices a-ident datom true)
-         true (advance-max-eid (.-e datom))
-         (not noop?) (update :hash + (hash prim))
-         (and schema? (not noop?)) (-> (update-schema datom)
-                                       update-rschema)
-         true (update :op-count inc))
+        prim ^Datom (project-primary secondary-only? datom)]
+    (when (and secondary-only? (datom-added datom) (not has-secondary?))
+      (log/raise "Attribute " a-ident " is :db.secondary/only but no secondary index covers it — its value would be lost"
+                 {:error :transact/secondary-only-uncovered :attribute a-ident :datom datom}))
+    (if (datom-added datom)
+      (cond-> db
+        true (update-in [:eavt] #(di/-insert % prim :eavt op-count))
+        true (update-in [:aevt] #(di/-insert % prim :aevt op-count))
+        indexing? (update-in [:avet] #(di/-insert % prim :avet op-count))
+        has-secondary? (update-secondary-indices a-ident datom true)
+        true (advance-max-eid (.-e datom))
+        true (update :hash + (hash prim))
+        schema? (-> (update-schema datom)
+                    update-rschema)
+        true (update :op-count inc))
 
-       (if-some [removing ^Datom (first (dbi/search db [(.-e prim) (.-a prim) (.-v prim)]))]
-         (cond-> db
-           true (update-in [:eavt] #(di/-remove % removing :eavt op-count))
-           true (update-in [:aevt] #(di/-remove % removing :aevt op-count))
-           indexing? (update-in [:avet] #(di/-remove % removing :avet op-count))
-           has-secondary? (update-secondary-indices a-ident datom false)
-           true (update :hash - (hash removing))
-           schema? (-> (remove-schema datom) update-rschema)
-           keep-history? (update-in [:temporal-eavt] #(di/-temporal-insert % removing :eavt op-count))
-           keep-history? (update-in [:temporal-eavt] #(di/-temporal-insert % prim :eavt (inc op-count)))
-           keep-history? (update-in [:temporal-aevt] #(di/-temporal-insert % removing :aevt op-count))
-           keep-history? (update-in [:temporal-aevt] #(di/-temporal-insert % prim :aevt (inc op-count)))
-           keep-history? (update :hash + (hash prim))
-           (and keep-history? indexing?) (update-in [:temporal-avet] #(di/-temporal-insert % removing :avet op-count))
-           (and keep-history? indexing?) (update-in [:temporal-avet] #(di/-temporal-insert % prim :avet (inc op-count)))
-           true (update :op-count + (if (or keep-history? indexing?) 2 1)))
-         db)))))
+      (if-some [removing ^Datom (first (dbi/search db [(.-e prim) (.-a prim) (.-v prim)]))]
+        (cond-> db
+          true (update-in [:eavt] #(di/-remove % removing :eavt op-count))
+          true (update-in [:aevt] #(di/-remove % removing :aevt op-count))
+          indexing? (update-in [:avet] #(di/-remove % removing :avet op-count))
+          has-secondary? (update-secondary-indices a-ident datom false)
+          true (update :hash - (hash removing))
+          schema? (-> (remove-schema datom) update-rschema)
+          keep-history? (update-in [:temporal-eavt] #(di/-temporal-insert % removing :eavt op-count))
+          keep-history? (update-in [:temporal-eavt] #(di/-temporal-insert % prim :eavt (inc op-count)))
+          keep-history? (update-in [:temporal-aevt] #(di/-temporal-insert % removing :aevt op-count))
+          keep-history? (update-in [:temporal-aevt] #(di/-temporal-insert % prim :aevt (inc op-count)))
+          keep-history? (update :hash + (hash prim))
+          (and keep-history? indexing?) (update-in [:temporal-avet] #(di/-temporal-insert % removing :avet op-count))
+          (and keep-history? indexing?) (update-in [:temporal-avet] #(di/-temporal-insert % prim :avet (inc op-count)))
+          true (update :op-count + (if (or keep-history? indexing?) 2 1)))
+        db))))
 
 (defn- with-temporal-datom [db ^Datom datom]
   (let [{a-ident :ident} (dbu/attr-info db (.-a datom) :error-on-missing)
@@ -501,12 +498,23 @@
                     :attribute (.-a datom)
                     :datom     datom})))))
 
+(defn- current-datom-for-ea
+  "The datom the current EAVT index holds for `[e a]`, or nil. Cardinality-one,
+   so there is at most one."
+  [db e a]
+  (first (di/-slice (:eavt db)
+                    (dd/datom e a nil tx0)
+                    (dd/datom e a nil txmax)
+                    :eavt)))
+
 (defn- with-datom-upsert
-  "Takes `noop?` for arity parity with `with-datom` — both are used as
-   `update-fn`. It is unused here: the cardinality-one no-op is already handled
-   by the `:hash` clause below, and `-upsert` is idempotent on the indexes."
-  ([db ^Datom datom] (with-datom-upsert db datom false))
-  ([db ^Datom datom _noop?]
+  "`old-datom` is the current `[e a]` datom. `transact-add` has already looked it
+   up to decide whether this assertion is redundant or a supersession, so it is
+   passed in rather than found again — the same lookup used to happen up to three
+   times per cardinality-one write."
+  ([db ^Datom datom]
+   (with-datom-upsert db datom (current-datom-for-ea db (.-e datom) (.-a datom))))
+  ([db ^Datom datom old-datom]
    (validate-datom-upsert db datom)
    (let [indexing?     (dbu/indexing? db (.-a datom))
          {a-ident :ident} (dbu/attr-info db (.-a datom) :error-on-missing)
@@ -515,10 +523,6 @@
          keep-history? (and (dbi/-keep-history? db) (not (dbu/no-history? db a-ident))
                             (not= :db/txInstant a-ident))
          op-count      (:op-count db)
-         old-datom (first (di/-slice (:eavt db)
-                                     (dd/datom (.-e datom) (.-a datom) nil (.-tx datom))
-                                     (dd/datom (.-e datom) (.-a datom) nil (.-tx datom))
-                                     :eavt))
          has-secondary? (seq (get-in db [:rschema :db.secondary/index a-ident]))
          secondary-only? (dbu/secondary-only? db a-ident)
         ;; primary indexes hold the content hash for :db.secondary/only attrs;
@@ -574,37 +578,57 @@
        schema? (-> (update-schema datom)
                    update-rschema)))))
 
-(defn- value-present?
-  "True when the CURRENT indexes already hold `datom`'s exact [e a v] — i.e. this
-   assertion re-states a value the entity already has (cardinality-one: v IS the
-   current value; cardinality-many: this value already exists). Probes EAVT with
-   `di/-slice`, so the value is compared through the index's own datom comparator
-   — content-correct for :db.type/bytes and tuple values, where Clojure `=` would
-   miss byte-array content equality. For :db.secondary/only attrs the primary
-   index holds a content hash, so we probe the same primary projection."
-  [db ^Datom datom]
-  (let [{a-ident :ident} (dbu/attr-info db (.-a datom) :error-on-missing)
-        prim ^Datom (project-primary (dbu/secondary-only? db a-ident) datom)
-        e (.-e prim) a (.-a prim) v (.-v prim)]
-    (some? (first (di/-slice (:eavt db)
-                             (dd/datom e a v tx0)
-                             (dd/datom e a v txmax)
-                             :eavt)))))
+(defn- vt-mode-attr?
+  "True when a covering secondary index is in valid-time (SCD2) mode — i.e. keys
+   on more than `[e a v]`.
+
+   For such an attribute a re-assertion is NOT redundant: an `IValidTimeAware`
+   adapter stores SCD2 rows keyed by (entity, valid-time window), and
+   `update-secondary-indices` hands it the in-progress tx's `:tx-meta`. The same
+   `[e a v]` under a new `:db.valid/from` is a new version — the row it opens
+   has to carry every column, including the ones whose values did not change.
+
+   Reproducing that from the no-op path is not merely a matter of re-emitting
+   the events: the stratum adapter builds each new row solely from the
+   assertions it receives during the transaction (`pending-adds`, stratum.clj),
+   with no merge from the previous row, so a suppressed restatement leaves that
+   column nil. The full write runs for these attributes and is reported — which
+   is the same rule as everywhere else, since for them the write really happens.
+
+   The question is about how the index STORES, so it is answered from the
+   schema. `IValidTimeAware` is a different property — a query capability, and
+   an optional one: `secondary.cljc` says non-implementers stay correct via a
+   generic post-hoc filter, the protocol just lets an adapter push `valid-at`
+   into its own plan. `sec/vt-aware?` would be wrong here in both directions.
+   `StratumIndex` implements the protocol unconditionally and tests
+   `(vt-mode? config)` inside `-search-at-vt`, so every stratum index satisfies
+   it whether or not it keeps windows — excluding attributes whose rows are
+   plain current state and whose re-assertions really are redundant. And
+   mid-transaction `:secondary-indices` holds a `TransientStratumIndex`, which
+   does not implement the protocol at all, so the probe would answer false
+   exactly when it is asked."
+  [db a-ident]
+  (boolean
+   (some #(get-in db [:schema % :db.secondary/config :valid-time])
+         (get-in db [:rschema :db.secondary/index a-ident]))))
 
 (defn- transact-report
   ([report datom] (transact-report report datom false))
-  ([report datom upsert?]
+  ([report datom upsert?] (transact-report report datom upsert? ::not-looked-up))
+  ;; `old` is the current `[e a]` datom when the caller already has it — see
+  ;; `with-datom-upsert`. `::not-looked-up` is distinct from `nil`, which is the
+  ;; legitimate answer "the entity has no value for this attribute".
+  ([report datom upsert? old]
    (let [db      (:db-after report)
          a       (:a datom)
-         update-fn (if upsert? with-datom-upsert with-datom)
-         ;; Issue #457: an assertion that re-states an already-present value must
-         ;; not appear in :tx-data. Decided BEFORE the write, but the write itself
-         ;; still runs — so secondary indices, history and composite-tuple queueing
-         ;; behave exactly as before; only the :tx-data entry is suppressed.
-         noop?   (and (datom-added datom) (value-present? db datom))
-         report' (cond-> report
-                   true        (update-in [:db-after] update-fn datom noop?)
-                   (not noop?) (update-in [:tx-data] conj datom))]
+         write   (fn [db]
+                   (cond
+                     (not upsert?)            (with-datom db datom)
+                     (= ::not-looked-up old)  (with-datom-upsert db datom)
+                     :else                    (with-datom-upsert db datom old)))
+         report' (-> report
+                     (update-in [:db-after] write)
+                     (update-in [:tx-data] conj datom))]
      ;; ONE resolving lookup, not a resolving predicate plus a raw lookup.
      ;; `tuple-source?` resolved `a` ref→ident and answered yes; the `get` that
      ;; followed did not, so under `:attribute-refs?` (where `a` is a numeric
@@ -876,7 +900,59 @@
                       (>= ^long e ^long tx0)
                       (not= e (current-tx report)))
                  (update ::pending-vt-validation (fnil conj #{}) e))]
-    (transact-report report new-datom upsert?)))
+    ;; ONE index lookup decides all three cases, as DataScript's `transact-add`
+    ;; does. It used to take up to three per cardinality-one write — a
+    ;; `value-present?` probe, `with-datom-upsert`'s own slice for the datom it
+    ;; supersedes, and a third to build the retraction — which cost ~11% on
+    ;; overwrites, the commonest write there is. `old` is threaded into
+    ;; `with-datom-upsert` and is itself the retraction datom.
+    ;;
+    ;; Cardinality-one asks the index for whatever `[e a]` currently holds;
+    ;; cardinality-many asks for this exact `[e a v]`, since every value is its
+    ;; own datom. Both probe through `-slice`, so `:db.secondary/only` attrs are
+    ;; matched on the content hash the primary index actually stores.
+    (let [prim ^Datom (project-primary (dbu/secondary-only? db a-ident) new-datom)
+          pv (.-v prim)
+          old ^Datom (if upsert?
+                       (current-datom-for-ea db e a)
+                       (first (di/-slice (:eavt db)
+                                         (dd/datom e a pv tx0)
+                                         (dd/datom e a pv txmax)
+                                         :eavt)))
+          ;; Compared through `compare-value`, not `=`: byte, float and double
+          ;; arrays do not implement Comparable and `=` compares them by
+          ;; identity, so an unchanged blob would read as a change.
+          same-value? (and (some? old)
+                           (or (not upsert?)
+                               (zero? (dd/compare-value (.-v old) pv))))]
+      (cond
+        ;; Re-states a value the entity already holds: changes nothing anywhere
+        ;; — no primary write, no secondary-index event, no :tx-data entry.
+        ;; Datomic and DataScript both decide this here, at the operation rather
+        ;; than inside the index update, and both leave the datom's original
+        ;; `tx` alone. Deciding it further down let the write run, which re-dated
+        ;; the cardinality-one fact to the new transaction while history went on
+        ;; dating it to the original, and made cardinality-many report a datom
+        ;; that is in no index at all.
+        ;;
+        ;; `vt-mode-attr?` is the one exception, and it documents itself: under a
+        ;; bitemporal index a re-assertion in a new valid-time window is not a
+        ;; restatement.
+        (and same-value? (not (vt-mode-attr? db a-ident)))
+        report
+
+        ;; Cardinality-one over a DIFFERENT value. The supersession is a real
+        ;; retraction — `-temporal-upsert` writes it into history at this very
+        ;; tx — and datahike wrote it without reporting it, so its own history
+        ;; contradicted its own :tx-data. Reported WITHOUT changing the write:
+        ;; routing it through `with-datom` instead, as DataScript does having no
+        ;; history to keep, drops the new value's own temporal record.
+        (and upsert? (some? old))
+        (-> report
+            (update :tx-data conj (datom (.-e old) (.-a old) (.-v old) tx false))
+            (transact-report new-datom upsert? old))
+
+        :else (transact-report report new-datom upsert? old)))))
 
 (defn- transact-retract-datom
   ([report] report)
