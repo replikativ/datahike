@@ -73,7 +73,7 @@
 
 (def ^:private derived-fields
   ;; :op-count is deliberately EXCLUDED — see `op-count-diverges-but-is-inert`.
-  [:schema :rschema :max-eid :system-entities :ident-ref-map :ref-ident-map
+  [:hash :schema :rschema :max-eid :system-entities :ident-ref-map :ref-ident-map
    :secondary-indices])
 
 (defn- compare-records
