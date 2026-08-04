@@ -1145,3 +1145,86 @@
           (is (some? (get-in r [:tier0 :format])) "and reports the format it found")
           (is (pos? (get-in r [:tier1 :manifest-count]))))
         (finally (teardown conn))))))
+
+;; ---------------------------------------------------------------------------
+;; A :db.type/ref whose value names a TRANSACTION
+;;
+;; Filed as "a ref value naming a transaction gets a dangling eid". It is not
+;; that. With :keep-history? true it round-trips correctly, and with
+;; :keep-history? false the reference is dangling in the SOURCE — datahike keeps
+;; no transaction entities there, so it never resolved and the dump is faithful.
+;;
+;; What IS real is that the two export modes then disagree about what the
+;; unresolvable value BECOMES, from byte-identical records. `migrated-eid`
+;; consults `:tids` first, and a transaction enters `:tids` when it is first seen
+;; as some record's `t`. The sorted export orders by `t` ascending and a ref can
+;; only name an earlier-or-equal transaction, so the tx is always known by then.
+;; The streaming export emits schema/meta first and data in EAVT order, so a
+;; datom referencing tx T can precede every datom FROM tx T — `migrated-eid`
+;; answers nil and the "ref not added yet" branch allocates an ENTITY eid.
+;;
+;; These tests PIN that, they do not endorse it. Phase 2 (`:eids` policy) reworks
+;; the id mapping and should make a deliberate choice here — routing a tx-range
+;; value through `:tids` is the obvious candidate — at which point the second
+;; test must be updated rather than silently drifting.
+
+(defn- tx-ref-db!
+  "A database whose entity carries a ref to the transaction that created it."
+  [conn]
+  (d/transact conn [{:db/ident :name :db/valueType :db.type/string
+                     :db/cardinality :db.cardinality/one
+                     :db/unique :db.unique/identity}
+                    {:db/ident :asserted-by :db/valueType :db.type/ref
+                     :db/cardinality :db.cardinality/one}])
+  (let [tx1 (:max-tx (:db-after (d/transact conn [{:db/id -1 :name "a"}])))]
+    (d/transact conn [{:db/id [:name "a"] :asserted-by tx1}])
+    tx1))
+
+(defn- roundtrip-asserted-by [conn hist? sort?]
+  (let [path (str (System/getProperty "java.io.tmpdir") "/dh-txref-" (utils/get-time)
+                  "-" sort?)]
+    (m/export-db conn path {:history? hist? :sort? sort?})
+    (let [tgt (utils/setup-db (mem-cfg {:history? hist?}))]
+      (m/import-db tgt path {})
+      (let [db (d/db tgt)
+            v  (:v (first (d/datoms db :aevt :asserted-by)))]
+        [tgt v (some? (first (d/datoms db :eavt v :db/txInstant)))]))))
+
+(deftest a-ref-to-a-transaction-survives-when-history-is-kept
+  (testing "the transaction entity is in the dump, so the ref resolves to it —
+            in BOTH export modes. This is the property that must not regress."
+    (doseq [sort? [true false]]
+      (let [conn (utils/setup-db (mem-cfg {:history? true}))]
+        (try
+          (tx-ref-db! conn)
+          (let [[tgt v resolves?] (roundtrip-asserted-by conn true sort?)]
+            (is (>= v c/tx0) (str ":sort? " sort? " — value stays in the tx range"))
+            (is (true? resolves?)
+                (str ":sort? " sort? " — and names a transaction that exists"))
+            (teardown tgt))
+          (finally (teardown conn)))))))
+
+(deftest without-history-the-two-export-modes-disagree
+  (testing "PINNED, NOT ENDORSED — see the comment above.
+
+            :keep-history? false keeps no transaction entities, so this ref is
+            already unresolvable in the source and no import can repair it. The
+            defect is that the two modes produce DIFFERENT values for it."
+    (let [conn (utils/setup-db (mem-cfg {:history? false}))]
+      (try
+        (tx-ref-db! conn)
+        (is (nil? (first (d/datoms (d/db conn) :aevt :db/txInstant)))
+            "precondition: the source really has no transaction entities")
+        (let [[s-tgt s-v s-res] (roundtrip-asserted-by conn false true)
+              [a-tgt a-v a-res] (roundtrip-asserted-by conn false false)]
+          (is (false? s-res) "dangling either way — sorted")
+          (is (false? a-res) "dangling either way — streaming")
+          (is (>= s-v c/tx0)
+              ":sort? true keeps it in the tx range, so it still LOOKS like a
+               broken transaction reference")
+          (is (< a-v c/tx0)
+              ":sort? false rewrites it into the ENTITY range — a phantom entity
+               rather than a recognisably broken tx ref. This is the asymmetry
+               Phase 2 should resolve.")
+          (teardown s-tgt) (teardown a-tgt))
+        (finally (teardown conn))))))
