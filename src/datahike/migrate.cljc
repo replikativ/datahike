@@ -260,8 +260,10 @@
      :compression  :gzip         :gzip or :none. gzip is ~7x on a real dump and
                                 needs no dependency on any runtime; see
                                 `datahike.migrate.compress` for why not zstd.
-     :chunk-size   1000000      datoms per chunk file (50000 for store targets —
-                                a store chunk is held in memory as one value)
+     :chunk-size   100000       datoms per chunk file, and therefore the import's
+                                per-chunk memory (~2.7 MB of records). Same for
+                                both media — see `manifest/default-chunk-size`
+                                for why they were unified.
      :sort-buffer  1000000      datoms per in-memory external-sort run
      :sort?        true         false ⇒ no-scratch streaming order (see below)
      :progress-fn  nil          (fn [{:keys [phase datoms]}])
@@ -1156,7 +1158,8 @@
    Returns {:datom-count .. :tx-count .. :max-tx .. :verified? .. :errors [..]
             :recommended-heap ..}. Prints a heap warning if the current -Xmx looks
    too small for the id-remap map (see `estimate-import-memory`).
-   Refuses a non-empty target (import is not resumable — recreate and restart)."
+   Refuses a non-empty target unless `:merge? true` (above); an interrupted
+   import is not resumable either way — recreate and restart."
   ([conn source] (import-db conn source {}))
   ([conn source opts]
    (assert-sync-supported! opts)

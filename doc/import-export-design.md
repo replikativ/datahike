@@ -467,8 +467,10 @@ integration test (`test/datahike/integration_test/migrate_s3_test.clj`) round-tr
 over the **real S3 wire protocol** against Garage in docker (endpoint override +
 path-style + SigV4, via `konserve-s3`; self-skips without docker — Garage chosen
 over MinIO because it is actively maintained open source). Store chunks are held
-in memory as one value each, so the store-target `:chunk-size` defaults lower
-(50k) than the filesystem's (1M).
+in memory as one value each — which is why `:chunk-size` defaults to 100k datoms
+(~2.7 MB of records) for BOTH media rather than the 1M the filesystem exporter
+originally used. The two defaults were unified once the store medium existed;
+see `datahike.migrate.manifest/default-chunk-size`.
 
 **No-scratch streaming export (`:sort? false`).** For a container with no writable
 filesystem at all (hard read-only), export can skip the external sort entirely:
