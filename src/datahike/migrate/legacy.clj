@@ -34,6 +34,30 @@
   [v]
   (if (instance? java.time.Instant v) (java.util.Date/from v) v))
 
+(defn count-records
+  "Number of records in a legacy single-file dump, by decoding it.
+
+   Throws if `path` is not one — which is the point. A legacy dump has no
+   manifest, no chunk list and no checksums, so `manifest-of` classifies ANY
+   existing non-directory as one and synthesises a manifest with zero chunks.
+   Nothing downstream then has anything to verify, and `verify` reported
+   `{:ok? true}` for a plain text file. Reading the records is the only
+   integrity check the format admits."
+  [path]
+  (try
+    (with-open [in (io/input-stream path)]
+      (count (mcbor/decode-records in)))
+    (catch Exception e
+      ;; The decoder's complaint is about bytes ("declared count 16 needs at
+      ;; least 16 bytes but only 9 remain"), which answers a question nobody
+      ;; asked. The caller asked whether this is a dump.
+      (throw (ex-info (str "Not a datahike dump: " path
+                           ". A dump is a DIRECTORY containing manifest.edn and "
+                           "datoms-NNNNNN.cbor; a single FILE is only read as the "
+                           "legacy format, and this one does not decode as one.")
+                      {:error :import/not-a-dump :source (str path)}
+                      e)))))
+
 (defn import-db-legacy
   "Legacy import of an old flat CBOR dump via api/transact (unchanged behaviour).
 

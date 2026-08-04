@@ -1089,3 +1089,59 @@
               (is (= :migrate/bad-size (:error (ex-data e))))
               (is (= k (:option (ex-data e)))))))
         (finally (teardown conn))))))
+
+(deftest verify-refuses-things-that-are-not-dumps
+  (testing "`verify` is the call an operator makes to ask whether a backup is
+            intact, and it answered `{:ok? true}` for a plain text file.
+
+            `manifest-of` classifies ANY existing non-directory as the legacy
+            single-file format and synthesises a manifest with no chunks — so
+            there was nothing to checksum and nothing said otherwise. Directories
+            failed, but as whatever the read threw: FileNotFoundException on a
+            missing manifest.edn, `EOF while reading` on a truncated one. None of
+            those answers the question."
+    (let [base (str (System/getProperty "java.io.tmpdir") "/dh-notdump-" (utils/get-time))
+          err  (fn [f] (try (m/verify f) ::no-throw
+                            (catch clojure.lang.ExceptionInfo e (:error (ex-data e)))))]
+      (testing "a path that does not exist"
+        (is (= :import/no-such-dump (err (str base "-missing")))))
+      (testing "a plain file — this is the one that reported :ok? true"
+        (let [f (io/file (str base "-file"))]
+          (spit f "this is not a dump")
+          (is (= :import/not-a-dump (err (.getPath f))))))
+      (testing "an empty directory"
+        (let [d (io/file (str base "-empty"))]
+          (.mkdirs d)
+          (is (= :import/not-a-dump (err (.getPath d))))))
+      (testing "a directory of unrelated files"
+        (let [d (io/file (str base "-junk"))]
+          (.mkdirs d)
+          (spit (io/file d "notes.txt") "hello")
+          (is (= :import/not-a-dump (err (.getPath d))))))
+      (testing "a manifest.edn that does not parse"
+        (let [d (io/file (str base "-badedn"))]
+          (.mkdirs d)
+          (spit (io/file d "manifest.edn") "{:truncated")
+          (is (= :import/not-a-dump (err (.getPath d))))))
+      (testing "a well-formed EDN map that is not a datahike manifest — it has
+                no format marker, and was previously read as a dump with no
+                chunks, i.e. as intact"
+        (let [d (io/file (str base "-notours"))]
+          (.mkdirs d)
+          (spit (io/file d "manifest.edn") (pr-str {:chunks [] :semantic-digest {:count 0}}))
+          (is (= :import/not-a-dump (err (.getPath d)))))))))
+
+(deftest verify-still-accepts-a-real-dump
+  (testing "the guards above must not refuse the thing they are guarding"
+    (let [conn (utils/setup-db (mem-cfg {:history? true}))
+          path (str (System/getProperty "java.io.tmpdir") "/dh-realdump-" (utils/get-time))]
+      (try
+        (d/transact conn [{:db/ident :n :db/valueType :db.type/long
+                           :db/cardinality :db.cardinality/one}])
+        (d/transact conn [{:n 1} {:n 2}])
+        (m/export-db conn path {:history? true})
+        (let [r (m/verify path)]
+          (is (true? (:ok? r)))
+          (is (some? (get-in r [:tier0 :format])) "and reports the format it found")
+          (is (pos? (get-in r [:tier1 :manifest-count]))))
+        (finally (teardown conn))))))

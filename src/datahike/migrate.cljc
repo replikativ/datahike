@@ -409,7 +409,30 @@
   (let [f (str source)]
     (cond
       (fs/directory? f)
-      (let [manifest (read-manifest-map (fs/slurp-text (fs/join f "manifest.edn")))
+      ;; A directory that is not a dump used to surface as whatever the read
+      ;; happened to throw — `FileNotFoundException` on manifest.edn for an
+      ;; empty or unrelated directory, `EOF while reading` from the EDN reader
+      ;; for a truncated one. Neither says what was actually wrong, and `verify`
+      ;; is the call an operator makes to ask exactly that.
+      (let [mf (fs/join f "manifest.edn")
+            manifest (try
+                       (read-manifest-map (fs/slurp-text mf))
+                       (catch #?(:clj Exception :cljs :default) e
+                         (throw (ex-info (str "Not a datahike dump: " f
+                                              ". A dump directory contains manifest.edn and "
+                                              "datoms-NNNNNN.cbor; this one has no readable "
+                                              "manifest.edn.")
+                                         {:error :import/not-a-dump :source f}
+                                         e))))
+            _ (when-not (contains? manifest manifest-key)
+                ;; Present and parseable, but not ours — any EDN map would have
+                ;; got this far and then been treated as a dump with no chunks,
+                ;; which `verify` reported as intact.
+                (throw (ex-info (str "Not a datahike dump: " f
+                                     ". manifest.edn is missing " manifest-key
+                                     ", so it was not written by datahike's export.")
+                                {:error :import/not-a-dump :source f
+                                 :manifest-keys (vec (sort (keys manifest)))})))
             files    (mapv #(validate-chunk-file f (:file %)) (:chunks manifest))]
         {:manifest manifest :legacy? false :files files})
 
@@ -1334,7 +1357,7 @@
    tier2 = multiset digest over `[a v op]` + ref-topology counts, tier3 = sampled
    structural diff of unique entities. `source` may be a path or a konserve store."
   ([source]
-   (let [{:keys [manifest]}
+   (let [{:keys [manifest legacy-count]}
          (if (mstore/store-target? source)
            (let [m (mstore/open source)]
              (try
@@ -1353,11 +1376,27 @@
                  (mstore/reduce-records m manifest (fn [acc _] acc) nil)
                  {:manifest manifest})
                (finally (mstore/close m))))
-           (open-dump source))]
+           (let [dump (open-dump source)]
+             (if (:legacy? dump)
+               ;; Nothing above has looked at this file. `manifest-of` classifies
+               ;; ANY existing non-directory as the legacy single-file format and
+               ;; synthesises a manifest with no chunks, so `open-dump` has no
+               ;; checksums to verify and the report below said `{:ok? true}` for
+               ;; a plain text file — from the one call an operator makes to ask
+               ;; whether a backup is intact. Decoding it is the only check the
+               ;; format admits: it carries no manifest, no chunk list, no hashes.
+               {:manifest (:manifest dump)
+                :legacy-count #?(:clj (mlegacy/count-records (str source))
+                                 :cljs (throw (ex-info
+                                               (str "This is a legacy single-file dump, readable only "
+                                                    "on the JVM — it can only have been written by an "
+                                                    "old JVM datahike.")
+                                               {:error :import/legacy-not-portable})))}
+               {:manifest (:manifest dump)})))]
      (let [blobs (verify-blobs manifest source)]
        {:ok? (:ok? blobs)
         :tier0 {:checksums :ok :format (get manifest manifest-key)}
-        :tier1 {:manifest-count (:count (:semantic-digest manifest))}
+        :tier1 {:manifest-count (or (:count (:semantic-digest manifest)) legacy-count)}
         :blobs blobs})))
   ([conn-or-db source]
    (let [db    (->db conn-or-db)]
