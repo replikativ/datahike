@@ -89,9 +89,9 @@
            (run-import conn {:expected-count 999} {} (chunks-of rs 10) {:sync? true})))
       (teardown conn))))
 
-(deftest the-translate-hook-works-on-a-non-dump-source
+(deftest the-xform-hook-works-on-a-non-dump-source
   (testing "filtering is the same operation for any source. Dropping an
-            attribute is `:translate` returning nil, and the dropped records are
+            attribute is a `remove` in the `:xform`, and the dropped records are
             subtracted from the expected count so the drop is not reported as
             corruption."
     (let [conn (fresh-conn)
@@ -103,9 +103,8 @@
                           {}
                           (chunks-of rs 25)
                           {:sync? true
-                           :translate (fn [[_ a _ _ _ :as r]]
-                                        (when-not (= a :secret) r))})]
-      (is (true? (:translated? rep)))
+                           :xform (remove (fn [[_ a _ _ _]] (= a :secret)))})]
+      (is (true? (:transformed? rep)))
       (is (= 100 (:dropped rep)) "every :secret record was dropped")
       (is (= 100 (:datom-count rep)) "and only the kept ones landed")
       (is (true? (:verified? rep))

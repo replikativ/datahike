@@ -367,3 +367,51 @@
             "with identical history, datom for datom")
         (teardown s-tgt) (teardown a-tgt))
       (teardown src))))
+
+(deftest an-xform-spans-chunks-in-async-mode
+  (testing "`:xform` is a transducer over records, and ONE instance runs for the
+            whole import. That matters twice over here.
+
+            Correctness: a transducer applied per chunk resets its state at every
+            boundary, and chunk boundaries are an artefact of how the dump was
+            written. With `:chunk-size 7` a per-chunk `(take 25)` would take 25
+            FROM EACH CHUNK — i.e. everything. Only one instance spanning the
+            stream yields 25.
+
+            Async: the transform sits between two awaits — the chunk read and the
+            batch flush — so it must not park and must not be inside a closure the
+            `go` state machine cannot reach. That is the trap this namespace
+            exists for, and a stateful xform is the shape most likely to hit it."
+    (let [src (utils/setup-db (mem-cfg))]
+      (d/transact src [{:db/ident :n :db/valueType :db.type/long
+                        :db/cardinality :db.cardinality/one}])
+      (doseq [b (partition-all 20 (range 60))]
+        (d/transact src (vec (for [i b] {:db/id (+ 100 i) :n i}))))
+      (let [path (str (System/getProperty "java.io.tmpdir") "/dh-xf-async-" (utils/get-time))
+            man  (take-result (m/export-db src path {:history? true :sync? false
+                                                     :chunk-size 7}))
+            total (fn [opts]
+                    (let [tgt (utils/setup-db (mem-cfg))]
+                      (take-result (m/import-db tgt path (merge {:sync? false :verify? false} opts)))
+                      (let [n (count (d/datoms @tgt :eavt))] (teardown tgt) n)))]
+        (is (< 1 (count (:chunks man))) "several chunks, so the xform must span them")
+        (let [baseline (total {})]
+          (is (< 25 baseline) "precondition: more datoms than the take limit")
+          (testing "stateful (take 25) across chunks, under :sync? false"
+            (is (= 25 (total {:xform (take 25)}))))
+          (testing "and a stateless xform still filters"
+            (is (= (- baseline 30)
+                   (total {:xform (remove (fn [[_ a v]] (and (= a :n) (odd? v))))}))
+                "the 30 odd :n datoms are gone")))
+        (testing "the report says the records were transformed, and counts the net removal"
+          (let [tgt (utils/setup-db (mem-cfg))
+                rep (take-result (m/import-db tgt path
+                                              {:sync? false
+                                               :xform (remove (fn [[_ a v]]
+                                                                (and (= a :n) (odd? v))))}))]
+            (is (true? (:transformed? rep)))
+            (is (= 30 (:dropped rep)))
+            (is (true? (:verified? rep))
+                "verification subtracts the drops rather than reporting corruption")
+            (teardown tgt))))
+      (teardown src))))

@@ -848,6 +848,49 @@
    :expected-count (:count (:semantic-digest manifest))
    :max-tx         (:max-tx (:stats manifest))})
 
+(defn- dangling-refs
+  "Ref values in `db` that name an entity holding no datoms.
+
+   A POST-PASS over the target, not bookkeeping during the import, and that is a
+   deliberate trade. Collecting \"every eid referenced\" and \"every eid asserted\"
+   as records stream past is O(entities) in memory — the same term
+   `estimate-import-memory` already warns about for the id map, and the reason
+   the `:eids` policy went to trouble to make `:offset`/`:preserve` functions.
+   This walks the ref datoms the import produced and probes each value instead:
+   bounded memory, one index probe per ref.
+
+   It is therefore OPT-IN. It costs a pass proportional to the ref count, and an
+   import that does not ask should not pay for it.
+
+   A dangling ref is NOT necessarily corruption. It is normal for a filtered
+   import — an `:xform` that drops the entities being pointed at leaves the
+   pointers behind, and the caller may well intend that. It is also what a wrong
+   `:eids` mapping produces, which is the case worth catching. So this reports;
+   it never refuses.
+
+   `sample` bounds what is carried back, because a mapping that is wrong is
+   usually wrong for everything and nobody wants a million eids in a report."
+  [db sample]
+  (let [ref-attrs (into #{} (keep (fn [[a m]]
+                                    (when (and (keyword? a)
+                                               (= :db.type/ref (:db/valueType m)))
+                                      a)))
+                        (:schema db))
+        exists? (fn [e] (boolean (seq (dbi/datoms db :eavt [e]))))]
+    (reduce (fn [acc a]
+              (reduce (fn [acc dm]
+                        (let [v (:v dm)]
+                          (if (exists? v)
+                            acc
+                            (-> acc
+                                (update :count inc)
+                                (cond-> (< (count (:sample acc)) sample)
+                                  (update :sample conj [(:e dm) a v]))))))
+                      acc
+                      (dbi/datoms db :aevt [a])))
+            {:count 0 :sample []}
+            ref-attrs)))
+
 (defn- run-import
   "Medium-agnostic import core.
    `chunk-src` yields the dump's records a CHUNK at a time:
@@ -890,7 +933,7 @@
   (let [opts     (merge {:batch-size default-batch-size :verify? true
                          :on-error :abort :finalize? true :sync? true} opts)
         progress (or (:progress-fn opts) (constantly nil))
-        translate (:translate opts)
+        xform    (:xform opts)
         batch-size (:batch-size opts)
         on-error (:on-error opts)]
     (async+sync
@@ -965,6 +1008,34 @@
     ;; transaction whichever call it arrives in — but it is why the transaction
     ;; count is taken from the id map rather than from the batcher.
         (let [sref-db @conn
+          ;; ONE stepper for the whole import, not one per chunk. A transducer
+          ;; applied per chunk resets its state at every boundary — and chunk
+          ;; boundaries are an artefact of how the dump was written, not of the
+          ;; data — so `dedupe`, `partition-all` and `take` would be quietly
+          ;; wrong in a way that a single-chunk test would not show. `step`
+          ;; closes over that state and outlives the chunk loop.
+          ;;
+          ;; The transform runs at the CHUNK
+          ;; boundary, after the read has been awaited and before the batching
+          ;; loop, so the loop below and its parked flush are unchanged. One
+          ;; input record may expand to zero or more outputs.
+              step    (when xform (xform conj))
+          ;; NET records removed, not "dropped": a transducer may EXPAND as well
+          ;; as filter, and `expected` below is `declared - this`. One input
+          ;; becoming three makes it -2, which raises the expectation, which is
+          ;; right. Counted here because `prepare` is where records disappear —
+          ;; the batching loop never sees them.
+              removed (volatile! 0)
+              prepare (fn [records]
+                        (let [rs (mapv #(resolve-sysrefs sref-db %) records)]
+                          (if step
+                            (let [out (into [] (mapcat (fn [r]
+                                                         (let [o (step [] r)]
+                                                           (if (reduced? o) @o o))))
+                                            rs)]
+                              (vswap! removed + (- (count rs) (count out)))
+                              out)
+                            rs)))
           ;; TWO NESTED LOOPS, not a reduce. The outer reads one chunk, the inner
           ;; batches its records and flushes — and both the read and the flush are
           ;; awaits, which must sit at statement positions the `go` state machine
@@ -977,17 +1048,17 @@
                                 :migration migration0}]
                       (if (nil? cs)
                         acc
-                        (let [records (<?- ((:read chunk-src) (first cs) opts))]
+                        (let [records (prepare (<?- ((:read chunk-src) (first cs) opts)))]
                           (recur
                            (next cs)
                            (loop [rs (seq records) acc acc]
                              (if (nil? rs)
                                acc
-                           ;; `:translate` runs AFTER sysref resolution, so a user
-                           ;; function sees a plain [e a v t op] with real ids and
-                           ;; never an internal SysRef. Returning nil DROPS it.
-                               (let [rec (let [r (resolve-sysrefs sref-db (first rs))]
-                                           (if translate (translate r) r))]
+                           ;; Already resolved and transformed by `prepare`. The
+                           ;; xform sees a plain [e a v t op] with real ids and
+                           ;; never an internal SysRef; dropping is expressed by
+                           ;; emitting nothing.
+                               (let [rec (first rs)]
                                  (if rec
                                    (let [t (nth rec 3)
                                          acc (if (and (>= (long (:n acc)) batch-size)
@@ -1006,7 +1077,17 @@
                                                 (update :n inc)
                                                 (assoc :last-t t))))
                                    (recur (next rs) (update acc :dropped inc))))))))))
-              last-flush (<?- (flush-batch! conn (:batch final) on-error (:migration final)
+          ;; The completion arity, once, after the last chunk. A transducer
+          ;; holding a partial group — `partition-all`, or a custom one buffering
+          ;; until some boundary — emits it here and nowhere else; without this
+          ;; the tail of the stream is silently dropped.
+          ;; The completion arity emits any partial group the transducer held.
+          ;; Those are outputs with no corresponding input in this pass, so they
+          ;; reduce the net-removed count.
+              residue (if step (vec (step [])) [])
+              _ (vswap! removed - (count residue))
+              last-flush (<?- (flush-batch! conn (into (:batch final) residue)
+                                            on-error (:migration final)
                                             progress opts))
               errors (into (:errors final) (:errors last-flush))
           ;; the mapping the whole import built — the `:tids` half is where the
@@ -1016,7 +1097,7 @@
           ;; What this import ADDED. Identical to the whole-database count for
           ;; the ordinary empty-target import, where `live-before` is 0.
               live   (- (long (user-datom-count @conn hist?)) live-before)
-              dropped (long (:dropped final))
+              dropped (long (+ (long (:dropped final)) (long @removed)))
           ;; A translator that DROPS records makes the dump's own count the wrong
           ;; expectation — the mismatch is the transformation working, not a
           ;; failure. Subtracting the drops keeps the check meaningful (records
@@ -1030,7 +1111,7 @@
                               (throw (ex-info "Post-import verification failed (datom count mismatch)"
                                               {:error :import/verify-failed
                                                :dump-count (:expected-count source-meta)
-                                               :dropped-by-translate dropped
+                                               :dropped-by-xform dropped
                                                :expected-count expected
                                                :live-count live})))
                             ok?))
@@ -1070,35 +1151,46 @@
                             " (source " src-max-tx ", restored " (:max-tx @conn)
                             "): the restored database numbers its next transaction"
                             " differently. Datom content is unaffected.")))))
-          {:datom-count live
-           :translated? (boolean translate)
-           :dropped     dropped
+          (let [refs (when (:check-refs? opts)
+                       (dangling-refs @conn (get opts :dangling-sample 10)))]
+            (when (and refs (pos? (long (:count refs))))
+              (warn! (str "[datahike.migrate] " (:count refs) " ref value(s) in the imported "
+                          "database name an entity that holds no datoms. This is expected "
+                          "when an :xform dropped the entities being pointed at; it is also "
+                          "what a wrong :eids mapping produces. Sample: "
+                          (pr-str (:sample refs)))))
+            (cond-> {:datom-count live
+       ;; "The records were transformed", which is what makes `:dropped` and any
+       ;; count mismatch expected rather than a fault.
+                     :transformed? (boolean xform)
+                     :dropped     dropped
        ;; The restored db's max-tx is one HIGHER than the source's, because the
        ;; import ends via `transact-entities-directly`, which bumps it once more.
        ;; It does not compound -- a second round trip is stable -- but the restored
        ;; database numbers its next transaction differently from the one it
        ;; replaced, and that is the kind of thing an operator should be told
        ;; rather than discover. nil when the dump records no source max-tx.
-           :max-tx-drift (when-let [src-max-tx (and (not (:merge? opts)) (:max-tx source-meta))]
-                           (- (long (:max-tx @conn)) (long src-max-tx)))
-           :merged?     (boolean (:merge? opts))
+                     :max-tx-drift (when-let [src-max-tx (and (not (:merge? opts)) (:max-tx source-meta))]
+                                     (- (long (:max-tx @conn)) (long src-max-tx)))
+                     :merged?     (boolean (:merge? opts))
        ;; How many entity ids the import had to REMEMBER. Zero under a function
        ;; policy (`:offset`, `:preserve`), which is the whole reason a function
        ;; is allowed: the default accumulates one entry per source entity, and
        ;; that map is what the heap warning above is about. A count rather than
        ;; the map itself, so reporting it retains nothing.
-           :id-map-size (let [m (:eids migration)] (if (map? m) (count m) 0))
+                     :id-map-size (let [m (:eids migration)] (if (map? m) (count m) 0))
        ;; Which entity ids this import created, so a caller that merged can find
        ;; what it just added without diffing the database.
-           :eid-range   (let [after (:max-eid @conn)]
-                          (when (> (long after) (long max-eid-before))
-                            [(inc (long max-eid-before)) (long after)]))
-           :tx-count    tx-count
-           :max-tx      (:max-tx @conn)
-           :verified?   verified?
-           :finalized?  (boolean (and (:finalize? opts) (not (false? verified?))))
-           :recommended-heap (:recommended-heap mem)
-           :errors      errors}))))))
+                     :eid-range   (let [after (:max-eid @conn)]
+                                    (when (> (long after) (long max-eid-before))
+                                      [(inc (long max-eid-before)) (long after)]))
+                     :tx-count    tx-count
+                     :max-tx      (:max-tx @conn)
+                     :verified?   verified?
+                     :finalized?  (boolean (and (:finalize? opts) (not (false? verified?))))
+                     :recommended-heap (:recommended-heap mem)
+                     :errors      errors}
+              refs (assoc :dangling-refs refs)))))))))
 
 (defn- restore-blobs!
   "Put the dump's carried `:db.type/store-ref` bytes into the target store, before
@@ -1136,34 +1228,29 @@
                              function — that reads the dump; this checks the
                              database that came out of it.
      :on-error     :abort    :abort | :collect  (never silently skip)
-     :translate    nil       (fn [[e a v t op]] -> record | nil) applied to every
-                             record on the way in. Returning nil DROPS it.
+     :xform        nil       a TRANSDUCER over records. Each record is
+                             `[e a v t op]` with real ids — it runs after
+                             sysref resolution, so a user function never sees an
+                             internal SysRef. One input may produce zero or more
+                             outputs; producing none drops it.
 
-                             This is the general hook rather than a set of special
-                             facilities: attribute renames, value rewrites, unit
-                             conversions, redaction and filtering are all the same
-                             operation, and it costs nothing in the streaming
-                             pipeline because it is per record.
+                             ONE instance spans the whole import, so stateful
+                             transducers work across chunk boundaries: `(take n)`
+                             takes n from the STREAM, not n per chunk, and the
+                             completion arity runs at the end so a transducer
+                             holding a partial group flushes it rather than
+                             losing the tail.
 
-                             Three constraints, all forced rather than chosen:
+                               :xform (comp (remove schema-datom?)
+                                            (filter mine?)
+                                            (map rewrite-value))
 
-                             - PURE and deterministic. A future resumable import
-                               re-derives ids from a pre-pass over the same
-                               records; a translator that is not a function makes
-                               the two passes disagree.
-                             - 1 -> 0 or 1 -> 1 only. Emitting several records
-                               would break the manifest counts and the
-                               tx-alignment the batcher depends on.
-                             - It sees a plain [e a v t op] with real ids, AFTER
-                               sysref resolution — no internal types leak into a
-                               user function.
-
-                             Verification stays honest: dropped records are
-                             subtracted from the expected count, so a deliberate
-                             drop is not reported as corruption. The report
-                             carries :translated? and :dropped. Note that
+                             It must be PURE — no IO, no parking. It runs inside
+                             the import's `go` block in async mode, where a
+                             parked take in a closure cannot be reached by the
+                             state machine.
                              `verify`'s tier-2 digest compares the DUMP against
-                             the live db, so a translated import will differ there
+                             the live db, so a transformed import will differ there
                              by design — that comparison is not meaningful after a
                              transformation.
      :merge?       false     ADD this dump to a target that already holds data,
