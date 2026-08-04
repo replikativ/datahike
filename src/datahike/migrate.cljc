@@ -482,6 +482,11 @@
    before running it. Reads only the dump's manifest (no scan, no hashing).
    `source` may be a filesystem path/dir OR a konserve store target.
 
+   JVM-only, for two reasons: it opens the medium synchronously (so it is
+   refused by name on ClojureScript, like `verify`), and `:sufficient?` /
+   `:current-max-heap` have no meaning where there is no `Runtime.maxMemory` —
+   they are absent from the result there rather than nil.
+
    Three terms. The O(entities) id-remap map that `load-entities` holds until
    `finalize-import!` dominates ABOVE about a million entities; below that the
    `:chunk-size` worth of records held while a chunk is decoded is the largest,
@@ -493,6 +498,7 @@
       :current-max-heap-bytes .. :current-max-heap \"512 MB\" :sufficient? bool}"
   ([source] (estimate-import-memory source {}))
   ([source opts]
+   (assert-sync-supported! {:sync? true})
    (let [batch-size (get opts :batch-size default-batch-size)]
      (if (mstore/store-target? source)
        (let [m (mstore/open source)]
@@ -1078,7 +1084,10 @@
    SHOULD be freshly created with a config compatible with the dump's
    :source-config. 2-arity keeps the legacy surface; 3-arity opts:
      :batch-size   100000   datoms per load-entities call (tx-aligned, never split)
-     :verify?      true      run verify after import; throw on mismatch
+     :verify?      true      after import, check the datom count against the
+                             manifest's and throw on mismatch. NOT the `verify`
+                             function — that reads the dump; this checks the
+                             database that came out of it.
      :on-error     :abort    :abort | :collect  (never silently skip)
      :translate    nil       (fn [[e a v t op]] -> record | nil) applied to every
                              record on the way in. Returning nil DROPS it.
@@ -1355,8 +1364,17 @@
    against that database (id-independent semantic equivalence). Returns a tiered
    report: tier0 = checksums/paths (validated on open), tier1 = counts,
    tier2 = multiset digest over `[a v op]` + ref-topology counts, tier3 = sampled
-   structural diff of unique entities. `source` may be a path or a konserve store."
+   structural diff of unique entities. `source` may be a path or a konserve store.
+
+   JVM-only for now: it opens the medium synchronously throughout. Unlike
+   `export-db`/`import-db` it has not been through `async+sync`, so on
+   ClojureScript it is refused by name rather than failing somewhere inside
+   konserve's sync branch.
+
+   NOT the same thing as `import-db`'s `:verify?` option, which is a datom-count
+   delta check on the imported database. This reads the DUMP."
   ([source]
+   (assert-sync-supported! {:sync? true})
    (let [{:keys [manifest legacy-count]}
          (if (mstore/store-target? source)
            (let [m (mstore/open source)]
@@ -1399,6 +1417,7 @@
         :tier1 {:manifest-count (or (:count (:semantic-digest manifest)) legacy-count)}
         :blobs blobs})))
   ([conn-or-db source]
+   (assert-sync-supported! {:sync? true})
    (let [db    (->db conn-or-db)]
      (with-source-records source
        (fn [manifest reduce-source]

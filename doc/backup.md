@@ -289,8 +289,18 @@ system can tell which kind it holds. Datahike has no history-excision primitive.
 
 ## Integrity & signing
 
-Each chunk carries a SHA-256 in the manifest; `import-db`/`verify` recompute them
-before touching the database. Exports are deterministic (identical source db ⇒
+Each chunk carries a SHA-256 in the manifest, and both are recomputed on read —
+but *when* differs by medium, and it matters if you are restoring a backup.
+
+* **`verify`** reads and rehashes the whole dump, on either medium. This is the
+  pre-flight check: run it before a restore you care about.
+* **`import-db` from a directory** rehashes every chunk before it writes
+  anything, so a corrupt dump is refused with the target untouched.
+* **`import-db` from a konserve store** verifies each chunk as it is consumed,
+  because a pre-pass would mean reading the entire dump twice over the network.
+  A corruption found late therefore leaves a partially populated target and any
+  restored blobs behind it. Import requires an empty target, so the remedy is to
+  delete it and start again — or to run `verify` first. Exports are deterministic (identical source db ⇒
 byte-identical chunks), so a dump can be signed by external tooling (GPG, cosign,
 KMS). The manifest's semantic digest is for order-independent content comparison,
 not tamper-evidence.
