@@ -20,6 +20,7 @@
             [superv.async :refer [<?? S]]
             [clojure.string :as str]
             [konserve.store :as ks]
+            [datahike.migrate.store :as mstore]
             [datahike.test.utils :as utils]))
 
 ;; ---------------------------------------------------------------------------
@@ -1227,4 +1228,71 @@
                rather than a recognisably broken tx ref. This is the asymmetry
                Phase 2 should resolve.")
           (teardown s-tgt) (teardown a-tgt))
+        (finally (teardown conn))))))
+
+(deftest the-two-media-write-the-same-dump
+  (testing "`datahike.migrate.store`'s docstring claims the store dump's format,
+            per-chunk SHA-256 and semantic digest are IDENTICAL to the filesystem
+            dump's. Nothing checked it, and it has already been false once —
+            `chunk-name` omitted the `.cbor` extension on the store side, so the
+            two media wrote different values into the same manifest field and the
+            validation that would have caught it is only applied to one of them.
+
+            This is the regression test for that claim, and the prerequisite for
+            any refactor that tries to unify the two write paths: it is the only
+            thing that would notice a change in chunk boundaries, record order or
+            hashing."
+    (let [conn (utils/setup-db (mem-cfg {:history? true}))]
+      (try
+        (d/transact conn [{:db/ident :name :db/valueType :db.type/string
+                           :db/cardinality :db.cardinality/one
+                           :db/unique :db.unique/identity}
+                          {:db/ident :score :db/valueType :db.type/long
+                           :db/cardinality :db.cardinality/one}
+                          {:db/ident :tag :db/valueType :db.type/keyword
+                           :db/cardinality :db.cardinality/many}])
+        ;; enough history, and enough shapes, that a boundary or ordering change
+        ;; would move something
+        (doseq [i (range 30)]
+          (d/transact conn [{:db/id -1 :name (str "e" i) :score i :tag :a}]))
+        (doseq [i (range 0 30 3)]
+          (d/transact conn [{:db/id [:name (str "e" i)] :score (+ 100 i)}]))
+        (doseq [i (range 0 30 7)]
+          (d/transact conn [[:db/retract [:name (str "e" i)] :tag :a]]))
+
+        (doseq [codec [:gzip :none]
+                chunk-size [7 1000]]
+          (testing (str "codec " codec ", chunk-size " chunk-size)
+            (let [dir   (str (System/getProperty "java.io.tmpdir") "/dh-both-"
+                             (utils/get-time) "-" (name codec) "-" chunk-size)
+                  store (ks/create-store {:backend :memory :id (java.util.UUID/randomUUID)}
+                                         {:sync? true})
+                  opts  {:history? true :compression codec :chunk-size chunk-size}
+                  fs-man (m/export-db conn dir opts)
+                  st-man (m/export-db conn {:store store :prefix "both"} opts)]
+
+              (testing "the semantic digest — the whole-dump content identity"
+                (is (= (:semantic-digest fs-man) (:semantic-digest st-man))))
+
+              (testing "the chunk list, field for field"
+                (is (= (count (:chunks fs-man)) (count (:chunks st-man)))
+                    "same number of chunks, so the boundaries agree")
+                (doseq [[a b] (map vector (:chunks fs-man) (:chunks st-man))]
+                  (is (= (:file a) (:file b)) "same name — this is what drifted before")
+                  (is (= (:sha256 a) (:sha256 b)) "same hash, over the same bytes")
+                  (is (= (:count a) (:count b)) "same record count")
+                  (is (= (:raw-bytes a) (:raw-bytes b)) "same decoded size")))
+
+              (testing "and the same declared compression"
+                (is (= (:compression fs-man) (:compression st-man) codec)))
+
+              (testing "and both import to the same database"
+                (let [t1 (utils/setup-db (mem-cfg {:history? true}))
+                      t2 (utils/setup-db (mem-cfg {:history? true}))]
+                  (m/import-db t1 dir {})
+                  (m/import-db t2 {:store store :prefix "both"} {})
+                  (is (= (:hash @t1) (:hash @t2)))
+                  (is (= (vec (d/datoms (d/history @t1) :eavt))
+                         (vec (d/datoms (d/history @t2) :eavt))))
+                  (teardown t1) (teardown t2))))))
         (finally (teardown conn))))))

@@ -455,17 +455,62 @@
 (defn- open-dump
   "Like `manifest-of`, but for a chunked directory dump additionally validates chunk
    paths and verifies per-chunk SHA-256 by STREAMING each file (bounded memory)
-   before any import touches the database."
-  [source]
-  (let [dump (manifest-of source)]
-    (when-not (:legacy? dump)
-      (doseq [{:keys [file sha256]} (:chunks (:manifest dump))
-              :when sha256
-              :let [cf (validate-chunk-file (str source) file)]]
-        (when (not= sha256 (sha256-of-chunk cf (codec-of (:manifest dump))))
-          (throw (ex-info (str "Checksum mismatch for chunk " file)
-                          {:error :import/checksum-failed :file file})))))
-    dump))
+   before any import touches the database.
+
+   `:checksums` is `:require` (default) or `:skip`.
+
+   `:require` FAILS CLOSED, and the distinction matters more than it looks. The
+   loop used to carry `:when sha256`, which skips a chunk whose manifest entry
+   has no hash — so deleting one key from manifest.edn turned integrity checking
+   off entirely and the dump still verified clean with corrupt bytes in it.
+   Nothing this exporter writes omits a hash: `chunk-descriptor` takes one as a
+   required argument and both writers always compute it. An entry without one is
+   an edited or foreign manifest.
+
+   `:skip` exists because importing a modified or hand-built dump is a real
+   thing to want — filtering records, or a dump produced by another tool. It is
+   spelled as a deliberate value rather than a boolean flag so it cannot arrive
+   by a stray `true`, and `import-db` logs a warning every time it is used."
+  ([source] (open-dump source {}))
+  ([source {:keys [checksums] :or {checksums :require}}]
+   (let [dump   (manifest-of source)
+         chunks (:chunks (:manifest dump))
+         check? (and (not (:legacy? dump)) (not= :skip checksums))]
+     (when check?
+        ;; FAIL CLOSED. This used to be `:when sha256`, which SKIPS a chunk whose
+        ;; manifest entry has no hash — so deleting one key from manifest.edn
+        ;; turned integrity checking off and `verify` still reported the dump
+        ;; intact, corrupt bytes and all. Nothing datahike writes omits a hash
+        ;; (`chunk-descriptor` takes it as a required argument and both writers
+        ;; always compute one), so an entry without one is an edited or foreign
+        ;; manifest, which is exactly the case worth refusing.
+       (doseq [{:keys [file sha256]} chunks]
+         (when-not sha256
+           (throw (ex-info (str "Chunk " file " has no :sha256 in the manifest. "
+                                "Every chunk datahike writes carries one; a manifest "
+                                "missing them has been edited or was not written by "
+                                "this exporter, and its contents cannot be trusted.")
+                           {:error :import/missing-checksum :file file})))
+         (let [cf (validate-chunk-file (str source) file)]
+           (when (not= sha256 (sha256-of-chunk cf (codec-of (:manifest dump))))
+             (throw (ex-info (str "Checksum mismatch for chunk " file)
+                             {:error :import/checksum-failed :file file})))))
+        ;; A manifest that lists FEWER chunks than the directory holds is also
+        ;; not a dump this exporter wrote: `:chunks []` with datoms-*.cbor files
+        ;; present verified clean, because the loop above had nothing to iterate.
+       (let [declared (set (map :file chunks))
+             extra    (->> (fs/list-names (str source))
+                           (filter #(re-matches chunk-re %))
+                           (remove declared)
+                           sort vec)]
+         (when (seq extra)
+           (throw (ex-info (str "Dump directory holds chunk files the manifest does not "
+                                "list: " (pr-str extra)
+                                ". The manifest is the authority on what a dump contains, "
+                                "so this one is truncated or edited.")
+                           {:error :import/undeclared-chunks
+                            :undeclared extra})))))
+     (assoc dump :chunks-verified (if check? (count chunks) 0)))))
 
 ;; ---------------------------------------------------------------------------
 ;; memory estimation — tell the user how much heap to give an import
@@ -1194,7 +1239,11 @@
                      (catch #?(:clj Exception :cljs :default) e e))]
            (<?- (mstore/close m opts))
            (if (instance? #?(:clj Throwable :cljs js/Error) res) (throw res) res))
-         (let [dump (open-dump source)]
+         (let [_ (when (= :skip (:checksums opts))
+                   (warn! (str "[datahike.migrate] importing WITHOUT verifying chunk "
+                               "checksums (:checksums :skip). Corruption in this dump "
+                               "will be loaded silently: " source)))
+               dump (open-dump source opts)]
            (if (:legacy? dump)
              #?(:clj (mlegacy/import-db-legacy conn source)
                 :cljs (throw (ex-info (str "This is a legacy single-file dump, readable only on the "
@@ -1378,7 +1427,7 @@
    delta check on the imported database. This reads the DUMP."
   ([source]
    (assert-sync-supported! {:sync? true})
-   (let [{:keys [manifest legacy-count]}
+   (let [{:keys [manifest legacy-count chunks-verified finding]}
          (if (mstore/store-target? source)
            (let [m (mstore/open source)]
              (try
@@ -1397,7 +1446,22 @@
                  (mstore/reduce-records m manifest (fn [acc _] acc) nil)
                  {:manifest manifest})
                (finally (mstore/close m))))
-           (let [dump (open-dump source)]
+           ;; REPORTS rather than enforces. `open-dump` throws on a bad or
+           ;; missing checksum, which is right for an import — but this is the
+           ;; call an operator makes to ASK about a dump, and "it threw" is a
+           ;; worse answer than "here is what is wrong with it". So the integrity
+           ;; failures become findings and `:ok?` goes false; nothing is hidden
+           ;; and nothing needs an opt-out to get an answer.
+           (let [[dump finding]
+                 (try [(open-dump source) nil]
+                      (catch #?(:clj clojure.lang.ExceptionInfo :cljs :default) e
+                        (let [{:keys [error]} (ex-data e)]
+                          (if (#{:import/missing-checksum :import/checksum-failed
+                                 :import/undeclared-chunks} error)
+                            [(manifest-of source) {:error error :message #?(:clj (.getMessage e)
+                                                                            :cljs (.-message e))
+                                                   :data (ex-data e)}]
+                            (throw e)))))]
              (if (:legacy? dump)
                ;; Nothing above has looked at this file. `manifest-of` classifies
                ;; ANY existing non-directory as the legacy single-file format and
@@ -1413,12 +1477,23 @@
                                                     "on the JVM — it can only have been written by an "
                                                     "old JVM datahike.")
                                                {:error :import/legacy-not-portable})))}
-               {:manifest (:manifest dump)})))]
+               {:manifest (:manifest dump)
+                :chunks-verified (:chunks-verified dump)
+                :finding finding})))]
      (let [blobs (verify-blobs manifest source)]
-       {:ok? (:ok? blobs)
-        :tier0 {:checksums :ok :format (get manifest manifest-key)}
-        :tier1 {:manifest-count (or (:count (:semantic-digest manifest)) legacy-count)}
-        :blobs blobs})))
+       (cond-> {:ok? (and (nil? finding) (:ok? blobs))
+        ;; `:checksums` used to be the literal `:ok`, so "40 chunks matched" and
+        ;; "there were no chunks and nothing was checked" read identically. It is
+        ;; now derived, and `:chunks-verified` says how much was actually read.
+                :tier0 {:checksums (cond finding                          :failed
+                                         (and chunks-verified
+                                              (pos? chunks-verified))     :ok
+                                         :else                            :none)
+                        :chunks-verified (or chunks-verified 0)
+                        :format (get manifest manifest-key)}
+                :tier1 {:manifest-count (or (:count (:semantic-digest manifest)) legacy-count)}
+                :blobs blobs}
+         finding (assoc :integrity finding)))))
   ([conn-or-db source]
    (assert-sync-supported! {:sync? true})
    (let [db    (->db conn-or-db)]
