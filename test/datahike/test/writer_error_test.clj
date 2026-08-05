@@ -12,7 +12,7 @@
 (deftest fatal-error-in-commit-fails-loudly
   (testing "a fatal Error during commit propagates to the caller within a bounded time"
     (let [cfg {:store {:backend :file
-                       :path (str (System/getProperty "java.io.tmpdir") "/dh-fatal-commit")
+                       :path (str (System/getProperty "java.io.tmpdir") "/dh-fatal-commit-" (java.util.UUID/randomUUID))
                        :id #uuid "d1ffb000-0000-0000-0000-00000000fa7a"}
                :schema-flexibility :read :keep-history? false}]
       (when (d/database-exists? cfg) (d/delete-database cfg))
@@ -46,7 +46,7 @@
   (testing "an Error thrown on the COMMIT thread (create-commit-id — only commit! calls it)
             reaches the caller instead of parking the writer forever"
     (let [cfg {:store {:backend :file
-                       :path (str (System/getProperty "java.io.tmpdir") "/dh-fatal-commit2")
+                       :path (str (System/getProperty "java.io.tmpdir") "/dh-fatal-commit2-" (java.util.UUID/randomUUID))
                        :id #uuid "d1ffb000-0000-0000-0000-00000000fa7b"}
                :schema-flexibility :read :keep-history? false}]
       (when (d/database-exists? cfg) (d/delete-database cfg))

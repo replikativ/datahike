@@ -194,11 +194,37 @@
    (do
      (defn- files [store] (count (k/keys store {:sync? true})))
 
+     (defn- stress-store
+       "A file store no other test run can be touching.
+
+        These stress tests used FIXED paths — `/tmp/dh-bgc-pipe`, `/tmp/dh-bgc-branch`
+        and three more — and each one begins by DELETING the database at its path.
+        So two suite runs on one machine destroyed each other's stores mid-test,
+        and the failures that produced looked like GC bugs rather than like a
+        collision: a sweep that appeared to eat live data, a cold reopen that
+        found nothing. Diagnosed twice before the cause was believed, which is
+        the real cost of a fixed path in a test that deletes.
+
+        `dh-bgc-branch` was worse than shared-across-runs: two tests in THIS file
+        used the same path with different ids, so the second wiped the first's
+        directory even in a single sequential run — harmless only because nothing
+        outlived its own deftest.
+
+        The portable smoke test above already had this right (`tmp-path` takes a
+        fresh uuid); this is the same treatment for the JVM-only ones. The id is
+        randomised with the path rather than left fixed, so a store is identified
+        the same way it is located — `datahike.gc-guard` keys in-flight state by
+        store id, and two databases sharing an id is exactly the confusion these
+        tests exist to detect."
+       [tag]
+       (let [id (java.util.UUID/randomUUID)]
+         {:backend :file
+          :path (str (System/getProperty "java.io.tmpdir") "/dh-bgc-" tag "-" id)
+          :id id}))
+
      (deftest background-gc-under-pipelined-writes
        (testing "concurrent collection cycles + pipelined writer: exact data, contained store"
-         (let [cfg {:store {:backend :file
-                            :path (str (System/getProperty "java.io.tmpdir") "/dh-bgc-pipe")
-                            :id #uuid "b6c00000-0000-0000-0000-000000000001"}
+         (let [cfg {:store (stress-store "pipe")
                     :schema-flexibility :write :keep-history? false}]
            (d/delete-database cfg)
            (d/create-database cfg)
@@ -241,9 +267,7 @@
 
      (deftest background-gc-with-live-branches
        (testing "collection with two diverging branches under writes keeps both exact"
-         (let [cfg {:store {:backend :file
-                            :path (str (System/getProperty "java.io.tmpdir") "/dh-bgc-branch")
-                            :id #uuid "b6c00000-0000-0000-0000-000000000002"}
+         (let [cfg {:store (stress-store "branch")
                     :schema-flexibility :write :keep-history? true}]
            (d/delete-database cfg)
            (d/create-database cfg)
@@ -296,9 +320,7 @@
      ;; sweep deletes nothing at all and the test is vacuous.
      (deftest sweep-spares-in-flight-commit
        (testing "a collection cycle racing a mid-flush commit leaves the store intact"
-         (let [cfg   {:store {:backend :file
-                              :path (str (System/getProperty "java.io.tmpdir") "/dh-bgc-inflight")
-                              :id #uuid "b6c00000-0000-0000-0000-000000000003"}
+         (let [cfg   {:store (stress-store "inflight")
                       :schema-flexibility :write :keep-history? false
                       :commit-graph? false}
                kset  (fn [store] (set (map :key (k/keys store {:sync? true}))))]
@@ -353,9 +375,7 @@
      ;; commit added. A missing NODE is loud; a missing SCHEMA is not.
      (deftest sweep-spares-in-flight-schema
        (testing "a schema added by a mid-flush commit survives a racing collection"
-         (let [cfg {:store {:backend :file
-                            :path (str (System/getProperty "java.io.tmpdir") "/dh-bgc-schema")
-                            :id #uuid "b6c00000-0000-0000-0000-000000000004"}
+         (let [cfg {:store (stress-store "schema")
                     :schema-flexibility :write :keep-history? false
                     :commit-graph? false}]
            (d/delete-database cfg)
@@ -411,9 +431,7 @@
      ;; serialization would cover it. The guard is in the store, so it does.
      (deftest sweep-spares-in-flight-branch
        (testing "a branch being created survives a racing collection"
-         (let [cfg {:store {:backend :file
-                            :path (str (System/getProperty "java.io.tmpdir") "/dh-bgc-branch")
-                            :id #uuid "b6c00000-0000-0000-0000-000000000005"}
+         (let [cfg {:store (stress-store "branch")
                     :schema-flexibility :write :keep-history? false}]
            (d/delete-database cfg)
            (d/create-database cfg)
