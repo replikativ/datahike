@@ -1110,7 +1110,7 @@
                                                              :datom r
                                                              :message (ex-message e)})
                                                     true))))
-                                         rs)
+                                       rs)
                         :else (do (run! mman/validate-record! rs) rs)))
               prepare (fn [records]
                         (let [rs (mapv #(resolve-sysrefs sref-db %) records)]
@@ -1775,7 +1775,7 @@
                          :tx-count    (tx-cardinality txs)
                          :max-tx      (:max-tx @conn)
                          :verified?   verified?
-                            :recommended-heap (:recommended-heap mem)
+                         :recommended-heap (:recommended-heap mem)
                          :errors      []}
                   refs (assoc :dangling-refs refs)))
               (catch #?(:clj Exception :cljs :default) e e))]

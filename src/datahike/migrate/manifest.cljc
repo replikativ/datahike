@@ -92,8 +92,8 @@
    keyword ident; ref values pointing at a system entity become #datahike/sysref."
   ([db sys-ents sys-idents datom] (datom->record db sys-ents sys-idents nil datom))
   ([db sys-ents sys-idents sec-read datom]
-  (let [e (nth datom 0)
-        a (a-ident db (nth datom 1))
+   (let [e (nth datom 0)
+         a (a-ident db (nth datom 1))
         ;; For a `:db.secondary/only` attribute the primary holds a content hash,
         ;; so the real value comes from the secondary index instead — see
         ;; `secondary-only-values`. Falls back to the primary's value, which is
@@ -103,13 +103,13 @@
         ;; the primary holds a content hash. Falls back to the primary's value,
         ;; which is right for a RETRACTION (those already carry the stored hash)
         ;; and for an entity the index has no row for.
-        v (or (when (and sec-read (nth datom 4)) (sec-read a (nth datom 0)))
-              (nth datom 2))
-        t (nth datom 3)
-        op (nth datom 4)
-        sysref? (fn [val] (when (and (dbu/ref? db a) (contains? sys-ents val))
-                            (get sys-idents val)))]
-    [e a (mcbor/encode-value v sysref?) t op])))
+         v (or (when (and sec-read (nth datom 4)) (sec-read a (nth datom 0)))
+               (nth datom 2))
+         t (nth datom 3)
+         op (nth datom 4)
+         sysref? (fn [val] (when (and (dbu/ref? db a) (contains? sys-ents val))
+                             (get sys-idents val)))]
+     [e a (mcbor/encode-value v sysref?) t op])))
 
 (defn secondary-only-reader
   "`nil` when the database has no `:db.secondary/only` attribute — the common

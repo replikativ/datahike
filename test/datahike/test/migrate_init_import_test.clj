@@ -380,14 +380,14 @@
           "the ordinary case is not refused")
       (is (re-find #"persistent-set"
                    (m/build-indexes-refusal (conn {:index :datahike.index/hitchhiker-tree})
-                                   man {:sync? true})))
+                                            man {:sync? true})))
       (is (re-find #"attribute-refs"
                    (m/build-indexes-refusal (conn (assoc pss :attribute-refs? true))
-                                   man {:sync? true})))
+                                            man {:sync? true})))
       (is (re-find #"secondary"
                    (m/build-indexes-refusal (conn pss)
-                                   {:schema {:by-name {:db.secondary/type :stratum}}}
-                                   {:sync? true}))
+                                            {:schema {:by-name {:db.secondary/type :stratum}}}
+                                            {:sync? true}))
           "a secondary index in the DUMP's schema, which the build does not construct")
       (is (re-find #"schema" (m/build-indexes-refusal (conn pss) {} {:sync? true}))
           "a manifest with no :schema KEY: ref values could not be remapped")
@@ -396,7 +396,7 @@
            declares no attributes and can hold no refs either")
       (testing "and several at once come back together"
         (let [why (m/build-indexes-refusal (conn (assoc pss :attribute-refs? true))
-                                  man {:sync? true :merge? true})]
+                                           man {:sync? true :merge? true})]
           (is (re-find #"merge" why))
           (is (re-find #"attribute-refs" why)))))))
 
