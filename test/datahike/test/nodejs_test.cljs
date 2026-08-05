@@ -38,6 +38,9 @@
             [datahike.test.experimental.graph-util-test]
             [datahike.test.experimental.graph-test]
             [datahike.test.experimental.anomaly-test]
+            ;; datahike.experimental.diff — the async arm of diff/tx-range, which
+            ;; only cljs executes.
+            [datahike.test.experimental-diff-portable-test]
             ;; Weighted LRU query-cache — the cljs WeightedLRU deftype has its
             ;; own implementation, so cover it (unit + test.check property) here.
             [datahike.test.lru-weighted-test]
@@ -771,6 +774,7 @@
                'datahike.test.store-ref-test
                'datahike.test.async-storage-test
                'datahike.kabel.walker-test
+               'datahike.test.experimental-diff-portable-test
                'datahike.test.experimental.graph-util-test
                'datahike.test.experimental.graph-test
                'datahike.test.experimental.anomaly-test

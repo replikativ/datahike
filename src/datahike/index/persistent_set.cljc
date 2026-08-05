@@ -130,6 +130,39 @@
 
 (def slice-comparator-constructor (generate-slice-comparator-constructor))
 
+(defn diff-index
+  "Datoms added and removed between two versions of ONE index that share
+   structure, as `{:added [...] :removed [...]}`.
+
+   Delegates to `psset/diff`, which reads only the nodes that changed rather
+   than walking either tree: two versions share every node they have in common,
+   so a subtree whose address appears on both sides cannot contain a difference.
+   Measured in persistent-sorted-set at 3-4 node reads for a two-element delta
+   whether the set holds a thousand elements or a hundred thousand.
+
+   Two platform differences are absorbed here rather than by every caller. The
+   JVM set carries its own storage and the call is synchronous, while the cljs
+   set takes storage and `:sync?` explicitly. And persistent-sorted-set's
+   ClojureScript arm speaks partial-cps while datahike's async path speaks
+   core.async, so an async cljs result is adapted to a CHANNEL — the same seam
+   `datahike.writing/as-awaitable` crosses in the other direction.
+
+   Returns a value under `:sync? true` (always, on the JVM), a channel under
+   `:sync? false` on cljs."
+  [a b {:keys [sync?] :or {sync? #?(:clj true :cljs false)} :as opts}]
+  #?(:clj  (psset/diff a b)
+     :cljs (let [res (psset/diff a b (.-storage ^BTSet b) (assoc opts :sync? sync?))]
+             (if sync?
+               res
+               ;; errors travel as VALUES on the channel, which is what `<?-`
+               ;; expects and what konserve does everywhere else
+               (let [ch (async/promise-chan)]
+                 (res (fn [v] (async/put! ch v))
+                      (fn [e] (async/put! ch (if (instance? js/Error e)
+                                               e
+                                               (ex-info "diff failed" {:error e})))))
+                 ch)))))
+
 (defn remove-datom [pset ^Datom datom index-type]
   (psset/disj pset datom (index-type->cmp-quick index-type false)))
 

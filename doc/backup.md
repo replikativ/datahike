@@ -353,6 +353,23 @@ finishes, and the delta grows for as long as the migration runs.
 The recipe below reduces downtime to the final catch-up window. Everything it
 uses already exists; nothing here is a separate feature.
 
+> **Catching up without a listener.** The recipe below holds a `d/listen!` open
+> on the source for the whole migration, which means the source machine buffers
+> the backlog. If that is not acceptable —  a large delta, or a production box
+> you would rather not add memory pressure to — `datahike.experimental.diff`
+> can compute the same catch-up window *after the fact* from two database
+> values, at a cost proportional to the delta rather than the database:
+>
+> ```clojure
+> (require '[datahike.experimental.diff :as xd])
+> (xd/tx-range db-before db-after)  ;=> [{:t 536870915 :data [...]} ...]
+> ```
+>
+> It needs `:keep-history? true`, and it needs the older version's index nodes
+> to still be in the store — `d/gc-storage` reclaims exactly those, so do not
+> collect past the point you intend to catch up from. *Experimental*; see the
+> namespace docstring.
+
 ```clojure
 (require '[datahike.api :as d] '[datahike.migrate :as m])
 
