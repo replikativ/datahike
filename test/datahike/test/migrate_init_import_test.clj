@@ -8,8 +8,11 @@
    the SOURCE instead would fail for a reason that has nothing to do with bulk —
    a `:keep-history? false` dump carries only the datoms that survived, so its
    transactions renumber densely on import whichever path reads it, and its
-   fully-retracted entities are simply absent. Measured: the transact path
-   reports `:max-tx-drift -6` on this fixture, the bulk path -7.
+   fully-retracted entities are simply absent. Measured: both paths report
+   `:max-tx-drift -7` on this fixture — negative because the dump names fewer
+   transactions than its source had, and equal because the two paths now agree
+   on numbering (the streaming path's old per-call `max-tx` bump, which made it
+   -6, is gone).
 
    `migrate-init-build-test` covers the trees. This covers everything a DB
    record owes beyond them — `:hash`, `:schema`, `:rschema`, `:max-eid`,
@@ -131,11 +134,18 @@
           (is (true? (:verified? bk-rep)) "and verification ran and passed")
           (is (= (:datom-count tx-rep) (:datom-count bk-rep)))
           (is (= (:tx-count tx-rep) (:tx-count bk-rep)))
-          (testing ":max-tx is the ONE field that differs, and by exactly one.
-                    The streaming import ends via `transact-entities-directly`,
-                    which bumps max-tx once more; the bulk import does not
-                    transact at all, so it lands on the number the dump names."
-            (is (= 1 (- (long (:max-tx @tx-tgt)) (long (:max-tx @bk-tgt))))))
+          (testing ":max-tx now AGREES between the two paths.
+
+                    It used to differ by one: the streaming import ended via
+                    `transact-entities-directly`, which bumped max-tx once per
+                    call, while the index build does not transact at all and
+                    landed on the number the dump names. That per-call bump was
+                    a bug — it made the streaming result depend on
+                    `:batch-size` — and with it gone both paths land on the
+                    dump's own max-tx. The two import paths producing the same
+                    database is the property this whole test exists for, so
+                    there is nothing left to exempt."
+            (is (= (long (:max-tx @tx-tgt)) (long (:max-tx @bk-tgt)))))
           (teardown src) (teardown tx-tgt) (teardown bk-tgt))))))
 
 (deftest bulk-reproduces-the-source-database-exactly

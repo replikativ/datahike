@@ -1752,8 +1752,20 @@
          es initial-es
          migration-state (or (:migration initial-report) {})]
     (if (empty? es)
+      ;; NO `max-tx` bump here. One call is one BATCH, not one transaction, and
+      ;; the per-transaction bump below (the `:tids` miss branch) has already
+      ;; advanced `max-tx` past every id this call allocated.
+      ;;
+      ;; Bumping per call made the result depend on `:batch-size`: each batch
+      ;; boundary skipped an id, so the same dump imported at `:batch-size 5`
+      ;; and at one batch produced datoms whose `tx` components differed —
+      ;; measured at 240 of 253 on a six-transaction fixture — and `as-of`,
+      ;; `since`, `tx-range` and `diff` all read that. It also left `max-tx`
+      ;; pointing at an id NO datom uses, a hole a transacted database never
+      ;; has. Dropping it restores that invariant and makes a restore
+      ;; `max-tx`-identical to its source, which is what the index-build path
+      ;; already produced.
       (-> report
-          (update-in [:db-after :max-tx] inc)
           (assoc :migration migration-state)
           (update :db-after persistent!)
           (update :db-after finalize-secondary-indices))

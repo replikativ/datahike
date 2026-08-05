@@ -149,35 +149,107 @@
           "same number of :note datoms in history")
       (teardown src) (teardown tgt))))
 
-(deftest max-tx-drift-is-plus-one-reported-and-does-not-compound
-  (testing "the restored database's max-tx is one HIGHER than its source's.
+(deftest a-single-transaction-dump-still-flushes-in-batches
+  (testing "the memory bound must not depend on the source having many
+            transactions.
 
-            The import ends via `transact-entities-directly`, which bumps max-tx
-            once more, so one transaction id is skipped. Datom content is
-            unaffected — every index matches — but the restored database numbers
-            its next transaction differently from the one it replaced.
+            The batcher prefers to flush at a TRANSACTION boundary, so its
+            condition was `(and (>= n batch-size) (not= t last-t))`. A dump whose
+            records all carry one `t` never satisfies that — and such a dump is
+            ordinary, not exotic: any database built by a single large `transact`
+            or by `load-entities` has every datom at one transaction. Without a
+            backstop nothing flushed until the very end and the whole dump sat in
+            memory, which is precisely what `:chunk-size` and `:batch-size` exist
+            to prevent.
 
-            Pinned at exactly +1 rather than asserted away: if it ever becomes +2,
-            or starts compounding across round trips, that is a different and much
-            worse bug, and this is what would catch it. `import-db` also REPORTS
-            the drift and warns, so an operator is told rather than left to find
-            out."
-    (let [src (build-adversarial-db! (utils/setup-db (mem-cfg)))
+            Counted through `:progress-fn`, which reports `{:phase :batch}` once
+            per flush. The assertion contrasts the backstop against ITSELF
+            disabled — `:max-pending` set absurdly high reproduces the old
+            behaviour exactly — so it cannot pass vacuously: measured at 809
+            datoms in one transaction, 1 flush without the backstop and 11 with
+            it."
+    (let [conn (utils/setup-db (mem-cfg))
+          _    (d/transact conn base-schema)
+          ;; ONE transaction, many datoms — every record shares a `t`
+          _    (d/transact conn (vec (for [i (range 400)]
+                                       {:name (str "e" i) :score i})))
+          path (str (System/getProperty "java.io.tmpdir") "/dh-fid-1tx-" (utils/get-time))
+          _    (m/export-db @conn path {:history? true})
+          run  (fn [opts]
+                 (let [c (utils/setup-db (mem-cfg))
+                       n (atom 0)
+                       _ (m/import-db c path (assoc opts :progress-fn
+                                                    (fn [ev] (when (= :batch (:phase ev))
+                                                               (swap! n inc)))))
+                       datoms (set (map (juxt :e :a :v :tx :added) (d/datoms @c :eavt)))]
+                   (teardown c)
+                   {:flushes @n :datoms datoms}))
+          off  (run {:batch-size 20 :max-pending 100000000})
+          on   (run {:batch-size 20})
+          tight (run {:batch-size 20 :max-pending 50})]
+      (is (= 1 (:flushes off))
+          "without the backstop the whole single-transaction dump buffers — the bug")
+      (is (> (:flushes on) 5)
+          (str "with it the stream drains incrementally, got " (:flushes on) " flushes"))
+      (is (> (:flushes tight) (:flushes on))
+          ":max-pending tightens the ceiling")
+      (is (= (:datoms off) (:datoms on) (:datoms tight))
+          "and splitting one transaction across flushes changes nothing")
+      (teardown conn))))
+
+(deftest a-restore-is-faithful-and-batch-size-does-not-show
+  (testing "the restored database equals its source, and `:batch-size` — a
+            tuning knob — leaves no trace in it.
+
+            `:batch-size` decides how many records go into one `load-entities`
+            call. Nothing about the RESULT may depend on it, or two restores of
+            one dump cannot be compared and every temporal query shifts with a
+            performance setting.
+
+            This once failed. `transact-entities-directly` bumped `max-tx` once
+            per CALL on top of the correct bump per source transaction, so each
+            batch boundary skipped a transaction id and stretched the numbering:
+            at `:batch-size 5` the six transactions of a small fixture landed on
+            ids stepping by two, at one batch they stepped by one, and 240 of 253
+            datoms differed in their `tx` component. The old test pinned the
+            resulting drift at `+1` and asserted 'datom content is unaffected' —
+            both true only because its fixture fitted in a single batch.
+
+            So the property is stated over batch sizes, and includes `max-tx`:
+            the restored database is now identical to its source, holes and all
+            absent."
+    (let [src  (build-adversarial-db! (utils/setup-db (mem-cfg)))
           path (str (System/getProperty "java.io.tmpdir") "/dh-fid-mt-" (utils/get-time))
-          _ (m/export-db src path {:history? true})
-          gen1 (utils/setup-db (mem-cfg))
-          rep1 (m/import-db gen1 path {})]
-      (is (= 1 (- (:max-tx @gen1) (:max-tx @src))) "exactly +1, not more")
-      (is (= 1 (:max-tx-drift rep1)) "and the report says so")
-      (testing "a second round trip is stable — the drift does not compound"
-        (let [p2 (str (System/getProperty "java.io.tmpdir") "/dh-fid-mt2-" (utils/get-time))
-              _ (m/export-db gen1 p2 {:history? true})
+          _    (m/export-db src path {:history? true})
+          tuples (fn [db] (set (map (juxt :e :a :v :tx :added) (d/datoms db :eavt))))
+          restore (fn [bs] (let [c (utils/setup-db (mem-cfg))
+                                 rep (m/import-db c path {:batch-size bs})
+                                 r {:max-tx (:max-tx @c) :datoms (tuples @c)
+                                    :drift (:max-tx-drift rep)}]
+                             (teardown c) r))
+          tiny  (restore 3)
+          small (restore 17)
+          huge  (restore 1000000)]
+      (testing "identical across batch sizes — datoms AND max-tx"
+        (is (= (:datoms tiny) (:datoms small) (:datoms huge)))
+        (is (= (:max-tx tiny) (:max-tx small) (:max-tx huge))))
+      (testing "and faithful to the source: no drift at any batch size"
+        (is (= (:max-tx @src) (:max-tx huge)) "max-tx equals the source's")
+        (is (= (tuples @src) (:datoms huge)) "every datom, tx component included")
+        (is (= 0 (:drift tiny) (:drift small) (:drift huge))
+            "and the report agrees"))
+      (testing "a second round trip changes nothing"
+        (let [gen1 (utils/setup-db (mem-cfg))
+              _    (m/import-db gen1 path {})
+              p2   (str (System/getProperty "java.io.tmpdir") "/dh-fid-mt2-" (utils/get-time))
+              _    (m/export-db @gen1 p2 {:history? true})
               gen2 (utils/setup-db (mem-cfg))
               rep2 (m/import-db gen2 p2 {})]
-          (is (= (:max-tx @gen1) (:max-tx @gen2)) "gen2 max-tx equals gen1's")
-          (is (zero? (:max-tx-drift rep2)) "and the report shows no further drift")
-          (teardown gen2)))
-      (teardown src) (teardown gen1))))
+          (is (= (:max-tx @gen1) (:max-tx @gen2)))
+          (is (= (tuples @gen1) (tuples @gen2)))
+          (is (zero? (:max-tx-drift rep2)))
+          (teardown gen1) (teardown gen2)))
+      (teardown src))))
 
 (deftest op-count-diverges-but-is-inert
   (testing ":op-count does NOT round-trip, and that is acceptable — but only

@@ -993,6 +993,12 @@
         progress (or (:progress-fn opts) (constantly nil))
         xform    (:xform opts)
         batch-size (:batch-size opts)
+        ;; The backstop for a stream that never reaches a transaction boundary.
+        ;; A multiple of `:batch-size` rather than an absolute, so raising the
+        ;; batch size raises the ceiling with it and one knob still governs
+        ;; memory. `:max-pending` overrides for a caller who wants the ceiling
+        ;; tighter than the flush point.
+        hard-max (long (or (:max-pending opts) (* 4 batch-size)))
         on-error (:on-error opts)]
     (async+sync
      (:sync? opts) *default-sync-translation*
@@ -1150,8 +1156,28 @@
                                (let [rec (first rs)]
                                  (if rec
                                    (let [t (nth rec 3)
-                                         acc (if (and (>= (long (:n acc)) batch-size)
-                                                      (not= t (:last-t acc)))
+                                         ;; Flush at a TRANSACTION boundary once the
+                                         ;; batch is full — but never wait forever for
+                                         ;; one. A stream whose records all carry the
+                                         ;; same `t` (a database built by ONE large
+                                         ;; `transact`, or by `load-entities`, exported
+                                         ;; and re-imported) never satisfies
+                                         ;; `(not= t last-t)`, so without the second
+                                         ;; clause nothing flushes and the whole dump
+                                         ;; accumulates here — defeating the
+                                         ;; `:chunk-size` + `:batch-size` bound this
+                                         ;; loop exists to provide, on exactly the
+                                         ;; databases big enough to need it.
+                                         ;;
+                                         ;; Splitting a transaction across two
+                                         ;; `load-entities` calls is safe: the target
+                                         ;; tx id lives in `migration-state[:tids]`,
+                                         ;; which is threaded across calls, so both
+                                         ;; halves land on ONE transaction with order
+                                         ;; and grouping intact.
+                                         acc (if (or (and (>= (long (:n acc)) batch-size)
+                                                          (not= t (:last-t acc)))
+                                                     (>= (long (:n acc)) hard-max))
                                                (let [r (<?- (flush-batch! conn (:batch acc)
                                                                           on-error (:migration acc)
                                                                           progress opts))]
@@ -1231,8 +1257,11 @@
                 (warn! (str "[datahike.migrate] max-tx drifted by "
                             (if (pos? drift) "+" "") drift
                             " (source " src-max-tx ", restored " (:max-tx @conn)
-                            "): the restored database numbers its next transaction"
-                            " differently. Datom content is unaffected.")))))
+                            "): the restored database numbers its transactions"
+                            " differently, so datom `tx` components differ from the"
+                            " source's and `as-of` / `since` / `tx-range` shift with"
+                            " them. Entity ids, attributes and values are unaffected."
+                            " A faithful restore drifts by 0.")))))
           (let [refs (when (:check-refs? opts)
                        (dangling-refs @conn (get opts :dangling-sample 10)))]
             (when (and refs (pos? (long (:count refs))))
@@ -1246,12 +1275,17 @@
        ;; count mismatch expected rather than a fault.
                      :transformed? (boolean xform)
                      :dropped     dropped
-       ;; The restored db's max-tx is one HIGHER than the source's, because the
-       ;; import ends via `transact-entities-directly`, which bumps it once more.
-       ;; It does not compound -- a second round trip is stable -- but the restored
-       ;; database numbers its next transaction differently from the one it
-       ;; replaced, and that is the kind of thing an operator should be told
-       ;; rather than discover. nil when the dump records no source max-tx.
+       ;; ZERO for a faithful restore. It used to be +1 per `load-entities`
+       ;; CALL -- so +N for N batches -- because `transact-entities-directly`
+       ;; bumped max-tx once per call on top of the correct bump per source
+       ;; transaction. That skipped an id at every batch boundary and stretched
+       ;; the numbering, which is not cosmetic: a datom carries its `tx`, so
+       ;; the same dump imported at two `:batch-size` settings produced
+       ;; databases whose datoms differed, and `as-of` / `since` / `tx-range`
+       ;; with them. The per-call bump is gone; this stays because a non-zero
+       ;; drift now means something real (a merge, or a target that was not
+       ;; empty) and an operator should be told. nil when the dump records no
+       ;; source max-tx.
                      :max-tx-drift (when-let [src-max-tx (and (not (:merge? opts)) (:max-tx source-meta))]
                                      (- (long (:max-tx @conn)) (long src-max-tx)))
                      :merged?     (boolean (:merge? opts))

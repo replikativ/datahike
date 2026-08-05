@@ -267,11 +267,14 @@
                              (str k ": " (count (get a k)) " vs " (count (get b k)))))
                        (doseq [k derived-fields]
                          (is (= (get a k) (get b k)) (str k " differs")))
-                       (testing ":max-tx is the ONE field that differs, and by exactly
-                                 one. The streaming import ends via
-                                 `transact-entities-directly`, which bumps max-tx once
-                                 more; the index build does not transact at all."
-                         (is (= 1 (- (:max-tx a) (:max-tx b)))))
+                       (testing ":max-tx AGREES between the two paths, on Node as on
+                                 the JVM. It used to differ by one, because the
+                                 streaming import ended via
+                                 `transact-entities-directly`, which bumped max-tx
+                                 once per CALL — a bug that also made the result
+                                 depend on `:batch-size`. With it gone both paths
+                                 land on the number the dump names."
+                         (is (= (:max-tx a) (:max-tx b))))
                        (is (= #{"a" "b" "c"}
                               (set (map first (d/q '[:find ?n :where [?e :name ?n]] b))))
                            "and the bulk-built database is queryable"))
