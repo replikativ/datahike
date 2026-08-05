@@ -144,13 +144,32 @@
          (catch #?(:clj Exception :cljs js/Error) e
            (if (:error (ex-data e)) (throw e) (throw (gc-error db-before db-after e)))))
     (let [out (async/promise-chan)]
-      (async/take! (f)
-                   (fn [v]
-                     (async/put! out
-                                 (if (and (instance? #?(:clj Exception :cljs js/Error) v)
-                                          (not (:error (ex-data v))))
-                                   (gc-error db-before db-after v)
-                                   v))))
+      (async/take!
+       (f)
+       (fn [v]
+         (async/put!
+          out
+          (cond
+            ;; A CLOSED channel yields nil here, and a bare `go` that throws
+            ;; closes exactly that way — the failure is invisible to the taker.
+            ;; Putting that nil through would be worse than invisible: `put!`
+            ;; REFUSES nil ("Can't put nil on channel"), the throw happens inside
+            ;; this callback where nothing observes it, and `out` never
+            ;; delivers — a hang instead of an error. So nil is treated as the
+            ;; failure it is.
+            (nil? v)
+            (ex-info (str "diff failed: the index read completed without a result. "
+                          "A channel closed without delivering, which is what a "
+                          "core.async `go` block does when it throws.")
+                     {:error :diff/no-result
+                      :max-tx-before (:max-tx db-before)
+                      :max-tx-after (:max-tx db-after)})
+
+            (and (instance? #?(:clj Exception :cljs js/Error) v)
+                 (not (:error (ex-data v))))
+            (gc-error db-before db-after v)
+
+            :else v))))
       out)))
 
 (defn- distinct-datoms
