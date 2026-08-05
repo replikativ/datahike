@@ -22,6 +22,7 @@
             [datahike.datom :as d]
             [datahike.db.interface :as dbi]
             [datahike.db.utils :as dbu]
+            [datahike.index.secondary :as sec]
             [datahike.schema :as ds]
             [datahike.migrate.blobs :as mblobs]
             [datahike.migrate.cbor :as mcbor]
@@ -89,15 +90,100 @@
 (defn datom->record
   "Convert a datom to an EDN-encodable record vector [e a v t added]. `a` becomes a
    keyword ident; ref values pointing at a system entity become #datahike/sysref."
-  [db sys-ents sys-idents datom]
+  ([db sys-ents sys-idents datom] (datom->record db sys-ents sys-idents nil datom))
+  ([db sys-ents sys-idents sec-read datom]
   (let [e (nth datom 0)
         a (a-ident db (nth datom 1))
-        v (nth datom 2)
+        ;; For a `:db.secondary/only` attribute the primary holds a content hash,
+        ;; so the real value comes from the secondary index instead — see
+        ;; `secondary-only-values`. Falls back to the primary's value, which is
+        ;; correct for a RETRACTION (those already carry the stored hash) and for
+        ;; an entity the scan did not cover.
+        ;; Read from the SECONDARY index for a `:db.secondary/only` attribute —
+        ;; the primary holds a content hash. Falls back to the primary's value,
+        ;; which is right for a RETRACTION (those already carry the stored hash)
+        ;; and for an entity the index has no row for.
+        v (or (when (and sec-read (nth datom 4)) (sec-read a (nth datom 0)))
+              (nth datom 2))
         t (nth datom 3)
         op (nth datom 4)
         sysref? (fn [val] (when (and (dbu/ref? db a) (contains? sys-ents val))
                             (get sys-idents val)))]
-    [e a (mcbor/encode-value v sysref?) t op]))
+    [e a (mcbor/encode-value v sysref?) t op])))
+
+(defn secondary-only-reader
+  "`nil` when the database has no `:db.secondary/only` attribute — the common
+   case, one rschema lookup. Otherwise a `(fn [attr eid] -> value)` that reads
+   the full value from the secondary index covering `attr`.
+
+   ## Why export needs it
+
+   For a `:db.secondary/only` attribute the primary EAVT/AEVT/AVET hold a CONTENT
+   HASH — `project-primary` substitutes it on the way in — and the real value
+   goes only to the secondary index. `export-records` reads the primary indexes,
+   so a dump built from them carries the hash and the value is absent from the
+   backup entirely. Measured before this existed: a round trip left
+   `hasch(hasch(v))` in the restored primary and `v` was unrecoverable.
+
+   With the real value in the dump the IMPORT needs no change: the transactor
+   re-projects it, so the primary lands on `hasch(v)` (correct) and the secondary
+   receives `v` (correct). The double-hash was a symptom of the missing value,
+   not a separate defect.
+
+   ## Why a function and not a map
+
+   An earlier version read every `[eid value]` pair up front and held them in
+   `{attr {eid value}}` for the whole export. That is every document of a
+   full-text corpus resident at once — and `:db.secondary/only` exists precisely
+   for values too large to want in the primary index. Everything else in the
+   export path is bounded (`:chunk-size`, `:sort-buffer`); this would have been
+   the single unbounded term. One value at a time is the same bound the record
+   stream already has, at the price of a random read per such datom.
+
+   ## Why it validates eagerly
+
+   Scannability is checked HERE, before a single record is written, so an
+   unsupported index refuses the export rather than failing partway through a
+   dump that is already half on disk.
+
+   Refusing at all is the point: an index whose values cannot be read cannot be
+   backed up losslessly, and writing a dump we know is incomplete means the
+   operator discovers it at RESTORE time. (An export-side transform would be the
+   other way out — drop the attribute deliberately — but transforms are
+   import-only today; `:xform` has no export counterpart.)"
+  [db]
+  (let [only-attrs (->> (:schema db)
+                        (keep (fn [[k v]]
+                                (when (and (keyword? k) (map? v) (:db.secondary/only v)) k)))
+                        seq)]
+    (when only-attrs
+      (let [idx-for (reduce
+                     (fn [acc attr]
+                       (let [idx-idents (get-in db [:rschema :db.secondary/index attr])
+                             idx (some (fn [i] (get (:secondary-indices db) i)) idx-idents)]
+                         (when (nil? idx)
+                           (throw (ex-info (str "Cannot export " attr ": it is :db.secondary/only, "
+                                                "so its values live only in a secondary index, and "
+                                                "no such index is loaded on this database.")
+                                           {:error :export/secondary-only-unreadable
+                                            :attribute attr})))
+                         (when-not (satisfies? sec/ISecondaryScannable idx)
+                           (throw (ex-info (str "Cannot export " attr " losslessly: it is "
+                                                ":db.secondary/only, so its values live ONLY in the "
+                                                "secondary index covering it, and that index does "
+                                                "not implement ISecondaryScannable. The primary "
+                                                "indexes hold a content hash, so a dump written "
+                                                "from them would NOT contain this attribute's data "
+                                                "— you would discover that when restoring. "
+                                                "Refusing to write an incomplete backup.")
+                                           {:error :export/secondary-only-unreadable
+                                            :attribute attr
+                                            :index-idents (vec idx-idents)})))
+                         (assoc acc attr idx)))
+                     {} only-attrs)]
+        (fn [attr eid]
+          (when-let [idx (get idx-for attr)]
+            (sec/-sec-value idx attr eid)))))))
 
 (defn export-records
   "Lazy seq of encoded record vectors for `db` (UNSORTED — the external merge sort
@@ -109,10 +195,11 @@
   [db {:keys [history?]}]
   (let [src      (if history? (api/history db) db)
         sys-ents (if (attribute-refs? db) (dbi/-system-entities db) #{})
-        sidents  (system-idents db)]
+        sidents  (system-idents db)
+        sec-read (secondary-only-reader db)]
     (->> (api/datoms src :eavt)
          (filter (fn [dm] (> (d/datom-tx dm) c/tx0)))
-         (map (fn [dm] (datom->record db sys-ents sidents dm))))))
+         (map (fn [dm] (datom->record db sys-ents sidents sec-read dm))))))
 
 (defn export-records-streaming
   "Lazy seq of encoded records for `db` in a load-safe order WITHOUT sorting (so
@@ -135,7 +222,8 @@
         schema-or-meta? (fn [dm]
                           (let [a (a-ident db (nth dm 1))]
                             (or (ds/schema-attr? a) (ds/meta-attr? a))))
-        make     (fn [dm] (datom->record db sys-ents sidents dm))]
+        sec-read (secondary-only-reader db)
+        make     (fn [dm] (datom->record db sys-ents sidents sec-read dm))]
     (concat
      (->> (api/datoms src :eavt) (filter user?) (filter schema-or-meta?) (map make))
      (->> (api/datoms src :eavt) (filter user?) (remove schema-or-meta?) (map make)))))
@@ -326,6 +414,64 @@
                              "loop forever.")
                         {:error :migrate/bad-size :option k :value v}))))))
 
+(defn validate-record!
+  "Refuse a record that is not `[e a v t op]` with the right shapes. Throws;
+   returns nil. ~65 ns, i.e. 0.3% of a streaming import — which is the whole
+   argument for running it always rather than behind a flag.
+
+   Applied AFTER sysref resolution and AFTER `:xform`, so it also catches a
+   transducer that emits something malformed.
+
+   Each clause is a measured silent corruption, not a hypothetical:
+
+   `boolean? op` — the one that matters most. `op` is consumed by TRUTHINESS
+     everywhere (`(if (nth r 4) …)`, six places across three namespaces), and in
+     Clojure the integer `0` is truthy. A producer in another language emitting
+     CBOR `0`/`1` — the natural encoding, and the documented seam invites foreign
+     producers — therefore has EVERY RETRACTION SILENTLY ASSERTED. Measured on
+     the index-build path: `:verified? true` over a database whose current state
+     differs from the dump's.
+
+   `some? v` — a nil value reaches the indexes on both paths. `validate-val`
+     (which would reject it) is on the transact path only; `with-datom` calls
+     `validate-datom`, which checks uniqueness and not much else.
+
+   `integer? e` — a nil `e` is worse than it looks: `(or (migrated-eid m nil)
+     max-eid)` allocates ONE id for the nil key and remembers it, so every
+     nil-`e` record becomes an attribute of the SAME entity.
+
+   `t >= tx0` — `record->datom` passes `t` straight to `dd/datom`'s 5-arity,
+     which encodes `added` in the SIGN of tx. So `t=0` makes an assertion into a
+     retraction sitting in the current index, and `0 < t < tx0` yields a
+     plausible datom at a transaction id inside the entity id space. The
+     streaming path is immune (it remaps `t` through `:tids` first); the index
+     build is not.
+
+   `keyword? a` and the arity check turn two unattributable crashes — a bare
+     `IndexOutOfBoundsException` from the batcher, a `ClassCastException` from
+     inside `cmp_attr_quick` — into an error naming the record."
+  [record]
+  (letfn [(bad! [why]
+            (throw (ex-info (str "Malformed dump record: " why ". Records are "
+                                 "[e a v t op] with e/t integers, a a keyword ident, "
+                                 "v non-nil and op a boolean.")
+                            {:error :import/malformed-record
+                             :reason why
+                             :record record})))]
+    (when-not (and (vector? record) (= 5 (count record))) (bad! "not a 5-element vector"))
+    (let [[e a v t op] record]
+      (when-not (integer? e) (bad! (str "e is not an integer: " (pr-str e))))
+      (when-not (keyword? a) (bad! (str "a is not a keyword ident: " (pr-str a))))
+      (when (nil? v) (bad! "v is nil"))
+      (when-not (integer? t) (bad! (str "t is not an integer: " (pr-str t))))
+      (when (< (long t) (long c/tx0))
+        (bad! (str "t " t " is below tx0 (" c/tx0 "); dd/datom encodes `added` in "
+                   "the sign of tx, so such a t cannot mean what it says")))
+      (when-not (boolean? op)
+        (bad! (str "op is not a boolean: " (pr-str op)
+                   " — op is read by truthiness, so a non-boolean (CBOR 0/1 from a "
+                   "foreign producer) silently asserts retractions"))))))
+
 (defn assert-codec-supported!
   "Refuse a `:compression` this version cannot write.
 
@@ -371,6 +517,56 @@
    before `datoms-999999` lexicographically. Nothing does: the manifest's
    `:chunks` is an ordered vector and that is the authority."
   #"^datoms-\d{6,}\.cbor(\.gz)?$")
+
+(defn assert-dump-manifest!
+  "Guards that a manifest must pass before ANY chunk of it is read, on EVERY
+   medium. Throws; returns nil.
+
+   ## Why this is here and not in the filesystem reader
+
+   These three checks existed only on the filesystem path, inside `manifest-of`
+   and `open-dump`. The konserve-store path read its manifest with a bare `k/get`
+   and proceeded, so every one of them was absent for exactly the deployment that
+   most needs them — an S3 backup an operator cannot inspect by hand. Measured
+   before the fix, on a store dump:
+
+     * a chunk entry with `:sha256` deleted → tampered bytes imported,
+       `{:datom-count 15, :verified? true, :errors []}`, and `verify` `:ok? true`.
+       The same two edits to a filesystem dump threw `:import/missing-checksum`.
+     * a MISSING manifest key → `k/get` returns nil, every guard no-ops on nil,
+       `expected` and `live` are both 0, so the count check compared 0 against 0
+       and passed. An import of nothing reported success. Since the manifest is
+       written LAST as the commit marker, that is the normal shape of an export
+       that died midway — not operator error.
+
+   Keeping the rule in one medium-independent place is the point: the filesystem
+   fix was written, documented, and then not carried across, and nothing failed.
+
+   `:checksums :skip` is the only way past the hash requirement, and the caller
+   warns when it is used."
+  [manifest source opts]
+  (when (nil? manifest)
+    (throw (ex-info (str "Not a datahike dump: " (pr-str source)
+                         " has no manifest. A dump's manifest is written LAST as its"
+                         " commit marker, so a source without one is either not a dump"
+                         " or an export that did not finish.")
+                    {:error :import/not-a-dump :source source})))
+  (when-not (contains? manifest manifest-key)
+    (throw (ex-info (str "Not a datahike dump: " (pr-str source) " has a manifest with no "
+                         manifest-key ", so it was not written by datahike's export.")
+                    {:error :import/not-a-dump :source source
+                     :manifest-keys (vec (sort (keys manifest)))})))
+  (doseq [{:keys [file sha256]} (:chunks manifest)]
+    (when-not (and (string? file) (re-matches chunk-re (str file)))
+      (throw (ex-info (str "Dump manifest names a chunk this version will not read: "
+                           (pr-str file))
+                      {:error :import/bad-chunk-path :file file :source source})))
+    (when (and (nil? sha256) (not= :skip (:checksums opts)))
+      (throw (ex-info (str "Dump manifest has no :sha256 for chunk " (pr-str file)
+                           ". Integrity checking fails CLOSED: a chunk with no declared"
+                           " hash is refused rather than treated as unhashed. Pass"
+                           " {:checksums :skip} to import it anyway.")
+                      {:error :import/missing-checksum :file file :source source})))))
 
 (def chunk-name
   "One spelling for both media — see `datahike.migrate.store/chunk-name`."

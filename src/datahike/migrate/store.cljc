@@ -233,7 +233,23 @@
        ;; Decompress BEFORE hashing: `:sha256` is over the records, so that a
        ;; dump compares equal however it was stored (see `migrate.compress`).
        (let [content (mz/decompress-bytes codec stored {:file file})]
-         (when (and sha256 (not= sha256 (dig/sha256-hex content)))
+         ;; FAIL CLOSED on a missing hash. This used to read
+         ;; `(and sha256 (not= sha256 ...))`, i.e. a nil `:sha256` skipped the
+         ;; comparison — verbatim the fail-open that `migrate/open-dump`'s
+         ;; docstring records as fixed ("deleting one key from manifest.edn
+         ;; turned integrity checking off entirely"). It was fixed for the
+         ;; filesystem and not here, and the store medium is the one an operator
+         ;; cannot inspect by hand. Measured: tampered values plus a deleted
+         ;; `:sha256` imported clean with `:verified? true`.
+         ;;
+         ;; `manifest/assert-dump-manifest!` now refuses such a manifest before
+         ;; any chunk is read, so this is the second line of defence rather than
+         ;; the only one — but a chunk whose hash went missing between that check
+         ;; and this read must still not slip through.
+         (when (nil? sha256)
+           (throw (ex-info (str "Chunk " file " has no :sha256 in the manifest.")
+                           {:error :import/missing-checksum :file file})))
+         (when (not= sha256 (dig/sha256-hex content))
            (throw (ex-info (str "Checksum mismatch for chunk " file)
                            {:error :import/checksum-failed :file file})))
          (mcbor/decode-records-from content)))))))
