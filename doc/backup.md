@@ -53,9 +53,7 @@ flowchart TD
     I8["@load-entities(batch)<br/>remap e/tx ids; id-map O(entities)"]
     I9{":verify?"}
     I10["✗ import/verify-failed"]
-    I11{":finalize?"}
-    I12["drop :migration id-map"]
-    I13(["report: datom-count, verified?, finalized?, ..."])
+    I13(["report: datom-count, verified?, ..."])
     I0-->I1-->I2-->I3
     I3-- fail -->I4
     I3-- ok -->I5
@@ -64,10 +62,8 @@ flowchart TD
     I7-->I8
     I8-- "more batches" -->I7
     I8-- done -->I9
-    I9-- ok -->I11
+    I9-- ok -->I13
     I9-- mismatch -->I10
-    I11-- true -->I12-->I13
-    I11-- false -->I13
   end
 
   E11 -. "dump on disk or in store" .-> I0
@@ -136,15 +132,12 @@ flowchart TD
         ▼
   tx-aligned batcher ─► @(load-entities conn batch)   remap e/tx ids; max-tx
         │   ▲   (tx never split; a tx spanning chunks stays whole)
-        │   └── next batch      id-remap map O(entities), held until finalize
+        │   └── next batch      id-remap map O(entities), held for the import
         ▼ done
   :verify?  ─► dump count == live count   else ► throw :import/verify-failed
         │
         ▼
-  :finalize? ─► drop :migration id-map (frees O(entities))
-        │
-        ▼
-  REPORT {:datom-count :tx-count :max-tx :verified? :finalized?
+  REPORT {:datom-count :tx-count :max-tx :verified?
           :recommended-heap :errors}
 ╚═════════════════════════════════════════════════════════════════════════╝
 ```
@@ -233,9 +226,10 @@ Two knobs matter when the heap is tight relative to the data:
   export/import buffers below.
 - **`:sort-buffer` / `:batch-size`**, sized to your heap: peak export memory is
   roughly `:sort-buffer` records plus the merge fan-in; peak import memory is one
-  `:batch-size` batch plus the O(entities) id-remap map (cleared by
-  `finalize-import!`). The id-remap map is the one part that grows with entity
-  count — budget for it on very large imports.
+  `:batch-size` batch plus the O(entities) id-remap map, which the import holds
+  for its whole duration. That map is the one part that grows with entity count —
+  budget for it on very large imports, or use `:build-indexes?`, whose default
+  `:eids :preserve` needs no map at all.
 
 **How much RAM to give an import.** You don't have to work this out by hand — call
 `estimate-import-memory` on the dump *before* importing:
@@ -258,26 +252,200 @@ source {:batch-size N}`).
 
 ```clojure
 (def report (m/import-db fresh-conn "/backups/mydb"))
-;; => {:datom-count .. :tx-count .. :max-tx .. :verified? true :finalized? true :errors []}
+;; => {:datom-count .. :tx-count .. :max-tx .. :verified? true :errors []}
 ```
 
 Restore into a **freshly created, empty** database whose config is compatible with
 the dump's `:source-config` (the manifest records it). Import:
 
 - runs through `load-entities`, which **remaps** entity/tx ids — a restored
-  database is *semantically equivalent*, never id-identical;
+  database is *semantically equivalent*, never id-identical. (`:build-indexes? true`
+  below is the exception: from a `:history? true` dump it reproduces the
+  source's ids and `:max-tx` exactly, because it allocates the mapping up front
+  and never transacts.)
 - **refuses a non-empty target** (`:import/non-empty-target`). Import is **not
   resumable** (the id-remap is in-memory only); if an import is interrupted,
   delete the target and start over;
-- verifies itself against the manifest by default (`:verify? true`) and clears its
-  bookkeeping on success (`:finalize? true`).
+- verifies itself against the manifest by default (`:verify? true`).
 
-Options: `:batch-size`, `:verify?`, `:finalize?`, `:on-error :abort|:collect`,
-`:progress-fn`. Failures are `ex-info` with a namespaced `:error` (e.g.
-`:import/config-mismatch`, `:import/checksum-failed`, `:import/bad-chunk-path`).
+Options:
+
+| option | default | what it does |
+|---|---|---|
+| `:verify?` | `true` | check the imported datom count against the manifest's |
+| `:on-error` | `:abort` | `:abort` or `:collect` — never silently skips |
+| `:batch-size` | 100k | datoms per `load-entities` call (default path; tx-aligned, never split) |
+| `:xform` | — | a transducer over `[e a v t op]` records |
+| `:check-refs?` | `false` | report ref values naming an entity that holds no datoms |
+| `:merge?` | `false` | add this dump to a non-empty target (append-only) |
+| `:eids` | `:allocate` | how source ids bind to target ids (`:preserve` by default under `:build-indexes?`) |
+| `:build-indexes?` | `false` | build a fresh database from sorted input — see below |
+| `:checksums` | `:require` | `:skip` imports **without** verifying chunk hashes, and warns |
+| `:sort-buffer` | 200k | records held in memory per sort run (`:build-indexes?`) |
+| `:spool-codec` | `:gzip` | compression for the index-build scratch spool; `:none` to disable |
+| `:spool-chunk-size` | 100k | records per spool file |
+| `:dangling-sample` | 10 | how many dangling refs `:check-refs?` includes in its report |
+| `:progress-fn` | — | called with `{:phase … :datoms …}` |
+
+Failures are `ex-info` with a namespaced `:error` (e.g.
+`:import/config-mismatch`, `:import/checksum-failed`, `:import/bad-chunk-path`,
+`:import/build-indexes-refused`).
 
 Old flat **CBOR** dumps (produced by pre-1.0 datahike) still import through the
 legacy path automatically.
+
+### Building a fresh database from a dump (`:build-indexes? true`) — beta
+
+```clojure
+(m/import-db fresh-conn "/backups/mydb" {:build-indexes? true})
+;; => {:build-indexes? true :datom-count .. :max-tx-drift 0 :verified? true ..}
+```
+
+Instead of replaying the dump datom by datom, this **builds the index trees
+directly from sorted input** — the case a B-tree's insertion cost exists to
+avoid when the data is already known in full. The dump is read twice (once to
+compute the complete id mapping, once to normalise it to a single file), sorted
+three times, and all six trees are constructed from sorted streams and published
+in **one commit**.
+
+The result is a database equal field-for-field to the one the default path
+produces — every index, `:hash`, `:schema`, `:rschema`, `:max-eid`, the ident
+maps — with two differences, both by design:
+
+* **`:max-tx` is the dump's exactly**, not one higher. The streaming import ends
+  via a transaction, which bumps it; this one never transacts. With
+  `:history? true` that makes an index-build restore *id-identical* to its source,
+  which the streaming path cannot manage.
+* **`:op-count` differs**, which is inert for the persistent-set index (every
+  index operation takes it as an unused argument) and matters only to the
+  deprecated hitchhiker-tree, which is refused anyway.
+
+It is **opt-in and refused rather than downgraded**. `:build-indexes? true` that cannot
+be honoured throws with the reason, because an import that silently took the
+slow path would look like a mysterious performance result rather than a
+configuration mistake. The reasons: `:merge?` or a non-empty target (building
+trees from sorted input cannot apply upsert semantics against existing data —
+index-building and `:merge?` are complements), a non-persistent-set index,
+`:attribute-refs? true`, a dump whose schema declares a secondary index, and
+a caller-supplied `:eids`.
+
+It runs on **ClojureScript/Node** too, under `:sync? false` — the only mode
+there is. Both of the refusals that used to name a runtime are gone: neither
+described something the builder could not reproduce. The dump read and the tree
+build are awaited; the three sorts in between read a local scratch spool with
+synchronous primitives on both runtimes, which is what keeps them ordinary lazy
+seqs.
+
+**No speedup figure is quoted here.** The earlier one was withdrawn as unsound
+and has not been re-measured end to end.
+
+An **aborted** index build is destructive under `:crypto-hash? false`: flushed
+index nodes may reuse freelist addresses, so a build that fails midway has
+already overwritten them. Restore into a database you are willing to recreate —
+which, for a restore, is the normal case.
+
+## Migrating a live database
+
+Export/import moves a database that is standing still. A production migration is
+the other case: the source keeps taking writes, so the dump is stale before it
+finishes, and the delta grows for as long as the migration runs.
+
+The recipe below reduces downtime to the final catch-up window. Everything it
+uses already exists; nothing here is a separate feature.
+
+```clojure
+(require '[datahike.api :as d] '[datahike.migrate :as m])
+
+;; 1. LISTENER FIRST — before the snapshot, deliberately
+(def backlog (atom []))
+(d/listen conn ::migration (fn [report] (swap! backlog conj report)))
+
+;; 2. then the snapshot: a plain db VALUE, not the connection
+(def snapshot @conn)
+(def watermark (:max-tx snapshot))
+
+;; 3. export the snapshot while the source keeps taking writes
+(m/export-db snapshot "/backups/cutover" {:history? true})
+
+;; 4. restore, PRESERVING entity ids
+(m/import-db new-conn "/backups/cutover" {:build-indexes? true})
+
+;; 5. catch up: everything newer than the watermark
+(defn catch-up! []
+  (let [[pending _] (reset-vals! backlog [])]
+    (doseq [r pending
+            :when (> (long (:max-tx (:db-after r))) (long watermark))
+            :let [ops (->> (:tx-data r)
+                           (remove (fn [d] (= (:e d) (:tx d))))   ; skip tx entities
+                           (mapv (fn [d] [(if (:added d) :db/add :db/retract)
+                                          (:e d) (:a d) (:v d)])))]
+            :when (seq ops)]
+      (d/transact new-conn ops))))
+
+(catch-up!)          ; repeat while the backlog is still large
+;; ... stop writes ...
+(catch-up!)          ; final, short window
+(d/unlisten conn ::migration)
+```
+
+### Why the listener goes first
+
+**Registration does not need to be atomic with the snapshot**, which is what
+makes this simple. Register first and a transaction landing in the gap appears
+in *both* the snapshot and the backlog; `:max-tx` is an exact watermark, so the
+replay filter drops it. Register *after* the snapshot and such a transaction
+appears in neither — it is lost.
+
+So the ordering is load-bearing in one direction only, and the cost of getting
+it right is remembering to filter.
+
+### Why `:build-indexes?`
+
+It preserves entity ids. The backlog's datoms carry the *source's* eids, so they
+are only replayable if the restored database uses the same ones — and the
+default import path allocates fresh ids and does not hand back the mapping (it
+is O(entities), so the report carries only its size). `:build-indexes?` defaults
+to `:eids :preserve` for an empty target, which is exactly what this needs.
+
+### What is preserved, and what is not
+
+Measured on a source taking writes throughout — five transactions racing the
+snapshot, eleven more during the migration:
+
+| | |
+|---|---|
+| `[e a v]` including **entity ids** | identical |
+| history, excluding tx entities | identical |
+| `as-of` on the target | works |
+| transaction granularity | preserved **if** you replay one target transaction per source transaction |
+| `:db/txInstant` of replayed transactions | **differs** — they are genuinely new transactions with their own timestamps |
+
+Batching the replay collapses transaction structure: batching 200 datoms at a
+time turned 18 source transactions into 3 in the target. Content and ids were
+still identical — but `history` and `as-of` on the delta then see coarser
+transactions than the source had. Replay per source transaction if that matters,
+and pass explicit `:tx-meta` if wall-clock provenance does.
+
+### Two constraints
+
+**Do not write to the target from inside the callback.** `listen`'s contract is
+explicit: inside the callback use only async operations — a synchronous writer
+call deadlocks. Append to a queue, as above, and drain it elsewhere.
+
+**The backlog is memory.** It holds every transaction since the snapshot, so it
+grows with migration time and write rate. Draining into a durable queue rather
+than an atom is the obvious change for a long migration; `reset-vals!` above is
+what keeps a drained batch from being replayed twice.
+
+### When to use this instead of store sync
+
+konserve-sync replicates the **store**: same ids, same structure, continuously.
+Prefer it whenever the target should be a copy.
+
+This recipe reconstructs a database from its datoms, which is slower but can
+**transform on the way** — a different config, a different index, or a per-tenant
+split via export `:xform` (see [Export](#export)). Use it when the target is
+meant to differ from the source, not when it is meant to match.
 
 ## Data protection (PII / right-to-erasure)
 

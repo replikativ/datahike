@@ -1,15 +1,25 @@
-# Robust Export / Import — design proposal
+# Robust Export / Import — design rationale
 
-**Status:** Draft for discussion (targets Datahike 1.0's import/export revisit).
-**Namespace:** `datahike.migrate` (today `^:no-doc`, "temporary solution, pending
-Wanderung").
+**Status:** Shipped. This document explains *why* the format and the import paths
+are shaped as they are. It is no longer a proposal.
+**Namespace:** `datahike.migrate`.
 **Scope:** full-history, type-exact, verifiable dump/restore that round-trips a
 real database — not just a toy EAVT snapshot.
 
-This document is written to be checked against the live source. Every claim about
-internals carries a `file:line` citation so a maintainer can verify it before any
-code lands. Where an earlier private spec (v2) was wrong about the code, this doc
-says so explicitly — the goal is to *not* ship a PR built on a stale mental model.
+> **Read [import-export-invariants.md](import-export-invariants.md) for what the
+> code actually guarantees today.** That file is the contract to check an
+> implementation against; this one is the reasoning behind it.
+>
+> **The `file:line` citations below are historical.** They were written so every
+> claim could be verified against source on the day it was written, and they are
+> stale now — the subsystem has grown a second import path, a transducer hook, a
+> merge mode, an eid policy and fail-closed integrity since. Treat a citation as
+> "this was true of this function once", not as a pointer. Claims of *behaviour*
+> in §§4, 7, 8, 10 have likewise drifted; the invariants file supersedes them.
+>
+> The lesson is worth keeping rather than repeating: a document that cites line
+> numbers dates itself precisely, and a reader who trusts it is misled with equal
+> precision.
 
 ---
 
@@ -84,7 +94,9 @@ several load-bearing parts. These corrections are normative here:
    §7.4 table omits. A type-exact codec must cover them (§5.3).
 
 6. **`migration-state` is O(entities) and rides in the db value** — clearing it
-   after a verified import (`finalize-import!`) is still warranted (§8).
+   after a verified import is still warranted (§8). *(Superseded: the map never
+   rode on the db value, so there was nothing to clear; `finalize-import!` and
+   `:finalize?` were removed.)*
 
 Stale incidentals also corrected: the file is `migrate.clj` (not `.cljc`); tests
 live at `test/datahike/test/migrate_test.clj` and run via kaocha
@@ -316,9 +328,17 @@ practical bound.
 ## 8. Finalization
 
 `migration-state`'s `:eids` map is O(entities); for millions of entities that is
-hundreds of MB riding inside the db value. `finalize-import!` removes `:migration`
-after `verify` passes; on by default (`:finalize? true`), idempotent, and a
-precondition for reporting `:finalized? true`.
+hundreds of MB. This section designed a `finalize-import!` step to clear it after
+`verify` passed.
+
+> **Superseded — the premise was wrong.** The map never rode inside the db value:
+> it goes in and comes out on the tx-REPORT, and `complete-db-update` does not
+> copy it onto `db-after`. So the `swap!` that step performed had nothing to
+> clear, and it could not have worked anyway — `swap!` on the connection does not
+> reach the writer, which carries its own db value. `finalize-import!` and
+> `:finalize?` were removed. The import owns the map and drops it on return;
+> `migrate-test` asserts directly that an import leaves no id map on the db.
+> `:build-indexes?` with its default `:eids :preserve` needs no map at all.
 
 ---
 
@@ -343,7 +363,7 @@ precondition for reporting `:finalized? true`.
 
 `export-db` (`[db target]` legacy | `[db target opts]`), `import-db`
 (`[conn source]` legacy | `[conn source opts]`), `verify` (`[source]` |
-`[conn-or-db source]`), `finalize-import!` `[conn]`, and low-level reusable pieces
+`[conn-or-db source]`), and low-level reusable pieces
 `datom-reducible`, `write-dump`, `read-dump`, `semantic-digest`. Streaming
 producers/consumers are **reducibles** (`IReduceInit`), not lazy seqs, so file
 handles stay scoped to the reduction. `update-max-tx`/`update-max-tx-from-file`
@@ -433,7 +453,7 @@ codec would actually need.
 The committed implementation delivers the correctness core AND bounded-memory
 streaming end-to-end — the chunked CBOR-sequence format (gzip by default),
 type-exact codec (fixing #633), history + attribute-refs round-trip, manifest +
-per-chunk SHA-256 + semantic digest, `verify`, `finalize-import!`,
+per-chunk SHA-256 + semantic digest, `verify`,
 config/emptiness/format guards, closed-reader + path-validation + owner-only
 perms, and legacy-CBOR read compatibility — with a green kaocha suite
 (`test/datahike/test/migrate_test.clj`) across the persistent-set and
@@ -493,4 +513,18 @@ The verification and error-handling described in §§7–10 are fully implemente
 - **`:on-error :collect` is per-datom (§8.10).** On a batch failure the importer
   narrows to per-transaction, then per-datom, so exactly the offending datoms are
   recorded and skipped while everything else lands — id-consistency holds because
-  the `:migration` id-map persists in the db value across `load-entities` calls.
+  the same id-map is threaded across every `load-entities` call of the import.
+
+  > **Corrected.** This paragraph used to say the id-map "persists in the db
+  > value". It does not, and has not for some time: the map is owned by the
+  > import and threaded through the batcher, deliberately *not* placed on the db
+  > value or the connection, because a db value has two holders (the connection
+  > atom and the writer's own loop) and putting it there cost three bugs. See
+  > §8, where the `finalize-import!` step that was designed to clear it is
+  > superseded — it and `:finalize?` have been removed.
+
+**Since this document was written**, the subsystem gained: a second import path
+that builds index trees from sorted input (`:build-indexes?`), an `:xform`
+transducer replacing the old per-record `:translate` hook, `:merge?`, an `:eids`
+policy, `:check-refs?`, fail-closed integrity checking, and a compressed scratch
+spool. None of them are described above. The invariants file covers all of them.
