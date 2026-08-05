@@ -45,6 +45,37 @@
      persist alongside their content keys.
      Returns updated index instance (must be persistent/immutable)."))
 
+(defprotocol ISecondaryScannable
+  "Optional: enumerate what this index holds, so a BACKUP can carry it.
+
+   Exists for `:db.secondary/only` attributes and only for them. For such an
+   attribute the primary EAVT/AEVT/AVET store a content hash — `project-primary`
+   replaces the value on the way in — and the full value lives ONLY in the
+   secondary index. `datahike.migrate/export-db` reads the primary indexes, so
+   without this protocol a dump carries the hash and the value is simply absent
+   from the backup: measured, a round trip produced `hasch(hasch(v))` in the
+   primary and no way to recover `v` at all.
+
+   An index that does not implement this cannot be backed up losslessly, and
+   `export-db` REFUSES rather than writing a dump it knows is incomplete.
+
+   A POINT LOOKUP, deliberately, not a scan. An earlier version returned every
+   `[eid value]` pair at once and the caller held them in a map for the duration
+   of the export — which for a full-text corpus is every document resident at
+   once. Everything else in the export path is bounded by `:chunk-size` and
+   `:sort-buffer`; a whole-index map beside them would have been the one
+   unbounded term, and `:db.secondary/only` exists precisely for values too big
+   to want in the primary index. One value at a time is the same bound the
+   record stream already has.
+
+   The cost is a random read per datom of such an attribute. That is the right
+   trade here — these attributes are opt-in and rarely the bulk of a database —
+   and a backend free to cache internally still can. It also happens to be the
+   only shape proximum can serve: it fetches a vector BY external id and cannot
+   list its ids."
+  (-sec-value [this attr eid]
+    "The full value this index holds for `[attr eid]`, or nil."))
+
 (defprotocol ITransientSecondaryIndex
   "Optional protocol for secondary indices that support batch-mode transients.
    When supported, the transaction loop makes the index transient once at the

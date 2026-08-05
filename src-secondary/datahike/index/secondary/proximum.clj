@@ -132,6 +132,15 @@
                            :expected root
                            :details result}]}))))
 
+      sec/ISecondaryScannable
+      (-sec-value [_ _attr eid]
+        ;; `prox/get-vector` takes the EXTERNAL id — exactly the eid `-transact`
+        ;; inserted under — so this needs nothing from proximum that is not
+        ;; already public. It is also the only shape this backend can serve: it
+        ;; fetches by id and cannot enumerate its ids, which is one reason the
+        ;; protocol is a point lookup rather than a scan.
+        (prox/get-vector prox-idx eid))
+
       (-transact [_ tx-report]
         ;; tx-report: {:datom datom :added? bool}
         (let [{:keys [datom added?]} tx-report

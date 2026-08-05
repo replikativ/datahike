@@ -159,6 +159,21 @@
                                :expected root
                                :details (:errors r)}]}))))))
 
+      sec/ISecondaryScannable
+      (-sec-value [_ attr eid]
+        ;; A term query on the stored `_entity_id`, reading back the stored
+        ;; `value`. `-search` above throws that field away — it builds an
+        ;; EntityBitSet because that is what a query needs — but the text is
+        ;; there: `add-doc` writes `:value` with no `:store?` key and scriptum's
+        ;; default is `store? true`, i.e. `Field$Store/YES`.
+        ;;
+        ;; A point lookup rather than a scan, because the caller is streaming a
+        ;; dump and must not accumulate a corpus in memory. `:limit` is small but
+        ;; not 1: one entity can hold several attributes, each its own document.
+        (let [want (if (keyword? attr) (name attr) (str attr))]
+          (some (fn [r] (when (= want (get r "_attr")) (get r "value")))
+                (sc/search writer {:term [:_entity_id (str eid)]} {:limit 64}))))
+
       (-transact [this tx-report]
         ;; tx-report: {:datom datom :added? bool}
         (let [{:keys [datom added?]} tx-report

@@ -527,6 +527,22 @@
 
   (-indexed-attrs [_] attrs)
 
+  sec/ISecondaryScannable
+  (-sec-value [_ attr eid]
+    ;; Stratum keeps the real column values, so a backup can read them back —
+    ;; which matters only for `:db.secondary/only` attributes, whose value is
+    ;; NOT in the primary indexes (those hold a content hash) and would
+    ;; otherwise be absent from the dump entirely.
+    ;;
+    ;; A point query, not a column scan: the caller streams a dump and must stay
+    ;; bounded. `:where` takes `[[op col val] ...]` — see `-slice-ordered`.
+    (when dataset
+      (let [col-key (attr-col-key attr)]
+        (-> (st/q {:from dataset :select [:eid col-key]
+                   :where [[:= :eid (long eid)]] :limit 1})
+            first
+            (get col-key)))))
+
   (-transact [this tx-report]
     (let [t (sec/-as-transient this)]
       (sec/-transact! t tx-report)
