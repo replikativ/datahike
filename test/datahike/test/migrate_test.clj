@@ -134,8 +134,14 @@
             tgt (utils/setup-db (mem-cfg {:history? true}))
             report (m/import-db tgt dir {})]
         (is (:verified? report) "post-import verification passes")
-        (is (true? (:finalized? report)) "migration state cleared")
-        (is (nil? (:migration @tgt)) "finalize-import! removed :migration")
+        ;; The PROPERTY, kept after `finalize-import!` and `:finalize?` were
+        ;; removed. It used to be phrased as "finalize-import! removed
+        ;; :migration", which credited a no-op: the id map is threaded through
+        ;; the import and lands on the tx-REPORT, never on the db value, so
+        ;; there was nothing for that `swap!` to clear. An import leaving an
+        ;; O(entities) map on the db is still the regression worth catching —
+        ;; only the reason it cannot happen changed.
+        (is (nil? (:migration @tgt)) "an import leaves no id map on the db value")
         (is (= (user-triples src) (user-triples tgt))
             "id-independent content is identical after round-trip")
         (testing "#633: double/float classes preserved exactly"
@@ -614,7 +620,14 @@
                                         (assoc-in [:chunks last-ix :bytes] (.length chunk)))))))]
       (testing ":abort halts with the offending datom"
         (let [t1 (utils/setup-db (mem-cfg {:history? true}))]
-          (is (= :import/corrupt-datom
+          ;; `:import/malformed-record`, not `:import/corrupt-datom`: the fixture
+          ;; injects `[9999 42 "x" …]`, whose attribute is a NUMBER. A dump never
+          ;; carries numeric attributes — `datom->record` resolves them to keyword
+          ;; idents even in an attribute-refs database — so the record is
+          ;; malformed by the format's own contract and is now refused at the
+          ;; record seam rather than deep inside the transactor. What is being
+          ;; tested here is unchanged: :abort halts on a bad record.
+          (is (= :import/malformed-record
                  (try (m/import-db t1 path {:on-error :abort :verify? false}) nil
                       (catch clojure.lang.ExceptionInfo ex (:error (ex-data ex))))))
           (teardown t1)))

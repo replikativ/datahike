@@ -36,9 +36,14 @@
             [datahike.datom :as d]
             [datahike.db.interface :as dbi]
             [datahike.db.utils :as dbu]
+            [datahike.db.transaction :as dbt]
             [datahike.schema :as ds]
             [datahike.tools :as dt]
+            [datahike.gc-guard :as guard]
+            [datahike.writing :as dwriting]
             [datahike.migrate.cbor :as mcbor]
+            [datahike.migrate.ids :as ids]
+            [datahike.migrate.init :as init]
             [datahike.migrate.digest :as dig]
             [datahike.migrate.compress :as mz]
             [datahike.migrate.fs :as fs]
@@ -331,9 +336,33 @@
          ;; shape it was ALSO blamed for was never the obstacle, since every read
          ;; in the merge is a synchronous local file read and no channel op ever
          ;; occurs inside it.
-         (let [records (if (:sort? opts)
-                         (export-records db opts)
-                         (export-records-streaming db opts))
+         (let [records (cond->> (if (:sort? opts)
+                                  (export-records db opts)
+                                  (export-records-streaming db opts))
+                         ;; `:xform` on the EXPORT side, applied before the sort
+                         ;; and before the digest, so the manifest describes what
+                         ;; the dump actually holds — counts, semantic digest and
+                         ;; `:stats` all fall out of the transformed stream
+                         ;; rather than needing adjustment.
+                         ;;
+                         ;; The motivating case is splitting one large database
+                         ;; into per-tenant dumps: multi-tenancy is usually worth
+                         ;; adopting only once usage patterns are clear, i.e.
+                         ;; AFTER a single database already holds everyone, and
+                         ;; an export filter is how you get out of that without
+                         ;; a bespoke migration.
+                         ;;
+                         ;; Two things such a filter must get right, neither
+                         ;; enforced here because both are legitimate choices:
+                         ;; KEEP THE SCHEMA DATOMS (a dump of data with no schema
+                         ;; imports into a database that declares nothing), and
+                         ;; expect refs OUT of the retained set to dangle —
+                         ;; `import-db`'s `:check-refs?` reports those.
+                         ;;
+                         ;; One instance for the whole export, so a stateful
+                         ;; transducer sees one stream; it must be pure, since
+                         ;; `:sort? false` makes two passes over `:eavt`.
+                         (:xform opts) (sequence (:xform opts)))
                tmp-dir (when (:sort? opts) (fs/temp-dir! "dh-export"))]
            (try
              ;; NOT a `write-to!` closure any more. It held the konserve write,
@@ -534,8 +563,8 @@
    `:current-max-heap` have no meaning where there is no `Runtime.maxMemory` —
    they are absent from the result there rather than nil.
 
-   Three terms. The O(entities) id-remap map that `load-entities` holds until
-   `finalize-import!` dominates ABOVE about a million entities; below that the
+   Three terms. The O(entities) id-remap map the import holds for its whole
+   duration dominates ABOVE about a million entities; below that the
    `:chunk-size` worth of records held while a chunk is decoded is the largest,
    which is why it is counted rather than assumed negligible. The third is one
    `:batch-size` of records plus the tx-report churn it drives. Returns e.g.
@@ -750,8 +779,6 @@
                         {:error :import/config-mismatch :key k
                          :expected (get src k) :actual (get tgt k)}))))))
 
-(declare finalize-import!)
-
 (defn- check-target!
   "Refuse an import this target cannot accept — BEFORE anything is written.
 
@@ -768,6 +795,37 @@
       (throw (ex-info (str "Unsupported dump format-version " fv)
                       {:error :import/format-version :version fv}))))
   (config-compat! manifest conn)
+  ;; ---- machine-local paths inside a portable dump ----
+  ;; Secondary indexes ARE recreated automatically on import: their declaration
+  ;; lives in the schema, the schema datoms are replayed like any others, and
+  ;; transacting `:db.secondary/type` instantiates the index. What does NOT
+  ;; travel is `:db.secondary/config`, which may name an absolute path on the
+  ;; machine the dump came from — a lucene directory, a stratum root. Restoring
+  ;; that onto a different host writes the index somewhere the operator did not
+  ;; choose, or fails at the first write, long after the import reported success.
+  ;;
+  ;; A warning rather than a refusal: the path may well be right — restoring onto
+  ;; the same host is the common case — and the caller has `:xform` to rewrite it
+  ;; if it is not.
+  (doseq [[ident entry] (or (:schema manifest) {})]
+    (when-let [p (and (map? entry) (:db.secondary/type entry)
+                      (get-in entry [:db.secondary/config :path]))]
+      (warn! (str "[datahike.migrate] the dump's secondary index " ident
+                  " carries an absolute path from the machine it was exported on: "
+                  (pr-str p) ". It will be recreated pointing THERE. Rewrite it with"
+                  " :xform if this database is being restored somewhere else."))))
+  ;; ---- an :eids policy aimed at ids that are already taken ----
+  ;; `:preserve` refuses on collision, and a caller-supplied map or function gets
+  ;; the same courtesy: `transact-entities-directly` does not check, so a mapping
+  ;; onto an occupied eid MERGES the dump's entity into an existing one and the
+  ;; import reports success. Only checkable against a target that has data, which
+  ;; is `:merge?`.
+  (when (and (:merge? opts) (:eids opts)
+             (not (contains? #{:allocate :offset :preserve} (:eids opts))))
+    (warn! (str "[datahike.migrate] a caller-supplied :eids mapping is NOT checked for"
+                " collisions with entity ids already in this database. Mapping onto an"
+                " occupied id silently merges the dump's entity into the existing one."
+                " :preserve refuses instead; :offset cannot collide by construction.")))
   ;; The format and config checks above are about COMPATIBILITY and apply
   ;; whatever the target holds. Only emptiness is negotiable.
   (when-not (:merge? opts)
@@ -931,7 +989,7 @@
    manifest, so a non-dump caller simply does not call them."
   [conn source-meta mem chunk-src opts]
   (let [opts     (merge {:batch-size default-batch-size :verify? true
-                         :on-error :abort :finalize? true :sync? true} opts)
+                         :on-error :abort :sync? true} opts)
         progress (or (:progress-fn opts) (constantly nil))
         xform    (:xform opts)
         batch-size (:batch-size opts)
@@ -1026,6 +1084,34 @@
           ;; right. Counted here because `prepare` is where records disappear —
           ;; the batching loop never sees them.
               removed (volatile! 0)
+              ;; A VALUE, not a boolean — `:validate-records? :skip`, the way
+              ;; `:checksums :skip` is spelled. An opt-out that costs 0.3% should
+              ;; not be reachable by a stray `true` or a typo'd key.
+              ;;
+              validate? (not= :skip (:validate-records? opts))
+              ;; `:collect` COLLECTS malformed records rather than aborting on
+              ;; them — a bad record must surface either way, and `:collect`'s
+              ;; whole contract is to survive one and name it. An earlier version
+              ;; simply disabled validation here, which quietly reintroduced the
+              ;; two shapes this check exists for (a non-boolean `op`, a nil `e`)
+              ;; for anyone using `:collect`.
+              collect? (= :collect on-error)
+              bad (volatile! [])
+              check (fn [rs]
+                      (cond
+                        (not validate?) rs
+                        collect? (into [] (remove
+                                           (fn [r]
+                                             (try (mman/validate-record! r) false
+                                                  (catch #?(:clj Exception :cljs :default) e
+                                                    (vswap! bad conj
+                                                            {:error (or (:error (ex-data e))
+                                                                        :import/malformed-record)
+                                                             :datom r
+                                                             :message (ex-message e)})
+                                                    true))))
+                                         rs)
+                        :else (do (run! mman/validate-record! rs) rs)))
               prepare (fn [records]
                         (let [rs (mapv #(resolve-sysrefs sref-db %) records)]
                           (if step
@@ -1034,8 +1120,11 @@
                                                            (if (reduced? o) @o o))))
                                             rs)]
                               (vswap! removed + (- (count rs) (count out)))
-                              out)
-                            rs)))
+                              ;; AFTER the transducer, so an `:xform` can repair a
+                              ;; malformed record before it is judged — and so a
+                              ;; transducer that PRODUCES one is caught.
+                              (check out))
+                            (check rs))))
           ;; TWO NESTED LOOPS, not a reduce. The outer reads one chunk, the inner
           ;; batches its records and flushes — and both the read and the flush are
           ;; awaits, which must sit at statement positions the `go` state machine
@@ -1089,7 +1178,8 @@
               last-flush (<?- (flush-batch! conn (into (:batch final) residue)
                                             on-error (:migration final)
                                             progress opts))
-              errors (into (:errors final) (:errors last-flush))
+              errors (-> (into (:errors final) (:errors last-flush))
+                         (into @bad))
           ;; the mapping the whole import built — the `:tids` half is where the
           ;; transaction count comes from
               migration (:migration last-flush)
@@ -1127,14 +1217,6 @@
           ;; datoms in the first and its data datoms in the second. Measured: a
           ;; 13-transaction database reported 25.
               tx-count (count (:tids migration))]
-      ;; `verified?` is nil when verification was not RUN, and false when it ran
-      ;; and failed. Treating nil as failure used to mean `:verify? false`
-      ;; silently disabled `:finalize?` and left the O(entities) id map in the
-      ;; db value forever — on exactly the imports big enough that someone
-      ;; turned verification off to save time. The map no longer lives there, so
-      ;; this now only decides what `:finalized?` reports.
-          (when (and (:finalize? opts) (not (false? verified?)))
-            (finalize-import! conn))
       ;; Same cljs hazards as the heap warning above — `*err*` and `format` exist
       ;; on neither path — and this one had no guard at all. Left as-is until the
       ;; move to .cljc, where both warnings become one portable helper rather
@@ -1187,10 +1269,537 @@
                      :tx-count    tx-count
                      :max-tx      (:max-tx @conn)
                      :verified?   verified?
-                     :finalized?  (boolean (and (:finalize? opts) (not (false? verified?))))
                      :recommended-heap (:recommended-heap mem)
                      :errors      errors}
               refs (assoc :dangling-refs refs)))))))))
+
+;; ---------------------------------------------------------------------------
+;; the index-build path (opt-in, `:build-indexes? true`)
+
+(defn build-indexes-refusal
+  "Why this import cannot take the index-build path, as a sentence, or nil.
+
+   Every clause is a property the bulk builder cannot REPRODUCE, not a feature
+   it merely lacks — the point of refusing rather than degrading is that an index-build
+   import must be indistinguishable from the transact import it replaces, and
+   the four traps below are the ways it would not be:
+
+   `:merge?` / a non-empty target — building index trees from sorted input
+     cannot apply the upsert semantics `load-entities` applies when datoms meet
+     data that is already there. A complement, not a temporary gap.
+
+   a non-persistent-set index — `di/init-index-sorted` is implemented for
+     persistent-set only; hitchhiker-tree is deprecated.
+
+   `:attribute-refs? true` — a fresh database of that shape already holds
+     `ref-datoms` in its indexes and counts NONE of them in `:hash`
+     (`db.cljc/empty-db`), while `export-records` filters them out of the dump.
+     The bulk build would therefore have to synthesise them, and its `:hash`
+     rule would need an exception. Left out rather than half-done.
+
+   a secondary index in the dump's schema — `build-family!` builds the six
+     primary trees and nothing else, and `db->stored` would then publish a db
+     whose `:secondary-index-keys` are absent while its schema declares them.
+
+   Two clauses that USED to be here are gone, and neither was a property the
+   builder cannot reproduce — they were descriptions of an implementation:
+
+   `:sync? false` said \"the sort and the tree build are blocking\". The sort is,
+     on both runtimes, because every read in it is a synchronous local file read;
+     the tree build is not, and `di/init-index-sorted` has had a partial-cps
+     ClojureScript arm for as long as this refusal existed.
+
+   ClojureScript said \"`datahike.migrate.init` is `.clj`\". It is `.cljc`.
+
+   Note there is nothing left to refuse on that axis: `assert-sync-supported!`
+   refuses `{:sync? true}` on ClojureScript at the public entry points, so cljs
+   necessarily arrives here async, and the JVM keeps its synchronous path
+   through the same `async+sync` source.
+
+   Refusals are checked and reported TOGETHER as one message rather than
+   one-at-a-time, so a caller learns everything blocking them in a single run."
+  [conn manifest opts]
+  (let [config (:config @conn)
+        schema (or (:schema manifest) {})
+        reasons
+        (cond-> []
+          (:merge? opts)
+          (conj ":build-indexes? builds indexes from scratch and cannot merge into existing data")
+
+          (not= :datahike.index/persistent-set (:index config))
+          (conj (str ":build-indexes? needs the persistent-set index, this database uses "
+                     (:index config)))
+
+          (:attribute-refs? config)
+          (conj ":build-indexes? does not support :attribute-refs? true")
+
+          (some (fn [[_ entry]] (and (map? entry) (:db.secondary/type entry))) schema)
+          (conj ":build-indexes? does not build secondary indexes, and this dump's schema declares one")
+
+          ;; Not defensiveness for its own sake: `ids/build-mapping` decides
+          ;; whether a VALUE is a ref by looking the attribute up in this schema,
+          ;; and a ref value may point forward to an entity whose own datoms come
+          ;; later. With no schema every ref value passes through unmapped, which
+          ;; is invisible whenever the mapping happens to be the identity — the
+          ;; usual case for an empty target — and silently produces dangling refs
+          ;; when it is not. Every dump this exporter writes carries `:schema`.
+          ;;
+          ;; Keyed on the KEY's absence, not on an empty map: a
+          ;; `:schema-flexibility :read` database declares no attributes, so its
+          ;; `ident-schema` is legitimately `{}` — and it can hold no refs
+          ;; either, since `:db.type/ref` requires a declaration. Empty is fine;
+          ;; missing means the manifest is not one of ours.
+          (not (contains? manifest :schema))
+          (conj ":build-indexes? needs the dump's schema to remap ref values, and this manifest carries none")
+
+          ;; `:preserve` (the default here) and `:allocate` are the two this
+          ;; path can honour. `:offset` and a caller-supplied map/fn are about
+          ;; fitting a dump AROUND data that is already there, which is the
+          ;; `:merge?` case this path refuses outright.
+          (not (contains? #{nil :preserve :allocate} (:eids opts)))
+          (conj (str ":build-indexes? supports :eids :preserve (default) and :allocate; "
+                     (pr-str (:eids opts)) " is for fitting a dump around existing data,"
+                     " which this path does not do")))]
+    (when (seq reasons)
+      (apply str "cannot build indexes directly: " (interpose "; " reasons)))))
+
+(defn- reduce-source-records
+  "Reduce `rf` over the dump's sysref-resolved, `:xform`ed records, ONE CHUNK AT
+   A TIME. `async+sync`: the accumulator in sync mode, a channel of it otherwise.
+
+   ## Why a fold and not a seq
+
+   This used to be `source-records`, returning a fresh lazy seq that each pass
+   reduced over. That cannot survive `:sync? false`: `((:read chunk-src) c opts)`
+   returns a CHANNEL there, and a `go` state machine does not park inside a
+   `lazy-seq` body — the identical constraint `run-import` documents under \"Why
+   chunks and not a reducer\", and the reason `reduce-dump-records` lost its
+   streaming arm. So the read moves to a statement position in an explicit chunk
+   `loop`, and the caller is handed a fold instead of a seq.
+
+   The chunk loop is also what keeps the memory bound the seq had. Emphatically
+   not
+
+     (mapcat #((:read chunk-src) % opts) (:chunks chunk-src))
+
+   which is what this was two revisions ago and which read the WHOLE dump into
+   memory before the sort saw a record: `mapcat` is `(apply concat (map f coll))`
+   and `map` over a CHUNKED collection evaluates `f` for a whole 32-element block
+   at once, while a dump has far fewer than 32 chunk files — 14 for the
+   1.4M-datom database this was measured on. Measured: pulling ONE record decoded
+   14 of 14 chunks; one chunk at a time, the same import decoded 4 and completed
+   in a 256 MB heap where the eager version died. That is also why the OOM was
+   insensitive to `:sort-buffer`.
+
+   `rf` must not PARK. It is applied inside a `reduce` here, so an await in it
+   would be invisible to the go block — the same rule `reduce-dump-records`
+   states for its own `rf`. Both callers only compute and write to the spool,
+   which is what makes the fold seam sufficient: the spool is read back with
+   synchronous `fs` primitives on both runtimes, so everything downstream of this
+   function can go back to being a lazy seq.
+
+   Called ONCE PER PASS, and each call builds a FRESH transducer instance. That
+   is sound only because `:xform` is documented as pure: two instances see the
+   same input in the same order, so they produce the same output.
+
+   `counter`, when given, is a volatile incremented once per record BEFORE the
+   transducer sees it — the pre-transform count, which is what makes verification
+   meaningful after a dropping `:xform`.
+
+   The transducer is stepped ONE RECORD AT A TIME from a fresh `[]`, which is
+   exactly what `run-import`'s `prepare` does, rather than through `sequence`.
+   Two reasons, and the first is a bug this had:
+
+     * `sequence` SHORT-CIRCUITS. `(take 25)` stops pulling after 25 records, so
+       the counter above saw 25 inputs instead of the dump's 55, `dropped` came
+       out 0, and verification failed on a transducer that had worked perfectly.
+       Stepping explicitly always consumes the whole input.
+     * it makes `:xform` semantics identical between the two import paths by
+       construction, rather than by two implementations agreeing.
+
+   `reduced?` is unwrapped per record, and the completion arity runs once after
+   the last chunk so a transducer holding a partial group flushes it."
+  [sref-db chunk-src opts counter rf init]
+  (async+sync
+   (:sync? opts) *default-sync-translation*
+   (go-try-
+    (let [read-chunk (:read chunk-src)
+          step (when-let [xf (:xform opts)] (xf conj))
+          ;; wrapped ONCE, around `rf` — so it covers the transducer's output and
+          ;; the completion arity's residue without a second call site to forget
+          rf (if (or (= :skip (:validate-records? opts))
+                     (= :collect (:on-error opts)))
+               rf
+               (fn [a r] (mman/validate-record! r) (rf a r)))]
+      (loop [cs (seq (:chunks chunk-src)) acc init]
+        (if (nil? cs)
+          ;; The completion arity, once, at the end of the PASS — not per chunk,
+          ;; where a stateful transducer would flush a group the stream had not
+          ;; finished.
+          (if step (reduce rf acc (step [])) acc)
+          (let [records (<?- (read-chunk (first cs) opts))]
+            (recur (next cs)
+                   (reduce (fn [a record]
+                             (let [r (resolve-sysrefs sref-db record)]
+                               (when counter (vswap! counter inc))
+                               (if step
+                                 (let [o (step [] r)]
+                                   (reduce rf a (if (reduced? o) @o o)))
+                                 (rf a r))))
+                           acc records)))))))))
+
+;; Distinct transaction ids, for the report's `:tx-count`.
+;;
+;; This exists because the obvious cheap trick does not work: a dump carries NO
+;; `:db/txInstant` records at all — measured, 0 of them in a 24-record dump
+;; spanning 6 transactions — so counting tx entities counts nothing.
+;; `export-records` projects datoms, and datahike keeps txInstant in the tx
+;; entity rather than in the datom stream this reads.
+;;
+;; Two implementations, and they do NOT cost the same. On the JVM it is a
+;; `java.util.BitSet` offset by `tx0`: a transaction id IS `tx0 + k` for a small
+;; k, so one bit per POSSIBLE transaction is exact and costs ~125 KB per million
+;; transactions, where a `HashSet` of boxed Longs would cost a few hundred times
+;; that. ClojureScript has no BitSet, and a hand-rolled one over a typed array is
+;; not worth writing for a counter, so it is a `js/Set` of the ids themselves:
+;; O(DISTINCT TRANSACTIONS) boxed numbers rather than one bit per possible
+;; transaction. That is a real asymmetry, not parity — a million-transaction
+;; dump costs tens of megabytes on Node against 125 KB on the JVM — and it is
+;; accepted only because the term stays well under the spool and the sort's own
+;; window, both of which are proportional to the whole database.
+(defn- tx-counter [] #?(:clj (java.util.BitSet.) :cljs (js/Set.)))
+
+(defn- tx-seen! [counter t]
+  #?(:clj (.set ^java.util.BitSet counter (int (- (long t) (long c/tx0))))
+     :cljs (.add counter t))
+  nil)
+
+(defn- tx-cardinality [counter]
+  #?(:clj (.cardinality ^java.util.BitSet counter)
+     :cljs (.-size counter)))
+
+(defn- run-index-build
+  "Build all six index trees from the dump directly and publish them in ONE
+   commit, instead of replaying the dump through `load-entities`.
+
+   ## Two passes over the dump, three over a normalised file
+
+   1. `ids/build-mapping` — the COMPLETE id mapping, before anything is
+      written. A bulk build needs final ids before sorting, because the sort
+      order is over those ids; the incremental allocation
+      `transact-entities-directly` does cannot supply them. Skipped entirely
+      under `:eids :preserve`, which is the default here.
+   2. Rewrite every record through that mapping and write the result to a
+      temporary chunked CBOR spool. The dump is not read again: the three sorts
+      read the spool, which is already sysref-resolved, transformed and remapped.
+      `:hash` and the schema datoms are collected in the same pass, since the
+      records are streaming past anyway.
+   3. Three external sorts of the spool — one per index family — each feeding
+      both trees of its family (see the namespace docstring on why six trees
+      need three sorts).
+
+   ## Where the asynchrony is, and where it is not
+
+   `async+sync`, so one source compiles into a synchronous JVM path and a
+   ClojureScript one. Only TWO things in the sequence are ever asynchronous:
+
+     * the dump read, which is why passes 1 and 2 go through
+       `reduce-source-records`' chunk loop rather than a lazy seq;
+     * the tree build, which on ClojureScript is partial-cps (see
+       `init/build-index!`).
+
+   Everything between them is synchronous on both runtimes, and the SPOOL is
+   what makes that true: it is written once from the async read and then read
+   back with `fs` synchronous primitives (`readSync` on Node), so the three
+   sorts and the currentness folds stay ordinary lazy seqs. That property is
+   worth preserving — losing it would mean pushing `go` state machines through
+   the merge sort.
+
+   ## The guard, and why it is not a `finally`
+
+   `guard/writing!` is taken BEFORE the first tree is built and released only
+   after the commit that publishes the root. Everything in between is written to
+   the store while the branch head still names the previous (empty) snapshot, so
+   a concurrent collector would classify it as garbage. The commit runs inside
+   the writer, and the writer delivers its callback only after `reset!`ing the
+   connection — so awaiting the publish is exactly the right span.
+
+   The release is explicit on both the success and the failure path, INSIDE the
+   go block, and NOT a `try/finally` — for the reason `import-db` records at its
+   store arm: in async mode the body hands back a channel, so a `finally` fires
+   the moment it is handed back, which here would drop the guard before a single
+   node had been written and delete the spool out from under the sorts. Same for
+   the temp-directory cleanup."
+  [conn source-meta schema mem chunk-src opts]
+  ;; The SAME defaults `run-import` applies, and for the same reason: they are
+  ;; applied here rather than in `import-db` because `run-import` is also
+  ;; called directly. Missing them once already cost this path its
+  ;; verification — `:verify?` read as nil, so every index-build import reported
+  ;; `:verified? nil` and checked nothing.
+  ;; `:eids :preserve` by DEFAULT, unlike the streaming path, whose default is
+  ;; `:allocate`. The target is empty, so there is nothing for a source id to
+  ;; collide with, and preserving them is both the cheaper and the more
+  ;; faithful answer: no O(entities) map, one less read of the dump, and a
+  ;; restore that reproduces its source's ids exactly. `:allocate` remains
+  ;; available for a caller who wants the dump renumbered densely.
+  (let [opts       (merge {:verify? true :on-error :abort :sync? true
+                           :eids :preserve}
+                          opts)
+        opts       (update opts :eids #(or % :preserve))
+        db0        @conn
+        config     (:config db0)
+        keep-hist? (boolean (:keep-history? config))
+        store      (:store db0)
+        store-id   (:id (:store config))
+        ;; 200k, not the export path's 1,000,000.
+        ;;
+        ;; `spill-runs` holds `run-size` records in memory, sorts them, and
+        ;; spills — so this number IS the sort's peak heap, and at a million
+        ;; five-element vectors it is the largest term in the whole import
+        ;; now that the id map is gone under `:preserve`. Worse, `spill-runs`
+        ;; does not spill at all when the input fits in one run, so a
+        ;; million-record default means every database up to a million
+        ;; records is sorted ENTIRELY in memory — exactly the case a bounded
+        ;; heap cannot afford.
+        ;;
+        ;; Lower is not free: fewer records per run means more runs and a
+        ;; deeper merge (`reduce-runs` handles the fan-in). 200k trades a
+        ;; little merge depth for a bound an operator can reason about, and
+        ;; `:sort-buffer` raises it for anyone who has the heap.
+        run-size   (get opts :sort-buffer 200000)
+        progress   (or (:progress-fn opts) (constantly nil))
+        spool-codec (get opts :spool-codec mz/default-codec)
+        ;; The index BUILDER's mode, which is NOT the import's — and this is the
+        ;; one place the two must not be conflated. `psset/from-sorted-seq` is
+        ;; synchronous on the JVM whatever `:sync?` says: it calls `(flush-fn)`
+        ;; and ignores the result (persistent_sorted_set.clj:398). So a `false`
+        ;; here under a JVM `:sync? false` import would hand the builder channels
+        ;; nobody ever takes — the konserve writes would still run, out of band,
+        ;; with their errors dropped on the floor and no backpressure at all.
+        ;; The ClojureScript builder is partial-cps and does await the flush, and
+        ;; `:sync? true` never reaches this function there
+        ;; (`assert-sync-supported!` refuses it at the entry points).
+        build-sync? #?(:clj true :cljs false)]
+    (when (false? (:sufficient? mem))
+      (warn! (str "[datahike.migrate] heap warning: importing " (:datoms mem)
+                  " datoms needs about " (:recommended-heap mem)
+                  "; this runtime's limit is " (:current-max-heap mem) ".")))
+    (async+sync
+     (:sync? opts) *default-sync-translation*
+     (go-try-
+      (let [tmp   (fs/temp-dir! "dh-index-build")
+            token (guard/writing! store-id)
+            res
+            (try
+              (let [;; ---- pass 1, ONLY under :allocate ----
+                    ;; `:preserve` needs no mapping at all, and skipping it
+                    ;; removes BOTH the O(entities) map and one of the two reads
+                    ;; of the dump. That is not a micro-optimisation:
+                    ;; `estimate-import-memory` calls the id map "the dominant,
+                    ;; unavoidable term", and it is what would put a big restore
+                    ;; over a bounded heap. It is avoidable here precisely
+                    ;; because the target is empty — there is nothing for a
+                    ;; source id to collide with.
+                    ;;
+                    ;; `build-mapping`'s body is `(reduce-records rf init)`, so
+                    ;; handing it the async fold makes it return that fold's
+                    ;; channel unchanged. The park happens inside
+                    ;; `reduce-source-records`' own go block, not inside this
+                    ;; closure — which the state machine could not enter.
+                    mapping  (when (= :allocate (:eids opts))
+                               (<?- (ids/build-mapping
+                                     {:schema schema
+                                      :system-entities (:system-entities db0)
+                                      :max-eid (:max-eid db0)
+                                      :max-tx (:max-tx db0)}
+                                     (fn [rf init]
+                                       (reduce-source-records db0 chunk-src opts nil rf init)))))
+                    ;; ---- pass 2: normalise to the spool, collecting what we can see ----
+                    ;; COMPRESSED scratch. This spool holds the whole database,
+                    ;; and it used to be raw CBOR while the dump it came from was
+                    ;; gzipped — several times the dump's size in scratch, which
+                    ;; an operator had to discover rather than be told.
+                    spool    (init/open-spool! tmp spool-codec
+                                               (get opts :spool-chunk-size
+                                                    init/default-spool-chunk-size))
+                    raw-n    (volatile! 0)
+                    schema?  (fn [record] (let [a (nth record 1)]
+                                            (or (ds/schema-attr? a) (ds/entity-spec-attr? a))))
+                    ref?     (fn [a] (= :db.type/ref (:db/valueType (get schema a))))
+                    txs      (tx-counter)
+                    ;; No `try/finally` around the fold to close the spool. In
+                    ;; async mode the fold IS a channel, so a `finally` would
+                    ;; flush the spool before a record had been read; and there
+                    ;; is nothing to release on the failure path anyway — a spool
+                    ;; file is a file in `tmp`, which the cleanup below removes
+                    ;; whichever way this ends.
+                    state    (<?- (reduce-source-records
+                                   db0 chunk-src opts raw-n
+                                   (fn [acc record]
+                                     (let [r (if mapping
+                                               (ids/apply-mapping mapping schema record)
+                                               record)
+                                           n (inc (long (:n acc)))
+                                           e (nth r 0) a (nth r 1) v (nth r 2) t (nth r 3)]
+                                       ((:add! spool) r)
+                                       (when (>= (long t) (long c/tx0))
+                                         (tx-seen! txs t))
+                                       (when (zero? (rem n 100000))
+                                         ;; `{:phase .. :datoms ..}` — the shape
+                                         ;; every other progress callback in this
+                                         ;; namespace uses, so one progress-fn
+                                         ;; serves both import paths.
+                                         (progress {:phase :normalise :datoms n}))
+                                       (-> acc
+                                           (update :n inc)
+                                           (update :hash + (if (nth r 4)
+                                                             (hash (d/datom e a v))
+                                                             0))
+                                           ;; O(1) running maxima, so `:preserve`
+                                           ;; needs no mapping to derive them
+                                           ;; from. `tx0` PARTITIONS the id space
+                                           ;; — entity ids below it, transaction
+                                           ;; ids at or above — which is what
+                                           ;; makes a single comparison enough.
+                                           ;; Ref VALUES count towards max-eid
+                                           ;; too: a ref may name an entity that
+                                           ;; holds no datoms of its own, and a
+                                           ;; later allocation landing on that id
+                                           ;; would silently resurrect the
+                                           ;; reference.
+                                           (update :max-eid max
+                                                   (if (< (long e) c/tx0) (long e) 0)
+                                                   (if (and (ref? a) (number? v) (< (long v) c/tx0))
+                                                     (long v) 0))
+                                           (update :max-tx max (long t))
+                                           (cond-> (schema? r) (update :schema-recs conj r)))))
+                                   {:n 0 :hash 0 :schema-recs []
+                                    :max-eid (long (:max-eid db0)) :max-tx (long (:max-tx db0))}))
+                    ;; flushes the tail chunk; the files are the spool
+                    spool-files ((:close! spool))
+                    ;; ---- the schema-derived fields, from the dump's own datoms ----
+                    sfields  (init/schema-from-records db0 (:schema-recs state))
+                    rschema  (:rschema sfields)
+                    index-config (assoc (:index-config config)
+                                        :indexed (:db/index rschema)
+                                        :sync? build-sync?
+                                        :flush-fn (dwriting/bulk-flush-fn store build-sync?))
+                    ;; ---- three sorts, six trees ----
+                    ;; Announced, because this is the long phase and it emits
+                    ;; nothing while it runs: three external sorts and six tree
+                    ;; builds over the whole database, with no per-record
+                    ;; callback to hang progress on.
+                    _        (progress {:phase :build-indexes :datoms (:n state)})
+                    ;; `(:sync? opts)`, NOT `build-sync?`: the last argument is
+                    ;; the SHAPE `build-indexes!` hands back, and this import
+                    ;; awaits it. The builder's own mode travels in
+                    ;; `index-config` above. Passing `build-sync?` here meant a
+                    ;; JVM `:sync? false` import awaited a plain map — "No
+                    ;; implementation of method: :take! of protocol: ReadPort".
+                    indexes  (<?- (init/build-indexes! store (:index config) index-config rschema
+                                                       keep-hist?
+                                                       #(init/spool-records spool-files spool-codec)
+                                                       run-size tmp (:sync? opts)))
+                    fields   (merge sfields indexes
+                                    ;; Under `:allocate` the mapping already
+                                    ;; knows both maxima exactly — it allocated
+                                    ;; them — and using it costs nothing. Under
+                                    ;; `:preserve` the running maxima from pass 2
+                                    ;; are the whole answer. Both are exact,
+                                    ;; neither scans the finished trees.
+                                    {:max-eid (if mapping
+                                                (dec (long (:next-eid mapping)))
+                                                (:max-eid state))
+                                     :max-tx  (if mapping
+                                                (dec (long (:next-tx mapping)))
+                                                (:max-tx state))
+                                     :hash    (:hash state)
+                                     ;; inert for persistent-set (every index op
+                                     ;; takes it as `_op-count`), and
+                                     ;; hitchhiker-tree — the only index that
+                                     ;; reads it — is refused above.
+                                     :op-count (:n state)})
+                    ;; Awaited the way `flush-batch!` awaits the writer, and for
+                    ;; the same reason: `throwable-promise` is derefable AND
+                    ;; parkable on the JVM, while ClojureScript has only the
+                    ;; promise-chan. A bare `deref` here would not compile there.
+                    p        (dwriter/publish-built-db! conn fields)
+                    report   #?(:clj (if (:sync? opts) @p (<?- p))
+                                :cljs (<?- p))
+                    _        (when (instance? #?(:clj Throwable :cljs js/Error) report)
+                               (throw report))
+                    live (long (user-datom-count @conn (boolean (:history? source-meta))))
+                    ;; NET removed by the transducer, exactly as `run-import`
+                    ;; counts it — a transducer may expand as well as filter, so
+                    ;; an input becoming three makes this negative, which RAISES
+                    ;; the expectation. Subtracting it keeps the check meaningful
+                    ;; (records that should have landed and did not are still
+                    ;; caught) rather than either failing spuriously on a working
+                    ;; transformation or being switched off.
+                    dropped (- (long @raw-n) (long (:n state)))
+                    expected (- (long (or (:expected-count source-meta) 0)) dropped)
+                    verified? (when (:verify? opts)
+                                (let [ok? (or (nil? (:expected-count source-meta))
+                                              (= expected live))]
+                                  (when (and (not ok?) (not= :collect (:on-error opts)))
+                                    (throw (ex-info "Post-import verification failed (datom count mismatch)"
+                                                    {:error :import/verify-failed
+                                                     :dump-count (:expected-count source-meta)
+                                                     :dropped-by-xform dropped
+                                                     :expected-count expected
+                                                     :live-count live})))
+                                  ok?))
+                    refs (when (:check-refs? opts)
+                           (dangling-refs @conn (get opts :dangling-sample 10)))]
+                (when (and refs (pos? (long (:count refs))))
+                  (warn! (str "[datahike.migrate] " (:count refs) " ref value(s) in the imported "
+                              "database name an entity that holds no datoms. Sample: "
+                              (pr-str (:sample refs)))))
+                (cond-> {:datom-count live
+                         :build-indexes?       true
+                         :transformed? (boolean (:xform opts))
+                         :dropped     dropped
+                         ;; The index-build path does not transact, so `max-tx`
+                         ;; is exactly the source's — none of the +1 the
+                         ;; streaming import reports, because nothing bumps it on
+                         ;; the way in.
+                         :max-tx-drift (when-let [src (:max-tx source-meta)]
+                                         (- (long (:max-tx @conn)) (long src)))
+                         :merged?     false
+                         ;; ZERO under `:preserve`, which is the point of it: the
+                         ;; heap warning is about this number.
+                         :id-map-size (if mapping (count (:eids mapping)) 0)
+                         :eid-range   (let [after (long (:max-eid @conn))
+                                            before (long (:max-eid db0))]
+                                        (when (> after before) [(inc before) after]))
+                         :tx-count    (tx-cardinality txs)
+                         :max-tx      (:max-tx @conn)
+                         :verified?   verified?
+                            :recommended-heap (:recommended-heap mem)
+                         :errors      []}
+                  refs (assoc :dangling-refs refs)))
+              (catch #?(:clj Exception :cljs :default) e e))]
+        ;; The guard closes and the scratch goes away on BOTH paths, here rather
+        ;; than in a `finally` — see the docstring. The guard must outlive the
+        ;; publish, and it does: `publish-built-db!`'s promise resolves only after
+        ;; the writer has committed and `reset!` the connection.
+        (guard/done! store-id token)
+        (doseq [n (or (fs/list-names tmp) [])] (fs/delete! (fs/join tmp n)))
+        (fs/delete! tmp)
+        (if (instance? #?(:clj Throwable :cljs js/Error) res) (throw res) res))))))
+
+(defn- import-via
+  "Pick the import path. `:build-indexes? true` REFUSES rather than falls back: silently
+   taking the slow path when the caller asked for the fast one turns a
+   configuration mistake into a mysterious performance report, and every reason
+   in `build-indexes-refusal` is something the caller can act on."
+  [conn manifest mem chunk-src opts]
+  (if (:build-indexes? opts)
+    (if-let [why (build-indexes-refusal conn manifest opts)]
+      (throw (ex-info why {:error :import/build-indexes-refused :reason why}))
+      (run-index-build conn (manifest->source-meta manifest)
+                       (or (:schema manifest) {}) mem chunk-src opts))
+    (run-import conn (manifest->source-meta manifest) mem chunk-src opts)))
 
 (defn- restore-blobs!
   "Put the dump's carried `:db.type/store-ref` bytes into the target store, before
@@ -1282,10 +1891,52 @@
                              is about. Transaction ids are not covered; they are
                              always allocated above the target's :max-tx.
                              See `eid-policy`.
-     :finalize?    true      vestigial. The id map used to ride in the db value
-                             and needed clearing; it is now owned by the import
-                             and released when the import returns. Kept for
-                             compatibility — see `finalize-import!`.
+     :build-indexes? false    BETA. Create the database by building its index
+                             trees directly from the dump — sort it three times
+                             and construct all six trees from sorted input —
+                             instead of replaying it datom by datom. One commit,
+                             at the end.
+
+                             This is the FRESH-DATABASE case, not bulk ingestion
+                             in general: it refuses a non-empty target and
+                             refuses `:merge?`, because building trees from
+                             sorted input cannot apply the upsert semantics
+                             `load-entities` applies when datoms meet existing
+                             data.
+
+                             The result is a database equal field-for-field to
+                             the one the default path produces, EXCEPT that
+                             `:max-tx` is the source's exactly rather than one
+                             higher (nothing transacts, so nothing bumps it) and
+                             `:op-count` differs, which is inert for
+                             persistent-set.
+
+                             `:eids` defaults to `:preserve` HERE, unlike the
+                             streaming path: an empty target has nothing for a
+                             source id to collide with, so the dump's ids are
+                             kept as they are. That removes the O(entities) id
+                             map — the term `estimate-import-memory` calls the
+                             dominant one — and one of the two reads of the
+                             dump, and makes a `:history? true` restore
+                             id-identical to its source. `:eids :allocate` opts
+                             back into the pre-pass and the map.
+
+                             Runs on ClojureScript/Node too, under `:sync? false`
+                             — the only mode there is. The dump read and the tree
+                             build are awaited; the sorts in between read a local
+                             scratch spool with synchronous primitives on both
+                             runtimes.
+
+                             Refused, with the reason, for a merge, a non-empty
+                             target, a non-persistent-set index,
+                             `:attribute-refs? true`, a dump whose schema
+                             declares a secondary index, an `:eids` policy other
+                             than `:preserve`/`:allocate`, and a manifest with no
+                             schema. See `build-indexes-refusal`.
+
+                             No speedup figure is quoted here on purpose — the
+                             earlier one was withdrawn as unsound and has not
+                             been re-measured end to end.
      :progress-fn  nil
    Returns {:datom-count .. :tx-count .. :max-tx .. :verified? .. :errors [..]
             :recommended-heap ..}. Prints a heap warning if the current -Xmx looks
@@ -1316,10 +1967,13 @@
                manifest (<?- (mstore/read-manifest m opts))
                mem (estimate-from-manifest manifest (manifest-total-bytes manifest nil) batch-size)
                res (try
+                     ;; The SAME guard the filesystem arm gets from `open-dump`.
+                     ;; Inside the `try` so a refused dump still closes the store.
+                     (mman/assert-dump-manifest! manifest source opts)
                      (check-capabilities! manifest)
                      (check-target! conn manifest opts)
                      (<?- (restore-blobs! conn manifest source opts))
-                     (<?- (run-import conn (manifest->source-meta manifest) mem
+                     (<?- (import-via conn manifest mem
                                       {:chunks (:chunks manifest)
                                        :read (fn [c o] (mstore/read-chunk m manifest c o))}
                                       opts))
@@ -1348,29 +2002,10 @@
              ;; that were never written. The store arm above always awaited this;
              ;; only the filesystem arm did not.
                (<?- (restore-blobs! conn manifest source opts))
-               (<?- (run-import conn (manifest->source-meta manifest) mem
+               (<?- (import-via conn manifest mem
                                 {:chunks (:files dump)
                                  :read (fn [f o] (fs-read-chunk manifest f o))}
                                 opts)))))))))))
-
-(defn finalize-import!
-  "Historically: clear the `:migration` id map from the db after a verified
-   import, because it was O(entities) and rode in the db value.
-
-   It no longer rides there. The mapping is threaded through `run-import` and
-   goes out of scope when the import returns, so there is nothing to free and
-   this is a no-op for any database built by the current importer. It stays
-   public, idempotent, and still dissocs, so a db value carried over from an
-   older import is handled too.
-
-   Worth recording why it existed: it could not do its job. `swap!` on the
-   CONNECTION does not reach the writer, which carries its own db value — so the
-   map was never actually freed, and the next import into the same connection
-   inherited it and upserted onto the previous import's entities. Owning the
-   mapping in the caller removes the need for the step rather than fixing it."
-  [conn]
-  (swap! conn dissoc :migration)
-  :finalized)
 
 ;; ---------------------------------------------------------------------------
 ;; verify
@@ -1398,6 +2033,10 @@
   (if (mstore/store-target? source)
     (let [m (mstore/open source)]
       (try (let [manifest (mstore/read-manifest m)]
+             ;; Without this every tier folded over zero records and compared
+             ;; empty against empty, so `verify` returned a fully green report
+             ;; for a store prefix that is not a dump at all.
+             (mman/assert-dump-manifest! manifest source {})
              (f manifest (fn [rf init] (mstore/reduce-records m manifest rf init))))
            (finally (mstore/close m))))
     (let [dump (open-dump source)]
@@ -1518,7 +2157,27 @@
          (if (mstore/store-target? source)
            (let [m (mstore/open source)]
              (try
-               (let [manifest (mstore/read-manifest m)]
+               (let [manifest (mstore/read-manifest m)
+                     ;; REPORTS rather than throws, matching the filesystem
+                     ;; branch below — this is the call an operator makes to ASK
+                     ;; about a dump, and "it threw" is a worse answer than "here
+                     ;; is what is wrong with it". Both the manifest guard and
+                     ;; `reduce-records`' per-chunk hash check are caught: before
+                     ;; this, a store dump with a corrupt chunk threw out of
+                     ;; `verify` while the same dump on disk came back as a
+                     ;; finding.
+                     finding (try
+                               (mman/assert-dump-manifest! manifest source {})
+                               (mstore/reduce-records m manifest (fn [acc _] acc) nil)
+                               nil
+                               (catch #?(:clj clojure.lang.ExceptionInfo :cljs :default) e
+                                 (let [{:keys [error]} (ex-data e)]
+                                   (if (#{:import/missing-checksum :import/checksum-failed
+                                          :import/bad-chunk-path :import/not-a-dump} error)
+                                     {:error error
+                                      :message #?(:clj (.getMessage e) :cljs (.-message e))
+                                      :data (ex-data e)}
+                                     (throw e)))))]
                  ;; Read every chunk. `mstore/reduce-records` verifies each one's
                  ;; SHA-256 as it goes, which is what makes the `:checksums :ok`
                  ;; below true.
@@ -1530,8 +2189,9 @@
                  ;; same corruption on a filesystem dump threw, because
                  ;; `open-dump` hashes every chunk. Verified both ways before
                  ;; changing it.
-                 (mstore/reduce-records m manifest (fn [acc _] acc) nil)
-                 {:manifest manifest})
+                 {:manifest (or manifest {})
+                  :chunks-verified (when (nil? finding) (count (:chunks manifest)))
+                  :finding finding})
                (finally (mstore/close m))))
            ;; REPORTS rather than enforces. `open-dump` throws on a bad or
            ;; missing checksum, which is right for an import — but this is the
@@ -1593,9 +2253,21 @@
                dump-count (long (or (:count (:semantic-digest manifest)) 0))
                live-count (long (user-datom-count db hist?))
                ;; tier 2 — id-independent fingerprint, dump vs live
+               ;; `:db.secondary/only` attributes compare on the HASH, because
+               ;; the two sides legitimately hold different things: the dump
+               ;; carries the real value (export reads it from the secondary
+               ;; index — without that the backup would not contain the data at
+               ;; all), while the live primary holds `project-primary`'s content
+               ;; hash. Projecting the dump side is what makes them comparable;
+               ;; the alternative would be reading every live secondary index
+               ;; back during verification.
+               sec-only? (fn [a] (dbu/secondary-only? db a))
                dump-fp (fp-final (reduce-source
                                   (fn [fp record]
-                                    (let [[e a v _t op] record]
+                                    (let [[e a v _t op] record
+                                          v (if (and op (sec-only? a))
+                                              (dbt/secondary-only-hash v)
+                                              v)]
                                       (fp-step fp [e a v op] ref?)))
                                   (fp-init)))
                src     (if hist? (api/history db) db)
@@ -1612,7 +2284,18 @@
                ;; blobs — same tier as the chunks, and part of :ok?
                blobs  (verify-blobs manifest source)]
            {:ok? (and (= dump-count live-count) t2-ok (:ok? t3) (:ok? blobs))
-            :tier0 {:checksums :ok :format (get manifest manifest-key)}
+            ;; DERIVED, not the literal `:ok` this used to be. The 1-arity was
+            ;; fixed to distinguish "every chunk was hashed" from "there were no
+            ;; chunks and nothing was checked"; forty lines below its comment
+            ;; saying so, this arity still hardcoded `:ok` — and reported it for
+            ;; a store prefix that was not a dump, with every tier folding over
+            ;; zero records and comparing empty against empty.
+            ;;
+            ;; `with-source-records` now refuses a non-dump outright, so reaching
+            ;; here means a real manifest; this says how much of it was covered.
+            :tier0 {:checksums (if (pos? (count (:chunks manifest))) :ok :none)
+                    :chunks-verified (count (:chunks manifest))
+                    :format (get manifest manifest-key)}
             :tier1 {:manifest-count dump-count :live-count live-count :match? (= dump-count live-count)}
             :tier2 {:match? t2-ok
                     :value-digest-match? (= (:digest dump-fp) (:digest live-fp))

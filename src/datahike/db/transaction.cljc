@@ -1739,8 +1739,11 @@
    connection atom and the writer's own loop — so neither is authoritative, and
    `swap!`ing the connection to seed or clear the mapping never reached the
    transactor. It also put O(entities) of import bookkeeping inside a value that
-   means \"the database\", which is why clearing it needed a separate
-   `finalize-import!` step at all.
+   means \"the database\", which is why clearing it seemed to need a separate
+   finalization step at all. (`datahike.migrate/finalize-import!` and its
+   `:finalize?` option existed for that and have been removed: the map goes in
+   and comes out on the REPORT, never on `db-after`, so the step had nothing to
+   clear even before this changed.)
 
    Now the caller owns it: pass the previous call's `:migration` back in, and
    the map goes out of scope when the import ends."

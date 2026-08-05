@@ -189,7 +189,11 @@
                            #?@(:clj ['build-secondary-index! w/build-secondary-index!
                                      'install-secondary-index! w/install-secondary-index!])
                            ;; merge with multi-parent commit tracking
-                           'merge! (with-tx-pred w/merge-writer!)})
+                           'merge! (with-tx-pred w/merge-writer!)
+                           ;; bulk import: indexes built outside, substituted here.
+                           ;; NOT wrapped — its :tx-data is empty by construction,
+                           ;; so a tx-pred has nothing to judge (see w/publish-built-db!)
+                           'publish-built-db! w/publish-built-db!})
 
 (defmulti create-writer
   (fn [writer-config _]
@@ -307,6 +311,22 @@
                                        :args [entities migration]}))]
          (#?(:clj deliver :cljs put!) p tx-report)))
      p)))
+
+(defn publish-built-db!
+  "Publish a bulk-built database through the writer.
+
+   The promise resolves only after the commit loop has committed and `reset!` the
+   connection, which is what lets `migrate/run-index-build` hold the GC guard
+   across the whole build-then-publish sequence: bulk-built nodes are written
+   before anything references them, and the guard must not close until the root
+   that references them has landed."
+  [connection fields]
+  (let [p (throwable-promise)
+        writer (:writer @(:wrapped-atom connection))]
+    (go
+      (let [tx-report (<! (dispatch! writer {:op 'publish-built-db! :args [fields]}))]
+        (#?(:clj deliver :cljs put!) p tx-report)))
+    p))
 
 (defn merge-db!
   "Merge parent branches/commits into the current branch through the writer.

@@ -198,7 +198,7 @@
       (let [[path _] (dump-with-a-bad-datom src)]
         (testing "sync throws"
           (let [tgt (utils/setup-db (mem-cfg))]
-            (is (= :import/corrupt-datom
+            (is (= :import/malformed-record
                    (try (m/import-db tgt path {:sync? true :on-error :abort :verify? false}) nil
                         (catch clojure.lang.ExceptionInfo e (:error (ex-data e))))))
             (teardown tgt)))
@@ -206,7 +206,7 @@
           (let [tgt (utils/setup-db (mem-cfg))
                 v (<!! (m/import-db tgt path {:sync? false :on-error :abort :verify? false}))]
             (is (instance? Throwable v) "not a report — a failure")
-            (is (= :import/corrupt-datom (:error (ex-data v))))
+            (is (= :import/malformed-record (:error (ex-data v))))
             (teardown tgt))))
       (teardown src))))
 

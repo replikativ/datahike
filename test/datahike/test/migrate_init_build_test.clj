@@ -1,4 +1,4 @@
-(ns datahike.test.migrate-bulk-build-test
+(ns datahike.test.migrate-init-build-test
   "What a bulk build owes the transact path, tree by tree.
 
    `migrate-bulk-test` covers the index-layer primitive (`init-index-sorted`
@@ -20,7 +20,7 @@
             [datahike.api :as d]
             [datahike.datom :as dd]
             [datahike.db.utils :as dbu]
-            [datahike.migrate.bulk :as bulk]
+            [datahike.migrate.init :as init]
             [datahike.migrate.fs :as fs]
             [datahike.migrate.history :as mh]
             [datahike.migrate.manifest :as mman]
@@ -251,9 +251,9 @@
                  [:aevt :aevt :temporal-aevt]
                  [:avet :avet :temporal-avet]]]
           (testing (name family)
-            (let [sorted-file (bulk/sort-family! records family 1000000 tmp)
+            (let [sorted-file (init/sort-family! records family 1000000 tmp)
                   {:keys [current temporal]}
-                  (bulk/build-family! store :datahike.index/persistent-set
+                  (init/build-family! store :datahike.index/persistent-set
                                       family sorted-file index-config rschema)]
               (is (= {:missing () :spurious ()}
                      (diff (set (map tup (seq (get db current-key))))
@@ -277,17 +277,46 @@
             index's name. Nothing downstream can notice — every tree involved is
             a real tree — so the refusal has to happen at this boundary."
     (doseq [f [:eavtt :temporal-eavt nil "eavt"]]
-      (is (= :bulk/unknown-index-family
-             (try (bulk/sort-family! [] f 10 "/tmp") nil
+      (is (= :init/unknown-index-family
+             (try (init/sort-family! [] f 10 "/tmp") nil
                   (catch clojure.lang.ExceptionInfo e (:error (ex-data e)))))
           (str "sort-family! must refuse " (pr-str f)))
-      (is (= :bulk/unknown-index-family
-             (try (bulk/build-family! nil :datahike.index/persistent-set f nil {} {}) nil
+      (is (= :init/unknown-index-family
+             (try (init/build-family! nil :datahike.index/persistent-set f nil {} {}) nil
                   (catch clojure.lang.ExceptionInfo e (:error (ex-data e)))))
           (str "build-family! must refuse " (pr-str f))))
     (testing "and the three real families are accepted"
-      (doseq [f bulk/index-families]
-        (is (some #{f} bulk/index-families))))))
+      (doseq [f init/index-families]
+        (is (some #{f} init/index-families))))))
+
+(deftest asking-for-no-temporal-tree-builds-no-temporal-tree
+  (testing "`temporal? false` must not merely return an empty tree — it must not
+            BUILD one.
+
+            Under `:keep-history? false` the stored db has no temporal keys at
+            all (`writing/db->stored`), so every node such a build wrote would be
+            unreferenced the moment the commit landed: garbage, written at full
+            cost. The absent `:temporal` key is how the caller can tell the
+            difference between 'built and empty' and 'not built'."
+    (let [conn (adversarial-conn)
+          db @conn
+          index-config {:indexed (:db/index (:rschema db))}
+          records (vec (mman/export-records db {:history? true}))
+          tmp (fs/temp-dir! "dh-bulk-notemporal")]
+      (try
+        (let [f (init/sort-family! records :eavt 1000000 tmp)
+              built (init/build-family! (:store db) :datahike.index/persistent-set
+                                        :eavt f index-config (:rschema db) false)]
+          (is (contains? built :current) "the current tree is still built")
+          (is (not (contains? built :temporal))
+              "and there is no :temporal key at all, empty or otherwise")
+          (is (pos? (count (seq (:current built))))
+              "precondition: the fixture is not empty, so an absent temporal key
+               is a choice rather than an artefact"))
+        (finally
+          (doseq [n (or (fs/list-names tmp) [])] (fs/delete! (fs/join tmp n)))
+          (fs/delete! tmp)
+          (teardown conn))))))
 
 (deftest a-record-with-t-zero-decodes-as-a-retraction
   (testing "`dd/datom`'s 5-arity encodes `added` in the SIGN of tx, so t=0 has no

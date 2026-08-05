@@ -913,3 +913,40 @@
   ([old entities migration]
    (log/debug :datahike/load-entities {:entity-count (count entities)})
    (complete-db-update old (core/load-entities-with old entities nil migration))))
+
+(defn publish-built-db!
+  "Replace `old`'s indexes and derived fields wholesale with ones built OUTSIDE
+   the writer, and hand the result to the ordinary commit path.
+
+   `datahike.migrate/run-index-build` builds six index trees from a dump by
+   sorting it, which takes as long as the import takes. Doing that inside the
+   writer's transaction loop would block every other write on this connection for
+   the duration and, worse, would put a multi-minute synchronous call inside a
+   `go` block. So the build happens outside and this only substitutes the
+   result — the writer's own commit loop then flushes, commits and publishes it,
+   which is what keeps an index-build import's durability identical to a transaction's.
+
+   `fields` carries only what a bulk build computes: the index trees, the
+   schema-derived maps, `:max-eid`, `:max-tx`, `:hash`, `:op-count`. Everything
+   else — store, config, writer, meta, system entities — is `old`'s, so this
+   cannot smuggle in a database from somewhere else.
+
+   `:tx-data` is empty and this is deliberately NOT wrapped in `with-tx-pred`: a
+   transaction predicate judges datoms, and an index-build import presents none for it to
+   judge. A store that relies on a tx-pred as a gate should not enable `:build-indexes?`.
+
+   Refuses a non-empty `old`, which is the same precondition
+   `migrate/check-target!` enforces one level up — restated here because this is
+   the function that would silently discard the data."
+  [old fields]
+  (log/debug :datahike/publish-built-db {:max-eid (:max-eid fields) :max-tx (:max-tx fields)})
+  (when-not (zero? (count (:eavt old)))
+    (throw (ex-info "publish-built-db! would discard an existing database"
+                    {:error :index-build/target-not-empty})))
+  (complete-db-update
+   old
+   {:db-before old
+    :db-after  (merge old fields)
+    :tx-data   []
+    :tempids   {}
+    :tx-meta   {:db/txInstant (dt/get-date)}}))
