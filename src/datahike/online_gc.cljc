@@ -91,8 +91,13 @@
       ;; Evict from cache to prevent stale reads
       (doseq [addr addresses]
         (wrapped/evict cache addr))
-      ;; Add all addresses to the freelist for reuse
-      (swap! freelist into addresses)
+      ;; Add to the freelist for reuse — DISTINCT, and never an address already on it.
+      ;; An address appearing twice would be popped twice and handed to two different
+      ;; nodes; see CachedStorage.markFreed for how duplicates arise. That source is
+      ;; now de-duped too, so this is a backstop rather than the only guard.
+      (swap! freelist (fn [fl]
+                        (let [present (set fl)]
+                          (into fl (comp (distinct) (remove present)) addresses))))
       (count addresses))))
 
 (defn delete-freed-addresses!

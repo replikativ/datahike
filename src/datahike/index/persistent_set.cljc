@@ -554,7 +554,23 @@
                                     :address address
                                     :cause-message #?(:cljs (.-message e) :clj (ex-message e))}))))))))))
   (markFreed [_ address]
-    (when address
+    ;; AT MOST ONCE per address. `markFreed` is a multiset of "superseded by the
+    ;; version being produced" events, not a set of facts: two versions derived from
+    ;; one stored parent both legitimately supersede its nodes, so both report them.
+    ;; That is ordinary structural sharing, not a race — measured on plain
+    ;; `(conj base x)` / `(conj base y)`: 6 calls for 3 addresses, every one doubled.
+    ;;
+    ;; `freed-addresses` is a VECTOR and feeds `online-gc/recycle-freed-addresses!`,
+    ;; which pushes onto a freelist that `freelist-pop!` draws from. A duplicate there
+    ;; means the SAME address is handed to two different nodes — the second store
+    ;; overwrites the first and any parent still pointing at it reads the wrong node.
+    ;; Verified: recycling [A A B] popped B, A, A.
+    ;;
+    ;; `freed-set` already exists as the membership index; it just was not consulted.
+    ;; The check-then-swap is not atomic, but marking happens on the write path, which
+    ;; is single-writer per store by datahike's own contract — and `recycle` de-dupes
+    ;; again as a backstop.
+    (when (and address (not (contains? @freed-set address)))
       ;; Monotonic stamp (konserve's write clock) — compared against
       ;; online-GC's grace cutoff, which reads the same source.
       (let [now (ku/now)]
