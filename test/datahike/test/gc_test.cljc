@@ -9,6 +9,7 @@
    [datahike.versioning :refer [branch! delete-branch! merge!
                                 branch-history]]
    [konserve.core :as k]
+   [datahike.gc :as gc]
    [datahike.test.core-test])
   (:import [java.util Date]))
 
@@ -157,3 +158,68 @@
         (is (= 7 (count history-after-gc)))))
     (d/release conn)
     (d/release conn-branch1)))
+
+;; ---------------------------------------------------------------------------
+;; Explicit GC roots
+;;
+;; datahike's native liveness is reachability AND recency: `reachable-in-branch`
+;; follows ancestry only while a record is newer than `remove-before`. That is
+;; correct when a branch head is the only pointer, but a consumer can have
+;; pointers datahike cannot see — geschichte stores git refs as ordinary datoms,
+;; so every one of its commits looks like unreferenced old history and a cutoff
+;; GC silently deletes the snapshot the ref names.
+;;
+;; A root restores git's rule for such a consumer: referenced means live,
+;; independent of age.
+;; ---------------------------------------------------------------------------
+
+(deftest test-gc-roots
+  (let [id   (random-uuid)
+        cfg  {:store {:backend :file :path (str "/tmp/gc-roots-" id) :id id}
+              :schema-flexibility :write :keep-history? true :commit-graph? true
+              :index :datahike.index/persistent-set}
+        _    (d/delete-database cfg)
+        _    (d/create-database cfg)
+        conn (d/connect cfg)]
+    (d/transact conn [{:db/ident       :note/text
+                       :db/valueType   :db.type/string
+                       :db/cardinality :db.cardinality/one}])
+    (d/transact conn [{:note/text "oldest"}])
+    (let [old-cid (:datahike/commit-id (:meta @conn))
+          store   (:store @conn)
+          resolves? (fn [cid] (try (some? (d/commit-as-db conn cid))
+                                   (catch Throwable _ false)))]
+      ;; bury it under later history so a cutoff would otherwise reach it
+      (dotimes [i 5] (d/transact conn [{:note/text (str "later " i)}]))
+      (is (resolves? old-cid) "baseline: the old commit resolves before any GC")
+
+      (testing "declaring a root"
+        (is (= #{old-cid} (<?? S (gc/gc-root! store old-cid))))
+        (is (= #{old-cid} (<?? S (gc/gc-roots store))))
+        (is (= #{old-cid} (<?? S (gc/gc-root! store old-cid))) "idempotent"))
+
+      (testing "a root survives a cutoff that would otherwise collect it"
+        (<?? S (d/gc-storage conn (Date.)))
+        (is (resolves? old-cid)
+            "the rooted commit must still resolve after a full-cutoff GC")
+        (is (some? (d/q '[:find ?t . :where [_ :note/text ?t]] @conn))
+            "ordinary operation is unaffected"))
+
+      (testing "unrooting releases it — the control for the assertion above"
+        (is (= #{} (<?? S (gc/gc-unroot! store old-cid))))
+        (<?? S (d/gc-storage conn (Date.)))
+        (is (not (resolves? old-cid))
+            "without the root the same GC collects it, so the root is what protected it")))))
+
+(deftest test-gc-root-rejects-unresolvable-commit
+  (let [id   (random-uuid)
+        cfg  {:store {:backend :file :path (str "/tmp/gc-roots-" id) :id id}
+              :schema-flexibility :write :keep-history? true :commit-graph? true
+              :index :datahike.index/persistent-set}
+        _    (d/delete-database cfg)
+        _    (d/create-database cfg)
+        conn (d/connect cfg)]
+    ;; A root naming a missing commit retains nothing. Failing at declaration
+    ;; keeps that from surfacing later as a store that already lost the history
+    ;; the root was meant to protect.
+    (is (thrown? Throwable (<?? S (gc/gc-root! (:store @conn) (random-uuid)))))))
