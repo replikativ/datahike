@@ -481,6 +481,38 @@
       ;; Evict old cached value when reusing an address
       (when reused
         (wrapped/evict cache address))
+      ;; UN-FREE. An address we are publishing is LIVE, whatever an earlier
+      ;; supersession said about it. PSS reports a free at MUTATION time — the old
+      ;; root address goes to markFreed inside `cons`/`disjoin`, before store has
+      ;; decided anything — and `IStorage.markFreed` is explicit that this is "a HINT,
+      ;; not a reachability claim", leaving it to us to establish that no live version
+      ;; needs an address before acting on it. We did not.
+      ;;
+      ;; Under `:crypto-hash?` an address is a pure function of content, so any commit
+      ;; that ends with content it started with republishes the very address it just
+      ;; superseded. Measured on a file store, bf 8, one `{:a 12345}` transacted and
+      ;; then retractEntity'd: freed-set 14, reachable 39, OVERLAP 6 — six live nodes
+      ;; marked freed, where the seed phase had overlap 0.
+      ;;
+      ;; That is not benign here. `freelist-pop!` above is already gated off for
+      ;; crypto-hash, but online-gc's OTHER branch is `delete-freed-addresses!`
+      ;; (online_gc.cljc:199/:219 select it precisely when crypto-hash? is on), so
+      ;; those six blobs are deleted once the grace period expires — while the current
+      ;; db still points at them.
+      ;;
+      ;; Not a concern with the default squuid addressing, where every write gets a
+      ;; fresh address and a freed one is dead forever.
+      ;;
+      ;; This closes free-then-write, which is the order PSS actually produces. The
+      ;; reverse (write, then free the same address later in one commit) would need a
+      ;; per-commit written-set to catch; the one site that could produce it —
+      ;; Branch.store freeing a flushed child's anchor — cannot, because a child with a
+      ;; non-empty diff has different content from its anchor and so a different
+      ;; address.
+      (when (contains? @freed-set address)
+        (log/trace :datahike/index-unfreed {:address address})
+        (swap! freed-set disj address)
+        (swap! freed-addresses (fn [pairs] (filterv #(not= address (first %)) pairs))))
       (swap! pending-writes conj [address node])
       (wrapped/miss cache address node)
       ;; The write itself is synchronous either way — it buffers onto
