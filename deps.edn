@@ -110,7 +110,7 @@
                                ;; whole :test suite fails to LOAD without it --
                                ;; not just the CBOR tests.
                                org.replikativ/kabel          {:mvn/version "0.3.102"}
-                               org.replikativ/boring         {:mvn/version "0.1.8"}
+                               org.replikativ/boring         {:mvn/version "0.1.17"}
                                is.simm/distributed-scope     {:mvn/version "0.1.6"}
                                org.replikativ/konserve-sync  {:mvn/version "0.1.38"}
 
