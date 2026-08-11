@@ -53,7 +53,8 @@
             [datahike.migrate.manifest :as mman
              :refer [->db a-ident attribute-refs? build-manifest
                      chunk-re codec-of config-must-match datom->record
-                     assert-sync-supported! assert-sizes-positive! assert-codec-supported!
+                     assert-sync-supported! assert-jvm-only! assert-sizes-positive!
+                     assert-codec-supported!
                      default-batch-size default-chunk-size
                      default-sync? estimate-from-manifest
                      export-records export-records-streaming
@@ -81,6 +82,10 @@
 ;; `datahike.migrate.manifest`. Re-exported rather than left to `:refer`, which
 ;; maps a symbol into this namespace WITHOUT interning a var — so `m/format-version`
 ;; and `m/check-capabilities!` would have stopped resolving for anyone outside.
+;; Defined below, next to `user-datom-count` which it uses; needed by the two
+;; manifest-building call sites above it.
+(declare with-source-count refuse-incomplete-dump!)
+
 (def format-version mman/format-version)
 (def check-capabilities! mman/check-capabilities!)
 
@@ -144,7 +149,7 @@
       ;; one that was used. See `migrate.store/write-chunks!` for why that
       ;; matters: a manifest that disagrees with the bytes reports corruption on
       ;; an intact dump.
-        (let [manifest (assoc (build-manifest db opts (dig/finalize dacc) chunks)
+        (let [manifest (assoc (build-manifest db (with-source-count db opts) (dig/finalize dacc) chunks)
                               :compression codec)]
           (fs/spit-text! (fs/join dir "manifest.edn") (pr-str manifest))
           (fs/restrict-perms! (fs/join dir "manifest.edn") false)
@@ -272,6 +277,26 @@
      :sort-buffer  1000000      datoms per in-memory external-sort run
      :sort?        true         false ⇒ no-scratch streaming order (see below)
      :progress-fn  nil          (fn [{:keys [phase datoms]}])
+     :xform        nil          a TRANSDUCER over `[e a v t op]` records, the
+                                mirror of `import-db`'s. Applied BEFORE the sort
+                                and before the digest, so the manifest describes
+                                what the dump actually holds — count, semantic
+                                digest and `:stats` all fall out of the
+                                transformed stream rather than being adjusted
+                                afterwards.
+
+                                The motivating case is splitting one database
+                                into per-tenant dumps. Two things such a filter
+                                must get right, neither enforced because both are
+                                legitimate choices: KEEP THE SCHEMA DATOMS (a
+                                dump of data with no schema imports into a
+                                database that declares nothing), and expect refs
+                                OUT of the retained set to dangle —
+                                `import-db`'s `:check-refs?` reports those.
+
+                                One instance for the whole export, so a stateful
+                                transducer sees one stream. It must be PURE:
+                                `:sort? false` makes two passes over `:eavt`.
    `target` may be a filesystem path/dir OR a konserve store (S3 / S3-compatible /
    JDBC / mem). Returns the manifest map.
 
@@ -377,7 +402,7 @@
                    (try
                      (<?- (mstore/write-chunks! m sorted (:chunk-size opts)
                                                 (fn [digest chunks]
-                                                  (build-manifest db opts digest chunks))
+                                                  (build-manifest db (with-source-count db opts) digest chunks))
                                                 progress opts
                                                 (get opts :compression mz/default-codec)))
                      (finally (<?- (mstore/close m opts)))))
@@ -574,7 +599,7 @@
       :current-max-heap-bytes .. :current-max-heap \"512 MB\" :sufficient? bool}"
   ([source] (estimate-import-memory source {}))
   ([source opts]
-   (assert-sync-supported! {:sync? true})
+   (assert-jvm-only! "estimate-import-memory" opts)
    (let [batch-size (get opts :batch-size default-batch-size)]
      (if (mstore/store-target? source)
        (let [m (mstore/open source)]
@@ -650,6 +675,48 @@
    (let [src (if history? (api/history db) db)]
      (count (filter #(> (d/datom-tx %) c/tx0) (api/datoms src :eavt))))))
 
+(defn- with-source-count
+  "Add an INDEPENDENT witness of how much the source held.
+
+   Every other integrity field — `:datom-count`, the semantic digest — is derived
+   from what was WRITTEN, so a dump that lost records agrees with itself perfectly
+   and `verify` passes it. Measured: a 205-datom database exported short to 120
+   produced a manifest saying 120, and `verify` returned `:ok? true`.
+
+   `db` is an immutable value, so counting it after the write is the same count as
+   before. It costs one extra index scan; `{:count-source? false}` skips it and
+   records nil — \"unknown\", which an importer must treat as unverifiable rather
+   than as agreement."
+  [db opts]
+  (cond-> opts
+    (not (false? (:count-source? opts)))
+    (assoc :source-datom-count (user-datom-count db (boolean (:history? opts))))))
+
+(defn- refuse-incomplete-dump!
+  "Refuse a dump that holds fewer records than its source held, with no `:xform`
+   recorded to explain it.
+
+   Called by BOTH import media. It was written for one of them first, and the
+   filesystem dump sailed straight through — the same shape as the `:sha256`
+   fail-closed rule, which was written for the filesystem, documented, and not
+   carried across to the store. That is what a `store-target?` fork costs each
+   time (see the open item on collapsing them into one medium seam)."
+  [manifest opts]
+  (when-let [missing (and (not (:allow-partial? opts))
+                          (mman/unexplained-shortfall manifest))]
+    (throw (ex-info
+            (str "Dump is incomplete: it holds "
+                 (get-in manifest [:stats :datom-count])
+                 " records but its source held "
+                 (get-in manifest [:stats :source-datom-count])
+                 " — " missing " unaccounted for, and no :xform was recorded to"
+                 " explain the difference. This is what a partially-written export"
+                 " looks like. Re-export, or pass `:allow-partial? true` to import"
+                 " it anyway.")
+            {:error :import/incomplete-dump
+             :missing missing
+             :stats (:stats manifest)}))))
+
 (defn- has-user-datoms?
   "Does `db` hold any user-transaction datom? Stops at the FIRST one.
 
@@ -689,6 +756,120 @@
       #?(:clj (if (:sync? opts) @p (<?- p))
          :cljs (<?- p))))))
 
+(defn- verification-result
+  "Decide, ONCE, whether an import verified — for both import paths.
+
+   It was decided twice, and the two disagreed on the case that matters. Given a
+   source declaring no record count, the streaming path threw
+   `:import/verify-failed` (\"datom count mismatch\", comparing `live` against
+   `(- 0 dropped)` — a mismatch that says nothing about the data), while the
+   index-build path had `(or (nil? (:expected-count source-meta)) …)` and
+   returned **`:verified? true`**. Same input, one fails closed with a false
+   description, the other certifies. Measured on both.
+
+   `:verified?` alone could not express any of this. It is `true` / `false` /
+   `nil`, and `nil` covered THREE unrelated situations — verification was
+   switched off, nothing to compare against, or `:collect` swallowing the
+   result — all of which read, in a report otherwise full of successes, as
+   \"fine\". So the report now also carries `:verification`, which says which:
+
+     {:status :ok | :failed | :skipped | :unavailable
+      :expected N :actual N :missing K :reason kw}
+
+   `:verified?` keeps its old shape and meaning for callers that test it as a
+   boolean — deliberately NOT widened to a keyword, since `:not-checked` would
+   be TRUTHY and every `(if (:verified? rep) …)` in the wild would start reading
+   an unchecked import as a verified one.
+
+   Throws unless `:on-error :collect`, whose contract is to report rather than
+   abort."
+  [{:keys [verify? source-count dropped live on-error]}]
+  (let [collect? (= :collect on-error)]
+    (cond
+      (not verify?)
+      {:verified? nil :verification {:status :skipped :actual live}}
+
+      (nil? source-count)
+      (let [v {:status :unavailable :reason :no-source-count :actual live}]
+        ;; Fail CLOSED, like the streaming path did — but saying the true thing.
+        ;; "The source declares no count" is not "the counts disagree", and an
+        ;; operator sent to inspect a dump over the latter is being sent to
+        ;; inspect an artefact that may be perfectly intact.
+        (when-not collect?
+          (throw (ex-info (str "Cannot verify this import: the source declares no record "
+                               "count, so there is nothing to compare the "
+                               live " restored datoms against. Pass {:verify? false} "
+                               "to import without this check.")
+                          {:error :import/verify-unavailable
+                           :live-count live
+                           :verification v})))
+        {:verified? nil :verification v})
+
+      :else
+      (let [expected (- (long source-count) (long dropped))
+            ok? (= expected (long live))
+            v (cond-> {:status (if ok? :ok :failed)
+                       :expected expected :actual live}
+                (not ok?) (assoc :missing (- expected (long live))))]
+        (when (and (not ok?) (not collect?))
+          (throw (ex-info (str "Post-import verification failed: the source declares "
+                               source-count " record(s), " dropped " were dropped by "
+                               ":xform, so " expected " datom(s) were expected and "
+                               live " are present. Either the source holds less than it "
+                               "declares or the import did not apply everything it read.")
+                          {:error :import/verify-failed
+                           :dump-count source-count
+                           :dropped-by-xform dropped
+                           :expected-count expected
+                           :live-count live
+                           :verification v})))
+        {:verified? ok? :verification v}))))
+
+(def ^:private record-fault-namespaces
+  "Error namespaces that mean *datahike judged this datom*.
+
+   `:on-error :collect`'s contract is to survive a bad RECORD and name it. That
+   is only meaningful for failures a record can be responsible for, and these
+   are the namespaces datahike uses to say so — `:transact/unique`,
+   `:transact/schema`, `:entity-id/missing`, `:lookup-ref/syntax`,
+   `:import/malformed-record`, and their siblings.
+
+   A whitelist rather than a blacklist of infrastructure errors, because the two
+   fail in opposite directions. An unrecognised INFRASTRUCTURE error under a
+   blacklist would be collected — the store blamed on the data, silently, which
+   is the bug this exists to stop. An unrecognised DATA error under this
+   whitelist aborts the import with the original exception as the cause: noisier
+   than it needs to be, and nothing is hidden or misattributed."
+  #{"transact" "entity-id" "lookup-ref" "retract" "search" "schema" "import" "db"})
+
+(defn- record-fault?
+  "Whether `ex` is a failure the offending record can be held responsible for."
+  [ex]
+  (let [e (dt/ex-error ex)]
+    (and (keyword? e) (contains? record-fault-namespaces (namespace e)))))
+
+(defn- abort-not-a-record-fault!
+  "Refuse to file a systemic failure as a bad datom.
+
+   Measured before this existed: an `IOException` out of `writing/commit!` under
+   `:on-error :collect` killed the writer, after which the narrowing retry
+   attempted every remaining datom individually against a dead one and filed all
+   74 as `:import/corrupt-datom` — the first of them a `:db/txInstant` the
+   EXPORTER wrote. `import-db` then returned normally with 10 of 84 datoms
+   restored, and the only signal was `:verified? false`.
+
+   Two things were wrong and both are fixed by stopping here: the datoms were
+   blamed for the store, and the narrowing did 74 pointless writes against a
+   writer that could not accept any of them."
+  [ex context]
+  (throw (ex-info (str "Import aborted: the failure is not attributable to any "
+                       "record, so :on-error :collect cannot survive it — "
+                       (ex-message ex))
+                  (merge {:error :import/apply-failed
+                          :cause-error (dt/ex-error ex)}
+                         context)
+                  ex)))
+
 (defn- collect-apply!
   "Apply a tx-aligned batch under :on-error :collect. Fast path applies the whole
    batch; on failure it narrows to per-transaction, then per-datom, so exactly the
@@ -720,8 +901,16 @@
    (go-try-
     ;; Each successful call yields an updated mapping; a FAILED one yields
     ;; none, because the writer returns the old db and allocates nothing.
-    (let [rep (try (<?- (load-batch! conn batch migration opts))
-                   (catch #?(:clj Exception :cljs :default) _ nil))]
+    (let [r0 (try {:rep (dt/delivered! (<?- (load-batch! conn batch migration opts))
+                                       {:op :load-entities :batch-size (count batch)}
+                                       "a batch was applied but the writer returned no report")}
+                  (catch #?(:clj Exception :cljs :default) e {:ex e}))
+          rep (:rep r0)]
+      ;; Checked BEFORE narrowing, not after. Narrowing a systemic failure costs
+      ;; one write per datom against something that cannot accept any of them,
+      ;; and then reports each as corrupt.
+      (when (and (:ex r0) (not (record-fault? (:ex r0))))
+        (abort-not-a-record-fault! (:ex r0) {:batch-size (count batch)}))
       (if rep
         (do (progress {:phase :batch :datoms (count batch)})
             {:errors [] :migration (:migration rep)})
@@ -729,8 +918,12 @@
           (if (nil? groups)
             {:errors errs :migration m}
             (let [tx-group (vec (first groups))
-                  tx-rep (try (<?- (load-batch! conn tx-group m opts))
-                              (catch #?(:clj Exception :cljs :default) _ nil))]
+                  rt (try {:rep (<?- (load-batch! conn tx-group m opts))}
+                          (catch #?(:clj Exception :cljs :default) e {:ex e}))
+                  tx-rep (:rep rt)]
+              (when (and (:ex rt) (not (record-fault? (:ex rt))))
+                (abort-not-a-record-fault! (:ex rt) {:tx (nth (first tx-group) 3)
+                                                     :tx-size (count tx-group)}))
               (if tx-rep
                 (recur (next groups) errs (:migration tx-rep))
                 (let [[errs' m'] (loop [ds (seq tx-group) errs errs m m]
@@ -739,9 +932,17 @@
                                      (let [d (first ds)
                                            r (try {:rep (<?- (load-batch! conn [d] m opts))}
                                                   (catch #?(:clj Exception :cljs :default) e {:ex e}))]
+                                       (when (and (:ex r) (not (record-fault? (:ex r))))
+                                         (abort-not-a-record-fault! (:ex r) {:datom d}))
                                        (recur (next ds)
                                               (if-let [ex (:ex r)]
-                                                (conj errs {:error (or (:error (ex-data ex)) :import/corrupt-datom)
+                                                ;; `dt/ex-error`, not `(:error (ex-data ex))`:
+                                                ;; the writer boundary wraps twice, so the
+                                                ;; latter is nil even for a `:transact/unique`
+                                                ;; that said exactly what was wrong — which is
+                                                ;; how every collected error came back labelled
+                                                ;; `:import/corrupt-datom`.
+                                                (conj errs {:error (or (dt/ex-error ex) :import/corrupt-datom)
                                                             :datom d :message (ex-message ex)})
                                                 errs)
                                               (if (:ex r) m (:migration (:rep r)))))))]
@@ -763,10 +964,34 @@
         (let [r (try {:rep (<?- (load-batch! conn batch migration opts))}
                      (catch #?(:clj Exception :cljs :default) e {:ex e}))]
           (if-let [ex (:ex r)]
-            (throw (ex-info (str "Import aborted: " (ex-message ex))
-                            (merge (ex-data ex) {:error :import/corrupt-datom}) ex))
-            (do (progress {:phase :batch :datoms (count batch)})
-                {:errors [] :migration (:migration (:rep r))}))))
+            ;; `:import/corrupt-datom` only when the failure IS about a record.
+            ;; The old spelling was `(merge (ex-data ex) {:error :import/corrupt-datom})`,
+            ;; which stamps that label over whatever the failure actually said —
+            ;; and since the writer boundary leaves `(ex-data ex)` empty, that
+            ;; label was ALWAYS the answer. A store outage aborted the import
+            ;; with `:error :import/corrupt-datom`, sending an operator to look
+            ;; at their dump.
+            (throw (if (record-fault? ex)
+                     (ex-info (str "Import aborted: " (ex-message ex))
+                              (merge (ex-data ex) {:error :import/corrupt-datom
+                                                   :cause-error (dt/ex-error ex)})
+                              ex)
+                     (ex-info (str "Import aborted: " (ex-message ex))
+                              (merge (ex-data ex) {:error :import/apply-failed
+                                                   :cause-error (dt/ex-error ex)
+                                                   :batch-size (count batch)})
+                              ex)))
+            ;; A nil `rep` has no `:ex`, so without this the batch reports SUCCESS
+            ;; — `progress` fires with its full count and `:migration` becomes
+            ;; nil, which restarts the id map and leaves DANGLING REFS in the
+            ;; restored database. Guarded outside the `try` so it is not
+            ;; misfiled as `:import/corrupt-datom`: the datoms were fine, the
+            ;; writer did not answer.
+            (let [rep (dt/delivered! (:rep r)
+                                     {:op :load-entities :batch-size (count batch)}
+                                     "a batch was applied but the writer returned no report")]
+              (progress {:phase :batch :datoms (count batch)})
+              {:errors [] :migration (:migration rep)}))))
       {:errors [] :migration migration}))))
 
 (defn- config-compat! [manifest conn]
@@ -1143,7 +1368,10 @@
                                 :migration migration0}]
                       (if (nil? cs)
                         acc
-                        (let [records (prepare (<?- ((:read chunk-src) (first cs) opts)))]
+                        (let [records (prepare (dt/delivered!
+                                                (<?- ((:read chunk-src) (first cs) opts))
+                                                {:op :read-chunk :chunk (first cs)}
+                                                "a dump chunk could not be read"))]
                           (recur
                            (next cs)
                            (loop [rs (seq records) acc acc]
@@ -1220,17 +1448,10 @@
           ;; that should have landed and did not are still caught) instead of
           ;; either failing spuriously or being switched off, which is how people
           ;; learn to ignore verification output.
-              expected (- (long (or (:expected-count source-meta) 0)) dropped)
-              verified? (when (:verify? opts)
-                          (let [ok? (= expected live)]
-                            (when (and (not ok?) (not= :collect on-error))
-                              (throw (ex-info "Post-import verification failed (datom count mismatch)"
-                                              {:error :import/verify-failed
-                                               :dump-count (:expected-count source-meta)
-                                               :dropped-by-xform dropped
-                                               :expected-count expected
-                                               :live-count live})))
-                            ok?))
+              vres (verification-result {:verify? (:verify? opts)
+                                         :source-count (:expected-count source-meta)
+                                         :dropped dropped :live live :on-error on-error})
+              verified? (:verified? vres)
           ;; The EXACT number of source transactions, taken from the id mapping's
           ;; `:tids` — one entry per distinct source `t`, already in hand, so
           ;; this costs nothing.
@@ -1303,6 +1524,7 @@
                      :tx-count    tx-count
                      :max-tx      (:max-tx @conn)
                      :verified?   verified?
+                     :verification (:verification vres)
                      :recommended-heap (:recommended-heap mem)
                      :errors      errors}
               refs (assoc :dangling-refs refs)))))))))
@@ -1471,7 +1693,9 @@
           ;; where a stateful transducer would flush a group the stream had not
           ;; finished.
           (if step (reduce rf acc (step [])) acc)
-          (let [records (<?- (read-chunk (first cs) opts))]
+          (let [records (dt/delivered! (<?- (read-chunk (first cs) opts))
+                                       {:op :read-chunk :chunk (first cs)}
+                                       "a dump chunk could not be read")]
             (recur (next cs)
                    (reduce (fn [a record]
                              (let [r (resolve-sysrefs sref-db record)]
@@ -1563,8 +1787,32 @@
    store arm: in async mode the body hands back a channel, so a `finally` fires
    the moment it is handed back, which here would drop the guard before a single
    node had been written and delete the spool out from under the sorts. Same for
-   the temp-directory cleanup."
-  [conn source-meta schema mem chunk-src opts]
+   the temp-directory cleanup.
+
+   ## `source-schema` does NOT install the schema
+
+   It was called `schema`, which reads as \"the schema this build installs\" and
+   is not what it is. The installed schema is derived from the schema DATOMS in
+   the record stream, by `init/schema-from-records` below — so a source must
+   emit its own schema datoms, and this argument cannot substitute for them.
+
+   What it IS: how to READ the records. Two uses, both about interpretation
+   rather than declaration:
+
+     * `ref?`, on every record, to decide whether a ref VALUE should raise
+       `:max-eid`. An entity that is only ever pointed AT — never the `e` of any
+       datom — still occupies an id, and missing it lets a later transact
+       allocate that id and silently resurrect the reference.
+     * `ids/build-mapping` and `ids/apply-mapping`, under `:eids :allocate`
+       only, which must rewrite ref values as ids rather than leave them as
+       opaque numbers.
+
+   For a datahike dump the two agree by construction: the manifest's `:schema`
+   and the schema datoms come from the same database. Nothing CHECKS that they
+   agree, which does not matter yet and will as soon as a caller supplies both
+   independently — see the record-source seam work, where a source declaring one
+   schema and emitting another would compute `:max-eid` from the wrong ref set."
+  [conn source-meta source-schema mem chunk-src opts]
   ;; The SAME defaults `run-import` applies, and for the same reason: they are
   ;; applied here rather than in `import-db` because `run-import` is also
   ;; called directly. Missing them once already cost this path its
@@ -1642,7 +1890,7 @@
                     ;; closure — which the state machine could not enter.
                     mapping  (when (= :allocate (:eids opts))
                                (<?- (ids/build-mapping
-                                     {:schema schema
+                                     {:schema source-schema
                                       :system-entities (:system-entities db0)
                                       :max-eid (:max-eid db0)
                                       :max-tx (:max-tx db0)}
@@ -1659,7 +1907,7 @@
                     raw-n    (volatile! 0)
                     schema?  (fn [record] (let [a (nth record 1)]
                                             (or (ds/schema-attr? a) (ds/entity-spec-attr? a))))
-                    ref?     (fn [a] (= :db.type/ref (:db/valueType (get schema a))))
+                    ref?     (fn [a] (= :db.type/ref (:db/valueType (get source-schema a))))
                     txs      (tx-counter)
                     ;; No `try/finally` around the fold to close the spool. In
                     ;; async mode the fold IS a channel, so a `finally` would
@@ -1671,7 +1919,7 @@
                                    db0 chunk-src opts raw-n
                                    (fn [acc record]
                                      (let [r (if mapping
-                                               (ids/apply-mapping mapping schema record)
+                                               (ids/apply-mapping mapping source-schema record)
                                                record)
                                            n (inc (long (:n acc)))
                                            e (nth r 0) a (nth r 1) v (nth r 2) t (nth r 3)]
@@ -1771,18 +2019,11 @@
                     ;; caught) rather than either failing spuriously on a working
                     ;; transformation or being switched off.
                     dropped (- (long @raw-n) (long (:n state)))
-                    expected (- (long (or (:expected-count source-meta) 0)) dropped)
-                    verified? (when (:verify? opts)
-                                (let [ok? (or (nil? (:expected-count source-meta))
-                                              (= expected live))]
-                                  (when (and (not ok?) (not= :collect (:on-error opts)))
-                                    (throw (ex-info "Post-import verification failed (datom count mismatch)"
-                                                    {:error :import/verify-failed
-                                                     :dump-count (:expected-count source-meta)
-                                                     :dropped-by-xform dropped
-                                                     :expected-count expected
-                                                     :live-count live})))
-                                  ok?))
+                    vres (verification-result {:verify? (:verify? opts)
+                                               :source-count (:expected-count source-meta)
+                                               :dropped dropped :live live
+                                               :on-error (:on-error opts)})
+                    verified? (:verified? vres)
                     refs (when (:check-refs? opts)
                            (dangling-refs @conn (get opts :dangling-sample 10)))]
                 (when (and refs (pos? (long (:count refs))))
@@ -1809,6 +2050,7 @@
                          :tx-count    (tx-cardinality txs)
                          :max-tx      (:max-tx @conn)
                          :verified?   verified?
+                         :verification (:verification vres)
                          :recommended-heap (:recommended-heap mem)
                          :errors      []}
                   refs (assoc :dangling-refs refs)))
@@ -1834,6 +2076,187 @@
       (run-index-build conn (manifest->source-meta manifest)
                        (or (:schema manifest) {}) mem chunk-src opts))
     (run-import conn (manifest->source-meta manifest) mem chunk-src opts)))
+
+(defn records->chunk-src
+  "Wrap a seq of records as a `chunk-src`, splitting ONLY at transaction boundaries.
+
+   For a source small enough to hold, or one that is already a lazy seq from
+   somewhere cheap. A source that can address its own storage — a dump's chunk
+   files, a Datomic `t` range — should build `{:chunks … :read …}` directly
+   instead, because descriptors it computes itself are cheap where these are not
+   (see the memory note on `import-source`).
+
+   `n` is a MINIMUM, not a maximum: a chunk grows past it until `t` changes, so a
+   transaction is never split across chunks. Splitting one would hand the
+   importer a partial transaction, and the batcher's flush rule keys on `t`
+   changing."
+  ([records] (records->chunk-src records default-batch-size))
+  ([records n]
+   (let [chunks (->> records
+                     (partition-by (fn [r] (nth r 3)))
+                     (reduce (fn [acc tx-group]
+                               (let [cur (count (peek acc))]
+                                 (if (or (empty? acc) (>= cur (long n)))
+                                   (conj acc (vec tx-group))
+                                   (conj (pop acc) (into (peek acc) tx-group)))))
+                             [])
+                     vec)]
+     {:chunks chunks
+      ;; `:read` is `<?-`'d by the importer, so under `:sync? false` it must
+      ;; return a CHANNEL — a plain collection raises
+      ;; "No implementation of method: :take! of protocol: ReadPort".
+      ;; `default-sync?` is FALSE on ClojureScript, so returning the vector
+      ;; directly broke every Node caller by default. Measured before this.
+      :read   (fn [chunk opts]
+                (async+sync (get opts :sync? default-sync?)
+                            *default-sync-translation*
+                            (go-try- chunk)))})))
+
+(defn import-source
+  "Import records from ANY source into `conn`. **Experimental.**
+
+   The medium-agnostic core `import-db` uses for dumps, exposed so a caller can
+   supply records from somewhere that is not a datahike dump — Datomic, a
+   triple stream, pre-sorted synthetic data. `import-db` is this function plus a
+   dump-specific preamble (manifest, checksums, capabilities, blobs); both meet
+   at the same importer, so neither can drift from the other.
+
+   `chunk-src` is `{:chunks [descriptor …] :read (fn [descriptor opts] -> records)}`.
+
+   ## What the source owes
+
+   1. Records are `[e a v t op]`: `a` a keyword ident, `v` a real value (`nil` is
+      not storable), `t` the source's transaction id, `op` a boolean.
+   2. ORDER is `(t, txInstant-first, e, a)` — the same order `export-db` writes
+      and `datahike.migrate.sort/sort-key` documents. Schema before the data that
+      uses it, the tx entity before its own datoms, causally ordered.
+   3. `t` MUST VARY. The batcher flushes on `(and (>= n batch-size) (not= t last-t))`,
+      so a source that stamps every record with one `t` never reaches a flush and
+      buffers the whole stream. `:max-pending` is the backstop, not the design.
+   4. The source EMITS ITS OWN SCHEMA DATOMS. The installed schema is derived from
+      the record stream; `:schema` here only feeds ref detection on the
+      index-build path.
+   5. `:read` must be RE-ENTRANT — `verify` and the index build read chunks more
+      than once — and should return a realized, bounded collection. The importer
+      `mapv`s it immediately, so laziness buys nothing and a lazy read holding a
+      file handle across chunks would be a leak.
+
+   ## Async: `:read` may park, `:xform` may not
+
+   This is the whole reason the seam yields CHUNKS rather than taking a reducing
+   function. `run-import`'s docstring has the history: a reducing function is a
+   closure, the `go` state machine does not enter one, and an async import could
+   never have been expressed through it. Chunks put the read and the write at
+   statement positions the machine can see.
+
+   So:
+
+     :read    is `<?-`'d. Under `:sync? false` it MUST return a channel — a plain
+              collection raises \"No implementation of method: :take! of protocol:
+              ReadPort\". That is also the licence to do real IO in it: a Datomic
+              log read, an HTTP fetch, a file read. `default-sync?` is FALSE on
+              ClojureScript, so this is the DEFAULT path there, not the exotic one.
+     :xform   runs synchronously inside the importer's `go` block and must be
+              PURE — no IO, no parking. A parked take inside a transducer cannot
+              be reached by the state machine.
+
+   `records->chunk-src` handles the `:read` side for you; a hand-written source
+   must do it, and `async+sync` + `go-try-` is how the rest of this namespace does.
+
+   ## Memory
+
+   RECORDS stream: one chunk plus one batch is live at a time. DESCRIPTORS do
+   not — the importer holds `chunk-src` for the whole run, so a realized
+   descriptor list stays reachable. `:chunks` may be lazy, but a descriptor must
+   be small, data-free metadata (a file name, a `t` range), never the records
+   themselves.
+
+   ## Opts
+
+   Everything `import-db` takes (`:batch-size` `:xform` `:eids` `:merge?`
+   `:build-indexes?` `:on-error` `:sync?` …) plus:
+
+     :source-meta  {:history? :expected-count :max-tx}, all three OPTIONAL.
+                   Absent `:expected-count` only means the count check has
+                   nothing to compare against; absent `:max-tx` only means no
+                   drift warning. A source that knows none of them passes none.
+     :schema       source schema map, index-build path only (ref detection).
+
+   ## Verification is DECLINED, not defaulted away
+
+   `:verify?` stays `true` by default here, exactly as for a dump: a source that
+   declares an `:expected-count` is held to it, and one that declares none must
+   pass `{:verify? false}` and thereby say so. That is the existing contract —
+   see `migrate-source-test/a-source-that-knows-no-count-can-still-import` — and
+   it is deliberate: a caller who simply forgot `:expected-count` should be told,
+   not quietly given an unverified import.
+
+   ## Async: `:read` may park, `:xform` may not
+
+   This is the whole reason the seam yields CHUNKS rather than taking a reducing
+   function. `run-import`'s docstring has the history: a reducing function is a
+   closure, the `go` state machine does not enter one, and an async import could
+   never have been expressed through it. Chunks put the read and the write at
+   statement positions the machine can see.
+
+   So:
+
+     :read    is `<?-`'d. Under `:sync? false` it MUST return a channel — a plain
+              collection raises \"No implementation of method: :take! of protocol:
+              ReadPort\". That is also the licence to do real IO in it: a Datomic
+              log read, an HTTP fetch, a file read. `default-sync?` is FALSE on
+              ClojureScript, so this is the DEFAULT path there, not the exotic one.
+     :xform   runs synchronously inside the importer's `go` block and must be
+              PURE — no IO, no parking. A parked take inside a transducer cannot
+              be reached by the state machine.
+
+   `records->chunk-src` handles the `:read` side for you; a hand-written source
+   must do it, and `async+sync` + `go-try-` is how the rest of this namespace does.
+
+   ## Memory
+
+   RECORDS stream: one chunk plus one batch is live at a time. DESCRIPTORS do
+   not — the importer holds `chunk-src` for the whole run, so a realized
+   descriptor list stays reachable. `:chunks` may be lazy, but a descriptor must
+   be small, data-free metadata (a file name, a `t` range), never the records
+   themselves.
+
+   ## Opts
+
+   Everything `import-db` takes (`:batch-size` `:xform` `:eids` `:merge?`
+   `:build-indexes?` `:on-error` `:sync?` …) plus:
+
+     :source-meta  {:history? :expected-count :max-tx}, all three OPTIONAL.
+                   Absent `:expected-count` only means the count check has
+                   nothing to compare against; absent `:max-tx` only means no
+                   drift warning. A source that knows none of them passes none.
+     :schema       source schema map, index-build path only (ref detection).
+
+   ## `:verify?` defaults to whether verification is POSSIBLE
+
+   Does NOT do what only a dump needs: no manifest, no checksums, no blob
+   restore, no capability or format-version check. A non-dump caller has nothing
+   to check them against."
+  ([conn chunk-src] (import-source conn chunk-src {}))
+  ([conn chunk-src opts]
+   (assert-sync-supported! opts)
+   (assert-sizes-positive! opts)
+   (let [smeta (:source-meta opts)
+         opts (merge {:sync? default-sync?} opts)]
+     (async+sync
+      (:sync? opts) *default-sync-translation*
+      (go-try-
+       ;; `nil` manifest throughout: every check inside degrades to a no-op on an
+       ;; absent manifest, which is what makes this callable at all.
+       (check-target! conn nil opts)
+       (if (:build-indexes? opts)
+         (if-let [why (build-indexes-refusal conn nil opts)]
+           (throw (ex-info why {:error :import/build-indexes-refused :reason why}))
+           ;; `mem` is nil: it feeds only the heap warning and the report's
+           ;; `:recommended-heap`, and `(false? (:sufficient? nil))` is false, so
+           ;; a source with no size estimate simply gets no heap advice.
+           (<?- (run-index-build conn smeta (or (:schema opts) {}) nil chunk-src opts)))
+         (<?- (run-import conn smeta nil chunk-src opts))))))))
 
 (defn- restore-blobs!
   "Put the dump's carried `:db.type/store-ref` bytes into the target store, before
@@ -2004,12 +2427,21 @@
                      ;; The SAME guard the filesystem arm gets from `open-dump`.
                      ;; Inside the `try` so a refused dump still closes the store.
                      (mman/assert-dump-manifest! manifest source opts)
+                     (refuse-incomplete-dump! manifest opts)
                      (check-capabilities! manifest)
                      (check-target! conn manifest opts)
                      (<?- (restore-blobs! conn manifest source opts))
                      (<?- (import-via conn manifest mem
                                       {:chunks (:chunks manifest)
-                                       :read (fn [c o] (mstore/read-chunk m manifest c o))}
+                                       ;; The `:read` seam is where a caller-supplied
+                                       ;; function will run once the record source is
+                                       ;; public, and on ClojureScript a throw that is
+                                       ;; not an Error kills the process rather than
+                                       ;; failing the import — see the helper.
+                                       :read (fn [c o]
+                                               (dt/call-reporting-foreign-throws
+                                                #(mstore/read-chunk m manifest c o)
+                                                {:op :read-chunk :chunk c}))}
                                       opts))
                      (catch #?(:clj Exception :cljs :default) e e))]
            (<?- (mstore/close m opts))
@@ -2026,6 +2458,7 @@
                                       {:error :import/legacy-not-portable})))
              (let [manifest (:manifest dump)
                    mem (estimate-from-manifest manifest (manifest-total-bytes manifest (:files dump)) batch-size)]
+               (refuse-incomplete-dump! manifest opts)
                (check-capabilities! manifest)
                (check-target! conn manifest opts)
              ;; AWAITED. `restore-blobs!` is `async+sync`, so under `:sync? false`
@@ -2038,7 +2471,10 @@
                (<?- (restore-blobs! conn manifest source opts))
                (<?- (import-via conn manifest mem
                                 {:chunks (:files dump)
-                                 :read (fn [f o] (fs-read-chunk manifest f o))}
+                                 :read (fn [f o]
+                                         (dt/call-reporting-foreign-throws
+                                          #(fs-read-chunk manifest f o)
+                                          {:op :read-chunk :chunk f}))}
                                 opts)))))))))))
 
 ;; ---------------------------------------------------------------------------
@@ -2186,7 +2622,7 @@
    NOT the same thing as `import-db`'s `:verify?` option, which is a datom-count
    delta check on the imported database. This reads the DUMP."
   ([source]
-   (assert-sync-supported! {:sync? true})
+   (assert-jvm-only! "verify")
    (let [{:keys [manifest legacy-count chunks-verified finding]}
          (if (mstore/store-target? source)
            (let [m (mstore/open source)]
@@ -2276,7 +2712,7 @@
                 :blobs blobs}
          finding (assoc :integrity finding)))))
   ([conn-or-db source]
-   (assert-sync-supported! {:sync? true})
+   (assert-jvm-only! "verify")
    (let [db    (->db conn-or-db)]
      (with-source-records source
        (fn [manifest reduce-source]
