@@ -94,9 +94,9 @@
                             ctx))
                  :close (fn [_] (a/go :done))}
                 {:history? true :chunk-size 1 :sync? false})))
-        (is (seq @seen) "precondition: sorted-record-seq was actually called")
-        (is (false? @checked)
-            "the record stream was still reachable mid-export — a binding is
+      (is (seq @seen) "precondition: sorted-record-seq was actually called")
+      (is (false? @checked)
+          "the record stream was still reachable mid-export — a binding is
              holding its head, which in async mode retains the whole database")
       (teardown conn))))
 
