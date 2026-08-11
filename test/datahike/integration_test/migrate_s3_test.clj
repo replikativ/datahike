@@ -8,12 +8,35 @@
    maintained open source; nothing below is Garage-specific beyond the
    provisioning CLI — any S3-compatible target works. The config file is
    injected with `docker cp` (no volume mounts), so the test runs on any docker
-   host. Skips cleanly when docker is unavailable."
+   host.
+
+   ## Why not just export to a filestore instead
+
+   Because a filestore cannot fail the way this test exists to catch. The store
+   target over an in-memory konserve, over a filestore, and over the filesystem
+   medium are all already covered elsewhere; what is only covered HERE is the S3
+   wire itself — SigV4 signing, path-style addressing, an endpoint override, and
+   konserve-s3's `bget` handle shape (see `migrate.store`'s note on
+   replikativ/konserve#162, which is exactly a real-backend difference an
+   in-memory stand-in hid). Substituting a local store would keep the test green
+   and delete its subject.
+
+   What was wrong was the FAILURE MODE, not the backend: `docker?` returning
+   true only means a daemon answered, and everything after it — image pull,
+   container create, `docker cp` from a tmpdir the daemon cannot see, the health
+   poll — could still fail, and did, as an ERROR indistinguishable from datahike
+   being broken. Those are now skips, like an absent docker.
+
+   Set `DATAHIKE_REQUIRE_S3=1` to turn every skip back into a failure. That is
+   the point of the flag: a test that skips itself when the environment is
+   imperfect will eventually skip forever without anyone noticing, so CI (where
+   the environment IS the deliverable) should run with it set."
   (:require [clojure.test :refer [deftest testing is]]
             [clojure.java.shell :refer [sh]]
             [clojure.java.io :as io]
             [datahike.api :as d]
             [datahike.migrate :as m]
+            [clojure.string :as str]
             [konserve-s3.core]  ;; registers the :s3 konserve backend
             [konserve.store :as ks]))
 
@@ -98,6 +121,22 @@
 (defn- stop-garage! []
   (sh "docker" "rm" "-f" container))
 
+(defn- required? []
+  (contains? #{"1" "true" "yes"} (some-> (System/getenv "DATAHIKE_REQUIRE_S3")
+                                         str/lower-case)))
+
+(defn- skip!
+  "Report an environment failure the way an absent docker is reported — unless
+   the operator asked for the opposite."
+  [why ex]
+  (if (required?)
+    (throw (or ex (ex-info why {})))
+    (do (println (str "[migrate-s3-test] " why
+                      (when ex (str " — " (ex-message ex)))
+                      " — skipping. Set DATAHIKE_REQUIRE_S3=1 to make this a failure."))
+        (is true (str "skipped: " why))
+        nil)))
+
 (defn- fresh-db []
   (let [cfg {:store {:backend :memory :id (java.util.UUID/randomUUID)}
              :keep-history? true :schema-flexibility :write}]
@@ -106,45 +145,49 @@
 
 (deftest migrate-via-garage-test
   (if-not (docker?)
-    (do (println "[migrate-s3-test] docker unavailable — skipping Garage integration test")
-        (is true "skipped: no docker"))
+    (skip! "docker unavailable" nil)
     (try
-      (start-garage!)
-      (let [{:keys [access-key secret]} (provision!)
-            s3-spec {:backend :s3
-                     :bucket bucket
-                     :region "us-east-1"
-                     :access-key access-key
-                     :secret secret
-                     :endpoint-override {:protocol :http :hostname "localhost" :port s3-port}
-                     :path-style-access? true}]
-        (testing "export → estimate → import → verify through a real S3 API"
-          (let [store  (ks/create-store (assoc s3-spec :id (java.util.UUID/randomUUID))
-                                        {:sync? true})
-                target {:store store :prefix "backup-it"}
-                src    (fresh-db)]
-            (d/transact src [{:db/ident :name :db/valueType :db.type/string
-                              :db/cardinality :db.cardinality/one :db/unique :db.unique/identity}
-                             {:db/ident :score :db/valueType :db.type/double
-                              :db/cardinality :db.cardinality/one}
-                             {:db/ident :pal :db/valueType :db.type/ref
-                              :db/cardinality :db.cardinality/many}])
-            (d/transact src [{:db/id "a" :name "Alice" :score 0.0}
-                             {:db/id "b" :name "Bob" :score 3.14 :pal "a"}])
-            (d/transact src [[:db/retractEntity [:name "Bob"]]])
-            (let [man (m/export-db src target {:history? true :chunk-size 5})
-                  est (m/estimate-import-memory target)
-                  tgt (fresh-db)
-                  rep (m/import-db tgt target {})
-                  ver (m/verify tgt target)]
-              (is (> (count (:chunks man)) 1) "wrote multiple chunk objects to garage")
-              (is (string? (:recommended-heap est)) "estimate reads the manifest from S3")
-              (is (:verified? rep) "import from S3 verifies")
-              (is (:ok? ver) "full tiered verify against the S3 dump passes")
-              (is (get-in ver [:tier2 :match?]))
-              (is (= Double (class (d/q '[:find ?v . :where [?e :name "Alice"] [?e :score ?v]] @tgt)))
-                  "#633 type-exactness holds over the S3 wire")
-              (d/release src)
-              (d/release tgt)))))
+      ;; Setup only. The assertions below stay OUTSIDE this catch on purpose —
+      ;; once garage is up and the export begins, a failure is datahike's and
+      ;; must be reported as one. Swallowing that would be worse than the error
+      ;; this replaces.
+      (when-let [{:keys [access-key secret]}
+                 (try (start-garage!) (provision!)
+                      (catch Exception e (skip! "could not bring up garage" e)))]
+        (let [s3-spec {:backend :s3
+                       :bucket bucket
+                       :region "us-east-1"
+                       :access-key access-key
+                       :secret secret
+                       :endpoint-override {:protocol :http :hostname "localhost" :port s3-port}
+                       :path-style-access? true}]
+          (testing "export → estimate → import → verify through a real S3 API"
+            (let [store  (ks/create-store (assoc s3-spec :id (java.util.UUID/randomUUID))
+                                          {:sync? true})
+                  target {:store store :prefix "backup-it"}
+                  src    (fresh-db)]
+              (d/transact src [{:db/ident :name :db/valueType :db.type/string
+                                :db/cardinality :db.cardinality/one :db/unique :db.unique/identity}
+                               {:db/ident :score :db/valueType :db.type/double
+                                :db/cardinality :db.cardinality/one}
+                               {:db/ident :pal :db/valueType :db.type/ref
+                                :db/cardinality :db.cardinality/many}])
+              (d/transact src [{:db/id "a" :name "Alice" :score 0.0}
+                               {:db/id "b" :name "Bob" :score 3.14 :pal "a"}])
+              (d/transact src [[:db/retractEntity [:name "Bob"]]])
+              (let [man (m/export-db src target {:history? true :chunk-size 5})
+                    est (m/estimate-import-memory target)
+                    tgt (fresh-db)
+                    rep (m/import-db tgt target {})
+                    ver (m/verify tgt target)]
+                (is (> (count (:chunks man)) 1) "wrote multiple chunk objects to garage")
+                (is (string? (:recommended-heap est)) "estimate reads the manifest from S3")
+                (is (:verified? rep) "import from S3 verifies")
+                (is (:ok? ver) "full tiered verify against the S3 dump passes")
+                (is (get-in ver [:tier2 :match?]))
+                (is (= Double (class (d/q '[:find ?v . :where [?e :name "Alice"] [?e :score ?v]] @tgt)))
+                    "#633 type-exactness holds over the S3 wire")
+                (d/release src)
+                (d/release tgt))))))
       (finally
         (stop-garage!)))))
