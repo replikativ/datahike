@@ -109,7 +109,19 @@
                                        :raw-bytes (count raw) :sha256 (dig/sha256-hex raw)}]
                                      [])
                            :semantic-digest digest
-                           :stats (assoc (:stats man) :datom-count (:count digest)))))
+                           ;; `:transformed? true` because that is what this
+                           ;; helper DOES: `f` rewrote the records, so a record
+                           ;; count below `:source-datom-count` is explained.
+                           ;; Without it every shrinking rewrite here — the
+                           ;; zero-record dump most obviously — is
+                           ;; indistinguishable from a truncated export and is
+                           ;; refused as `:import/incomplete-dump` before any of
+                           ;; these tests' actual subjects are reached. That
+                           ;; check is about UNexplained shortfalls; these dumps
+                           ;; are intact and wrong, which is a different thing.
+                           :stats (assoc (:stats man)
+                                         :datom-count (:count digest)
+                                         :transformed? true))))
       dir)))
 
 (defn- dump-of

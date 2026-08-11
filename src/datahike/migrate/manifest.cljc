@@ -328,9 +328,26 @@
      :system-idents                  (system-idents db)
      ;; :max-eid / :max-tx let an importer estimate the O(entities) id-remap map
      ;; (and thus the heap to give the import) without scanning the dump.
-     :stats                          {:datom-count (:count digest)
-                                      :max-eid     (:max-eid db)
-                                      :max-tx      (:max-tx db)}
+     ;; `:datom-count` is what was WRITTEN; `:source-datom-count` is what the
+     ;; database HELD. Both, because one alone cannot tell a complete dump from a
+     ;; short one: every other integrity field — the count, the semantic digest —
+     ;; is derived from the write path, so a dump that lost records agrees with
+     ;; itself perfectly. Measured before this: a 205-datom database exported to a
+     ;; 120-datom dump whose manifest said 120 and which `verify` passed as `:ok?
+     ;; true`.
+     ;;
+     ;; `:transformed?` says the shortfall is EXPLAINED. An `:xform` that filters a
+     ;; tenant out is a legitimately smaller dump; a shortfall with no xform is
+     ;; unaccounted-for loss, and `import-db` refuses that.
+     ;;
+     ;; `:source-datom-count` is nil when `:count-source? false` — one extra index
+     ;; scan is real cost on a large database, and "unknown" is an honest answer
+     ;; where "equal" would be a guess.
+     :stats                          {:datom-count        (:count digest)
+                                      :source-datom-count (:source-datom-count opts)
+                                      :transformed?       (boolean (:xform opts))
+                                      :max-eid            (:max-eid db)
+                                      :max-tx             (:max-tx db)}
      :semantic-digest                digest
      ;; Which `:db.type/store-ref` blobs this dump carries, and which it could
      ;; not. A store-ref names an object without saying where the bytes live, so
@@ -391,6 +408,36 @@
                                   ":sync? (the default here is false) and take from "
                                   "the returned channel.")
                              {:error :migrate/sync-not-supported})))))
+
+(defn assert-jvm-only!
+  "Refuse a function that has no ClojureScript form at all — BY NAME, and
+   without giving advice that cannot work.
+
+   These used to call `assert-sync-supported!` with a hardcoded `{:sync? true}`,
+   so a ClojureScript caller was told \"Omit :sync? (the default here is false)
+   and take from the returned channel.\" There is no `:sync?` to omit — the
+   argument is a literal — and no channel to take from. The message described
+   `export-db`/`import-db`, which really are `async+sync`, and sent the reader
+   looking for an async form of a function that has none.
+
+   `:sync? false` is refused on the JVM too, where it would otherwise be
+   silently ignored: portable code that passes it should fail the same way on
+   both runtimes rather than working on one and throwing on the other."
+  ([fn-name] (assert-jvm-only! fn-name nil))
+  ([fn-name opts]
+   (when (false? (:sync? opts))
+     (throw (ex-info (str "`" fn-name "` is synchronous — it has no asynchronous "
+                          "form, so {:sync? false} cannot be honoured. Drop the "
+                          "option, or use export-db / import-db, which are "
+                          "async+sync throughout.")
+                     {:error :migrate/sync-only :fn fn-name})))
+   #?(:clj nil
+      :cljs (throw (ex-info (str "`" fn-name "` runs on the JVM only: it opens the "
+                                 "dump medium synchronously throughout and has not "
+                                 "been through async+sync. There is no ClojureScript "
+                                 "form of it to call. export-db and import-db do run "
+                                 "on ClojureScript.")
+                            {:error :migrate/jvm-only :fn fn-name})))))
 
 (defn assert-sizes-positive!
   "Refuse non-positive window sizes.
@@ -517,6 +564,30 @@
    before `datoms-999999` lexicographically. Nothing does: the manifest's
    `:chunks` is an ordered vector and that is the authority."
   #"^datoms-\d{6,}\.cbor(\.gz)?$")
+
+(defn unexplained-shortfall
+  "How many records a dump is missing WITHOUT an explanation, or nil.
+
+   `:datom-count` says what was written and `:source-datom-count` what the
+   database held. They may legitimately differ: an `:xform` that filters one
+   tenant out of a shared database produces a smaller dump on purpose, and that
+   dump carries `:transformed? true`.
+
+   A shortfall with no xform is unaccounted-for loss. It has to be caught HERE,
+   from the two counts, because every other integrity signal is derived from the
+   write path and therefore agrees with a short dump: measured, a 205-datom
+   database exported short to 120 produced a manifest saying 120, a matching
+   semantic digest, and `verify` `:ok? true`.
+
+   nil when the counts agree, when an xform explains the gap, or when
+   `:source-datom-count` is absent — a dump written with `{:count-source? false}`
+   is UNVERIFIABLE on this axis, which is not the same as verified."
+  [manifest]
+  (let [{:keys [datom-count source-datom-count transformed?]} (:stats manifest)]
+    (when (and source-datom-count datom-count
+               (not transformed?)
+               (< (long datom-count) (long source-datom-count)))
+      (- (long source-datom-count) (long datom-count)))))
 
 (defn assert-dump-manifest!
   "Guards that a manifest must pass before ANY chunk of it is read, on EVERY

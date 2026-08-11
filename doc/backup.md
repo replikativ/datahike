@@ -266,6 +266,9 @@ the dump's `:source-config` (the manifest records it). Import:
 - **refuses a non-empty target** (`:import/non-empty-target`). Import is **not
   resumable** (the id-remap is in-memory only); if an import is interrupted,
   delete the target and start over;
+- **refuses a dump that holds fewer records than its source did, with nothing to
+  explain the gap** (`:import/incomplete-dump`, carrying `:missing`) — see
+  [Detecting an incomplete dump](#detecting-an-incomplete-dump) below;
 - verifies itself against the manifest by default (`:verify? true`).
 
 Options:
@@ -285,11 +288,72 @@ Options:
 | `:spool-codec` | `:gzip` | compression for the index-build scratch spool; `:none` to disable |
 | `:spool-chunk-size` | 100k | records per spool file |
 | `:dangling-sample` | 10 | how many dangling refs `:check-refs?` includes in its report |
+| `:allow-partial?` | `false` | import a dump with an unexplained shortfall anyway |
 | `:progress-fn` | — | called with `{:phase … :datoms …}` |
 
 Failures are `ex-info` with a namespaced `:error` (e.g.
 `:import/config-mismatch`, `:import/checksum-failed`, `:import/bad-chunk-path`,
+`:import/incomplete-dump`, `:import/apply-failed`, `:import/verify-unavailable`,
 `:import/build-indexes-refused`).
+
+### What the report says about verification
+
+`:verified?` is `true`, `false`, or `nil` — and `nil` alone cannot tell you
+whether verification was switched off, had nothing to compare against, or failed
+under `:on-error :collect`. The report therefore also carries `:verification`,
+which says which:
+
+| `:status` | `:verified?` | meaning |
+|---|---|---|
+| `:ok` | `true` | the restored count matched what the source declared |
+| `:failed` | `false` | it did not; `:missing` says by how much |
+| `:skipped` | `nil` | you passed `:verify? false`; nothing is claimed |
+| `:unavailable` | `nil` | the source declares no record count, so there was nothing to check against |
+
+`:failed` and `:unavailable` **throw** unless `:on-error :collect`, whose whole
+contract is to report rather than abort. Under `:collect`, `:missing` and the
+length of `:errors` should agree — each missing datom accounted for by a
+collected error.
+
+### What `:on-error :collect` will and will not survive
+
+`:collect` exists to survive a bad **record** and name it, so it applies only to
+failures a record can be responsible for — datahike's own `:transact/…`,
+`:entity-id/…`, `:lookup-ref/…`, `:schema/…` and `:import/…` rejections. Each
+appears in `:errors` under the error key datahike raised, together with the
+datom it blames.
+
+Anything else — a store outage, a shut-down writer — aborts with
+`:import/apply-failed`, carrying the original exception as its cause. It is not
+filed against your data, and the import does not continue retrying records one
+at a time against something that cannot accept any of them.
+
+### Detecting an incomplete dump
+
+Every other integrity signal a dump carries — `:datom-count`, the semantic
+digest, the per-chunk SHA-256 — is computed from what was **written**. A dump
+that lost records therefore agrees with itself perfectly, so checking it against
+itself proves nothing: a 205-datom database exported short to 120 produced a
+manifest saying 120, a matching digest, and `verify` returning `:ok? true`.
+
+The manifest's `:stats` therefore also carries an **independent** witness:
+
+| key | meaning |
+|---|---|
+| `:datom-count` | records written to the dump |
+| `:source-datom-count` | records the source database held, counted from the database — `nil` if the export was run with `{:count-source? false}` |
+| `:transformed?` | true when an `:xform` was applied, i.e. a smaller dump is expected |
+
+`import-db` refuses a dump where `:source-datom-count` exceeds `:datom-count`
+and `:transformed?` is false, since that is what a truncated export looks like.
+An `:xform` dump is smaller *and says so*, and imports normally. Pass
+`{:allow-partial? true}` to restore a short dump deliberately — it is the right
+call when the alternative is no restore at all, and it is your decision rather
+than a silent one.
+
+Counting the source costs one index scan at export time; `{:count-source? false}`
+skips it and records `:source-datom-count nil`, which reads as *unknown* and
+disables the check for that dump.
 
 Old flat **CBOR** dumps (produced by pre-1.0 datahike) still import through the
 legacy path automatically.
