@@ -26,7 +26,18 @@
         ;; :cljs + :test (shadow-cljs.edn:1), and `bb test cljs-node` sees only
         ;; :cljs — so this is the one placement all three see. The old :bulk
         ;; alias reached none of the cljs ones.
-        org.replikativ/persistent-sorted-set        {:local/root "../persistent-sorted-set"}
+        org.replikativ/persistent-sorted-set        {:mvn/version "0.5.140"}
+        ;; MAIN deps, not a test alias. `datahike.cbor` is src/, so boring is a
+        ;; real runtime dependency: the dump codec and the kabel wire format
+        ;; both go through it. It used to be declared only under :test, which
+        ;; meant the tests ran against the pinned version while a CONSUMER got
+        ;; whatever kabel/konserve-sync dragged in transitively -- 0.1.6, ELEVEN
+        ;; versions behind. That is not hypothetical: `export-db` throws
+        ;; `boring: unknown profile :archival` on 0.1.6, so export was broken for
+        ;; every consumer while CI stayed green on 3001 tests, because CI runs
+        ;; the alias. Kabel's own deps.edn names this hazard exactly -- "green CI
+        ;; on a version nothing else in the stack uses".
+        org.replikativ/boring                       {:mvn/version "0.1.17"}
         is.simm/partial-cps                         {:mvn/version "0.1.59"}
         environ/environ                             {:mvn/version "1.2.0"}
         nrepl/bencode                               {:mvn/version "1.2.0"}
@@ -104,13 +115,13 @@
                                org.replikativ/stratum        {:mvn/version "0.3.77"}
 
                                ;; kabel integration for distributed datahike.
-                               ;; boring comes with it: src-kabel's connector
-                               ;; requires datahike.cbor, which is the wire
-                               ;; format the kabel peers now speak, so the
-                               ;; whole :test suite fails to LOAD without it --
-                               ;; not just the CBOR tests.
+                               ;; src-kabel's connector requires datahike.cbor,
+                               ;; so the whole :test suite fails to LOAD without
+                               ;; kabel -- not just the CBOR tests. boring is no
+                               ;; longer duplicated here: it is a main dep now,
+                               ;; because declaring it twice is precisely how the
+                               ;; tested and shipped versions came apart.
                                org.replikativ/kabel          {:mvn/version "0.3.102"}
-                               org.replikativ/boring         {:mvn/version "0.1.17"}
                                is.simm/distributed-scope     {:mvn/version "0.1.6"}
                                org.replikativ/konserve-sync  {:mvn/version "0.1.38"}
 
