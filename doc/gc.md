@@ -106,10 +106,14 @@ Online GC automatically deletes freed index nodes during transaction commits, pr
 
 ### How Online GC Works
 
-> Online GC is **ONLY safe for single-branch databases**.
-> For multi-branch databases, online GC is automatically disabled because freed nodes
-> from one branch may still be referenced by other branches through structural sharing.
-> Use offline GC (`d/gc-storage`) for multi-branch cleanup instead.
+> Online GC has **two hard requirements**: a single branch, and `:diff-buf-size 0`.
+> Both are enforced — the diff-buf combination is refused at connect, and both are
+> skipped inside the GC itself. Use offline GC (`d/gc-storage`) otherwise; it derives
+> reachability itself instead of trusting the freed-address hint, so it is unaffected.
+>
+> Note the multi-branch restriction is **not** because structural sharing is confined to
+> branches — it is not. Nodes are shared between any two versions, including two versions
+> of the same branch. See *Why diff-buf is excluded* below.
 
 When PSS (Persistent Sorted Set) index trees are modified during transactions, old index nodes become unreachable. Online GC tracks these freed addresses with timestamps and deletes them incrementally:
 
@@ -204,10 +208,54 @@ Online GC includes **address recycling**—freed addresses are reused for new in
 - **Bulk import scenarios** (write-only, no concurrent queries)
 
 **Online GC is automatically disabled when:**
+- `:diff-buf-size` is non-zero (refused at connect; also skipped with a warning inside the
+  GC if reached via `:allow-unsafe-config` or a direct `online-gc!` call).
+  Reason: see *Why diff-buf is excluded* below
 - Multiple branches exist (online GC completely skipped - use offline GC instead)
-  Reason: Freed nodes from one branch may still be referenced by other branches
-  through structural sharing
+  Reason: reachability across branches is not established by the freed-address stream
 - Using `:crypto-hash? true` with recycling (falls back to deletion mode)
+
+### Why diff-buf is excluded
+
+Online GC reclaims blobs from the `markFreed` stream that persistent-sorted-set emits.
+That stream is documented by pss as a **hint, not a reachability claim** — the consumer
+must establish for itself that no live version needs an address.
+
+Without diff-buf the hint is reliable in practice: a changed child is always rewritten to a
+new address, so the old one belonged solely to the version being superseded.
+
+With diff-buf it is not. A parent no longer says *"child i is the blob at A"*; it says
+*"child i is the blob at anchor A **plus** this diff"*. Two versions can therefore name the
+same anchor with different diffs, and neither owns it. Storing one of them may **flush**
+that child — write it out whole and free the anchor — which is correct for the version
+being stored and wrong for the other. The useful distinction is that freeing on
+**supersession** is safe while freeing on **re-representation** is not, and a flush is
+re-representation: the same elements, written differently.
+
+So the stream is sound exactly when the commit history is **linear** — every version stored
+before the next is derived from it. Measured in pss against a backend that acts on the
+callback:
+
+| shape | result |
+|---|---|
+| linear | publication closure held in 432/432 cells, every budget |
+| ancestor then descendant (descendant derived while ancestor unstored) | 25 read failures / 768 trials at budget ≤ 4; clean at ≥ 8 |
+| `:diff-buf-size 0` | 864/864 clean, no premature free in any shape |
+
+Two mitigations that do **not** work, so they are not attempted: retaining "the last N
+images" fails for every N, because the freed blob is not reachable from the immediately
+preceding image and the required depth grows without bound; and limiting the number of
+branches does not help, because the hazardous shape lives inside a single lineage
+(`force-branch!` twice on one branch reproduces it while `(count branches)` stays 1).
+
+Datahike enforces the simpler, mechanically checkable rule — `:diff-buf-size 0` — rather
+than asking users to reason about linearity. That is also strictly stronger: every free
+that could be premature happens under diff-buf, so excluding it closes the class.
+
+Tracked in [datahike#951](https://github.com/replikativ/datahike/issues/951) — see the issue
+for the underlying design question of whether incremental reclamation should derive its
+free set from reachability instead of a producer hint. pss's own statement of the contract
+is in `IStorage.markFreed`.
 
 ### Bulk Import Configuration
 
@@ -261,7 +309,8 @@ For maximum performance during bulk imports where no concurrent readers exist:
 - Deletes **entire old snapshots** by walking all branches
 - Slower: Full tree traversal and marking
 - Handles **multi-branch databases** safely through reachability analysis
-- **Required for multi-branch databases** (online GC doesn't work)
+- **Required for multi-branch databases** and for any database with a non-zero
+  `:diff-buf-size` (online GC doesn't work in either case)
 - Best for: Periodic maintenance, deleting old branches, multi-branch cleanup
 
 **Use both:** Online GC for incremental cleanup during single-branch writes, offline GC for periodic deep cleaning and all multi-branch scenarios.
