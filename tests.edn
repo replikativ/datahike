@@ -38,6 +38,13 @@
                                     :ns-patterns ["datahike.test."]}
                                  {:id         :norm
                                   :test-paths ["test/datahike/norm"]}
+                                 ;; Datomic Pro <-> datahike. Its own PATH, because
+                                 ;; `datahike.migrate.datomic` requires `datomic.api`
+                                 ;; and fails to LOAD without the peer jar rather
+                                 ;; than skipping — so it must be unreachable from
+                                 ;; every tier that runs without the :datomic alias.
+                                 {:id         :datomic
+                                  :test-paths ["test-datomic"]}
                                  {:id         :integration
                                   :test-paths ["test/datahike/integration_test"]}
                                  {:id         :kabel

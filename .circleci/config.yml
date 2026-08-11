@@ -159,6 +159,28 @@ jobs:
           paths:
             - /home/circleci/.m2
             - /home/circleci/.deps.clj
+  datomic-test:
+    executor: tools/clojurecli
+    steps:
+      - attach_workspace:
+          at: /home/circleci
+      - run:
+          # Datomic Pro <-> datahike migration. Needs the `:datomic` alias for the
+          # peer jar; `datomic:mem://` needs no license key or transactor, so this
+          # is an ordinary job rather than an integration one. The namespace lives
+          # on `src-datomic` and the tests on `test-datomic`, reachable from no
+          # other tier — `datahike.migrate.datomic` requires `datomic.api` and
+          # fails to LOAD without it, so being visible elsewhere would break that
+          # tier rather than skip.
+          name: Run Datomic migration tests
+          command: bb test datomic
+          no_output_timeout: 5m
+      - save_cache:
+          key: deps-{{ checksum "deps.edn" }}
+          paths:
+            - /home/circleci/.m2
+            - /home/circleci/.deps.clj
+
   migrate-test:
     executor: tools/clojurecli
     steps:
@@ -389,6 +411,9 @@ workflows:
             - build
       - backward-compatibility-test:
           context: ghcr-read-package
+          requires:
+            - build
+      - datomic-test:
           requires:
             - build
       - migrate-test:
