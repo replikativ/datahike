@@ -337,6 +337,52 @@
              (export-records-streaming db opts))
     (:xform opts) (sequence (:xform opts))))
 
+(defn- sorted-record-seq
+  "The record stream an export writes, sorted if `:sort?` — CREATED AT THE POINT
+   OF USE, never bound to a name.
+
+   That is not style. core.async only decomposes subforms that CONTAIN a park,
+   but once a park anywhere in the enclosing form forces decomposition, EVERY
+   `let`/`loop` binding in that region becomes a local inside the state machine's
+   `try`, where Clojure's locals-clearing does not apply — and one read from a
+   second block goes into the state array, which is never nulled. So a named
+   record stream is retained for the whole go block: the entire database.
+
+   Measured, 400k records, used heap sampled inside the block (baseline 15 MB):
+
+       bind -> park -> consume                     63 MB
+       bind -> consume SYNCHRONOUSLY -> park       63 MB   <- no park in between
+       bind -> if(parking arm NOT taken) -> use    63 MB   <- untaken arm still leaks
+       inlined into the arm                        15 MB
+       loop parking every iteration, seq unnamed   14 MB
+
+   Two rules follow, and both are easy to undo by accident:
+
+     * REORDERING DOES NOT HELP. Moving the park earlier leaves the binding in
+       the same decomposed region. Only having no name works.
+     * A CALLEE MAY REFERENCE THE SEQ PARAMETER ONCE. `mstore/write-chunks!` and
+       `write-chunked!` each mention it exactly once, in a loop init that then
+       advances — safe. A second mention (a `(when (seq records) …)` guard, say)
+       reintroduces the leak with no other symptom.
+
+   `async+sync` compiles the same source to a plain `let` under `:sync? true`, so
+   none of this shows on the JVM default; `default-sync?` is FALSE on
+   ClojureScript, so async is the only mode there.
+
+   ## `:xform` is applied here, and therefore once PER CALL
+
+   Because this is called at the point of use, \"one instance for the whole
+   export\" is no longer structural — it holds because only one arm of a
+   `store-target?` fork runs. Do not call this twice on one export. That exact
+   defect already shipped once (`:xform` applied twice, dumps transformed twice,
+   invisible because every test used an idempotent transducer), which is why
+   `migrate-export-xform-test` drives a STATEFUL one through every path."
+  [db opts tmp-dir]
+  (let [rs (export-record-seq db opts)]
+    (if (:sort? opts)
+      (msort/external-sort rs (:sort-buffer opts) tmp-dir)
+      rs)))
+
 (defn export-db
   "Export a database (or connection) to `target`.
 
@@ -437,26 +483,31 @@
          ;; shape it was ALSO blamed for was never the obstacle, since every read
          ;; in the merge is a synchronous local file read and no channel op ever
          ;; occurs inside it.
-         (let [records (export-record-seq db opts)
-               tmp-dir (when (:sort? opts) (fs/temp-dir! "dh-export"))]
+         (let [tmp-dir (when (:sort? opts) (fs/temp-dir! "dh-export"))]
            (try
              ;; NOT a `write-to!` closure any more. It held the konserve write,
              ;; and a closure is exactly what the `go` state machine cannot enter
              ;; — the same rule that reshaped the importer. Inlined so the awaits
              ;; sit at statement positions.
-             (let [sorted (if (:sort? opts)
-                            (msort/external-sort records (:sort-buffer opts) tmp-dir)
-                            records)]
+             ;; No `sorted` binding, and no `records` binding above: BOTH arms
+             ;; build their own. The store arm's park decomposes this `if`, which
+             ;; promotes a shared binding for the FILESYSTEM arm too — measured,
+             ;; a seq consumed in the non-parking arm is retained just the same.
+             ;; Fixing only the store arm would have left write-chunked! holding
+             ;; the whole dump, with nothing in the suite to notice.
+             (do
                (if (mstore/store-target? target)
                  (let [m (<?- (mstore/open target opts))]
                    (try
-                     (<?- (mstore/write-chunks! m sorted (:chunk-size opts)
+                     (<?- (mstore/write-chunks! m (sorted-record-seq db opts tmp-dir)
+                                                (:chunk-size opts)
                                                 (fn [digest chunks]
                                                   (build-manifest db (with-source-count db opts) digest chunks))
                                                 progress opts
                                                 (get opts :compression mz/default-codec)))
                      (finally (<?- (mstore/close m opts)))))
-                 (write-chunked! db opts target sorted (:chunk-size opts) progress)))
+                 (write-chunked! db opts target (sorted-record-seq db opts tmp-dir)
+                                 (:chunk-size opts) progress)))
              (finally
                (when tmp-dir
                  (doseq [n (or (fs/list-names tmp-dir) [])]
@@ -491,7 +542,7 @@
    a transfer, and the target defines what fidelity means. `export-db` is the
    verifiable artefact.
 
-   ## Chunks are transaction-aligned
+   ## Chunks are transaction-aligned, and `:sort? false` is REFUSED
 
    A chunk holds at least `:chunk-size` records and then grows to the next change
    of `t`, so a transaction is never split across two `:write` calls. That costs
@@ -499,6 +550,21 @@
    needs: a sink that transacts can transact what it is handed. `export-db`'s own
    chunking does not do this — a dump chunk is a byte-range and its reader
    reassembles the stream — so this is a property of THIS seam, not of the dump.
+
+   `:sort? false` cannot provide it and is refused rather than silently breaking
+   it. That mode uses `export-records-streaming`, which walks `:eavt`: `t`
+   interleaves arbitrarily, so `partition-by` yields runs of about one record and
+   a transaction lands in many chunks. Measured on a database where entity order
+   and transaction order disagree, `:chunk-size 40`: `:sort? true` split nothing
+   across 9 chunks, while `:sort? false` put TWO transactions in all nine. It is
+   not the two-pass meta/data split alone — merging those would not fix it.
+
+   The cost is real and worth naming: `:sort? false` exists for hard read-only
+   and diskless targets, and this is the only diskless route to a non-dump
+   target. A sink that does not transact per chunk — a socket, a columnar
+   writer — does not need the alignment and is nonetheless refused. If that
+   becomes a real need, the shape is a sink declaring `:tx-aligned? false`
+   rather than dropping the guarantee for everyone.
 
    ## Async
 
@@ -535,9 +601,9 @@
    targeting something where the reference is the point. `export-db` is the path
    that carries the bytes for you.
 
-   Opts are `export-db`'s: `:history?` `:xform` `:chunk-size` `:sort?`
-   `:sort-buffer` `:sync?` `:progress-fn`. `:compression` is ignored — nothing
-   here writes bytes."
+   Opts are `export-db`'s: `:history?` `:xform` `:chunk-size` `:sort-buffer`
+   `:sync?` `:progress-fn`. `:compression` is ignored — nothing here writes
+   bytes — and `:sort? false` is refused, see above."
   ([db-or-conn sink] (export-to-sink db-or-conn sink {}))
   ([db-or-conn sink opts]
    (assert-sync-supported! opts)
@@ -545,6 +611,15 @@
    (when-not (and (ifn? (:open sink)) (ifn? (:write sink)) (ifn? (:close sink)))
      (throw (ex-info "A sink must supply :open, :write and :close functions."
                      {:error :export/malformed-sink :got (keys sink)})))
+   ;; Before anything is read. `:sort? false` cannot keep a transaction in one
+   ;; chunk — see the docstring for the measurement — and this seam's whole
+   ;; contract is that a sink can transact what it is handed.
+   (when (false? (:sort? opts))
+     (throw (ex-info (str "export-to-sink cannot honour {:sort? false}: without the sort, "
+                          "records arrive in :eavt order and a transaction is split across "
+                          "many chunks, which breaks the transaction alignment a sink relies "
+                          "on. Use export-db for a no-scratch export.")
+                     {:error :export/sort-required})))
    (let [db       (->db db-or-conn)
          opts     (merge {:history? (boolean (:keep-history? (dbi/-config db)))
                           :chunk-size default-chunk-size
@@ -562,13 +637,11 @@
      (async+sync
       (:sync? opts) *default-sync-translation*
       (go-try-
-       (let [records (export-record-seq db opts)
-             tmp-dir (when (:sort? opts) (fs/temp-dir! "dh-export-sink"))]
+       ;; `tmp-dir` stays out here so the `finally` below can clean it. It is a
+       ;; path, not a stream, so naming it costs nothing.
+       (let [tmp-dir (when (:sort? opts) (fs/temp-dir! "dh-export-sink"))]
          (try
-           (let [sorted (if (:sort? opts)
-                          (msort/external-sort records (:sort-buffer opts) tmp-dir)
-                          records)
-                 ctx0   (<?- ((:open sink) opts))
+           (let [ctx0   (<?- ((:open sink) opts))
                  ;; The LATEST ctx, not `ctx0`. `:write` returns a new context,
                  ;; so a sink that rotates a resource through it — a file handle,
                  ;; an open transaction — would otherwise be handed a stale one to
@@ -581,7 +654,13 @@
                  ;; rather than being handled in the `catch`, because nothing may
                  ;; park there — the shape `import-db` uses for the same reason.
                  err (try
-                       (loop [cs  (seq (tx-aligned-chunks sorted (:chunk-size opts)))
+                       ;; The stream is built HERE, in the loop init, and never
+                       ;; bound to a name — see `sorted-record-seq`. Creating it
+                       ;; "after the park" would not be enough: the binding would
+                       ;; still live in the region this go block decomposes.
+                       (loop [cs  (seq (tx-aligned-chunks
+                                        (sorted-record-seq db opts tmp-dir)
+                                        (:chunk-size opts)))
                               ctx ctx0
                               n   0]
                          (if (nil? cs)
@@ -2392,48 +2471,7 @@
    it is deliberate: a caller who simply forgot `:expected-count` should be told,
    not quietly given an unverified import.
 
-   ## Async: `:read` may park, `:xform` may not
-
-   This is the whole reason the seam yields CHUNKS rather than taking a reducing
-   function. `run-import`'s docstring has the history: a reducing function is a
-   closure, the `go` state machine does not enter one, and an async import could
-   never have been expressed through it. Chunks put the read and the write at
-   statement positions the machine can see.
-
-   So:
-
-     :read    is `<?-`'d. Under `:sync? false` it MUST return a channel — a plain
-              collection raises \"No implementation of method: :take! of protocol:
-              ReadPort\". That is also the licence to do real IO in it: a Datomic
-              log read, an HTTP fetch, a file read. `default-sync?` is FALSE on
-              ClojureScript, so this is the DEFAULT path there, not the exotic one.
-     :xform   runs synchronously inside the importer's `go` block and must be
-              PURE — no IO, no parking. A parked take inside a transducer cannot
-              be reached by the state machine.
-
-   `records->chunk-src` handles the `:read` side for you; a hand-written source
-   must do it, and `async+sync` + `go-try-` is how the rest of this namespace does.
-
-   ## Memory
-
-   RECORDS stream: one chunk plus one batch is live at a time. DESCRIPTORS do
-   not — the importer holds `chunk-src` for the whole run, so a realized
-   descriptor list stays reachable. `:chunks` may be lazy, but a descriptor must
-   be small, data-free metadata (a file name, a `t` range), never the records
-   themselves.
-
-   ## Opts
-
-   Everything `import-db` takes (`:batch-size` `:xform` `:eids` `:merge?`
-   `:build-indexes?` `:on-error` `:sync?` …) plus:
-
-     :source-meta  {:history? :expected-count :max-tx}, all three OPTIONAL.
-                   Absent `:expected-count` only means the count check has
-                   nothing to compare against; absent `:max-tx` only means no
-                   drift warning. A source that knows none of them passes none.
-     :schema       source schema map, index-build path only (ref detection).
-
-   ## `:verify?` defaults to whether verification is POSSIBLE
+   ## What this does NOT do
 
    Does NOT do what only a dump needs: no manifest, no checksums, no blob
    restore, no capability or format-version check. A non-dump caller has nothing
@@ -2442,6 +2480,21 @@
   ([conn chunk-src opts]
    (assert-sync-supported! opts)
    (assert-sizes-positive! opts)
+   ;; `:on-error :collect` has no meaning on the index-build path, so it is
+   ;; REFUSED rather than quietly ignored. `run-index-build` carries none of the
+   ;; streaming path's `collect-apply!` / `record-fault?` machinery, and
+   ;; `reduce-source-records` SKIPS `validate-record!` entirely under `:collect`.
+   ;; Measured, one source and one set of opts through both paths: streaming gave
+   ;; `[:OK 10 [{:error :import/malformed-record …}]]`, the index build gave
+   ;; `[:OK 11 []]` — a nil-valued datom written into the index and zero errors
+   ;; claimed. That was reachable only through a corrupt dump; making
+   ;; `:build-indexes?` reachable from a record source would have made it routine.
+   (when (and (:build-indexes? opts) (= :collect (:on-error opts)))
+     (throw (ex-info (str "{:on-error :collect} is not supported with {:build-indexes? true}: "
+                          "the index-build path neither validates records nor collects faults, "
+                          "so a malformed record is written into the index and reported as no "
+                          "error at all. Use the streaming import to collect faults.")
+                     {:error :import/collect-unsupported-on-index-build})))
    (let [smeta (:source-meta opts)
          opts (merge {:sync? default-sync?} opts)]
      (async+sync
@@ -2451,7 +2504,16 @@
        ;; absent manifest, which is what makes this callable at all.
        (check-target! conn nil opts)
        (if (:build-indexes? opts)
-         (if-let [why (build-indexes-refusal conn nil opts)]
+         ;; `(select-keys opts [:schema])`, NOT `{:schema (:schema opts)}` and not
+         ;; `nil`. The clause tests `(contains? manifest :schema)`, so a literal
+         ;; map is ALWAYS true and turns the guard into a no-op — measured, a
+         ;; source with no schema under `:eids :allocate` then produced a ref
+         ;; pointing at an entity that does not exist (`#{[3 101]}` where the
+         ;; schema gives `#{[3 4]}`), the exact silent dangling ref that clause
+         ;; exists to prevent. `nil` was wrong the other way: always true, so this
+         ;; branch was DEAD and refused by naming a manifest a record source can
+         ;; never have.
+         (if-let [why (build-indexes-refusal conn (select-keys opts [:schema]) opts)]
            (throw (ex-info why {:error :import/build-indexes-refused :reason why}))
            ;; `mem` is nil: it feeds only the heap warning and the report's
            ;; `:recommended-heap`, and `(false? (:sufficient? nil))` is false, so

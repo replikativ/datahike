@@ -472,10 +472,21 @@
          (if (nil? families)
            acc
            (let [family (first families)
-                 rs (if (= family :avet)
-                      (filter #(contains? indexed (nth % 1)) (records-fn))
-                      (records-fn))
-                 f (sort-family! rs family run-size tmp-dir)
+                 ;; The record seq is built INSIDE the sort-family! call and never
+                 ;; bound. `sort-family!` drains it synchronously, but binding it
+                 ;; would still pin it: `build-family!` below parks, which
+                 ;; decomposes this region, and every binding in a decomposed
+                 ;; region becomes a state-machine local that is never cleared.
+                 ;; Measured (400k records): bind -> synchronous consume -> park
+                 ;; retains the seq exactly as bind -> park -> consume does. `rs`
+                 ;; here is the WHOLE database, so this held the entire spool per
+                 ;; family — contradicting this fn's own docstring, which says a
+                 ;; seq held across all three would pin the dump. It held it for
+                 ;; one at a time. See `migrate/sorted-record-seq` for the rule.
+                 f (sort-family! (if (= family :avet)
+                                   (filter #(contains? indexed (nth % 1)) (records-fn))
+                                   (records-fn))
+                                 family run-size tmp-dir)
                  {:keys [current temporal]}
                  (<?- (build-family! store index-name family f index-config rschema
                                      (boolean keep-history?) sync?))]
