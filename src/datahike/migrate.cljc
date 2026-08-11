@@ -261,6 +261,45 @@
                              (let [f' (fs/join (blob-dir source) (str id))]
                                (when (fs/exists? f') (fs/read-bytes f'))))))))))))
 
+(defn- tx-aligned-chunks
+  "LAZY seq of chunks of `records`, each at least `n` long, never splitting a
+   transaction.
+
+   `n` is a MINIMUM: a chunk takes whole `t` runs until it reaches `n`, so it
+   overshoots rather than cutting one in half. A split transaction would hand a
+   sink a fragment to transact, and hand the importer's batcher — which flushes
+   on `t` changing — a group it cannot recognise as complete.
+
+   Lazy on purpose. Realizing every chunk would materialize the whole database,
+   which is what `:chunk-size` exists to avoid; `partition-by` streams, and this
+   holds one chunk at a time."
+  [records n]
+  (letfn [(step [groups]
+            (lazy-seq
+             (when (seq groups)
+               (loop [acc [] cnt 0 gs groups]
+                 (if (and (seq gs) (< cnt (long n)))
+                   (let [g (first gs)]
+                     (recur (into acc g) (+ cnt (count g)) (next gs)))
+                   (cons acc (step gs)))))))]
+    (step (partition-by (fn [r] (nth r 3)) records))))
+
+(defn- export-record-seq
+  "The record stream an export writes, before it is sorted or chunked.
+
+   Shared by `export-db` and `export-to-sink` deliberately: they differ only in
+   WHERE the records go, and letting each build its own stream is how the two
+   would come to disagree about `:xform` or about which builder `:sort?` selects.
+
+   `:sort? true` uses `export-records` (unsorted; the external sort imposes the
+   dump's order); `:sort? false` uses `export-records-streaming`, which is
+   already in a load-safe order and needs no scratch space."
+  [db opts]
+  (cond->> (if (:sort? opts)
+             (export-records db opts)
+             (export-records-streaming db opts))
+    (:xform opts) (sequence (:xform opts))))
+
 (defn export-db
   "Export a database (or connection) to `target`.
 
@@ -361,9 +400,7 @@
          ;; shape it was ALSO blamed for was never the obstacle, since every read
          ;; in the merge is a synchronous local file read and no channel op ever
          ;; occurs inside it.
-         (let [records (cond->> (if (:sort? opts)
-                                  (export-records db opts)
-                                  (export-records-streaming db opts))
+         (let [records (cond->> (export-record-seq db opts)
                          ;; `:xform` on the EXPORT side, applied before the sort
                          ;; and before the digest, so the manifest describes what
                          ;; the dump actually holds — counts, semantic digest and
@@ -412,6 +449,152 @@
                  (doseq [n (or (fs/list-names tmp-dir) [])]
                    (fs/delete! (fs/join tmp-dir n)))
                  (fs/delete! tmp-dir)))))))))))
+
+(defn export-to-sink
+  "Stream a database's records into a caller-supplied SINK. **Experimental.**
+
+   The mirror of `import-source`. Where that lets a caller supply records from
+   anywhere, this lets a caller receive them anywhere — another database, a
+   custom file format, a socket. `export-db` remains the way to produce a
+   datahike DUMP; this is for everything that is not one.
+
+   `sink` is
+
+     {:open  (fn [opts]          -> ctx)
+      :write (fn [ctx records]   -> ctx)
+      :close (fn [ctx]           -> result)}
+
+   `export-to-sink` returns whatever `:close` returns.
+
+   ## What a sink gets, and what it does NOT get
+
+   It gets the same `[e a v t op]` records `export-db` writes, in the same
+   `(t, txInstant-first, e, a)` order, transformed by the same `:xform`.
+
+   It does NOT get what makes a dump a dump: no manifest, no per-chunk SHA-256,
+   no semantic digest, nothing `verify` can later read back. Those are properties
+   of BYTES AT REST, and a sink writing into a live database has none of them to
+   offer. Do not read a successful `export-to-sink` as a verified backup — it is
+   a transfer, and the target defines what fidelity means. `export-db` is the
+   verifiable artefact.
+
+   ## Chunks are transaction-aligned
+
+   A chunk holds at least `:chunk-size` records and then grows to the next change
+   of `t`, so a transaction is never split across two `:write` calls. That costs
+   a little chunk-size overshoot and buys the property every live-target sink
+   needs: a sink that transacts can transact what it is handed. `export-db`'s own
+   chunking does not do this — a dump chunk is a byte-range and its reader
+   reassembles the stream — so this is a property of THIS seam, not of the dump.
+
+   ## Async
+
+   `:open`, `:write` and `:close` may all do IO and are each awaited, so under
+   `:sync? false` each must return a channel. `default-sync?` is FALSE on
+   ClojureScript, so that is the default there.
+
+   `:close` is called on the FAILURE path too, and deliberately not from a
+   `finally`: in async mode this function returns a channel, and a `finally`
+   would fire the moment it is handed back — before a single record had been
+   written. `import-db` carries the same scar, where that mistake read every
+   chunk against a released store and still reported `:verified? true`.
+
+   The three run in ONE go block, so under `:sync? false` a sink written to
+   return plain values will not work and one written to return channels will not
+   work under `:sync? true`. To write a sink that serves both, wrap each body the
+   way this namespace does — `(async+sync (:sync? opts) *default-sync-translation*
+   (go-try- …))` — and note `:open` and `:write` are handed the OPTS, so `:sync?`
+   is available to them.
+
+   `:close` is called EXACTLY ONCE, on the success and the failure path alike,
+   and is handed the LATEST context — the one the last successful `:write`
+   returned, not the one `:open` produced. A sink that rotates a resource through
+   its context can therefore close the right one. If `:close` itself throws while
+   an earlier failure is already in flight, the EARLIER failure is what surfaces;
+   a broken close must not hide the reason it was reached.
+
+   ## `:db.type/store-ref` blobs
+
+   Warned about, not refused. The records carry blob REFERENCES and their bytes
+   are not written here, because a record sink has nowhere to put them. That is
+   a limitation the caller may well have already handled — copying the objects
+   separately (`datahike.gc/reachable-store-refs` gives the live set), or
+   targeting something where the reference is the point. `export-db` is the path
+   that carries the bytes for you.
+
+   Opts are `export-db`'s: `:history?` `:xform` `:chunk-size` `:sort?`
+   `:sort-buffer` `:sync?` `:progress-fn`. `:compression` is ignored — nothing
+   here writes bytes."
+  ([db-or-conn sink] (export-to-sink db-or-conn sink {}))
+  ([db-or-conn sink opts]
+   (assert-sync-supported! opts)
+   (assert-sizes-positive! opts)
+   (when-not (and (ifn? (:open sink)) (ifn? (:write sink)) (ifn? (:close sink)))
+     (throw (ex-info "A sink must supply :open, :write and :close functions."
+                     {:error :export/malformed-sink :got (keys sink)})))
+   (let [db       (->db db-or-conn)
+         opts     (merge {:history? (boolean (:keep-history? (dbi/-config db)))
+                          :chunk-size default-chunk-size
+                          :sort-buffer 1000000
+                          :sync? default-sync?
+                          :sort? true}
+                         opts)
+         progress (or (:progress-fn opts) (constantly nil))]
+     (when (mblobs/schema-has-store-refs? db)
+       (warn! (str "[datahike.migrate] this database has :db.type/store-ref attributes. The "
+                   "records carry blob REFERENCES; their BYTES are not written here, because a "
+                   "record sink has nowhere for them to go. Copy them yourself (see "
+                   "datahike.gc/reachable-store-refs) or use export-db, which carries them "
+                   "alongside the dump.")))
+     (async+sync
+      (:sync? opts) *default-sync-translation*
+      (go-try-
+       (let [records (export-record-seq db opts)
+             tmp-dir (when (:sort? opts) (fs/temp-dir! "dh-export-sink"))]
+         (try
+           (let [sorted (if (:sort? opts)
+                          (msort/external-sort records (:sort-buffer opts) tmp-dir)
+                          records)
+                 ctx0   (<?- ((:open sink) opts))
+                 ;; The LATEST ctx, not `ctx0`. `:write` returns a new context,
+                 ;; so a sink that rotates a resource through it — a file handle,
+                 ;; an open transaction — would otherwise be handed a stale one to
+                 ;; close. A `loop` binding is invisible to the code that runs
+                 ;; after it, hence the volatile.
+                 latest (volatile! ctx0)
+                 ;; A loop over tx-aligned chunks rather than a reduce: the state
+                 ;; machine cannot enter a reducing closure, the same constraint
+                 ;; that shaped the importer. The error comes back as a VALUE
+                 ;; rather than being handled in the `catch`, because nothing may
+                 ;; park there — the shape `import-db` uses for the same reason.
+                 err (try
+                       (loop [cs  (seq (tx-aligned-chunks sorted (:chunk-size opts)))
+                              ctx ctx0
+                              n   0]
+                         (if (nil? cs)
+                           (do (progress {:phase :sink-complete :datoms n}) nil)
+                           (let [chunk (first cs)
+                                 ctx'  (<?- ((:write sink) ctx chunk))]
+                             (vreset! latest ctx')
+                             (progress {:phase :sink-chunk :datoms (+ n (count chunk))})
+                             (recur (next cs) ctx' (+ n (count chunk))))))
+                       (catch #?(:clj Exception :cljs :default) e e))
+                 ;; ONCE, on both paths. Closing inside the loop's success branch
+                 ;; AND in a catch would double-close whenever `:close` itself
+                 ;; threw: the catch would see its own exception and run again.
+                 closed (try (<?- ((:close sink) @latest))
+                             (catch #?(:clj Exception :cljs :default) e {::close-failed e}))]
+             (cond
+               ;; A failing close must not MASK the failure that caused it.
+               (some? err) (throw err)
+               (and (map? closed) (contains? closed ::close-failed))
+               (throw (::close-failed closed))
+               :else closed))
+           (finally
+             (when tmp-dir
+               (doseq [n (or (fs/list-names tmp-dir) [])]
+                 (fs/delete! (fs/join tmp-dir n)))
+               (fs/delete! tmp-dir))))))))))
 
 ;; ---------------------------------------------------------------------------
 ;; reading dumps
@@ -2092,15 +2275,13 @@
    changing."
   ([records] (records->chunk-src records default-batch-size))
   ([records n]
-   (let [chunks (->> records
-                     (partition-by (fn [r] (nth r 3)))
-                     (reduce (fn [acc tx-group]
-                               (let [cur (count (peek acc))]
-                                 (if (or (empty? acc) (>= cur (long n)))
-                                   (conj acc (vec tx-group))
-                                   (conj (pop acc) (into (peek acc) tx-group)))))
-                             [])
-                     vec)]
+   ;; `vec`, not the lazy seq: `:chunks` IS the descriptor list here — each chunk
+   ;; is its own descriptor — and the importer holds it for the whole run, so
+   ;; realizing it is honest about the memory rather than pretending to stream.
+   ;; A source that can address its own storage should build cheap descriptors
+   ;; instead. The tx-alignment rule lives in `tx-aligned-chunks`, shared with
+   ;; `export-to-sink`, so the two cannot disagree about what a chunk is.
+   (let [chunks (vec (tx-aligned-chunks records n))]
      {:chunks chunks
       ;; `:read` is `<?-`'d by the importer, so under `:sync? false` it must
       ;; return a CHANNEL — a plain collection raises
