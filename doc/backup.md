@@ -2,8 +2,12 @@
 
 `datahike.migrate/export-db` and `import-db` write and read a portable, type-exact
 dump of a database. Use them for backups, moving a database between stores, or
-snapshotting before a risky change. For the format details and rationale see
-[import-export-design.md](import-export-design.md).
+snapshotting before a risky change.
+
+A dump is not the only way in or out: `import-source` and `export-to-sink` make
+the underlying record stream public, so datahike can read from and write to
+things that are not dumps at all — see [Beyond dumps](#beyond-dumps-import-source-and-export-to-sink)
+below, and [Migrating from Datomic](./migrate-datomic.md).
 
 ## Flow
 
@@ -553,3 +557,60 @@ but *when* differs by medium, and it matters if you are restoring a backup.
 byte-identical chunks), so a dump can be signed by external tooling (GPG, cosign,
 KMS). The manifest's semantic digest is for order-independent content comparison,
 not tamper-evidence.
+
+
+## Beyond dumps: `import-source` and `export-to-sink`
+
+A dump is a convenience, not the interface. Underneath, export and import both
+speak a stream of **records** — `[e a v t op]`, the same tuples a dump holds —
+and both ends of that stream are public.
+
+    (require '[datahike.migrate :as m])
+
+    ;; anything -> datahike
+    (m/import-source conn {:chunks [descriptor …]
+                           :read   (fn [descriptor opts] …)}
+                     {:source-meta {:history? true :expected-count n}})
+
+    ;; datahike -> anything
+    (m/export-to-sink @conn {:open  (fn [opts] ctx)
+                             :write (fn [ctx records] ctx')
+                             :close (fn [ctx] result)}
+                      {:history? true :chunk-size 1000})
+
+Use these when the other side is a live system rather than a file: a Datomic
+database, a CSV reader, a triple stream, a socket. They compose directly — out
+through a sink and back in through a source reproduces a database with no dump
+anywhere in between.
+
+### What a source owes
+
+1. **Records are `[e a v t op]`** — `a` a keyword ident, `v` a real value (`nil`
+   is not storable), `t` the source's transaction id, `op` a boolean.
+2. **Order is `(t, txInstant-first, e, a)`** — schema before the data using it,
+   the transaction entity before its own datoms.
+3. **`t` must vary.** The batcher flushes when `t` changes; a source stamping
+   every record with one `t` never flushes and buffers the whole stream.
+4. **The source emits its own schema datoms.** The installed schema is derived
+   from the stream.
+5. **`:read` must be re-entrant** — verification and the index build read chunks
+   more than once — and should return a realized, bounded collection.
+6. **Descriptors are metadata, not records.** The importer holds the descriptor
+   list for the whole run, so a descriptor should be a file name or a `t` range,
+   never the records themselves. `records->chunk-src` is the exception, and a
+   convenience only for a source small enough to hold in memory.
+
+`:read` may park, which is what lets it do real IO. Under `{:sync? false}` — the
+default on ClojureScript — it **must** return a channel.
+
+### What a sink gets
+
+`:open`, `:write` and `:close` are each awaited, so each may do IO. Chunks are
+**transaction-aligned**: `:chunk-size` is a minimum that grows to the next change
+of `t`, so a sink that transacts what it is handed never commits a fragment of a
+transaction. (`export-db`'s own chunking does not do this and does not need to —
+a dump chunk is a byte range whose reader reassembles the stream.)
+
+`:close` runs on the failure path as well, and receives the latest context. A
+`{:sort? false}` export is refused here, because without the sort a transaction
+is split across many chunks and the alignment guarantee cannot hold.
