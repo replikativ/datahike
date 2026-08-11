@@ -242,6 +242,20 @@
      :impl datahike.writer/load-entities}
 
     with
+    ;; THREE branches, two of which are 2-arity. That is deliberate and it is the
+    ;; Java binding's shape: `param-type->java` maps `STransactions` to `List` and
+    ;; `SWithArgs` to `Object`, so the two 2-arity branches generate two DISTINCT
+    ;; Java overloads — and the `List` one marshals through
+    ;; `Util.normalizeCollections`, which the `Object` one does not.
+    ;;
+    ;; malli cannot express that: it rejects a `:function` whose branches share an
+    ;; arity (`:malli.core/duplicate-arities`). Merging them into
+    ;; `[:or SWithArgs STransactions]` satisfies malli and DELETES
+    ;; `with(Object, List)` from the generated Java, silently dropping the
+    ;; collection normalisation with it (measured against the generated source).
+    ;;
+    ;; So the binding wins and `with` is excluded from instrumentation by name —
+    ;; see `datahike.api/uninstrumentable`. It is the only such operation.
     {:args [:function
             [:=> [:cat :datahike/SDB :datahike/SWithArgs] :datahike/STransactionReport]
             [:=> [:cat :datahike/SDB :datahike/STransactions] :datahike/STransactionReport]
@@ -387,9 +401,29 @@
     ;; =========================================================================
 
     datoms
+    ;; Two branches with NON-OVERLAPPING arities. Both forms the impl accepts —
+    ;; (f db :eavt component…) and (f db {:index .. :components ..}) — used to be
+    ;; declared as two branches that BOTH admitted two arguments; malli's
+    ;; `:function` dispatches on arity, so it took the arg-map one and reported
+    ;; the canonical `(f db :eavt)` as `:malli.core/invalid-input`.
+    ;;
+    ;; So the 2-arity branch now accepts EITHER shape via `:or`, and the
+    ;; component branch starts at THREE (`:+`, one-or-more components). The
+    ;; index keyword is the same enum `SIndexLookupArgs` declares, so a bad
+    ;; index is still caught.
+    ;;
+    ;; The two branches are also load-bearing for CODEGEN, which is why this is
+    ;; not collapsed into one variadic `[:* :any]`: `codegen/java` maps each
+    ;; `[:cat]` element to one positional Java parameter and has no varargs
+    ;; notion, so a single branch emits a single overload and
+    ;; `Datahike.datoms(db, kwd(":eavt"))` stops compiling. Two branches, two
+    ;; overloads — the arity counts here are the generated Java signatures.
     {:args [:function
-            [:=> [:cat :datahike/SDB :datahike/SIndexLookupArgs] [:maybe :datahike/SDatoms]]
-            [:=> [:cat :datahike/SDB :keyword [:* :any]] [:maybe :datahike/SDatoms]]]
+            [:=> [:cat :datahike/SDB
+                  [:or [:enum :eavt :aevt :avet] :datahike/SIndexLookupArgs]]
+             [:maybe :datahike/SDatoms]]
+            [:=> [:cat :datahike/SDB [:enum :eavt :aevt :avet] [:+ :any]]
+             [:maybe :datahike/SDatoms]]]
      :ret [:maybe :datahike/SDatoms]
      :categories [:query :index :advanced]
      :stability :stable
@@ -405,9 +439,29 @@
      :impl datahike.api.impl/datoms}
 
     seek-datoms
+    ;; Two branches with NON-OVERLAPPING arities. Both forms the impl accepts —
+    ;; (f db :eavt component…) and (f db {:index .. :components ..}) — used to be
+    ;; declared as two branches that BOTH admitted two arguments; malli's
+    ;; `:function` dispatches on arity, so it took the arg-map one and reported
+    ;; the canonical `(f db :eavt)` as `:malli.core/invalid-input`.
+    ;;
+    ;; So the 2-arity branch now accepts EITHER shape via `:or`, and the
+    ;; component branch starts at THREE (`:+`, one-or-more components). The
+    ;; index keyword is the same enum `SIndexLookupArgs` declares, so a bad
+    ;; index is still caught.
+    ;;
+    ;; The two branches are also load-bearing for CODEGEN, which is why this is
+    ;; not collapsed into one variadic `[:* :any]`: `codegen/java` maps each
+    ;; `[:cat]` element to one positional Java parameter and has no varargs
+    ;; notion, so a single branch emits a single overload and
+    ;; `Datahike.datoms(db, kwd(":eavt"))` stops compiling. Two branches, two
+    ;; overloads — the arity counts here are the generated Java signatures.
     {:args [:function
-            [:=> [:cat :datahike/SDB :datahike/SIndexLookupArgs] [:maybe :datahike/SDatoms]]
-            [:=> [:cat :datahike/SDB :keyword [:* :any]] [:maybe :datahike/SDatoms]]]
+            [:=> [:cat :datahike/SDB
+                  [:or [:enum :eavt :aevt :avet] :datahike/SIndexLookupArgs]]
+             [:maybe :datahike/SDatoms]]
+            [:=> [:cat :datahike/SDB [:enum :eavt :aevt :avet] [:+ :any]]
+             [:maybe :datahike/SDatoms]]]
      :ret [:maybe :datahike/SDatoms]
      :categories [:query :index :advanced]
      :stability :stable
@@ -419,9 +473,29 @@
      :impl datahike.api.impl/seek-datoms}
 
     rseek-datoms
+    ;; Two branches with NON-OVERLAPPING arities. Both forms the impl accepts —
+    ;; (f db :eavt component…) and (f db {:index .. :components ..}) — used to be
+    ;; declared as two branches that BOTH admitted two arguments; malli's
+    ;; `:function` dispatches on arity, so it took the arg-map one and reported
+    ;; the canonical `(f db :eavt)` as `:malli.core/invalid-input`.
+    ;;
+    ;; So the 2-arity branch now accepts EITHER shape via `:or`, and the
+    ;; component branch starts at THREE (`:+`, one-or-more components). The
+    ;; index keyword is the same enum `SIndexLookupArgs` declares, so a bad
+    ;; index is still caught.
+    ;;
+    ;; The two branches are also load-bearing for CODEGEN, which is why this is
+    ;; not collapsed into one variadic `[:* :any]`: `codegen/java` maps each
+    ;; `[:cat]` element to one positional Java parameter and has no varargs
+    ;; notion, so a single branch emits a single overload and
+    ;; `Datahike.datoms(db, kwd(":eavt"))` stops compiling. Two branches, two
+    ;; overloads — the arity counts here are the generated Java signatures.
     {:args [:function
-            [:=> [:cat :datahike/SDB :datahike/SIndexLookupArgs] [:maybe :datahike/SDatoms]]
-            [:=> [:cat :datahike/SDB :keyword [:* :any]] [:maybe :datahike/SDatoms]]]
+            [:=> [:cat :datahike/SDB
+                  [:or [:enum :eavt :aevt :avet] :datahike/SIndexLookupArgs]]
+             [:maybe :datahike/SDatoms]]
+            [:=> [:cat :datahike/SDB [:enum :eavt :aevt :avet] [:+ :any]]
+             [:maybe :datahike/SDatoms]]]
      :ret [:maybe :datahike/SDatoms]
      :categories [:query :index :advanced]
      :stability :experimental
@@ -491,7 +565,7 @@
      :impl datahike.api.impl/history}
 
     since
-    {:args [:=> [:cat :datahike/SDB types/time-point?] :datahike/SDB]
+    {:args [:=> [:cat :datahike/SDB :datahike/time-point?] :datahike/SDB]
      :ret :datahike/SDB
      :categories [:temporal :query]
      :stability :stable
@@ -505,7 +579,7 @@
      :impl datahike.api.impl/since}
 
     as-of
-    {:args [:=> [:cat :datahike/SDB types/time-point?] :datahike/SDB]
+    {:args [:=> [:cat :datahike/SDB :datahike/time-point?] :datahike/SDB]
      :ret :datahike/SDB
      :categories [:temporal :query]
      :stability :stable
@@ -788,7 +862,7 @@
 
     gc-storage
     {:args [:function
-            [:=> [:cat :datahike/SConnection types/time-point?] :any]
+            [:=> [:cat :datahike/SConnection :datahike/time-point?] :any]
             [:=> [:cat :datahike/SConnection] :any]]
      :ret :any
      :categories [:maintenance :lifecycle]
