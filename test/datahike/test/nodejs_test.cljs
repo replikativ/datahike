@@ -41,6 +41,13 @@
             ;; datahike.experimental.diff — the async arm of diff/tx-range, which
             ;; only cljs executes.
             [datahike.test.experimental-diff-portable-test]
+            ;; import-source on Node in the mode Node actually uses (no :sync?).
+            ;; `default-sync?` is FALSE here, so the async path is the DEFAULT —
+            ;; and it is the one that broke while being written.
+            ;; NOTE: requiring is NOT enough — `-main` below enumerates the
+            ;; namespaces it runs, so a namespace added here and not there
+            ;; compiles, reports nothing, and leaves the suite total unchanged.
+            [datahike.test.migrate-import-source-node-test]
             ;; Weighted LRU query-cache — the cljs WeightedLRU deftype has its
             ;; own implementation, so cover it (unit + test.check property) here.
             [datahike.test.lru-weighted-test]
@@ -75,7 +82,8 @@
             ;; persistent-sorted-set has a cljs `from-sorted-seq`.
             [datahike.test.bulk-build-node-test]
             ;; export/import ON NODE — the point of the whole conversion.
-            [datahike.test.migrate-node-test]))
+            [datahike.test.migrate-node-test]
+            [datahike.test.migrate-fault-node-test]))
 
 ;; Hook cljs.test's end-of-run callback so the Node process exits with
 ;; status 0 only when all tests pass. The previous setup always exited
@@ -758,6 +766,8 @@
                'datahike.test.migrate-sort-test
                'datahike.test.bulk-build-node-test
                'datahike.test.migrate-node-test
+               'datahike.test.migrate-fault-node-test
+               'datahike.test.migrate-import-source-node-test
                'datahike.test.nodejs-test
                'datahike.test.index-test
                'datahike.test.cljs-tiered-storage-test
