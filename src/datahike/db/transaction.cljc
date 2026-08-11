@@ -943,7 +943,14 @@
     ;; matched on the content hash the primary index actually stores.
     (let [prim ^Datom (project-primary (dbu/secondary-only? db a-ident) new-datom)
           pv (.-v prim)
-          old ^Datom (if upsert?
+          ;; `^Datom old`, NOT `old ^Datom (if …)`. Metadata on the VALUE form
+          ;; hints the `if` expression and never reaches the local, so both
+          ;; `(.-v old)` sites below compiled to REFLECTIVE field access. That
+          ;; works on the JVM and fails in a native image, where there is no
+          ;; reflection metadata for the field: `No matching field found: v for
+          ;; class datahike.datom.Datom`, which is what has been failing the
+          ;; native bb-pod tests on main.
+          ^Datom old (if upsert?
                        (current-datom-for-ea db e a)
                        (first (di/-slice (:eavt db)
                                          (dd/datom e a pv tx0)
