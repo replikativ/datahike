@@ -54,7 +54,8 @@
             #?(:cljs [clojure.core.async :refer-macros [go]])
             [datahike.migrate.cbor :as mcbor]
             [datahike.migrate.compress :as mz]
-            [datahike.migrate.digest :as dig]))
+            [datahike.migrate.digest :as dig]
+            [datahike.tools :as dt]))
 
 (def ^:private ns-tag "datahike.migrate")
 
@@ -246,12 +247,30 @@
          ;; any chunk is read, so this is the second line of defence rather than
          ;; the only one — but a chunk whose hash went missing between that check
          ;; and this read must still not slip through.
-         (when (nil? sha256)
-           (throw (ex-info (str "Chunk " file " has no :sha256 in the manifest.")
-                           {:error :import/missing-checksum :file file})))
-         (when (not= sha256 (dig/sha256-hex content))
-           (throw (ex-info (str "Checksum mismatch for chunk " file)
-                           {:error :import/checksum-failed :file file})))
+         ;;
+         ;; `:checksums :skip` is honoured HERE as well as in
+         ;; `assert-dump-manifest!`, because otherwise it is not honoured at all
+         ;; on this medium. Measured, same dump both ways:
+         ;;
+         ;;   FS    bad sha256, :checksums :skip  → imported 20
+         ;;   STORE bad sha256, :checksums :skip  → REFUSED :import/checksum-failed
+         ;;
+         ;; A documented option that works on one medium and silently does not
+         ;; on the other — the third instance of exactly this split, after the
+         ;; fail-closed rule above and the incomplete-dump refusal. And it is
+         ;; the wrong way round: the escape hatch exists to salvage what is left
+         ;; of a damaged backup, and the store medium is the one an operator
+         ;; cannot open by hand to repair.
+         ;;
+         ;; The DEFAULT is unchanged and still fails closed on both a missing
+         ;; and a mismatched hash. Only an explicit, warned-about opt-out passes.
+         (when (not= :skip (:checksums opts))
+           (when (nil? sha256)
+             (throw (ex-info (str "Chunk " file " has no :sha256 in the manifest.")
+                             {:error :import/missing-checksum :file file})))
+           (when (not= sha256 (dig/sha256-hex content))
+             (throw (ex-info (str "Checksum mismatch for chunk " file)
+                             {:error :import/checksum-failed :file file}))))
          (mcbor/decode-records-from content)))))))
 
 (defn reduce-records
@@ -269,4 +288,7 @@
        (if (nil? cs)
          acc
          (recur (next cs)
-                (reduce rf acc (<?- (read-chunk medium manifest (first cs) opts))))))))))
+                (reduce rf acc (dt/delivered!
+                                (<?- (read-chunk medium manifest (first cs) opts))
+                                {:op :read-chunk :chunk (first cs)}
+                                "a dump chunk could not be read")))))))))

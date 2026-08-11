@@ -99,7 +99,26 @@
                         (cond (chan? res)
                               ;; async op, run in parallel in background, no sequential commit handling needed
                               (do
-                                (go (>! callback (<! res)))
+                                ;; `>!` REFUSES nil, so forwarding a closed `res`
+                                ;; throws inside this bare `go` — which closes the
+                                ;; go's own channel, silently, and the callback is
+                                ;; never delivered. The caller's promise then never
+                                ;; resolves: a HANG, not an error. `res` closes
+                                ;; whenever the op failed in a way `go-try-` could
+                                ;; not turn into a value (a JVM Error, a cljs throw
+                                ;; of a non-js/Error), and `gc-storage` reaches
+                                ;; here on every call.
+                                (go (let [v (<! res)]
+                                      (>! callback
+                                          (if (nil? v)
+                                            (ex-info (str "The " op " operation produced no result"
+                                                          " — its channel closed without a value,"
+                                                          " which means it failed in a way that"
+                                                          " could not be reported.")
+                                                     {:error :async/no-result
+                                                      :type :writer-no-result
+                                                      :op op})
+                                            v))))
                                 (recur old))
 
                               (not= res :error)
