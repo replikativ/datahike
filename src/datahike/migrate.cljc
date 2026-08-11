@@ -271,8 +271,23 @@
    on `t` changing — a group it cannot recognise as complete.
 
    Lazy on purpose. Realizing every chunk would materialize the whole database,
-   which is what `:chunk-size` exists to avoid; `partition-by` streams, and this
-   holds one chunk at a time."
+   which is what `:chunk-size` exists to avoid.
+
+   BOUNDED BY ONE TRANSACTION, NOT BY `n`. `partition-by` streams, so this holds
+   one chunk at a time only while `t` VARIES. A stream whose `t` never changes —
+   a database built by one large `transact`, or by `load-entities` — is a single
+   `partition-by` group, and `into` materializes all of it. Measured: 3M records
+   at a constant `t` OOM at -Xmx256m even when the result is consumed lazily;
+   the same 3M with `t` changing every 1000 records is fine.
+
+   Note `:max-pending` does NOT cover this. That backstop lives in the importer's
+   batcher, downstream of here, so a caller who reads `import-source` rule 3 and
+   sets it is not protected against this.
+
+   Never-splitting and bounding a single transaction are in tension: one
+   transaction is the unit a sink can commit, so cutting it would hand a sink a
+   fragment. The bound is therefore the largest transaction, and that is the
+   contract rather than an oversight."
   [records n]
   (letfn [(step [groups]
             (lazy-seq
@@ -293,7 +308,29 @@
 
    `:sort? true` uses `export-records` (unsorted; the external sort imposes the
    dump's order); `:sort? false` uses `export-records-streaming`, which is
-   already in a load-safe order and needs no scratch space."
+   already in a load-safe order and needs no scratch space.
+
+   `:xform` is applied HERE and ONLY here — before the sort and before the
+   digest, so the manifest describes what the dump actually holds and counts,
+   semantic digest and `:stats` all fall out of the transformed stream rather
+   than needing adjustment afterwards.
+
+   ONE instance for the whole export, so a stateful transducer sees one stream.
+   It must be PURE: `:sort? false` makes two passes over `:eavt`.
+
+   That \"one instance\" is why the application lives in one place. `export-db`
+   also applied it at its call site after this helper was extracted, so every
+   dump was transformed TWICE: a source of 1,2 with an incrementing `:xform`
+   exported as 3,4, and the manifest, digest and `verify` all agreed with the
+   wrong values because each is derived from the doubly-transformed stream. No
+   test caught it because every export-`:xform` test used an idempotent
+   transducer — a `take` or a `filter`.
+
+   The motivating case is splitting one database into per-tenant dumps. Two
+   things such a filter must get right, neither enforced because both are
+   legitimate choices: KEEP THE SCHEMA DATOMS (a dump of data with no schema
+   imports into a database that declares nothing), and expect refs OUT of the
+   retained set to dangle — `import-db`'s `:check-refs?` reports those."
   [db opts]
   (cond->> (if (:sort? opts)
              (export-records db opts)
@@ -400,31 +437,7 @@
          ;; shape it was ALSO blamed for was never the obstacle, since every read
          ;; in the merge is a synchronous local file read and no channel op ever
          ;; occurs inside it.
-         (let [records (cond->> (export-record-seq db opts)
-                         ;; `:xform` on the EXPORT side, applied before the sort
-                         ;; and before the digest, so the manifest describes what
-                         ;; the dump actually holds — counts, semantic digest and
-                         ;; `:stats` all fall out of the transformed stream
-                         ;; rather than needing adjustment.
-                         ;;
-                         ;; The motivating case is splitting one large database
-                         ;; into per-tenant dumps: multi-tenancy is usually worth
-                         ;; adopting only once usage patterns are clear, i.e.
-                         ;; AFTER a single database already holds everyone, and
-                         ;; an export filter is how you get out of that without
-                         ;; a bespoke migration.
-                         ;;
-                         ;; Two things such a filter must get right, neither
-                         ;; enforced here because both are legitimate choices:
-                         ;; KEEP THE SCHEMA DATOMS (a dump of data with no schema
-                         ;; imports into a database that declares nothing), and
-                         ;; expect refs OUT of the retained set to dangle —
-                         ;; `import-db`'s `:check-refs?` reports those.
-                         ;;
-                         ;; One instance for the whole export, so a stateful
-                         ;; transducer sees one stream; it must be pure, since
-                         ;; `:sort? false` makes two passes over `:eavt`.
-                         (:xform opts) (sequence (:xform opts)))
+         (let [records (export-record-seq db opts)
                tmp-dir (when (:sort? opts) (fs/temp-dir! "dh-export"))]
            (try
              ;; NOT a `write-to!` closure any more. It held the konserve write,
@@ -2276,10 +2289,17 @@
   ([records] (records->chunk-src records default-batch-size))
   ([records n]
    ;; `vec`, not the lazy seq: `:chunks` IS the descriptor list here — each chunk
-   ;; is its own descriptor — and the importer holds it for the whole run, so
-   ;; realizing it is honest about the memory rather than pretending to stream.
-   ;; A source that can address its own storage should build cheap descriptors
-   ;; instead. The tx-alignment rule lives in `tx-aligned-chunks`, shared with
+   ;; is its own descriptor — and the importer holds it for the whole run.
+   ;;
+   ;; SO THIS HELPER MATERIALIZES THE WHOLE SOURCE, and it is the one place that
+   ;; breaks `import-source`'s own rule that a descriptor be "small, data-free
+   ;; metadata … never the records themselves". Measured: 3M records OOM at
+   ;; -Xmx256m before the importer reads one. It is a CONVENIENCE for a source
+   ;; small enough to hold, not a way to stream — a source that can address its
+   ;; own storage (a file offset, a `t` range) must build cheap descriptors and
+   ;; a `:read` that fetches, which is the whole point of the two-key shape.
+   ;;
+   ;; The tx-alignment rule lives in `tx-aligned-chunks`, shared with
    ;; `export-to-sink`, so the two cannot disagree about what a chunk is.
    (let [chunks (vec (tx-aligned-chunks records n))]
      {:chunks chunks
