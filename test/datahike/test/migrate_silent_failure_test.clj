@@ -190,7 +190,7 @@
     (let [src    (filled)
           target (dump-to-store! src)
           calls  (atom 0)]
-      (with-redefs [dwriter/load-entities
+      (with-redefs [dwriter/load-entities-migrating
                     (fn [& _] (swap! calls inc) (no-result false))]
         (let [tgt (utils/setup-db (mem-cfg))
               r   (try {:ok (take-result (m/import-db tgt target {:sync? false :batch-size 4}))}

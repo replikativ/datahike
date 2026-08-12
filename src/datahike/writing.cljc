@@ -909,10 +909,30 @@
   (complete-db-update old (core/with old tx-data tx-meta)))
 
 (defn load-entities
-  ([old entities] (load-entities old entities nil))
-  ([old entities migration]
-   (log/debug :datahike/load-entities {:entity-count (count entities)})
-   (complete-db-update old (core/load-entities-with old entities nil migration))))
+  [old entities]
+  (log/debug :datahike/load-entities {:entity-count (count entities)})
+  (complete-db-update old (core/load-entities-with old entities nil nil)))
+
+(defn ^:no-doc load-entities-migrating
+  "`load-entities` threading an import's id mapping. **Internal to
+   `datahike.migrate`.**
+
+   `migration` is the `{:eids … :tids …}` map `transact-entities-directly` takes
+   in and hands back on the report: an import is many calls, and a ref in a late
+   batch may name an entity first seen in an early one, so the mapping has to
+   survive between them.
+
+   A SEPARATE function rather than an arity on `load-entities`, because that one
+   is public, `:stability :stable`, and declared in `datahike.api.specification`
+   as taking exactly two arguments. Widening it would have made an
+   import-internal id map part of the contract that generates the Java, pod, CLI
+   and TypeScript bindings, where it means nothing — and this release already
+   changes `load-entities`' BEHAVIOUR (transaction ids no longer vary with
+   `:batch-size`). One change to a stable function is a documented bug fix; two
+   is a habit."
+  [old entities migration]
+  (log/debug :datahike/load-entities-migrating {:entity-count (count entities)})
+  (complete-db-update old (core/load-entities-with old entities nil migration)))
 
 (defn publish-built-db!
   "Replace `old`'s indexes and derived fields wholesale with ones built OUTSIDE

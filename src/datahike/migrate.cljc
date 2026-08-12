@@ -1020,12 +1020,13 @@
   (async+sync
    (:sync? opts) *default-sync-translation*
    (go-try-
-    ;; `datahike.writer/load-entities` rather than `api/load-entities`, because
-    ;; the id mapping travels WITH the call and the public arity is pinned at
-    ;; two arguments by its malli spec. The tx-report carries the UPDATED
-    ;; mapping back out; see `transact-entities-directly` for why it does not
-    ;; live on the database value.
-    (let [p (dwriter/load-entities conn batch migration)]
+    ;; `load-entities-migrating` rather than `api/load-entities`, because the id
+    ;; mapping travels WITH the call and `load-entities` is a published 2-arity
+    ;; function — widening it in place would have changed a public contract for
+    ;; the sake of an internal one. The tx-report carries the UPDATED mapping
+    ;; back out; see `transact-entities-directly` for why it does not live on
+    ;; the database value.
+    (let [p (dwriter/load-entities-migrating conn batch migration)]
       ;; ClojureScript has no blocking deref, and `:sync? true` is refused there
       ;; by `assert-sync-supported!` at the entry points.
       #?(:clj (if (:sync? opts) @p (<?- p))

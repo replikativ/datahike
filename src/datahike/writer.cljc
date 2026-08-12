@@ -201,6 +201,8 @@
 ;; public API to internal mapping
 (def default-write-fn-map {'transact!     (with-tx-pred w/transact!)
                            'load-entities (with-tx-pred w/load-entities)
+                           ;; import-internal; see writing/load-entities-migrating
+                           'load-entities-migrating (with-tx-pred w/load-entities-migrating)
                            ;; async operations that run in background — NOT report
                            ;; producers, must not be wrapped (they return channels)
                            'gc-storage!   gc/gc-storage!
@@ -319,17 +321,36 @@
         (#?(:clj deliver :cljs put!) p tx-report)))
     p))
 
+(defn- dispatch-load!
+  "`args` is the argument vector as the write-fn will receive it AFTER `old` —
+   so it must match that op's arity exactly. Passing a trailing `nil` for the
+   plain op sent three arguments to a two-arity `writing/load-entities`; that
+   was invisible while the extra arity existed to absorb it."
+  [connection op args]
+  (let [p (throwable-promise)
+        writer (:writer @(:wrapped-atom connection))]
+    (go
+      (let [tx-report (<! (dispatch! writer {:op op :args args}))]
+        (#?(:clj deliver :cljs put!) p tx-report)))
+    p))
+
 (defn load-entities
-  ([connection entities] (load-entities connection entities nil))
-  ([connection entities migration]
-   (let [p (throwable-promise)
-         writer (:writer @(:wrapped-atom connection))]
-     (go
-       (let [tx-report (<! (dispatch! writer
-                                      {:op 'load-entities
-                                       :args [entities migration]}))]
-         (#?(:clj deliver :cljs put!) p tx-report)))
-     p)))
+  [connection entities]
+  (dispatch-load! connection 'load-entities [entities]))
+
+(defn ^:no-doc load-entities-migrating
+  "`load-entities` threading an import's id mapping. **Internal to
+   `datahike.migrate`** — see `datahike.writing/load-entities-migrating` for why
+   this is a separate function rather than an arity.
+
+   It also dispatches under its OWN op symbol. The writer's op name is part of
+   the writer protocol, not just a local detail: a remote or replicated writer
+   reads it off the wire. Sharing `'load-entities` for both shapes would have
+   left the separation cosmetic — one dispatch path, two argument counts, and
+   nothing on the receiving end able to tell which contract it was being held
+   to."
+  [connection entities migration]
+  (dispatch-load! connection 'load-entities-migrating [entities migration]))
 
 (defn publish-built-db!
   "Publish a bulk-built database through the writer.
