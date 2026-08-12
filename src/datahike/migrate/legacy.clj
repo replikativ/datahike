@@ -77,15 +77,26 @@
    What CANNOT be recovered is what clj-cbor lost on WRITE: it encoded zero, NaN
    and +-Infinity doubles as float16 and bignums that fit as plain integers, so
    those values are already narrowed in the bytes. boring reads them exactly as
-   clj-cbor does; no reader can restore information the writer discarded."
+   clj-cbor does; no reader can restore information the writer discarded.
+
+   Returns `{:record-count n :tx-count n}` — FACTS, not a report. `import-db`
+   assembles the report map, because the report needs `decide-verification` and
+   friends from `datahike.migrate`, which already requires THIS namespace: a
+   require back would be a cycle. Same shape as `*import-batch-size*` arriving
+   as an argument rather than being read here."
   [conn path batch-size]
   (println "Preparing legacy CBOR import of" path "in batches of" batch-size)
   (let [datoms (->> (with-open [in (io/input-stream path)]
                       (doall (mcbor/decode-records in)))
-                    (map #(-> (apply d/datom %) (update :v instance-to-date))))]
-    (reduce (fn [_last-tx batch]
-              (let [batch (vec batch)]
-                (swap! conn update-max-tx batch)
-                (api/transact conn batch)))
-            nil
-            (partition-all batch-size datoms))))
+                    (map #(-> (apply d/datom %) (update :v instance-to-date))))
+        batches (partition-all batch-size datoms)
+        n-tx (reduce (fn [n batch]
+                       (let [batch (vec batch)]
+                         (swap! conn update-max-tx batch)
+                         (api/transact conn batch)
+                         (inc n)))
+                     0
+                     batches)]
+    ;; `datoms` is already fully realised above, so counting it costs nothing
+    ;; and holds nothing new.
+    {:record-count (count datoms) :tx-count n-tx}))

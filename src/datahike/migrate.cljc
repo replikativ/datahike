@@ -1121,6 +1121,64 @@
                            :verification v})))
         {:verified? ok? :verification v}))))
 
+#?(:clj
+   (defn- legacy-import-report
+     "The report map for a LEGACY single-file import, from the facts
+      `import-db-legacy` hands back.
+
+      `import-db` returns one shape whatever it was given. It used to return the
+      report map for a manifest-and-chunks dump and the final `TxReport` for a
+      legacy one — two types from one function, while the docstring promised the
+      map unconditionally.
+
+      IT IS NOT VERIFIED, and says so rather than manufacturing a check.
+
+      The obvious move is to compare records decoded against datoms present
+      afterwards. It does not work, and how it fails is instructive: the two are
+      not the same quantity. Measured on the 44-record golden fixture, a
+      faithful import leaves 45 — the legacy path replays through `api/transact`,
+      which stamps its OWN `:db/txInstant`, one per batch. So a correct restore
+      does not satisfy `records = datoms`, and the expectation that would
+      satisfy it (`records + batches`) is derived from the import's own
+      behaviour: an integrity signal computed from the write path, which is the
+      defect class this seam exists to avoid.
+
+      Nor would the count be independent. A manifest records what the EXPORTER
+      counted; decoding a legacy dump says only what is in the bytes just read,
+      so a truncated dump agrees with itself.
+
+      So `:verification` is `{:status :unavailable :reason :legacy-format}` and
+      `:verified?` is nil — NOT CHECKED, which is what happened.
+      `verification-result`'s own `:unavailable` branch is deliberately not
+      reused: it THROWS, because there a source that should declare a count did
+      not, which is suspicious. Here the format never had the concept and no
+      operator can supply it. `verify` is the tool that inspects a legacy dump,
+      and says the same thing in the same words.
+
+      Keys absent by construction are absent rather than nil-filled:
+      `:transformed?`/`:dropped` need an `:xform` this path does not support,
+      `:eid-range`/`:id-map-size` need the id machinery it does not use, and
+      `:max-tx-drift` needs a source max-tx no legacy dump records."
+     [conn {:keys [record-count tx-count]} opts]
+     ;; The TEMPORAL set where the target has one: a legacy `export-db` wrote
+     ;; `(api/history db)` whenever the source kept history, and the format
+     ;; carries no flag saying whether it did, so counting only current datoms
+     ;; would undercount a history dump. Conditional because `api/history`
+     ;; THROWS on a database without a temporal index — "history is only allowed
+     ;; on temporal indexed databases" — which an unconditional `true` turned
+     ;; into an uncaught exception on every `:keep-history? false` import.
+     (let [live (user-datom-count @conn (boolean (:keep-history? (:config @conn))))]
+       (cond-> {:datom-count live
+                :tx-count tx-count
+                :max-tx (:max-tx @conn)
+                :verified? nil
+                :verification (if (get opts :verify? true)
+                                {:status :unavailable :reason :legacy-format
+                                 :actual live :records-read record-count}
+                                {:status :skipped :actual live})
+                :errors []}
+         (:merge? opts) (assoc :merged? true)))))
+
 (def ^:private record-fault-namespaces
   "Error namespaces that mean *datahike judged this datom*.
 
@@ -2679,9 +2737,31 @@
                              earlier one was withdrawn as unsound and has not
                              been re-measured end to end.
      :progress-fn  nil
-   Returns {:datom-count .. :tx-count .. :max-tx .. :verified? .. :errors [..]
-            :recommended-heap ..}. Prints a heap warning if the current -Xmx looks
-   too small for the id-remap map (see `estimate-import-memory`).
+   RETURNS a report map — always, whichever format `source` turned out to be.
+   Always present:
+
+     :datom-count      datoms in the target afterwards
+     :tx-count         transactions the import performed
+     :max-tx           the target's :max-tx afterwards
+     :verified?        true | false | nil — see `verification-result`; nil
+                       means NOT CHECKED, which is not the same as passing
+     :verification     {:status :ok|:failed|:skipped|:unavailable ..}, which
+                       says WHICH of those nil covers
+     :errors           [] unless :on-error :collect collected any
+
+   From the manifest-and-chunks path, additionally: `:transformed?`, `:dropped`
+   (what an :xform removed), `:max-tx-drift`, `:merged?`, `:id-map-size`,
+   `:eid-range`, `:recommended-heap`, and `:dangling-refs` when any were found.
+   A LEGACY single-file dump supports none of the features those describe, so
+   they are absent rather than nil-filled, and it is NOT verified: its
+   `:verification` is `{:status :unavailable :reason :legacy-format}` with
+   `:verified?` nil. The format carries no count to check against, and the
+   records it holds are not one-for-one with the datoms a correct import
+   leaves — so there is no honest comparison to make. Use `verify` to inspect
+   such a dump.
+
+   Prints a heap warning if the current -Xmx looks too small for the id-remap
+   map (see `estimate-import-memory`).
    Refuses a non-empty target unless `:merge? true` (above); an interrupted
    import is not resumable either way — recreate and restart."
   ([conn source] (import-db conn source {}))
@@ -2736,9 +2816,10 @@
                                "will be loaded silently: " source)))
                dump (open-dump source opts)]
            (if (:legacy? dump)
-             ;; Read HERE, so the value is the caller's `binding` rather than a
-             ;; root value captured somewhere further in.
-             #?(:clj (mlegacy/import-db-legacy conn source *import-batch-size*)
+             ;; `*import-batch-size*` read HERE, so the value is the caller's
+             ;; `binding` rather than a root value captured further in.
+             #?(:clj (legacy-import-report
+                      conn (mlegacy/import-db-legacy conn source *import-batch-size*) opts)
                 :cljs (throw (ex-info (str "This is a legacy single-file dump, readable only on the "
                                            "JVM — it can only have been written by an old JVM datahike.")
                                       {:error :import/legacy-not-portable})))

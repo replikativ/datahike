@@ -10,11 +10,24 @@ That one mechanism covers three jobs that are usually separate tools:
 | **Moving between stores** | the same dump, written to a filesystem path *or* a konserve store — file, S3, JDBC, in-memory, IndexedDB. Change backend by exporting from one and importing to another. |
 | **Moving between systems** | `import-source` / `export-to-sink` hand you the record stream itself, so the other side can be a live database rather than a file — see [Migrating from Datomic](./migrate-datomic.md). |
 
-**Beta.** Tested and functional across both runtimes, with the API still open to
-change. The dump format and `export-db` / `import-db` are the settled part; the
-record seam (`import-source` / `export-to-sink`) is the newest surface and the
-likeliest to move, since each new adapter written against it is a fresh test of
-whether its shape is right.
+**Experimental.** Tested and functional across both runtimes — the suites cover
+every builtin value type, full history, both runtimes, and fault injection — but
+nobody outside the project has used it yet, and the API is open to change.
+
+Beta is a promise about a contract, and this contract is still being found: the
+work that introduced it also found a short export certifying itself as intact, a
+failed chunk read becoming an empty one, an `:xform` applied twice, and an
+`import-db` that returned two different types depending on the format it was
+given. All are fixed and guarded, and each was invisible until someone looked.
+That is the argument for field use before the promise, not against the code.
+
+Please try it on real data and report what breaks. It moves to Beta once it has
+survived that.
+
+Within it, the dump format and `export-db` / `import-db` are the settled part;
+the record seam (`import-source` / `export-to-sink`) is the newest surface and
+the likeliest to move, since each new adapter written against it is a fresh test
+of whether its shape is right.
 
 They are the same code path. A dump is just the record stream with a manifest
 and checksums around it; a foreign system is the record stream with an adapter

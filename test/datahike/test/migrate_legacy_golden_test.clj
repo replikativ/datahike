@@ -48,6 +48,59 @@
       (is (= 44 (mlegacy/count-records (str f))))
       (.delete f))))
 
+(def ^:private always-present
+  "The keys `import-db` documents as present whatever `source` turned out to be."
+  #{:datom-count :tx-count :max-tx :verified? :verification :errors})
+
+(deftest import-db-returns-one-shape-for-both-dump-formats
+  (testing "it used to return the report map for a manifest-and-chunks dump and
+            a datahike.db.TxReport for a legacy one — two TYPES from one
+            function, while the docstring promised the map unconditionally.
+            Asserted on both formats in one test, because the defect was
+            precisely that each was fine when looked at alone."
+    (let [legacy-f (fixture-file)
+          lconn    (utils/setup-db {:store {:backend :memory :id (java.util.UUID/randomUUID)}
+                                    :schema-flexibility :write :keep-history? true})
+          lrep     (m/import-db lconn (str legacy-f))
+
+          dir      (str (System/getProperty "java.io.tmpdir")
+                        "/dh-shape-" (java.util.UUID/randomUUID))
+          sconn    (utils/setup-db {:store {:backend :memory :id (java.util.UUID/randomUUID)}
+                                    :schema-flexibility :write :keep-history? true})
+          _        (d/transact sconn [{:db/ident :name :db/valueType :db.type/string
+                                       :db/cardinality :db.cardinality/one
+                                       :db/unique :db.unique/identity}])
+          _        (d/transact sconn [{:name "x"}])
+          _        (m/export-db sconn dir)
+          tconn    (utils/setup-db {:store {:backend :memory :id (java.util.UUID/randomUUID)}
+                                    :schema-flexibility :write :keep-history? true})
+          nrep     (m/import-db tconn dir)]
+
+      (is (map? lrep) "a legacy import must return a map, not a TxReport")
+      (is (map? nrep))
+      (doseq [[label rep] [["legacy" lrep] ["manifest" nrep]]]
+        (is (empty? (remove (set (keys rep)) always-present))
+            (str label " is missing documented keys: "
+                 (pr-str (vec (remove (set (keys rep)) always-present))))))
+
+      (testing "and the legacy report says it was NOT verified, rather than
+                manufacturing a check. Records in a legacy dump are not
+                one-for-one with the datoms a correct import leaves — the
+                import stamps its own :db/txInstant — so `records = datoms` is
+                false for a faithful restore, and the expectation that would
+                make it true is derived from the import's own behaviour."
+        (is (nil? (:verified? lrep)))
+        (is (= :unavailable (:status (:verification lrep))))
+        (is (= :legacy-format (:reason (:verification lrep))))
+        (testing "while a manifest-backed dump verifies for real"
+          (is (true? (:verified? nrep)))
+          (is (= :ok (:status (:verification nrep))))))
+
+      (teardown lconn)
+      (teardown sconn)
+      (teardown tconn)
+      (.delete legacy-f))))
+
 (deftest the-released-writers-dump-still-imports
   (let [f    (fixture-file)
         conn (utils/setup-db {:store {:backend :memory :id (java.util.UUID/randomUUID)}
