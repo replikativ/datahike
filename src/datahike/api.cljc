@@ -41,23 +41,6 @@
         ()
         (into (sorted-map) api-specification))))
 
-(def ^:no-doc uninstrumentable
-  "Operations whose `:args` schema cannot be registered with malli, by name and
-   for a reason — never as a silent fallback.
-
-   `with` declares three branches, two of them 2-arity. That is the JAVA
-   BINDING's shape: `codegen/java` maps `STransactions` to `List` and
-   `SWithArgs` to `Object`, so those two branches emit two distinct overloads,
-   and the `List` one marshals through `Util.normalizeCollections` while the
-   other does not. malli rejects a `:function` with two branches of the same
-   arity, and merging them into `[:or …]` deletes `with(Object, List)` from the
-   generated Java — measured against the generated source — taking the
-   collection normalisation with it.
-
-   The user-facing binding wins over the check. This is the only operation in
-   that position; everything else is registered and enforced."
-  #{'with})
-
 (defn ^:no-doc register-api-schemas!
   "Publish this namespace's malli function schemas so `malli.instrument/instrument!`
    can find them. Idempotent; called once at load.
@@ -77,14 +60,22 @@
    friends), so they are compiled against it here rather than the default one."
   []
   (let [opts {:registry (merge (m/default-schemas) (mu/schemas) types/registry)}]
-    (doseq [[n {:keys [args]}] api-specification
-            :when (not (contains? uninstrumentable n))]
-      ;; NOT wrapped in a try. A schema that fails to compile is a schema that
-      ;; silently checks nothing, which is how seven of them stayed wrong — so a
-      ;; new one must break the build rather than quietly opt itself out. The
-      ;; only permitted exceptions are named in `uninstrumentable`, with reasons.
+    (doseq [[n {:keys [args]}] api-specification]
+      ;; EVERY operation, with no exclusion list. NOT wrapped in a try either: a
+      ;; schema that fails to compile is a schema that silently checks nothing,
+      ;; which is how seven of them stayed wrong — so a new one must break the
+      ;; build rather than quietly opt itself out.
+      ;;
+      ;; There was an exclusion list, holding the four operations whose 2-arity
+      ;; accepts either a transaction vector or an arg-map. It is gone because
+      ;; the reason for it is: `codegen/java`'s `expand-or-args` renders an
+      ;; `[:or …]` argument as separate Java overloads, so those schemas can now
+      ;; describe both shapes without costing the binding the `List` overload
+      ;; that carries `Util.normalizeCollections`. Do not reintroduce the list —
+      ;; an operation that cannot be registered is a schema bug or a codegen
+      ;; gap, and both are fixable.
       (m/-register-function-schema! 'datahike.api n (m/schema args opts) {}))
-    (- (count api-specification) (count uninstrumentable))))
+    (count api-specification)))
 
 (emit-api)
 (register-api-schemas!)

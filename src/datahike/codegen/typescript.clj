@@ -59,8 +59,13 @@
     (let [[op & args] schema]
       (case op
         ;; [:or Type1 Type2] → Type1 | Type2
+        ;;
+        ;; Distinct, because branches that differ in malli need not differ in
+        ;; TypeScript: `entity`'s `[:or :datahike/SEId :any]` maps both to `any`
+        ;; and emitted the degenerate `any | any`. Same reason `codegen/java`
+        ;; deduplicates expanded overloads by signature.
         :or
-        (str/join " | " (map malli->ts-type args))
+        (str/join " | " (distinct (map malli->ts-type args)))
 
         ;; [:maybe Type] → Type | null
         :maybe

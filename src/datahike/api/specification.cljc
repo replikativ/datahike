@@ -182,7 +182,12 @@
      :impl datahike.api.impl/db}
 
     release
-    {:args [:=> [:cat :datahike/SConnection] :nil]
+    ;; TWO arities: `(release conn)` and `(release conn release-all?)`. The
+    ;; second was undeclared, so instrumentation rejected a call the
+    ;; implementation has always accepted (`connector/release`).
+    {:args [:function
+            [:=> [:cat :datahike/SConnection] :nil]
+            [:=> [:cat :datahike/SConnection :any] :nil]]
      :ret :nil
      :categories [:connection :lifecycle]
      :stability :stable
@@ -198,7 +203,12 @@
     ;; =========================================================================
 
     transact
-    {:args [:=> [:cat :datahike/SConnection :datahike/STransactions] :datahike/STransactionReport]
+    ;; Either a transaction vector or an arg-map `{:tx-data … :tx-meta …}`; the
+    ;; arg-map is the form in README.md. Declaring only the vector made a
+    ;; CORRECT call fail under `malli.instrument/instrument!`. See `with` above
+    ;; for why this is one `[:or …]` parameter rather than two branches, and
+    ;; `codegen/java`'s `expand-or-args` for what it emits.
+    {:args [:=> [:cat :datahike/SConnection [:or :datahike/STransactions :datahike/SWithArgs]] :datahike/STransactionReport]
      :ret :datahike/STransactionReport
      :categories [:transaction :write]
      :stability :stable
@@ -218,7 +228,7 @@
      :impl datahike.api.impl/transact}
 
     transact!
-    {:args [:=> [:cat :datahike/SConnection :datahike/STransactions] :any]
+    {:args [:=> [:cat :datahike/SConnection [:or :datahike/STransactions :datahike/SWithArgs]] :any]
      :ret :any
      :categories [:transaction :write :async]
      :stability :stable
@@ -242,23 +252,19 @@
      :impl datahike.writer/load-entities}
 
     with
-    ;; THREE branches, two of which are 2-arity. That is deliberate and it is the
-    ;; Java binding's shape: `param-type->java` maps `STransactions` to `List` and
-    ;; `SWithArgs` to `Object`, so the two 2-arity branches generate two DISTINCT
-    ;; Java overloads — and the `List` one marshals through
-    ;; `Util.normalizeCollections`, which the `Object` one does not.
+    ;; The 2-arity accepts EITHER a transaction vector or an arg-map
+    ;; `{:tx-data … :tx-meta …}` — both documented, both in the examples below —
+    ;; so it is ONE `[:or …]` parameter. Declaring them as two branches instead
+    ;; is what malli rejects (`:malli.core/duplicate-arities`), and it is why
+    ;; this operation spent a while excluded from registration entirely.
     ;;
-    ;; malli cannot express that: it rejects a `:function` whose branches share an
-    ;; arity (`:malli.core/duplicate-arities`). Merging them into
-    ;; `[:or SWithArgs STransactions]` satisfies malli and DELETES
-    ;; `with(Object, List)` from the generated Java, silently dropping the
-    ;; collection normalisation with it (measured against the generated source).
-    ;;
-    ;; So the binding wins and `with` is excluded from instrumentation by name —
-    ;; see `datahike.api/uninstrumentable`. It is the only such operation.
+    ;; The Java binding keeps all three overloads it has always had:
+    ;; `codegen/java`'s `expand-or-args` turns an `[:or …]` argument into one
+    ;; overload per distinct Java type, so `STransactions`/`SWithArgs` still
+    ;; emit `with(Object, List)` — marshalling through
+    ;; `Util.normalizeCollections` — beside `with(Object, Object)`.
     {:args [:function
-            [:=> [:cat :datahike/SDB :datahike/SWithArgs] :datahike/STransactionReport]
-            [:=> [:cat :datahike/SDB :datahike/STransactions] :datahike/STransactionReport]
+            [:=> [:cat :datahike/SDB [:or :datahike/STransactions :datahike/SWithArgs]] :datahike/STransactionReport]
             [:=> [:cat :datahike/SDB :datahike/STransactions :datahike/STxMeta] :datahike/STransactionReport]]
      :ret :datahike/STransactionReport
      :categories [:transaction :immutable]
@@ -273,7 +279,7 @@
      :impl datahike.api.impl/with}
 
     db-with
-    {:args [:=> [:cat :datahike/SDB :datahike/STransactions] :datahike/SDB]
+    {:args [:=> [:cat :datahike/SDB [:or :datahike/STransactions :datahike/SWithArgs]] :datahike/SDB]
      :ret :datahike/SDB
      :categories [:transaction :immutable]
      :stability :stable

@@ -21,11 +21,13 @@
        contract rejected the documented call.
      * `as-of` / `since` / `gc-storage` — referenced `types/time-point?`, a bare
        SYMBOL, where the registry key is `:datahike/time-point?`. Uncompilable.
-     * `with` — two 2-arity branches, `:malli.core/duplicate-arities`. This one
-       is NOT fixed: those two branches are the Java binding's two overloads,
-       one of which marshals through `Util.normalizeCollections`, and merging
-       them deletes it from the generated source. The binding wins; `with` is
-       excluded by name, in `datahike.api/uninstrumentable`.
+     * `with` — two 2-arity branches, `:malli.core/duplicate-arities`. Those
+       two branches were the Java binding's two overloads, one of which marshals
+       through `Util.normalizeCollections`, so merging them into `[:or …]` used
+       to delete it from the generated source and `with` was excluded by name
+       instead. `codegen/java`'s `expand-or-args` renders an `[:or …]` argument
+       as separate overloads, which closed that gap; the exclusion list is gone
+       and every operation is registered.
 
    That matters past the tests: this same specification generates the Java API,
    the TypeScript definitions, the HTTP routes and the CLI.
@@ -37,7 +39,7 @@
    calls malli's instrumenter sees exactly the behaviour they always did — which
    the first test here pins. Instrumentation is opt-in, here and for users."
   (:require [clojure.test :refer [deftest testing is use-fixtures]]
-            [datahike.api :as d :refer [uninstrumentable]]
+            [datahike.api :as d]
             [datahike.api.specification :refer [api-specification]]
             [malli.core :as m]
             [malli.instrument :as mi]
@@ -84,25 +86,33 @@
   (testing "an uncompilable schema is silently unenforced — and four of them
             were, which is how they stayed wrong. This is the cheap guard."
     (let [bad (for [[n {:keys [args]}] api-specification
-                    :when (not (contains? uninstrumentable n))
                     :let [err (try (m/schema args (m/-registry)) nil
                                    (catch Exception e (:type (ex-data e))))]
                     :when err]
                 [n err])]
       (is (empty? bad) (str "uncompilable API schemas: " (pr-str (vec bad))))))
-  (testing "and the exclusions are a SHORT, named list — if this grows, the
-            registration is quietly checking less than it appears to"
-    (is (= #{'with} uninstrumentable))))
+  (testing "EVERY operation, with no exclusion list. There was one, holding the
+            four operations whose 2-arity takes either a transaction vector or
+            an arg-map; `expand-or-args` in the Java codegen removed the need
+            for it. An operation that cannot be registered is a schema bug or a
+            codegen gap — do not reintroduce a list to hide it in."
+    (is (= (count api-specification)
+           (count (get (m/function-schemas) 'datahike.api))))))
 
 (deftest the-schemas-are-registered-for-anyone-who-instruments
   (testing "registration is global, so a user running their own
             `(malli.instrument/instrument!)` gets datahike's API checked too —
             that is the whole reason to register rather than keep them private"
     (let [registered (get (m/function-schemas) 'datahike.api)]
-      (is (= (- (count api-specification) (count uninstrumentable)) (count registered))
-          "every specified operation except the named exclusions is registered")
+      (is (= (count api-specification) (count registered))
+          "every specified operation is registered")
       (is (contains? registered 'datoms))
-      (is (contains? registered 'transact)))))
+      (is (contains? registered 'transact))
+      ;; The four that used to be excluded, named individually so a regression
+      ;; says which one rather than just moving a count.
+      (is (contains? registered 'with))
+      (is (contains? registered 'transact!))
+      (is (contains? registered 'db-with)))))
 
 (deftest the-ordinary-api-does-not-violate-its-own-contract
   (testing "THE case. `(d/datoms db :eavt)` is the documented call and the
