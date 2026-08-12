@@ -15,7 +15,9 @@
             [datahike.migrate.cbor :as mcbor]
             [clojure.java.io :as io]))
 
-(def ^:dynamic *import-batch-size* 10000)
+;; `*import-batch-size*` used to live here. It is defined in `datahike.migrate`
+;; instead — that is the name the CHANGELOG published ([#845]) — and its value
+;; arrives as the `batch-size` argument below. See the var's docstring.
 
 (defn ^:deprecated update-max-tx
   "DEPRECATED. max-tx is maintained by load-entities; retained for old dumps."
@@ -76,8 +78,8 @@
    and +-Infinity doubles as float16 and bignums that fit as plain integers, so
    those values are already narrowed in the bytes. boring reads them exactly as
    clj-cbor does; no reader can restore information the writer discarded."
-  [conn path]
-  (println "Preparing legacy CBOR import of" path "in batches of" *import-batch-size*)
+  [conn path batch-size]
+  (println "Preparing legacy CBOR import of" path "in batches of" batch-size)
   (let [datoms (->> (with-open [in (io/input-stream path)]
                       (doall (mcbor/decode-records in)))
                     (map #(-> (apply d/datom %) (update :v instance-to-date))))]
@@ -86,4 +88,4 @@
                 (swap! conn update-max-tx batch)
                 (api/transact conn batch)))
             nil
-            (partition-all *import-batch-size* datoms))))
+            (partition-all batch-size datoms))))

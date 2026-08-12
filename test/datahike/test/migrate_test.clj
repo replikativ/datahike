@@ -10,7 +10,6 @@
             [datahike.migrate :as m]
             [datahike.migrate.cbor :as mcbor]
             [datahike.migrate.blobs :as mblobs]
-            [datahike.migrate.legacy :as mlegacy]
             [datahike.migrate.compress :as mz]
             [datahike.migrate.digest :as dig]
             [datahike.blob :as blob]
@@ -368,10 +367,28 @@
           conn (utils/setup-db {:store {:backend :memory :id (java.util.UUID/randomUUID)}
                                 :schema-flexibility :read :keep-history? false})]
       (cbor/spit-all path datoms)
-      (binding [mlegacy/*import-batch-size* 5]
-        (m/import-db conn path))
-      (is (= (set (map #(apply datom/datom %) datoms))
-             (set (filter #(< (:e %) (:max-tx @conn)) (d/datoms @conn :eavt)))))
+      ;; The binding must actually REACH the reader, and asserting on the
+      ;; imported datoms cannot see that — the import succeeds identically at
+      ;; any batch size, so this test passed whether or not the var was plumbed
+      ;; through. Nor can the datoms' `:tx` show it: a legacy import PRESERVES
+      ;; the tx from the dump (that is what `update-max-tx` is for), and every
+      ;; datom in this fixture carries 536870913, so the count is 1 regardless.
+      ;;
+      ;; The batch sizes handed to `transact` are the only honest observable.
+      (let [sizes (atom [])
+            orig  d/transact]
+        (with-redefs [d/transact (fn [c tx] (swap! sizes conj (count tx)) (orig c tx))]
+          ;; `datahike.migrate/*import-batch-size*` — where the CHANGELOG
+          ;; published it ([#845]) — NOT `datahike.migrate.legacy`, where the
+          ;; reader that consumes it lives.
+          (binding [m/*import-batch-size* 5]
+            (m/import-db conn path)))
+        (is (= (set (map #(apply datom/datom %) datoms))
+               (set (filter #(< (:e %) (:max-tx @conn)) (d/datoms @conn :eavt)))))
+        (is (= [5 5 2] @sizes)
+            (str "expected 12 datoms to arrive as batches of 5, 5, 2; got "
+                 (pr-str @sizes) " — a single batch means the binding never "
+                 "reached the legacy reader")))
       (teardown conn)
       (.delete (io/file path)))))
 

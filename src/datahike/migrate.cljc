@@ -78,6 +78,26 @@
             ;; keys — cljs `&env` is the compiler map, with keyword keys.
             #?(:cljs [clojure.core.async :refer-macros [go]])))
 
+(def ^:dynamic *import-batch-size*
+  "Transactions per batch when `import-db` reads a LEGACY single-file dump.
+   Has no effect on the manifest-and-chunks format, which takes `:batch-size`
+   as an option instead.
+
+   Defined here rather than beside the legacy reader it governs, and that is
+   deliberate. The CHANGELOG announced this var by its fully-qualified name —
+   `datahike.migrate/*import-batch-size*` ([#845]) — so this is its published
+   home, and a `binding` written against that announcement must keep working.
+
+   It cannot simply be `def`-ed in `datahike.migrate.legacy` and referred to
+   here: `datahike.migrate` already requires that namespace, so the reverse
+   require would be a cycle. Nor can it be aliased — an alias is a NEW var, so
+   `(binding [datahike.migrate/*import-batch-size* 5] …)` would set something
+   nothing reads, turning today's loud compile error into a silent no-op. So
+   the var lives here and its value is passed to `import-db-legacy` as an
+   argument, which is read at the call site and therefore inside the caller's
+   binding scope."
+  10000)
+
 ;; Public names that used to be defined here and now live in
 ;; `datahike.migrate.manifest`. Re-exported rather than left to `:refer`, which
 ;; maps a symbol into this namespace WITHOUT interning a var — so `m/format-version`
@@ -2716,7 +2736,9 @@
                                "will be loaded silently: " source)))
                dump (open-dump source opts)]
            (if (:legacy? dump)
-             #?(:clj (mlegacy/import-db-legacy conn source)
+             ;; Read HERE, so the value is the caller's `binding` rather than a
+             ;; root value captured somewhere further in.
+             #?(:clj (mlegacy/import-db-legacy conn source *import-batch-size*)
                 :cljs (throw (ex-info (str "This is a legacy single-file dump, readable only on the "
                                            "JVM — it can only have been written by an old JVM datahike.")
                                       {:error :import/legacy-not-portable})))
