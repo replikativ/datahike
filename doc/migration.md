@@ -249,7 +249,13 @@ Two knobs matter when the heap is tight relative to the data:
 - **`:sort-buffer` / `:batch-size`**, sized to your heap: peak export memory is
   roughly `:sort-buffer` records plus the merge fan-in; peak import memory is one
   `:batch-size` batch plus the O(entities) id-remap map, which the import holds
-  for its whole duration. That map is the one part that grows with entity count —
+  for its whole duration.
+
+  Note `:sort-buffer` has **two different defaults**, because it names two
+  different sorts: **1 000 000** records for an export's external merge sort, and
+  **200 000** for the scratch sort the `:build-indexes?` import runs. The import
+  table below lists the latter; if you are tuning an *export*, the number to
+  start from is the former. That map is the one part that grows with entity count —
   budget for it on very large imports, or use `:build-indexes?`, whose default
   `:eids :preserve` needs no map at all.
 
