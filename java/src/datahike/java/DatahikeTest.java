@@ -353,6 +353,63 @@ public class DatahikeTest {
     }
 
     /**
+     * The arg-map form, as a plain java.util.Map.
+     *
+     * `transact` accepts either a transaction vector or `{:tx-data ...}`. In
+     * Java those are two overloads — `transact(Object, List)` and
+     * `transact(Object, Object)` — generated from one `[:or ...]` parameter.
+     *
+     * The `List` one marshals through `Util.normalizeCollections` because of
+     * its TYPE. The `Object` one has to be told to, and until it was, this
+     * exact call compiled and then died with "Bad argument to transact,
+     * expected map, vector or sequence" — because a java.util.HashMap is not a
+     * Clojure map and its keys were Strings rather than keywords.
+     *
+     * A plain HashMap with String keys is deliberate: it is what a Java caller
+     * writes, and it is the case that failed.
+     */
+    @org.junit.Test
+    public void transactAcceptsAJavaArgMap() {
+        Object conn = transactOnce();
+
+        Map<String, Object> argMap = new HashMap<>();
+        List<Object> txData = new ArrayList<>();
+        Map<String, Object> entity = new HashMap<>();
+        entity.put(":name", "Charlie");
+        entity.put(":age", 35L);
+        txData.add(entity);
+        argMap.put("tx-data", txData);
+        argMap.put("tx-meta", new HashMap<String, Object>());
+
+        Datahike.transact(conn, argMap);
+
+        Object res = Datahike.q(
+            "[:find ?a :in $ ?n :where [?e :name ?n] [?e :age ?a]]",
+            deref(conn), "Charlie");
+        assertEquals(PersistentHashSet.create(
+                         Arrays.asList(PersistentVector.create(35L))),
+                     res);
+
+        // dbWith is the same [:or ...] parameter on an immutable db value, so
+        // it must marshal identically rather than by coincidence.
+        Map<String, Object> argMap2 = new HashMap<>();
+        List<Object> txData2 = new ArrayList<>();
+        Map<String, Object> entity2 = new HashMap<>();
+        entity2.put(":name", "Dana");
+        entity2.put(":age", 40L);
+        txData2.add(entity2);
+        argMap2.put("tx-data", txData2);
+
+        Object newDb = Datahike.dbWith(deref(conn), argMap2);
+        Object res2 = Datahike.q(
+            "[:find ?a :in $ ?n :where [?e :name ?n] [?e :age ?a]]",
+            newDb, "Dana");
+        assertEquals(PersistentHashSet.create(
+                         Arrays.asList(PersistentVector.create(40L))),
+                     res2);
+    }
+
+    /**
      * Called by Datahike's Clojure tests and runs the above Junit tests.
      */
     public static boolean run() {

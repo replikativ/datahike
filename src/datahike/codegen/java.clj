@@ -126,6 +126,15 @@
     ;; Default to general type mapping
     :else (malli->java-type schema)))
 
+(defn needs-normalization?
+  "Whether a Java parameter type needs Java→Clojure collection normalization
+   before it can be handed to a Clojure function."
+  [param-type]
+  (or (= param-type "List")
+      (= param-type "List<?>")
+      (= param-type "Map<?,?>")
+      (= param-type "Map<String,Object>")))
+
 ;; =============================================================================
 ;; Name Conversion
 ;; =============================================================================
@@ -210,9 +219,9 @@
   (mapv :type params))
 
 (defn- number-params
-  "Name a vector of Java type strings `arg0`, `arg1`, …"
-  [types]
-  (vec (map-indexed (fn [idx t] {:name (str "arg" idx) :type t}) types)))
+  "Name a vector of parameter maps `arg0`, `arg1`, …"
+  [params]
+  (vec (map-indexed (fn [idx p] (assoc p :name (str "arg" idx))) params)))
 
 (defn- expand-cat
   "Every Java parameter list a `[:cat …]` denotes, expanding `[:or …]`
@@ -220,15 +229,26 @@
 
    Deduplicated by signature: `entity`'s `[:or :datahike/SEId :any]` maps both
    branches to `Object`, and emitting that twice is a duplicate method rather
-   than an overload."
+   than an overload.
+
+   Marks `:normalize?` on an argument whose `[:or …]` has ANY branch that is a
+   Java collection. `transact`'s `[:or STransactions SWithArgs]` is exactly
+   `List OR Object`: the `List` overload marshals through
+   `Util.normalizeCollections` because of its TYPE, and without this flag the
+   `Object` one would not — so the arg-map overload would compile and then hand
+   datahike a raw `java.util.HashMap`, which it refuses with `Bad argument to
+   transact`. Both branches denote the same Clojure parameter, so both marshal."
   [cat-schema]
   (->> (rest cat-schema)
        (reduce (fn [acc param-schema]
-                 (let [alts (if (and (vector? param-schema)
-                                     (= :or (first param-schema)))
-                              (map param-type->java (rest param-schema))
-                              [(param-type->java param-schema)])]
-                   (vec (distinct (for [types acc, t alts] (conj types t))))))
+                 (let [or?   (and (vector? param-schema)
+                                  (= :or (first param-schema)))
+                       alts  (if or?
+                               (map param-type->java (rest param-schema))
+                               [(param-type->java param-schema)])
+                       norm? (boolean (and or? (some needs-normalization? alts)))]
+                   (vec (distinct (for [params acc, t alts]
+                                    (conj params {:type t :normalize? norm?}))))))
                [[]])
        (mapv number-params)))
 
@@ -340,19 +360,11 @@
 ;; Method Body Generation
 ;; =============================================================================
 
-(defn needs-normalization?
-  "Check if a parameter type needs Java→Clojure collection normalization."
-  [param-type]
-  (or (= param-type "List")
-      (= param-type "List<?>")
-      (= param-type "Map<?,?>")
-      (= param-type "Map<String,Object>")))
-
 (defn convert-arg
   "Generate conversion code for an argument.
    Applies normalization to Java collection types automatically."
-  [{:keys [type name]}]
-  (if (needs-normalization? type)
+  [{:keys [type name normalize?]}]
+  (if (or normalize? (needs-normalization? type))
     (str "Util.normalizeCollections(" name ")")
     name))
 
