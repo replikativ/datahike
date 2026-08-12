@@ -556,7 +556,34 @@ meant to differ from the source, not when it is meant to match.
 in an immutable database, so every value ever asserted — including "deleted"
 personal data — is written into the dump. If a dump may leave your trust boundary,
 export with `:history? false`. The manifest records `:history?` so a receiving
-system can tell which kind it holds. Datahike has no history-excision primitive.
+system can tell which kind it holds.
+
+### Erasing before you export
+
+Datahike **does** have excision primitives, and they remove data from the
+temporal index rather than merely retracting it:
+
+| operation | removes |
+|---|---|
+| `[:db/purge e a v]` | one datom, current and historical |
+| `[:db.purge/entity e]` | every datom of an entity, across history |
+| `[:db.purge/attribute e a]` | every value an entity ever held for one attribute |
+| `[:db.history.purge/before t]` | all history older than `t` |
+
+Measured on a `:keep-history? true` database: an entity whose email was
+asserted, changed, then purged with `[:db.purge/entity e]` leaves **no** value
+of that attribute in `d/history`, and **none** in a subsequent
+`{:history? true}` export.
+
+So the sequence for a right-to-erasure request is purge first, export second —
+in that order, because a dump taken before the purge still holds the data and is
+not retroactively cleaned. See [Time variance](./time_variance.md) for the
+purge operations in full.
+
+Two limits worth keeping in view. Purging rewrites the index but does **not** by
+itself reclaim the old index nodes from the store — that is what
+[GC](./gc.md) is for, and an un-collected store can still hold the superseded
+nodes. And a dump already written elsewhere is beyond datahike's reach entirely.
 
 ## Integrity & signing
 
