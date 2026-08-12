@@ -99,7 +99,7 @@
    datahike dependency and most contributors will not have it."
   []
   (apply clj {:extra-env {"LOG_LEVEL" ":warn"}}
-         "-M:test:datomic" "-m" "kaocha.runner" ["--focus" "datomic"]))
+         "-M:test:datomic" "-m" "kaocha.runner" ["--config-file" "tests-datomic.edn"]))
 
 (defn cljs-node-test []
   (p/shell "clj -M:cljs -m shadow.cljs.devtools.cli compile :node-test")
