@@ -23,8 +23,8 @@ datahike takes **no Datomic dependency**. The namespace requires `datomic.api`,
 so it loads only when you put the peer jar on your own classpath:
 
 ```clojure
-{:deps {io.replikativ/datahike {:mvn/version "…"}
-        com.datomic/peer       {:mvn/version "1.0.7622"}}}
+{:deps {org.replikativ/datahike {:mvn/version "…"}
+        com.datomic/peer        {:mvn/version "1.0.7622"}}}
 ```
 
 Nothing else in datahike requires it, so if you never add the dependency you
