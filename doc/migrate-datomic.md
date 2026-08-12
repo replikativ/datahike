@@ -2,7 +2,7 @@
 
 `datahike.migrate.datomic` moves a database **in either direction** between
 Datomic Pro and datahike, over the same record seam dumps use (see
-[Backup & restore](./backup.md)). *Experimental.*
+[Migration](./migration.md)). *Experimental.*
 
 ```clojure
 (require '[datahike.migrate.datomic :as dtm])

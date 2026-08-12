@@ -1,13 +1,25 @@
-# Backup & restore
+# Migration: backup, restore, and moving data
 
-`datahike.migrate/export-db` and `import-db` write and read a portable, type-exact
-dump of a database. Use them for backups, moving a database between stores, or
-snapshotting before a risky change.
+`datahike.migrate` reads and writes a database as a stream of **records** —
+`[e a v t op]`, entity, attribute, value, transaction, asserted-or-retracted.
+That one mechanism covers three jobs that are usually separate tools:
 
-A dump is not the only way in or out: `import-source` and `export-to-sink` make
-the underlying record stream public, so datahike can read from and write to
-things that are not dumps at all — see [Beyond dumps](#beyond-dumps-import-source-and-export-to-sink)
-below, and [Migrating from Datomic](./migrate-datomic.md).
+| | |
+|---|---|
+| **Backup and restore** | `export-db` / `import-db` to a portable, type-exact, verifiable dump. Snapshot before a risky change; restore after one. |
+| **Moving between stores** | the same dump, written to a filesystem path *or* a konserve store — file, S3, JDBC, in-memory, IndexedDB. Change backend by exporting from one and importing to another. |
+| **Moving between systems** | `import-source` / `export-to-sink` hand you the record stream itself, so the other side can be a live database rather than a file — see [Migrating from Datomic](./migrate-datomic.md). |
+
+They are the same code path. A dump is just the record stream with a manifest
+and checksums around it; a foreign system is the record stream with an adapter
+around it. Anything true of one — bounded memory, `:xform`, verification,
+history fidelity — is true of the others, which is why they are documented
+together.
+
+Start with **[Export](#export)** and **[Restore](#restore)** for backups,
+**[Migrating a live database](#migrating-a-live-database)** to change storage
+backend, and **[Beyond dumps](#beyond-dumps-import-source-and-export-to-sink)**
+to read from or write to something that is not a dump at all.
 
 ## Flow
 

@@ -72,7 +72,7 @@ For experienced users building production systems:
 - **[Cross-database references](./cross-db-references.md)** - `dh://` URIs and reified links across databases (living vs record references)
 - **[Optimistic Overlay](./optimistic-overlay.md)** - Zero-latency UI updates over a remote writer via `d/with` (experimental)
 - **[Versioning](./versioning.md)** - Git-like branching and merging (beta)
-- **[Backup & restore](./backup.md)** - Portable, type-exact, verifiable dumps to a filesystem path or a konserve store; plus `import-source` / `export-to-sink`, the record seam for reading from and writing to things that are not dumps (experimental)
+- **[Migration](./migration.md)** - One record stream, three jobs: backup/restore via portable verifiable dumps, moving between storage backends, and reading from or writing to other systems via `import-source` / `export-to-sink` (experimental)
 - **[Migrating from Datomic](./migrate-datomic.md)** - Datomic Pro in and out over that seam, with what survives a round trip and what cannot (experimental)
 - **[Norms](./norms.md)** - Database migration system
 - **[Unstructured Input Support](./unstructured.md)** - Schema inference from JSON/EDN (experimental)
