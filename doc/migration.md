@@ -10,6 +10,12 @@ That one mechanism covers three jobs that are usually separate tools:
 | **Moving between stores** | the same dump, written to a filesystem path *or* a konserve store — file, S3, JDBC, in-memory, IndexedDB. Change backend by exporting from one and importing to another. |
 | **Moving between systems** | `import-source` / `export-to-sink` hand you the record stream itself, so the other side can be a live database rather than a file — see [Migrating from Datomic](./migrate-datomic.md). |
 
+**Beta.** Tested and functional across both runtimes, with the API still open to
+change. The dump format and `export-db` / `import-db` are the settled part; the
+record seam (`import-source` / `export-to-sink`) is the newest surface and the
+likeliest to move, since each new adapter written against it is a fresh test of
+whether its shape is right.
+
 They are the same code path. A dump is just the record stream with a manifest
 and checksums around it; a foreign system is the record stream with an adapter
 around it. Anything true of one — bounded memory, `:xform`, verification,

@@ -2,7 +2,13 @@
 
 `datahike.migrate.datomic` moves a database **in either direction** between
 Datomic Pro and datahike, over the same record seam dumps use (see
-[Migration](./migration.md)). *Experimental.*
+[Migration](./migration.md)).
+
+**Experimental**, and deliberately at arm's length: it lives on its own source
+path, takes no dependency datahike itself carries, and is reachable only if you
+put the Datomic peer jar on your classpath. It may well move out of datahike
+into a library of its own — nothing in datahike depends on it, which is what
+would make that move cheap. Treat the API as likely to change.
 
 ```clojure
 (require '[datahike.migrate.datomic :as dtm])
