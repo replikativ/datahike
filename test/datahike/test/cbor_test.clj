@@ -70,7 +70,7 @@
       ;; `frame-name`/`frame-payload` read either shape without branching.
       (is (bdata/tagged-frame? raw))
       (is (tagged-literal? raw))
-      (is (= "datahike.datom.Datom" (bdata/frame-name raw)))
+      (is (= "datahike.datom/Datom" (bdata/frame-name raw)))
       (is (= [1 :name "Alice" 536870913 true] (vec (bdata/frame-payload raw)))))))
 
 (deftest positional-datoms-are-half-the-size-of-a-field-map
@@ -216,3 +216,39 @@
           "fressian writes (vec (seq d)); boring writes the same vector")
       (is (= d (dd/datom-from-reader (vec (seq d))))
           "and both read it back through datom-from-reader"))))
+
+;; ---------------------------------------------------------------------------
+;; Wire names
+;; ---------------------------------------------------------------------------
+
+(deftest records-carry-borings-own-name-shape
+  (testing "`namespace/Record`, which is what `boring.records/wire-name`
+            derives and `boring.data/record-type-name` reports. Registering
+            under any other shape means a type reached through boring's own
+            `defrecords` macro carries a different name than the same type
+            registered by hand — two names for one type. It is also what a
+            foreign reader needs: `datahike.datom.Datom` gives no way to tell
+            where the namespace ends."
+    (is (= "datahike.datom/Datom" dcbor/datom-name))
+    (is (= "datahike.db/DB" dcbor/db-name))
+    (is (= "datahike.db/TxReport" dcbor/tx-report-name))
+
+    (testing "and the name is what actually goes out, seen by a reader with no
+              datahike handlers at all"
+      (let [d (dd/datom 7 :attr "v" 536870920 true)
+            raw (boring/decode (boring/encode d {:registry (dcbor/registry)}) {})]
+        (is (= "datahike.datom/Datom" (bdata/frame-name raw)))))))
+
+(deftest the-dotted-name-is-not-registered
+  (testing "no compatibility alias for the dotted spelling these briefly had.
+            The CBOR codec is introduced by this change set, so nothing ever
+            wrote a tag-27 frame under `datahike.datom.Datom` and there is
+            nothing to read back — an alias would be dead code claiming to
+            protect data that does not exist. Asserted rather than assumed,
+            because a stray alias is invisible until a store depends on it."
+    (let [legacy (bdata/tagged-value 27 ["datahike.datom.Datom" [7 :attr "v" 536870920 true]])
+          back (boring/decode (boring/encode legacy {}) {:registry (dcbor/registry)})]
+      (is (not (instance? datahike.datom.Datom back))
+          "the old name must NOT construct a Datom")
+      (is (bdata/tagged-frame? back)
+          "it degrades to a carrier, which is boring's contract for a name no registry resolves"))))

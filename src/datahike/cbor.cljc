@@ -75,10 +75,35 @@
 
 (def ^:const DEFAULT_BRANCHING_FACTOR 512)
 
-;; The wire names, unchanged from the fressian handlers this replaced.
-(def ^:const datom-name    "datahike.datom.Datom")
-(def ^:const db-name       "datahike.db.DB")
-(def ^:const tx-report-name "datahike.db.TxReport")
+;; The wire names.
+;;
+;; `namespace/Record`, which is what boring derives for itself:
+;; `boring.records/wire-name` is `(str ns-sym "/" record-sym)` and
+;; `boring.data/record-type-name` must match it. Registering under any other
+;; shape means a record reached through boring's own `defrecords` macro would
+;; carry a DIFFERENT name than the same type registered here — two names for one
+;; type, found the hard way.
+;;
+;; It also says more to a stranger. These names are not private: they go in
+;; tag-27 frames, and — since `dcbor/install` is what konserve-lmdb's boring
+;; registry gets — into stored blobs. A foreign CBOR reader seeing
+;; `datahike.datom.Datom` cannot tell where the namespace ends;
+;; `datahike.datom/Datom` is self-describing, which is the whole reason the
+;; frames are an IETF format rather than a private one.
+(def ^:const datom-name     "datahike.datom/Datom")
+(def ^:const db-name        "datahike.db/DB")
+(def ^:const tx-report-name "datahike.db/TxReport")
+
+;; NO compatibility alias for the dotted, class-shaped names these briefly had
+;; (`datahike.datom.Datom`, inherited from the fressian handlers, which keyed on
+;; the Java class). The CBOR codec is introduced by this change set — nothing
+;; has ever written a tag-27 frame under the old spelling, so there is nothing
+;; to read back. An alias would be dead code claiming to protect data that does
+;; not exist.
+;;
+;; It buys nothing elsewhere either: an old peer speaks FRESSIAN frames, which a
+;; CBOR peer cannot read at all, so the names inside are never reached; and
+;; konserve-lmdb routes legacy vs boring by LEADING BYTE, not by record name.
 
 ;; ---------------------------------------------------------------------------
 ;; Store registry
