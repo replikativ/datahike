@@ -1,0 +1,19 @@
+;; A remote writer, so the native binary drives `datahike.http.writer` — which
+;; posts `application/cbor` through `datahike.remote.cbor`.
+;;
+;; This is the one CBOR path the rest of the native suite does not reach. Lines
+;; 60-61 of run-native-image-tests already round-trip `--format cbor` and
+;; `cbor:FILE`, but both use the EMPTY interop registry; only the writer
+;; exercises a POPULATED one, i.e. tag-27 record construction on decode. That
+;; matters natively because boring's fallbacks for records — the reflective
+;; `:auto-construct-records?` path and `records/auto-registry` — both fail
+;; SILENTLY under a closed-world image, returning a carrier or an empty
+;; registry rather than an error.
+{:store  {:backend :file
+          :path "/tmp/dh-cbor-writer-store"
+          :id #uuid "550e8400-e29b-41d4-a716-44665544cb02"}
+ :keep-history? true
+ :schema-flexibility :read
+ :writer {:backend :datahike-server
+          :url     "http://localhost:32191"
+          :token   "nativetesttoken"}}

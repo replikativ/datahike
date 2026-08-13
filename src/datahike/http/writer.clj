@@ -1,8 +1,7 @@
 (ns datahike.http.writer
   "Remote writer implementation for datahike.http.server through datahike.http.client."
   (:require [datahike.writer :refer [PWriter create-writer create-database delete-database]]
-            [datahike.http.client :refer [request-json] :as client]
-            [datahike.json :as json]
+            [datahike.http.client :refer [request-cbor] :as client]
             [datahike.connector :as connector]
             [datahike.tools :as dt :refer [throwable-promise]]
             [replikativ.logging :as log]
@@ -18,11 +17,16 @@
       (log/trace :datahike/http-write-args {:arg-map arg-map})
       (put! p
             (try
-              (request-json :post
+              ;; CBOR, not JSON. This channel is machine-to-machine only —
+              ;; never a browser, never read by a human — so JSON's
+              ;; readability buys nothing here while its costs all apply: the
+              ;; `!kw`/`!date` tagged-string encoding, the re-entrant
+              ;; `write-to-generator`, and the server-side schema lookup that
+              ;; re-infers types JSON could not carry. CBOR carries them.
+              (request-cbor :post
                             (str op "-writer")
                             remote-peer
-                            (vec (concat [config] args))
-                            json/mapper)
+                            (vec (concat [config] args)))
               (catch Exception e
                 e)))
       p))
@@ -40,7 +44,7 @@
         {:keys [writer] :as config} (first args)]
     ;; redirect call to remote-peer as writer config
     (deliver p (try (->
-                     (request-json :post
+                     (request-cbor :post
                                    "create-database-writer"
                                    writer
                                    (vec (concat [(-> config
@@ -58,7 +62,7 @@
         {:keys [writer] :as config} (first args)]
     ;; redirect call to remote-peer as writer config
     (deliver p (try
-                 (-> (request-json :post
+                 (-> (request-cbor :post
                                    "delete-database-writer"
                                    writer
                                    (vec (concat [(-> config
