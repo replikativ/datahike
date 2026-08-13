@@ -1,4 +1,4 @@
-(ns ^:no-doc datahike.migrate
+(ns datahike.migrate
   "Robust, type-exact, verifiable export/import for datahike databases.
 
    The 3-arity `export-db`/`import-db` produce and consume a *type-exact* CBOR
@@ -1503,7 +1503,7 @@
                            "dump to what is already there (append-only; see `import-db`).")
                       {:error :import/non-empty-target})))))
 
-(defn eid-policy
+(defn- eid-policy
   "Resolve the `:eids` option into what `:migration`'s `:eids` slot should hold,
    or nil to leave the default (allocate fresh ids) alone.
 
@@ -1557,7 +1557,7 @@
                                ". Expected :allocate, :offset, :preserve, a map or a function.")
                           {:error :import/bad-eid-strategy :value eids}))))
 
-(defn manifest->source-meta
+(defn- manifest->source-meta
   "The three things `run-import` needs from a dump's manifest.
 
    The whole of the importer's dependency on the dump FORMAT, in one place. A
