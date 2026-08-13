@@ -18,6 +18,7 @@
    `Runtime.maxMemory` in a browser). Both are diagnostics; neither changes what
    a dump contains or whether it can be read."
   (:require [datahike.api :as api]
+            [datahike.connector :as dconn]
             [datahike.constants :as c]
             [datahike.datom :as d]
             [datahike.db.interface :as dbi]
@@ -66,7 +67,71 @@
 ;; ---------------------------------------------------------------------------
 ;; small helpers
 
-(defn ->db [x] (if (dbu/db? x) x @x))
+(defn ensure-db
+  "The read side of migration takes a database SNAPSHOT, not a connection.
+
+   This used to be `->db`, `(if (dbu/db? x) x @x)`, which silently accepted a
+   connection and derefed it. Nothing downstream ever wanted the connection —
+   export reads `(:store db)`, `(dbi/-config db)` and the index roots, all of
+   which are on the db — so the coercion bought one character over `@conn` and
+   cost a wider contract than the code needs:
+
+     * it hid a choice of TIME. `(export-db conn …)` reads as \"export the
+       connection\", but exports whichever snapshot happened to be current at
+       that instant; `@conn` puts that instant at the call site, where a reader
+       can see it.
+     * it is ambiguous under branching, where a connection and a db can disagree
+       about which branch was meant.
+     * a permissive published contract can only ever widen.
+
+   `dbu/db?` is the gate rather than a class check, so `d/history`, `d/as-of`
+   and `d/since` views pass — they are snapshots too, and exporting one is
+   legitimate. A connection is not a `db?`, so it lands in the refusal, and
+   being an `IDeref` is what lets the message name the fix instead of
+   complaining abstractly.
+
+   This does NOT make a long export safe on its own: a reader holding an old
+   snapshot is protected by `d/gc-storage`'s grace period, not by holding a
+   connection, and the guard in `datahike.gc-guard` is writer-side only
+   (\"Readers are unconstrained\"). See doc/gc.md."
+  [x who]
+  (cond
+    (dbu/db? x) x
+
+    #?(:clj (instance? clojure.lang.IDeref x) :cljs (satisfies? IDeref x))
+    (throw (ex-info (str who " takes a database snapshot, not a connection. "
+                         "Pass `@conn` (or `(d/db conn)`) — which also makes it "
+                         "explicit which snapshot is being read.")
+                    {:type :datahike/db-expected :fn who :got (type x)}))
+
+    :else
+    (throw (ex-info (str who " takes a database snapshot; got " (pr-str (type x)) ".")
+                    {:type :datahike/db-expected :fn who :got (type x)}))))
+
+(defn ensure-conn
+  "The mirror of `ensure-db`, for the WRITE side.
+
+   It exists because `ensure-db` trains a habit. Once `export-db` refuses a
+   connection and tells you to pass `@conn`, the natural next thing a caller
+   writes is `(import-db @conn source)` — and a snapshot has nothing to write
+   into. Without this, that died as a bare ClassCastException from inside
+   `config-compat!`, several frames below anything the caller wrote.
+
+   A one-sided tightening is worse than none: it teaches a rule and then
+   punishes the symmetric application of it."
+  [x who]
+  (cond
+    (dconn/connection? x) x
+
+    (dbu/db? x)
+    (throw (ex-info (str who " takes a connection, not a database snapshot. "
+                         "A snapshot is immutable and has nothing to write into "
+                         "— pass the `conn` itself.")
+                    {:type :datahike/conn-expected :fn who :got (type x)}))
+
+    :else
+    (throw (ex-info (str who " takes a connection; got " (pr-str (type x)) ".")
+                    {:type :datahike/conn-expected :fn who :got (type x)}))))
 
 (defn attribute-refs? [db] (boolean (:attribute-refs? (dbi/-config db))))
 

@@ -175,11 +175,11 @@
               (d/transact src [{:db/id "a" :name "Alice" :score 0.0}
                                {:db/id "b" :name "Bob" :score 3.14 :pal "a"}])
               (d/transact src [[:db/retractEntity [:name "Bob"]]])
-              (let [man (m/export-db src target {:history? true :chunk-size 5})
+              (let [man (m/export-db @src target {:history? true :chunk-size 5})
                     est (m/estimate-import-memory target)
                     tgt (fresh-db)
                     rep (m/import-db tgt target {})
-                    ver (m/verify tgt target)]
+                    ver (m/verify @tgt target)]
                 (is (> (count (:chunks man)) 1) "wrote multiple chunk objects to garage")
                 (is (string? (:recommended-heap est)) "estimate reads the manifest from S3")
                 (is (:verified? rep) "import from S3 verifies")

@@ -38,7 +38,7 @@
 
 (defn- export! [conn]
   (let [p (str (System/getProperty "java.io.tmpdir") "/dh-ids-" (utils/get-time))]
-    (m/export-db conn p {:history? true})
+    (m/export-db @conn p {:history? true})
     p))
 
 (defn- mapping-for [conn path]

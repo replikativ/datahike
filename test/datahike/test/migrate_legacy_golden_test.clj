@@ -71,7 +71,7 @@
                                        :db/cardinality :db.cardinality/one
                                        :db/unique :db.unique/identity}])
           _        (d/transact sconn [{:name "x"}])
-          _        (m/export-db sconn dir)
+          _        (m/export-db @sconn dir)
           tconn    (utils/setup-db {:store {:backend :memory :id (java.util.UUID/randomUUID)}
                                     :schema-flexibility :write :keep-history? true})
           nrep     (m/import-db tconn dir)]

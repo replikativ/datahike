@@ -122,7 +122,7 @@
       (testing (str "keep-history? " history? ", chunk-size " chunk)
         (let [src (build-adversarial-db! (fresh history?))
               path (tmp-path (str history? "-" chunk))
-              _ (m/export-db src path {:history? history? :chunk-size chunk})
+              _ (m/export-db @src path {:history? history? :chunk-size chunk})
               tx-tgt (fresh history?)
               tx-rep (m/import-db tx-tgt path {})
               bk-tgt (fresh history?)
@@ -158,7 +158,7 @@
             which the streaming path cannot manage."
     (let [src (build-adversarial-db! (fresh true))
           path (tmp-path "src")
-          _ (m/export-db src path {:history? true})
+          _ (m/export-db @src path {:history? true})
           tgt (fresh true)
           rep (m/import-db tgt path {:build-indexes? true})
           diffs (compare-records @src @tgt)]
@@ -192,7 +192,7 @@
             leaves them where the source had them."
     (let [src (build-adversarial-db! (fresh false))
           path (tmp-path "preserve")
-          _ (m/export-db src path {:history? false})
+          _ (m/export-db @src path {:history? false})
           alloc (fresh false)
           a-rep (m/import-db alloc path {:build-indexes? true :eids :allocate})
           pres (fresh false)
@@ -228,7 +228,7 @@
             contains its declared fields. The value is the claim."
     (let [src (build-adversarial-db! (fresh false))
           path (tmp-path "nohist")
-          _ (m/export-db src path {:history? false})
+          _ (m/export-db @src path {:history? false})
           tx-tgt (fresh false)
           _ (m/import-db tx-tgt path {})
           bk-tgt (fresh false)
@@ -255,7 +255,7 @@
             process restarted."
     (let [src (build-adversarial-db! (fresh true))
           path (tmp-path "reconnect")
-          _ (m/export-db src path {:history? true})
+          _ (m/export-db @src path {:history? true})
           cfg' (cfg true)
           _ (d/create-database cfg')
           tgt (d/connect cfg')
@@ -284,7 +284,7 @@
           store (ks/create-store {:backend :memory :id (java.util.UUID/randomUUID)}
                                  {:sync? true})
           target {:store store :prefix "bulk"}
-          _ (m/export-db src target {:history? true :chunk-size 5})
+          _ (m/export-db @src target {:history? true :chunk-size 5})
           tx-tgt (fresh true)
           _ (m/import-db tx-tgt target {})
           bk-tgt (fresh true)
@@ -305,7 +305,7 @@
             not only a stateless `remove`."
     (let [src (build-adversarial-db! (fresh true))
           path (tmp-path "xform")
-          _ (m/export-db src path {:history? true :chunk-size 5})
+          _ (m/export-db @src path {:history? true :chunk-size 5})
           drop-tags (remove (fn [record] (= :tag (nth record 1))))
           tx-tgt (fresh true)
           tx-rep (m/import-db tx-tgt path {:xform drop-tags})
@@ -345,7 +345,7 @@
             it always did, and give the operator nothing to act on."
     (let [src (build-adversarial-db! (fresh true))
           path (tmp-path "refuse")
-          _ (m/export-db src path {:history? true})
+          _ (m/export-db @src path {:history? true})
           refusal (fn [opts]
                     (let [tgt (fresh true)
                           r (try (m/import-db tgt path (assoc opts :build-indexes? true))
@@ -443,7 +443,7 @@
                                           ;; tx entities carry the transactions
                                           (= (nth r 0) (nth r 3)))))
             path (tmp-path "tenant-acme")
-            _ (m/export-db src path {:history? true :xform only-acme})
+            _ (m/export-db @src path {:history? true :xform only-acme})
             tgt (fresh true)
             rep (m/import-db tgt path {:check-refs? true})]
         (is (= #{"acme"} (set (map first (d/q '[:find ?t :where [_ :tenant ?t]] @tgt))))

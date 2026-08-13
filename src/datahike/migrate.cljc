@@ -50,8 +50,9 @@
             ;; JVM-only by nature: a legacy single-file dump can only have been
             ;; written by an old JVM datahike.
             #?(:clj [datahike.migrate.legacy :as mlegacy])
+            [datahike.migrate.schema :as msch]
             [datahike.migrate.manifest :as mman
-             :refer [->db a-ident attribute-refs? build-manifest
+             :refer [a-ident attribute-refs? build-manifest
                      chunk-re codec-of config-must-match datom->record
                      assert-sync-supported! assert-jvm-only! assert-sizes-positive!
                      assert-codec-supported!
@@ -404,7 +405,10 @@
       rs)))
 
 (defn export-db
-  "Export a database (or connection) to `target`.
+  "Export a database SNAPSHOT to `target`. Pass `@conn`, not `conn` — a
+   connection is refused by name rather than derefed, so which snapshot is being
+   read stays visible at the call site. `d/history`, `d/as-of` and `d/since`
+   views are snapshots too and are accepted.
 
    Writes a DIRECTORY: `manifest.edn`, `datoms-NNNNNN.cbor`, and `store-refs/`
    when the database has `:db.type/store-ref` blobs. Opts:
@@ -455,11 +459,12 @@
 
    NOTE: with :history? true this dump contains every value ever asserted,
    including retracted (\"deleted\") data — treat it as sensitive."
-  ([db-or-conn target] (export-db db-or-conn target {}))
-  ([db-or-conn target opts]
+  ([db target] (export-db db target {}))
+  ([db target opts]
    (assert-sync-supported! opts)
    (assert-sizes-positive! opts)
-   (let [db       (->db db-or-conn)
+   (msch/validate-opts! msch/ExportOpts opts "export-db")
+   (let [db       (mman/ensure-db db "export-db")
          opts     (merge {:history? (boolean (:keep-history? (dbi/-config db)))
                           :chunk-size default-chunk-size
                           :sort-buffer 1000000
@@ -624,8 +629,8 @@
    Opts are `export-db`'s: `:history?` `:xform` `:chunk-size` `:sort-buffer`
    `:sync?` `:progress-fn`. `:compression` is ignored — nothing here writes
    bytes — and `:sort? false` is refused, see above."
-  ([db-or-conn sink] (export-to-sink db-or-conn sink {}))
-  ([db-or-conn sink opts]
+  ([db sink] (export-to-sink db sink {}))
+  ([db sink opts]
    (assert-sync-supported! opts)
    (assert-sizes-positive! opts)
    (when-not (and (ifn? (:open sink)) (ifn? (:write sink)) (ifn? (:close sink)))
@@ -640,7 +645,8 @@
                           "many chunks, which breaks the transaction alignment a sink relies "
                           "on. Use export-db for a no-scratch export.")
                      {:error :export/sort-required})))
-   (let [db       (->db db-or-conn)
+   (msch/validate-opts! msch/SinkOpts opts "export-to-sink")
+   (let [db       (mman/ensure-db db "export-to-sink")
          opts     (merge {:history? (boolean (:keep-history? (dbi/-config db)))
                           :chunk-size default-chunk-size
                           :sort-buffer 1000000
@@ -895,6 +901,10 @@
   ([source] (estimate-import-memory source {}))
   ([source opts]
    (assert-jvm-only! "estimate-import-memory" opts)
+   ;; Every sibling entry point validates its sizes; this one did not, so
+   ;; `{:batch-size 0}` returned a confident under-estimate — and the whole
+   ;; point of this function is that an operator sizes `-Xmx` from what it says.
+   (msch/validate-opts! msch/EstimateOpts opts "estimate-import-memory")
    (let [batch-size (get opts :batch-size default-batch-size)]
      (if (mstore/store-target? source)
        (let [m (mstore/open source)]
@@ -2557,8 +2567,10 @@
    to check them against."
   ([conn chunk-src] (import-source conn chunk-src {}))
   ([conn chunk-src opts]
+   (mman/ensure-conn conn "import-source")
    (assert-sync-supported! opts)
    (assert-sizes-positive! opts)
+   (msch/validate-opts! msch/ImportOpts opts "import-source")
    ;; `:on-error :collect` has no meaning on the index-build path, so it is
    ;; REFUSED rather than quietly ignored. `run-index-build` carries none of the
    ;; streaming path's `collect-apply!` / `record-fault?` machinery, and
@@ -2766,8 +2778,10 @@
    import is not resumable either way — recreate and restart."
   ([conn source] (import-db conn source {}))
   ([conn source opts]
+   (mman/ensure-conn conn "import-db")
    (assert-sync-supported! opts)
    (assert-sizes-positive! opts)
+   (msch/validate-opts! msch/ImportOpts opts "import-db")
    (let [opts (merge {:sync? default-sync?} opts)
          batch-size (get opts :batch-size default-batch-size)]
      (async+sync
@@ -2975,8 +2989,9 @@
      :external 0 :self-contained? true}))
 
 (defn verify
-  "Compare a dump against its own manifest (integrity) and, given a live db/conn,
-   against that database (id-independent semantic equivalence). Returns a tiered
+  "Compare a dump against its own manifest (integrity) and, given a live db
+   snapshot (`@conn`, not `conn`), against that database (id-independent
+   semantic equivalence). Returns a tiered
    report: tier0 = checksums/paths (validated on open), tier1 = counts,
    tier2 = multiset digest over `[a v op]` + ref-topology counts, tier3 = sampled
    structural diff of unique entities. `source` may be a path or a konserve store.
@@ -3078,9 +3093,9 @@
                 :tier1 {:manifest-count (or (:count (:semantic-digest manifest)) legacy-count)}
                 :blobs blobs}
          finding (assoc :integrity finding)))))
-  ([conn-or-db source]
+  ([db source]
    (assert-jvm-only! "verify")
-   (let [db    (->db conn-or-db)]
+   (let [db    (mman/ensure-db db "verify")]
      (with-source-records source
        (fn [manifest reduce-source]
          (let [schema (:schema manifest)

@@ -47,7 +47,7 @@ The diagram renders on GitHub / cljdoc; the ASCII version below it reads anywher
 
 ```mermaid
 flowchart TD
-  subgraph BACKUP["Backup — export-db(conn, target, opts)"]
+  subgraph BACKUP["Backup — export-db(db, target, opts)"]
     E0["@conn → immutable db value"]
     E1{":history?"}
     E2["src = history db<br/>asserts + retracts + tx entities"]
@@ -106,7 +106,7 @@ flowchart TD
 
 ```
 ╔══════════════════════════ BACKUP (export-db) ══════════════════════════╗
-  export-db(conn, TARGET, opts)
+  export-db(db, TARGET, opts)
         │
   @conn ─► immutable db value          (consistent snapshot)
         │
@@ -183,10 +183,10 @@ flowchart TD
 (require '[datahike.migrate :as m])
 
 ;; snapshot of the current value (no history)
-(m/export-db conn "/backups/mydb")
+(m/export-db @conn "/backups/mydb")
 
 ;; full history — every assertion, retraction, and tx entity
-(m/export-db conn "/backups/mydb" {:history? true})
+(m/export-db @conn "/backups/mydb" {:history? true})
 ```
 
 Export always writes a DIRECTORY: `manifest.edn` plus numbered chunks
@@ -208,11 +208,11 @@ and per-chunk SHA-256 guards against partial/eventually-consistent reads.
 
 ```clojure
 ;; an already-open konserve store (you construct it with your bucket/endpoint)
-(m/export-db conn {:store my-store :prefix "backup-2026-07"} {:history? true})
+(m/export-db @conn {:store my-store :prefix "backup-2026-07"} {:history? true})
 (m/import-db fresh-conn {:store my-store :prefix "backup-2026-07"})
 
 ;; or a konserve store-config map (backend opened and released for you)
-(m/export-db conn {:backend :s3 :bucket "my-bucket" :region "..." :id #uuid "..."
+(m/export-db @conn {:backend :s3 :bucket "my-bucket" :region "..." :id #uuid "..."
                    :prefix "backup-2026-07"} {:history? true})
 ```
 
@@ -229,7 +229,7 @@ mount if needed). For a container with **no writable filesystem at all**, pass
 `:sort? false` to export with **no scratch**:
 
 ```clojure
-(m/export-db conn {:store my-store :prefix "backup"} {:history? true :sort? false})
+(m/export-db @conn {:store my-store :prefix "backup"} {:history? true :sort? false})
 ```
 
 It streams schema/tx-entity datoms then data in `:eavt` order straight to the

@@ -8,6 +8,7 @@
             [datahike.db.interface :as dbi]
             [datahike.db.utils :as dbu]
             [datahike.migrate :as m]
+            [datahike.migrate.manifest :as mman]
             [datahike.migrate.cbor :as mcbor]
             [datahike.migrate.blobs :as mblobs]
             [datahike.migrate.compress :as mz]
@@ -129,7 +130,7 @@
       (let [src (utils/setup-db (mem-cfg {:history? true}))
             _   (populate-rich! src)
             dir (str (System/getProperty "java.io.tmpdir") "/dh-rt-" cs "-" (utils/get-time))
-            manifest (m/export-db src dir {:history? true :chunk-size cs})
+            manifest (m/export-db @src dir {:history? true :chunk-size cs})
             tgt (utils/setup-db (mem-cfg {:history? true}))
             report (m/import-db tgt dir {})]
         (is (:verified? report) "post-import verification passes")
@@ -178,7 +179,7 @@
                                {:db/ident :pal :db/valueType :db.type/ref :db/cardinality :db.cardinality/many}])
           _   (d/transact src [{:db/id "a" :name "Alice"} {:db/id "b" :name "Bob" :pal "a"}])
           path (str (System/getProperty "java.io.tmpdir") "/dh-ar-" (utils/get-time))
-          _   (m/export-db src path {:history? true})
+          _   (m/export-db @src path {:history? true})
           tgt (utils/setup-db (mem-cfg {:history? true :attribute-refs? true}))
           report (m/import-db tgt path {})]
       (is (:verified? report))
@@ -199,7 +200,7 @@
                                     :db/cardinality :db.cardinality/one}])
                   (d/transact src [{:name "x"} {:name "y"}]))
           path (str (System/getProperty "java.io.tmpdir") "/dh-order-" (utils/get-time))
-          _   (m/export-db src path {})
+          _   (m/export-db @src path {})
           tgt (utils/setup-db (mem-cfg {:history? false}))]
       (is (:verified? (m/import-db tgt path {})))
       (is (= #{["x"] ["y"]} (d/q '[:find ?n :where [?e :name ?n]] @tgt)))
@@ -236,7 +237,7 @@
           _   (do (d/transact src [{:db/ident :n :db/valueType :db.type/string :db/cardinality :db.cardinality/one}])
                   (d/transact src [{:n "a"}]))
           dir (str (System/getProperty "java.io.tmpdir") "/dh-path-" (utils/get-time))
-          manifest (m/export-db src dir {})
+          manifest (m/export-db @src dir {})
           mf (io/file dir "manifest.edn")
           poisoned (assoc-in (read-string (slurp mf)) [:chunks 0 :file] "../evil.cbor")]
       (spit mf (pr-str poisoned))
@@ -256,7 +257,7 @@
           ;; `:compression :none` because this test edits the CBOR itself. The
           ;; property under test is the codec's, not the container's; the
           ;; compressed path has its own tamper test below.
-          _   (m/export-db src dir {:compression :none})
+          _   (m/export-db @src dir {:compression :none})
           chunk (io/file dir "datoms-000001.cbor")
           content (let [bos (java.io.ByteArrayOutputStream.)]
                     (with-open [in (io/input-stream chunk)] (io/copy in bos))
@@ -281,7 +282,7 @@
           _   (do (d/transact src [{:db/ident :n :db/valueType :db.type/string :db/cardinality :db.cardinality/one}])
                   (d/transact src [{:n "a"}]))
           path (str (System/getProperty "java.io.tmpdir") "/dh-nonempty-" (utils/get-time))
-          _   (m/export-db src path {})
+          _   (m/export-db @src path {})
           tgt (utils/setup-db (mem-cfg {}))]
       (d/transact tgt [{:db/ident :n :db/valueType :db.type/string :db/cardinality :db.cardinality/one}])
       (d/transact tgt [{:n "pre-existing"}])
@@ -303,8 +304,8 @@
           ;; `:compression :none` — this asserts that :archival makes the BYTES
           ;; a function of the data. Compressed determinism is a property of the
           ;; gzip encoder and is covered separately.
-          m1  (m/export-db src d1 {:history? true :chunk-size 5 :compression :none})
-          m2  (m/export-db src d2 {:history? true :chunk-size 5 :compression :none})]
+          m1  (m/export-db @src d1 {:history? true :chunk-size 5 :compression :none})
+          m2  (m/export-db @src d2 {:history? true :chunk-size 5 :compression :none})]
       (is (= (:semantic-digest m1) (:semantic-digest m2)))
       (is (= (mapv :sha256 (:chunks m1)) (mapv :sha256 (:chunks m2))))
       (let [rd (fn [f] (let [bos (java.io.ByteArrayOutputStream.)]
@@ -444,7 +445,7 @@
       (d/transact src [{:db/id "e3" :a 3 :c "hello"}])
       (d/transact src [[:db/retractEntity [:c "hello"]]])
       (let [path (str (System/getProperty "java.io.tmpdir") "/dh-schema-evo-" (utils/get-time))
-            _   (m/export-db src path {:history? true})
+            _   (m/export-db @src path {:history? true})
             tgt (utils/setup-db (mem-cfg {:history? true}))
             report (m/import-db tgt path {})]
         (is (:verified? report))
@@ -472,8 +473,8 @@
       (doseq [batch (partition-all 500 (range n))]
         (d/transact src (mapv (fn [i] {:k i :s (str "v" i)}) batch)))
       (let [dir (str (System/getProperty "java.io.tmpdir") "/dh-scale-" (utils/get-time))
-            manifest (m/export-db src dir {:history? true
-                                           :sort-buffer 300 :chunk-size 250})
+            manifest (m/export-db @src dir {:history? true
+                                            :sort-buffer 300 :chunk-size 250})
             tgt (utils/setup-db (mem-cfg {:history? true}))
             report (m/import-db tgt dir {:batch-size 200})]
         (is (> (count (:chunks manifest)) 1) "produced multiple chunks")
@@ -500,8 +501,8 @@
           big   (make 2000)
           ps    (str (System/getProperty "java.io.tmpdir") "/dh-est-s-" (utils/get-time))
           pb    (str (System/getProperty "java.io.tmpdir") "/dh-est-b-" (utils/get-time))
-          _     (m/export-db small ps {:history? true})
-          man-b (m/export-db big pb {:history? true})
+          _     (m/export-db @small ps {:history? true})
+          man-b (m/export-db @big pb {:history? true})
           es    (m/estimate-import-memory ps)
           eb    (m/estimate-import-memory pb)]
       (is (pos? (:recommended-heap-bytes es)))
@@ -525,7 +526,7 @@
           target {:store store :prefix "backup-1"}
           src    (utils/setup-db (mem-cfg {:history? true}))
           _      (populate-rich! src)
-          man    (m/export-db src target {:history? true :chunk-size 4})
+          man    (m/export-db @src target {:history? true :chunk-size 4})
           est    (m/estimate-import-memory target)
           tgt    (utils/setup-db (mem-cfg {:history? true}))
           rep    (m/import-db tgt target {})]
@@ -547,7 +548,7 @@
     (let [src (utils/setup-db (mem-cfg {:history? true}))
           _   (populate-rich! src)
           path (str (System/getProperty "java.io.tmpdir") "/dh-nosort-" (utils/get-time))
-          _   (m/export-db src path {:history? true :sort? false})
+          _   (m/export-db @src path {:history? true :sort? false})
           tgt (utils/setup-db (mem-cfg {:history? true}))
           rep (m/import-db tgt path {})]
       (is (:verified? rep) "no-scratch export verifies")
@@ -562,7 +563,7 @@
                                 :db/cardinality :db.cardinality/one :db/unique :db.unique/identity}
                                {:db/ident :pal :db/valueType :db.type/ref :db/cardinality :db.cardinality/many}])
           _   (d/transact src [{:db/id "a" :name "Alice"} {:db/id "b" :name "Bob" :pal "a"}])
-          _   (m/export-db src target {:history? true :sort? false :chunk-size 4})
+          _   (m/export-db @src target {:history? true :sort? false :chunk-size 4})
           tgt (utils/setup-db (mem-cfg {:history? true :attribute-refs? true}))
           rep (m/import-db tgt target {})]
       (is (:verified? rep) "no-scratch export to store, attribute-refs, verifies")
@@ -578,16 +579,16 @@
     (let [src  (utils/setup-db (mem-cfg {:history? true}))
           _    (populate-rich! src)
           path (str (System/getProperty "java.io.tmpdir") "/dh-verify-" (utils/get-time))
-          _    (m/export-db src path {:history? true})
+          _    (m/export-db @src path {:history? true})
           tgt  (utils/setup-db (mem-cfg {:history? true}))
           _    (m/import-db tgt path {:verify? false})
-          ok   (m/verify tgt path)]
+          ok   (m/verify @tgt path)]
       (is (:ok? ok))
       (is (get-in ok [:tier1 :match?]))
       (is (get-in ok [:tier2 :match?]) "id-independent value digest + ref topology match")
       (is (:ok? (:tier3 ok)) "sampled structural diff clean")
       (d/transact tgt [{:name "extra-entity" :score 1.0}])
-      (let [bad (m/verify tgt path)]
+      (let [bad (m/verify @tgt path)]
         (is (not (:ok? bad)))
         (is (not (get-in bad [:tier2 :match?])) "tier2 catches the extra content"))
       (teardown src)
@@ -599,7 +600,7 @@
           _    (d/transact src [{:db/ident :age :db/valueType :db.type/long :db/cardinality :db.cardinality/one}])
           _    (d/transact src [{:db/id "a" :age 30}])
           path (str (System/getProperty "java.io.tmpdir") "/dh-collect-" (utils/get-time))
-          man  (m/export-db src path {:history? true})
+          man  (m/export-db @src path {:history? true})
           good-count (:count (:semantic-digest man))
           ;; inject a datom load-entities rejects — a numeric attribute in a
           ;; non-ref db — INTO the same tx as the good data datoms, so the
@@ -673,7 +674,7 @@
                                  :blob (byte-array [3 1 4])}
                                 {:db/id 2 :name "Bob" :score 2.5}])
           path (str (System/getProperty "java.io.tmpdir") "/dh-sor-" (utils/get-time))
-          _    (m/export-db src path {:history? true})
+          _    (m/export-db @src path {:history? true})
           tgt  (utils/setup-db (cfg))
           rep  (m/import-db tgt path {})]
       (is (:verified? rep))
@@ -887,7 +888,7 @@
         (doseq [sort? [true false]]
           (let [path (str (System/getProperty "java.io.tmpdir") "/dh-txc-"
                           sort? "-" (utils/get-time))
-                _ (m/export-db src path {:history? true :sort? sort?})
+                _ (m/export-db @src path {:history? true :sort? sort?})
                 tgt (utils/setup-db (mem-cfg {:history? true}))
                 rep (m/import-db tgt path {:verify? false})]
             (is (= actual (:tx-count rep)) (str ":sort? " sort?))
@@ -912,7 +913,7 @@
         (let [store (ks/create-store {:backend :memory :id (java.util.UUID/randomUUID)}
                                      {:sync? true})
               target {:store store :prefix "vt"}
-              man (m/export-db src target {:history? true :chunk-size 2})]
+              man (m/export-db @src target {:history? true :chunk-size 2})]
           (is (= {:ok? true} (select-keys (m/verify target) [:ok?]))
               "an intact store dump verifies")
           (k/bassoc store ["datahike.migrate" "vt" (:file (first (:chunks man)))]
@@ -924,7 +925,7 @@
                which one depends on whether the damage survives decompression")))
       (testing "filesystem medium, same corruption"
         (let [path (str (System/getProperty "java.io.tmpdir") "/dh-vfs-" (utils/get-time))
-              man (m/export-db src path {:history? true :chunk-size 2})
+              man (m/export-db @src path {:history? true :chunk-size 2})
               chunk (io/file path (:file (first (:chunks man))))]
           (with-open [o (java.io.FileOutputStream. chunk)]
             (.write o (byte-array (map unchecked-byte (repeat 40 0x77)))))
@@ -977,7 +978,7 @@
     (let [src (utils/setup-db (mem-cfg {:history? true}))
           _   (populate-rich! src)
           dir (str (System/getProperty "java.io.tmpdir") "/dh-gz-" (utils/get-time))
-          man (m/export-db src dir {:history? true})]
+          man (m/export-db @src dir {:history? true})]
       (is (= :gzip (:compression man)) "gzip without being asked")
       (is (every? #(re-find #"\.cbor\.gz$" (:file %)) (:chunks man))
           "chunk files say what they are, so `gzip -d` works on them")
@@ -1002,8 +1003,8 @@
           _   (populate-rich! src)
           d1  (str (System/getProperty "java.io.tmpdir") "/dh-cz-none-" (utils/get-time))
           d2  (str (System/getProperty "java.io.tmpdir") "/dh-cz-gzip-" (utils/get-time))
-          m1  (m/export-db src d1 {:history? true :chunk-size 5 :compression :none})
-          m2  (m/export-db src d2 {:history? true :chunk-size 5 :compression :gzip})]
+          m1  (m/export-db @src d1 {:history? true :chunk-size 5 :compression :none})
+          m2  (m/export-db @src d2 {:history? true :chunk-size 5 :compression :gzip})]
       (is (= (:semantic-digest m1) (:semantic-digest m2))
           "the semantic digest does not depend on the codec")
       (is (= (mapv :sha256 (:chunks m1)) (mapv :sha256 (:chunks m2)))
@@ -1027,7 +1028,7 @@
                                     :db/cardinality :db.cardinality/one}])
                   (d/transact src [{:n "alpha"} {:n "beta"}]))
           dir (str (System/getProperty "java.io.tmpdir") "/dh-gztamper-" (utils/get-time))
-          man (m/export-db src dir {})
+          man (m/export-db @src dir {})
           chunk (io/file dir (:file (first (:chunks man))))
           content (java.nio.file.Files/readAllBytes (.toPath chunk))]
       ;; flip a byte in the deflate payload, past the 10-byte gzip header
@@ -1049,7 +1050,7 @@
           _   (d/transact src [{:db/ident :n :db/valueType :db.type/string
                                 :db/cardinality :db.cardinality/one}])
           dir (str (System/getProperty "java.io.tmpdir") "/dh-codec-" (utils/get-time))
-          _   (m/export-db src dir {})
+          _   (m/export-db @src dir {})
           mf  (io/file dir "manifest.edn")]
       (spit mf (pr-str (assoc (read-string (slurp mf)) :compression :brotli)))
       (let [tgt (utils/setup-db (mem-cfg {}))]
@@ -1081,7 +1082,7 @@
         (d/transact conn [{:n 1}])
         (doseq [bad [:zstd :brotli "gzip"]]
           (testing (str "codec " (pr-str bad))
-            (let [e (try (m/export-db conn path {:compression bad}) nil
+            (let [e (try (m/export-db @conn path {:compression bad}) nil
                          (catch clojure.lang.ExceptionInfo ex ex))]
               (is (some? e) "must throw")
               (is (= :migrate/unsupported-codec (:error (ex-data e))))
@@ -1091,13 +1092,13 @@
         (testing "nil is refused too, rather than silently meaning `the default`
                   — `export-db` merges its defaults BEFORE the guard, so an
                   explicit nil has already overridden `:gzip`"
-          (let [e (try (m/export-db conn path {:compression nil}) nil
+          (let [e (try (m/export-db @conn path {:compression nil}) nil
                        (catch clojure.lang.ExceptionInfo ex ex))]
             (is (= :migrate/unsupported-codec (:error (ex-data e))))))
         (testing "and both supported codecs are accepted"
           (doseq [ok [:gzip :none]]
             (let [p (str path "-" (name ok))]
-              (is (map? (m/export-db conn p {:compression ok}))))))
+              (is (map? (m/export-db @conn p {:compression ok}))))))
         (finally (teardown conn))))))
 
 (deftest export-refuses-a-non-positive-window
@@ -1114,7 +1115,7 @@
         (doseq [k [:sort-buffer :chunk-size]
                 v [0 -1]]
           (testing (str k " = " v)
-            (let [e (try (m/export-db conn path {k v}) nil
+            (let [e (try (m/export-db @conn path {k v}) nil
                          (catch clojure.lang.ExceptionInfo ex ex))]
               (is (some? e) "must throw rather than loop")
               (is (= :migrate/bad-size (:error (ex-data e))))
@@ -1170,7 +1171,7 @@
         (d/transact conn [{:db/ident :n :db/valueType :db.type/long
                            :db/cardinality :db.cardinality/one}])
         (d/transact conn [{:n 1} {:n 2}])
-        (m/export-db conn path {:history? true})
+        (m/export-db @conn path {:history? true})
         (let [r (m/verify path)]
           (is (true? (:ok? r)))
           (is (some? (get-in r [:tier0 :format])) "and reports the format it found")
@@ -1214,7 +1215,7 @@
 (defn- roundtrip-asserted-by [conn hist? sort?]
   (let [path (str (System/getProperty "java.io.tmpdir") "/dh-txref-" (utils/get-time)
                   "-" sort?)]
-    (m/export-db conn path {:history? hist? :sort? sort?})
+    (m/export-db @conn path {:history? hist? :sort? sort?})
     (let [tgt (utils/setup-db (mem-cfg {:history? hist?}))]
       (m/import-db tgt path {})
       (let [db (d/db tgt)
@@ -1298,8 +1299,8 @@
                   store (ks/create-store {:backend :memory :id (java.util.UUID/randomUUID)}
                                          {:sync? true})
                   opts  {:history? true :compression codec :chunk-size chunk-size}
-                  fs-man (m/export-db conn dir opts)
-                  st-man (m/export-db conn {:store store :prefix "both"} opts)]
+                  fs-man (m/export-db @conn dir opts)
+                  st-man (m/export-db @conn {:store store :prefix "both"} opts)]
 
               (testing "the semantic digest — the whole-dump content identity"
                 (is (= (:semantic-digest fs-man) (:semantic-digest st-man))))
@@ -1326,3 +1327,114 @@
                          (vec (d/datoms (d/history @t2) :eavt))))
                   (teardown t1) (teardown t2))))))
         (finally (teardown conn))))))
+
+;; ---------------------------------------------------------------------------
+;; The read side takes a snapshot, not a connection
+;; ---------------------------------------------------------------------------
+
+(deftest the-read-side-refuses-a-connection
+  (testing "`export-db`, `export-to-sink` and `verify` take a database SNAPSHOT.
+            They used to accept a connection and deref it, which bought one
+            character over `@conn` and cost a wider contract than the code
+            needs: nothing downstream ever wanted the connection, and accepting
+            one hid a choice of TIME behind a call that reads as though it
+            exported the connection itself.
+
+            Pinned because a silent coercion is exactly the kind of convenience
+            that gets reintroduced, and because the refusal has to NAME the fix
+            to be worth having over a NullPointerException somewhere inside."
+    (let [cfg  {:store {:backend :memory :id (random-uuid)}
+                :keep-history? true
+                :schema-flexibility :read}
+          _    (d/create-database cfg)
+          conn (d/connect cfg)]
+      (try
+        (d/transact conn [{:name "Amara"}])
+        (doseq [[label f] {"export-db"      #(m/export-db conn "/tmp/should-not-exist")
+                           "export-to-sink" #(m/export-to-sink conn {:open (fn [_] nil)
+                                                                     :write (fn [c _] c)
+                                                                     :close (fn [_] nil)})
+                           "verify"         #(m/verify conn "/tmp/should-not-exist")}]
+          (testing label
+            (let [e (is (thrown? clojure.lang.ExceptionInfo (f)))]
+              (is (= :datahike/db-expected (:type (ex-data e)))
+                  "a typed error, so a caller can dispatch on it")
+              (is (str/includes? (ex-message e) "@conn")
+                  "the message must name the fix, not just the complaint"))))
+
+        (testing "and the snapshot forms are all accepted — history/as-of/since
+                  are snapshots too, so gating on `db?` rather than a class
+                  check is what keeps exporting a history view legitimate"
+          (let [db @conn]
+            (doseq [[label snap] {"db"      db
+                                  "history" (d/history db)
+                                  "as-of"   (d/as-of db (java.util.Date.))
+                                  "since"   (d/since db (java.util.Date. 0))}]
+              (testing label
+                (is (identical? snap (mman/ensure-db snap "t")))))))
+        (finally (d/release conn))))))
+
+(deftest options-are-validated-without-being-closed
+  (testing "Two dials, set independently. A wrong VALUE under a known key is
+            unambiguous misuse and is refused. An UNKNOWN key is reported and
+            tolerated — closing the map would break a caller forwarding opts
+            from a newer datahike, and rigidity there buys nothing.
+
+            The motivating case is `:xform`, whose docstring names per-tenant
+            dump splitting: `{:xfrom …}` was silently dropped, the export
+            SUCCEEDED, the manifest said `:transformed? false` and `verify` said
+            `:ok? true` — a dump holding every tenant, certified intact. Absent
+            and misspelled were indistinguishable, and absent means \"export
+            everything\". The schema does not make that impossible, but it makes
+            it loud, and names the key you meant."
+    (let [cfg  {:store {:backend :memory :id (random-uuid)}
+                :keep-history? true :schema-flexibility :read}
+          _    (d/create-database cfg)
+          conn (d/connect cfg)
+          tmp  #(str (System/getProperty "java.io.tmpdir") "/dh-opts-" (System/nanoTime))]
+      (try
+        (d/transact conn [{:name "Ines"}])
+        (testing "a bad value under a known key is refused, with the key named"
+          (let [e (is (thrown? clojure.lang.ExceptionInfo
+                               (m/export-db @conn (tmp) {:history? :yes})))]
+            (is (= :migrate/invalid-opts (:error (ex-data e))))))
+
+        (testing "where a purpose-built guard already exists it keeps the
+                  answer: the schema runs AFTER `assert-sizes-positive!`, so a
+                  non-positive size still gets its own specific error rather
+                  than a generic schema one. Pinned because the ordering is the
+                  whole reason adding the schema was non-breaking."
+          (let [e (is (thrown? clojure.lang.ExceptionInfo
+                               (m/export-db @conn (tmp) {:chunk-size 0})))]
+            (is (= :migrate/bad-size (:error (ex-data e))))))
+
+        (testing "the option sets are per-entry-point, not one shared bag —
+                  `:on-error` is an import option, so on export it is an unknown
+                  key (reported), while on import a bad value is refused"
+          (let [dir (tmp)]
+            (m/export-db @conn dir {:history? true})
+            (is (map? (m/export-db @conn (tmp) {:on-error :abort}))
+                "unknown on export — warned, not fatal")
+            (let [e (is (thrown? clojure.lang.ExceptionInfo
+                                 (m/import-db conn dir {:on-error :skip})))]
+              (is (= :migrate/invalid-opts (:error (ex-data e)))
+                  "known on import, and :skip is not one of :abort | :collect"))))
+
+        (testing "an unknown key does NOT stop the export — the map stays open"
+          (is (map? (m/export-db @conn (tmp) {:xfrom identity}))
+              "a forward-compatible caller must not be broken by a key we do not know"))
+
+        (testing "estimate-import-memory validates its sizes like every sibling.
+                  It did not, and an operator sizes -Xmx from what it returns."
+          (let [dir (tmp)]
+            (m/export-db @conn dir {:history? true})
+            (is (thrown? clojure.lang.ExceptionInfo
+                         (m/estimate-import-memory dir {:batch-size 0})))))
+
+        (testing "and the write side refuses a snapshot, mirroring the read side"
+          (let [dir (tmp)]
+            (m/export-db @conn dir {:history? true})
+            (let [e (is (thrown? clojure.lang.ExceptionInfo (m/import-db @conn dir {})))]
+              (is (= :datahike/conn-expected (:type (ex-data e)))
+                  "a one-sided tightening would teach `@conn` and then punish it"))))
+        (finally (d/release conn))))))

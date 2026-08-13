@@ -15,6 +15,7 @@
   arity by itself."
   (:require [boring.core :as boring]
             [clojure.java.io :as io]
+            [datahike.remote.cbor :as rcbor]
             [muuntaja.format.core :as core])
   (:import [java.io ByteArrayOutputStream InputStream]))
 
@@ -23,20 +24,37 @@
     (io/copy in out)
     (.toByteArray out)))
 
-(defn decoder [options]
+(defn- decoder [options]
   (reify
     core/Decode
     (decode [_ data _charset]
       (boring/decode (if (bytes? data) data (read-all-bytes data)) options))))
 
-(defn encoder [options]
+(defn- encoder [options]
   (reify
     core/EncodeToBytes
     (encode-to-bytes [_ data _charset]
       (boring/encode data options))))
 
-(def cbor-format
+(defn cbor-format
+  "The muuntaja Format, with its codec options ALREADY IN IT.
+
+   A function rather than a bare `def`, because the options are the contract.
+   As a plain Format with empty `:decoder-opts`, anyone installing it into their
+   own muuntaja instance — the only reason to make it public — would get no
+   registry and boring's `:fallback`: every datahike handle would decode to a
+   tagged literal, and a protocol mismatch between peers would surface as an
+   unrelated failure somewhere later. That is exactly the outcome
+   `datahike.remote.cbor/decode-opts` chooses `:on-unknown-record :error` to
+   prevent, and it would have been silently undone one namespace away.
+
+   Taking the registry as an argument also removes the process-global: the
+   server builds one and hands it in, so what a given format speaks is visible
+   at the call site rather than resolved through a var."
+  [registry]
   (core/map->Format
-   {:name    "application/cbor"
-    :decoder [decoder]
-    :encoder [encoder]}))
+   {:name         "application/cbor"
+    :decoder      [decoder]
+    :decoder-opts (rcbor/decode-opts registry)
+    :encoder      [encoder]
+    :encoder-opts (rcbor/encode-opts registry)}))

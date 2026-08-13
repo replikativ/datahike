@@ -61,7 +61,7 @@
                       :db/cardinality :db.cardinality/one}])
     (d/transact src [{:n 1}])
     (let [path (str (System/getProperty "java.io.tmpdir") "/dh-async-shape-" (utils/get-time))
-          _ (m/export-db src path {:history? true})
+          _ (m/export-db @src path {:history? true})
           t1 (utils/setup-db (mem-cfg))
           t2 (utils/setup-db (mem-cfg))
           sync-r (m/import-db t1 path {:sync? true})
@@ -87,7 +87,7 @@
           (d/transact src [{:name (str "e" i) :n i}]))
         (let [path (str (System/getProperty "java.io.tmpdir")
                         "/dh-async-" sync? "-" (utils/get-time))
-              man (m/export-db src path {:history? true :chunk-size 3})
+              man (m/export-db @src path {:history? true :chunk-size 3})
               tgt (utils/setup-db (mem-cfg))
               rep (take-result (m/import-db tgt path {:sync? sync?}))
               triples (fn [c] (set (map (juxt :e :a :v :added)
@@ -109,7 +109,7 @@
                         :db/cardinality :db.cardinality/one}])
       (doseq [i (range 8)] (d/transact src [{:n i}]))
       (let [path (str (System/getProperty "java.io.tmpdir") "/dh-async-multi-" (utils/get-time))
-            man (m/export-db src path {:history? true :chunk-size 2})
+            man (m/export-db @src path {:history? true :chunk-size 2})
             tgt (utils/setup-db (mem-cfg))]
         (is (> (count (:chunks man)) 3) "precondition: several chunks")
         (let [rep (take-result (m/import-db tgt path {:sync? false}))]
@@ -126,7 +126,7 @@
                         :db/cardinality :db.cardinality/one}])
       (doseq [i (range 6)] (d/transact src [{:n i}]))
       (let [path (str (System/getProperty "java.io.tmpdir") "/dh-async-batch-" (utils/get-time))
-            man (m/export-db src path {:history? true})
+            man (m/export-db @src path {:history? true})
             tgt (utils/setup-db (mem-cfg))
             rep (take-result (m/import-db tgt path {:sync? false :batch-size 1}))]
         (is (= (:count (:semantic-digest man)) (:datom-count rep)))
@@ -142,7 +142,7 @@
    with the chunk hash recomputed so the dump still describes itself."
   [src]
   (let [path (str (System/getProperty "java.io.tmpdir") "/dh-async-bad-" (utils/get-time))
-        man (m/export-db src path {:history? true})
+        man (m/export-db @src path {:history? true})
         chunk (io/file path (:file (last (:chunks man))))
         codec (:compression man)
         bad (mcbor/encode-record [9999 42 "x" 536870914 true])]
@@ -232,7 +232,7 @@
       (let [store (ks/create-store {:backend :memory :id (java.util.UUID/randomUUID)}
                                    {:sync? true})
             target {:store store :prefix "async-export"}
-            r (m/export-db src target {:history? true :sort? false :sync? false})]
+            r (m/export-db @src target {:history? true :sort? false :sync? false})]
         (is (instance? clojure.core.async.impl.channels.ManyToManyChannel r)
             "async export returns a channel")
         (let [man (take-result r)]
@@ -253,8 +253,8 @@
                         :db/cardinality :db.cardinality/one}])
       (doseq [i (range 4)] (d/transact src [{:n i}]))
       (let [path (str (System/getProperty "java.io.tmpdir") "/dh-async-exp-" (utils/get-time))
-            man (take-result (m/export-db src path {:history? true :sort? false
-                                                    :sync? false :chunk-size 2}))
+            man (take-result (m/export-db @src path {:history? true :sort? false
+                                                     :sync? false :chunk-size 2}))
             tgt (utils/setup-db (mem-cfg))
             rep (take-result (m/import-db tgt path {:sync? false}))]
         (is (= (:count (:semantic-digest man)) (:datom-count rep)))
@@ -287,7 +287,7 @@
           (let [store (ks/create-store {:backend :memory :id (java.util.UUID/randomUUID)}
                                        {:sync? true})
                 target {:store store :prefix "release-order"}]
-            (m/export-db src target {:history? true :sort? false :chunk-size 2})
+            (m/export-db @src target {:history? true :sort? false :chunk-size 2})
             (doseq [sync? [true false]]
               (reset! log [])
               (let [tgt (utils/setup-db (mem-cfg))]
@@ -324,8 +324,8 @@
         (doseq [batch (partition-all 50 eids)]
           (d/transact src (vec (for [e batch] {:db/id e :n (+ 1000 e)})))))
       (let [path (str (System/getProperty "java.io.tmpdir") "/dh-async-sort-" (utils/get-time))
-            man  (take-result (m/export-db src path {:history? true :sync? false
-                                                     :sort-buffer 10 :chunk-size 100}))
+            man  (take-result (m/export-db @src path {:history? true :sync? false
+                                                      :sort-buffer 10 :chunk-size 100}))
             tgt  (utils/setup-db (mem-cfg))
             rep  (take-result (m/import-db tgt path {:sync? false}))]
         (is (< 1 (count (:chunks man))) "several chunks, so the merge spanned runs")
@@ -351,8 +351,8 @@
       (d/transact src [{:db/id [:name "a"] :tag :y}])
       (d/transact src [[:db/retract [:name "a"] :tag :x]])
       (let [base (str (System/getProperty "java.io.tmpdir") "/dh-cmp-" (utils/get-time))
-            s-man (m/export-db src (str base "-sync") {:history? true})
-            a-man (take-result (m/export-db src (str base "-async") {:history? true :sync? false}))
+            s-man (m/export-db @src (str base "-sync") {:history? true})
+            a-man (take-result (m/export-db @src (str base "-async") {:history? true :sync? false}))
             load! (fn [p sync?]
                     (let [tgt (utils/setup-db (mem-cfg))]
                       (take-result (m/import-db tgt p {:sync? sync?}))
@@ -388,8 +388,8 @@
       (doseq [b (partition-all 20 (range 60))]
         (d/transact src (vec (for [i b] {:db/id (+ 100 i) :n i}))))
       (let [path (str (System/getProperty "java.io.tmpdir") "/dh-xf-async-" (utils/get-time))
-            man  (take-result (m/export-db src path {:history? true :sync? false
-                                                     :chunk-size 7}))
+            man  (take-result (m/export-db @src path {:history? true :sync? false
+                                                      :chunk-size 7}))
             total (fn [opts]
                     (let [tgt (utils/setup-db (mem-cfg))]
                       (take-result (m/import-db tgt path (merge {:sync? false :verify? false} opts)))

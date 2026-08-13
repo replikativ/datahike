@@ -93,7 +93,7 @@
   "Export `conn` and import into a fresh database. Returns the target conn."
   [conn]
   (let [path (str (System/getProperty "java.io.tmpdir") "/dh-fid-" (utils/get-time))
-        _ (m/export-db conn path {:history? true})
+        _ (m/export-db @conn path {:history? true})
         tgt (utils/setup-db (mem-cfg))]
     (m/import-db tgt path {})
     tgt))
@@ -220,7 +220,7 @@
             absent."
     (let [src  (build-adversarial-db! (utils/setup-db (mem-cfg)))
           path (str (System/getProperty "java.io.tmpdir") "/dh-fid-mt-" (utils/get-time))
-          _    (m/export-db src path {:history? true})
+          _    (m/export-db @src path {:history? true})
           tuples (fn [db] (set (map (juxt :e :a :v :tx :added) (d/datoms db :eavt))))
           restore (fn [bs] (let [c (utils/setup-db (mem-cfg))
                                  rep (m/import-db c path {:batch-size bs})

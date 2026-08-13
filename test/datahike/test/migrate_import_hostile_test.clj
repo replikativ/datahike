@@ -129,7 +129,7 @@
   ([conn] (dump-of conn identity))
   ([conn f]
    (let [dir (tmp-dir!)]
-     (m/export-db conn dir {:history? true})
+     (m/export-db @conn dir {:history? true})
      (rewrite-dump! dir (vec (f (dump-records dir))))
      dir)))
 
@@ -263,7 +263,7 @@
           (is (true? (:verified? (:report res))))
           (is (some #(= "not-a-long" (nth % 2)) (current conn)))
           (is (true? (:ok? (m/verify dir))) "verify 1-arity: intact")
-          (is (true? (:ok? (m/verify conn dir))) "verify 2-arity: equivalent — and both are right"))
+          (is (true? (:ok? (m/verify @conn dir))) "verify 2-arity: equivalent — and both are right"))
         (finally (release! src conn))))))
 
 (deftest attribute-absent-from-the-schema-is-stored-under-write-flexibility
@@ -366,7 +366,7 @@
                 (d/transact conn [{:db/id -1 :name "a" :score 1}])
                 conn)
           dir (tmp-dir!)
-          _ (m/export-db src dir {:history? false})
+          _ (m/export-db @src dir {:history? false})
           rs (dump-records dir)
           dup (first (filter #(= :score (nth % 1)) rs))
           dup-dir (tmp-dir!)]
@@ -402,7 +402,7 @@
       (try
         ;; (a) :pal missing from the manifest schema, under a NON-identity mapping
         (let [dir (tmp-dir!)
-              _ (m/export-db src dir {:history? true})
+              _ (m/export-db @src dir {:history? true})
               shift (fn [x] (if (and (number? x) (< (long x) (long c/tx0))) (+ (long x) 1000) x))
               rs (mapv (fn [[e a v t op]] [(shift e) a (if (= a :pal) (shift v) v) t op])
                        (dump-records dir))
@@ -420,7 +420,7 @@
 
         ;; (b) the manifest calls :score a ref; the dump's values are longs
         (let [dir (tmp-dir!)
-              _ (m/export-db src dir {:history? true})
+              _ (m/export-db @src dir {:history? true})
               _ (rewrite-dump! dir (dump-records dir))
               _ (spit (str dir "/manifest.edn")
                       (pr-str (assoc-in (manifest-of dir) [:schema :score :db/valueType] :db.type/ref)))
@@ -466,7 +466,7 @@
       (Thread/sleep 400)
       (let [stored (d/q '[:find ?v . :where [?e :doc/body ?v]] @src)
             dir (tmp-dir!)]
-        (m/export-db src dir {:history? true})
+        (m/export-db @src dir {:history? true})
         (release! src)
         (let [conn (conn! (cfg true))
               ;; rewrite the machine-local index path, which `check-target!` warns
@@ -491,7 +491,7 @@
             ;; documented as meaningless after an `:xform` for exactly this
             ;; reason. What matters here is that the mismatch is attributable to
             ;; the rewritten index path and NOT to :doc/body.
-            (let [rep (m/verify conn dir)]
+            (let [rep (m/verify @conn dir)]
               (is (false? (:ok? rep)))
               (is (= [[:db/ident :idx/ft]] (mapv :unique (:diffs (:tier3 rep))))
                   "the only entity that differs is the index whose path we rewrote"))
@@ -526,7 +526,7 @@
       (testing ":chunk-size 1 — a transaction split across every possible
                 boundary — round-trips on both paths"
         (let [dir (tmp-dir!)]
-          (m/export-db src dir {:history? true :chunk-size 1})
+          (m/export-db @src dir {:history? true :chunk-size 1})
           (is (< 1 (count (:chunks (manifest-of dir)))))
           (let [a (conn! (cfg true)) b (conn! (cfg true))]
             (try
@@ -550,7 +550,7 @@
       (d/transact src [[:db/retract [:name "a"] :tag :x]])
       (d/transact src [{:db/id [:name "a"] :tag :x}])
       (let [dir (tmp-dir!)
-            _ (m/export-db src dir {:history? true})
+            _ (m/export-db @src dir {:history? true})
             a (conn! (cfg true)) b (conn! (cfg true))]
         (try
           (import-into! a dir {})

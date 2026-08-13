@@ -88,8 +88,11 @@
      (log/trace :datahike/http-response {:response response})
      response)))
 
-;; One registry per process; immutable once built.
-(def cbor-registry (delay (rcbor/client-registry)))
+;; One registry per process; immutable once built. Private: its server twin
+;; is private, it is a delay whose deref-and-rebind would be a mutation of
+;; process-wide wire behaviour, and publishing it would commit us to it staying
+;; a delay.
+(def ^:private cbor-registry (delay (rcbor/client-registry)))
 
 (defn- decode-error-body
   "An error body is only CBOR if the error came from datahike. A proxy, a load
@@ -119,7 +122,7 @@
    (let [{:keys [url token]} remote-peer
          fmt      "application/cbor"
          url      (str url "/" end-point)
-         out      (boring/encode data {:registry registry})
+         out      (boring/encode data (rcbor/encode-opts registry))
          _        (log/trace :datahike/http-request {:url url :end-point end-point :data data})
          response
          (try

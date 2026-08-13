@@ -115,6 +115,18 @@
 (defn decode-opts [registry]
   {:registry registry :on-unknown-record :error})
 
+(defn encode-opts
+  "The write half, as a function for the same reason `decode-opts` is one.
+
+   It carries only `:registry` today, which is exactly why it is easy to spell
+   inline and exactly why it should not be: the moment the encode side needs a
+   second key — a determinism flag, a size cap — a literal at each call site
+   drifts, and for a wire format that means one peer writing what the other
+   cannot read. `datahike.cbor`'s own docstring makes this argument for having
+   one definition of the codec; this is the same argument one level up."
+  [registry]
+  {:registry registry})
+
 ;; ---------------------------------------------------------------------------
 ;; Client side: writes handles, reads handles
 ;; ---------------------------------------------------------------------------

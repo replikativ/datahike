@@ -149,12 +149,9 @@
    (-> m/default-options
        ;; `application/cbor` is an addition, not a replacement — it takes its
        ;; place beside edn/json/transit and is reached only when a client asks
-       ;; for it by Accept or Content-Type.
-       (assoc-in [:formats "application/cbor"] cbor/cbor-format)
-       (assoc-in [:formats "application/cbor" :decoder-opts]
-                 (rcbor/decode-opts cbor-registry))
-       (assoc-in [:formats "application/cbor" :encoder-opts]
-                 {:registry cbor-registry})
+       ;; for it by Accept or Content-Type. The format carries its own codec
+       ;; options, so there is no second place for them to drift from.
+       (assoc-in [:formats "application/cbor"] (cbor/cbor-format cbor-registry))
        (assoc-in [:formats "application/edn" :decoder-opts]
                  {:readers edn-readers})
        (assoc-in [:formats "application/json" :decoder-opts]

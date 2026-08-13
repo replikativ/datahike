@@ -760,7 +760,7 @@
                                   {:person/name "c"} {:person/name "d"}])
           _ (d/transact src-conn [{:person/name "a"
                                    :person/friend [:person/name "d"]}])
-          _ (dm/export-db src-conn dump-dir)
+          _ (dm/export-db @src-conn dump-dir)
           src-datoms (count (d/datoms @src-conn :eavt))
           _ (release src-conn)
 
