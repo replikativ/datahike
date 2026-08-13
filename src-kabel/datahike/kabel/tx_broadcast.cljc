@@ -113,7 +113,23 @@
    (publish-tx-report! peer store-id tx-report nil))
   ([peer store-id tx-report request-id]
    (let [topic (tx-report-topic store-id)
-         payload {:tx-report (tx-report->wire tx-report)
+         ;; `:migration` STRIPPED here and only here.
+         ;;
+         ;; It is an import's source-id -> target-id map, threaded batch to
+         ;; batch on the report because the writer owns the db and the caller
+         ;; cannot reach into its loop (see `transact-entities-directly`). The
+         ;; RETURN to the calling peer must therefore keep it — `handlers.cljc`
+         ;; calls `tx-report->wire` separately for that, and the import breaks
+         ;; without it.
+         ;;
+         ;; A SUBSCRIBER has no such need: nothing in this source tree reads
+         ;; `:migration` off a broadcast. It is bookkeeping internal to one
+         ;; import, and under the default `:eids :allocate` it holds one entry
+         ;; per source entity — measured at 119 KB of wire for 20 000 entities,
+         ;; growing across batches because the map accumulates. A million-entity
+         ;; restore at the default `:batch-size` would fan roughly 33 MB of it
+         ;; out to every subscriber, none of which looks at it.
+         payload {:tx-report (dissoc (tx-report->wire tx-report) :migration)
                   :store-id store-id
                   :request-id request-id}]
      (debug {:event ::publish-tx-report

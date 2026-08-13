@@ -106,3 +106,37 @@
                 :request-id #uuid "22222222-0000-0000-0000-000000000002"})
       (is (= 1 (count @received)) "Remote transaction should be processed")
       (is (= tx-report (first @received))))))
+
+(deftest a-broadcast-does-not-carry-the-import-id-map
+  (testing ":migration is an import's source-id -> target-id map, threaded from
+            batch to batch on the tx-report because the writer owns the db and
+            the caller cannot reach into its loop. The RETURN to the calling
+            peer needs it — that is how the next batch gets its mapping — but a
+            SUBSCRIBER does not: nothing reads it off a broadcast. Under the
+            default `:eids :allocate` it holds one entry per source entity, and
+            it accumulates across batches, so leaving it in fans an import's
+            bookkeeping out to every peer: measured at 119 KB of wire for 20 000
+            entities."
+    (let [captured (atom nil)
+          migration {:eids {1 100, 2 200, 3 300} :tids {536870913 536870913}}
+          rep {:db-before nil :db-after nil :tx-data [] :tempids {}
+               :tx-meta nil :migration migration}]
+
+      (with-redefs [pubsub/publish! (fn [_peer _topic payload]
+                                      (reset! captured payload)
+                                      :published)]
+        (tx-broadcast/publish-tx-report! nil store-id rep nil))
+
+      (testing "stripped from what goes out to subscribers"
+        (is (some? @captured) "the stub must have been reached")
+        (is (not (contains? (:tx-report @captured) :migration))
+            (str "the broadcast payload still carries the id map: "
+                 (pr-str (:migration (:tx-report @captured))))))
+
+      (testing "and everything else a subscriber does read survives"
+        (is (contains? (:tx-report @captured) :tx-data))
+        (is (= store-id (:store-id @captured))))
+
+      (testing "while the projection used for the RETURN keeps it — strip it
+                there too and a remote import loses its mapping between batches"
+        (is (= migration (:migration (tx-broadcast/tx-report->wire rep))))))))

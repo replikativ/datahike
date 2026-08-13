@@ -289,6 +289,35 @@ runs the same check itself and prints a heap warning to stderr when the current
 `:batch-size` you intend to use so the estimate matches (`estimate-import-memory
 source {:batch-size N}`).
 
+### Where to run a large import
+
+**On the machine that owns the writer.** An import is many writer calls, and the
+id-remap map travels out on each tx-report and back in on the next call — it has
+to, because the writer owns the database and the caller cannot reach into its
+loop (see `transact-entities-directly`). With a local (`:self`) writer that is a
+reference passed in-process and costs nothing.
+
+Against a **remote** writer — `:kabel` or `:datahike-server` — the same map is
+serialised on every batch, and it *accumulates*: measured at 119 KB of wire for
+20 000 entities, so a million-entity restore at the default `:batch-size` moves
+several MB per batch and tens of MB overall, on top of the records themselves.
+It works (there is an integration test importing through a `KabelWriter`), but it
+is the slow way to do it. Restore locally, then let the store replicate.
+
+**At very large scale, the map is the problem, not the wire.** It costs about 64
+bytes per entity for the whole duration of the import, so a database with 100
+million entities wants ~6 GB of heap for bookkeeping alone — and running it
+locally does not change that. The answer there is `:build-indexes? true`, whose
+default `:eids :preserve` needs **no map at all**: source ids are kept as they
+are, which an empty target has nothing to collide with. That is the path for
+restoring a large backup into a fresh database.
+
+`import-db` does not return the mapping itself — the report carries
+`:id-map-size`, a count, so that reporting it retains nothing. If you need to
+know which source entity became which target entity (the usual reason is a
+`:merge?` import), that is not available today; please open an issue describing
+the use, since it is cheap to add as an opt-in and pointless to add by default.
+
 ## Restore
 
 ```clojure
