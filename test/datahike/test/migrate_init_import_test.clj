@@ -443,7 +443,7 @@
                                           ;; tx entities carry the transactions
                                           (= (nth r 0) (nth r 3)))))
             path (tmp-path "tenant-acme")
-            _ (m/export-db @src path {:history? true :xform only-acme})
+            _ (m/export-transformed @src path only-acme {:history? true})
             tgt (fresh true)
             rep (m/import-db tgt path {:check-refs? true})]
         (is (= #{"acme"} (set (map first (d/q '[:find ?t :where [_ :tenant ?t]] @tgt))))

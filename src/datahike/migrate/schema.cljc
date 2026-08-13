@@ -52,6 +52,10 @@
    [:progress-fn {:optional true} fn?]])
 
 (def ^:private stream-opts
+  ;; `:xform` is here because the shared implementation receives it — but
+  ;; `export-db` refuses it at its own entry and `export-transformed` supplies
+  ;; it positionally, so no CALLER reaches this key through an opts map. See
+  ;; `export-transformed`'s docstring for why the transform is not an option.
   [[:chunk-size  {:optional true} pos-int?]
    [:sort-buffer {:optional true} pos-int?]
    [:xform       {:optional true} fn?]

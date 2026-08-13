@@ -36,9 +36,17 @@
     (d/transact conn (vec (for [i (range 200)] {:n i})))
     conn))
 
-(defn- dump! [conn opts]
-  (let [dir (str (System/getProperty "java.io.tmpdir") "/dh-complete-" (utils/get-time))]
-    (m/export-db @conn dir (merge {:history? true} opts))
+(defn- dump!
+  "`:xform` is routed to `export-transformed`, which is where a transform lives
+   now — it is positional there so that omitting it cannot silently yield a full
+   dump. This helper keeps taking it in a map because these tests vary it as
+   data."
+  [conn opts]
+  (let [dir (str (System/getProperty "java.io.tmpdir") "/dh-complete-" (utils/get-time))
+        opts (merge {:history? true} opts)]
+    (if-let [xf (:xform opts)]
+      (m/export-transformed @conn dir xf (dissoc opts :xform))
+      (m/export-db @conn dir opts))
     dir))
 
 (defn- stats [dir] (:stats (edn/read-string (slurp (str dir "/manifest.edn")))))
@@ -103,7 +111,7 @@
           src    (count (d/datoms @conn :eavt))
           store  (ks/create-store {:backend :memory :id (java.util.UUID/randomUUID)} {:sync? true})
           target {:store store :prefix "backup-1"}
-          _      (m/export-db @conn target {:history? true :xform (take 120)})
+          _      (m/export-transformed @conn target (take 120) {:history? true})
           medium (mstore/open target {:sync? true})
           man    (mstore/read-manifest medium)]
       (is (= 120 (get-in man [:stats :datom-count])) "the store medium records both counts too")

@@ -60,8 +60,8 @@
           cfg  (fresh-store-config)]
       (try
         (let [[result released] (with-release-spy
-                                  #(m/export-db @conn (assoc cfg :prefix "owned")
-                                                {:history? true :xform boom}))]
+                                  #(m/export-transformed @conn (assoc cfg :prefix "owned")
+                                                         boom {:history? true}))]
           (is (= "boom" (:err result)) "the export must actually have failed")
           (is (= 1 (count released))
               "released exactly once, on the failure path")
@@ -80,8 +80,8 @@
           store (ks/connect-store cfg {:sync? true})]
       (try
         (let [[result released] (with-release-spy
-                                  #(m/export-db @conn {:store store :prefix "lent"}
-                                                {:history? true :xform boom}))]
+                                  #(m/export-transformed @conn {:store store :prefix "lent"}
+                                                         boom {:history? true}))]
           (is (= "boom" (:err result)) "the export must actually have failed")
           (is (empty? released) "a lent store is not ours to close, on either path"))
 

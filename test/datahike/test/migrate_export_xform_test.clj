@@ -77,7 +77,7 @@
   [conn xform]
   (let [dir (str "/tmp/claude-1000/xform-test-" (System/currentTimeMillis) "-" (rand-int 100000))
         tgt (fresh-conn)]
-    (m/export-db @conn dir {:xform xform})
+    (m/export-transformed @conn dir xform {})
     (m/import-db tgt dir)
     (let [vs (sort (map first (d/q '[:find ?v :where [?e :n ?v]] @tgt)))]
       (teardown tgt)

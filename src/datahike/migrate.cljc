@@ -404,6 +404,8 @@
       (msort/external-sort rs (:sort-buffer opts) tmp-dir)
       rs)))
 
+(declare export-db*)
+
 (defn export-db
   "Export a database SNAPSHOT to `target`. Pass `@conn`, not `conn` — a
    connection is refused by name rather than derefed, so which snapshot is being
@@ -459,12 +461,89 @@
 
    NOTE: with :history? true this dump contains every value ever asserted,
    including retracted (\"deleted\") data — treat it as sensitive."
-  ([db target] (export-db db target {}))
+  ([db target] (export-db* db target {} "export-db"))
   ([db target opts]
+   ;; `:xform` is NOT an option here. See `export-transformed`: the transform is
+   ;; positional there precisely so that forgetting it cannot yield a complete
+   ;; dump that every integrity signal then certifies as correct.
+   (when (contains? opts :xform)
+     (throw (ex-info (str "export-db does not take :xform — it produces a FAITHFUL dump. "
+                          "Use `export-transformed`, which takes the transducer as a "
+                          "required positional argument, so omitting it is an error "
+                          "rather than a silent full export.")
+                     {:error :migrate/xform-not-an-option :fn "export-db"})))
+   (export-db* db target opts "export-db")))
+
+(defn export-transformed
+  "Export a database SNAPSHOT that is deliberately NOT a faithful copy —
+   filtered to a subset, or with values redacted — through `xform`, a transducer
+   over `[e a v t op]` records.
+
+   Same as `export-db` in every other respect, and it sets `:transformed? true`
+   in the manifest, which is the manifest's existing word for \"a smaller dump is
+   expected here\".
+
+   ## Why the transducer is positional, and required
+
+   `export-db` and this function are the same machinery doing two jobs whose
+   SAFE DEFAULTS POINT IN OPPOSITE DIRECTIONS:
+
+     * a backup wants everything. More data than expected is fine; missing data
+       is the failure.
+     * a subset or a redaction wants less. More data than expected is a
+       DISCLOSURE; that is the failure.
+
+   As an option, the transform was omissible, and omitting it means \"no
+   transform\" — so for the second job the failure mode of forgetting it was
+   identical to the default behaviour. `{:xfrom …}` produced a successful
+   export, a manifest saying `:transformed? false`, and `verify` saying
+   `:ok? true`, over a dump holding every tenant. Every signal agreed, because
+   the dump WAS a correct full backup. It just was not what was asked for.
+
+   A positional argument cannot be misspelled, cannot be dropped by a map merge,
+   and omitting it is an arity error rather than a full dump. That is the whole
+   of the reason for a second entry point.
+
+   It does NOT make a wrong transducer safe — one that keeps more than intended
+   still keeps more than intended. It removes only the \"forgot it entirely\"
+   path, which is the one that fails silently.
+
+   ## Which transforms belong here, and which belong on import
+
+   Here: anything whose omission would let data OUT that should not — filtering
+   to a tenant, redacting a value in place, replacing it with a tombstone.
+   The export side is the disclosure boundary; doing it on import is too late,
+   because the dump already exists with the data in it.
+
+   On `import-db`'s `:xform` instead: reshaping that should happen when data
+   LANDS — renaming an attribute for a schema change, rewriting a value
+   representation, splitting one record into several. Omitting those yields
+   visibly un-migrated data rather than silent over-disclosure, which is why
+   they do not need this treatment; and keeping them on import means the dump
+   stays a faithful artifact you can re-run the transform against without
+   re-exporting, with the original still intact if the transform was wrong.
+
+   Nothing prevents a rewrite here if you want one — this takes any transducer.
+   The doctrine is about where each kind is best placed, not a restriction."
+  ([db target xform] (export-transformed db target xform {}))
+  ([db target xform opts]
+   (when-not (ifn? xform)
+     (throw (ex-info (str "export-transformed needs a transducer as its third argument; got "
+                          (pr-str (type xform)) ". For a faithful dump use `export-db`.")
+                     {:error :migrate/xform-required :fn "export-transformed"})))
+   (when (contains? opts :xform)
+     (throw (ex-info "export-transformed takes the transducer positionally; drop :xform from opts."
+                     {:error :migrate/xform-not-an-option :fn "export-transformed"})))
+   (export-db* db target (assoc opts :xform xform) "export-transformed")))
+
+(defn- export-db*
+  "The shared implementation of `export-db` and `export-transformed`. `who` is
+   the public name to blame in errors."
+  ([db target opts who]
    (assert-sync-supported! opts)
    (assert-sizes-positive! opts)
-   (msch/validate-opts! msch/ExportOpts opts "export-db")
-   (let [db       (mman/ensure-db db "export-db")
+   (msch/validate-opts! msch/ExportOpts opts who)
+   (let [db       (mman/ensure-db db who)
          opts     (merge {:history? (boolean (:keep-history? (dbi/-config db)))
                           :chunk-size default-chunk-size
                           :sort-buffer 1000000
