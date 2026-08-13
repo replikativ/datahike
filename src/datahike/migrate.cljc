@@ -3082,8 +3082,9 @@
 
    NOT the same thing as `import-db`'s `:verify?` option, which is a datom-count
    delta check on the imported database. This reads the DUMP."
-  ([source]
-   (assert-jvm-only! "verify")
+  ([source] (verify source {}))
+  ([source opts]
+   (assert-jvm-only! "verify" opts)
    (let [{:keys [manifest legacy-count chunks-verified finding]}
          (if (mstore/store-target? source)
            (let [m (mstore/open source)]
@@ -3104,7 +3105,15 @@
                                (catch #?(:clj clojure.lang.ExceptionInfo :cljs :default) e
                                  (let [{:keys [error]} (ex-data e)]
                                    (if (#{:import/missing-checksum :import/checksum-failed
-                                          :import/bad-chunk-path :import/not-a-dump} error)
+                                          :import/bad-chunk-path :import/not-a-dump
+                                          ;; A broken gzip member is corruption too.
+                                          ;; `compress/decompress-bytes` says so
+                                          ;; itself: "a hash mismatch and a broken
+                                          ;; member are both corruption; they differ
+                                          ;; only in which one the reader notices
+                                          ;; first". It threw out of `verify` while
+                                          ;; a hash mismatch beside it was a finding.
+                                          :import/corrupt-chunk} error)
                                      {:error error
                                       :message #?(:clj (.getMessage e) :cljs (.-message e))
                                       :data (ex-data e)}
@@ -3135,7 +3144,7 @@
                       (catch #?(:clj clojure.lang.ExceptionInfo :cljs :default) e
                         (let [{:keys [error]} (ex-data e)]
                           (if (#{:import/missing-checksum :import/checksum-failed
-                                 :import/undeclared-chunks} error)
+                                 :import/undeclared-chunks :import/corrupt-chunk} error)
                             [(manifest-of source) {:error error :message #?(:clj (.getMessage e)
                                                                             :cljs (.-message e))
                                                    :data (ex-data e)}]
@@ -3171,18 +3180,66 @@
                         :format (get manifest manifest-key)}
                 :tier1 {:manifest-count (or (:count (:semantic-digest manifest)) legacy-count)}
                 :blobs blobs}
-         finding (assoc :integrity finding)))))
-  ([db source]
-   (assert-jvm-only! "verify")
-   (let [db    (mman/ensure-db db "verify")]
-     (with-source-records source
-       (fn [manifest reduce-source]
-         (let [schema (:schema manifest)
-               ref?   (fn [a] (= :db.type/ref (:db/valueType (get schema a))))
-               hist?  (boolean (:history? manifest))
+         finding (assoc :integrity finding)
+         ;; The comparison keys are present-but-nil so that ONE handler works
+         ;; over either function's report. They were absent here and present in
+         ;; the comparison, so `(:match? (:tier1 r))` was nil half the time for
+         ;; two different reasons — "not compared" and "compared, no answer".
+         true    (update :tier1 merge {:live-count nil :match? nil})
+         true    (merge {:tier2 nil :tier3 nil}))))))
+
+(declare verify-against*)
+
+(defn verify-against
+  "`verify`, plus an id-independent comparison against a LIVE database snapshot
+   (`@conn`, not `conn`).
+
+   Split from `verify` rather than being its 2-arity. As one function the first
+   argument changed meaning with the arity — `(verify a b)` gave a reader no way
+   to tell whether `b` was the source or the opts map every sibling puts there —
+   and the leading slot being taken meant `verify` could never gain opts at all.
+
+   The two also disagreed about the same fault: a corrupt chunk was a FINDING
+   from `verify` and a THROWN exception from the comparison, though `verify`'s
+   own docstring argues that \"it threw\" is the wrong answer to \"is my backup
+   intact?\". They now share it — see the catch below — and return the same key
+   set, with the comparison keys nil when there was nothing to compare.
+
+   Tiers: tier0 = checksums/paths, tier1 = counts, tier2 = multiset digest over
+   `[a v op]` plus ref-topology counts, tier3 = sampled structural diff of unique
+   entities.
+
+   JVM-only, for the same reason `verify` is."
+  ([db source] (verify-against db source {}))
+  ([db source opts]
+   (assert-jvm-only! "verify-against" opts)
+   (let [db (mman/ensure-db db "verify-against")]
+     (try
+       (verify-against* db source opts)
+       (catch #?(:clj clojure.lang.ExceptionInfo :cljs :default) e
+         ;; A dump that fails its own integrity check cannot be meaningfully
+         ;; compared, and throwing here would answer a different question than
+         ;; the one asked. Fall back to `verify` for the detailed finding: it
+         ;; re-reads, which costs a second pass, but only on a dump already
+         ;; known to be corrupt. The success path still reads once.
+         (if (#{:import/missing-checksum :import/checksum-failed
+                :import/undeclared-chunks :import/bad-chunk-path :import/not-a-dump
+                :import/corrupt-chunk}
+              (:error (ex-data e)))
+           (verify source opts)
+           (throw e)))))))
+
+(defn- verify-against*
+  "The comparison itself, on a dump that opened cleanly."
+  ([db source opts]
+   (with-source-records source
+     (fn [manifest reduce-source]
+       (let [schema (:schema manifest)
+             ref?   (fn [a] (= :db.type/ref (:db/valueType (get schema a))))
+             hist?  (boolean (:history? manifest))
                ;; tier 1 — counts
-               dump-count (long (or (:count (:semantic-digest manifest)) 0))
-               live-count (long (user-datom-count db hist?))
+             dump-count (long (or (:count (:semantic-digest manifest)) 0))
+             live-count (long (user-datom-count db hist?))
                ;; tier 2 — id-independent fingerprint, dump vs live
                ;; `:db.secondary/only` attributes compare on the HASH, because
                ;; the two sides legitimately hold different things: the dump
@@ -3192,29 +3249,29 @@
                ;; hash. Projecting the dump side is what makes them comparable;
                ;; the alternative would be reading every live secondary index
                ;; back during verification.
-               sec-only? (fn [a] (dbu/secondary-only? db a))
-               dump-fp (fp-final (reduce-source
-                                  (fn [fp record]
-                                    (let [[e a v _t op] record
-                                          v (if (and op (sec-only? a))
-                                              (dbt/secondary-only-hash v)
-                                              v)]
-                                      (fp-step fp [e a v op] ref?)))
-                                  (fp-init)))
-               src     (if hist? (api/history db) db)
-               live-fp (fp-final (reduce (fn [fp dm]
-                                           (if (> (d/datom-tx dm) c/tx0)
-                                             (fp-step fp [(nth dm 0) (a-ident db (nth dm 1)) (nth dm 2) (nth dm 4)] ref?)
-                                             fp))
-                                         (fp-init) (api/datoms src :eavt)))
-               t2-ok  (and (= (:digest dump-fp) (:digest live-fp))
-                           (= (:ref-counts dump-fp) (:ref-counts live-fp))
-                           (= (:out-degree dump-fp) (:out-degree live-fp)))
+             sec-only? (fn [a] (dbu/secondary-only? db a))
+             dump-fp (fp-final (reduce-source
+                                (fn [fp record]
+                                  (let [[e a v _t op] record
+                                        v (if (and op (sec-only? a))
+                                            (dbt/secondary-only-hash v)
+                                            v)]
+                                    (fp-step fp [e a v op] ref?)))
+                                (fp-init)))
+             src     (if hist? (api/history db) db)
+             live-fp (fp-final (reduce (fn [fp dm]
+                                         (if (> (d/datom-tx dm) c/tx0)
+                                           (fp-step fp [(nth dm 0) (a-ident db (nth dm 1)) (nth dm 2) (nth dm 4)] ref?)
+                                           fp))
+                                       (fp-init) (api/datoms src :eavt)))
+             t2-ok  (and (= (:digest dump-fp) (:digest live-fp))
+                         (= (:ref-counts dump-fp) (:ref-counts live-fp))
+                         (= (:out-degree dump-fp) (:out-degree live-fp)))
                ;; tier 3 — sampled structural diff
-               t3     (verify-sample manifest reduce-source db ref? 25)
+             t3     (verify-sample manifest reduce-source db ref? 25)
                ;; blobs — same tier as the chunks, and part of :ok?
-               blobs  (verify-blobs manifest source)]
-           {:ok? (and (= dump-count live-count) t2-ok (:ok? t3) (:ok? blobs))
+             blobs  (verify-blobs manifest source)]
+         {:ok? (and (= dump-count live-count) t2-ok (:ok? t3) (:ok? blobs))
             ;; DERIVED, not the literal `:ok` this used to be. The 1-arity was
             ;; fixed to distinguish "every chunk was hashed" from "there were no
             ;; chunks and nothing was checked"; forty lines below its comment
@@ -3224,16 +3281,16 @@
             ;;
             ;; `with-source-records` now refuses a non-dump outright, so reaching
             ;; here means a real manifest; this says how much of it was covered.
-            :tier0 {:checksums (if (pos? (count (:chunks manifest))) :ok :none)
-                    :chunks-verified (count (:chunks manifest))
-                    :format (get manifest manifest-key)}
-            :tier1 {:manifest-count dump-count :live-count live-count :match? (= dump-count live-count)}
-            :tier2 {:match? t2-ok
-                    :value-digest-match? (= (:digest dump-fp) (:digest live-fp))
-                    :ref-counts-match? (= (:ref-counts dump-fp) (:ref-counts live-fp))
-                    :out-degree-match? (= (:out-degree dump-fp) (:out-degree live-fp))}
-            :tier3 t3
-            :blobs blobs}))))))
+          :tier0 {:checksums (if (pos? (count (:chunks manifest))) :ok :none)
+                  :chunks-verified (count (:chunks manifest))
+                  :format (get manifest manifest-key)}
+          :tier1 {:manifest-count dump-count :live-count live-count :match? (= dump-count live-count)}
+          :tier2 {:match? t2-ok
+                  :value-digest-match? (= (:digest dump-fp) (:digest live-fp))
+                  :ref-counts-match? (= (:ref-counts dump-fp) (:ref-counts live-fp))
+                  :out-degree-match? (= (:out-degree dump-fp) (:out-degree live-fp))}
+          :tier3 t3
+          :blobs blobs})))))
 
 ;; ---------------------------------------------------------------------------
 ;; legacy CBOR path (backward compatibility for old dumps)

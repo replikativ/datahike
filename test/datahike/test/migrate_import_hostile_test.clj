@@ -263,7 +263,7 @@
           (is (true? (:verified? (:report res))))
           (is (some #(= "not-a-long" (nth % 2)) (current conn)))
           (is (true? (:ok? (m/verify dir))) "verify 1-arity: intact")
-          (is (true? (:ok? (m/verify @conn dir))) "verify 2-arity: equivalent — and both are right"))
+          (is (true? (:ok? (m/verify-against @conn dir))) "verify 2-arity: equivalent — and both are right"))
         (finally (release! src conn))))))
 
 (deftest attribute-absent-from-the-schema-is-stored-under-write-flexibility
@@ -491,7 +491,7 @@
             ;; documented as meaningless after an `:xform` for exactly this
             ;; reason. What matters here is that the mismatch is attributable to
             ;; the rewritten index path and NOT to :doc/body.
-            (let [rep (m/verify @conn dir)]
+            (let [rep (m/verify-against @conn dir)]
               (is (false? (:ok? rep)))
               (is (= [[:db/ident :idx/ft]] (mapv :unique (:diffs (:tier3 rep))))
                   "the only entity that differs is the index whose path we rewrote"))

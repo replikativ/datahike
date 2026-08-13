@@ -582,13 +582,13 @@
           _    (m/export-db @src path {:history? true})
           tgt  (utils/setup-db (mem-cfg {:history? true}))
           _    (m/import-db tgt path {:verify? false})
-          ok   (m/verify @tgt path)]
+          ok   (m/verify-against @tgt path)]
       (is (:ok? ok))
       (is (get-in ok [:tier1 :match?]))
       (is (get-in ok [:tier2 :match?]) "id-independent value digest + ref topology match")
       (is (:ok? (:tier3 ok)) "sampled structural diff clean")
       (d/transact tgt [{:name "extra-entity" :score 1.0}])
-      (let [bad (m/verify @tgt path)]
+      (let [bad (m/verify-against @tgt path)]
         (is (not (:ok? bad)))
         (is (not (get-in bad [:tier2 :match?])) "tier2 catches the extra content"))
       (teardown src)
@@ -844,10 +844,10 @@
         (is (= 1 (:declared (:blobs v))))
         (is (= 1 (:verified (:blobs v))))
         (is (empty? (:missing (:blobs v)))))
-      (is (:ok? (m/verify @conn dump))))
+      (is (:ok? (m/verify-against @conn dump))))
     (testing "a missing blob fails verification even though every other tier passes"
       (io/delete-file (io/file dump mblobs/dir-name (str id)))
-      (let [v (m/verify @conn dump)]
+      (let [v (m/verify-against @conn dump)]
         (is (false? (:ok? v)))
         (is (true? (:match? (:tier1 v))) "datom counts still match")
         (is (true? (:match? (:tier2 v))) "the semantic digest still matches")
@@ -918,20 +918,27 @@
               "an intact store dump verifies")
           (k/bassoc store ["datahike.migrate" "vt" (:file (first (:chunks man)))]
                     (byte-array (map unchecked-byte (repeat 40 0x77))) {:sync? true})
-          (is (contains? #{:import/checksum-failed :import/corrupt-chunk}
-                         (try (m/verify target) nil
-                              (catch clojure.lang.ExceptionInfo e (:error (ex-data e)))))
-              "a corrupted store dump is refused, by a NAMED datahike error —
-               which one depends on whether the damage survives decompression")))
+          (let [r (m/verify target)]
+            (is (false? (:ok? r))
+                "a corrupted store dump is not certified intact")
+            (is (contains? #{:import/checksum-failed :import/corrupt-chunk}
+                           (:error (:integrity r)))
+                "and it is REPORTED by a named datahike error rather than thrown —
+                 which error depends on whether the damage survives decompression.
+                 It used to throw; `verify` is the call an operator makes to ask
+                 whether a backup is intact, and a finding answers that question
+                 while an exception only ends it."))))
       (testing "filesystem medium, same corruption"
         (let [path (str (System/getProperty "java.io.tmpdir") "/dh-vfs-" (utils/get-time))
               man (m/export-db @src path {:history? true :chunk-size 2})
               chunk (io/file path (:file (first (:chunks man))))]
           (with-open [o (java.io.FileOutputStream. chunk)]
             (.write o (byte-array (map unchecked-byte (repeat 40 0x77)))))
-          (is (contains? #{:import/checksum-failed :import/corrupt-chunk}
-                         (try (m/verify path) nil
-                              (catch clojure.lang.ExceptionInfo e (:error (ex-data e))))))))
+          (let [r (m/verify path)]
+            (is (false? (:ok? r)))
+            (is (contains? #{:import/checksum-failed :import/corrupt-chunk}
+                           (:error (:integrity r)))
+                "the same answer on both media, which is what this test exists for"))))
       (teardown src))))
 
 (deftest a-non-empty-target-is-refused-before-any-blob-is-written
@@ -1354,7 +1361,8 @@
                            "export-to-sink" #(m/export-to-sink conn {:open (fn [_] nil)
                                                                      :write (fn [c _] c)
                                                                      :close (fn [_] nil)})
-                           "verify"         #(m/verify conn "/tmp/should-not-exist")}]
+                           ;; `verify` takes no db now — the comparison does.
+                           "verify-against" #(m/verify-against conn "/tmp/should-not-exist")}]
           (testing label
             (let [e (is (thrown? clojure.lang.ExceptionInfo (f)))]
               (is (= :datahike/db-expected (:type (ex-data e)))
@@ -1437,4 +1445,56 @@
             (let [e (is (thrown? clojure.lang.ExceptionInfo (m/import-db @conn dir {})))]
               (is (= :datahike/conn-expected (:type (ex-data e)))
                   "a one-sided tightening would teach `@conn` and then punish it"))))
+        (finally (d/release conn))))))
+
+(deftest verify-and-verify-against-agree-about-a-broken-dump
+  (testing "`verify` asks whether a dump is intact; `verify-against` asks that
+            AND whether it matches a live database. Splitting them by name was
+            not cosmetic: as two arities of one function the first argument
+            changed meaning with the arity, so `(verify a b)` gave a reader no
+            way to tell whether `b` was the source or the opts map every sibling
+            puts there — and the taken leading slot meant `verify` could never
+            gain opts at all.
+
+            They also disagreed about the same fault. A corrupt chunk was a
+            FINDING from one and a THROWN exception from the other, though the
+            docstring argues at length that \"it threw\" is the wrong answer to
+            \"is my backup intact?\". This pins that they now agree, and that one
+            handler works over either report."
+    (let [cfg  {:store {:backend :memory :id (random-uuid)}
+                :keep-history? true :schema-flexibility :read}
+          _    (d/create-database cfg)
+          conn (d/connect cfg)
+          dir  (str (System/getProperty "java.io.tmpdir") "/dh-verify-" (System/nanoTime))]
+      (try
+        (d/transact conn (vec (for [i (range 30)] {:name (str "p" i)})))
+        (m/export-db @conn dir {:history? true :chunk-size 5})
+
+        (testing "an intact dump: both say so, and their key sets are identical
+                  so a caller can write one handler"
+          (is (:ok? (m/verify dir)))
+          (is (:ok? (m/verify-against @conn dir)))
+          (is (= (set (keys (m/verify dir)))
+                 (set (keys (m/verify-against @conn dir))))))
+
+        (testing "and the integrity-only report carries the comparison keys as
+                  nil rather than omitting them"
+          (let [r (m/verify dir)]
+            (is (contains? (:tier1 r) :live-count))
+            (is (contains? (:tier1 r) :match?))
+            (is (nil? (:tier2 r)))))
+
+        (testing "a corrupt chunk is a FINDING from both, not a throw from one.
+                  Corrupting the gzip member rather than the hash is deliberate:
+                  `compress/decompress-bytes` says a broken member and a hash
+                  mismatch are both corruption, differing only in which the
+                  reader notices first — and this was the one that threw."
+          (spit (first (filter #(re-find #"datoms-" (.getName %)) (file-seq (io/file dir))))
+                "garbage")
+          (doseq [[label f] {"verify"         #(m/verify dir)
+                             "verify-against" #(m/verify-against @conn dir)}]
+            (testing label
+              (let [r (f)]
+                (is (false? (:ok? r)) "reported, not thrown")
+                (is (some? (:integrity r)) "and it says what was wrong")))))
         (finally (d/release conn))))))

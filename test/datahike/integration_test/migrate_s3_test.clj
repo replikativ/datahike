@@ -179,7 +179,7 @@
                     est (m/estimate-import-memory target)
                     tgt (fresh-db)
                     rep (m/import-db tgt target {})
-                    ver (m/verify @tgt target)]
+                    ver (m/verify-against @tgt target)]
                 (is (> (count (:chunks man)) 1) "wrote multiple chunk objects to garage")
                 (is (string? (:recommended-heap est)) "estimate reads the manifest from S3")
                 (is (:verified? rep) "import from S3 verifies")
