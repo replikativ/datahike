@@ -130,6 +130,23 @@
    (async+sync
     (:sync? opts) *default-sync-translation*
     (go-try-
+     ;; OWNERSHIP. This is the whole of the difference between the two store
+     ;; target shapes, and it is worth naming because it is the obligation the
+     ;; config form creates:
+     ;;
+     ;;   {:store s ..}    the CALLER opened it and the caller closes it. We
+     ;;                    must not release a store we were lent — another
+     ;;                    export may still be using it, and for an S3 or JDBC
+     ;;                    store that means a live connection pool.
+     ;;   {:backend .. ..} WE open it, so we must release it on EVERY path,
+     ;;                    including failure. `close` is called from a `finally`
+     ;;                    at each call site for exactly this reason, and
+     ;;                    `migrate-store-ownership-test` pins the failure path
+     ;;                    — the success path would pass with no `finally` at
+     ;;                    all, so testing only that proves nothing.
+     ;;
+     ;; `:owned?` is what carries the answer to `close`; nothing else in the
+     ;; codebase distinguishes the two shapes.
      (let [prefix (or (:prefix target) "dump")]
        (if-let [s (:store target)]
          {:store s :prefix prefix :owned? false}

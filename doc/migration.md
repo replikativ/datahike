@@ -207,14 +207,24 @@ become keys under a prefix; the manifest key is written last as the commit marke
 and per-chunk SHA-256 guards against partial/eventually-consistent reads.
 
 ```clojure
-;; an already-open konserve store (you construct it with your bucket/endpoint)
+;; an already-open konserve store — YOU own it, and you close it. Datahike will
+;; not release a store it was lent: another export may still be using it.
 (m/export-db @conn {:store my-store :prefix "backup-2026-07"} {:history? true})
 (m/import-db fresh-conn {:store my-store :prefix "backup-2026-07"})
 
-;; or a konserve store-config map (backend opened and released for you)
+;; or a konserve store-config map — DATAHIKE opens it and releases it, on every
+;; path including failure. Use this when the caller has no place to construct a
+;; store: a config file, a CLI flag, a language binding (an open store is not
+;; data, so it cannot cross a wire; a config can).
 (m/export-db @conn {:backend :s3 :bucket "my-bucket" :region "..." :id #uuid "..."
                    :prefix "backup-2026-07"} {:history? true})
 ```
+
+Both shapes require the store to **already exist** — konserve's `connect-store`
+opens, it does not create. That is not only an S3 bucket thing: a `:file` or
+`:memory` config for a store that was never created is refused by konserve
+before datahike sees it, so create it once with `konserve.store/create-store` if
+you are not pointing at a store some other part of your system already made.
 
 `konserve-s3` accepts a custom `endpoint` + path-style addressing, which is how you
 target S3-compatible stores (MinIO, R2, B2, Wasabi, Ceph, Spaces) — nothing here is
