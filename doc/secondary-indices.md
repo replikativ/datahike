@@ -406,6 +406,51 @@ Secondary indices are declared via schema transactions:
 
 Stratum requires no external storage — it maintains an in-memory columnar dataset that is updated transactionally alongside the primary index.
 
+## Index-like reads from the store itself: konserve-lmdb
+
+The three types above are secondary *indices*: separate structures Datahike
+maintains beside the primary EAVT/AEVT/AVET trees.
+[konserve-lmdb](https://github.com/replikativ/konserve-lmdb) offers a different
+trade — index-like reads out of the **stored blobs**, with no second structure to
+build, maintain or garbage-collect.
+
+**This is not a konserve-wide capability, and not a Datahike index type.**
+konserve defines no secondary-index protocol; this is specific to the LMDB
+backend, and there is no `:db.secondary/type :lmdb`. It is a storage-level
+facility you use directly, not through `:db.secondary/*` schema.
+
+What it provides (format v2):
+
+- **Ordered range access** — `scan` and `scan-keys` walk a key range in order,
+  `scan-keys` without touching value pages at all.
+- **Projection** — `project` pulls one field out of every value in a range
+  *without materialising the value*, and `project-reduce` folds several fields
+  over that range in a single pass. The store's range picks the rows;
+  [boring](https://github.com/replikativ/boring)'s navigator picks the columns
+  inside the CBOR blob, which is where the JSONB-like part comes in.
+
+The speed comes from LMDB's zero-copy memory-mapped layout combined with never
+rebuilding the document. Measured against PostgreSQL JSONB on
+`count(doc->'tail'->>'city')`, comparing Postgres' own `EXPLAIN ANALYZE` time:
+6.7x at 400 bytes of padding, **49.5x at 3000**. Worth being precise about why,
+because it is not a claim that the navigation is cleverer — JSONB's is arguably
+better. It is that `PG_GETARG_JSONB_P` fully detoasts before its O(1) navigation
+runs, so its cost tracks document size whatever field you asked for, while a
+projection's cost tracks only how much CBOR sits in front of the field. An
+optional index frame (`:index N`) replaces that walk with a jump.
+
+Versioned stores are a separate, **experimental** facility within the library:
+each write appends a version under an HLC coordinate, giving `latest`, `as-of`
+and `history` at the store level, with `gc!` to collect versions no live pin can
+reach.
+
+Requires **Java 22+** (Project Panama FFI) and `liblmdb`.
+
+> **Beta**, and moving. The API may change between releases, and the versioned
+> layer is experimental even by that standard. If you try it for aggregate or
+> range workloads that would otherwise want a Stratum index, reports of where it
+> wins and where it does not are exactly what is useful right now.
+
 ## Implementing Custom Secondary Indices
 
 Implement the `ISecondaryIndex` protocol to add your own index type:

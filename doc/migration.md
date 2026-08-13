@@ -8,7 +8,7 @@ That one mechanism covers three jobs that are usually separate tools:
 |---|---|
 | **Backup and restore** | `export-db` / `import-db` to a portable, type-exact, verifiable dump. Snapshot before a risky change; restore after one. |
 | **Moving between stores** | the same dump, written to a filesystem path *or* a konserve store — file, S3, JDBC, in-memory, IndexedDB. Change backend by exporting from one and importing to another. |
-| **Moving between systems** | `import-source` / `export-to-sink` hand you the record stream itself, so the other side can be a live database rather than a file — see [Migrating from Datomic](./migrate-datomic.md). |
+| **Moving between systems** | `import-source` / `export-to-sink` hand you the record stream itself, so the other side can be a live database rather than a file — see [Migrating from Datomic](./migrate-datomic.md). PostgreSQL goes a different way, over SQL and `pg_dump` — see [PostgreSQL](#postgresql). |
 
 **Experimental.** Tested and functional across both runtimes — the suites cover
 every builtin value type, full history, both runtimes, and fault injection — but
@@ -707,3 +707,28 @@ a dump chunk is a byte range whose reader reassembles the stream.)
 `:close` runs on the failure path as well, and receives the latest context. A
 `{:sort? false}` export is refused here, because without the sort a transaction
 is split across many chunks and the alignment guarantee cannot hold.
+
+## PostgreSQL
+
+Moving between Datahike and PostgreSQL goes through
+[pg-datahike](https://github.com/replikativ/pg-datahike), which speaks the
+PostgreSQL wire protocol from inside a Datahike process. It is not built on the
+record seam above — the exchange happens at the **SQL** level, via `pg_dump`, in
+both directions:
+
+- **PostgreSQL → Datahike.** `pg_dump` output replays straight in through `psql`
+  or any PG client, including `COPY … FROM stdin` in text and CSV form. Its
+  `{:compat :pg-dump}` preset accepts the rest of `pg_dump`'s output — ownership,
+  tablespaces, encodings — with a NOTICE instead of an error, so a dump loads
+  without hand-editing.
+- **Datahike → PostgreSQL.** `datahike.pg.dump/dump` walks a Datahike database
+  and emits `pg_dump`-shaped SQL that real PostgreSQL restores.
+
+Because tables and Datahike schemas are the same datoms, a database that arrived
+over SQL is queryable with `d/q`, and history/`as-of` apply to it like any other
+Datahike data.
+
+> **Beta.** pg-datahike is not a full PostgreSQL dialect, and its API may still
+> change — see its README for the compatibility matrix and the fixtures it is
+> tested against (Chinook and Pagila `pg_dump` files load end to end). Reports of
+> what fails on your schema are welcome.
