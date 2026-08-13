@@ -90,12 +90,26 @@ Both directions are covered by tests that compare against the original rather
 than merely checking the result is non-empty.
 
 **Datomic → datahike → Datomic** is datom-for-datom identical to the source,
-with exactly one difference: one extra transaction, and its timestamp. Datomic
-will not *use* an attribute in the transaction that *installs* it, while
-datahike will, so a source transaction carrying both becomes two on the way
-back. The schema half is stamped one millisecond before the source instant, so
-the two still ascend; its content and ordering are exact, its installation time
-is approximate.
+with exactly one difference: one extra transaction, and its timestamp — however
+many schema transactions the source had.
+
+Datomic will not let an attribute be **used** — appear as the attribute of a
+datom — in the same transaction that **installs** it. datahike will, and the
+import relies on that: it emits the schema for `:datomic/t` and
+`:datomic/tx-eid` with the log's *first* transaction and stamps that same
+transaction with them. So it is the **provenance** that forces the split, not
+anything the Datomic source did — a Datomic source could not have produced such
+a transaction, since Datomic would have refused it. `{:provenance? false}`
+removes the cause and the extra transaction with it.
+
+The schema half is stamped one millisecond before the source instant, so the two
+still ascend; its content and ordering are exact, its installation time is
+approximate.
+
+Every other schema transaction comes back whole. The sink splits on a transaction
+that installs an attribute *and uses it*, not on the mere presence of schema — an
+earlier version split on presence, which cost one wasted transaction per schema
+transaction (measured: four came back as six).
 
 **datahike → Datomic → datahike** preserves current values and history.
 

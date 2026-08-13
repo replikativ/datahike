@@ -172,12 +172,14 @@
                     "every original transaction time survives the return trip")
                 (is (contains? instants #inst "2020-12-31T23:59:59.999-00:00")
                     "plus one EXTRA transaction at (first instant - 1ms): Datomic
-                     requires an attribute installed before its first use, so a
-                     source transaction carrying both becomes two here, and the
-                     schema half needs a time of its own or it would be stamped
-                     `now` and push the basis past every historical instant after
-                     it. Documented in the ns; the schema's install time is
-                     approximate, its content and ordering are exact."))))
+                     requires an attribute installed before its first use, and
+                     the FIRST transaction both installs the provenance schema
+                     and is stamped with it — datahike's doing, not the source's,
+                     since Datomic could not have produced such a transaction.
+                     The schema half needs a time of its own or it would be
+                     stamped `now` and push the basis past every historical
+                     instant after it. Documented in the ns; the schema's install
+                     time is approximate, its content and ordering are exact."))))
           (finally (dt/release c2) (dt/delete-database uri2)))))))
 
 ;; ---------------------------------------------------------------------------
@@ -349,9 +351,16 @@
             ;; MEASURED: 4 source transactions come back as 5. Not a defect and not
             ;; noise — it is the schema/data split, the one structural difference a
             ;; Datomic round trip introduces. Datomic will not use an attribute in
-            ;; the transaction that installs it, while datahike will, so a source
-            ;; transaction carrying both becomes two here. Asserted exactly, so that
-            ;; a SECOND source of extra transactions would still fail this.
+            ;; the transaction that installs it, while datahike will, and the
+            ;; import's FIRST transaction does exactly that with the provenance
+            ;; schema. Asserted exactly, so that a SECOND source of extra
+            ;; transactions would still fail this.
+            ;;
+            ;; This fixture cannot tell "one split" from "one split PER schema
+            ;; transaction", because all of its schema is in the first
+            ;; transaction — and an earlier sink did the latter. See
+            ;; `only-the-provenance-transaction-splits-however-much-schema-there-is`,
+            ;; which adds a second schema transaction for that reason.
             (is (= (inc (count a)) (count b))
                 (str "exactly one extra transaction, from the schema/data split: "
                      (count a) " -> " (count b)))
@@ -410,3 +419,64 @@
             (d/release src) (d/delete-database src-cfg)
             (d/release tgt) (d/delete-database tgt-cfg)
             (dt/release c) (dt/delete-database uri)))))))
+
+(deftest only-the-provenance-transaction-splits-however-much-schema-there-is
+  (testing "The sink splits a transaction that INSTALLS an attribute and USES it,
+            because Datomic refuses that and datahike allows it. Exactly one
+            transaction in a Datomic round trip is of that shape, and it is
+            datahike's own doing rather than the source's: `source` emits the
+            provenance schema with the log's FIRST transaction and stamps
+            `:datomic/t` on that same transaction.
+
+            A Datomic SOURCE cannot produce such a transaction — Datomic would
+            have refused it — so every OTHER schema transaction must come back
+            whole. It used to split all of them, because the predicate was the
+            mere presence of schema datoms rather than a use of what they
+            install. Measured before the fix: four source transactions came back
+            as six.
+
+            The fixture above puts all of its schema in the first transaction,
+            so it cannot tell the two apart; this one adds a SECOND schema
+            transaction, which is the whole point."
+    (let [uri (str "datomic:mem://dh-split-" (rand-int 1000000))]
+      (dt/create-database uri)
+      (let [src (dt/connect uri)]
+        (try
+          @(dt/transact src [{:db/ident :s/name :db/valueType :db.type/string
+                              :db/cardinality :db.cardinality/one}
+                             [:db/add "datomic.tx" :db/txInstant #inst "2021-01-01"]])
+          @(dt/transact src [{:s/name "Ann"}
+                             [:db/add "datomic.tx" :db/txInstant #inst "2021-02-01"]])
+          ;; The second schema transaction. Installs `:s/age`, uses nothing it
+          ;; installs — its only other datoms are `:db/txInstant` and the
+          ;; provenance the import adds, all defined earlier.
+          @(dt/transact src [{:db/ident :s/age :db/valueType :db.type/long
+                              :db/cardinality :db.cardinality/one}
+                             [:db/add "datomic.tx" :db/txInstant #inst "2021-03-01"]])
+          @(dt/transact src [{:s/name "Ann" :s/age 31}
+                             [:db/add "datomic.tx" :db/txInstant #inst "2021-04-01"]])
+
+          (dtm/import-from-datomic! *dh* src)
+          (let [uri2 (str "datomic:mem://dh-split-t-" (rand-int 1000000))]
+            (dt/create-database uri2)
+            (let [tgt (dt/connect uri2)]
+              (try
+                (dtm/export-to-datomic! @*dh* tgt)
+                (let [n-src (count (shape src))
+                      n-tgt (count (shape tgt))]
+                  (is (= (inc n-src) n-tgt)
+                      (str "exactly ONE extra transaction — the provenance split — "
+                           "however many schema transactions the source had: "
+                           n-src " -> " n-tgt))
+                  (testing "and every original transaction time is still there"
+                    (let [instants (set (map first (dt/q '[:find ?i :where [_ :db/txInstant ?i]]
+                                                         (dt/db tgt))))]
+                      (is (every? instants [#inst "2021-01-01" #inst "2021-02-01"
+                                            #inst "2021-03-01" #inst "2021-04-01"]))
+                      (testing "with the one split stamped a millisecond before the first"
+                        (is (contains? instants #inst "2020-12-31T23:59:59.999-00:00")))
+                      (testing "and NO split before the second schema transaction"
+                        (is (not (contains? instants #inst "2021-02-28T23:59:59.999-00:00"))
+                            "a gratuitous split would land here")))))
+                (finally (dt/release tgt) (dt/delete-database uri2)))))
+          (finally (dt/release src) (dt/delete-database uri)))))))

@@ -456,6 +456,32 @@
                         ;; installation time is not preserved, its content is.
                         schema? (fn [[_ _ a]] (contains? schema-defining-attrs a))
                         [sch dat] [(filterv schema? td) (filterv (complement schema?) td)]
+                        ;; Split only when this transaction actually USES an
+                        ;; attribute it INSTALLS. Splitting on the mere presence
+                        ;; of schema is stricter than the rule above, and the
+                        ;; difference is not free: a Datomic SOURCE cannot
+                        ;; produce a transaction that carries both, so every one
+                        ;; of its schema transactions was being split for
+                        ;; nothing. Measured on a source with two schema
+                        ;; transactions: 4 came back as 6, of which one extra
+                        ;; was real and one was this.
+                        ;;
+                        ;; The real one is datahike's own doing, not the source's
+                        ;; — `source` emits the provenance schema with the log's
+                        ;; FIRST transaction (`:extra (when (= t from) schema)`)
+                        ;; and stamps `:datomic/t` on that same transaction.
+                        ;; datahike accepts that; Datomic does not, which is the
+                        ;; `:db.error/not-an-entity :datomic/t` the split was
+                        ;; added for. That case still splits, because `:datomic/t`
+                        ;; is installed and used here.
+                        installed (into #{} (keep (fn [[_ _ a v]]
+                                                    (when (= a :db/ident) v))
+                                                  sch))
+                        needs-split? (and (seq sch)
+                                          (boolean (some (fn [[_ _ a]]
+                                                           (contains? installed a))
+                                                         dat)))
+                        [sch dat] (if needs-split? [sch dat] [[] td])
                         ;; The split transaction needs the SOURCE's time too, one
                         ;; millisecond earlier so the two still ascend. Without it
                         ;; Datomic stamps the schema transaction with the wall
