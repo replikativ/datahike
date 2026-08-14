@@ -170,16 +170,16 @@
                 (is (every? instants [#inst "2021-01-01" #inst "2021-02-01"
                                       #inst "2021-03-01" #inst "2021-04-01"])
                     "every original transaction time survives the return trip")
-                (is (contains? instants #inst "2020-12-31T23:59:59.999-00:00")
-                    "plus one EXTRA transaction at (first instant - 1ms): Datomic
-                     requires an attribute installed before its first use, and
-                     the FIRST transaction both installs the provenance schema
-                     and is stamped with it — datahike's doing, not the source's,
-                     since Datomic could not have produced such a transaction.
-                     The schema half needs a time of its own or it would be
-                     stamped `now` and push the basis past every historical
-                     instant after it. Documented in the ns; the schema's install
-                     time is approximate, its content and ordering are exact."))))
+                (is (not (contains? instants #inst "2020-12-31T23:59:59.999-00:00"))
+                    "and NOT at (first instant - 1ms). The split half now carries
+                     the SAME instant as the half it was split from: Datomic
+                     accepts an equal :db/txInstant and rejects an earlier one
+                     (measured both ways), and the ordering between the two is
+                     carried by `t`. The `dec` this replaces made the schema
+                     half's install time approximate for no benefit, and was
+                     reachable as an outright FAILURE — two source transactions
+                     sharing a millisecond put the synthetic instant before the
+                     previous transaction and aborted the export mid-way."))))
           (finally (dt/release c2) (dt/delete-database uri2)))))))
 
 ;; ---------------------------------------------------------------------------
@@ -365,16 +365,19 @@
                 (str "exactly one extra transaction, from the schema/data split: "
                      (count a) " -> " (count b)))
             (is (= (apply merge-with + a)
-                   ;; `dissoc`, not `(update … dec)`: the key is ABSENT from the
-                   ;; original, and a count of 0 is not the same map as no key.
-                   (dissoc (apply merge-with + b)
-                           ;; the split transaction's own instant, source minus 1ms
-                           [:db/txInstant #inst "2020-12-31T23:59:59.999-00:00" true]))
+                   ;; `(update … dec)`, not `dissoc` — and the flip is the point.
+                   ;; The split half used to carry a SYNTHETIC instant one
+                   ;; millisecond earlier, a key absent from the original, so it
+                   ;; was dropped wholesale. It now carries the SAME instant as
+                   ;; the half it was split from, so the key is present in both
+                   ;; and merely counted twice. Decrementing is what says that.
+                   (update (apply merge-with + b)
+                           [:db/txInstant #inst "2021-01-01" true] dec))
                 "and across the whole log, every assertion and retraction is the
-                 same one for one. Diagnosed in the REPL: the ONLY residue is the
-                 split transaction's synthetic instant. Nothing is lost, dropped
-                 or altered — the split moves datoms between transactions and
-                 adds a timestamp for the half it created.")
+                 same one for one. The ONLY residue is that the first instant is
+                 asserted twice rather than once, because the split created a
+                 second transaction at that instant. Nothing is lost, dropped or
+                 altered — the split moves datoms between transactions.")
             (testing "current values agree through the query api too"
               (is (= (into #{} (dt/q '[:find ?n ?g :where [?e :p/name ?n] [?e :p/age ?g]] (dt/db *dtm*)))
                      (into #{} (dt/q '[:find ?n ?g :where [?e :p/name ?n] [?e :p/age ?g]] (dt/db c2)))))
@@ -473,10 +476,162 @@
                                                          (dt/db tgt))))]
                       (is (every? instants [#inst "2021-01-01" #inst "2021-02-01"
                                             #inst "2021-03-01" #inst "2021-04-01"]))
-                      (testing "with the one split stamped a millisecond before the first"
-                        (is (contains? instants #inst "2020-12-31T23:59:59.999-00:00")))
+                      (testing "with the split half sharing the instant it was split
+                                from, rather than a synthetic one before it"
+                        (is (not (contains? instants #inst "2020-12-31T23:59:59.999-00:00"))))
                       (testing "and NO split before the second schema transaction"
                         (is (not (contains? instants #inst "2021-02-28T23:59:59.999-00:00"))
                             "a gratuitous split would land here")))))
                 (finally (dt/release tgt) (dt/delete-database uri2)))))
           (finally (dt/release src) (dt/delete-database uri)))))))
+
+;; ---------------------------------------------------------------------------
+;; The shapes the fixture never produced
+;;
+;; Every defect below was invisible to the suite for the same reason: the
+;; fixture declares only attributes (so every ident is in the low hundreds),
+;; puts its card-many retraction alone in a transaction (so nothing supersedes
+;; it), and never lets an ordinary entity straddle the schema/data split. Each
+;; test here is one of those shapes, and each fails on the code as it was.
+;; ---------------------------------------------------------------------------
+
+(deftest a-user-entity-with-an-ident-does-not-collide-with-provenance
+  (testing "provenance eids used to be `(inc (max ident-eid))`, on the premise
+            that \"attribute entities live in the low hundreds\". `ident-map`
+            queries EVERY `:db/ident`, and an enum — or the singleton/config
+            idiom — is an ordinary user entity at ~1.76e13, so the base landed
+            inside the occupied partition.
+
+            Reproduced before the fix: `:datomic/tx-eid` was allocated exactly
+            the eid Datomic then gave the next user entity, and the import
+            reported `:verified? true` over a single entity that was
+            simultaneously an attribute definition and a person."
+    (let [uri (str "datomic:mem://enum-" (System/nanoTime))]
+      (dt/create-database uri)
+      (let [c (dt/connect uri)]
+        (try
+          @(dt/transact c [[:db/add "datomic.tx" :db/txInstant #inst "2021-01-01"]
+                           {:db/ident :p/name :db/valueType :db.type/string
+                            :db/cardinality :db.cardinality/one}
+                           {:db/ident :p/colour :db/valueType :db.type/ref
+                            :db/cardinality :db.cardinality/one}
+                           ;; the enum: a USER entity carrying a :db/ident
+                           {:db/ident :colour/red}
+                           {:db/ident :colour/blue}])
+          @(dt/transact c [[:db/add "datomic.tx" :db/txInstant #inst "2021-02-01"]
+                           {:p/name "Ann" :p/colour :colour/red}
+                           {:p/name "Bob" :p/colour :colour/blue}])
+          (let [cfg {:store {:backend :memory :id (random-uuid)}
+                     :keep-history? true :schema-flexibility :write} _ (d/create-database cfg) conn (d/connect cfg)]
+            (try
+              (dtm/import-from-datomic! conn c)
+              (testing "no entity is both an attribute definition and a person"
+                (is (empty? (d/q '[:find ?e :where [?e :db/ident _] [?e :p/name _]] @conn))
+                    "an eid collision shows up here, and nowhere else"))
+              (testing "and the enum reference resolves — a ref value naming an
+                        ident entity must stay NUMERIC so the eid remap carries
+                        it. Turning it into the keyword made every enum
+                        reference point at a phantom entity with no datoms."
+                (is (= #{["Ann" :colour/red] ["Bob" :colour/blue]}
+                       (into #{} (d/q '[:find ?n ?ci
+                                        :where [?e :p/name ?n] [?e :p/colour ?c]
+                                               [?c :db/ident ?ci]]
+                                      @conn)))))
+              (finally (d/release conn) (d/delete-database cfg))))
+          (finally (dt/release c) (dt/delete-database uri)))))))
+
+(deftest a-card-many-retraction-survives-a-same-transaction-assertion
+  (testing "the superseded filter dropped any retraction sharing `[e a]` with an
+            assertion in the same transaction, on the reasoning that Datomic
+            derives a card-one retraction itself. Measured, that IS true for
+            card-one and false for card-many, where retract v1 and assert v2 are
+            independent facts — so the retracted value stayed alive in the
+            target. The fixture missed it by putting its card-many retraction
+            alone in its own transaction."
+    (let [cfg {:store {:backend :memory :id (random-uuid)}
+                     :keep-history? true :schema-flexibility :write} _ (d/create-database cfg) conn (d/connect cfg)]
+      (try
+        (d/transact conn [{:db/ident :p/tag :db/valueType :db.type/string
+                           :db/cardinality :db.cardinality/many}
+                          {:db/ident :p/name :db/valueType :db.type/string
+                           :db/cardinality :db.cardinality/one}])
+        (let [r (d/transact conn [{:db/id -1 :p/name "Ann" :p/tag ["x" "y"]}])
+              ann (get-in r [:tempids -1])]
+          ;; the shape: a card-many retraction AND an assertion on the same [e a]
+          (d/transact conn [[:db/retract ann :p/tag "x"]
+                            [:db/add ann :p/tag "z"]])
+          (is (= #{"y" "z"} (into #{} (map first)
+                                  (d/q '[:find ?t :where [_ :p/tag ?t]] @conn)))
+              "sanity: the source really did retract x"))
+        (let [uri (str "datomic:mem://cm-" (System/nanoTime))]
+          (dt/create-database uri)
+          (let [c (dt/connect uri)]
+            (try
+              (dtm/export-to-datomic! @conn c)
+              (is (= #{"y" "z"}
+                     (into #{} (map first)
+                           (dt/q '[:find ?t :where [_ :p/tag ?t]] (dt/db c))))
+                  "the retracted value must not be resurrected in Datomic")
+              (finally (dt/release c) (dt/delete-database uri)))))
+        (finally (d/release conn) (d/delete-database cfg))))))
+
+(deftest an-entity-spanning-the-schema-split-stays-one-entity
+  (testing "`sink-tx-data` runs once and bakes tempid STRINGS into the tx-data;
+            the result is then split and committed as two Datomic transactions.
+            Tempids do not span transactions, so an entity with a schema datom
+            and a data datom in one source transaction became TWO entities — the
+            ident on one, the data on the other, silently. The data half is now
+            re-resolved against `eids` after the schema half commits."
+    (let [cfg {:store {:backend :memory :id (random-uuid)}
+                     :keep-history? true :schema-flexibility :write} _ (d/create-database cfg) conn (d/connect cfg)]
+      (try
+        ;; one transaction that both INSTALLS :p/name and USES it, on an entity
+        ;; that also carries a :db/ident — so that entity straddles the split
+        (d/transact conn [{:db/ident :p/name :db/valueType :db.type/string
+                           :db/cardinality :db.cardinality/one}
+                          {:db/id -1 :db/ident :colour/red :p/name "Red"}])
+        (let [uri (str "datomic:mem://span-" (System/nanoTime))]
+          (dt/create-database uri)
+          (let [c (dt/connect uri)]
+            (try
+              (dtm/export-to-datomic! @conn c)
+              (is (= "Red" (:p/name (dt/entity (dt/db c) :colour/red)))
+                  "the ident and the data must land on ONE entity")
+              (is (= 1 (count (dt/q '[:find ?e :where [?e :db/ident :colour/red]]
+                                    (dt/db c))))
+                  "and there must not be a second, orphaned one")
+              (finally (dt/release c) (dt/delete-database uri)))))
+        (finally (d/release conn) (d/delete-database cfg))))))
+
+(deftest transactions-sharing-a-millisecond-do-not-abort-the-export
+  (testing "the split half used to be stamped one millisecond BEFORE the half it
+            came from. Datomic accepts an equal `:db/txInstant` and rejects an
+            earlier one, so two source transactions sharing a millisecond put
+            that synthetic instant before the previous transaction and aborted
+            the export mid-way, leaving the target half-migrated. datahike's own
+            allocator is monotonic, but caller-supplied `:db/txInstant` in
+            `:tx-meta` overrides it, and an imported database inherits whatever
+            ties its source had."
+    (let [cfg {:store {:backend :memory :id (random-uuid)}
+                     :keep-history? true :schema-flexibility :write} _ (d/create-database cfg) conn (d/connect cfg)
+          t   #inst "2021-06-01T12:00:00.000-00:00"]
+      (try
+        (d/transact conn {:tx-data [{:db/ident :p/a :db/valueType :db.type/string
+                                     :db/cardinality :db.cardinality/one}]
+                          :tx-meta {:db/txInstant t}})
+        ;; the tie, on a transaction that also installs-and-uses => splits
+        (d/transact conn {:tx-data [{:db/ident :p/b :db/valueType :db.type/string
+                                     :db/cardinality :db.cardinality/one}
+                                    {:db/id -1 :p/b "x"}]
+                          :tx-meta {:db/txInstant t}})
+        (let [uri (str "datomic:mem://tie-" (System/nanoTime))]
+          (dt/create-database uri)
+          (let [c (dt/connect uri)]
+            (try
+              (is (map? (dtm/export-to-datomic! @conn c))
+                  "the export must complete rather than abort with
+                   :db.error/past-tx-instant")
+              (is (= #{"x"} (into #{} (map first)
+                                  (dt/q '[:find ?v :where [_ :p/b ?v]] (dt/db c)))))
+              (finally (dt/release c) (dt/delete-database uri)))))
+        (finally (d/release conn) (d/delete-database cfg))))))

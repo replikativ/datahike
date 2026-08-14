@@ -200,10 +200,25 @@
 (defn- tx->records
   "One Datomic log entry -> datahike records, in `(t, txInstant-first, e, a)` order.
 
-   `a` becomes a keyword ident. A ref value naming an ident entity becomes that
-   ident — schema refs like `:db/valueType` point at ident entities, and a raw
-   eid there would dangle. A ref value naming an ordinary entity stays numeric
-   and is remapped by datahike's importer along with `e`.
+   `a` becomes a keyword ident.
+
+   A ref value is turned into a keyword ONLY when the attribute is one of
+   `schema-defining-attrs` — `:db/valueType` -> `:db.type/string`,
+   `:db/cardinality` -> `:db.cardinality/one`. Those name Datomic's own
+   vocabulary, datahike does not treat them as refs, and a raw eid there would
+   dangle.
+
+   Every OTHER ref value stays numeric and is remapped by datahike's importer
+   along with `e`, INCLUDING one that points at an entity carrying a
+   `:db/ident`. That is the enum case, and keying on \"the target has an ident\"
+   instead of \"the attribute is schema\" broke it: `:p/color` -> `:color/red`
+   became the keyword, `ids/apply-mapping` guards ref remapping with
+   `(number? v)` so the keyword passed straight through, and
+   `transact-entities-directly` then allocated a fresh eid for it. Measured:
+   every enum reference pointed at a phantom entity with no datoms, a join
+   through it returned `#{}`, and the import reported success. The same dump
+   exported back to Datomic then aborted with `:db.error/tempid-not-an-entity`,
+   because the sink minted a tempid for an eid that had no datoms to assert.
 
    The tx entity's own eid is rewritten to the mapped `t` so that the
    `:db/txInstant` datom names its own transaction, which is the shape datahike
@@ -226,8 +241,11 @@
                      :else
                      (let [v (.v dm)
                            v (cond
-                               ;; a ref naming an ident entity -> the ident
-                               (and (refs a) (idents v)) (idents v)
+                               ;; a SCHEMA ref -> the ident it names. Keyed on
+                               ;; the attribute, not on "the target happens to
+                               ;; have an ident" — see the docstring.
+                               (and (schema-defining-attrs a) (refs a) (idents v))
+                               (idents v)
                                ;; :db.type/uri has no datahike type; carry the string
                                (instance? java.net.URI v) (str v)
                                :else v)
@@ -244,19 +262,33 @@
 (defn- provenance-schema
   "Schema datoms for the two provenance attributes, at eids that cannot collide.
 
-   Datomic's id space has a gap: attribute entities live in the low hundreds and
-   user entities start around 1.76e13, so one past the highest ident eid is free.
-   These ids only have to be DISTINCT — datahike reallocates them like every
-   other source eid."
-  [idents]
-  (let [base (inc (long (reduce max 0 (keys idents))))]
-    (into []
-          (mapcat (fn [[i a vt]]
-                    [[(+ base i) :db/ident a 0 true]
-                     [(+ base i) :db/valueType vt 0 true]
-                     [(+ base i) :db/cardinality :db.cardinality/one 0 true]]))
-          [[0 :datomic/t      :db.type/long]
-           [1 :datomic/tx-eid :db.type/long]])))
+   NEGATIVE ids, because they only have to be DISTINCT — datahike reallocates
+   them like every other source eid — and no Datomic eid is ever negative, so
+   this is collision-free by construction rather than by assumption.
+
+   It used to be `(inc (max ident-eid))`, on the reasoning that \"attribute
+   entities live in the low hundreds and user entities start around 1.76e13, so
+   one past the highest ident eid is free\". That premise is false for any
+   database where a USER entity carries a `:db/ident` — a Datomic enum
+   (`{:db/ident :color/red}`) is the common case, and the singleton/config
+   idiom is another. `ident-map` queries `[?e :db/ident ?i]`, i.e. EVERY ident,
+   so one such entity puts `base` inside the occupied user partition.
+
+   Reproduced: with an enum at 17592186045418, `:datomic/tx-eid` was allocated
+   17592186045420 — exactly the eid Datomic then handed the next user entity.
+   The import reported `:verified? true` over a single entity that was
+   simultaneously an attribute definition and a person, and `d/pull` on that
+   person returned the attribute's schema. Silent, and it compounds: the merged
+   entity now holds both a schema datom and a data datom, which is precisely the
+   shape that splits into two entities on the way back out."
+  []
+  (into []
+        (mapcat (fn [[i a vt]]
+                  [[i :db/ident a 0 true]
+                   [i :db/valueType vt 0 true]
+                   [i :db/cardinality :db.cardinality/one 0 true]]))
+        [[-1 :datomic/t      :db.type/long]
+         [-2 :datomic/tx-eid :db.type/long]]))
 
 (defn- log-t-range
   "The `[from to]` of the transaction log, as Datomic's half-open `tx-range` bounds.
@@ -312,7 +344,7 @@
          refs    (ref-attr-idents db)
          dropped (volatile! #{})
          [from to] (or (log-t-range conn) [0 0])
-         schema  (when provenance? (provenance-schema idents))
+         schema  (when provenance? (provenance-schema))
          chunks  (vec (for [start (range from to window)]
                         {:from start :to (min to (+ start window))}))]
      {:chunks chunks
@@ -390,10 +422,26 @@
    \"datomic.tx\", which is how `:db/txInstant` is carried across.
 
    A retraction whose `[e a]` is also ASSERTED in the same transaction is
-   dropped: Datomic derives the retraction of a superseded cardinality-one value
-   itself, so replaying ours too records it twice."
-  [group t eids ref-idents strip?]
-  (let [superseded (into #{} (keep (fn [[e a _ _ op]] (when op [e a]))) group)
+   dropped FOR A CARDINALITY-ONE ATTRIBUTE ONLY: Datomic derives that retraction
+   itself, so replaying ours too records it twice. Measured against Datomic:
+   `[[:db/add e :p/age 31]]` alone yields tx-data carrying both the assertion and
+   `[e :p/age 30 false]`, and sending our own retraction as well records it
+   twice.
+
+   For CARDINALITY-MANY the same reasoning is false and the filter was silently
+   wrong: a retraction of v1 and an assertion of v2 are independent facts, and
+   Datomic derives nothing — measured, `[[:db/add e :p/tag \"c\"]]` yields only
+   the assertion. Dropping ours left the retracted value ALIVE in the target.
+   Measured end to end: source tags `#{y z}`, target `#{x y z}`.
+
+   `many-idents` is learned from the stream, like `ref-idents`. An attribute of
+   UNKNOWN cardinality keeps its retraction — the safe direction, since a
+   duplicate retraction is a log-fidelity blemish while a dropped one is wrong
+   data."
+  [group t eids ref-idents many-idents strip?]
+  (let [superseded (into #{} (keep (fn [[e a _ _ op]]
+                                     (when (and op (not (many-idents a))) [e a])))
+                         group)
         ref->      (fn [e] (if (= e t) "datomic.tx" (or (@eids e) (str "e" e))))]
     (into []
           (comp
@@ -431,17 +479,27 @@
    Returns `{:transactions n :eids {source-eid datomic-eid}}` from `:close`."
   ([conn] (sink conn {}))
   ([conn {:keys [strip-datahike-schema?] :or {strip-datahike-schema? true}}]
-   {:open  (fn [_opts] {:eids (atom {}) :refs (atom #{}) :idents (atom {}) :n 0})
-    :write (fn [{:keys [eids refs idents] :as ctx} records]
+   {:open  (fn [_opts] {:eids (atom {}) :refs (atom #{}) :idents (atom {})
+                        :many (atom #{}) :n 0})
+    :write (fn [{:keys [eids refs idents many] :as ctx} records]
              ;; learn the schema from the stream, as the dump's own importer does
              (doseq [[e a v _ op] records]
                (when (and op (= a :db/ident))     (swap! idents assoc e v))
-               (when (and op (= a :db/valueType) (= v :db.type/ref)) (swap! refs conj e)))
-             (let [ref-idents (into #{} (keep @idents) @refs)]
+               (when (and op (= a :db/valueType) (= v :db.type/ref)) (swap! refs conj e))
+               ;; cardinality, for the superseded filter. Learned from the STREAM
+               ;; rather than looked up in the target: `sink-tx-data` runs before
+               ;; either half is committed, so a target lookup misses on exactly
+               ;; the transaction that installs a card-many attribute and writes
+               ;; to it — the one where it matters most.
+               (when (and op (= a :db/cardinality) (= v :db.cardinality/many))
+                 (swap! many conj e)))
+             (let [ref-idents  (into #{} (keep @idents) @refs)
+                   many-idents (into #{} (keep @idents) @many)]
                (reduce
                 (fn [c group]
                   (let [t  (nth (first group) 3)
-                        td (sink-tx-data group t eids ref-idents strip-datahike-schema?)
+                        td (sink-tx-data group t eids ref-idents many-idents
+                                         strip-datahike-schema?)
                         ;; DATOMIC REQUIRES SCHEMA IN AN EARLIER TRANSACTION than
                         ;; its first use; datahike accepts an attribute and the
                         ;; datom using it in ONE transaction, and `export-db`
@@ -482,21 +540,31 @@
                                                            (contains? installed a))
                                                          dat)))
                         [sch dat] (if needs-split? [sch dat] [[] td])
-                        ;; The split transaction needs the SOURCE's time too, one
-                        ;; millisecond earlier so the two still ascend. Without it
-                        ;; Datomic stamps the schema transaction with the wall
-                        ;; clock, which advances the basis past every historical
-                        ;; instant that follows — measured:
+                        ;; The split transaction needs the SOURCE's time too.
+                        ;; Without it Datomic stamps the schema transaction with
+                        ;; the wall clock, which advances the basis past every
+                        ;; historical instant that follows — measured:
                         ;; `:db.error/past-tx-instant … 2021-01-01 is older than
                         ;; database basis`, on a FRESH database, caused entirely by
-                        ;; the split. The schema's own installation time is
-                        ;; therefore approximate (source instant minus 1ms); its
-                        ;; content and its ordering are exact.
+                        ;; the split.
+                        ;;
+                        ;; The SAME instant, not one millisecond earlier. Datomic
+                        ;; accepts an equal `:db/txInstant` and rejects an earlier
+                        ;; one (measured both ways), and ordering between the two
+                        ;; halves is carried by `t`, not by the instant. The `dec`
+                        ;; this replaces made the schema half's time approximate
+                        ;; for no benefit, and was reachable as a FAILURE: two
+                        ;; source transactions sharing a millisecond put the
+                        ;; synthetic instant before the previous transaction, and
+                        ;; the export aborted mid-way with `:db.error/past-tx-instant`
+                        ;; leaving the target half-migrated. datahike's own
+                        ;; allocator is strictly monotonic, but caller-supplied
+                        ;; `:db/txInstant` in `:tx-meta` overrides it, and an
+                        ;; imported database inherits whatever ties its source had.
                         inst (some (fn [[_ _ a v]] (when (= a :db/txInstant) v)) dat)
                         sch  (cond-> sch
                                (and (seq sch) inst)
-                               (conj [:db/add "datomic.tx" :db/txInstant
-                                      (java.util.Date. (dec (.getTime ^java.util.Date inst)))]))
+                               (conj [:db/add "datomic.tx" :db/txInstant inst]))
                         commit! (fn [c' d]
                                   (if (empty? d)
                                     c'
@@ -506,8 +574,33 @@
                                           (if (= k "datomic.tx")
                                             (swap! eids assoc t id)
                                             (swap! eids assoc (parse-long (subs k 1)) id))))
-                                      (update c' :n inc))))]
-                    (-> c (commit! sch) (commit! dat))))
+                                      (update c' :n inc))))
+                        ;; TEMPIDS DO NOT SPAN TRANSACTIONS. `td` was built once,
+                        ;; before the split, so both halves carry the same tempid
+                        ;; STRING for a source eid — and Datomic resolves the same
+                        ;; string in two transactions to two DIFFERENT entities.
+                        ;; An entity with a schema datom and a data datom in one
+                        ;; source transaction therefore became two entities, with
+                        ;; the ident on one and the data on the other, silently.
+                        ;; Measured: `{:db/ident :color/red :p/name "Red"}` landed
+                        ;; as two entities and `(:p/name (d/entity db :color/red))`
+                        ;; was nil.
+                        ;;
+                        ;; `commit! sch` fills `eids` for everything the schema
+                        ;; half created, so the data half is re-resolved against it
+                        ;; here — after that commit, not before.
+                        resolve-tempid (fn [x]
+                                         (if (and (string? x) (not= x "datomic.tx"))
+                                           (or (@eids (parse-long (subs x 1))) x)
+                                           x))
+                        rebuild (fn [d]
+                                  (mapv (fn [[op e a v]]
+                                          [op (resolve-tempid e) a (resolve-tempid v)])
+                                        d))]
+                    (let [c (commit! c sch)]
+                      ;; rebuilt only when a schema half actually ran; otherwise
+                      ;; `dat` is `td` untouched and there is nothing to resolve.
+                      (commit! c (if (seq sch) (rebuild dat) dat)))))
                 ctx
                 (partition-by #(nth % 3) records))))
     :close (fn [{:keys [n eids]}] {:transactions n :eids @eids})}))
