@@ -940,12 +940,44 @@
                                 "this exporter, and its contents cannot be trusted.")
                            {:error :import/missing-checksum :file file})))
          (let [cf (validate-chunk-file (str source) file)]
+            ;; A chunk the manifest names and the directory does not hold is the
+            ;; most ordinary corruption there is — a file lost in transfer. The
+            ;; store medium has said `:import/missing-chunk` for it all along
+            ;; (`store/read-chunk`), and every catch set here already lists that
+            ;; error; only the throw site was missing, so on a filesystem dump it
+            ;; surfaced as a raw `FileNotFoundException` from `io/input-stream`
+            ;; two frames down. `verify` turned that into an exception escaping
+            ;; the call an operator makes to ASK whether a backup is intact,
+            ;; while the identical damage on a store came back as a finding.
+            ;;
+            ;; Checked HERE rather than in `validate-chunk-file`, which is also
+            ;; called by `manifest-of` — including from `verify`'s own catch, to
+            ;; recover a manifest for the finding. Throwing there would throw out
+            ;; of the handler that exists to report this.
+           (when-not (fs/exists? cf)
+             (throw (ex-info (str "Missing chunk file: " file
+                                  ". The manifest names it, but the dump directory "
+                                  "does not hold it.")
+                             {:error :import/missing-chunk :file file})))
            (when (not= sha256 (sha256-of-chunk cf (codec-of (:manifest dump))))
              (throw (ex-info (str "Checksum mismatch for chunk " file)
                              {:error :import/checksum-failed :file file})))))
         ;; A manifest that lists FEWER chunks than the directory holds is also
         ;; not a dump this exporter wrote: `:chunks []` with datoms-*.cbor files
         ;; present verified clean, because the loop above had nothing to iterate.
+        ;;
+        ;; NOT mirrored on the store medium, and that asymmetry is deliberate
+        ;; rather than the usual filesystem-first oversight. `konserve.core/keys`
+        ;; yields every TOP-LEVEL key in the store, not the keys under a prefix,
+        ;; so the store equivalent would enumerate a store that commonly also
+        ;; holds a live database — every index node — and on S3 that is a full
+        ;; bucket listing on a call an operator may run often. The motivating
+        ;; case is covered there anyway: `:chunks []` now leaves `:checksums
+        ;; :none`, which `:ok?` refuses. What remains uncovered is a manifest
+        ;; that declares a PROPER SUBSET of the chunks present and has had its
+        ;; counts and digest adjusted to match — which is internally consistent,
+        ;; and so indistinguishable from a legitimately smaller dump. That is a
+        ;; completeness question, answered at export.
        (let [declared (set (map :file chunks))
              extra    (->> (fs/list-names (str source))
                            (filter #(re-matches chunk-re %))

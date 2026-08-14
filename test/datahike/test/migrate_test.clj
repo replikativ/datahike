@@ -1004,6 +1004,45 @@
 
       (teardown src))))
 
+(deftest a-missing-chunk-is-a-finding-on-both-media
+  (testing "the most ordinary corruption there is — a file lost in transfer.
+
+            The store medium named it `:import/missing-chunk` all along, and
+            every catch set in `verify` already listed that error; only the
+            filesystem THROW SITE was missing, so `validate-chunk-file` passed a
+            path that did not exist to `io/input-stream` and a raw
+            `FileNotFoundException` escaped the call an operator makes to ask
+            whether a backup is intact. The identical damage on a store came
+            back as a finding. Both media are pinned here."
+    (let [src (utils/setup-db (mem-cfg {:history? false}))]
+      (d/transact src [{:db/ident :name :db/valueType :db.type/string
+                        :db/cardinality :db.cardinality/one}])
+      (d/transact src (vec (for [i (range 60)] {:name (str "p" i)})))
+
+      (testing "filesystem medium"
+        (let [path (str (System/getProperty "java.io.tmpdir") "/dh-mc-" (utils/get-time))
+              man (m/export-db @src path {:chunk-size 20})]
+          (is (.delete (io/file path (:file (last (:chunks man)))))
+              "the fixture must actually have removed a chunk")
+          (let [r (m/verify path)]
+            (is (false? (:ok? r)) "reported, not thrown")
+            (is (= :import/missing-chunk (:error (:integrity r)))
+                "and named, so an operator knows to look for a lost file rather
+                 than for corruption in bytes that do not exist"))))
+
+      (testing "store medium, same damage"
+        (let [store (ks/create-store {:backend :memory :id (java.util.UUID/randomUUID)}
+                                     {:sync? true})
+              target {:store store :prefix "mc"}
+              man (m/export-db @src target {:chunk-size 20})]
+          (k/dissoc store ["datahike.migrate" "mc" (:file (last (:chunks man)))] {:sync? true})
+          (let [r (m/verify target)]
+            (is (false? (:ok? r)))
+            (is (= :import/missing-chunk (:error (:integrity r)))
+                "the same answer on both media, which is what this test exists for"))))
+
+      (teardown src))))
+
 (deftest verify-does-not-certify-what-it-did-not-check
   (testing "`:tier0 :checksums` grew a `:none` value precisely so that \"there
             were no chunks and nothing was checked\" would stop reading like
