@@ -10,6 +10,7 @@
    [datahike.index.secondary.scriptum]
    [datahike.index.secondary.stratum]
    [datahike.migrate :as m]
+   [stratum.api :as st]
    [datahike.test.query-aggregates-test :refer [aggregate-contract]]))
 
 ;; Proximum requires Java 22+ (class file version 66.0).
@@ -777,3 +778,92 @@
             (is (= :accepted (decl [:p/emb]))
                 "while the supported shape — one index per vector attribute — is unaffected"))
           (finally (d/release conn)))))))
+
+;; ---------------------------------------------------------------------------
+;; Stratum: a transaction sets CELLS, and reads see the current row
+
+(defn- ^:private stratum-conn [vt?]
+  (let [cfg (retraction-cfg)]
+    (d/delete-database cfg) (d/create-database cfg)
+    (let [conn (d/connect cfg)]
+      (d/transact conn [{:db/ident :p/dept :db/valueType :db.type/string
+                         :db/cardinality :db.cardinality/one}
+                        {:db/ident :p/salary :db/valueType :db.type/long
+                         :db/cardinality :db.cardinality/one}])
+      (d/transact conn [{:db/ident :idx/an :db.secondary/type :stratum
+                         :db.secondary/attrs [:p/dept :p/salary]
+                         :db.secondary/config (if vt? {:valid-time true} {})}])
+      (Thread/sleep 700)
+      conn)))
+
+(deftest stratum-update-touches-one-cell-and-leaves-one-row
+  (testing "the adapter used to hand-roll SCD2, and its transient could only
+            append a whole row or drop a whole row — `pending-adds` held only
+            the columns THIS transaction wrote and was treated as a complete
+            row. So a card-one update left a duplicate whose sibling columns
+            were nil, and `-sec-value` (`:limit 1`, unordered) returned the
+            stale one. Measured before: 2 rows, `:dept nil` on the new one,
+            salary 50000 after being set to 60000. `-columnar-aggregate` then
+            threw ArrayIndexOutOfBoundsException where it worked on a clean
+            dataset.
+
+            It now delegates to stratum's `upsert!`, which merges the cells
+            onto the existing row."
+    (let [conn (stratum-conn false)]
+      (try
+        (let [eid (get-in (d/transact conn [{:db/id -1 :p/dept "eng" :p/salary 50000}])
+                          [:tempids -1])
+              idx #(get (:secondary-indices @conn) :idx/an)]
+          (Thread/sleep 500)
+          (d/transact conn [{:db/id eid :p/salary 60000}])
+          (Thread/sleep 700)
+          (is (= 1 (st/row-count (.-dataset (idx)))) "one row, not a duplicate")
+          (is (= 60000 (sec/-sec-value (idx) :p/salary eid)) "the current value")
+          (is (= "eng" (sec/-sec-value (idx) :p/dept eid))
+              "and the column this transaction never mentioned survives")
+          (is (= [{:dept "eng" :_count 1 :avg 60000.0}]
+                 (sec/-columnar-aggregate (idx) {:group [:dept] :agg [[:avg :salary]]}))
+              "the index's own aggregate entry point stops throwing"))
+        (finally (d/release conn))))))
+
+(deftest stratum-retraction-clears-one-cell
+  (let [conn (stratum-conn false)]
+    (try
+      (let [eid (get-in (d/transact conn [{:db/id -1 :p/dept "eng" :p/salary 50000}])
+                        [:tempids -1])
+            idx #(get (:secondary-indices @conn) :idx/an)]
+        (Thread/sleep 500)
+        (d/transact conn [[:db/retract eid :p/salary 50000]])
+        (Thread/sleep 700)
+        (is (nil? (sec/-sec-value (idx) :p/salary eid)) "the retracted cell is cleared")
+        (is (= "eng" (sec/-sec-value (idx) :p/dept eid))
+            "and the entity's other attribute survives — `pending-retracts` names
+             [entity attribute], where it used to name the entity and drop its row"))
+      (finally (d/release conn)))))
+
+(deftest stratum-vt-mode-reads-the-current-row-and-stamps-a-real-window
+  (testing "two fixes that delegation does not give for free. `-sec-value` had
+            no current-row filter, so it read a SUPERSEDED row; and both axis
+            filters are needed, because an SCD2-on-both-axes update closes the
+            old row's `_system_to` while leaving `_valid_to` open — that is the
+            audit chain. Separately, `tx-meta-for-secondary` found no
+            `:db/txInstant` (the in-progress tx entity is not in EAVT yet), so
+            every row was stamped `_valid_from 0` AND `_valid_to 0` — a
+            zero-width window, valid at no instant."
+    (let [conn (stratum-conn true)]
+      (try
+        (let [eid (get-in (d/transact conn [{:db/id -1 :p/dept "eng" :p/salary 50000}])
+                          [:tempids -1])
+              idx #(get (:secondary-indices @conn) :idx/an)]
+          (Thread/sleep 500)
+          (d/transact conn [{:db/id eid :p/salary 60000}])
+          (Thread/sleep 700)
+          (is (= 60000 (sec/-sec-value (idx) :p/salary eid))
+              "the CURRENT generation, not a superseded one")
+          (let [rows (st/q {:from (.-dataset (idx))
+                            :select [:eid :_valid_from :_valid_to]})]
+            (is (every? #(pos? (:_valid_from %)) rows)
+                "every row carries a real instant, not 0")
+            (is (not-any? #(= (:_valid_from %) (:_valid_to %)) rows)
+                "and no row has a zero-width validity window")))
+        (finally (d/release conn))))))

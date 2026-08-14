@@ -344,7 +344,22 @@
    the original asserting tx's id, but vt-aware adapters need the
    writing tx's meta to close `_valid_to` correctly."
   [db ^Datom _datom]
-  (meta-for-tx-id db (inc (long (:max-tx db)))))
+  (let [m (meta-for-tx-id db (inc (long (:max-tx db))))]
+    ;; `:db/txInstant` is a datom ON the tx entity, and the in-progress tx's
+    ;; entity is not in EAVT yet when a data datom is being applied — so the
+    ;; seek above finds nothing and a vt-aware adapter received no instant at
+    ;; all. Measured downstream in the stratum index: every row stamped
+    ;; `_valid_from 0` AND `_valid_to 0`, a zero-width window, so a superseded
+    ;; generation was valid at no instant and `FOR VALID_TIME AS OF t` could
+    ;; never see it. The system axis was unaffected because it reads a clock.
+    ;;
+    ;; The fallback is that same clock — the one `:db/txInstant` is itself
+    ;; derived from — so the stamp is the writing moment rather than the
+    ;; instant the tx entity will record. They differ by the transaction's own
+    ;; duration, which is the accuracy a secondary index can have while the tx
+    ;; that would tell it exactly is still running.
+    (cond-> m
+      (nil? (:db/txInstant m)) (assoc :db/txInstant (get-date)))))
 
 (defn- update-secondary-indices
   "Update all secondary indices that cover the given attribute.
