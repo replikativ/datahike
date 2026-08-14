@@ -424,7 +424,15 @@
                                 for why they were unified.
      :sort-buffer  1000000      datoms per in-memory external-sort run
      :sort?        true         false ⇒ no-scratch streaming order (see below)
-     :progress-fn  nil          (fn [{:keys [phase datoms]}])
+     :progress-fn  nil          (fn [{:keys [phase datoms]}]). `:datoms` means one
+                                of two things, and `:phase` says which: a
+                                PER-UNIT phase (`:chunk`, `:sink-chunk`,
+                                `:batch`) reports the datoms in that unit, so
+                                they sum to the total; a MILESTONE phase
+                                (`:normalise`, `:build-indexes`,
+                                `:sink-complete`, `:done`) reports the running
+                                total so far. Summing the milestones would
+                                double-count.
      :xform        nil          a TRANSDUCER over `[e a v t op]` records, the
                                 mirror of `import-db`'s. Applied BEFORE the sort
                                 and before the digest, so the manifest describes
@@ -773,7 +781,14 @@
                            (let [chunk (first cs)
                                  ctx'  (<?- ((:write sink) ctx chunk))]
                              (vreset! latest ctx')
-                             (progress {:phase :sink-chunk :datoms (+ n (count chunk))})
+                             ;; THIS chunk's count, not the running total. Every
+                             ;; other per-unit event (`:chunk`, `:batch`) reports
+                             ;; the unit, and a caller cannot tell which it is
+                             ;; getting from a bare number — one that summed
+                             ;; these would have counted a 3-chunk dump six
+                             ;; times. The running total is still available: it
+                             ;; is what `:sink-complete` carries.
+                             (progress {:phase :sink-chunk :datoms (count chunk)})
                              (recur (next cs) ctx' (+ n (count chunk))))))
                        (catch #?(:clj Exception :cljs :default) e e))
                  ;; ONCE, on both paths. Closing inside the loop's success branch
@@ -860,15 +875,14 @@
                                               "manifest.edn.")
                                          {:error :import/not-a-dump :source f}
                                          e))))
-            _ (when-not (contains? manifest manifest-key)
-                ;; Present and parseable, but not ours — any EDN map would have
-                ;; got this far and then been treated as a dump with no chunks,
-                ;; which `verify` reported as intact.
-                (throw (ex-info (str "Not a datahike dump: " f
-                                     ". manifest.edn is missing " manifest-key
-                                     ", so it was not written by datahike's export.")
-                                {:error :import/not-a-dump :source f
-                                 :manifest-keys (vec (sort (keys manifest)))})))
+            ;; The SAME check the store medium gets from `assert-dump-manifest!`.
+            ;; Present and parseable is not enough — any EDN map got this far and
+            ;; was then treated as a dump with no chunks, which `verify` reported
+            ;; as intact. It also refuses a dump from a NEWER datahike, which
+            ;; this arm did not: `assert-dump-manifest!` is not on the filesystem
+            ;; route at all, so a version-2 dump verified `:ok? true` here while
+            ;; the store medium refused it.
+            _ (mman/assert-format-version! manifest f)
             files    (mapv #(validate-chunk-file f (:file %)) (:chunks manifest))]
         {:manifest manifest :legacy? false :files files})
 
@@ -2866,6 +2880,16 @@
      (async+sync
       (:sync? opts) *default-sync-translation*
       (go-try-
+       ;; Warned for BOTH media, above the branch. It used to sit in the
+       ;; filesystem arm only, so a store-medium import with `:checksums :skip`
+       ;; ran silently — and the store medium is the one an operator cannot open
+       ;; by hand to inspect. That is the same one-sided treatment of this option
+       ;; that `store/read-chunk` records fixing on the enforcement side; this is
+       ;; the reporting side of it.
+       (when (= :skip (:checksums opts))
+         (warn! (str "[datahike.migrate] importing WITHOUT verifying chunk "
+                     "checksums (:checksums :skip). Corruption in this dump "
+                     "will be loaded silently: " source)))
        (if (mstore/store-target? source)
        ;; NOT `try/finally`. `run-import` returns a CHANNEL in async mode, so a
        ;; `finally` fires the moment it is handed back — before a single chunk
@@ -2903,11 +2927,7 @@
                      (catch #?(:clj Exception :cljs :default) e e))]
            (<?- (mstore/close m opts))
            (if (instance? #?(:clj Throwable :cljs js/Error) res) (throw res) res))
-         (let [_ (when (= :skip (:checksums opts))
-                   (warn! (str "[datahike.migrate] importing WITHOUT verifying chunk "
-                               "checksums (:checksums :skip). Corruption in this dump "
-                               "will be loaded silently: " source)))
-               dump (open-dump source opts)]
+         (let [dump (open-dump source opts)]
            (if (:legacy? dump)
              ;; `*import-batch-size*` read HERE, so the value is the caller's
              ;; `binding` rather than a root value captured further in.
@@ -3105,6 +3125,7 @@
                                (catch #?(:clj clojure.lang.ExceptionInfo :cljs :default) e
                                  (let [{:keys [error]} (ex-data e)]
                                    (if (#{:import/missing-checksum :import/checksum-failed
+                                          :import/missing-chunk
                                           :import/bad-chunk-path :import/not-a-dump
                                           ;; A broken gzip member is corruption too.
                                           ;; `compress/decompress-bytes` says so
@@ -3144,6 +3165,7 @@
                       (catch #?(:clj clojure.lang.ExceptionInfo :cljs :default) e
                         (let [{:keys [error]} (ex-data e)]
                           (if (#{:import/missing-checksum :import/checksum-failed
+                                 :import/missing-chunk
                                  :import/undeclared-chunks :import/corrupt-chunk} error)
                             [(manifest-of source) {:error error :message #?(:clj (.getMessage e)
                                                                             :cljs (.-message e))
@@ -3223,6 +3245,7 @@
          ;; re-reads, which costs a second pass, but only on a dump already
          ;; known to be corrupt. The success path still reads once.
          (if (#{:import/missing-checksum :import/checksum-failed
+                :import/missing-chunk
                 :import/undeclared-chunks :import/bad-chunk-path :import/not-a-dump
                 :import/corrupt-chunk}
               (:error (ex-data e)))

@@ -654,6 +654,49 @@
                (< (long datom-count) (long source-datom-count)))
       (- (long source-datom-count) (long datom-count)))))
 
+(defn assert-format-version!
+  "Refuse a manifest that is not ours, or that is NEWER than we can read.
+
+   Its own function because both media must run it and they open a dump by
+   different routes: the store medium through `assert-dump-manifest!`, the
+   filesystem through `migrate/open-dump`. Spelled twice it would be enforced
+   once — which is exactly how the fail-open on `:sha256` came to hold on one
+   medium and not the other, and how `verify` on a filesystem dump came to
+   report `:ok? true` for a format it had never seen.
+
+   Presence used to be the whole check: the key was read for existence and its
+   VALUE ignored, so a dump written by a FUTURE datahike — the one case the key
+   exists to catch — was read under version-1 rules. Whatever a later version
+   changes about chunk or record layout, reading it that way is a silent
+   misread.
+
+   Only NEWER is refused. An older dump stays readable; that is the promise the
+   version number makes, and there is nothing below 1 to read yet."
+  [manifest source]
+  (when-not (contains? manifest manifest-key)
+    (throw (ex-info (str "Not a datahike dump: " (pr-str source) " has a manifest with no "
+                         manifest-key ", so it was not written by datahike's export.")
+                    {:error :import/not-a-dump :source source
+                     :manifest-keys (vec (sort (keys manifest)))})))
+  (let [v (get manifest manifest-key)]
+    ;; Two faults, two errors. A non-integer under the key is not a version at
+    ;; all — the manifest was not written by our export — and saying "newer than
+    ;; this datahike understands" would send the reader off to upgrade for
+    ;; nothing.
+    (when-not (int? v)
+      (throw (ex-info (str "Not a datahike dump: " (pr-str source) " has " manifest-key " = "
+                           (pr-str v) ", which is not a format version.")
+                      {:error :import/not-a-dump :source source :found v})))
+    (when (> (long v) (long format-version))
+      (throw (ex-info (str "Dump format version " v " is newer than this datahike "
+                           "understands (" format-version "). Upgrade datahike to import it; "
+                           "reading it under the older rules would misread the dump rather "
+                           "than fail.")
+                      {:error :import/unsupported-format-version
+                       :source source
+                       :found v
+                       :supported format-version})))))
+
 (defn assert-dump-manifest!
   "Guards that a manifest must pass before ANY chunk of it is read, on EVERY
    medium. Throws; returns nil.
@@ -687,11 +730,7 @@
                          " commit marker, so a source without one is either not a dump"
                          " or an export that did not finish.")
                     {:error :import/not-a-dump :source source})))
-  (when-not (contains? manifest manifest-key)
-    (throw (ex-info (str "Not a datahike dump: " (pr-str source) " has a manifest with no "
-                         manifest-key ", so it was not written by datahike's export.")
-                    {:error :import/not-a-dump :source source
-                     :manifest-keys (vec (sort (keys manifest)))})))
+  (assert-format-version! manifest source)
   (doseq [{:keys [file sha256]} (:chunks manifest)]
     (when-not (and (string? file) (re-matches chunk-re (str file)))
       (throw (ex-info (str "Dump manifest names a chunk this version will not read: "

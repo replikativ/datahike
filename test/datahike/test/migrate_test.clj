@@ -1168,6 +1168,28 @@
         (let [d (io/file (str base "-notours"))]
           (.mkdirs d)
           (spit (io/file d "manifest.edn") (pr-str {:chunks [] :semantic-digest {:count 0}}))
+          (is (= :import/not-a-dump (err (.getPath d))))))
+
+      (testing "a dump from a NEWER datahike. The version key's presence was
+                checked and its VALUE then ignored, so the one case the key
+                exists to catch — a format this build does not know — was read
+                under version-1 rules. Whatever a future version changes about
+                chunk or record layout, reading it that way is a silent misread,
+                and silent misreads are what every other guard on this path
+                exists to stop."
+        (let [d (io/file (str base "-newer"))]
+          (.mkdirs d)
+          (spit (io/file d "manifest.edn")
+                (pr-str {mman/manifest-key (inc mman/format-version)
+                         :chunks [] :semantic-digest {:count 0}}))
+          (is (= :import/unsupported-format-version (err (.getPath d))))))
+
+      (testing "and a version key holding something that is not a version —
+                reported as not-a-dump, not as a version to upgrade for"
+        (let [d (io/file (str base "-badver"))]
+          (.mkdirs d)
+          (spit (io/file d "manifest.edn")
+                (pr-str {mman/manifest-key "1" :chunks [] :semantic-digest {:count 0}}))
           (is (= :import/not-a-dump (err (.getPath d)))))))))
 
 (deftest verify-still-accepts-a-real-dump

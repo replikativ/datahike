@@ -246,8 +246,15 @@
      (let [codec (get manifest :compression :none)
            stored (<?- (k/bget store (ckey prefix file) (kb/to-bytes opts) opts))]
        (when (nil? stored)
+         ;; `:import/missing-chunk`, not `:import/checksum-failed`. The chunk is
+         ;; not there at all, and telling an operator their checksum failed sends
+         ;; them looking for corruption in bytes that do not exist — while the
+         ;; actual cause is a manifest naming a chunk the store does not hold.
+         ;; Distinct from `:import/incomplete-dump`, which is the manifest
+         ;; declaring its own chunk list short; here the manifest is complete and
+         ;; the STORE is missing a member.
          (throw (ex-info (str "Missing chunk in store: " file)
-                         {:error :import/checksum-failed :file file})))
+                         {:error :import/missing-chunk :file file})))
        ;; Decompress BEFORE hashing: `:sha256` is over the records, so that a
        ;; dump compares equal however it was stored (see `migrate.compress`).
        (let [content (mz/decompress-bytes codec stored {:file file})]

@@ -400,10 +400,19 @@ Options:
 | `:spool-chunk-size` | 100k | records per spool file |
 | `:dangling-sample` | 10 | how many dangling refs `:check-refs?` includes in its report |
 | `:allow-partial?` | `false` | import a dump with an unexplained shortfall anyway |
-| `:progress-fn` | — | called with `{:phase … :datoms …}` |
+| `:progress-fn` | — | called with `{:phase … :datoms …}` (see below) |
+
+`:progress-fn` receives `{:phase … :datoms …}`, where `:datoms` means one of two
+things and `:phase` tells you which:
+
+| kind | phases | `:datoms` is |
+|---|---|---|
+| per-unit | `:chunk`, `:sink-chunk`, `:batch` | the datoms in THAT unit — these sum to the total |
+| milestone | `:normalise`, `:build-indexes`, `:sink-complete`, `:done` | the running total so far — summing these double-counts |
 
 Failures are `ex-info` with a namespaced `:error` (e.g.
-`:import/config-mismatch`, `:import/checksum-failed`, `:import/bad-chunk-path`,
+`:import/config-mismatch`, `:import/checksum-failed`, `:import/missing-chunk`,
+`:import/unsupported-format-version`, `:import/bad-chunk-path`,
 `:import/incomplete-dump`, `:import/apply-failed`, `:import/verify-unavailable`,
 `:import/build-indexes-refused`).
 

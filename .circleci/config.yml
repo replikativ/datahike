@@ -414,6 +414,7 @@ workflows:
           requires:
             - build
       - datomic-test:
+          context: ghcr-read-package
           requires:
             - build
       - migrate-test:
