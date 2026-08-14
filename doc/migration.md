@@ -197,6 +197,37 @@ and is the commit marker — a dump directory without a `manifest.edn` is
 incomplete. Export holds an immutable db value, so it is
 consistent even under concurrent writes.
 
+### Transforming on the way out: `export-transformed`
+
+`export-db` produces a **faithful** dump and does not take a transform. To
+filter, redact, or otherwise emit something that is deliberately not a copy, use
+`export-transformed`, where the transducer is a required positional argument:
+
+```clojure
+(m/export-transformed @conn "/backups/acme" only-acme {:history? true})
+```
+
+That is not ceremony. As an option a transform is omissible, and omitting it
+means "no transform" — so for a per-tenant dump the failure mode of forgetting
+it was a complete, valid, *verified* dump of every tenant, with
+`:transformed? false` in the manifest and `verify` reporting `:ok? true`. Every
+signal agreed, because the result was a correct full backup; it just was not the
+one that was asked for. A positional argument cannot be misspelled, cannot be
+dropped by a map merge, and omitting it is an arity error.
+
+**Which side to transform on.** The export transform is the *disclosure
+boundary* — filtering to a tenant, redacting a value, replacing it with a
+tombstone: anything whose omission would let data out that should not. Doing
+that on import is too late, because the dump already exists with the data in it.
+
+Reshaping that should happen when data *lands* — renaming an attribute for a
+schema change, rewriting a value representation, splitting one record into
+several — belongs on `import-db`'s `:xform`, which is still an ordinary option.
+Omitting those yields visibly un-migrated data rather than silent
+over-disclosure, and keeping them on import leaves the dump a faithful artifact
+you can re-run the transform against, with the original intact if the transform
+was wrong.
+
 ### Export to an external store (S3 / S3-compatible / no local disk)
 
 For diskless deployments (e.g. Docker with no persistent volume), the dump target
@@ -605,8 +636,8 @@ Prefer it whenever the target should be a copy.
 
 This recipe reconstructs a database from its datoms, which is slower but can
 **transform on the way** — a different config, a different index, or a per-tenant
-split via export `:xform` (see [Export](#export)). Use it when the target is
-meant to differ from the source, not when it is meant to match.
+split via `export-transformed` (below). Use it when the target is meant to differ
+from the source, not when it is meant to match.
 
 ## Data protection (PII / right-to-erasure)
 

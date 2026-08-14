@@ -75,9 +75,13 @@
   (go (let [store (<! (ks/create-store {:backend :memory :id (random-uuid)}
                                        {:sync? false}))
             target {:store store :prefix "fault"}
-            man (<! (m/export-db @conn target (merge {:history? true :sort? false
-                                                      :chunk-size 4}
-                                                     opts)))]
+            ;; `:xform` goes to `export-transformed`, which is where a transform
+            ;; lives now — positional there so it cannot be forgotten. This
+            ;; helper still takes it in a map because these tests vary it as data.
+            opts* (merge {:history? true :sort? false :chunk-size 4} opts)
+            man (<! (if-let [xf (:xform opts*)]
+                      (m/export-transformed @conn target xf (dissoc opts* :xform))
+                      (m/export-db @conn target opts*)))]
         {:target target :chunks (count (:chunks man))})))
 
 (defn- import-into!
