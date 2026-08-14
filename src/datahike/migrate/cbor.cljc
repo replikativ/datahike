@@ -57,10 +57,15 @@
      JVM   [:bytes [-1 -128 1]]
      cljs  [:bytes [255 128 1]]
 
-   so a fingerprint built on one runtime disagreed with the same data on the
-   other. `verify-against` compares a dump to a live database, which is exactly
-   the cross-runtime case, and it reported a mismatch on correct data for any
-   `:db.type/bytes` value holding a byte >= 0x80.
+   so the same data normalised differently depending on where it ran.
+
+   The exposure is the SORT KEY, not `verify-against`. `verify-against` is
+   JVM-only (`assert-jvm-only!`) and computes both fingerprints in one process,
+   so its two sides always agreed with each other. But `sort.cljc` builds its
+   key from `norm-val`, so a dump written on Node ordered records differently
+   from one written on the JVM — different chunk boundaries, different chunk
+   `:sha256`, for the same database. That contradicts the byte-identical-dump
+   property `doc/migration.md` says external signing rests on.
 
    hasch already solves this — it hashes `byte[]`/`Uint8Array`,
    `float[]`/`Float32Array` and `double[]`/`Float64Array` to the same value
