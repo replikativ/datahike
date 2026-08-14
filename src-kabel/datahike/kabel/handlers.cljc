@@ -100,11 +100,12 @@
               (when-let [peer (get-peer-for-store store-id)]
                 (tx-broadcast/publish-tx-report! peer store-id tx-report request-id))
 
-        ;; Return the tx-report as a plain map. This used to rely on the
-        ;; fressian write handler to strip the live DBs, which made a correct
-        ;; wire representation a property of one codec -- see
-        ;; tx-broadcast/tx-report->wire.
-              (tx-broadcast/tx-report->wire tx-report))
+        ;; Return the op's result unchanged. Stripping the live DBs out of a
+        ;; TxReport is the CODEC's job, done by the tag-27 write handler
+        ;; `datahike.cbor` registers for the TxReport class — so it happens for
+        ;; a TxReport and only for a TxReport. Projecting here instead meant
+        ;; projecting every op's result, and `gc-storage!` returns a set.
+              tx-report)
 
             (throw (ex-info "Store not found for store-id"
                             {:store-id store-id

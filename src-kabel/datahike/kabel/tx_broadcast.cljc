@@ -17,7 +17,9 @@
             #?(:clj  [replikativ.logging :refer [debug info warn]]
                :cljs [replikativ.logging :refer [debug info warn] :include-macros true])
             #?(:clj [clojure.core.async :refer [go put! chan close!]]
-               :cljs [clojure.core.async :refer [go put! chan close!] :include-macros true])))
+               :cljs [clojure.core.async :refer [go put! chan close!] :include-macros true])
+            #?(:cljs [datahike.db :refer [TxReport]]))
+  #?(:clj (:import [datahike.db TxReport])))
 
 ;; =============================================================================
 ;; Topic Naming
@@ -70,57 +72,29 @@
     (pubsub/unregister-topic! peer topic)
     topic))
 
-(defn tx-report->wire
-  "Project a TxReport to a plain map fit for the wire.
 
-  `:db-before` / `:db-after` are live DB values holding index roots, a storage
-  handle and schema caches -- none of which may cross a connection. `db->stored`
-  is what strips them, and until now it was called from inside the FRESSIAN
-  WRITE HANDLER, which made a correct wire representation a property of one
-  codec rather than of this namespace.
-
-  Doing it here instead is codec-agnostic and removes a hard blocker: a
-  TxReport is a defrecord, and a serializer that handles records natively (as
-  CBOR tag 27 does) writes the record's raw fields with no opportunity for a
-  write handler to intervene. Under such a codec the stripping would simply
-  never happen, and the live state would go out on the wire with no error.
-
-  The client already expects a plain map here -- `datahike.kabel.writer`'s
-  `reconstruct-tx-report` / `reconstruct-stored-db` branch on stored-map vs
-  live-DB -- so this changes nothing downstream."
-  ;; Only project values that ARE databases. The old fressian handler fired
-  ;; solely on a genuine TxReport record, so it never met anything else; doing
-  ;; this at the publish site means we do, and a caller (a test stub, a
-  ;; partially-built report) may legitimately carry a plain map here. Passing
-  ;; those through unchanged preserves the previous behaviour exactly.
-  [tx-report]
-  ;; Only project something that IS a tx-report. This runs on whatever the
-  ;; writer op returned, and not every op returns one:
-  ;;
-  ;;   * `gc-storage!` returns a SET of swept ids. `(into {} #{uuid …})` throws
-  ;;     `IllegalArgumentException: Don't know how to create ISeq from
-  ;;     java.util.UUID`, server-side, so `d/gc-storage` over a kabel peer died
-  ;;     outright. Reproduced end to end.
-  ;;   * `build-secondary-index!` returns `{:idx-ident … :index …}`. That one is
-  ;;     a map, so it survived `into` — and then `update` ADDED `:db-before nil`
-  ;;     and `:db-after nil` to it, because `update` on an absent key calls the
-  ;;     function on nil and assocs the result. Quieter, and still wrong.
-  ;;
-  ;; So the guard is `contains? :db-after`, not `map?`: it admits the TxReport
-  ;; defrecord and any genuine report map, and passes everything else through
-  ;; untouched. A `map?` guard would have fixed only the first of the two.
-  ;;
-  ;; NOT pre-existing. On main this projection did not exist — the handler
-  ;; returned the raw report and fressian's write handler fired only on a real
-  ;; `TxReport` record, so a set never met it. Moving the projection here (for
-  ;; the codec-agnosticism argued above) is what put every op's result through
-  ;; it.
-  (if-not (contains? tx-report :db-after)
-    tx-report
-    (let [->stored (fn [db] (if (dbu/db? db) (second (dw/db->stored db false)) db))]
-      (-> (into {} tx-report)
-          (update :db-before ->stored)
-          (update :db-after ->stored)))))
+;; `tx-report->wire` USED TO LIVE HERE, and its removal is the point.
+;;
+;; It was moved out of the fressian write handler on the reasoning that a
+;; correct wire representation should not be a property of one codec — a
+;; serializer handling records natively (as CBOR tag 27 does) would write the
+;; raw fields and the live DBs would go out with no error. Sound hazard, wrong
+;; remedy: `datahike.cbor` REGISTERS a tag-27 write handler for TxReport that
+;; projects, so the hazard is answered by registration, exactly as fressian
+;; answered it — and `datahike.test.remote-cbor-test` is the test that stops a
+;; type going unregistered.
+;;
+;; What the move cost was the DISPATCH. A write handler is keyed on the TYPE, so
+;; it met a TxReport and nothing else. A publish site meets whatever the op
+;; returned, and `gc-storage!` returns a SET: `(into {} #{uuid …})` threw
+;; server-side, so `d/gc-storage` over a kabel peer died outright. A `map?` guard
+;; would not have been enough either, because `update` on an absent key ADDS it —
+;; `build-secondary-index!`'s result map was gaining `:db-before nil` and
+;; `:db-after nil` on the wire.
+;;
+;; So the projection is back to one definition, in `datahike.cbor`, reached only
+;; through the handler registered for the TxReport class. Ops return their own
+;; results unchanged.
 
 (defn publish-tx-report!
   "Publish a tx-report to all subscribers. Called after each transaction.
@@ -135,7 +109,31 @@
   ([peer store-id tx-report]
    (publish-tx-report! peer store-id tx-report nil))
   ([peer store-id tx-report request-id]
-   (let [topic (tx-report-topic store-id)
+   ;; NOT every op that reaches this function produced a transaction. The
+   ;; server has ONE global dispatch handler, so it hands us whatever
+   ;; `writer/dispatch!` returned, and `default-write-fn-map` holds three ops
+   ;; that are not report producers: `gc-storage!` (returns a SET of freed
+   ;; keys), `build-secondary-index!` and `install-secondary-index!` (plain
+   ;; status maps). The set threw outright — `dissoc` on a set is a
+   ;; ClassCastException — so `d/gc-storage` over a kabel peer died at the
+   ;; broadcast. The maps were quieter and worse: they went out on the
+   ;; tx-report topic, where a subscriber reads them as transactions.
+   ;;
+   ;; So the topic decides. A subscriber to `tx-report-topic` asked for
+   ;; transaction reports; an op that made no transaction has nothing to say
+   ;; here and is simply not published. Keyed on the TYPE rather than on shape
+   ;; — a status map has `:tx-data` no more than a set does, but `update` on an
+   ;; absent key ADDS it, so a shape guard invites exactly the silent
+   ;; key-fabrication this whole path already suffered once.
+   (if-not (instance? TxReport tx-report)
+     (do (debug {:event ::skip-non-tx-report
+                 :store-id store-id
+                 :request-id request-id
+                 :result-type (type tx-report)})
+         ;; A channel, because every other return from this function is one and
+         ;; the caller `<?`s it.
+         (go {:ok true :sent-count 0 :skipped :not-a-tx-report}))
+     (let [topic (tx-report-topic store-id)
          ;; `:migration` STRIPPED here and only here.
          ;;
          ;; It is an import's source-id -> target-id map, threaded batch to
@@ -152,14 +150,19 @@
          ;; growing across batches because the map accumulates. A million-entity
          ;; restore at the default `:batch-size` would fan roughly 33 MB of it
          ;; out to every subscriber, none of which looks at it.
-         payload {:tx-report (dissoc (tx-report->wire tx-report) :migration)
+         ;; `dissoc` on the record itself: `:migration` is an extension key, not
+         ;; one of TxReport's five fields, so this stays a TxReport and the
+         ;; codec's type-keyed handler still projects it on the way out. The
+         ;; strip is genuinely publish-specific — see below — which is why it
+         ;; stays here while the projection does not.
+         payload {:tx-report (dissoc tx-report :migration)
                   :store-id store-id
                   :request-id request-id}]
      (debug {:event ::publish-tx-report
              :store-id store-id
              :request-id request-id
              :max-tx (get-in tx-report [:db-after :max-tx])})
-     (pubsub/publish! peer topic payload))))
+       (pubsub/publish! peer topic payload)))))
 
 ;; =============================================================================
 ;; Client-Side API
