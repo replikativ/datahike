@@ -837,8 +837,14 @@
                    (into [:eid vt-from-col vt-to-col sys-from-col sys-to-col] attr-cols)
                    (into [:eid] attr-cols))
         stamp    (when vt?
+                   ;; `:db.valid/to` via `tx-meta->vt`, NOT the open sentinel.
+                   ;; A first transaction may declare a bounded validity window,
+                   ;; and hardcoding MAX here left it open — so the next write
+                   ;; OVERLAPPED it and triggered SCD2 surgery where the two
+                   ;; windows should simply have abutted. The system axis is
+                   ;; open by construction: a row just written is current.
                    {vt-from-col (tx-meta->vf tx-meta)
-                    vt-to-col   vt-open-sentinel
+                    vt-to-col   (tx-meta->vt tx-meta)
                     sys-from-col (tx-meta->sf tx-meta)
                     sys-to-col  vt-open-sentinel})
         rows     (mapv (fn [[eid cols]] (merge {:eid eid} stamp cols)) specs)
