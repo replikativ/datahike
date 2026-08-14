@@ -9,6 +9,7 @@
    [datahike.query :as q]
    [datahike.index.secondary.scriptum]
    [datahike.index.secondary.stratum]
+   [datahike.migrate :as m]
    [datahike.test.query-aggregates-test :refer [aggregate-contract]]))
 
 ;; Proximum requires Java 22+ (class file version 66.0).
@@ -673,3 +674,106 @@
                    '[:find (count-distinct ?x) :where [?e :num/v ?x]]]]
           (let [[ok? c r] (agree? (mk [10 10 40]) q)]
             (is ok? (str q " — columnar " (pr-str c) " vs reference " (pr-str r)))))))))
+
+;; ---------------------------------------------------------------------------
+;; Retraction granularity: a retraction names ONE datom, not the entity
+
+(defn- ^:private retraction-cfg []
+  {:store {:backend :memory :id (java.util.UUID/randomUUID)}
+   :index :datahike.index/persistent-set
+   :keep-history? false :schema-flexibility :write})
+
+(deftest scriptum-retraction-keeps-the-entitys-other-attributes
+  (testing "the retract branch deleted by `_entity_id` alone, which removed
+            EVERY document the entity had — all of its other indexed attributes
+            with it.
+
+            Measured before the fix: one entity with :doc/body and :doc/title,
+            both `:db.secondary/only` and both covered by one scriptum index;
+            retracting :doc/body left `-sec-value` returning nil for :doc/title
+            while the primary still held its content hash. So the database
+            reported the attribute present and the only copy of its text was
+            gone — the primary never holds it. `export-db` then refused
+            (`:export/secondary-only-unresolvable`), which is how it surfaced;
+            before the export learned to check hashes it wrote the HASH as the
+            title's value and reported success.
+
+            The fix is a composite `_ea` term, because `sc/delete-docs` takes a
+            single Lucene Term and a conjunction is therefore not expressible."
+    (let [cfg  (retraction-cfg)
+          _    (do (d/delete-database cfg) (d/create-database cfg))
+          conn (d/connect cfg)]
+      (try
+        (d/transact conn [{:db/ident :doc/body :db/valueType :db.type/string
+                           :db/cardinality :db.cardinality/one :db.secondary/only true}
+                          {:db/ident :doc/title :db/valueType :db.type/string
+                           :db/cardinality :db.cardinality/one :db.secondary/only true}])
+        (d/transact conn [{:db/ident :idx/ft :db.secondary/type :scriptum
+                           :db.secondary/attrs [:doc/body :doc/title]
+                           :db.secondary/config {:path (str "/tmp/dh-retr-" (java.util.UUID/randomUUID))}}])
+        (Thread/sleep 800)
+        (let [eid (get-in (d/transact conn [{:db/id -1 :doc/body "the whole document"
+                                             :doc/title "My Title"}])
+                          [:tempids -1])
+              idx #(get (:secondary-indices @conn) :idx/ft)]
+          (Thread/sleep 500)
+          (is (= "the whole document" (sec/-sec-value (idx) :doc/body eid)))
+          (is (= "My Title" (sec/-sec-value (idx) :doc/title eid)))
+
+          ;; Retracted by the ORIGINAL value, not by the hash a query returns:
+          ;; the retract path re-hashes its argument to find the stored datom,
+          ;; so passing the hash back is a silent no-op with empty :tx-data.
+          (d/transact conn [[:db/retract eid :doc/body "the whole document"]])
+          (Thread/sleep 700)
+
+          (is (nil? (sec/-sec-value (idx) :doc/body eid))
+              "the retracted attribute's value is gone, which is the point")
+          (is (= "My Title" (sec/-sec-value (idx) :doc/title eid))
+              "and the attribute that was NOT retracted still has its value")
+
+          (testing "so the database can still be backed up — the export refuses
+                    any :db.secondary/only value it cannot recover, and this one
+                    is recoverable again"
+            (is (map? (m/export-db @conn (str "/tmp/dh-retr-dump-" (java.util.UUID/randomUUID)) {})))))
+        (finally (d/release conn))))))
+
+(deftest proximum-covers-exactly-one-attribute
+  (when-not proximum-available?
+    (is (not proximum-available?) "SKIP: proximum requires Java 22+"))
+  (when proximum-available?
+    (testing "proximum is keyed by an external id, and this adapter uses the
+              entity id — so an index covering two attributes stores both of an
+              entity's vectors under one key. Both halves were measured:
+              an entity holding both attributes made proximum itself throw
+              \"External id already exists\" from inside the async index update,
+              naming neither the attribute nor the cause; and two attributes on
+              DISJOINT entities refused nothing at all, after which `-sec-value`
+              — which ignores its `attr` argument, being able to fetch only by
+              id — answered an entity's :p/face with its :p/emb vector.
+
+              Refused at declaration instead, which is also what makes ignoring
+              `attr` honest: with one covered attribute there is nothing to
+              disambiguate."
+      (let [cfg  (retraction-cfg)
+            _    (do (d/delete-database cfg) (d/create-database cfg))
+            conn (d/connect cfg)]
+        (try
+          (d/transact conn [{:db/ident :p/emb :db/valueType :db.type/float-array
+                             :db/cardinality :db.cardinality/one}
+                            {:db/ident :p/face :db/valueType :db.type/float-array
+                             :db/cardinality :db.cardinality/one}])
+          (let [decl (fn [attrs]
+                       (try (d/transact conn [{:db/ident (keyword "idx" (str "v" (count attrs)))
+                                               :db.secondary/type :proximum
+                                               :db.secondary/attrs attrs
+                                               :db.secondary/config
+                                               {:dim 4 :distance :cosine
+                                                :store-config {:backend :memory
+                                                               :id (java.util.UUID/randomUUID)}}}])
+                            :accepted
+                            (catch Exception e (str (ex-message e)))))]
+            (is (re-find #"covers exactly one attribute" (str (decl [:p/emb :p/face])))
+                "two attributes are refused, and the message says why")
+            (is (= :accepted (decl [:p/emb]))
+                "while the supported shape — one index per vector attribute — is unaffected"))
+          (finally (d/release conn)))))))

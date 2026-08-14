@@ -15,6 +15,19 @@
    [scriptum.core :as sc]
    [replikativ.logging :as log]))
 
+(defn- attr-name
+  "The attribute as scriptum stores it. `a` is a keyword normally and a numeric
+   ref under `:attribute-refs? true`, so both shapes must land on one spelling."
+  [a]
+  (if (keyword? a) (name a) (str a)))
+
+(defn- ea-key
+  "`\"<eid>|<attr>\"` — the term a retraction deletes by. `|` cannot occur in an
+   entity id and is not produced by `name` on a keyword, so the two components
+   cannot run together into a third meaning."
+  [eid a]
+  (str eid "|" (attr-name a)))
+
 (defn- make-scriptum-index
   "Create an ISecondaryIndex backed by Scriptum.
    Documents are stored with an '_entity_id' field for entity-level filtering.
@@ -181,17 +194,53 @@
               attr (.-a datom)
               val (.-v datom)]
           (if added?
-            ;; Add document with entity ID, attribute, and value
+            ;; Add document with entity ID, attribute, and value.
+            ;;
+            ;; `_ea` is a COMPOSITE key, `"<eid>|<attr>"`, and it exists only so
+            ;; that the retraction below can name this document. Composite
+            ;; rather than a conjunction of `_entity_id` and `_attr` because
+            ;; `sc/delete-docs` takes a single Lucene Term — so one field that
+            ;; already holds both is what makes an exact delete expressible
+            ;; without changing scriptum's API.
             (do
               (sc/add-doc writer
                           {:_entity_id {:value (str eid) :type :string :store? true}
-                           :_attr {:value (if (keyword? attr) (name attr) (str attr))
-                                   :type :string :store? true}
+                           :_attr {:value (attr-name attr) :type :string :store? true}
+                           :_ea {:value (ea-key eid attr) :type :string :store? true}
                            :value (if (string? val) val (str val))})
               this)
-            ;; Retract: delete documents matching entity ID
+            ;; Retract: delete the documents for THIS [entity, attribute].
+            ;;
+            ;; This used to delete by `_entity_id` alone, which removed every
+            ;; document the entity had — all of its other indexed attributes
+            ;; with it. Measured: one entity with `:doc/body` and `:doc/title`,
+            ;; retracting `:doc/body` left `-sec-value` returning nil for
+            ;; `:doc/title` while the primary still held it. For an ordinary
+            ;; attribute that is index drift, repairable by a rebuild; for a
+            ;; `:db.secondary/only` one the index was the only copy, so it was
+            ;; permanent loss of a value the database still reported as present.
+            ;;
+            ;; Why not by VALUE as well, which would also separate the several
+            ;; values of a cardinality-many attribute:
+            ;;
+            ;;   * for a `:db.secondary/only` attribute it is not possible — the
+            ;;     retraction datom carries the content HASH (the transactor
+            ;;     rewrites it to search the primary), not the text this index
+            ;;     stored, so there is nothing here to match on. Resolving that
+            ;;     needs a stored `_vhash`, which is the same field
+            ;;     `ISecondaryHashAddressable` needs; until some index wants
+            ;;     that, cardinality-many is refused on those attributes anyway,
+            ;;     so `[eid attr]` names exactly one document.
+            ;;   * for an ordinary cardinality-many attribute the value IS here
+            ;;     and this over-deletes the entity's other values of the same
+            ;;     attribute. That is the one case still imprecise — index drift
+            ;;     with the primary intact, and strictly narrower than the
+            ;;     everything-for-this-entity delete it replaces. Keying on the
+            ;;     value would mean hashing it into a term on every add, which
+            ;;     is new work on the transaction path for every scriptum user
+            ;;     to fix a case none of them may have.
             (do
-              (sc/delete-docs writer "_entity_id" (str eid))
+              (sc/delete-docs writer "_ea" (ea-key eid attr))
               this)))))))
 
 (sec/register-index-type!
