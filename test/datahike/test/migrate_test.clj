@@ -1,5 +1,6 @@
 (ns datahike.test.migrate-test
   (:require [clojure.test :refer [deftest testing is]]
+            [clojure.edn :as edn]
             [clojure.java.io :as io]
             [clj-cbor.core :as cbor]
             [datahike.api :as d]
@@ -940,6 +941,84 @@
                            (:error (:integrity r)))
                 "the same answer on both media, which is what this test exists for"))))
       (teardown src))))
+
+(defn- dump-with
+  "Export `src` to a fresh directory and rewrite its manifest with `f`."
+  [src f]
+  (let [path (str (System/getProperty "java.io.tmpdir") "/dh-vm-" (utils/get-time))
+        _    (m/export-db @src path {:chunk-size 50 :compression :none})
+        mpath (str path "/manifest.edn")]
+    (spit mpath (pr-str (f (edn/read-string (slurp mpath)))))
+    path))
+
+(deftest verify-checks-the-manifest-against-the-dump
+  (testing "`verify` re-hashed the chunk BYTES and then echoed the manifest's own
+            numbers back as if they had been checked. Every count and digest it
+            reported was the manifest quoting itself, so a hand-edited manifest —
+            the cheapest possible forgery — was invisible to the one call an
+            operator makes to ask whether a backup is intact.
+
+            These are all internal-consistency failures: the dump disagrees with
+            what its OWN manifest says about it. Whether the export captured
+            everything from its source is a different question, answered at
+            export and refused at import; `verify` reads a dump whose source may
+            be long gone."
+    (let [src (utils/setup-db (mem-cfg {:history? false}))]
+      (d/transact src [{:db/ident :name :db/valueType :db.type/string
+                        :db/cardinality :db.cardinality/one}])
+      (d/transact src (vec (for [i (range 100)] {:name (str "p" i)})))
+
+      (testing "an intact dump still verifies, and says what it checked"
+        (let [r (m/verify (dump-with src identity))]
+          (is (true? (:ok? r)))
+          (is (true? (get-in r [:tier1 :digest-match?])))
+          (is (true? (get-in r [:tier1 :counts-add-up?])))
+          (is (= (get-in r [:tier1 :manifest-count])
+                 (get-in r [:tier1 :recomputed-count])))))
+
+      (testing "a manifest that lies about the record count"
+        (let [r (m/verify (dump-with src #(assoc-in % [:semantic-digest :count] 999999)))]
+          (is (false? (:ok? r)))
+          (is (= 999999 (get-in r [:tier1 :manifest-count])))
+          (is (false? (get-in r [:tier1 :digest-match?])))))
+
+      (testing "a garbage :xor/:sum — these were WRITTEN AND NEVER READ, so no
+                value the manifest carried here could be wrong enough to notice"
+        (let [r (m/verify (dump-with src #(-> %
+                                              (assoc-in [:semantic-digest :xor] "deadbeefdeadbeef")
+                                              (assoc-in [:semantic-digest :sum] "0000000000000000"))))]
+          (is (false? (:ok? r)))
+          (is (false? (get-in r [:tier1 :digest-match?])))
+          (is (true? (get-in r [:tier1 :counts-add-up?]))
+              "and the counts are still right, so the report says WHICH signal
+               disagreed rather than only that something did")))
+
+      (testing "an edited chunk descriptor — caught with no IO at all, since the
+                per-chunk counts must add up to the declared total"
+        (let [r (m/verify (dump-with src #(update % :chunks
+                                                  (fn [cs] (assoc-in (vec cs) [0 :count] 12345)))))]
+          (is (false? (:ok? r)))
+          (is (false? (get-in r [:tier1 :counts-add-up?])))
+          (is (true? (get-in r [:tier1 :digest-match?]))
+              "the RECORDS are intact — only the manifest's arithmetic is not")))
+
+      (teardown src))))
+
+(deftest verify-does-not-certify-what-it-did-not-check
+  (testing "`:tier0 :checksums` grew a `:none` value precisely so that \"there
+            were no chunks and nothing was checked\" would stop reading like
+            \"40 chunks matched\" — and then `:ok?` was never wired to it. So an
+            EMPTY FILE came back `{:ok? true}`.
+
+            `manifest-of` classifies any existing non-directory as the legacy
+            single-file format and synthesises a manifest with no chunks, which
+            is how a zero-byte file reaches the report at all."
+    (let [f (java.io.File/createTempFile "dh-empty" ".cbor")]
+      (.deleteOnExit f)
+      (let [r (m/verify (.getPath f))]
+        (is (false? (:ok? r)) "an empty file is not a verified backup")
+        (is (= :none (get-in r [:tier0 :checksums])))
+        (is (zero? (get-in r [:tier0 :chunks-verified])))))))
 
 (deftest a-non-empty-target-is-refused-before-any-blob-is-written
   (testing "the guard rails run before `restore-blobs!`, not after.

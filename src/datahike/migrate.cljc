@@ -3087,6 +3087,26 @@
     {:ok? true :declared 0 :verified 0 :missing [] :corrupt []
      :external 0 :self-contained? true}))
 
+(defn- recompute-digest
+  "Fold the manifest's OWN semantic digest over the dump's actual records.
+
+   The same fold the export ran (`write-chunk!` / `write-chunks!`, both
+   `(dig/add-record acc (mcbor/encode-record record))`), so a match means the
+   records present are the records the manifest describes. `reduce-records`
+   hands back DECODED records, so this re-encodes — safe because `:archival`
+   makes a record's bytes a function of the record alone, which is the same
+   property the chunk `:sha256` already rests on.
+
+   This is the check that catches an altered VALUE. A count cannot: substituting
+   one record for another of the same shape leaves every count intact."
+  [source]
+  (with-source-records
+    source
+    (fn [_manifest reduce-source]
+      (dig/finalize (reduce-source
+                     (fn [acc record] (dig/add-record acc (mcbor/encode-record record)))
+                     (dig/accumulator))))))
+
 (defn verify
   "Compare a dump against its own manifest (integrity) and, given a live db
    snapshot (`@conn`, not `conn`), against that database (id-independent
@@ -3105,9 +3125,14 @@
   ([source] (verify source {}))
   ([source opts]
    (assert-jvm-only! "verify" opts)
-   (let [{:keys [manifest legacy-count chunks-verified finding]}
+   (let [{:keys [manifest legacy-count chunks-verified finding recomputed]}
          (if (mstore/store-target? source)
-           (let [m (mstore/open source)]
+           (let [m (mstore/open source)
+                 ;; Carried out of the `try` below rather than returned from it:
+                 ;; that form's value is the FINDING, where `nil` means "no
+                 ;; integrity failure". A volatile keeps the two answers apart
+                 ;; without a second pass over the dump.
+                 recomputed (volatile! nil)]
              (try
                (let [manifest (mstore/read-manifest m)
                      ;; REPORTS rather than throws, matching the filesystem
@@ -3120,7 +3145,18 @@
                      ;; finding.
                      finding (try
                                (mman/assert-dump-manifest! manifest source {})
-                               (mstore/reduce-records m manifest (fn [acc _] acc) nil)
+                               ;; This pass ALREADY decoded every record and threw
+                               ;; the lot away — `(fn [acc _] acc)`. Folding the
+                               ;; digest into it costs one re-encode per record
+                               ;; and no extra IO, which on a store medium is the
+                               ;; difference between a free check and a second
+                               ;; round trip per chunk.
+                               (vreset! recomputed
+                                        (dig/finalize
+                                         (mstore/reduce-records
+                                          m manifest
+                                          (fn [acc r] (dig/add-record acc (mcbor/encode-record r)))
+                                          (dig/accumulator))))
                                nil
                                (catch #?(:clj clojure.lang.ExceptionInfo :cljs :default) e
                                  (let [{:keys [error]} (ex-data e)]
@@ -3152,6 +3188,7 @@
                  ;; changing it.
                  {:manifest (or manifest {})
                   :chunks-verified (when (nil? finding) (count (:chunks manifest)))
+                  :recomputed @recomputed
                   :finding finding})
                (finally (mstore/close m))))
            ;; REPORTS rather than enforces. `open-dump` throws on a bad or
@@ -3188,19 +3225,57 @@
                                                {:error :import/legacy-not-portable})))}
                {:manifest (:manifest dump)
                 :chunks-verified (:chunks-verified dump)
+                ;; A SECOND pass, unlike the store branch. `open-dump` streams
+                ;; each chunk through SHA-256 without decoding it, so there is no
+                ;; existing decode to fold into — and decoding inside the hash
+                ;; loop would make the cheap tier pay for the expensive one even
+                ;; when the bytes are already wrong. Only reached when the hashes
+                ;; passed, so the common case is one extra read of a dump already
+                ;; known to be intact, on a tool that is not on any hot path.
+                :recomputed (when (and (nil? finding)
+                                       (seq (:chunks (:manifest dump))))
+                              (recompute-digest source))
                 :finding finding})))]
-     (let [blobs (verify-blobs manifest source)]
-       (cond-> {:ok? (and (nil? finding) (:ok? blobs))
+     (let [blobs (verify-blobs manifest source)
+           declared (:semantic-digest manifest)
         ;; `:checksums` used to be the literal `:ok`, so "40 chunks matched" and
         ;; "there were no chunks and nothing was checked" read identically. It is
         ;; now derived, and `:chunks-verified` says how much was actually read.
-                :tier0 {:checksums (cond finding                          :failed
-                                         (and chunks-verified
-                                              (pos? chunks-verified))     :ok
-                                         :else                            :none)
+           checksums (cond finding                          :failed
+                           (and chunks-verified
+                                (pos? chunks-verified))     :ok
+                           :else                            :none)
+        ;; Manifest-internal, and free: the per-chunk counts must add up to the
+        ;; declared total. No IO at all, and it catches an edited chunk
+        ;; descriptor before a single byte is read.
+           chunk-sum (when (seq (:chunks manifest))
+                       (reduce + 0 (keep :count (:chunks manifest))))
+           counts-add-up? (when (and chunk-sum (:count declared))
+                            (= (long chunk-sum) (long (:count declared))))
+        ;; The dump against what the manifest SAYS about it. `verify` used to
+        ;; hash the bytes and then echo the manifest's own numbers back as if
+        ;; they had been checked — so a manifest claiming 999999 records for a
+        ;; 29-record dump, or carrying a garbage `:xor`/`:sum`, came back
+        ;; `:ok? true` from the one call an operator makes to ask whether a
+        ;; backup is intact.
+           digest-match? (when (and recomputed declared) (= recomputed declared))]
+       (cond-> {:ok? (and (nil? finding)
+                          (:ok? blobs)
+                          ;; "nothing was checked" is not "everything matched".
+                          ;; The `:none` case was introduced to say so and then
+                          ;; never wired to the boolean, so an EMPTY FILE
+                          ;; verified `:ok? true`.
+                          (not= :none checksums)
+                          (not (false? counts-add-up?))
+                          (not (false? digest-match?)))
+                :tier0 {:checksums checksums
                         :chunks-verified (or chunks-verified 0)
                         :format (get manifest manifest-key)}
-                :tier1 {:manifest-count (or (:count (:semantic-digest manifest)) legacy-count)}
+                :tier1 (cond-> {:manifest-count (or (:count declared) legacy-count)
+                                :recomputed-count (:count recomputed)
+                                :digest-match? digest-match?}
+                         chunk-sum (assoc :chunk-count-sum chunk-sum
+                                          :counts-add-up? counts-add-up?))
                 :blobs blobs}
          finding (assoc :integrity finding)
          ;; The comparison keys are present-but-nil so that ONE handler works
