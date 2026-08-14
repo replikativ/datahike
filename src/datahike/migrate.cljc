@@ -3020,19 +3020,27 @@
 (defn- with-source-records
   "Call `(f manifest reduce-source)` where `reduce-source` is `(fn [rf init] -> acc)`
    streaming the dump's records, for either medium (filesystem or store).
-   `reduce-source` may be invoked several times (each pass re-opens/re-reads)."
-  [source f]
-  (if (mstore/store-target? source)
-    (let [m (mstore/open source)]
-      (try (let [manifest (mstore/read-manifest m)]
-             ;; Without this every tier folded over zero records and compared
-             ;; empty against empty, so `verify` returned a fully green report
-             ;; for a store prefix that is not a dump at all.
-             (mman/assert-dump-manifest! manifest source {})
-             (f manifest (fn [rf init] (mstore/reduce-records m manifest rf init))))
-           (finally (mstore/close m))))
-    (let [dump (open-dump source)]
-      (f (:manifest dump) (fn [rf init] (reduce-dump-records dump rf init))))))
+   `reduce-source` may be invoked several times (each pass re-opens/re-reads).
+
+   `opts` reaches `open-dump` on the filesystem side. It exists for ONE caller:
+   `verify` has already hashed every chunk by the time it recomputes the digest,
+   and `open-dump` defaults to `:checksums :require`, so the default would hash
+   the whole dump a second time and then read it a third to decode. Measured on a
+   20k-record dump: 3 ms of hashing became 54 ms. Callers that have NOT already
+   verified the bytes — `verify-against` — must keep the default."
+  ([source f] (with-source-records source f {}))
+  ([source f opts]
+   (if (mstore/store-target? source)
+     (let [m (mstore/open source)]
+       (try (let [manifest (mstore/read-manifest m)]
+              ;; Without this every tier folded over zero records and compared
+              ;; empty against empty, so `verify` returned a fully green report
+              ;; for a store prefix that is not a dump at all.
+              (mman/assert-dump-manifest! manifest source {})
+              (f manifest (fn [rf init] (mstore/reduce-records m manifest rf init))))
+            (finally (mstore/close m))))
+     (let [dump (open-dump source opts)]
+       (f (:manifest dump) (fn [rf init] (reduce-dump-records dump rf init)))))))
 
 (defn- verify-sample
   "Tier 3 — sampled structural diff. Pick up to `n` entities by a `:db.unique`
@@ -3147,7 +3155,10 @@
     (fn [_manifest reduce-source]
       (dig/finalize (reduce-source
                      (fn [acc record] (dig/add-record acc (mcbor/encode-record record)))
-                     (dig/accumulator))))))
+                     (dig/accumulator))))
+    ;; `verify` reaches this only AFTER every chunk's SHA-256 matched. Re-hashing
+    ;; them here made one `verify` read each chunk three times and hash it twice.
+    {:checksums :skip}))
 
 (defn verify
   "Compare a dump against its own manifest (integrity) and, given a live db
@@ -3274,12 +3285,20 @@
                 ;; when the bytes are already wrong. Only reached when the hashes
                 ;; passed, so the common case is one extra read of a dump already
                 ;; known to be intact, on a tool that is not on any hot path.
-                :recomputed (when (and (nil? finding)
-                                       (seq (:chunks (:manifest dump))))
-                              (recompute-digest source))
+                ;; Not gated on `(seq chunks)`. A dump with NO chunks is a real
+                ;; dump — `export-transformed` with an `:xform` that filters
+                ;; everything writes one — and folding over zero records gives
+                ;; the same empty digest the export recorded, so it verifies
+                ;; rather than being indistinguishable from a broken one.
+                :recomputed (when (nil? finding) (recompute-digest source))
                 :finding finding})))]
      (let [blobs (verify-blobs manifest source)
            declared (:semantic-digest manifest)
+        ;; The legacy single-file format carries no manifest, no chunk list and
+        ;; no hashes, so none of the checks below apply to it. `legacy-count` is
+        ;; set only on that branch, and decoding the file IS the only check the
+        ;; format admits.
+           legacy? (some? legacy-count)
         ;; `:checksums` used to be the literal `:ok`, so "40 chunks matched" and
         ;; "there were no chunks and nothing was checked" read identically. It is
         ;; now derived, and `:chunks-verified` says how much was actually read.
@@ -3290,8 +3309,15 @@
         ;; Manifest-internal, and free: the per-chunk counts must add up to the
         ;; declared total. No IO at all, and it catches an edited chunk
         ;; descriptor before a single byte is read.
-           chunk-sum (when (seq (:chunks manifest))
-                       (reduce + 0 (keep :count (:chunks manifest))))
+        ;; `keep`, then a check that we kept them ALL. A chunk descriptor with no
+        ;; `:count` makes the sum a number that means nothing, and reporting
+        ;; `:counts-add-up? false` for it says the arithmetic is wrong when the
+        ;; truth is that it is unknown. The digest below is the fail-closed
+        ;; check; this one is the free arithmetic beside it.
+           chunk-counts (keep :count (:chunks manifest))
+           chunk-sum (when (and (seq (:chunks manifest))
+                                (= (count chunk-counts) (count (:chunks manifest))))
+                       (reduce + 0 chunk-counts))
            counts-add-up? (when (and chunk-sum (:count declared))
                             (= (long chunk-sum) (long (:count declared))))
         ;; The dump against what the manifest SAYS about it. `verify` used to
@@ -3300,14 +3326,28 @@
         ;; 29-record dump, or carrying a garbage `:xor`/`:sum`, came back
         ;; `:ok? true` from the one call an operator makes to ask whether a
         ;; backup is intact.
-           digest-match? (when (and recomputed declared) (= recomputed declared))]
+           digest-match? (when (and recomputed declared) (= recomputed declared))
+        ;; FAIL CLOSED on an absent digest, for the reason `open-dump` fails
+        ;; closed on an absent chunk `:sha256`: everything datahike writes
+        ;; carries one, so a manifest without it has been edited. Failing OPEN
+        ;; here would have made `(dissoc manifest :semantic-digest)` — a cheaper
+        ;; edit than any this function now catches — defeat all of them at once,
+        ;; since `declared` nil leaves every comparison nil.
+           declared? (some? declared)
+        ;; "Nothing was checked" is not "everything matched" — but it is also
+        ;; not "this is broken". Three different things reach `:checksums :none`
+        ;; and they need three answers: an empty FILE (no records, no manifest:
+        ;; not a backup), a LEGACY dump (no chunks to hash by construction, and
+        ;; it decoded), and a chunked dump with an empty `:chunks` (a real
+        ;; manifest that declares zero records, which the digest confirms).
+        ;; Keying `:ok?` off `:none` alone called all three broken, which
+        ;; regressed the latter two.
+           anything-verified? (if legacy?
+                                (pos? (long legacy-count))
+                                (and declared? (not= :failed checksums)))]
        (cond-> {:ok? (and (nil? finding)
                           (:ok? blobs)
-                          ;; "nothing was checked" is not "everything matched".
-                          ;; The `:none` case was introduced to say so and then
-                          ;; never wired to the boolean, so an EMPTY FILE
-                          ;; verified `:ok? true`.
-                          (not= :none checksums)
+                          anything-verified?
                           (not (false? counts-add-up?))
                           (not (false? digest-match?)))
                 :tier0 {:checksums checksums

@@ -48,8 +48,10 @@
             [hasch.core :as hasch]))
 
 ;; Resolved once. `Class/forName` is a classloader lookup, and `norm-val` runs
-;; per record on the export path — twice per record, in fact, since the sort key
-;; and the semantic digest both call it.
+;; once per record on the export path, from `sort.cljc`'s `sort-key` — and only
+;; under `:sort? true`. (The manifest's semantic digest hashes `encode-record`
+;; bytes and does NOT call this; the other callers are `verify-against`'s
+;; id-independent fingerprint, which is not the export path.)
 #?(:clj (def ^:private ^Class farray-class (Class/forName "[F")))
 #?(:clj (def ^:private ^Class darray-class (Class/forName "[D")))
 
@@ -123,14 +125,24 @@
    takes the first `cond` arm and allocates nothing — and only tuples and
    free-schema nested data are collections at all.
 
-   ## The `::normalized` marker
+   ## The `::normalized` marker, and what it does NOT do
 
-   Rewriting `[bs \"a\"]` to `[[:bytes #uuid …] \"a\"]` produces a value a caller
-   could in principle have stored literally under `:schema-flexibility :read`,
-   and then two different values would share a sort key — losing the totality
-   this is for. Marking the containers we rewrote keeps the mapping injective.
-   A collection with no array in it is returned UNCHANGED and unmarked, so
-   existing dumps move only where they were already nondeterministic."
+   It marks the containers this rewrote, so the result says of itself that it is
+   a normalised form rather than a value. A collection holding no array is
+   returned UNCHANGED and unmarked — `identical?`, not merely `=` — so existing
+   dumps move only where they were already nondeterministic.
+
+   It does NOT make the mapping injective, and an earlier version of this
+   docstring claimed it did. Measured: `(norm-val [bs \"a\"])` and
+   `(norm-val [::normalized [[:bytes (hasch/uuid bs)] \"a\"]])` are the same
+   value, because the second holds no array and so passes through untouched.
+   The marker moved the collision rather than removing it; escaping a
+   pre-existing marker during the walk would be the actual fix. It is left as
+   is because the consequence is bounded: two values sharing a sort key TIE, and
+   a tie is broken deterministically — `sort` is stable and `merge-runs` breaks
+   by run index — so the dump stays byte-identical. Only a value hand-built to
+   look like this namespace's output is affected, and only in its ordering
+   against the value it imitates."
   [v]
   (cond
     (array-val? v) (tag-array v)

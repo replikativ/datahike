@@ -117,26 +117,36 @@
    (keyfn y))))`, so it recomputes exactly as much. Measured: 35,558 calls for
    2,000 records. The decoration has to be explicit.
 
-   The two halves travel TOGETHER because they are one decision. A caller given
-   `cmp` and `key-fn` as separate arguments can pass a pair that disagree, and
-   the failure is invisible in the worst way: each run would be sorted by one
-   order and merged by the other, so the runs are internally sorted, the merge
-   is internally consistent, and the global result is simply wrong. Deriving the
-   comparator from the key function, once, here, means there is no pair to get
-   wrong.
+   A keyed order carries the KEY FUNCTION ONLY. It deliberately does not also
+   carry the derived comparator: every site here branches on the key function
+   first, so a comparator alongside it would never be consulted, and a value
+   that is never read is a value that can be wrong without anyone noticing —
+   including wrong in the one direction that matters, where runs are sorted by
+   one order and merged by another. There is no pair to keep in step because
+   there is no pair.
 
    Not every order can be expressed this way, which is why the bare-comparator
    path stays. `init/sort-family!` sorts by `datom/index-type->cmp-quick`, an
    INDEX order over `[e a v t]` where `v` is heterogeneous — `(compare [1 :a \"x\" 5]
    [1 :a 7 5])` throws, so there is no Comparable key to precompute. Those
    callers pass a function and get the old behaviour, unchanged."
-  {::key-fn sort-key ::cmp by-sort-key})
+  {::key-fn sort-key})
 
 (defn- as-order
-  "Normalise the `cmp` argument, which is either a bundled order or a bare
-   comparator. Accepting both is what lets every signature here stay as it was."
+  "Normalise the `cmp` argument, which is either a keyed order or a bare
+   comparator. Accepting both is what lets every signature here stay as it was.
+
+   The assertion is not decoration: a map without `::key-fn` falls through to
+   `(sort nil records)`, i.e. natural ordering on RECORDS, which throws on a
+   heterogeneous `v` — or worse, silently succeeds on a homogeneous one and
+   writes a dump in the wrong order. It costs one `contains?` per sort call, not
+   per record."
   [x]
-  (if (map? x) x {::cmp x}))
+  (if (map? x)
+    (do (assert (contains? x ::key-fn)
+                "a map order must carry ::key-fn; pass a bare comparator otherwise")
+        x)
+    {::cmp x}))
 
 (defn- sort-window
   "Sort one in-memory window under `order`.
@@ -145,13 +155,16 @@
    since a key holds the stringified value, become garbage as soon as the sort is
    done rather than staying reachable for as long as the caller holds the result.
 
-   Then `seq`, and that is not cosmetic. Returning the VECTOR would make the
-   returned object itself the collection, so a consumer holding any position
-   holds the head — and `migrate_retention_test` watches exactly that object,
-   because in async mode a retained head is a retained database. `sort` returns
-   an `ArraySeq` whose head falls away as the consumer advances; handing back a
-   seq keeps that property. (Both retain the window's records until the consumer
-   is done, which is what `external-sort` means by sorting in memory.)
+   Then `seq`, which is about the IDENTITY of the returned object and nothing
+   else. Measured: a `ChunkedSeq` holds its vector and an `ArraySeq` holds its
+   array, so advancing to the end of either still keeps the first element
+   reachable — no memory is saved. What changes is that the object handed back
+   is a seq over the collection rather than the collection, so a consumer
+   holding a later position does not hold the returned object itself. That is
+   exactly what `migrate_retention_test` observes through a `WeakReference`, and
+   it is what `sort` did before, so this keeps parity rather than inventing a
+   property. The window's records stay resident either way, which is what
+   `external-sort` means by sorting in memory.
 
    Keys are compared directly rather than by sorting the pairs: comparing
    `[key record]` pairs would fall through to comparing RECORDS on a key tie, and

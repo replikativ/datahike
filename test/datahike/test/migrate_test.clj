@@ -1043,6 +1043,78 @@
 
       (teardown src))))
 
+(deftest verify-fails-closed-on-an-absent-digest
+  (testing "the digest check is only worth having if it cannot be switched off
+            by deleting it. `declared` nil left `digest-match?` and
+            `counts-add-up?` both nil, and `(not (false? nil))` is true — so
+            `(dissoc manifest :semantic-digest)`, a CHEAPER edit than any of the
+            forgeries the check was added to catch, verified clean and defeated
+            all of them at once.
+
+            `open-dump` already fails closed on an absent chunk `:sha256`, for
+            the same reason: everything datahike writes carries one, so a
+            manifest without it has been edited."
+    (let [src (utils/setup-db (mem-cfg {:history? false}))]
+      (d/transact src [{:db/ident :name :db/valueType :db.type/string
+                        :db/cardinality :db.cardinality/one}])
+      (d/transact src (vec (for [i (range 100)] {:name (str "p" i)})))
+      (let [r (m/verify (dump-with src #(dissoc % :semantic-digest)))]
+        (is (false? (:ok? r)) "a manifest with no digest is not a verified dump")
+        (is (nil? (get-in r [:tier1 :digest-match?]))
+            "and the report says the comparison did not happen, rather than
+             claiming it passed"))
+
+      (testing "a chunk descriptor with no `:count` is UNKNOWN, not wrong.
+                `(keep :count …)` summed the survivors, so dropping the counts
+                produced a sum of 0 and `:counts-add-up? false` — asserting the
+                arithmetic is wrong when the truth is that there is none. The
+                digest is the fail-closed check; this one is free arithmetic
+                beside it."
+        (let [r (m/verify (dump-with src #(update % :chunks
+                                                  (fn [cs] (mapv (fn [c] (dissoc c :count)) cs)))))]
+          (is (true? (:ok? r)))
+          (is (nil? (get-in r [:tier1 :counts-add-up?])))
+          (is (nil? (get-in r [:tier1 :chunk-count-sum])))))
+
+      (teardown src))))
+
+(deftest verify-accepts-the-two-dumps-that-legitimately-hash-nothing
+  (testing "wiring `:ok?` to `:checksums :none` was too blunt. THREE different
+            things reach `:none` and they need three answers, and two of them
+            are real dumps that this briefly called broken."
+    (let [src (utils/setup-db (mem-cfg {:history? false}))]
+      (d/transact src [{:db/ident :name :db/valueType :db.type/string
+                        :db/cardinality :db.cardinality/one}])
+      (d/transact src (vec (for [i (range 40)] {:name (str "p" i)})))
+
+      (testing "a LEGACY single-file dump has no chunks to hash by construction,
+                and decoding it is the only check the format admits — which
+                `verify` performs. `import-db` still reads these."
+        (let [f (str (System/getProperty "java.io.tmpdir") "/dh-leg-" (utils/get-time) ".cbor")]
+          (io/make-parents f)
+          (with-open [o (io/output-stream f)]
+            (.write o ^bytes (mcbor/concat-records
+                              (mapv mcbor/encode-record
+                                    (for [i (range 25)]
+                                      [i :name (str "p" i) c/tx0 true])))))
+          (let [r (m/verify f)]
+            (is (true? (:ok? r)) "a legacy dump that decodes is intact")
+            (is (= 25 (get-in r [:tier1 :manifest-count]))))))
+
+      (testing "an EMPTY chunked dump is a real dump: `export-transformed` with
+                an `:xform` that filters everything writes one, with a manifest
+                declaring zero records. Folding over zero chunks reproduces the
+                empty digest the export recorded, so it verifies."
+        (let [path (str (System/getProperty "java.io.tmpdir") "/dh-emp-" (utils/get-time))]
+          (m/export-transformed @src path (remove (constantly true)) {})
+          (let [r (m/verify path)]
+            (is (true? (:ok? r)))
+            (is (zero? (get-in r [:tier1 :recomputed-count])))
+            (is (true? (get-in r [:tier1 :digest-match?]))
+                "the empty digest is still a digest, and it still matches"))))
+
+      (teardown src))))
+
 (deftest verify-does-not-certify-what-it-did-not-check
   (testing "`:tier0 :checksums` grew a `:none` value precisely so that \"there
             were no chunks and nothing was checked\" would stop reading like
