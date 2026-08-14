@@ -43,25 +43,48 @@
 
    A newline-delimited format cannot do this without escaping, which is why the
    EDN codec was line-oriented all the way down into the external sort."
-  (:require [boring.core :as boring]))
+  (:require [boring.core :as boring]
+            [hasch.core :as hasch]))
 
 (defn norm-val
-  "Stably hashable form of a value: array/bytes values compare structurally rather
-   than by identity, while keeping their class distinct."
+  "Stably hashable form of a value: array values compare by CONTENT rather than
+   by identity, while keeping their class distinct.
+
+   The content comes from `hasch/uuid`, not from `(vec v)`, and that is the
+   whole point. `vec` reads the platform's element type, and the JVM's is
+   SIGNED where ClojureScript's is not — the same three bytes gave
+
+     JVM   [:bytes [-1 -128 1]]
+     cljs  [:bytes [255 128 1]]
+
+   so a fingerprint built on one runtime disagreed with the same data on the
+   other. `verify-against` compares a dump to a live database, which is exactly
+   the cross-runtime case, and it reported a mismatch on correct data for any
+   `:db.type/bytes` value holding a byte >= 0x80.
+
+   hasch already solves this — it hashes `byte[]`/`Uint8Array`,
+   `float[]`/`Float32Array` and `double[]`/`Float64Array` to the same value
+   across runtimes, by construction (replikativ/hasch#31), and datahike already
+   depends on it for `secondary-only-hash`. Reaching for it here means one
+   cross-platform notion of value identity instead of two that disagree.
+
+   The type tag stays, so a byte array and a float array of the same content
+   remain distinct — hasch would also keep them apart, but the tag says so
+   locally and keeps the shape a reader can see."
   [v]
   #?(:clj
      (cond
-       (bytes? v)                              [:bytes (vec v)]
-       (instance? (Class/forName "[F") v)      [:farray (vec v)]
-       (instance? (Class/forName "[D") v)      [:darray (vec v)]
+       (bytes? v)                              [:bytes  (hasch/uuid v)]
+       (instance? (Class/forName "[F") v)      [:farray (hasch/uuid v)]
+       (instance? (Class/forName "[D") v)      [:darray (hasch/uuid v)]
        :else                                   v)
      :cljs
      ;; The same three classes, spelled as the typed arrays ClojureScript uses
      ;; for them — `:db.type/bytes`, `:db.type/float-array`, `:db.type/double-array`.
      (cond
-       (instance? js/Uint8Array v)             [:bytes (vec v)]
-       (instance? js/Float32Array v)           [:farray (vec v)]
-       (instance? js/Float64Array v)           [:darray (vec v)]
+       (instance? js/Uint8Array v)             [:bytes  (hasch/uuid v)]
+       (instance? js/Float32Array v)           [:farray (hasch/uuid v)]
+       (instance? js/Float64Array v)           [:darray (hasch/uuid v)]
        :else                                   v)))
 
 ;; ---------------------------------------------------------------------------

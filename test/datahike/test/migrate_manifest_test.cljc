@@ -114,12 +114,34 @@
     (is (= "x" (mman/norm-val "x")))
     (let [bs #?(:clj (byte-array [1 2 3]) :cljs (js/Uint8Array.from #js [1 2 3]))
           fs #?(:clj (float-array [1.0 2.0]) :cljs (js/Float32Array.from #js [1.0 2.0]))
-          ds #?(:clj (double-array [1.0 2.0]) :cljs (js/Float64Array.from #js [1.0 2.0]))]
-      (is (= [:bytes [1 2 3]] (mman/norm-val bs)))
-      (is (= :farray (first (mman/norm-val fs))))
-      (is (= :darray (first (mman/norm-val ds))))
+          ds #?(:clj (double-array [1.0 2.0]) :cljs (js/Float64Array.from #js [1.0 2.0]))
+          hi #?(:clj (byte-array [(unchecked-byte 0xFF) (unchecked-byte 0x80)])
+                :cljs (js/Uint8Array.from #js [255 128]))]
+      ;; GOLDEN, and asserted in a .cljc so BOTH runtimes must produce them.
+      ;;
+      ;; This used to read `[:bytes [1 2 3]]` — the element vector — which is
+      ;; where the runtimes diverged: `vec` reads the platform's element type,
+      ;; and the JVM's is SIGNED where ClojureScript's is not. The same three
+      ;; bytes gave `[-1 -128 1]` on the JVM and `[255 128 1]` on Node, so
+      ;; `verify-against` reported a mismatch on CORRECT data for any
+      ;; `:db.type/bytes` value holding a byte >= 0x80, and the two runtimes
+      ;; sorted such records differently. The fixture below only used values
+      ;; under 0x80, where signed and unsigned agree — which is why it passed.
+      ;;
+      ;; The content now comes from hasch, which hashes the JVM array and the
+      ;; typed array to the same value by construction (replikativ/hasch#31).
+      ;; If a hasch upgrade changes its encoding these move: update them in the
+      ;; same commit for both runtimes, never one.
+      (is (= [:bytes  #uuid "1ef76d68-d43a-545c-9811-f0a49ffaaa01"] (mman/norm-val bs)))
+      (is (= [:farray #uuid "27020a21-bbfe-52c8-87fc-47cf10542659"] (mman/norm-val fs)))
+      (is (= [:darray #uuid "24755b8e-b622-5df5-bfec-f57cc71a9ddb"] (mman/norm-val ds)))
+      (is (= [:bytes  #uuid "0280444f-2bc8-5f70-b77c-73f15752ba50"] (mman/norm-val hi))
+          "the high-byte case the old element-vector form got wrong")
       (is (not= (mman/norm-val fs) (mman/norm-val ds))
-          "same numbers, different kinds — they must not hash alike"))))
+          "same numbers, different kinds — they must not hash alike")
+      (is (= (mman/norm-val bs)
+             (mman/norm-val #?(:clj (byte-array [1 2 3]) :cljs (js/Uint8Array.from #js [1 2 3]))))
+          "content-addressed: equal arrays normalise equally"))))
 
 (deftest codec-resolution-and-refusal
   (testing "a manifest with no `:compression` predates it and is stored verbatim;
