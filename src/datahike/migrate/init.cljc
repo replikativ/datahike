@@ -302,14 +302,27 @@
            multival   (set (:db.cardinality/many rschema))
           ;; the two classes a live datom of which never reaches temporal
            excluded?  (fn [a] (or (contains? no-history a) (contains? multival a)))
-           current-recs (->> (msort/read-sorted-file sorted-file)
-                             mh/current-from-eavt-sorted
-                             (map record->datom))
            ;; SEQUENTIAL, and not merely for tidiness: both builds write nodes
            ;; through the same `pending-writes` buffer and the same `:flush-fn`,
            ;; which is not written to be entered twice concurrently.
-           current (<?- (build-index! index-name store current-recs index-type
-                                      index-config sync?))
+           ;;
+           ;; The record seq is built INLINE, in the argument position, and is
+           ;; deliberately not bound. This used to be `current-recs`, a named
+           ;; binding whose next sibling parks — the exact bind-then-park shape
+           ;; the caller eleven lines up (`build-indexes!`) carries a comment
+           ;; refusing to write, because core.async decomposes the `let` and
+           ;; every binding in that region becomes a state-machine local that is
+           ;; never cleared. Measured with a WeakReference: named, the head of
+           ;; the record seq was still reachable during the SECOND (temporal)
+           ;; build; inlined, it was not. The head pins every realized cell, so
+           ;; an async `:build-indexes?` import held the whole current index, as
+           ;; records and as Datoms, per index family. `temporal` below already
+           ;; built its seq inline; the asymmetry was an oversight, not a choice.
+           current (<?- (build-index! index-name store
+                                      (->> (msort/read-sorted-file sorted-file)
+                                           mh/current-from-eavt-sorted
+                                           (map record->datom))
+                                      index-type index-config sync?))
            temporal (when temporal?
                       (<?- (build-index! index-name store
                                          (->> (msort/read-sorted-file sorted-file)

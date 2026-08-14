@@ -41,7 +41,9 @@
   (:require [clojure.test :refer [deftest testing is use-fixtures]]
             [datahike.api :as d]
             [datahike.api.specification :refer [api-specification]]
+            [datahike.api.types :as types]
             [malli.core :as m]
+            [malli.util :as mu]
             [malli.instrument :as mi]
             [datahike.test.utils :as utils]))
 
@@ -85,9 +87,23 @@
 (deftest every-api-schema-compiles
   (testing "an uncompilable schema is silently unenforced — and four of them
             were, which is how they stayed wrong. This is the cheap guard."
-    (let [bad (for [[n {:keys [args]}] api-specification
-                    :let [err (try (m/schema args (m/-registry)) nil
-                                   (catch Exception e (:type (ex-data e))))]
+    ;; The second argument is an OPTIONS MAP, and it must be the SAME one
+    ;; `register-api-schemas!` compiles with (api.cljc) — otherwise this checks a
+    ;; different registry than the one that matters. It used to be
+    ;; `(m/-registry)`, which returns a Registry object, so every call threw a
+    ;; ClassCastException whose `ex-data` is nil; `err` was therefore nil, the
+    ;; `:when` filtered every entry out, and `bad` was empty however broken the
+    ;; schemas were. Verified: it passed with deliberately broken schemas.
+    ;;
+    ;; Keep the whole `merge`. Narrower forms (`{:registry types/registry}`
+    ;; alone, or dropping `mu/schemas`) happen to give the same answer today,
+    ;; because `types/registry` already merges `m/default-schemas` — but a
+    ;; future `:merge`/`:union` schema would silently diverge under them.
+    (let [opts {:registry (merge (m/default-schemas) (mu/schemas) types/registry)}
+          bad (for [[n {:keys [args]}] api-specification
+                    :let [err (try (m/schema args opts) nil
+                                   (catch Exception e
+                                     (or (:type (ex-data e)) (ex-message e))))]
                     :when err]
                 [n err])]
       (is (empty? bad) (str "uncompilable API schemas: " (pr-str (vec bad))))))

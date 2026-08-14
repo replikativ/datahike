@@ -35,6 +35,7 @@
   (:require [datahike.db.interface :as dbi]
             [datahike.blob :as blob]
             [datahike.gc :as gc]
+            [datahike.tools :as dt]
             [konserve.core :as k]
             ;; Fully portable now. This namespace used to refer
             ;; `superv.async/<??` — a BLOCKING take that exists only on the JVM —
@@ -113,8 +114,28 @@
   (async+sync
    (:sync? opts) *default-sync-translation*
    (go-try-
-    (let [live (sort (<?- (gc/reachable-store-refs
-                           db (#?(:clj java.util.Date. :cljs js/Date.) 0) opts)))]
+    (let [;; `delivered!`, because a CLOSED channel is not an empty result.
+          ;; `go-try-` turns a thrown Exception into a channel value but does not
+          ;; cover a channel that closes — a JVM `Error` (an `assert`, and the
+          ;; :test alias runs with -ea) or a cljs throw of a non-`js/Error` — and
+          ;; `<?-` then yields nil. `(sort nil)` is `()`, the loop below exits on
+          ;; its first iteration, and a FAILED reachability walk returns
+          ;; `{:carried [] :external [] :self-contained? true}`.
+          ;;
+          ;; That is not a cosmetic wrong answer. Reproduced: no blob bytes are
+          ;; written, the manifest omits `:store-refs` entirely, `restore-blobs!`
+          ;; becomes a no-op, and `verify` reports `:ok? true` — a dump missing
+          ;; every blob, certified intact, importing into a database naming
+          ;; objects that were never placed. `manifest.cljc`'s own docstring
+          ;; records the identical outcome reached by a different route, and the
+          ;; 39 tests that caught THAT one do not catch this, because the plan is
+          ;; only wrong when the walk fails.
+          ;;
+          ;; nil is unambiguously failure here: `reachable-store-refs` returns a
+          ;; set, `#{}` for a schema with store-refs but no blob values.
+          live (sort (dt/delivered! (<?- (gc/reachable-store-refs
+                                          db (#?(:clj java.util.Date. :cljs js/Date.) 0) opts))
+                                    {:op :export/reachable-store-refs}))]
       (loop [ids (seq live) carried [] external []]
         (if (nil? ids)
           {:carried (vec (sort carried))

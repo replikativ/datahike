@@ -59,14 +59,34 @@
 
    `v` stays in the key, last, purely to keep the order total: two records
    differing only in value must not tie, or the merge would order them by
-   whichever run reached the cursor first."
+   whichever run reached the cursor first.
+
+   `norm-val` before `str`, and that is not cosmetic. `(str some-byte-array)` is
+   `\"[B@1a2b3c4d\"` — the JVM IDENTITY hash — so two records differing only in a
+   binary value sorted in an order that varied between JVM runs. Measured: six
+   exports of one stored database from six fresh JVMs produced FIVE distinct
+   chunk SHA-256s, which falsifies this namespace's own byte-identity claim for
+   exactly the value types the branch added (`:db.type/bytes`, float-array,
+   double-array — and tuples containing one). Two further consequences: a 32-bit
+   identity hash can COLLIDE, so the totality promised just above also failed
+   probabilistically; and ClojureScript stringifies a `Uint8Array` by CONTENT
+   (`\"1,2,3\"`), so the JVM and Node ordered the same database differently.
+
+   `norm-val` is content-based, class-distinct across the three array types, and
+   already what the semantic digest uses (`fp-step`), so the two agree. It
+   returns non-array values unchanged, so this key is byte-for-byte the old one
+   for every other type and existing dumps do not move.
+
+   It lives in `datahike.migrate.cbor` rather than `…/manifest` on purpose:
+   manifest requires `datahike.api`, and pulling that into this leaf namespace
+   to compute a sort key would be a large dependency for a small function."
   [record]
   [(nth record 3)
    (if (= (nth record 1) :db/txInstant) 0 1)
    (nth record 0)
    (str (nth record 1))
    (if (nth record 4) 1 0)
-   (str (nth record 2))])
+   (str (mcbor/norm-val (nth record 2)))])
 
 (def by-sort-key
   "Comparator over RECORDS implementing the export order.

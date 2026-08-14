@@ -813,21 +813,8 @@
 ;; ---------------------------------------------------------------------------
 ;; the tier-2 fingerprint: id-independent, so a dump compares to a live database
 
-(defn norm-val
-  "Stably hashable form of a value: array/bytes values compare structurally rather
-   than by identity, while keeping their class distinct."
-  [v]
-  #?(:clj
-     (cond
-       (bytes? v)                              [:bytes (vec v)]
-       (instance? (Class/forName "[F") v)      [:farray (vec v)]
-       (instance? (Class/forName "[D") v)      [:darray (vec v)]
-       :else                                   v)
-     :cljs
-     ;; The same three classes, spelled as the typed arrays ClojureScript uses
-     ;; for them — `:db.type/bytes`, `:db.type/float-array`, `:db.type/double-array`.
-     (cond
-       (instance? js/Uint8Array v)             [:bytes (vec v)]
-       (instance? js/Float32Array v)           [:farray (vec v)]
-       (instance? js/Float64Array v)           [:darray (vec v)]
-       :else                                   v)))
+(def norm-val
+  "Moved to `datahike.migrate.cbor` so `datahike.migrate.sort` can use it for
+   the sort key without requiring this namespace, which drags `datahike.api`
+   into a leaf. Re-exported here because it is referred by name elsewhere."
+  mcbor/norm-val)

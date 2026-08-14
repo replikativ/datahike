@@ -204,3 +204,36 @@
       (is (not= 0 (msort/by-sort-key a b)))
       (is (= (sort msort/by-sort-key [a b]) (sort msort/by-sort-key [b a]))
           "and the order does not depend on the input order"))))
+
+(deftest binary-values-sort-by-content-not-identity
+  (testing "`sort-key` ended `(str v)`, and `(str some-byte-array)` is
+            `\"[B@1a2b3c4d\"` — the JVM IDENTITY hash. So two records differing
+            only in a binary value sorted in an order that varied between JVM
+            RUNS. Measured before the fix: six exports of one stored database
+            from six fresh JVMs produced five distinct chunk SHA-256s, which
+            falsifies the byte-identical-export claim for exactly the value
+            types this branch added.
+
+            Two further consequences the identity hash had: it is 32 bits, so it
+            can collide and break the totality the docstring promises; and
+            ClojureScript stringifies a Uint8Array by CONTENT, so JVM and Node
+            ordered the same database differently."
+    (let [k #(msort/sort-key [1 :a % 5 true])]
+      (testing "equal content sorts equal, whatever the identity"
+        (is (= (k #?(:clj (byte-array [1 2 3]) :cljs (js/Uint8Array. #js [1 2 3])))
+               (k #?(:clj (byte-array [1 2 3]) :cljs (js/Uint8Array. #js [1 2 3]))))
+            "two distinct objects with the same bytes"))
+      (testing "different content still differs, so the order stays total"
+        (is (not= (k #?(:clj (byte-array [1 2 3]) :cljs (js/Uint8Array. #js [1 2 3])))
+                  (k #?(:clj (byte-array [9]) :cljs (js/Uint8Array. #js [9]))))))
+      (testing "the three array types stay distinct from each other and from a
+                plain vector of the same numbers — `norm-val` tags the class"
+        (let [ks [(k #?(:clj (byte-array [1 2]) :cljs (js/Uint8Array. #js [1 2])))
+                  (k #?(:clj (float-array [1 2]) :cljs (js/Float32Array. #js [1 2])))
+                  (k #?(:clj (double-array [1 2]) :cljs (js/Float64Array. #js [1 2])))
+                  (k [1 2])]]
+          (is (= 4 (count (set ks))))))
+      (testing "and a non-binary value's key is untouched, so existing dumps do
+                not move — this is the whole reason `norm-val` passes them through"
+        (is (= "hello" (last (msort/sort-key [1 :a "hello" 5 true]))))
+        (is (= "42" (last (msort/sort-key [1 :a 42 5 true]))))))))

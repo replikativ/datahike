@@ -16,7 +16,7 @@
             [datahike.blob :as blob]
             [datahike.db]
             [konserve.core :as k]
-            [clojure.core.async :refer [go]]
+            [clojure.core.async :as a :refer [go]]
             [superv.async :refer [<?? S]]
             [clojure.string :as str]
             [konserve.store :as ks]
@@ -1498,3 +1498,34 @@
                 (is (false? (:ok? r)) "reported, not thrown")
                 (is (some? (:integrity r)) "and it says what was wrong")))))
         (finally (d/release conn))))))
+
+(deftest a-failed-reachability-walk-is-not-an-empty-blob-plan
+  (testing "`plan` took `(sort (<?- (gc/reachable-store-refs …)))`. `go-try-`
+            turns a thrown Exception into a channel value but does NOT cover a
+            channel that CLOSES — a JVM Error (an assert; the :test alias runs
+            with -ea) or a cljs throw of a non-js/Error — and `<?-` then yields
+            nil. `(sort nil)` is `()`, so the loop exited on its first iteration
+            and a FAILED walk returned `{:carried [] :external []
+            :self-contained? true}`.
+
+            That is not a cosmetic wrong answer: no blob bytes get written, the
+            manifest omits `:store-refs`, `restore-blobs!` becomes a no-op and
+            `verify` reports `:ok? true` — a dump missing every blob, certified
+            intact. `manifest.cljc`'s own docstring records the identical
+            outcome reached by a different route, and the 39 tests that caught
+            THAT one do not catch this, because the plan is only wrong when the
+            walk fails.
+
+            nil is unambiguously failure here: `reachable-store-refs` returns a
+            set, `#{}` when a schema has store-refs but no blob values."
+    (with-redefs [datahike.gc/reachable-store-refs
+                  (fn [& _] (go (throw (AssertionError. "boom"))))]
+      ;; `:sync? false` on purpose: under `:sync? true` `async+sync` compiles to
+      ;; a plain `let` and `<?-` is identity, so the stub's channel would be
+      ;; taken as a VALUE and the test would fail for the wrong reason.
+      (let [r (a/<!! (mblobs/plan :fake-db :fake-store {:sync? false}))]
+        (is (instance? Throwable r)
+            (str "a failed walk must surface, not return a plan; got " (pr-str r)))
+        (is (= :export/reachable-store-refs (:op (ex-data r)))
+            "and it names the operation that failed, rather than reporting
+             a self-contained dump with no blobs")))))

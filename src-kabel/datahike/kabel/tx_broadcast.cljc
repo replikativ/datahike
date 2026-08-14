@@ -94,10 +94,33 @@
   ;; partially-built report) may legitimately carry a plain map here. Passing
   ;; those through unchanged preserves the previous behaviour exactly.
   [tx-report]
-  (let [->stored (fn [db] (if (dbu/db? db) (second (dw/db->stored db false)) db))]
-    (-> (into {} tx-report)
-        (update :db-before ->stored)
-        (update :db-after ->stored))))
+  ;; Only project something that IS a tx-report. This runs on whatever the
+  ;; writer op returned, and not every op returns one:
+  ;;
+  ;;   * `gc-storage!` returns a SET of swept ids. `(into {} #{uuid …})` throws
+  ;;     `IllegalArgumentException: Don't know how to create ISeq from
+  ;;     java.util.UUID`, server-side, so `d/gc-storage` over a kabel peer died
+  ;;     outright. Reproduced end to end.
+  ;;   * `build-secondary-index!` returns `{:idx-ident … :index …}`. That one is
+  ;;     a map, so it survived `into` — and then `update` ADDED `:db-before nil`
+  ;;     and `:db-after nil` to it, because `update` on an absent key calls the
+  ;;     function on nil and assocs the result. Quieter, and still wrong.
+  ;;
+  ;; So the guard is `contains? :db-after`, not `map?`: it admits the TxReport
+  ;; defrecord and any genuine report map, and passes everything else through
+  ;; untouched. A `map?` guard would have fixed only the first of the two.
+  ;;
+  ;; NOT pre-existing. On main this projection did not exist — the handler
+  ;; returned the raw report and fressian's write handler fired only on a real
+  ;; `TxReport` record, so a set never met it. Moving the projection here (for
+  ;; the codec-agnosticism argued above) is what put every op's result through
+  ;; it.
+  (if-not (contains? tx-report :db-after)
+    tx-report
+    (let [->stored (fn [db] (if (dbu/db? db) (second (dw/db->stored db false)) db))]
+      (-> (into {} tx-report)
+          (update :db-before ->stored)
+          (update :db-after ->stored)))))
 
 (defn publish-tx-report!
   "Publish a tx-report to all subscribers. Called after each transaction.
