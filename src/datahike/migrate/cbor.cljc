@@ -44,7 +44,35 @@
    A newline-delimited format cannot do this without escaping, which is why the
    EDN codec was line-oriented all the way down into the external sort."
   (:require [boring.core :as boring]
+            [clojure.walk :as walk]
             [hasch.core :as hasch]))
+
+;; Resolved once. `Class/forName` is a classloader lookup, and `norm-val` runs
+;; per record on the export path — twice per record, in fact, since the sort key
+;; and the semantic digest both call it.
+#?(:clj (def ^:private ^Class farray-class (Class/forName "[F")))
+#?(:clj (def ^:private ^Class darray-class (Class/forName "[D")))
+
+(defn- array-val?
+  "Is `v` one of the three primitive-array value types?
+
+   `:db.type/bytes`, `:db.type/float-array`, `:db.type/double-array` — spelled
+   on each platform as the class it actually arrives as."
+  [v]
+  #?(:clj  (or (bytes? v)
+               (instance? farray-class v)
+               (instance? darray-class v))
+     :cljs (or (instance? js/Uint8Array v)
+               (instance? js/Float32Array v)
+               (instance? js/Float64Array v))))
+
+(defn- tag-array [v]
+  #?(:clj  (cond (bytes? v)                  [:bytes  (hasch/uuid v)]
+                 (instance? farray-class v)  [:farray (hasch/uuid v)]
+                 :else                       [:darray (hasch/uuid v)])
+     :cljs (cond (instance? js/Uint8Array v)   [:bytes  (hasch/uuid v)]
+                 (instance? js/Float32Array v) [:farray (hasch/uuid v)]
+                 :else                         [:darray (hasch/uuid v)])))
 
 (defn norm-val
   "Stably hashable form of a value: array values compare by CONTENT rather than
@@ -75,22 +103,48 @@
 
    The type tag stays, so a byte array and a float array of the same content
    remain distinct — hasch would also keep them apart, but the tag says so
-   locally and keeps the shape a reader can see."
+   locally and keeps the shape a reader can see.
+
+   ## Inside collections too, and why that is not optional
+
+   A `:db.type/tuple` whose `:db/tupleTypes` names one of the three arrives as a
+   VECTOR holding an array, so a check on the top-level class alone walks past
+   it. The first version of this function did exactly that, and both callers
+   were wrong for tuples in the way each is wrong for a bare array:
+
+     sort.cljc   `(str [#object[\"[B\" 0x10fc35db …] \"a\"])` — the identity hash
+                 again, so chunk boundaries still varied between JVM runs for a
+                 database holding tuples.
+     migrate.cljc `verify-against` tier 3 puts `(norm-val v)` in a SET, and two
+                 `byte[]` are never `=`, so an INTACT dump reported
+                 `:field-mismatch` on every sampled entity.
+
+   So the rewrite is a `postwalk`. Only collection values pay for it — a scalar
+   takes the first `cond` arm and allocates nothing — and only tuples and
+   free-schema nested data are collections at all.
+
+   ## The `::normalized` marker
+
+   Rewriting `[bs \"a\"]` to `[[:bytes #uuid …] \"a\"]` produces a value a caller
+   could in principle have stored literally under `:schema-flexibility :read`,
+   and then two different values would share a sort key — losing the totality
+   this is for. Marking the containers we rewrote keeps the mapping injective.
+   A collection with no array in it is returned UNCHANGED and unmarked, so
+   existing dumps move only where they were already nondeterministic."
   [v]
-  #?(:clj
-     (cond
-       (bytes? v)                              [:bytes  (hasch/uuid v)]
-       (instance? (Class/forName "[F") v)      [:farray (hasch/uuid v)]
-       (instance? (Class/forName "[D") v)      [:darray (hasch/uuid v)]
-       :else                                   v)
-     :cljs
-     ;; The same three classes, spelled as the typed arrays ClojureScript uses
-     ;; for them — `:db.type/bytes`, `:db.type/float-array`, `:db.type/double-array`.
-     (cond
-       (instance? js/Uint8Array v)             [:bytes  (hasch/uuid v)]
-       (instance? js/Float32Array v)           [:farray (hasch/uuid v)]
-       (instance? js/Float64Array v)           [:darray (hasch/uuid v)]
-       :else                                   v)))
+  (cond
+    (array-val? v) (tag-array v)
+
+    (coll? v)
+    (let [touched? (volatile! false)
+          w (walk/postwalk (fn [x]
+                             (if (array-val? x)
+                               (do (vreset! touched? true) (tag-array x))
+                               x))
+                           v)]
+      (if @touched? [::normalized w] v))
+
+    :else v))
 
 ;; ---------------------------------------------------------------------------
 ;; system-entity references (#508): translate, never re-insert

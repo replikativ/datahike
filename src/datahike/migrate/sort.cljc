@@ -66,16 +66,18 @@
    binary value sorted in an order that varied between JVM runs. Measured: six
    exports of one stored database from six fresh JVMs produced FIVE distinct
    chunk SHA-256s, which falsifies this namespace's own byte-identity claim for
-   exactly the value types the branch added (`:db.type/bytes`, float-array,
-   double-array — and tuples containing one). Two further consequences: a 32-bit
-   identity hash can COLLIDE, so the totality promised just above also failed
-   probabilistically; and ClojureScript stringifies a `Uint8Array` by CONTENT
-   (`\"1,2,3\"`), so the JVM and Node ordered the same database differently.
+   the three primitive-array value types (`:db.type/bytes`, `:db.type/float-array`,
+   `:db.type/double-array` — and a `:db.type/tuple` holding one, which is a vector
+   and so needs `norm-val` to reach INSIDE the value). Two further consequences:
+   a 32-bit identity hash can COLLIDE, so the totality promised just above also
+   failed probabilistically; and ClojureScript stringifies a `Uint8Array` by
+   CONTENT (`\"1,2,3\"`), so the JVM and Node ordered the same database
+   differently.
 
    `norm-val` is content-based, class-distinct across the three array types, and
    already what the semantic digest uses (`fp-step`), so the two agree. It
-   returns non-array values unchanged, so this key is byte-for-byte the old one
-   for every other type and existing dumps do not move.
+   returns any value CONTAINING no array unchanged, so this key is byte-for-byte
+   the old one for every other type and existing dumps do not move.
 
    It lives in `datahike.migrate.cbor` rather than `…/manifest` on purpose:
    manifest requires `datahike.api`, and pulling that into this leaf namespace

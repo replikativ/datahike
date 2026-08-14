@@ -13,7 +13,8 @@
    makes it runnable without a store, a filesystem, or an async writer."
   (:require #?(:clj [clojure.test :refer [deftest testing is]]
                :cljs [cljs.test :refer [deftest testing is]])
-            [datahike.migrate.manifest :as mman]))
+            [datahike.migrate.manifest :as mman]
+            [hasch.core :as hasch]))
 
 ;; ---------------------------------------------------------------------------
 
@@ -142,6 +143,46 @@
       (is (= (mman/norm-val bs)
              (mman/norm-val #?(:clj (byte-array [1 2 3]) :cljs (js/Uint8Array.from #js [1 2 3]))))
           "content-addressed: equal arrays normalise equally"))))
+
+(deftest norm-val-reaches-inside-a-tuple
+  (testing "a `:db.type/tuple` whose `:db/tupleTypes` names one of the three
+            array types arrives as a VECTOR holding an array, so a check on the
+            top-level class alone walks straight past it — which is what the
+            first version of `norm-val` did.
+
+            Both callers were then wrong for tuples in the way each was wrong
+            for a bare array: `sort.cljc` stringified the identity hash, so
+            chunk boundaries varied between JVM runs; and `verify-against`
+            tier 3 puts the result in a SET, where two `byte[]` are never `=`,
+            so an INTACT dump reported `:field-mismatch` on every sampled
+            entity."
+    (let [bs  #?(:clj (byte-array [1 2 3]) :cljs (js/Uint8Array.from #js [1 2 3]))
+          bs' #?(:clj (byte-array [1 2 3]) :cljs (js/Uint8Array.from #js [1 2 3]))
+          other #?(:clj (byte-array [9 9 9]) :cljs (js/Uint8Array.from #js [9 9 9]))]
+      (is (= (mman/norm-val [bs "a"]) (mman/norm-val [bs' "a"]))
+          "two distinct arrays with the same bytes: one tuple value")
+      (is (= #{(mman/norm-val [bs "a"])} #{(mman/norm-val [bs' "a"])})
+          "and equal as SET members, which is the form tier 3 compares in")
+      (is (not= (mman/norm-val [bs "a"]) (mman/norm-val [other "a"]))
+          "different content still differs, so the sort order stays total")
+
+      (testing "a value holding no array is returned UNCHANGED — this is what
+                keeps existing dumps from moving"
+        (is (= [1 2 "x"] (mman/norm-val [1 2 "x"])))
+        (is (= {:a 1} (mman/norm-val {:a 1})))
+        (is (= [] (mman/norm-val []))))
+
+      (testing "rewritten containers are marked, so the mapping stays injective:
+                under `:schema-flexibility :read` a caller may store the
+                normalised shape literally, and it must not share a sort key
+                with the tuple that normalises to it"
+        (is (not= (mman/norm-val [bs "a"])
+                  (mman/norm-val [[:bytes (hasch/uuid bs)] "a"]))))
+
+      (testing "nesting is not limited to one level, since free schema permits
+                arbitrary values"
+        (is (= (mman/norm-val {:k [#{bs}]}) (mman/norm-val {:k [#{bs'}]})))
+        (is (not= (mman/norm-val {:k [#{bs}]}) (mman/norm-val {:k [#{other}]})))))))
 
 (deftest codec-resolution-and-refusal
   (testing "a manifest with no `:compression` predates it and is stored verbatim;
