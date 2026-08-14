@@ -422,7 +422,17 @@
                                 per-chunk memory (~2.7 MB of records). Same for
                                 both media — see `manifest/default-chunk-size`
                                 for why they were unified.
-     :sort-buffer  1000000      datoms per in-memory external-sort run
+     :sort-buffer  1000000      datoms per in-memory external-sort run. The sort
+                                decorates each resident record with its sort key
+                                (`migrate.sort/export-order`), so a run costs the
+                                records PLUS the keys — measured at 147 bytes per
+                                record for string values, 194 for longs and 241
+                                for `:db.type/bytes`, where the key carries the
+                                value's hash as a string. At this default that is
+                                ~150-240 MB on top of the window itself; lower it
+                                if the export runs in a small heap. The keys are
+                                freed as soon as the run is sorted, so this is the
+                                sort phase's live set, not the export's.
      :sort?        true         false ⇒ no-scratch streaming order (see below)
      :progress-fn  nil          (fn [{:keys [phase datoms]}]). `:datoms` means one
                                 of two things, and `:phase` says which: a

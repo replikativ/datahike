@@ -100,9 +100,70 @@
    reason, and a bulk index build will pass one of those here — over Datoms —
    rather than a key function.
 
-   The export path keeps a precomputed key because `sort-key` IS Comparable and
-   precomputing is cheaper than recomputing per comparison."
+   A bare comparator recomputes both keys on EVERY comparison — see
+   `export-order`, which is what the export path actually passes."
   (fn [a b] (compare (sort-key a) (sort-key b))))
+
+(def export-order
+  "The export order as a key function AND the comparator derived from it.
+
+   `by-sort-key` rebuilt both keys on every comparison. Measured on 20,000
+   records: 521,590 `sort-key` calls, 26.1 per record — and `sort-key` is not
+   cheap, since `norm-val` hashes an array value with hasch. The classic remedy
+   is decorate-sort-undecorate, and this namespace's docstring has claimed for
+   some time that the export path already did it. It did not.
+
+   `clojure.core/sort-by` is NOT the fix: it is `(sort (fn [x y] (compare (keyfn x)
+   (keyfn y))))`, so it recomputes exactly as much. Measured: 35,558 calls for
+   2,000 records. The decoration has to be explicit.
+
+   The two halves travel TOGETHER because they are one decision. A caller given
+   `cmp` and `key-fn` as separate arguments can pass a pair that disagree, and
+   the failure is invisible in the worst way: each run would be sorted by one
+   order and merged by the other, so the runs are internally sorted, the merge
+   is internally consistent, and the global result is simply wrong. Deriving the
+   comparator from the key function, once, here, means there is no pair to get
+   wrong.
+
+   Not every order can be expressed this way, which is why the bare-comparator
+   path stays. `init/sort-family!` sorts by `datom/index-type->cmp-quick`, an
+   INDEX order over `[e a v t]` where `v` is heterogeneous — `(compare [1 :a \"x\" 5]
+   [1 :a 7 5])` throws, so there is no Comparable key to precompute. Those
+   callers pass a function and get the old behaviour, unchanged."
+  {::key-fn sort-key ::cmp by-sort-key})
+
+(defn- as-order
+  "Normalise the `cmp` argument, which is either a bundled order or a bare
+   comparator. Accepting both is what lets every signature here stay as it was."
+  [x]
+  (if (map? x) x {::cmp x}))
+
+(defn- sort-window
+  "Sort one in-memory window under `order`.
+
+   Undecorated EAGERLY — `mapv`, not `map` — so the keys, which are the fat part
+   since a key holds the stringified value, become garbage as soon as the sort is
+   done rather than staying reachable for as long as the caller holds the result.
+
+   Then `seq`, and that is not cosmetic. Returning the VECTOR would make the
+   returned object itself the collection, so a consumer holding any position
+   holds the head — and `migrate_retention_test` watches exactly that object,
+   because in async mode a retained head is a retained database. `sort` returns
+   an `ArraySeq` whose head falls away as the consumer advances; handing back a
+   seq keeps that property. (Both retain the window's records until the consumer
+   is done, which is what `external-sort` means by sorting in memory.)
+
+   Keys are compared directly rather than by sorting the pairs: comparing
+   `[key record]` pairs would fall through to comparing RECORDS on a key tie, and
+   records are heterogeneous in `v`, so that throws."
+  [window {::keys [cmp key-fn]}]
+  (if key-fn
+    (->> window
+         (mapv (fn [r] [(key-fn r) r]))
+         (sort-by #(nth % 0))
+         (mapv #(nth % 1))
+         seq)
+    (sort cmp window)))
 
 (defn- spill-window!
   "Sort one window and write it to a fresh run file under `tmp-dir`."
@@ -110,7 +171,7 @@
   (let [f (fs/temp-file! tmp-dir "dh-run-" ".cbor")
         sink (fs/open-sink f)]
     (try
-      (doseq [r (sort cmp window)]
+      (doseq [r (sort-window window (as-order cmp))]
         (fs/write! sink (mcbor/encode-record r)))
       (finally (fs/close-sink! sink)))
     f))
@@ -119,7 +180,7 @@
   "Consume a (lazy) seq of records in windows of `run-size`, sort each window with
    `cmp`, and write it to a temp run file under `tmp-dir`. Returns the vector of
    run paths. Memory is bounded by one window."
-  ([records run-size tmp-dir] (spill-runs records run-size tmp-dir by-sort-key))
+  ([records run-size tmp-dir] (spill-runs records run-size tmp-dir export-order))
   ([records run-size tmp-dir cmp]
    (loop [rs (seq records) files []]
      (if (nil? rs)
@@ -167,15 +228,28 @@
    cursors holding equal records would compare equal, and `conj` would discard
    one along with everything behind it. Exactly one entry per cursor is resident
    at a time, so the index is unique across the set."
-  ([run-files] (merge-runs run-files by-sort-key false))
+  ([run-files] (merge-runs run-files export-order false))
   ([run-files cmp] (merge-runs run-files cmp false))
   ([run-files cmp consume?]
-   (let [cursor-cmp (fn [a b]
-                      (let [c (cmp (:record a) (:record b))]
-                        (if (zero? c) (compare (:idx a) (:idx b)) c)))
+   (let [{::keys [cmp key-fn]} (as-order cmp)
+         ;; The merge recomputed too, and more often than it looks: the
+         ;; `sorted-set-by` does O(log k) comparisons per record surfaced, and
+         ;; `reduce-runs` may run several passes, so a record's key was rebuilt
+         ;; O(log k) times PER PASS. Carrying it on the cursor makes it once per
+         ;; record per pass. Exactly one entry per cursor is resident, so this
+         ;; adds k keys, not n.
+         cursor-key (if key-fn #(key-fn %) (constantly nil))
+         cursor-cmp (if key-fn
+                      (fn [a b]
+                        (let [c (compare (:key a) (:key b))]
+                          (if (zero? c) (compare (:idx a) (:idx b)) c)))
+                      (fn [a b]
+                        (let [c (cmp (:record a) (:record b))]
+                          (if (zero? c) (compare (:idx a) (:idx b)) c))))
          cursors (keep-indexed (fn [i f]
                                  (when-let [rs (seq (record-seq-closing f consume?))]
-                                   {:record (first rs) :rest (rest rs) :idx i}))
+                                   {:record (first rs) :key (cursor-key (first rs))
+                                    :rest (rest rs) :idx i}))
                                run-files)]
      ((fn step [pq]
         (lazy-seq
@@ -183,7 +257,8 @@
            (let [{:keys [record rest idx]} c
                  pq' (disj pq c)
                  pq' (if-let [nr (first rest)]
-                       (conj pq' {:record nr :rest (next rest) :idx idx})
+                       (conj pq' {:record nr :key (cursor-key nr)
+                                  :rest (next rest) :idx idx})
                        pq')]
              (cons record (step pq'))))))
       (into (sorted-set-by cursor-cmp) cursors)))))
@@ -247,13 +322,13 @@
    memory and handed back. PostgreSQL makes the same distinction — `tuplesort`
    only calls `inittapes()` once memory is actually exhausted — and without it a
    ten-record sort creates a temp file, writes it, and reads it back."
-  ([records run-size tmp-dir] (external-sort records run-size tmp-dir by-sort-key))
+  ([records run-size tmp-dir] (external-sort records run-size tmp-dir export-order))
   ([records run-size tmp-dir cmp]
    (let [rs (seq records)
          window (into [] (take run-size) rs)
          more (seq (drop run-size rs))]
      (if (nil? more)
-       (sort cmp window)
+       (sort-window window (as-order cmp))
        (-> (into [(spill-window! window tmp-dir cmp)]
                  (spill-runs more run-size tmp-dir cmp))
            (reduce-runs tmp-dir cmp)
@@ -279,7 +354,7 @@
    `:sort-buffer` defaults to a million records, that was the common case rather
    than a corner: a bulk build of a database smaller than the buffer paid three
    entirely wasted serialization passes, one per index family."
-  ([records run-size tmp-dir] (external-sort-to-file records run-size tmp-dir by-sort-key))
+  ([records run-size tmp-dir] (external-sort-to-file records run-size tmp-dir export-order))
   ([records run-size tmp-dir cmp]
    (let [runs (spill-runs records run-size tmp-dir cmp)]
      (if (= 1 (count runs))

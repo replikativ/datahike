@@ -237,3 +237,85 @@
                 not move — this is the whole reason `norm-val` passes them through"
         (is (= "hello" (last (msort/sort-key [1 :a "hello" 5 true]))))
         (is (= "42" (last (msort/sort-key [1 :a 42 5 true]))))))))
+
+;; ---------------------------------------------------------------------------
+
+(deftest decorated-order-equals-the-bare-comparator
+  (testing "`export-order` precomputes each record's sort key instead of
+            rebuilding both keys on every comparison. The output must be
+            IDENTICAL to the bare comparator's, and the way this could go wrong
+            is the reason the two halves are bundled in one value rather than
+            passed as two arguments: if the comparator and the key function
+            disagreed, every run would be sorted by one order and merged by the
+            other. Each run would be internally sorted, the merge internally
+            consistent, and the global result simply wrong — which no assertion
+            about a single run would catch.
+
+            So this compares KEY SEQUENCES through the spilling path, where the
+            merge is what orders the output. Comparing records directly does not
+            work: records come back DECODED from run files, and `=` on a
+            `byte[]` is identity, so a `:db.type/bytes` value would report a
+            divergence that is the test's own artifact."
+    (let [mk (fn [i]
+               (case (mod i 4)
+                 0 [(mod i 13) :a #?(:clj (byte-array [(unchecked-byte i) 2])
+                                     :cljs (js/Uint8Array. #js [1 2]))
+                    (+ 536870913 (mod i 3)) true]
+                 1 [(mod i 13) :b (str "v" (mod i 7)) (+ 536870913 (mod i 3)) false]
+                 2 [(mod i 13) :c (mod i 5) (+ 536870913 (mod i 3)) true]
+                 3 [7 :d "tie" 536870913 true]))
+          records (mapv mk (range 400))
+          keys-of #(mapv msort/sort-key %)]
+      (doseq [run-size [10000 100 7 1 399 401]]
+        (let [d1 (fs/temp-dir! "dh-ord-a-")
+              d2 (fs/temp-dir! "dh-ord-b-")]
+          (try
+            (let [decorated (vec (msort/external-sort records run-size d1))
+                  bare      (vec (msort/external-sort records run-size d2
+                                                      msort/by-sort-key))
+                  kd (keys-of decorated)]
+              (is (= kd (keys-of bare))
+                  (str "same order at run-size " run-size))
+              (is (= kd (sort kd))
+                  (str "and it is actually sorted, at run-size " run-size))
+              (is (= (frequencies kd) (frequencies (keys-of records)))
+                  (str "no record gained or lost, at run-size " run-size)))
+            (finally (cleanup! d1) (cleanup! d2)))))
+
+      (testing "a run count above `max-fanin` (64), so `reduce-runs` performs
+                real merge passes rather than one final merge"
+        (let [d1 (fs/temp-dir! "dh-ord-c-")
+              d2 (fs/temp-dir! "dh-ord-d-")]
+          (try
+            (is (= (keys-of (msort/external-sort records 2 d1))
+                   (keys-of (msort/external-sort records 2 d2 msort/by-sort-key)))
+                "200 runs, merged in passes")
+            (finally (cleanup! d1) (cleanup! d2)))))
+
+      (testing "`external-sort-to-file` is a separate entry point with its own
+                default, and takes the spill path even for a small input"
+        (let [d1 (fs/temp-dir! "dh-ord-e-")
+              d2 (fs/temp-dir! "dh-ord-f-")]
+          (try
+            (is (= (keys-of (msort/read-sorted-file
+                             (msort/external-sort-to-file records 50 d1)))
+                   (keys-of (msort/read-sorted-file
+                             (msort/external-sort-to-file records 50 d2
+                                                          msort/by-sort-key)))))
+            (finally (cleanup! d1) (cleanup! d2))))))))
+
+(deftest a-bare-comparator-still-takes-the-undecorated-path
+  (testing "not every order has a Comparable key. `init/sort-family!` sorts by
+            `datom/index-type->cmp-quick`, an INDEX order over `[e a v t]` where
+            `v` is heterogeneous — `(compare [1 :a \"x\" 5] [1 :a 7 5])` throws,
+            which is why `sort.cljc` takes a comparator at all. Passing a
+            function must therefore keep working unchanged, and must NOT be
+            decorated with a key it has no key function for."
+    (let [records [[3 :a 1 5 true] [1 :a 2 5 true] [2 :a 3 5 true]]
+          ;; by entity id descending — nothing to do with the export order
+          by-e-desc (fn [a b] (compare (nth b 0) (nth a 0)))
+          d (fs/temp-dir! "dh-bare-")]
+      (try
+        (is (= [3 2 1] (mapv #(nth % 0) (msort/external-sort records 2 d by-e-desc)))
+            "the caller's comparator decides, through the spilling path")
+        (finally (cleanup! d))))))
