@@ -16,7 +16,6 @@
    [replikativ.logging :as log]
    [datahike.schema :as ds]
    [datahike.index.secondary :as sec]
-   [hasch.core :as hasch]
    [org.replikativ.persistent-sorted-set.arrays :as arrays])
   #?(:cljs (:require-macros [datahike.datom :refer [datom]]))
   #?(:clj (:import [clojure.lang ExceptionInfo]
@@ -383,12 +382,47 @@
                  db sec-idx-map))
        db))))
 
-(defn secondary-only-hash
-  "Content hash (string) of `v`, via hasch — the value the primary indexes hold
-   for a `:db.secondary/only` attribute. Deterministic, so retraction re-hashes
-   to find the stored datom and identical values dedup."
-  [v]
-  (str (hasch/uuid v)))
+(def secondary-only-hash
+  "See `datahike.index.secondary/secondary-only-hash`. Kept here as an alias
+   because this is where callers look for it and the transactor is its busiest
+   user; the definition moved because EXPORT needs the same hash to check what a
+   secondary index hands back, and a second spelling of it would be a second
+   opinion about what the primary holds."
+  sec/secondary-only-hash)
+
+(defn- assert-secondary-only-storable!
+  "Refuse a `:db.secondary/only` datom the covering index cannot store as its
+   own value.
+
+   The primary indexes keep only `secondary-only-hash`, so the secondary index
+   IS the storage. Most of them answer per ENTITY — stratum is columnar with one
+   cell per `[eid column]`, proximum is keyed by external id — and for those a
+   second value under the same `[eid attr]` overwrites the first at WRITE time.
+   Nothing said so: the transaction succeeded, the entity kept one of its
+   values, and the loss surfaced later as a backup that could not name which
+   value a datom meant.
+
+   So cardinality-many is allowed only where an index declares
+   `ISecondaryHashAddressable`, which is the claim that it stores values one per
+   datom and can find one by its content hash. Refused at the first such write,
+   next to the uncovered check, because that is the moment a value would be
+   lost and the last moment the caller can still do something about it —
+   declaring the schema alone loses nothing.
+
+   Costs a rschema lookup on a path that already does several, and only for
+   `:db.secondary/only` attributes."
+  [db a-ident datom sec-idx-idents]
+  (when (dbu/multival? db a-ident)
+    (let [idxs (keep #(get (:secondary-indices db) %) sec-idx-idents)]
+      (when-not (some sec/hash-addressable? idxs)
+        (log/raise "Attribute " a-ident " is :db.secondary/only AND :db.cardinality/many, but no "
+                   "index covering it can store more than one value per entity — the second value "
+                   "would overwrite the first and be lost silently. An index that stores values "
+                   "per datom can declare this by implementing ISecondaryHashAddressable."
+                   {:error :transact/secondary-only-multival-unstorable
+                    :attribute a-ident
+                    :datom datom
+                    :index-idents (vec sec-idx-idents)})))))
 
 (defn- project-primary
   "For an *added* `:db.secondary/only` datom, a copy with its value replaced by
@@ -417,6 +451,8 @@
     (when (and secondary-only? (datom-added datom) (not has-secondary?))
       (log/raise "Attribute " a-ident " is :db.secondary/only but no secondary index covers it — its value would be lost"
                  {:error :transact/secondary-only-uncovered :attribute a-ident :datom datom}))
+    (when (and secondary-only? (datom-added datom) has-secondary?)
+      (assert-secondary-only-storable! db a-ident datom (get-in db [:rschema :db.secondary/index a-ident])))
     (if (datom-added datom)
       (cond-> db
         true (update-in [:eavt] #(di/-insert % prim :eavt op-count))
@@ -531,6 +567,8 @@
      (when (and secondary-only? (not has-secondary?))
        (log/raise "Attribute " a-ident " is :db.secondary/only but no secondary index covers it — its value would be lost"
                   {:error :transact/secondary-only-uncovered :attribute a-ident :datom datom}))
+     (when (and secondary-only? has-secondary?)
+       (assert-secondary-only-storable! db a-ident datom (get-in db [:rschema :db.secondary/index a-ident])))
      (cond-> db
             ;; Optimistic removal of the schema entry (because we don't know whether it is already present or not)
        schema? (try

@@ -212,15 +212,48 @@ identical content de-duplicates. There is no separate value store and no extra G
 the value lives in the secondary, which already manages its own storage, GC
 (`d/gc-storage`) and branch-on-fork.
 
-**Semantics — search-only, not recoverable.** A `:db.secondary/only` value is
-**findable but not reproducible**: a full-text/vector index stores a *lossy
-projection* (tokens, embeddings), so there is no path to read the exact original
-back from the primary. Declare it only where the canonical value lives elsewhere
-(its source URL, a bounded summary attribute you store normally, your own blob).
 Writing such a value with no covering secondary raises — the value would be lost.
 
-> Verbatim recovery (`secondary-value` via a *reproducing* index such as Scriptum
-> with stored fields) is a planned follow-up; today the flag is search-only.
+### Backup, and which value a datom names
+
+The secondary index is the only place the value exists, so `export-db` reads it
+back from there through `ISecondaryScannable`. An index that does not implement
+that protocol cannot be backed up losslessly and the export **refuses** rather
+than writing a dump whose values are hashes.
+
+`-sec-value` is keyed on `[attr eid]`, and that key does not always identify a
+value. Two shapes it cannot express:
+
+* **`:db.cardinality/many`** — one entity, several values, one key.
+* **`{:history? true}` over an overwritten value** — the index holds current
+  state, so a superseded value is no longer in it.
+
+Both used to fail silently and produce a backup that restores to *different
+data*. They no longer can: export knows the content hash each datom names — the
+hash **is** the primary's value — and checks what the index hands back against
+it. A value it cannot confirm is refused
+(`:export/secondary-only-unresolvable`), never guessed.
+
+An index can serve both shapes by implementing **`ISecondaryHashAddressable`**
+(`-sec-value-by-hash [this attr eid hash]`). That is a claim about storage, not
+about lookup: it says values are kept one per *datom* rather than one per
+*entity*, and can be found by content hash. Of the indices shipped alongside
+datahike, none declares it yet — Stratum is columnar with one cell per
+`[eid column]` and Proximum is keyed by external id, so for those a second value
+overwrites the first at write time and no read protocol could recover it.
+
+Consequently a `:db.secondary/only` attribute may be `:db.cardinality/many`
+**only** where a covering index declares `ISecondaryHashAddressable`; otherwise
+the first such write is refused
+(`:transact/secondary-only-multival-unstorable`) instead of silently keeping one
+value.
+
+**Semantics — findable, and recoverable only as far as the index allows.** A
+full-text or vector index stores a *lossy projection* (tokens, embeddings) for
+searching, but it may also retain the original — Scriptum stores the field, which
+is what makes the round trip above work. Where it does not, declare the flag only
+if the canonical value lives elsewhere (its source URL, a bounded summary
+attribute stored normally, your own blob).
 
 ## Index Lifecycle
 

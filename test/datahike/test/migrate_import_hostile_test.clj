@@ -34,7 +34,8 @@
             [datahike.migrate.compress :as mz]
             [datahike.migrate.digest :as dig]
             [datahike.migrate.fs :as fs]
-            [datahike.migrate.manifest :as mman]))
+            [datahike.migrate.manifest :as mman]
+            [datahike.index.secondary :as sec]))
 
 ;; ---------------------------------------------------------------------------
 ;; fixture: a small database, its dump, and a way to rewrite that dump
@@ -496,6 +497,178 @@
               (is (= [[:db/ident :idx/ft]] (mapv :unique (:diffs (:tier3 rep))))
                   "the only entity that differs is the index whose path we rewrote"))
             (finally (release! conn))))))))
+
+;; ---------------------------------------------------------------------------
+;; 7b. :db.secondary/only — WHICH value a datom names
+
+;; A secondary index that stores values per DATOM, addressable by content hash.
+;; It exists to prove the mechanism has a working "yes" path and not only
+;; refusals: with it, both shapes that the shipped indices cannot represent
+;; become exportable, from the same code.
+;;
+;; Storage is `{[eid attr hash] value}` — the key the primary datom already
+;; carries in full. Note it does NOT drop the entity's other rows on a
+;; retraction, which is where scriptum (`delete-docs` on `_entity_id`) and
+;; stratum (`pending-retracts` per eid) both differ.
+(defn- register-hash-addressable-index! []
+  (sec/register-index-type!
+   :test/hash-addressable
+   (fn [config _db]
+     (let [rows (atom {})
+           attrs (set (:attrs config))]
+       (reify
+         sec/ISecondaryIndex
+         (-search [_ _ _] nil)
+         (-estimate [_ _] 0)
+         (-can-order? [_ _ _] false)
+         (-slice-ordered [_ _ _ _ _ _] nil)
+         (-indexed-attrs [_] attrs)
+         (-transact [this tx-report]
+           (let [{:keys [datom added?]} tx-report
+                 e (nth datom 0) a (nth datom 1) v (nth datom 2)]
+             ;; Added rows are recorded; RETRACTED ones are kept. Retaining
+             ;; superseded values is precisely the property that makes a history
+             ;; export possible, and the one the shipped indices lack — scriptum
+             ;; deletes and stratum overwrites. A retraction carries the stored
+             ;; hash rather than the value, so it names its row exactly and
+             ;; could delete it; not deleting is the point.
+             (when added?
+               (swap! rows assoc [e a (sec/secondary-only-hash v)] v))
+             this))
+
+         sec/ISecondaryScannable
+         ;; Deliberately as weak as the shipped indices: one arbitrary value for
+         ;; the entity. Everything exact comes from the hash lookup below, so
+         ;; this also proves the export does not lean on -sec-value being right.
+         (-sec-value [_ attr eid]
+           (some (fn [[[e a _h] v]] (when (and (= e eid) (= a attr)) v)) @rows))
+
+         sec/ISecondaryHashAddressable
+         (-sec-value-by-hash [_ attr eid hash] (get @rows [eid attr hash])))))))
+
+(deftest secondary-only-cardinality-many-is-refused-where-it-cannot-be-stored
+  (testing "the primary indexes keep only a content hash, so the secondary index
+            IS the storage — and most of them store one value per ENTITY.
+            stratum is columnar with one cell per [eid column]; proximum is keyed
+            by external id. A second value under the same [eid attr] overwrote
+            the first at WRITE time and nothing said so.
+
+            Measured before this refusal: tags \"alpha\" and \"beta\" on one
+            entity produced a dump holding [[\"alpha\" true] [\"alpha\" true]] —
+            one value repeated, the other absent from the backup entirely."
+    (require 'datahike.index.secondary.scriptum)
+    (let [conn (conn! (cfg true))
+          p (str "/tmp/dh-hostile-cm-" (java.util.UUID/randomUUID))]
+      (try
+        (d/transact conn [{:db/ident :doc/tag :db/valueType :db.type/string
+                           :db/cardinality :db.cardinality/many :db.secondary/only true}])
+        (d/transact conn [{:db/ident :idx/ft :db.secondary/type :scriptum
+                           :db.secondary/attrs [:doc/tag]
+                           :db.secondary/config {:path p}}])
+        (Thread/sleep 600)
+        ;; Asserted on the MESSAGE, not `ex-data`: the transact path rewraps a
+        ;; raised error and the replacement carries `{}` with no cause, so the
+        ;; keyword survives only in the printed map. That is worth its own fix
+        ;; and is not this test's subject.
+        (let [msg (try (d/transact conn [{:db/id -1 :doc/tag "alpha"}]) nil
+                       (catch clojure.lang.ExceptionInfo e (ex-message e)))]
+          (is (some? msg) "the write must be refused, not accepted")
+          (is (re-find #":transact/secondary-only-multival-unstorable" (str msg))
+              "refused at the first write, which is the last moment the caller
+               can still choose a different schema")
+          (is (re-find #":doc/tag" (str msg)) "and it names the attribute"))
+        (finally (release! conn))))))
+
+(deftest secondary-only-history-export-is-refused-rather-than-falsified
+  (testing "a secondary index holds only CURRENT state, so an overwritten value
+            is not in it any more — and `-sec-value` is keyed on [attr eid],
+            which cannot say so. Measured: \"version-one\" overwritten by
+            \"version-two\", exported with {:history? true}, produced
+
+              [[\"version-two\" true]   <- the HISTORICAL assertion, falsified
+               [<hash of version-one> false]
+               [\"version-two\" true]]
+
+            \"version-one\" appeared nowhere, and the retraction beside it named
+            a hash the dump never asserts. A backup that restores to different
+            data, reporting success."
+    (require 'datahike.index.secondary.scriptum)
+    (let [conn (conn! (cfg true))
+          p (str "/tmp/dh-hostile-hist-" (java.util.UUID/randomUUID))]
+      (try
+        (d/transact conn [{:db/ident :doc/body :db/valueType :db.type/string
+                           :db/cardinality :db.cardinality/one :db.secondary/only true}])
+        (d/transact conn [{:db/ident :idx/ft :db.secondary/type :scriptum
+                           :db.secondary/attrs [:doc/body]
+                           :db.secondary/config {:path p}}])
+        (Thread/sleep 600)
+        (let [eid (get-in (d/transact conn [{:db/id -1 :doc/body "version-one"}]) [:tempids -1])]
+          (Thread/sleep 300)
+          (d/transact conn [{:db/id eid :doc/body "version-two"}])
+          (Thread/sleep 400)
+
+          (testing "the history export refuses, and says which of the two reasons"
+            (let [err (try (m/export-db @conn (tmp-dir!) {:history? true}) nil
+                           (catch clojure.lang.ExceptionInfo e (ex-data e)))]
+              (is (= :export/secondary-only-unresolvable (:error err)))
+              (is (= :not-addressable (:reason err))
+                  "the index answers per entity — a property of its type, not of this value")
+              (is (= :doc/body (:attribute err)))))
+
+          (testing "while the CURRENT-state export is unaffected and correct —
+                    the refusal is scoped to what cannot be represented"
+            (let [dir (tmp-dir!)]
+              (m/export-db @conn dir {:history? false :compression :none})
+              (let [recs (mapcat (fn [f] (mcbor/decode-records-from
+                                          (java.nio.file.Files/readAllBytes (.toPath f))))
+                                 (sort (filter #(.endsWith (.getName %) ".cbor")
+                                               (.listFiles (io/file dir)))))]
+                (is (= [["version-two" true]]
+                       (mapv (fn [r] [(nth r 2) (nth r 4)])
+                             (filter #(= :doc/body (nth % 1)) recs)))
+                    "the live value, not its hash and not a stale generation")))))
+        (finally (release! conn))))))
+
+(deftest an-index-that-stores-per-datom-can-export-both-shapes
+  (testing "the other half of the contract. `ISecondaryHashAddressable` is the
+            claim that values are stored one per datom and findable by content
+            hash — which is exactly the key the primary datom carries. An index
+            that makes it gets cardinality-many AND history, through the same
+            export path that refuses them for the others."
+    (register-hash-addressable-index!)
+    (let [conn (conn! (cfg true))]
+      (try
+        (d/transact conn [{:db/ident :doc/tag :db/valueType :db.type/string
+                           :db/cardinality :db.cardinality/many :db.secondary/only true}
+                          {:db/ident :doc/body :db/valueType :db.type/string
+                           :db/cardinality :db.cardinality/one :db.secondary/only true}])
+        (d/transact conn [{:db/ident :idx/ha :db.secondary/type :test/hash-addressable
+                           :db.secondary/attrs [:doc/tag :doc/body]
+                           :db.secondary/config {}}])
+
+        (testing "cardinality-many is accepted here"
+          (let [eid (get-in (d/transact conn [{:db/id -1 :doc/tag "alpha"}]) [:tempids -1])]
+            (d/transact conn [{:db/id eid :doc/tag "beta"}])
+            (d/transact conn [{:db/id eid :doc/body "version-one"}])
+            (d/transact conn [{:db/id eid :doc/body "version-two"}])
+
+            (testing "and a history export carries every value, each resolved by
+                      the hash its own datom names"
+              (let [dir (tmp-dir!)]
+                (m/export-db @conn dir {:history? true :compression :none})
+                (let [recs (mapcat (fn [f] (mcbor/decode-records-from
+                                            (java.nio.file.Files/readAllBytes (.toPath f))))
+                                   (sort (filter #(.endsWith (.getName %) ".cbor")
+                                                 (.listFiles (io/file dir)))))
+                      vals-of (fn [a] (set (keep (fn [r] (when (and (= a (nth r 1)) (nth r 4))
+                                                           (nth r 2)))
+                                                 recs)))]
+                  (is (= #{"alpha" "beta"} (vals-of :doc/tag))
+                      "both card-many values, where the shipped indices lost one")
+                  (is (= #{"version-one" "version-two"} (vals-of :doc/body))
+                      "and the superseded value, which is the whole point of a
+                       history export"))))))
+        (finally (release! conn))))))
 
 ;; ---------------------------------------------------------------------------
 ;; 8. things that are FINE — worth pinning so a future check does not break them

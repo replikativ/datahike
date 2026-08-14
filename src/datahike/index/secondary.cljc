@@ -5,9 +5,28 @@
   ;; protocol methods -as-transient / -persistent! shadow cljs.core's names
   #?(:cljs (:refer-clojure :exclude [-as-transient -persistent!]))
   (:require [replikativ.logging :as log]
+            [hasch.core :as hasch]
             [datahike.bitemporal.predicate :as bp.pred]
             [datahike.db.interface :as dbi]
             [datahike.index.entity-set :as es]))
+
+;; ---------------------------------------------------------------------------
+;; The primary/secondary contract for `:db.secondary/only`
+
+(defn secondary-only-hash
+  "Content hash (string) of `v` — the value the PRIMARY indexes hold for a
+   `:db.secondary/only` attribute, while the real value goes only to the
+   secondary index.
+
+   Here rather than in `datahike.db.transaction` because it is the term of a
+   contract between the two sides, and three parties need it: the transactor
+   (to project a datom on the way in), the retract handler (to find the stored
+   datom), and export (to check that what a secondary index handed back is the
+   value this datom actually names). Spelled in one place so those three cannot
+   disagree about what the primary holds. Deterministic, so equal values dedup
+   and a retraction re-hashes to the datom it retracts."
+  [v]
+  (str (hasch/uuid v)))
 
 ;; ---------------------------------------------------------------------------
 ;; Protocol
@@ -75,6 +94,43 @@
    list its ids."
   (-sec-value [this attr eid]
     "The full value this index holds for `[attr eid]`, or nil."))
+
+(defprotocol ISecondaryHashAddressable
+  "OPTIONAL, and the answer to a question `ISecondaryScannable` cannot ask.
+
+   `-sec-value` is keyed on `[attr eid]`, and that key does not identify a
+   VALUE. Two shapes break it, both measured:
+
+     * `:db.cardinality/many` — one entity, several values, one key. Export
+       asked once per datom and got the same arbitrary value each time: a dump
+       held `\"alpha\"` twice and `\"beta\"` not at all.
+     * `{:history? true}` over an overwritten attribute — the index holds only
+       the CURRENT value, so every historical assertion was written with
+       today's value. `\"version-one\"` appeared nowhere in the backup.
+
+   An index that stores its values individually and can find one by its content
+   hash implements this and both shapes resolve exactly: the hash is what the
+   PRIMARY datom carries, so the caller always knows which value it means.
+
+   Implementing this is a claim about STORAGE, not about lookup. It says values
+   are kept one per datom rather than one per entity — which is why declaring it
+   is also what lets a `:db.secondary/only` attribute be cardinality-many at
+   all. Of the three indices shipped beside datahike, only scriptum's shape
+   admits it (one Lucene document per datom); stratum is columnar with one cell
+   per `[eid column]` and proximum is keyed by external id, so for those a
+   second value overwrites the first at WRITE time, and no read protocol can
+   recover it.
+
+   Returning nil is a legitimate answer — the value is not (or is no longer)
+   held — and export REFUSES rather than writing a dump it knows is wrong."
+  (-sec-value-by-hash [this attr eid hash]
+    "The value whose `secondary-only-hash` is `hash`, for `[attr eid]`, or nil."))
+
+(defn hash-addressable?
+  "Whether `idx` can resolve a value by its content hash. One predicate so the
+   export path and the schema check agree about what an index can do."
+  [idx]
+  (satisfies? ISecondaryHashAddressable idx))
 
 (defprotocol ITransientSecondaryIndex
   "Optional protocol for secondary indices that support batch-mode transients.

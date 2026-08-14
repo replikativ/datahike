@@ -168,13 +168,55 @@
         ;; the primary holds a content hash. Falls back to the primary's value,
         ;; which is right for a RETRACTION (those already carry the stored hash)
         ;; and for an entity the index has no row for.
-         v (or (when (and sec-read (nth datom 4)) (sec-read a (nth datom 0)))
+         ;; The primary's value IS the content hash for a `:db.secondary/only`
+         ;; attribute, so it is passed along as the thing to check the index's
+         ;; answer against — see `secondary-only-reader`. Retractions keep the
+         ;; primary value unchanged: they already carry the stored hash, which
+         ;; is what the import re-transacts.
+         v (or (when (and sec-read (nth datom 4)) (sec-read a (nth datom 0) (nth datom 2)))
                (nth datom 2))
          t (nth datom 3)
          op (nth datom 4)
          sysref? (fn [val] (when (and (dbu/ref? db a) (contains? sys-ents val))
                              (get sys-idents val)))]
      [e a (mcbor/encode-value v sysref?) t op])))
+
+(defn- refuse-unresolvable!
+  "Refuse an export that cannot recover the value a datom names.
+
+   Never a warning and never a silent skip: the caller asked for a backup, and
+   the failure mode this replaces is a dump that restores to DIFFERENT data
+   while reporting success. `:reason` separates the two cases an operator can
+   act on differently — `:not-addressable` is a property of the index type (the
+   attribute is cardinality-many, or the export asked for history, and this
+   index stores one value per entity), `:not-held` means the index is
+   hash-addressable but no longer holds this particular value, which for a
+   historical assertion means it was never retained."
+  [attr eid stored-hash idx reason]
+  (throw (ex-info
+          (str "Cannot export " attr " for entity " eid " losslessly: it is "
+               ":db.secondary/only, so the primary indexes hold only a content "
+               "hash and the value must come from the secondary index — but the "
+               (case reason
+                 :not-addressable
+                 (str "index covering it answers per ENTITY, not per datom, so it "
+                      "cannot say which value this datom names. That happens when "
+                      "the attribute is :db.cardinality/many, or when exporting "
+                      "{:history? true} over a value that has since been "
+                      "overwritten. An index that stores values per datom can "
+                      "implement ISecondaryHashAddressable to serve both.")
+                 :not-held
+                 (str "index does not hold the value with this hash. For a "
+                      "historical assertion that means the old value was not "
+                      "retained; only an index that keeps superseded values can "
+                      "export {:history? true} for such an attribute."))
+               " Refusing to write a backup that would restore to different data.")
+          {:error :export/secondary-only-unresolvable
+           :attribute attr
+           :entity eid
+           :value-hash stored-hash
+           :reason reason
+           :index-type (type idx)})))
 
 (defn secondary-only-reader
   "`nil` when the database has no `:db.secondary/only` attribute — the common
@@ -246,9 +288,40 @@
                                             :index-idents (vec idx-idents)})))
                          (assoc acc attr idx)))
                      {} only-attrs)]
-        (fn [attr eid]
+        ;; `stored-hash` is the value the PRIMARY datom carries, which for a
+        ;; `:db.secondary/only` attribute IS `(secondary-only-hash v)`. So the
+        ;; caller already holds the authoritative answer to "which value is
+        ;; this?" and can CHECK the index rather than trust it.
+        ;;
+        ;; It has to. `-sec-value` is keyed on `[attr eid]`, and that key does
+        ;; not identify a value — measured, twice:
+        ;;
+        ;;   card-many, tags "alpha" and "beta" on one entity
+        ;;     dump held [["alpha" true] ["alpha" true]]; "beta" absent
+        ;;   card-one + {:history? true}, "version-one" then "version-two"
+        ;;     dump held ["version-two" true] for the HISTORICAL assertion too;
+        ;;     "version-one" absent, and the retraction beside it named a hash
+        ;;     the dump never asserts
+        ;;
+        ;; Both are silent, and both produce a backup that restores to different
+        ;; data. The hash check costs one `hasch` per secondary-only datom —
+        ;; only for these opt-in attributes, on a path that is already doing a
+        ;; random read per datom — and it is the difference between a wrong
+        ;; backup and a refused one.
+        (fn [attr eid stored-hash]
           (when-let [idx (get idx-for attr)]
-            (sec/-sec-value idx attr eid)))))))
+            (let [v (sec/-sec-value idx attr eid)]
+              (cond
+                ;; The common case: card-one, current, unambiguous.
+                (and (some? v) (= stored-hash (sec/secondary-only-hash v))) v
+
+                ;; Ambiguous. An index that stores values per DATOM can still
+                ;; answer, because the hash names exactly one of them.
+                (sec/hash-addressable? idx)
+                (or (sec/-sec-value-by-hash idx attr eid stored-hash)
+                    (refuse-unresolvable! attr eid stored-hash idx :not-held))
+
+                :else (refuse-unresolvable! attr eid stored-hash idx :not-addressable)))))))))
 
 (defn export-records
   "Lazy seq of encoded record vectors for `db` (UNSORTED — the external merge sort
