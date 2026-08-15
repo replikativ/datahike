@@ -319,3 +319,38 @@
         (is (= [3 2 1] (mapv #(nth % 0) (msort/external-sort records 2 d by-e-desc)))
             "the caller's comparator decides, through the spilling path")
         (finally (cleanup! d))))))
+
+(deftest a-map-order-without-a-key-function-is-refused
+  (testing "`as-order` accepts either a keyed order or a bare comparator, and a
+            map that is neither falls through to `(sort nil records)` — natural
+            ordering on RECORDS, which throws on a heterogeneous `v` and, worse,
+            SUCCEEDS on a homogeneous one and writes a dump in the wrong order.
+
+            A `throw` rather than an `assert`: `shadow-cljs.edn` sets
+            `:elide-asserts false` on the dev and test builds but not on
+            `:browser-release` or `:npm-release`, so an assertion would exist
+            everywhere except the artifacts we publish. Neither the old
+            assertion nor the new refusal was pinned by anything until now."
+    (let [records [[1 :a 1 5 true] [2 :a 2 5 true] [3 :a 3 5 true]]
+          refused? (fn [order run-size]
+                     (let [d (fs/temp-dir! "dh-ord-")]
+                       (try
+                         (= :migrate/invalid-sort-order
+                            (try (doall (msort/external-sort records run-size d order))
+                                 ::no-throw
+                                 (catch #?(:clj clojure.lang.ExceptionInfo :cljs :default) e
+                                   (:error (ex-data e)))))
+                         (finally (cleanup! d)))))]
+      (is (refused? {} 100) "in memory, one window")
+      (is (refused? {} 2) "and through the spill and merge path")
+      (is (refused? {:cmp compare} 100)
+          "an unnamespaced :cmp is not this namespace's key — a near miss is
+           still a miss, and silently sorting by natural order would be worse
+           than refusing")
+
+      (testing "the two legitimate shapes are untouched"
+        (let [d (fs/temp-dir! "dh-ord-ok-")]
+          (try
+            (is (= 3 (count (msort/external-sort records 2 d))))
+            (is (= 3 (count (msort/external-sort records 2 d msort/by-sort-key))))
+            (finally (cleanup! d))))))))

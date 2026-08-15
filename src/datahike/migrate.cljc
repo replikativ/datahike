@@ -3334,18 +3334,29 @@
                        (reduce + 0 chunk-counts))
            counts-add-up? (when (and chunk-sum (:count declared))
                             (= (long chunk-sum) (long (:count declared))))
-        ;; What the export SAYS it wrote against what it HASHED. Also free, also
-        ;; manifest-internal, and it is what catches a manifest truncated to
-        ;; `:chunks []` with the data still sitting beside it: the digest is then
-        ;; honestly empty and agrees with itself, but `:stats` still remembers
-        ;; the 103 records the export wrote. The filesystem medium catches that
-        ;; forgery by listing the directory (`:import/undeclared-chunks`); the
-        ;; store medium cannot afford to, because `konserve.core/keys` is
-        ;; store-wide. `open-dump`'s note on that asymmetry rested on
-        ;; `:chunks []` leaving `:checksums :none` and `:ok?` refusing it — and
-        ;; then the fix that stopped calling a legitimately empty dump broken
-        ;; removed exactly that refusal, leaving the two media disagreeing about
-        ;; a two-key manifest edit. This restores it without any IO.
+        ;; A SECOND COPY of the record count, not a second witness — and the
+        ;; difference is worth stating plainly, because the obvious reading is
+        ;; the wrong one. `build-manifest` writes `:stats {:datom-count (:count
+        ;; digest) …}`: one accumulator, two keys. So this cannot disagree on an
+        ;; honest manifest and carries no information the digest does not.
+        ;;
+        ;; What it catches is an EDIT that misses one of the two copies — which
+        ;; is what a manifest truncated to `:chunks []` looks like when the
+        ;; forger empties the digest and leaves `:stats` remembering the 103
+        ;; records the export wrote. Redundancy against a careless edit, not
+        ;; independent evidence. A forger who zeroes both walks past it, and
+        ;; nothing here can tell that dump from a legitimately empty one — the
+        ;; question "did this export capture everything from its source" is
+        ;; answered at export and refused at import, not here.
+        ;;
+        ;; The filesystem medium catches the truncation properly, by listing the
+        ;; directory (`:import/undeclared-chunks`); the store medium cannot
+        ;; afford to, because `konserve.core/keys` is store-wide. `open-dump`'s
+        ;; note on that asymmetry rested on `:chunks []` leaving `:checksums
+        ;; :none` and `:ok?` refusing it — and then the fix that stopped calling
+        ;; a legitimately empty dump broken removed exactly that refusal, leaving
+        ;; the two media disagreeing about a two-key manifest edit. This narrows
+        ;; that gap without any IO; it does not close it.
            stats-count (get-in manifest [:stats :datom-count])
            stats-agree? (when (and stats-count (:count declared))
                           (= (long stats-count) (long (:count declared))))
@@ -3373,7 +3384,19 @@
         ;; regressed the latter two.
            anything-verified? (if legacy?
                                 (pos? (long legacy-count))
-                                (and declared? (not= :failed checksums)))]
+                                ;; `:stats` fails closed for the same reason
+                                ;; `:semantic-digest` does, and it has to: the
+                                ;; guard below reads `stats-count` with
+                                ;; `get-in`, so an ABSENT `:stats` left
+                                ;; `stats-agree?` nil and the whole check
+                                ;; evaporated — the one-key edit that defeated
+                                ;; the digest check, repeated one commit later
+                                ;; on its replacement. Every export since
+                                ;; format-version 1 writes `:stats`, so a
+                                ;; manifest without it has been edited.
+                                (and declared?
+                                     (some? stats-count)
+                                     (not= :failed checksums)))]
        (cond-> {:ok? (and (nil? finding)
                           (:ok? blobs)
                           anything-verified?

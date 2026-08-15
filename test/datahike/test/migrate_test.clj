@@ -1060,27 +1060,53 @@
       (d/transact src (vec (for [i (range 100)] {:name (str "p" i)})))
       (let [r (m/verify (dump-with src #(dissoc % :semantic-digest)))]
         (is (false? (:ok? r)) "a manifest with no digest is not a verified dump")
-        (is (pos? (get-in r [:tier1 :recomputed-count]))
-            "the recompute still RAN — the refusal is about the manifest having
-             nothing to check against, not about failing to read the dump"))
+        (is (nil? (get-in r [:tier1 :manifest-count]))
+            "there is no declared count to report, which is WHY it is refused —
+             the recompute still ran and found records, so this is the manifest
+             having nothing to check against, not a failure to read the dump")
+        (is (pos? (get-in r [:tier1 :recomputed-count]))))
 
       (testing "a manifest truncated to zero chunks, with the data still beside
-                it. `:stats :datom-count` is what the export says it WROTE and
-                the digest's `:count` is what it HASHED; a forger who empties
-                `:chunks` and the digest together leaves those two disagreeing.
-                Free, and it is the only guard the store medium has — listing a
-                store to find undeclared chunks is a whole-store operation, so
-                the filesystem's `:import/undeclared-chunks` has no cheap mirror."
-        (let [r (m/verify (dump-with src #(assoc % :chunks []
-                                                 :semantic-digest
-                                                 {:algo :xor64+sum64
-                                                  :xor "0000000000000000"
-                                                  :sum "0000000000000000"
-                                                  :count 0})))]
-          (is (false? (:ok? r)))
-          (is (false? (get-in r [:tier1 :stats-agree?])))
-          (is (pos? (get-in r [:tier1 :stats-count]))
-              "the manifest still remembers what the export wrote")))
+                it — ON THE STORE MEDIUM, which is the only place this matters.
+                The filesystem refuses it by listing the directory
+                (`:import/undeclared-chunks`), and `konserve.core/keys` is
+                store-wide so there is no cheap mirror; a first version of this
+                test used the filesystem and so proved nothing about the guard
+                it was written for. `:stats :datom-count` is a SECOND COPY of
+                the digest's `:count`, not a second witness — one accumulator
+                writes both — so what it catches is an edit that misses one
+                copy, and `:stats` must therefore fail closed when absent, or
+                the guard evaporates exactly as the digest check did."
+        (let [store (ks/create-store {:backend :memory :id (java.util.UUID/randomUUID)}
+                                     {:sync? true})
+              target {:store store :prefix "tr"}
+              _ (m/export-db @src target {:chunk-size 40})
+              mkey ["datahike.migrate" "tr" "manifest"]
+              mf (k/get store mkey nil {:sync? true})
+              empty-digest {:algo :xor64+sum64 :xor "0000000000000000"
+                            :sum "0000000000000000" :count 0}
+              retruncate! (fn [f]
+                            (k/assoc store mkey (f (assoc mf :chunks []
+                                                          :semantic-digest empty-digest))
+                                     {:sync? true}))]
+          (is (true? (:ok? (m/verify target))) "precondition: it verified intact")
+          (retruncate! identity)
+          (is (seq (filter #(re-find #"datoms-" (str (:key %)))
+                           (k/keys store {:sync? true})))
+              "precondition: the data is still in the store")
+          (let [r (m/verify target)]
+            (is (false? (:ok? r)) "the store medium refuses it too")
+            (is (false? (get-in r [:tier1 :stats-agree?])))
+            (is (pos? (get-in r [:tier1 :stats-count]))
+                "the manifest still remembers what the export wrote"))
+
+          (testing "and deleting `:stats` outright must not switch the guard
+                    off — `stats-count` is read with `get-in`, so an absent
+                    `:stats` left `stats-agree?` nil and `(not (false? nil))`
+                    true. That is the one-key edit that defeated the digest
+                    check, repeated on its replacement."
+            (retruncate! #(dissoc % :stats))
+            (is (false? (:ok? (m/verify target)))))))
 
       (testing "a chunk descriptor with no `:count` is UNKNOWN, not wrong.
                 `(keep :count …)` summed the survivors, so dropping the counts
@@ -1123,9 +1149,12 @@
                 not a backup. `count-records` only asked whether the bytes
                 decoded, so five CBOR integers counted as five records — and
                 once `verify` learned to accept a legacy dump that decodes, that
-                file reported `:ok? true`. Reported, not thrown: this call is an
-                operator asking about a file, and \"that is not a dump\" is the
-                commonest answer there is."
+                file reported `:ok? true`. THROWN, not reported, and deliberately
+                so: `verify-refuses-things-that-are-not-dumps` pins the same
+                answer for a plain text file. The findings-not-exceptions rule is
+                about a DAMAGED dump, where an operator asked a question and
+                deserves an answer; \"this is not a dump at all\" means they
+                pointed at the wrong thing."
         (let [f (str (System/getProperty "java.io.tmpdir") "/dh-junk-" (utils/get-time) ".cbor")]
           (io/make-parents f)
           (with-open [o (io/output-stream f)]
