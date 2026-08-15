@@ -311,6 +311,18 @@
                        :type (class-name a)
                        :hash ha})))))
 
+(defn- collision-refusal?
+  "Is this our own `hash-order` refusal rather than a failed comparison?
+
+   It has to survive every catch on the way out. `compare-sequential` recurses,
+   so the refusal is raised on an INNER pair while the catch tests the OUTER
+   one — and when the two containers have different classes (`[a]` against
+   `(list b)`), `class-order` answered and the refusal was swallowed. That turns
+   the one guarantee `hash-order` exists to provide, never silently merging two
+   distinct values, back into a silent merge via `cmp-nil`."
+  [e]
+  (= :datahike/incomparable-values (:error (ex-data e))))
+
 (defn- comparable?
   "Does this value carry its own order — i.e. will `compare` answer for it?
 
@@ -325,9 +337,25 @@
 
    So this mirrors `cljs.core/compare`'s own capability set, which is also what
    DataScript's `value-compare` does with its explicit
-   `(or (number? x) (string? x) (array? x) (true? x) (false? x))` arm."
+   `(or (number? x) (string? x) (array? x) (true? x) (false? x))` arm.
+
+   The JVM arm has the mirror-image trap, and DataScript has an explicit arm for
+   that too: NOT EVERY `Number` IS `Comparable`. `clojure.lang.BigInt` is the one
+   that matters, because `:db.type/bigint` is a declared, supported value type —
+   and `Util.compare` checks `instanceof Number` BEFORE `Comparable`, so asking
+   only about `Comparable` is a narrower gate than the `compare` it guards.
+   Missing it sent every bigint to `hash-order`:
+
+     (sort compare-value (map bigint (range 20)))
+       => [3N 18N 2N 4N 14N 10N 8N 7N 0N …]
+
+   i.e. every `:db.type/bigint` index ordered by hash, `seek-datoms` returning
+   the wrong range, `(compare-value 5N 0)` = -7 against `(compare-value 0 5N)`
+   = -1, and a transaction of two bigints whose hashes collide — 6 pairs in
+   300000 random values — refused outright by `hash-order`."
   [x]
-  #?(:clj (instance? Comparable x)
+  #?(:clj (or (instance? Number x)
+              (instance? Comparable x))
      :cljs (or (number? x)
                (string? x)
                (true? x)
@@ -419,7 +447,7 @@
             ;; when the two are Comparable but of DIFFERENT types (a long
             ;; against a string, under `:schema-flexibility :read`) — the catch
             ;; below settles that by type name.
-              (comparable? v1) (compare v1 v2)
+              (and (comparable? v1) (comparable? v2)) (compare v1 v2)
 
               ;; No order of its own. Checked BEFORE the hash so that equality is
               ;; decided by `a=` and never by a hash — which is what keeps value
@@ -462,17 +490,18 @@
          (and (sequential? v1) (sequential? v2))
          (compare-sequential v1 v2)
 
-         (comparable? v1) (compare v1 v2)
+         (and (comparable? v1) (comparable? v2)) (compare v1 v2)
 
          (da/a= v1 v2) 0
          (not (class-identical? v1 v2)) (class-order v1 v2)
          :else (hash-order v1 v2))
        (catch :default e
-         ;; cljs has no ClassCastException, so this catch is broad — which is
-         ;; why the class check comes first: a hash collision has identical
-         ;; classes and rethrows, and only a genuine cross-type comparison is
-         ;; settled by name.
-         (if (class-identical? v1 v2)
+         ;; cljs has no ClassCastException, so this catch is broad and must
+         ;; filter explicitly. The class check alone is not enough: the refusal
+         ;; may have been raised on an INNER pair by `compare-sequential` while
+         ;; the classes of the OUTER pair differ, and then it would be answered
+         ;; away by name.
+         (if (or (collision-refusal? e) (class-identical? v1 v2))
            (throw e)
            (class-order v1 v2))))))
 
@@ -494,7 +523,7 @@
   (try
     (compare-value a b)
     (catch #?(:clj Exception :cljs js/Error) e
-      (if (class-identical? a b)
+      (if (or (collision-refusal? e) (class-identical? a b))
         (throw e)
         (class-order a b)))))
 

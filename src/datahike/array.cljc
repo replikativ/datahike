@@ -55,7 +55,12 @@
      ;; incl. Float32Array/Float64Array — has an ArrayBuffer buffer + numeric
      ;; byteLength and would be misread as bytes, so a float array would be
      ;; capped/compared/wrapped as bytes.
-     (and (instance? js/ArrayBuffer (.-buffer x))
+     ;;
+     ;; `some?` first: `(.-buffer nil)` is a TypeError, not nil, so every caller
+     ;; that may see a nil value — `compare-value` reaches this before it checks
+     ;; anything else — would throw rather than answer.
+     (and (some? x)
+          (instance? js/ArrayBuffer (.-buffer x))
           (number? (.-byteLength x))
           (= 1 (.-BYTES_PER_ELEMENT x)))))
 
@@ -169,5 +174,14 @@ compared element-wise; a mismatched pair falls back to a stable class ordering."
       #?(:clj (and (value-array? a)
                    (value-array? b)
                    (zero? (compare-arrays a b)))
-         :cljs (or (identical? a b)
-                   (zero? (compare-arrays a b))))))
+         ;; The `value-array?` guard is not symmetry-for-its-own-sake: without
+         ;; it this branch handed ANY two values to `compare-arrays`, and
+         ;; `goog.array/compare3` on two non-arrays reads `.length` (undefined
+         ;; on both), skips its loop and returns 0 — so `a=` answered TRUE for
+         ;; every pair. Measured on Node: `(a= {:a 1} {:b 2})`, `(a= 5 7)`,
+         ;; `(a= #{1} #{2})` were all true. Anything downstream that asks "are
+         ;; these the same value" — `compare-value`'s equality arm, and
+         ;; `db.search`'s value matching — was told yes about everything.
+         :cljs (and (value-array? a)
+                    (value-array? b)
+                    (zero? (compare-arrays a b))))))

@@ -12,82 +12,87 @@
    `safe-compare`, whose fallback compares CLASS NAMES — equal for two vectors,
    so it answered \"incomparable\" with \"equal\" and a sorted set read that as a
    duplicate."
-  (:require [clojure.test :refer [deftest testing is]]
-            [datahike.api :as d]
+  (:require #?(:clj [clojure.test :refer [deftest testing is]]
+               :cljs [cljs.test :refer-macros [deftest testing is]])
+            #?(:clj [datahike.api :as d])
             [datahike.datom :as dd]
-            [datahike.test.utils :as utils]))
+            #?(:clj [datahike.test.utils :as utils])))
 
-(defn- ba [& xs] (byte-array (map unchecked-byte xs)))
+(defn- ba [& xs]
+  #?(:clj (byte-array (map unchecked-byte xs))
+     :cljs (js/Uint8Array.from (clj->js (map #(bit-and % 0xff) xs)))))
 
-(defn- conn-with [attr]
-  (let [cfg {:store {:backend :memory :id (java.util.UUID/randomUUID)}
-             :keep-history? false :schema-flexibility :write}]
-    (d/create-database cfg)
-    (let [c (d/connect cfg)]
-      (d/transact c [attr])
-      c)))
+#?(:clj
+   (defn- conn-with [attr]
+     (let [cfg {:store {:backend :memory :id (java.util.UUID/randomUUID)}
+                :keep-history? false :schema-flexibility :write}]
+       (d/create-database cfg)
+       (let [c (d/connect cfg)]
+         (d/transact c [attr])
+         c))))
 
-(deftest a-tuple-holding-an-array-is-usable
-  (testing "each of these was measured on the released implementation; three
+#?(:clj
+   (deftest a-tuple-holding-an-array-is-usable
+     (testing "each of these was measured on the released implementation; three
             threw ClassCastException and one silently stored one datom of eight."
 
-    (testing "card-many keeps every value — this is the silent one"
-      (let [c (conn-with {:db/ident :m/sig :db/valueType :db.type/tuple
-                          :db/tupleTypes [:db.type/bytes :db.type/string]
-                          :db/cardinality :db.cardinality/many})]
-        (d/transact c [{:db/id 100 :m/sig (vec (for [i (range 8)]
-                                                 [(ba i (inc i)) (str "v" i)]))}])
-        (is (= 8 (count (d/datoms @c {:index :eavt :components [100 :m/sig]})))
-            "8 transacted, 8 stored; it used to store 1")
-        (d/release c)))
+       (testing "card-many keeps every value — this is the silent one"
+         (let [c (conn-with {:db/ident :m/sig :db/valueType :db.type/tuple
+                             :db/tupleTypes [:db.type/bytes :db.type/string]
+                             :db/cardinality :db.cardinality/many})]
+           (d/transact c [{:db/id 100 :m/sig (vec (for [i (range 8)]
+                                                    [(ba i (inc i)) (str "v" i)]))}])
+           (is (= 8 (count (d/datoms @c {:index :eavt :components [100 :m/sig]})))
+               "8 transacted, 8 stored; it used to store 1")
+           (d/release c)))
 
-    (testing "card-one updates rather than throwing"
-      (let [c (conn-with {:db/ident :o/sig :db/valueType :db.type/tuple
-                          :db/tupleTypes [:db.type/bytes :db.type/string]
-                          :db/cardinality :db.cardinality/one})]
-        (d/transact c [{:db/id 100 :o/sig [(ba 1 1) "first"]}])
-        (d/transact c [{:db/id 100 :o/sig [(ba 9 9) "second"]}])
-        (let [ds (vec (d/datoms @c {:index :eavt :components [100 :o/sig]}))]
-          (is (= 1 (count ds)) "the update replaced, it did not accumulate")
-          (is (= "second" (second (nth (first ds) 2)))
-              "and the surviving value is the new one"))
-        (d/release c)))
+       (testing "card-one updates rather than throwing"
+         (let [c (conn-with {:db/ident :o/sig :db/valueType :db.type/tuple
+                             :db/tupleTypes [:db.type/bytes :db.type/string]
+                             :db/cardinality :db.cardinality/one})]
+           (d/transact c [{:db/id 100 :o/sig [(ba 1 1) "first"]}])
+           (d/transact c [{:db/id 100 :o/sig [(ba 9 9) "second"]}])
+           (let [ds (vec (d/datoms @c {:index :eavt :components [100 :o/sig]}))]
+             (is (= 1 (count ds)) "the update replaced, it did not accumulate")
+             (is (= "second" (second (nth (first ds) 2)))
+                 "and the surviving value is the new one"))
+           (d/release c)))
 
-    (testing "an indexed attribute builds an AVET entry and is findable BY VALUE
+       (testing "an indexed attribute builds an AVET entry and is findable BY VALUE
               — this one failed inside `cmp-datoms-avet-quick`, i.e. in the
               index itself rather than in the transaction"
-      (let [c (conn-with {:db/ident :i/sig :db/valueType :db.type/tuple
-                          :db/tupleTypes [:db.type/bytes :db.type/string]
-                          :db/cardinality :db.cardinality/one
-                          :db/index true})]
-        (d/transact c (vec (for [i (range 5)]
-                             {:db/id (+ 100 i) :i/sig [(ba i) (str "v" i)]})))
-        (is (= 5 (count (d/datoms @c {:index :avet :components [:i/sig]}))))
-        (is (= 1 (count (d/q '[:find ?e :in $ ?v :where [?e :i/sig ?v]]
-                             @c [(ba 3) "v3"])))
-            "looked up by a byte array with the same CONTENT, not the same object")
-        (d/release c)))
+         (let [c (conn-with {:db/ident :i/sig :db/valueType :db.type/tuple
+                             :db/tupleTypes [:db.type/bytes :db.type/string]
+                             :db/cardinality :db.cardinality/one
+                             :db/index true})]
+           (d/transact c (vec (for [i (range 5)]
+                                {:db/id (+ 100 i) :i/sig [(ba i) (str "v" i)]})))
+           (is (= 5 (count (d/datoms @c {:index :avet :components [:i/sig]}))))
+           (is (= 1 (count (d/q '[:find ?e :in $ ?v :where [?e :i/sig ?v]]
+                                @c [(ba 3) "v3"])))
+               "looked up by a byte array with the same CONTENT, not the same object")
+           (d/release c)))
 
-    (testing "unique identity keeps two distinct entities distinct — the failure
+       (testing "unique identity keeps two distinct entities distinct — the failure
               mode to fear here is not the exception but two entities merging"
-      (let [c (conn-with {:db/ident :u/sig :db/valueType :db.type/tuple
-                          :db/tupleTypes [:db.type/bytes :db.type/string]
-                          :db/cardinality :db.cardinality/one
-                          :db/unique :db.unique/identity})]
-        (d/transact c [{:u/sig [(ba 1) "a"] :db/doc "one"}
-                       {:u/sig [(ba 2) "b"] :db/doc "two"}])
-        (is (= 2 (count (d/q '[:find ?e :where [?e :u/sig _]] @c))))
-        (is (= ["one" "two"] (sort (map first (d/q '[:find ?doc :where [?e :db/doc ?doc]] @c)))))
-        (d/release c)))
+         (let [c (conn-with {:db/ident :u/sig :db/valueType :db.type/tuple
+                             :db/tupleTypes [:db.type/bytes :db.type/string]
+                             :db/cardinality :db.cardinality/one
+                             :db/unique :db.unique/identity})]
+           (d/transact c [{:u/sig [(ba 1) "a"] :db/doc "one"}
+                          {:u/sig [(ba 2) "b"] :db/doc "two"}])
+           (is (= 2 (count (d/q '[:find ?e :where [?e :u/sig _]] @c))))
+           (is (= ["one" "two"] (sort (map first (d/q '[:find ?doc :where [?e :db/doc ?doc]] @c)))))
+           (d/release c)))
 
-    (testing "retracting one tuple value still removes exactly that datom"
-      (let [c (conn-with {:db/ident :r/sig :db/valueType :db.type/tuple
-                          :db/tupleTypes [:db.type/bytes :db.type/string]
-                          :db/cardinality :db.cardinality/many})]
-        (d/transact c [{:db/id 100 :r/sig [[(ba 1) "a"] [(ba 2) "b"]]}])
-        (d/transact c [[:db/retract 100 :r/sig [(ba 1) "a"]]])
-        (is (= 1 (count (d/datoms @c {:index :eavt :components [100 :r/sig]}))))
-        (d/release c)))))
+       (testing "retracting one tuple value still removes exactly that datom"
+         (let [c (conn-with {:db/ident :r/sig :db/valueType :db.type/tuple
+                             :db/tupleTypes [:db.type/bytes :db.type/string]
+                             :db/cardinality :db.cardinality/many})]
+           (d/transact c [{:db/id 100 :r/sig [[(ba 1) "a"] [(ba 2) "b"]]}])
+           (d/transact c [[:db/retract 100 :r/sig [(ba 1) "a"]]])
+           (is (= 1 (count (d/datoms @c {:index :eavt :components [100 :r/sig]}))))
+           (d/release c))))))
 
 (deftest the-order-of-values-that-already-worked-does-not-move
   (testing "this is the migration hazard, not the fix. `compare-value` orders
@@ -145,84 +150,91 @@
 ;; incomparable values, datahike compared CLASS NAMES: equal for two values of
 ;; one type, hence 0, hence one datom where the user wrote four.
 
-(defn- many-conn
-  "Schema-on-read, with `:obj` DECLARED cardinality-many.
+#?(:clj
+   (defn- many-conn
+     "Schema-on-read, with `:obj` DECLARED cardinality-many.
 
    The declaration matters and is easy to get wrong: without it the attribute is
    cardinality-ONE, so four values legitimately become one datom and a test that
    omits it measures nothing. A first version of this measurement did exactly
    that and reported data loss for `:db.type/long`."
-  []
-  (let [cfg {:store {:backend :memory :id (java.util.UUID/randomUUID)}
-             :keep-history? false :schema-flexibility :read}]
-    (d/create-database cfg)
-    (let [c (d/connect cfg)]
-      (d/transact c [{:db/ident :obj :db/cardinality :db.cardinality/many}])
-      c)))
+     []
+     (let [cfg {:store {:backend :memory :id (java.util.UUID/randomUUID)}
+                :keep-history? false :schema-flexibility :read}]
+       (d/create-database cfg)
+       (let [c (d/connect cfg)]
+         (d/transact c [{:db/ident :obj :db/cardinality :db.cardinality/many}])
+         c))))
 
-(defn- stored [vals]
-  (let [c (many-conn)]
-    (try
-      (d/transact c [{:db/id 100 :obj vals}])
-      (count (d/datoms @c {:index :eavt :components [100 :obj]}))
-      (finally (d/release c)))))
+#?(:clj
+   (defn- stored [vals]
+     (let [c (many-conn)]
+       (try
+         (d/transact c [{:db/id 100 :obj vals}])
+         (count (d/datoms @c {:index :eavt :components [100 :obj]}))
+         (finally (d/release c))))))
 
-(deftest values-without-an-order-are-ranked-not-merged
-  (testing "each of these stored ONE datom before: the comparator had no answer
+#?(:clj
+   (deftest values-without-an-order-are-ranked-not-merged
+     (testing "each of these stored ONE datom before: the comparator had no answer
             and said 0, which a sorted set reads as a duplicate."
-    (is (= 4 (stored [{:a 1} {:b 2} {:c 3} {:d 4}])) "maps")
-    (is (= 4 (stored [#{1} #{2} #{3} #{4}])) "sets")
-    (is (= 4 (stored (vec (repeatedly 4 #(Object.))))) "opaque java objects")
-    (is (= 4 (stored (vec (map atom (range 4))))) "atoms — an in-memory cache of
+       (is (= 4 (stored [{:a 1} {:b 2} {:c 3} {:d 4}])) "maps")
+       (is (= 4 (stored [#{1} #{2} #{3} #{4}])) "sets")
+       (is (= 4 (stored (vec (repeatedly 4 #(Object.))))) "opaque java objects")
+       (is (= 4 (stored (vec (map atom (range 4))))) "atoms — an in-memory cache of
                                                    mutable cells is a real use
                                                    for schema-on-read + :memory")
 
-    (testing "and mixed types in one attribute, which schema-on-read permits.
+       (testing "and mixed types in one attribute, which schema-on-read permits.
               `(compare 1 \"x\")` throws, and only `cmp-nil` caught it — so the
               same pair ordered fine through a slice and crashed through
               `cmp-datoms-avet-quick`."
-      (is (= 4 (stored [1 "x" :k {:a 1}]))))
+         (is (= 4 (stored [1 "x" :k {:a 1}]))))
 
-    (testing "controls: types that always worked must be unaffected"
-      (is (= 4 (stored [1 2 3 4])))
-      (is (= 4 (stored ["a" "b" "c" "d"]))))))
+       (testing "controls: types that always worked must be unaffected"
+         (is (= 4 (stored [1 2 3 4])))
+         (is (= 4 (stored ["a" "b" "c" "d"])))))))
 
 (deftest equality-is-decided-by-equality-never-by-a-hash
   (testing "the property that keeps value semantics intact. `a=` answers before
             the hash is consulted, so the hash only RANKS values already known
             to be unequal — it never decides that two things are the same."
-    (is (= 2 (stored [{:a 1} {:b 2} {:a 1} {:b 2}]))
-        "four values, two distinct: equal maps still deduplicate")
+    #?(:clj (is (= 2 (stored [{:a 1} {:b 2} {:a 1} {:b 2}]))
+                "four values, two distinct: equal maps still deduplicate"))
     (is (zero? (dd/compare-value {:a 1} {:a 1})) "distinct but equal maps")
     (is (zero? (dd/compare-value #{1 2} #{2 1})) "sets ignore insertion order")
     (is (not (zero? (dd/compare-value {:a 1} {:b 2}))))
 
-    (testing "an opaque object is equal to itself and ordered against another"
-      (let [a (Object.) b (Object.)]
-        (is (zero? (dd/compare-value a a)))
-        (is (not (zero? (dd/compare-value a b))))))
+    ;; A bare `Object` has no cljs equivalent — `js/Object` is a constructor
+    ;; with value-ish semantics rather than the opaque identity this asserts.
+    #?(:clj
+       (testing "an opaque object is equal to itself and ordered against another"
+         (let [a (Object.) b (Object.)]
+           (is (zero? (dd/compare-value a a)))
+           (is (not (zero? (dd/compare-value a b)))))))
 
     (testing "different types are ordered by type name — a tie-break that is
               only valid BECAUSE the types differ"
       (is (not (zero? (dd/compare-value {:a 1} 5))))
       (is (= (- (dd/compare-value {:a 1} 5)) (dd/compare-value 5 {:a 1}))))))
 
-(deftest a-hash-collision-refuses-rather-than-dropping-a-value
-  (testing "32 bits collide somewhere in a few tens of thousands of values, and
+#?(:clj
+   (deftest a-hash-collision-refuses-rather-than-dropping-a-value
+     (testing "32 bits collide somewhere in a few tens of thousands of values, and
             returning 0 there would silently drop one — the bug this whole
             change removes. DataScript accepts that residual; we make it loud.
 
             Forced with two objects whose `hash` is equal by construction but
             which are not `=`."
-    (let [fixed (fn [] (reify Object (hashCode [_] 42)))
-          a (fixed) b (fixed)]
-      (is (= 42 (hash a) (hash b)) "precondition: the hashes really do collide")
-      (is (not (= a b)) "and the values really are distinct")
-      (is (zero? (dd/compare-value a a)) "self is still equal")
-      (is (= :datahike/incomparable-values
-             (try (dd/compare-value a b) ::no-throw
-                  (catch clojure.lang.ExceptionInfo e (:error (ex-data e)))))
-          "distinct values with colliding hashes are refused, not merged"))))
+       (let [fixed (fn [] (reify Object (hashCode [_] 42)))
+             a (fixed) b (fixed)]
+         (is (= 42 (hash a) (hash b)) "precondition: the hashes really do collide")
+         (is (not (= a b)) "and the values really are distinct")
+         (is (zero? (dd/compare-value a a)) "self is still equal")
+         (is (= :datahike/incomparable-values
+                (try (dd/compare-value a b) ::no-throw
+                     (catch clojure.lang.ExceptionInfo e (:error (ex-data e)))))
+             "distinct values with colliding hashes are refused, not merged")))))
 
 (deftest a-nil-inside-a-tuple-sorts-first
   (testing "not a defensive edge case: a COMPOSITE tuple is nil-padded when its
