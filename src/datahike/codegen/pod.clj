@@ -160,10 +160,18 @@
     [[]]))
 
 (defn variadic-schema?
-  "Check if a schema element is a variadic marker like [:* :any]"
+  "Check if a schema element is a variadic marker: [:* …] (zero or more) or
+   [:+ …] (one or more).
+
+   `:+` was missing, and the omission is not cosmetic — an arity declaring
+   `[:cat A B [:+ :any]]` generated a FIXED three-argument fn instead of
+   `[a b & args]`, so `(pod/datoms db :eavt 1 :age)` raised
+   `ArityException: Wrong number of args (4)`. Both markers mean the tail is
+   variadic; only the minimum count differs, and that distinction does not
+   survive into a Clojure `& args` signature anyway."
   [schema-elem]
   (and (vector? schema-elem)
-       (= :* (first schema-elem))))
+       (contains? #{:* :+} (first schema-elem))))
 
 (defn arity-arg-names
   "Generate argument names for an arity.

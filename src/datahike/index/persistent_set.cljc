@@ -130,6 +130,39 @@
 
 (def slice-comparator-constructor (generate-slice-comparator-constructor))
 
+(defn diff-index
+  "Datoms added and removed between two versions of ONE index that share
+   structure, as `{:added [...] :removed [...]}`.
+
+   Delegates to `psset/diff`, which reads only the nodes that changed rather
+   than walking either tree: two versions share every node they have in common,
+   so a subtree whose address appears on both sides cannot contain a difference.
+   Measured in persistent-sorted-set at 3-4 node reads for a two-element delta
+   whether the set holds a thousand elements or a hundred thousand.
+
+   Two platform differences are absorbed here rather than by every caller. The
+   JVM set carries its own storage and the call is synchronous, while the cljs
+   set takes storage and `:sync?` explicitly. And persistent-sorted-set's
+   ClojureScript arm speaks partial-cps while datahike's async path speaks
+   core.async, so an async cljs result is adapted to a CHANNEL — the same seam
+   `datahike.writing/as-awaitable` crosses in the other direction.
+
+   Returns a value under `:sync? true` (always, on the JVM), a channel under
+   `:sync? false` on cljs."
+  [a b {:keys [sync?] :or {sync? #?(:clj true :cljs false)} :as opts}]
+  #?(:clj  (psset/diff a b)
+     :cljs (let [res (psset/diff a b (.-storage ^BTSet b) (assoc opts :sync? sync?))]
+             (if sync?
+               res
+               ;; errors travel as VALUES on the channel, which is what `<?-`
+               ;; expects and what konserve does everywhere else
+               (let [ch (async/promise-chan)]
+                 (res (fn [v] (async/put! ch v))
+                      (fn [e] (async/put! ch (if (instance? js/Error e)
+                                               e
+                                               (ex-info "diff failed" {:error e})))))
+                 ch)))))
+
 (defn remove-datom [pset ^Datom datom index-type]
   (psset/disj pset datom (index-type->cmp-quick index-type false)))
 
@@ -229,6 +262,21 @@
     (mark pset))
   (-root-node [^PersistentSortedSet pset]
     ;; In-memory top node; populated after -flush set the root/address.
+    ;;
+    ;; The two arms are NOT equivalent, and the difference is now reachable.
+    ;; `.root` on the JVM is the method, which lazily restores from the stored
+    ;; address; `.-root` on ClojureScript is the raw field, which is nil for an
+    ;; ADDRESS-ROOTED set — exactly what `init-index-sorted` produces, since a
+    ;; streaming build stores each node as it fills and keeps only the root
+    ;; address.
+    ;;
+    ;; The consequence is bounded: the only caller is root fusion
+    ;; (`writing/db->stored`), and the restore side is presence-based
+    ;; (`cond-> ... root (-seed-root! root)`), so a nil here costs one storage
+    ;; read for the root and nothing else. Deliberately NOT "fixed" by
+    ;; restoring here: on ClojureScript a sync restore can raise
+    ;; :storage/sync-read-unavailable, which would turn a graceful loss of an
+    ;; optimisation into a failed commit.
     #?(:clj  (.root pset)
        :cljs (.-root pset)))
   (-seed-root! [^PersistentSortedSet pset root-node]
@@ -433,9 +481,49 @@
       ;; Evict old cached value when reusing an address
       (when reused
         (wrapped/evict cache address))
+      ;; UN-FREE. An address we are publishing is LIVE, whatever an earlier
+      ;; supersession said about it. PSS reports a free at MUTATION time — the old
+      ;; root address goes to markFreed inside `cons`/`disjoin`, before store has
+      ;; decided anything — and `IStorage.markFreed` is explicit that this is "a HINT,
+      ;; not a reachability claim", leaving it to us to establish that no live version
+      ;; needs an address before acting on it. We did not.
+      ;;
+      ;; Under `:crypto-hash?` an address is a pure function of content, so any commit
+      ;; that ends with content it started with republishes the very address it just
+      ;; superseded. Measured on a file store, bf 8, one `{:a 12345}` transacted and
+      ;; then retractEntity'd: freed-set 14, reachable 39, OVERLAP 6 — six live nodes
+      ;; marked freed, where the seed phase had overlap 0.
+      ;;
+      ;; That is not benign here. `freelist-pop!` above is already gated off for
+      ;; crypto-hash, but online-gc's OTHER branch is `delete-freed-addresses!`
+      ;; (online_gc.cljc:199/:219 select it precisely when crypto-hash? is on), so
+      ;; those six blobs are deleted once the grace period expires — while the current
+      ;; db still points at them.
+      ;;
+      ;; Not a concern with the default squuid addressing, where every write gets a
+      ;; fresh address and a freed one is dead forever.
+      ;;
+      ;; This closes free-then-write, which is the order PSS actually produces. The
+      ;; reverse (write, then free the same address later in one commit) would need a
+      ;; per-commit written-set to catch; the one site that could produce it —
+      ;; Branch.store freeing a flushed child's anchor — cannot, because a child with a
+      ;; non-empty diff has different content from its anchor and so a different
+      ;; address.
+      (when (contains? @freed-set address)
+        (log/trace :datahike/index-unfreed {:address address})
+        (swap! freed-set disj address)
+        (swap! freed-addresses (fn [pairs] (filterv #(not= address (first %)) pairs))))
       (swap! pending-writes conj [address node])
       (wrapped/miss cache address node)
-      address))
+      ;; The write itself is synchronous either way — it buffers onto
+      ;; `pending-writes` and the address is derived from the node's content, so
+      ;; no IO happens here. But a caller running under `:sync? false` AWAITS
+      ;; what this returns, and awaiting a raw address is a type error, not a
+      ;; no-op. `restore` just below already honours the flag the same way; this
+      ;; did not, which is why a ClojureScript streaming build failed with
+      ;; "fexpr.call is not a function" the moment it stored its first node.
+      #?(:clj address
+         :cljs (if (false? (:sync? opts)) (async address) address))))
   (accessed [_ address]
     (@cost-center-fn :accessed)
     (log/trace :datahike/index-access {:address address})
@@ -498,7 +586,23 @@
                                     :address address
                                     :cause-message #?(:cljs (.-message e) :clj (ex-message e))}))))))))))
   (markFreed [_ address]
-    (when address
+    ;; AT MOST ONCE per address. `markFreed` is a multiset of "superseded by the
+    ;; version being produced" events, not a set of facts: two versions derived from
+    ;; one stored parent both legitimately supersede its nodes, so both report them.
+    ;; That is ordinary structural sharing, not a race — measured on plain
+    ;; `(conj base x)` / `(conj base y)`: 6 calls for 3 addresses, every one doubled.
+    ;;
+    ;; `freed-addresses` is a VECTOR and feeds `online-gc/recycle-freed-addresses!`,
+    ;; which pushes onto a freelist that `freelist-pop!` draws from. A duplicate there
+    ;; means the SAME address is handed to two different nodes — the second store
+    ;; overwrites the first and any parent still pointing at it reads the wrong node.
+    ;; Verified: recycling [A A B] popped B, A, A.
+    ;;
+    ;; `freed-set` already exists as the membership index; it just was not consulted.
+    ;; The check-then-swap is not atomic, but marking happens on the write path, which
+    ;; is single-writer per store by datahike's own contract — and `recycle` de-dupes
+    ;; again as a backstop.
+    (when (and address (not (contains? @freed-set address)))
       ;; Monotonic stamp (konserve's write clock) — compared against
       ;; online-GC's grace cutoff, which reads the same source.
       (let [now (ku/now)]
@@ -566,6 +670,57 @@
                                                                      :storage (:storage store)}))]
     #?(:clj (set! (.-_storage pset) (:storage store)))
     (with-meta pset (root-meta store index-type))))
+
+;; Streaming bulk index build. `:sync?` picks the arm; the result is a set under
+;; `true` and a continuation otherwise.
+;;
+;; `:flush-fn` is SUPPLIED BY THE CALLER and this namespace never builds one.
+;; That is not tidiness. `IStorage/store` only buffers onto `pending-writes`, so
+;; something must drain it or the caller's buffer grows to the whole index — but
+;; draining means writing nodes that nothing references yet, and
+;; `datahike.gc-guard` states the rule for that: the ENTIRE values-then-pointer
+;; sequence must hold the guard, or a concurrent mark sees unreferenced nodes,
+;; sweeps them, and the eventual commit publishes a root pointing at deleted
+;; addresses.
+;;
+;; That sequence spans this build AND the commit that follows it, so nothing here
+;; can hold the guard for the right span — only the caller can. An earlier
+;; version drained from inside this namespace, unguarded, which is exactly the
+;; blind spot `gc_guard.cljc` was written to close.
+;;
+;; `datahike.writing/bulk-flush-fn` is the supported way to obtain one: it lives
+;; next to `write-pending-kvs!` and the guard, which is where durability policy
+;; belongs.
+(defmethod di/init-index-sorted :datahike.index/persistent-set
+  [_index-name store sorted-datoms index-type _
+   {:keys [indexed sync? flush-fn] :or {sync? #?(:clj true :cljs false)}}]
+  (let [xs (if (= index-type :avet)
+             (filter #(contains? indexed (.-a ^Datom %)) sorted-datoms)
+             sorted-datoms)
+        opts {:branching-factor (:datahike/branching-factor store DEFAULT_BRANCHING_FACTOR)
+              :diff-buf-size (:datahike/diff-buf-size store 0)
+              :storage (:storage store)
+              :flush-fn flush-fn
+              :sync? sync?}
+        cmp (index-type->cmp-quick index-type false)]
+    #?(:clj
+       (let [^PersistentSortedSet pset (psset/from-sorted-seq cmp xs opts)]
+         ;; JVM constructs without storage and attaches it afterwards; the cljs
+         ;; set keeps storage on `.-storage`, set from the `:storage` opt above,
+         ;; which this `set!` would not reach.
+         (set! (.-_storage pset) (:storage store))
+         (with-meta pset (root-meta store index-type)))
+       :cljs
+       ;; Under `:sync? false` the builder returns a partial-cps expression, so
+       ;; the metadata has to be attached inside the continuation. The caller
+       ;; gets a set or an expression according to the `:sync?` it asked for —
+       ;; the same contract every other storage-touching entry point here has.
+       (if sync?
+         (with-meta (psset/from-sorted-seq cmp xs opts) (root-meta store index-type))
+         (fn [resolve reject]
+           ((psset/from-sorted-seq cmp xs opts)
+            (fn [pset] (resolve (with-meta pset (root-meta store index-type))))
+            reject))))))
 
 ;; Datom — datahike's domain ELEMENT type, nested inside node :keys. Its handler recurses through
 ;; the canonical node codec. (vector form `[e a v tx added]`, read back via datom-from-reader.)

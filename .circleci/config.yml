@@ -159,6 +159,46 @@ jobs:
           paths:
             - /home/circleci/.m2
             - /home/circleci/.deps.clj
+  datomic-test:
+    executor: tools/clojurecli
+    steps:
+      - attach_workspace:
+          at: /home/circleci
+      - run:
+          # Datomic Pro <-> datahike migration. Needs the `:datomic` alias for the
+          # peer jar; `datomic:mem://` needs no license key or transactor, so this
+          # is an ordinary job rather than an integration one. The namespace lives
+          # on `src-datomic` and the tests on `test-datomic`, reachable from no
+          # other tier — `datahike.migrate.datomic` requires `datomic.api` and
+          # fails to LOAD without it, so being visible elsewhere would break that
+          # tier rather than skip.
+          name: Run Datomic migration tests
+          command: bb test datomic
+          no_output_timeout: 5m
+      - save_cache:
+          key: deps-{{ checksum "deps.edn" }}
+          paths:
+            - /home/circleci/.m2
+            - /home/circleci/.deps.clj
+
+  migrate-test:
+    executor: tools/clojurecli
+    steps:
+      - attach_workspace:
+          at: /home/circleci
+      - run:
+          # Export/import + experimental.diff. Its own tier because the feature
+          # supports exactly one index (the bulk build refuses anything but
+          # persistent-set), so running it once per index backend was 2/3 waste.
+          # See the comment at the top of tests.edn.
+          name: Run export/import (migrate) tests
+          command: bb test migrate
+          no_output_timeout: 5m
+      - save_cache:
+          key: deps-{{ checksum "deps.edn" }}
+          paths:
+            - /home/circleci/.m2
+            - /home/circleci/.deps.clj
   backward-compatibility-test:
     executor: tools/clojurecli
     steps:
@@ -373,6 +413,14 @@ workflows:
           context: ghcr-read-package
           requires:
             - build
+      - datomic-test:
+          context: ghcr-read-package
+          requires:
+            - build
+      - migrate-test:
+          context: ghcr-read-package
+          requires:
+            - build
       - integration-test:
           context: ghcr-read-package
           requires:
@@ -410,6 +458,7 @@ workflows:
             - persistent-set-test
             - hitchhiker-tree-test
             - backward-compatibility-test
+            - migrate-test
             - integration-test
             - kabel-test
             - browser-test
@@ -429,6 +478,7 @@ workflows:
             - persistent-set-test
             - hitchhiker-tree-test
             - backward-compatibility-test
+            - migrate-test
             - integration-test
             - kabel-test
             - browser-test

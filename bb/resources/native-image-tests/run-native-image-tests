@@ -60,6 +60,49 @@ fi
 ./dthk query '[:find ?e . :where [?e :name ?n]]' db:$CONFIG --format cbor >> /tmp/test
 ./dthk query '[:find ?i :in $ ?i . :where [?e :name ?n]]' db:$CONFIG cbor:/tmp/test # => 1
 
+# CBOR through a POPULATED registry, which the two lines above do not reach:
+# they use the empty interop registry, so no tag-27 record is ever constructed.
+# The remote writer posts application/cbor and decodes a TxReport and DB handle
+# coming back, which is the only path here that depends on `register-record`.
+# It is worth its own step because boring's record fallbacks fail SILENTLY
+# under a closed-world image rather than erroring.
+CBOR_CONFIG=bb/resources/native-image-tests/testconfig.cbor-writer.edn
+clojure -M:http-server \
+        bb/resources/native-image-tests/cbor-server-config.edn \
+        > /tmp/dh-cbor-server.log 2>&1 &
+CBOR_SERVER_PID=$!
+trap "rm -rf $TMPSTORE /tmp/dh-cbor-writer-store; kill $CBOR_SERVER_PID 2>/dev/null || true" EXIT
+
+# The server binds asynchronously; poll rather than sleeping a guessed interval.
+# The budget is generous on purpose: measured at 79s locally with a warm ~/.m2,
+# because `clojure -M` resolves the classpath before the JVM even starts. A
+# 60s budget looked ample and was not.
+SERVER_UP=""
+for _ in $(seq 1 240); do
+  if curl -sf -o /dev/null "http://localhost:32191/swagger.json"; then SERVER_UP=1; break; fi
+  sleep 1
+done
+if [ -z "$SERVER_UP" ]
+then
+  echo "Exception: CBOR test server never came up; see /tmp/dh-cbor-server.log"
+  cat /tmp/dh-cbor-server.log
+  exit 1
+fi
+
+./dthk create-database edn:$CBOR_CONFIG
+./dthk transact conn:$CBOR_CONFIG '[{:name "Kwame"}]'
+CBOR_OUT=`./dthk query '[:find (count ?e) . :where [?e :name _]]' db:$CBOR_CONFIG`
+if [ "$CBOR_OUT" -eq 1 ]
+then
+  echo "CBOR remote-writer test successful."
+else
+  echo "Exception: CBOR remote writer did not round-trip (got '$CBOR_OUT')."
+  exit 1
+fi
+./dthk delete-database edn:$CBOR_CONFIG
+kill $CBOR_SERVER_PID 2>/dev/null || true
+trap "rm -rf $TMPSTORE /tmp/dh-cbor-writer-store" EXIT
+
 # test arbitrary :in[puts] as positional args
 QUERY_OUT=`./dthk query '[:find (pull ?e [*]) . :in $ ?name :where [?e :name ?name]]' db:$CONFIG '"Judea"'`
 if [ "$QUERY_OUT" = '{:db/id 101, :name "Judea"}' ]

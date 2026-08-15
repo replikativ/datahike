@@ -13,7 +13,7 @@
 
 (defn- mk-cfg [label extra]
   (merge {:store {:backend :file
-                  :path (str (System/getProperty "java.io.tmpdir") "/dh-fusion-test-" label)
+                  :path (str (System/getProperty "java.io.tmpdir") "/dh-fusion-test-" label "-" (java.util.UUID/randomUUID))
                   :id (java.util.UUID/randomUUID)}
           :schema-flexibility :read :keep-history? true}
          extra))

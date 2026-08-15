@@ -1,7 +1,7 @@
 {:deps {org.clojure/clojure                         {:mvn/version "1.12.4"}
         org.replikativ/hasch                        {:mvn/version "0.4.102"
                                                      :exclusions [org.clojure/clojurescript]}
-        org.replikativ/konserve                     {:mvn/version "0.9.363"
+        org.replikativ/konserve                     {:mvn/version "0.9.372"
                                                      :exclusions [org.clojure/clojurescript
                                                                   org.clojars.mmb90/cljs-cache]}
                                                      
@@ -16,7 +16,31 @@
         ;; published NodeState — a pipelining writer's copies can never observe a torn settle;
         ;; 0.4.137 projects diff-buf diffs onto a COPY of the restored node, so tree versions
         ;; sharing a durable anchor through the node cache can't clobber each other's reads
-        org.replikativ/persistent-sorted-set        {:mvn/version "0.4.137"}
+        ;; Here in the top-level :deps and NOT in an alias on purpose. The three
+        ;; test entry points resolve different alias sets — `clojure -M:test`
+        ;; (kaocha) sees :test, `npx shadow-cljs compile node-test` sees
+        ;; :cljs + :test (shadow-cljs.edn:1), and `bb test cljs-node` sees only
+        ;; :cljs — so this is the one placement all three see. The old :bulk
+        ;; alias reached none of the cljs ones.
+        org.replikativ/persistent-sorted-set        {:mvn/version "0.5.140"}
+        ;; MAIN deps, not a test alias. `datahike.cbor` is src/, so boring is a
+        ;; real runtime dependency: the dump codec and the kabel wire format
+        ;; both go through it. It used to be declared only under :test, which
+        ;; meant the tests ran against the pinned version while a CONSUMER got
+        ;; whatever kabel/konserve-sync dragged in transitively -- 0.1.6, ELEVEN
+        ;; versions behind. That is not hypothetical: `export-db` throws
+        ;; `boring: unknown profile :archival` on 0.1.6, so export was broken for
+        ;; every consumer while CI stayed green on 3001 tests, because CI runs
+        ;; the alias. Kabel's own deps.edn names this hazard exactly -- "green CI
+        ;; on a version nothing else in the stack uses".
+        ;; 0.1.21 or newer: earlier readers decoded a tag-1 FLOAT instant up to a
+        ;; millisecond early on the JVM, so importing a dump written by released
+        ;; datahike (which used clj-cbor, and clj-cbor writes tag 1 as a float)
+        ;; shifted every :db.type/instant AND every :db/txInstant. boring's own
+        ;; output was never affected — it writes tag 0 — so no round trip could
+        ;; show it; `migrate-legacy-golden-test` reads bytes from the real old
+        ;; writer, which is what caught it. replikativ/boring#18.
+        org.replikativ/boring                       {:mvn/version "0.1.21"}
         is.simm/partial-cps                         {:mvn/version "0.1.59"}
         environ/environ                             {:mvn/version "1.2.0"}
         nrepl/bencode                               {:mvn/version "1.2.0"}
@@ -25,7 +49,6 @@
         medley/medley                               {:mvn/version "1.4.0"}
         metosin/spec-tools                          {:mvn/version "0.10.8"}
         metosin/malli                               {:mvn/version "0.20.1"}
-        mvxcvi/clj-cbor                             {:mvn/version "1.1.1"}
         org.babashka/http-client                    {:mvn/version "0.4.23"}
         metosin/jsonista                            {:mvn/version "0.3.14"}
         com.github.pkpkpk/cljs-cache                {:mvn/version "1.0.21"}
@@ -67,6 +90,16 @@
                                org.clojure/test.check      {:mvn/version "1.1.1"}
                                orchestra/orchestra         {:mvn/version "2021.01.01-1"}
 
+                               ;; TEST SCOPE ONLY. The dump codec is boring now and
+                               ;; nothing in src/ requires clj-cbor -- but legacy
+                               ;; dumps were WRITTEN by clj-cbor, so the only honest
+                               ;; way to test that boring reads them is to have
+                               ;; clj-cbor produce the bytes. See
+                               ;; `legacy-cbor-import-test`; using boring to write
+                               ;; the fixture would test boring against itself and
+                               ;; prove nothing about the format we must still read.
+                               mvxcvi/clj-cbor             {:mvn/version "1.1.1"}
+
                                ;; hitchhiker-tree index (optional, for testing)
                                io.replikativ/hitchhiker-tree {:mvn/version "0.2.222"
                                                               :exclusions [org.clojure/clojurescript
@@ -82,15 +115,30 @@
                                ;; secondary index integrations (for testing)
                                org.replikativ/proximum       {:mvn/version "0.1.25"}
                                org.replikativ/scriptum       {:mvn/version "0.1.27"}
-                               org.replikativ/stratum        {:mvn/version "0.3.77"}
+                               org.replikativ/stratum        {:mvn/version "0.3.80"}
 
-                               ;; kabel integration for distributed datahike
-                               org.replikativ/kabel          {:mvn/version "0.3.100"}
+                               ;; kabel integration for distributed datahike.
+                               ;; src-kabel's connector requires datahike.cbor,
+                               ;; so the whole :test suite fails to LOAD without
+                               ;; kabel -- not just the CBOR tests. boring is no
+                               ;; longer duplicated here: it is a main dep now,
+                               ;; because declaring it twice is precisely how the
+                               ;; tested and shipped versions came apart.
+                               org.replikativ/kabel          {:mvn/version "0.3.102"}
                                is.simm/distributed-scope     {:mvn/version "0.1.6"}
-                               org.replikativ/konserve-sync  {:mvn/version "0.1.35"}
+                               org.replikativ/konserve-sync  {:mvn/version "0.1.39"}
+
+                               ;; S3-compatible store integration test (migrate-s3-test, needs docker; runs Garage)
+                               org.replikativ/konserve-s3    {:mvn/version "0.1.37"}
                                http-kit/http-kit             {:mvn/version "2.8.1"}}}
 
-           :datomic {:extra-deps {com.datomic/datomic-free {:mvn/version "0.9.5703"}}}
+           ;; Datomic Pro peer API, for `datahike.migrate.datomic` and its
+           ;; integration test. datahike itself takes NO Datomic dependency —
+           ;; that namespace loads only when this alias (or the user's own dep)
+           ;; puts the peer jar on the classpath, which is why it is a .clj that
+           ;; nothing else requires.
+           :datomic {:extra-paths ["test" "test-datomic" "src-datomic"]
+                     :extra-deps {com.datomic/peer {:mvn/version "1.0.7622"}}}
 
            :ffix {:extra-deps {cljfmt/cljfmt {:mvn/version "0.9.2"}}
                   :main-opts ["-m" "cljfmt.main" "fix"]}

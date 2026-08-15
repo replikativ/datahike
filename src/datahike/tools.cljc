@@ -124,6 +124,114 @@
            (async-impl/put! p val handler)))))
    :cljs (def throwable-promise async/promise-chan))
 
+(defn delivered!
+  "Guard a value taken from an async operation's channel. Returns `v`, or throws
+   if the channel closed without delivering one.
+
+   A `go-try-` block converts an escaping Exception into a channel VALUE, so
+   `(<?- ch)` rethrows it and the caller sees the failure. That covers the
+   ordinary case and is why the codebase reads as if it did. It does not cover
+   the two ways a channel closes empty:
+
+   * a **bare `go`** (or a `go-try-` whose throwable is not an Exception — a JVM
+     `Error`, or on ClojureScript anything thrown that is not a `js/Error`)
+     closes its channel instead of putting;
+   * `put!`/`>!` **refuse nil**, so an operation that legitimately produces nil
+     and forwards it to another channel throws inside the forwarding block and
+     closes that channel too.
+
+   In both cases `<?-` yields `nil` — not an error, a value. Every consumer then
+   does something plausible and wrong: `(reduce rf acc nil)` is `acc`, so a chunk
+   that failed to read becomes an EMPTY chunk and the import continues, reports
+   success, and is short by exactly that chunk. That is the shape this exists to
+   stop: the failure is not that an operation errored, it is that erroring became
+   indistinguishable from returning nothing.
+
+   `ctx` is merged into the ex-data so the site names itself — a bare
+   \"unexpected nil\" is nearly as unhelpful as the silence it replaces."
+  ([v ctx] (delivered! v ctx "an async operation delivered no result"))
+  ([v ctx msg]
+   (if (nil? v)
+     (throw (ex-info (str msg
+                          " — its channel closed without a value, which means it"
+                          " failed in a way that could not be reported.")
+                     (merge {:error :async/no-result} ctx)))
+     v)))
+
+(defn call-reporting-foreign-throws
+  "Call `f`, converting a throw that the async machinery cannot report into one
+   it can. Returns whatever `f` returns.
+
+   ClojureScript can throw ANY value — `(throw #js {…})`, `(throw \"oops\")` —
+   and `go-try-` expands to `(catch js/Error e e)` there, so such a value is not
+   caught. What happens next is worse than the silent nil this codebase spends
+   so much effort on: core.async's `run-state-machine-wrapped` catches
+   `js/Object`, closes the go block's channel, and **rethrows**, onto the
+   microtask queue where nothing is listening. Measured on Node — the whole
+   process exits, mid-import, with the bare object printed and no stack:
+
+       cljs.core.async.impl.ioc_helpers.js:99
+       throw ex;
+       { msg: 'a foreign object, not a js/Error' }
+
+   Wrapping it in an `ex-info` puts it back inside what `go-try-` and `<?-`
+   already handle correctly, with the original value preserved under
+   `:thrown`.
+
+   This can only cover a SYNCHRONOUS throw at the call site. A foreign value
+   thrown inside the callee's own go block escapes into core.async before any
+   caller can see it, and terminates the process just the same; guarding that
+   would mean widening `go-try-`'s ClojureScript catch to `:default`, which is
+   superv.async's decision, not ours. The synchronous case is the one that
+   matters most here anyway: it is where a CALLER-SUPPLIED function runs — the
+   `:read` of a record source — and a caller is exactly who might throw
+   something that is not an `Error`.
+
+   On the JVM this is a plain call: `Throwable`s that are not `Exception`s are
+   deliberately left to propagate, and there is no analogous class of
+   unreportable throw."
+  [f ctx]
+  #?(:clj (f)
+     :cljs (try (f)
+                (catch :default e
+                  (if (instance? js/Error e)
+                    (throw e)
+                    (throw (ex-info (str "A non-Error value was thrown"
+                                         (when-let [o (:op ctx)] (str " by " o))
+                                         ". ClojureScript permits this, but the async"
+                                         " machinery cannot report it — core.async would"
+                                         " close the channel and rethrow onto the microtask"
+                                         " queue, terminating the process. Throw an Error"
+                                         " (or ex-info) instead.")
+                                    (merge {:error :async/foreign-throw
+                                            :thrown e}
+                                           ctx))))))))
+
+(defn cause-chain
+  "`t` and every exception it wraps, outermost first."
+  [t]
+  (take-while some? (iterate ex-cause t)))
+
+(defn ex-error
+  "What an exception names about ITSELF — its `:error`, or failing that its
+   `:type` — found by looking THROUGH the wrappers. Returns nil when nothing in
+   the chain says.
+
+   `(:error (ex-data e))` on the exception you were handed is usually nil even
+   when the original said exactly what went wrong, because a failure crossing
+   the writer boundary is wrapped twice: `throwable-promise`'s deref calls
+   `.get` on a CompletableFuture, which raises `ExecutionException` (ex-data
+   nil), and `superv.async/throw-if-exception-` then wraps THAT, reading its
+   ex-data — so the original's keys are two levels down.
+
+   Measured consequence, before this existed: a `:transact/unique` conflict and
+   a dead writer (`:writer-shut-down`) reached the import's error handler
+   looking identical, and both were filed under the handler's fallback label,
+   `:import/corrupt-datom`. A store outage was reported as 74 corrupt datoms."
+  [t]
+  (some (fn [e] (let [d (ex-data e)] (or (:error d) (:type d))))
+        (cause-chain t)))
+
 #?(:clj
    (defn get-version
      "Retrieves the current version of a dependency. Thanks to https://stackoverflow.com/a/33070806/10978897"

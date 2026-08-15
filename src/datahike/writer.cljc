@@ -6,6 +6,7 @@
             [datahike.tx-preds :as txp]
             [datahike.gc :as gc]
             [datahike.tools :as dt :refer [throwable-promise get-time-ms]]
+            [clojure.string :as str]
             [clojure.core.async :refer [chan close! promise-chan put! go go-loop <! >! poll! buffer timeout]]
             #?(:cljs [cljs.core.async.impl.channels :refer [ManyToManyChannel]]))
   #?(:clj (:import [clojure.core.async.impl.channels ManyToManyChannel])))
@@ -69,22 +70,56 @@
 
                             op-fn (write-fn-map op)
                             res   (try
+                              ;; NAMED before it is applied. `write-fn-map` is a
+                              ;; plain map, so an op it does not hold gave `nil`
+                              ;; and `(apply nil …)` threw a NullPointerException
+                              ;; — which the handler below then rewrote as
+                              ;; "connection may have been invalidated, e.g.
+                              ;; through db deletion". A caller whose only fault
+                              ;; was naming an operation this writer does not
+                              ;; have was sent to look at their storage.
+                              ;;
+                              ;; That is the version-skew case: a newer client
+                              ;; against an older remote writer sends an op the
+                              ;; server has never heard of. There is no version
+                              ;; exchange on this wire to catch it earlier, so
+                              ;; the honest thing is to say which op is missing
+                              ;; and which exist. `load-entities-migrating` is
+                              ;; simply the newest op to reach this; every op
+                              ;; ever added had the same failure.
+                                    (when-not op-fn
+                                      (throw (ex-info (str "This writer has no operation `" op "`. It supports: "
+                                                           (str/join ", " (sort (map str (keys write-fn-map))))
+                                                           ". A remote writer older than the client is the usual cause.")
+                                                      {:type :writer/unknown-op
+                                                       :op op
+                                                       :supported (set (keys write-fn-map))})))
                                     (apply op-fn old args)
                             ;; Catch all Throwables to handle AssertionError and other Errors
                             ;; These should crash the writer, but we deliver to callback first to prevent hangs
                                     (catch #?(:clj Throwable :cljs js/Error) e
                                       (log/error :datahike/write-error {:invocation invocation :error e :args args})
-                              ;; take a guess that a NPE was triggered by an invalid connection
                               ;; short circuit on errors
                                       #?(:cljs (put! callback e)
                                          :clj
                                          (put! callback
+                              ;; An NPE from INSIDE an op is still most often a
+                              ;; released connection, so the hint stays — but as
+                              ;; a hint, not a rewrite. It used to replace the
+                              ;; exception outright, on a guess its own comment
+                              ;; admitted to ("take a guess"), which meant every
+                              ;; unrelated NPE arrived wearing that explanation
+                              ;; and the real stack trace only in `:error`.
                                                (if (= (type e) NullPointerException)
-                                                 (ex-info "Null pointer encountered in invocation. Connection may have been invalidated, e.g. through db deletion, and needs to be released everywhere."
+                                                 (ex-info (str "NullPointerException during `" op "`. If this connection's "
+                                                               "database was deleted or released elsewhere, that is the "
+                                                               "usual cause; otherwise see :error for the original.")
                                                           {:type       :writer-error-during-invocation
+                                                           :op         op
                                                            :invocation invocation
                                                            :connection connection
-                                                           :error      e})
+                                                           :error      e}
+                                                          e)
                                                  e)))
                               ;; Re-throw Errors (AssertionError, OutOfMemoryError, etc.) to crash the writer
                               ;; Only Exceptions should be handled and allow the writer to continue.
@@ -99,7 +134,26 @@
                         (cond (chan? res)
                               ;; async op, run in parallel in background, no sequential commit handling needed
                               (do
-                                (go (>! callback (<! res)))
+                                ;; `>!` REFUSES nil, so forwarding a closed `res`
+                                ;; throws inside this bare `go` — which closes the
+                                ;; go's own channel, silently, and the callback is
+                                ;; never delivered. The caller's promise then never
+                                ;; resolves: a HANG, not an error. `res` closes
+                                ;; whenever the op failed in a way `go-try-` could
+                                ;; not turn into a value (a JVM Error, a cljs throw
+                                ;; of a non-js/Error), and `gc-storage` reaches
+                                ;; here on every call.
+                                (go (let [v (<! res)]
+                                      (>! callback
+                                          (if (nil? v)
+                                            (ex-info (str "The " op " operation produced no result"
+                                                          " — its channel closed without a value,"
+                                                          " which means it failed in a way that"
+                                                          " could not be reported.")
+                                                     {:error :async/no-result
+                                                      :type :writer-no-result
+                                                      :op op})
+                                            v))))
                                 (recur old))
 
                               (not= res :error)
@@ -182,6 +236,8 @@
 ;; public API to internal mapping
 (def default-write-fn-map {'transact!     (with-tx-pred w/transact!)
                            'load-entities (with-tx-pred w/load-entities)
+                           ;; import-internal; see writing/load-entities-migrating
+                           'load-entities-migrating (with-tx-pred w/load-entities-migrating)
                            ;; async operations that run in background — NOT report
                            ;; producers, must not be wrapped (they return channels)
                            'gc-storage!   gc/gc-storage!
@@ -189,7 +245,11 @@
                            #?@(:clj ['build-secondary-index! w/build-secondary-index!
                                      'install-secondary-index! w/install-secondary-index!])
                            ;; merge with multi-parent commit tracking
-                           'merge! (with-tx-pred w/merge-writer!)})
+                           'merge! (with-tx-pred w/merge-writer!)
+                           ;; bulk import: indexes built outside, substituted here.
+                           ;; NOT wrapped — its :tx-data is empty by construction,
+                           ;; so a tx-pred has nothing to judge (see w/publish-built-db!)
+                           'publish-built-db! w/publish-built-db!})
 
 (defmulti create-writer
   (fn [writer-config _]
@@ -296,13 +356,50 @@
         (#?(:clj deliver :cljs put!) p tx-report)))
     p))
 
-(defn load-entities [connection entities]
+(defn- dispatch-load!
+  "`args` is the argument vector as the write-fn will receive it AFTER `old` —
+   so it must match that op's arity exactly. Passing a trailing `nil` for the
+   plain op sent three arguments to a two-arity `writing/load-entities`; that
+   was invisible while the extra arity existed to absorb it."
+  [connection op args]
   (let [p (throwable-promise)
         writer (:writer @(:wrapped-atom connection))]
     (go
-      (let [tx-report (<! (dispatch! writer
-                                     {:op 'load-entities
-                                      :args [entities]}))]
+      (let [tx-report (<! (dispatch! writer {:op op :args args}))]
+        (#?(:clj deliver :cljs put!) p tx-report)))
+    p))
+
+(defn load-entities
+  [connection entities]
+  (dispatch-load! connection 'load-entities [entities]))
+
+(defn ^:no-doc load-entities-migrating
+  "`load-entities` threading an import's id mapping. **Internal to
+   `datahike.migrate`** — see `datahike.writing/load-entities-migrating` for why
+   this is a separate function rather than an arity.
+
+   It also dispatches under its OWN op symbol. The writer's op name is part of
+   the writer protocol, not just a local detail: a remote or replicated writer
+   reads it off the wire. Sharing `'load-entities` for both shapes would have
+   left the separation cosmetic — one dispatch path, two argument counts, and
+   nothing on the receiving end able to tell which contract it was being held
+   to."
+  [connection entities migration]
+  (dispatch-load! connection 'load-entities-migrating [entities migration]))
+
+(defn publish-built-db!
+  "Publish a bulk-built database through the writer.
+
+   The promise resolves only after the commit loop has committed and `reset!` the
+   connection, which is what lets `migrate/run-index-build` hold the GC guard
+   across the whole build-then-publish sequence: bulk-built nodes are written
+   before anything references them, and the guard must not close until the root
+   that references them has landed."
+  [connection fields]
+  (let [p (throwable-promise)
+        writer (:writer @(:wrapped-atom connection))]
+    (go
+      (let [tx-report (<! (dispatch! writer {:op 'publish-built-db! :args [fields]}))]
         (#?(:clj deliver :cljs put!) p tx-report)))
     p))
 

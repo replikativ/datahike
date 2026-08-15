@@ -7,12 +7,14 @@
    boundary, so callbacks receive the error and the writer shuts down."
   (:require [datahike.api :as d]
             [datahike.writing :as dw]
+            [datahike.writer :as dwriter]
+            [clojure.core.async :refer [<!!]]
             [clojure.test :refer [deftest is testing]]))
 
 (deftest fatal-error-in-commit-fails-loudly
   (testing "a fatal Error during commit propagates to the caller within a bounded time"
     (let [cfg {:store {:backend :file
-                       :path (str (System/getProperty "java.io.tmpdir") "/dh-fatal-commit")
+                       :path (str (System/getProperty "java.io.tmpdir") "/dh-fatal-commit-" (java.util.UUID/randomUUID))
                        :id #uuid "d1ffb000-0000-0000-0000-00000000fa7a"}
                :schema-flexibility :read :keep-history? false}]
       (when (d/database-exists? cfg) (d/delete-database cfg))
@@ -46,7 +48,7 @@
   (testing "an Error thrown on the COMMIT thread (create-commit-id — only commit! calls it)
             reaches the caller instead of parking the writer forever"
     (let [cfg {:store {:backend :file
-                       :path (str (System/getProperty "java.io.tmpdir") "/dh-fatal-commit2")
+                       :path (str (System/getProperty "java.io.tmpdir") "/dh-fatal-commit2-" (java.util.UUID/randomUUID))
                        :id #uuid "d1ffb000-0000-0000-0000-00000000fa7b"}
                :schema-flexibility :read :keep-history? false}]
       (when (d/database-exists? cfg) (d/delete-database cfg))
@@ -60,4 +62,39 @@
                          (deref f 15000 :HUNG)))]
           (is (= :failed-loudly result) "commit-thread Error must not hang the transact"))
         (try (d/release conn) (catch Exception _)))
+      (d/delete-database cfg))))
+
+(deftest an-unknown-op-names-itself-instead-of-blaming-the-connection
+  (testing "`write-fn-map` is a plain map, so an op it does not hold gave nil
+            and `(apply nil …)` threw a NullPointerException — which the error
+            handler then REWROTE as \"connection may have been invalidated, e.g.
+            through db deletion\". A caller whose only fault was naming an
+            operation this writer does not have was sent to look at their
+            storage. That is the version-skew case: a newer client against an
+            older remote writer, and there is no version exchange on the wire to
+            catch it earlier."
+    (let [cfg {:store {:backend :memory :id (java.util.UUID/randomUUID)}
+               :schema-flexibility :read :keep-history? false}
+          _ (d/create-database cfg)
+          conn (d/connect cfg)
+          w (:writer @(:wrapped-atom conn))
+          res (<!! (dwriter/dispatch! w {:op 'an-op-from-a-newer-client :args [[] {}]}))]
+
+      (is (instance? clojure.lang.ExceptionInfo res))
+      (is (= :writer/unknown-op (:type (ex-data res))))
+      (is (= 'an-op-from-a-newer-client (:op (ex-data res))))
+
+      (testing "the message names the missing op and what does exist, so version
+                skew is visible rather than inferred"
+        (is (re-find #"no operation `an-op-from-a-newer-client`" (ex-message res)))
+        (is (re-find #"transact!" (ex-message res)))
+        (is (not (re-find #"invalidated" (ex-message res)))
+            "and it must not claim the connection was invalidated"))
+
+      (testing "the writer SURVIVES — an unknown op is a caller error, not a
+                fatal one, and killing the writer would take every other
+                connection holder down with it"
+        (is (map? (d/transact conn [{:n 1}]))))
+
+      (d/release conn)
       (d/delete-database cfg))))

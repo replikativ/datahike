@@ -132,6 +132,15 @@
                            :expected root
                            :details result}]}))))
 
+      sec/ISecondaryScannable
+      (-sec-value [_ _attr eid]
+        ;; `prox/get-vector` takes the EXTERNAL id — exactly the eid `-transact`
+        ;; inserted under — so this needs nothing from proximum that is not
+        ;; already public. It is also the only shape this backend can serve: it
+        ;; fetches by id and cannot enumerate its ids, which is one reason the
+        ;; protocol is a point lookup rather than a scan.
+        (prox/get-vector prox-idx eid))
+
       (-transact [_ tx-report]
         ;; tx-report: {:datom datom :added? bool}
         (let [{:keys [datom added?]} tx-report
@@ -153,6 +162,35 @@
 (sec/register-index-type!
  :proximum
  (fn [config _db]
+   ;; ONE attribute per index, refused rather than silently mixed.
+   ;;
+   ;; proximum is keyed by an EXTERNAL ID, and this adapter uses the entity id
+   ;; for it — so an index covering two attributes stores both of an entity's
+   ;; vectors under the same key. What follows is not hypothetical, both halves
+   ;; measured:
+   ;;
+   ;;   * one entity with both attributes -> proximum itself refuses, with
+   ;;     "External id already exists", from inside the async index update,
+   ;;     naming neither the attribute nor the real cause.
+   ;;   * two attributes on DISJOINT entities -> nothing refuses, and reads are
+   ;;     wrong: `-sec-value` ignores its `attr` argument (it can only fetch by
+   ;;     id), so asking an entity for the attribute it does NOT have returns
+   ;;     the vector of the one it does.
+   ;;
+   ;; Refusing at declaration is also what makes `-sec-value` ignoring `attr`
+   ;; honest: with one covered attribute there is nothing to disambiguate.
+   ;; Widening this means keying proximum by [eid attr] rather than eid — and a
+   ;; single HNSW graph spanning two embedding spaces, under one `:dim` and one
+   ;; distance, is a doubtful thing to want in the first place.
+   (let [attrs (:attrs config)]
+     (when (> (count attrs) 1)
+       (throw (ex-info (str "A :proximum index covers exactly one attribute; this one declares "
+                            (count attrs) " " (pr-str (vec attrs)) ". It is keyed by entity id, so "
+                            "two attributes would store both vectors under the same key — "
+                            "colliding where an entity has both, and answering for the wrong "
+                            "attribute where it has one. Declare one index per vector attribute.")
+                       {:error :secondary/proximum-multi-attr
+                        :attrs (vec attrs)}))))
    (let [prox-config (merge {:type :hnsw}
                             (select-keys config [:dim :distance :store-config :mmap-dir
                                                  :capacity :m :ef-construction :ef-search]))

@@ -77,7 +77,8 @@ project the buffered diffs back onto the durable nodes as they are loaded.
   under different `:diff-buf-size` settings.
 - **Reader requirement.** The on-disk format needs persistent-sorted-set ≥
   0.4.126 (older readers refuse a diff-buffered store via the version guard);
-  correct concurrent reads require ≥ 0.4.137.
+  correct concurrent reads require ≥ 0.4.137, and the supported floor is ≥ 0.5.140,
+  which carries the diff-buf and B-tree correctness pass.
 
 ## Root fusion
 

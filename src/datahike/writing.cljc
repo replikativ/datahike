@@ -389,6 +389,77 @@
     (let [pending-ops (mapv (fn [[k v]] (k/assoc store k v {:immutable? true} {:sync? false})) kvs)]
       (go-try- (doseq [op pending-ops] (<?- op))))))
 
+(defn- as-awaitable
+  "Hand `x` back in the shape the streaming index builder's `await` expects.
+
+   Two async worlds meet at this seam and they are not the same one. Everything
+   in datahike's write path is core.async: `write-pending-kvs!` returns a channel
+   under `:sync? false`. persistent-sorted-set's ClojureScript builder is
+   partial-cps, and its `await` wants a continuation — handed a channel it fails
+   with `fexpr.call is not a function` on the very first flush, because a channel
+   is not callable.
+
+   On the JVM the builder is synchronous and never awaits, so the value passes
+   through untouched; only ClojureScript needs the adapter. konserve delivers
+   errors as values, so an error on the channel becomes a rejection rather than a
+   result that looks like success."
+  [x]
+  #?(:clj x
+     :cljs (fn [resolve reject]
+             (if (satisfies? cljs.core.async.impl.protocols/ReadPort x)
+               (async/take! x (fn [v] (if (instance? js/Error v) (reject v) (resolve v))))
+               (resolve x)))))
+
+(def ^:const default-index-flush-threshold
+  "Nodes allowed to accumulate in `pending-writes` before a streaming index build
+   drains them. ~1000 nodes at the default branching factor is on the order of
+   tens of MB — generous enough that no ordinary build pays for the check, small
+   enough that the bound is a bound."
+  1000)
+
+(defn bulk-flush-fn
+  "A `:flush-fn` for `di/init-index-sorted`: drain `pending-writes` once it grows
+   past `threshold`, else do nothing.
+
+   ## The caller MUST hold the GC guard
+
+   This writes index nodes that nothing in the store references yet — the branch
+   head still names the previous snapshot. `datahike.gc-guard` spells out what
+   that means: a mark running in that window classifies them as garbage and a
+   sweep deletes them, after which the commit publishes a root pointing at
+   deleted addresses. The guard must therefore be held across the WHOLE
+   sequence, from the first flush to the commit that makes the root reachable —
+   `(guard/writing! store-id)` before the build, `(guard/done! …)` after the
+   commit.
+
+   It lives here rather than in `datahike.index.persistent-set` for exactly that
+   reason. The index layer cannot hold the guard for the right span, because the
+   span extends past the build into a commit it knows nothing about; and
+   durability policy — when nodes become durable, in what order, under whose
+   guard — already lives in this namespace. An earlier version drained from
+   inside the index layer, unguarded, which is the blind spot `gc_guard`
+   exists to close.
+
+   Writes go through `write-pending-kvs!`, so the flush and the commit share one
+   implementation of the write discipline rather than the index layer keeping a
+   weaker copy.
+
+   nil when there is nothing to drain or flushing is switched off, which lets the
+   builder skip the hook entirely."
+  ([store] (bulk-flush-fn store true))
+  ([store sync?]
+   (let [pending   (-> store :storage :pending-writes)
+         threshold (:datahike/index-flush-threshold store default-index-flush-threshold)]
+     (when (and pending (pos? threshold))
+       (fn []
+         (if (>= (count @pending) threshold)
+           (let [[kvs _] (swap-vals! pending (constantly []))]
+             (cond-> (write-pending-kvs! store kvs sync?)
+               (not sync?) as-awaitable))
+           ;; Nothing to do — but the builder AWAITS this, so the async arm still
+           ;; has to hand back something awaitable.
+           (when-not sync? (as-awaitable nil))))))))
+
 (defn commit!
   ([db parents]
    (commit! db parents true))
@@ -837,6 +908,65 @@
   (log/trace :datahike/transact-detail {:tx-data tx-data :tx-meta tx-meta})
   (complete-db-update old (core/with old tx-data tx-meta)))
 
-(defn load-entities [old entities]
+(defn load-entities
+  [old entities]
   (log/debug :datahike/load-entities {:entity-count (count entities)})
-  (complete-db-update old (core/load-entities-with old entities nil)))
+  (complete-db-update old (core/load-entities-with old entities nil nil)))
+
+(defn ^:no-doc load-entities-migrating
+  "`load-entities` threading an import's id mapping. **Internal to
+   `datahike.migrate`.**
+
+   `migration` is the `{:eids … :tids …}` map `transact-entities-directly` takes
+   in and hands back on the report: an import is many calls, and a ref in a late
+   batch may name an entity first seen in an early one, so the mapping has to
+   survive between them.
+
+   A SEPARATE function rather than an arity on `load-entities`, because that one
+   is public, `:stability :stable`, and declared in `datahike.api.specification`
+   as taking exactly two arguments. Widening it would have made an
+   import-internal id map part of the contract that generates the Java, pod, CLI
+   and TypeScript bindings, where it means nothing — and this release already
+   changes `load-entities`' BEHAVIOUR (transaction ids no longer vary with
+   `:batch-size`). One change to a stable function is a documented bug fix; two
+   is a habit."
+  [old entities migration]
+  (log/debug :datahike/load-entities-migrating {:entity-count (count entities)})
+  (complete-db-update old (core/load-entities-with old entities nil migration)))
+
+(defn publish-built-db!
+  "Replace `old`'s indexes and derived fields wholesale with ones built OUTSIDE
+   the writer, and hand the result to the ordinary commit path.
+
+   `datahike.migrate/run-index-build` builds six index trees from a dump by
+   sorting it, which takes as long as the import takes. Doing that inside the
+   writer's transaction loop would block every other write on this connection for
+   the duration and, worse, would put a multi-minute synchronous call inside a
+   `go` block. So the build happens outside and this only substitutes the
+   result — the writer's own commit loop then flushes, commits and publishes it,
+   which is what keeps an index-build import's durability identical to a transaction's.
+
+   `fields` carries only what a bulk build computes: the index trees, the
+   schema-derived maps, `:max-eid`, `:max-tx`, `:hash`, `:op-count`. Everything
+   else — store, config, writer, meta, system entities — is `old`'s, so this
+   cannot smuggle in a database from somewhere else.
+
+   `:tx-data` is empty and this is deliberately NOT wrapped in `with-tx-pred`: a
+   transaction predicate judges datoms, and an index-build import presents none for it to
+   judge. A store that relies on a tx-pred as a gate should not enable `:build-indexes?`.
+
+   Refuses a non-empty `old`, which is the same precondition
+   `migrate/check-target!` enforces one level up — restated here because this is
+   the function that would silently discard the data."
+  [old fields]
+  (log/debug :datahike/publish-built-db {:max-eid (:max-eid fields) :max-tx (:max-tx fields)})
+  (when-not (zero? (count (:eavt old)))
+    (throw (ex-info "publish-built-db! would discard an existing database"
+                    {:error :index-build/target-not-empty})))
+  (complete-db-update
+   old
+   {:db-before old
+    :db-after  (merge old fields)
+    :tx-data   []
+    :tempids   {}
+    :tx-meta   {:db/txInstant (dt/get-date)}}))

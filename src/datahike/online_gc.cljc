@@ -91,8 +91,13 @@
       ;; Evict from cache to prevent stale reads
       (doseq [addr addresses]
         (wrapped/evict cache addr))
-      ;; Add all addresses to the freelist for reuse
-      (swap! freelist into addresses)
+      ;; Add to the freelist for reuse — DISTINCT, and never an address already on it.
+      ;; An address appearing twice would be popped twice and handed to two different
+      ;; nodes; see CachedStorage.markFreed for how duplicates arise. That source is
+      ;; now de-duped too, so this is a backstop rather than the only guard.
+      (swap! freelist (fn [fl]
+                        (let [present (set fl)]
+                          (into fl (comp (distinct) (remove present)) addresses))))
       (count addresses))))
 
 (defn delete-freed-addresses!
@@ -176,11 +181,33 @@
     (if sync?
       ;; Synchronous mode
       (let [branches (k/get store :branches nil {:sync? true})
-            multi-branch? (> (count branches) 1)]
-        (if multi-branch?
+            multi-branch? (> (count branches) 1)
+            diff-buf (:datahike/diff-buf-size store 0)]
+        (cond
+          ;; Online GC consumes persistent-sorted-set's markFreed stream, which pss documents
+          ;; as a HINT and not a reachability claim. Under diff-buf that hint is only sound for
+          ;; a LINEAR history: a parent's slot names an anchor PLUS a diff, so two versions can
+          ;; name the same anchor, and storing one of them may flush that child — freeing an
+          ;; anchor the other still needs. Measured in pss against a backend that acts on the
+          ;; callback: 25 read failures / 768 trials at budget <= 4; linear histories were clean
+          ;; in 432/432 cells; budget 0 was clean in 864/864.
+          ;;
+          ;; Warn rather than debug: this is a correctness constraint, not a capability limit
+          ;; like the multi-branch case below. Connect refuses the combination outright, so
+          ;; reaching here means either :allow-unsafe-config or a direct online-gc! call.
+          (pos? diff-buf)
+          (do
+            (log/warn :datahike/ogc-skip-diff-buf
+                      {:msg "Online GC is unsafe with diff-buf and was skipped. Use offline GC (d/gc-storage)."
+                       :diff-buf-size diff-buf})
+            0)
+
+          multi-branch?
           (do
             (log/debug :datahike/ogc-skip-multi-branch "Use offline GC instead")
             0)
+
+          :else
           (let [[to-recycle _remaining] (get-and-clear-eligible-freed! store grace-period-ms)]
             (if (seq to-recycle)
               (let [freelist (-> store :storage :freelist)
@@ -196,11 +223,23 @@
       ;; Asynchronous mode
       (go-try-
        (let [branches (<?- (k/get store :branches nil {:sync? false}))
-             multi-branch? (> (count branches) 1)]
-         (if multi-branch?
+             multi-branch? (> (count branches) 1)
+             diff-buf (:datahike/diff-buf-size store 0)]
+         (cond
+           ;; See the synchronous arm above for why diff-buf is refused here.
+           (pos? diff-buf)
+           (do
+             (log/warn :datahike/ogc-skip-diff-buf
+                       {:msg "Online GC is unsafe with diff-buf and was skipped. Use offline GC (d/gc-storage)."
+                        :diff-buf-size diff-buf})
+             0)
+
+           multi-branch?
            (do
              (log/debug :datahike/ogc-skip-multi-branch "Use offline GC instead")
              0)
+
+           :else
            (let [[to-recycle _remaining] (get-and-clear-eligible-freed! store grace-period-ms)]
              (if (seq to-recycle)
                (let [freelist (-> store :storage :freelist)

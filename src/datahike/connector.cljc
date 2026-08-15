@@ -221,6 +221,41 @@
               config
               store-fixed-record-keys))))
 
+(defn- check-online-gc-compatible
+  "Online GC and diff-buf are not compatible; refuse the combination at connect.
+
+   Online GC reclaims blobs from persistent-sorted-set's `markFreed` stream, which pss
+   documents as a HINT rather than a reachability claim. Under diff-buf that hint is only
+   sound for a LINEAR commit history: a parent's slot names an anchor PLUS a diff, so two
+   versions can name the same anchor and neither owns it. Storing one of them may FLUSH that
+   child — write it out whole and free the anchor — which is correct for the version being
+   stored and wrong for the other. Measured in pss against a backend that acts on the
+   callback: 25 read failures / 768 trials at budget <= 4; linear histories clean in 432/432
+   cells; budget 0 clean in 864/864.
+
+   Checked HERE because this is the first point where both values are known: `:diff-buf-size`
+   is create-time-fixed and has just been adopted from the stored config, while `:online-gc`
+   is supplied at connect. The dangerous case is precisely a reconnect — a database created
+   long ago with a budget, later connected with online GC switched on.
+
+   Refused rather than silently disabled so the operator learns their GC is not running.
+   `:allow-unsafe-config` overrides, consistent with the create-time-fixed conflict above;
+   `online-gc!` then skips with a warning rather than acting on the stream.
+
+   Offline GC (`d/gc-storage`) is unaffected — it derives reachability itself instead of
+   trusting the hint, and is the supported way to reclaim on a diff-buf database."
+  [config]
+  (let [dbs (get-in config [:index-config :diff-buf-size] 0)]
+    (when (and (get-in config [:online-gc :enabled?])
+               (pos? dbs)
+               (not (:allow-unsafe-config config)))
+      (log/raise "Online GC is not compatible with diff-buf; use offline GC (d/gc-storage)."
+                 {:type           :online-gc-incompatible-with-diff-buf
+                  :diff-buf-size  dbs
+                  :remedy         "Set :online-gc {:enabled? false}, or create the database with :diff-buf-size 0, or run d/gc-storage instead."
+                  :config         config})))
+  config)
+
 (defn- normalize-config [cfg]
   ;; :index-config and the store-fixed-record-keys are store-fixed and
   ;; adopted on a fresh connect (adopt-create-time-fixed), so an existing
@@ -280,7 +315,8 @@
                          ;; above) so e.g. a legacy store's non-default branching-factor
                          ;; reaches the node read handlers.
                          [config store stored-db]
-                         (let [config' (adopt-create-time-fixed config (:config stored-db))]
+                         (let [config' (check-online-gc-compatible
+                                        (adopt-create-time-fixed config (:config stored-db)))]
                            (if (= config' config)
                              [config store stored-db]
                              (let [store     (ds/add-cache-and-handlers raw-store config')

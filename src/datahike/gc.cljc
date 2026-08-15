@@ -1,6 +1,5 @@
 (ns datahike.gc
   (:require [clojure.set :as set]
-            [konserve.utils :as ku]
             [datahike.config :as dc]
             [datahike.constants :as c]
             [datahike.datom :as dd]
@@ -11,14 +10,26 @@
             [konserve.core :as k]
             [konserve.gc :refer [sweep!]]
             [replikativ.logging :as log]
-            [superv.async :refer [<? S go-try <<?]]
+            ;; `async+sync` and the superv operators are MACROS: ClojureScript
+            ;; needs :refer-macros for them, while `S` is an ordinary var needing
+            ;; a plain :refer on both. Written as two whole libspecs rather than
+            ;; with a reader conditional on the OPTION key, because
+            ;; `#?(:clj :refer :cljs :refer-macros)` beside a second `:refer`
+            ;; expands to a duplicate `:refer` on the JVM.
+            #?(:clj  [konserve.utils :as ku :refer [async+sync *default-sync-translation*]]
+               :cljs [konserve.utils :as ku
+                      :refer [*default-sync-translation*]
+                      :refer-macros [async+sync]])
+            #?(:clj  [superv.async :refer [<? S go-try <<? go-try- <?-]]
+               :cljs [superv.async :refer [S]
+                      :refer-macros [<? go-try <<? go-try- <?-]])
             ;; go-loop drives start-background-gc!'s scheduler; it's a MACRO, so
             ;; cljs needs it via :require-macros (mirrors datahike.versioning).
             #?(:clj  [clojure.core.async :as async :refer [go-loop]]
                :cljs [clojure.core.async :as async])
             [datahike.schema-cache :as sc])
   #?(:clj  (:import [java.util Date])
-     :cljs (:require-macros [clojure.core.async :refer [go-loop]])))
+     :cljs (:require-macros [clojure.core.async :refer [go-loop go]])))
 
 ;; meta-data does not get passed in macros
 (defn get-time [d]
@@ -74,33 +85,35 @@
                   taevt (set/union (attr-store-refs taevt attr))))
               #{} attrs))))
 
-(defn- reachable-in-branch [store branch after-date config schema-cache]
-  (go-try S
-          (let [head-cid (<? S (k/get-in store [branch :meta :datahike/commit-id]))]
-            (loop [[to-check & r] [branch]
-                   visited        #{}
-                   reachable      #{branch head-cid}
-                   refs           #{}]
-              (if to-check
-                (if (visited to-check) ;; skip
-                  (recur r visited reachable refs)
-                  (if-let [record (<? S (k/get store to-check))]
-                    (let [{:keys                         [eavt-key avet-key aevt-key
-                                                          temporal-eavt-key temporal-avet-key temporal-aevt-key
-                                                          eavt-root aevt-root avet-root
-                                                          temporal-eavt-root temporal-aevt-root temporal-avet-root
-                                                          schema-meta-key secondary-index-keys]
-                           {:keys [datahike/parents
-                                   datahike/created-at
-                                   datahike/updated-at]} :meta}
-                          record
-                          in-range? (> (get-time (or updated-at created-at))
-                                       (get-time after-date))]
-                      (let [sec-reachable (when (seq secondary-index-keys)
-                                            (reduce-kv
-                                             (fn [acc _idx-ident key-map]
-                                               (set/union acc (sec/mark-from-key-map key-map store)))
-                                             #{} secondary-index-keys))
+(defn- reachable-in-branch [store branch after-date config schema-cache opts]
+  (async+sync
+   (:sync? opts) *default-sync-translation*
+   (go-try-
+    (let [head-cid (<?- (k/get-in store [branch :meta :datahike/commit-id] nil opts))]
+      (loop [[to-check & r] [branch]
+             visited        #{}
+             reachable      #{branch head-cid}
+             refs           #{}]
+        (if to-check
+          (if (visited to-check) ;; skip
+            (recur r visited reachable refs)
+            (if-let [record (<?- (k/get store to-check nil opts))]
+              (let [{:keys                         [eavt-key avet-key aevt-key
+                                                    temporal-eavt-key temporal-avet-key temporal-aevt-key
+                                                    eavt-root aevt-root avet-root
+                                                    temporal-eavt-root temporal-aevt-root temporal-avet-root
+                                                    schema-meta-key secondary-index-keys]
+                     {:keys [datahike/parents
+                             datahike/created-at
+                             datahike/updated-at]} :meta}
+                    record
+                    in-range? (> (get-time (or updated-at created-at))
+                                 (get-time after-date))]
+                (let [sec-reachable (when (seq secondary-index-keys)
+                                      (reduce-kv
+                                       (fn [acc _idx-ident key-map]
+                                         (set/union acc (sec/mark-from-key-map key-map store)))
+                                       #{} secondary-index-keys))
                           ;; Stored roots are storage-detached; bind them to
                           ;; this store's storage so -mark can walk the tree.
                           ;; Root fusion: inlined roots aren't separate konserve
@@ -117,29 +130,29 @@
                           ;; datoms, for store-refs) — seeding a second one would
                           ;; duplicate the work and re-open the shared-record hazard
                           ;; above.
-                            bind (fn [idx root]
-                                   (cond-> (with-storage (:index config) idx (:storage store))
-                                     root (-seed-root! root)))
-                            aevt'  (bind aevt-key aevt-root)
-                            taevt' (when (:keep-history? config)
-                                     (bind temporal-aevt-key temporal-aevt-root))
+                      bind (fn [idx root]
+                             (cond-> (with-storage (:index config) idx (:storage store))
+                               root (-seed-root! root)))
+                      aevt'  (bind aevt-key aevt-root)
+                      taevt' (when (:keep-history? config)
+                               (bind temporal-aevt-key temporal-aevt-root))
                             ;; The schema names which attributes can hold store-refs.
                             ;; It is content-addressed and rarely changes, so memoize
                             ;; it across the whole collection rather than re-reading
                             ;; it for every commit in the window.
-                            schema-meta (when schema-meta-key
-                                          (if-let [cached (get @schema-cache schema-meta-key)]
-                                            cached
-                                            (let [sm (<? S (k/get store schema-meta-key))]
-                                              (swap! schema-cache assoc schema-meta-key sm)
-                                              sm)))
+                      schema-meta (when schema-meta-key
+                                    (if-let [cached (get @schema-cache schema-meta-key)]
+                                      cached
+                                      (let [sm (<?- (k/get store schema-meta-key nil opts))]
+                                        (swap! schema-cache assoc schema-meta-key sm)
+                                        sm)))
                             ;; Mirror stored->db's schema fallback so gc reads the
                             ;; schema exactly as the db reconstructs it. This does NOT
                             ;; guard store-refs: `(:schema record)` is non-nil only for
                             ;; old inline-schema databases, which predate
                             ;; :db.type/store-ref and so declare no key-bearing
                             ;; attribute (store-refs → #{} regardless).
-                            schema (or (:schema schema-meta) (:schema record))
+                      schema (or (:schema schema-meta) (:schema record))
                             ;; Kept SEPARATE from the node addresses, not folded in.
                             ;; A store-ref names an object; it does NOT say where the
                             ;; bytes live. If they are in this konserve store, the
@@ -149,32 +162,32 @@
                             ;; can do nothing with them, but `reachable-store-refs`
                             ;; hands the set to the application, which knows how to
                             ;; delete from wherever it put them.
-                            record-refs (if schema
-                                          (store-refs config schema
-                                                      (:ident-ref-map schema-meta) aevt' taevt')
-                                          #{})
-                            new-reachable (cond-> (set/union reachable #{to-check}
-                                                             (when schema-meta-key #{schema-meta-key})
-                                                             (-mark (bind eavt-key eavt-root))
-                                                             (-mark aevt')
-                                                             (-mark (bind avet-key avet-root)))
-                                            (:keep-history? config)
-                                            (set/union (-mark (bind temporal-eavt-key temporal-eavt-root))
-                                                       (-mark taevt')
-                                                       (-mark (bind temporal-avet-key temporal-avet-root)))
-                                            sec-reachable
-                                            (set/union sec-reachable))]
-                        (recur (concat r (when in-range? parents))
-                               (conj visited to-check)
-                               new-reachable
-                               (set/union refs record-refs))))
+                      record-refs (if schema
+                                    (store-refs config schema
+                                                (:ident-ref-map schema-meta) aevt' taevt')
+                                    #{})
+                      new-reachable (cond-> (set/union reachable #{to-check}
+                                                       (when schema-meta-key #{schema-meta-key})
+                                                       (-mark (bind eavt-key eavt-root))
+                                                       (-mark aevt')
+                                                       (-mark (bind avet-key avet-root)))
+                                      (:keep-history? config)
+                                      (set/union (-mark (bind temporal-eavt-key temporal-eavt-root))
+                                                 (-mark taevt')
+                                                 (-mark (bind temporal-avet-key temporal-avet-root)))
+                                      sec-reachable
+                                      (set/union sec-reachable))]
+                  (recur (concat r (when in-range? parents))
+                         (conj visited to-check)
+                         new-reachable
+                         (set/union refs record-refs))))
                     ;; Record absent: already swept by an earlier pass with a
                     ;; narrower window, or the store runs :commit-graph? false
                     ;; and never persisted it. Lineage ends here — nothing to
                     ;; mark. (Without this guard the nil destructure NPEs at
                     ;; get-time.)
-                    (recur r (conj visited to-check) reachable refs)))
-                {:reachable reachable :store-refs refs})))))
+              (recur r (conj visited to-check) reachable refs)))
+          {:reachable reachable :store-refs refs}))))))
 
 (defn gc-storage!
   "Invokes garbage collection on the database by whitelisting currently known branches.
@@ -239,8 +252,14 @@
                  ;; shared across branches: the schema is content-addressed, so
                  ;; every commit that did not change it names the SAME object
                  schema-cache (atom {})
+                 ;; `{:sync? false}` explicitly: `reachable-in-branch` is
+                 ;; `async+sync` now, and `gc-storage!` is an async-only `go-try`,
+                 ;; so it takes the channel branch. Passing opts is not optional —
+                 ;; omitting it called a 6-arg function with 5 and broke the
+                 ;; collector, which is how `background-gc-test` started hanging.
                  walked (->> branches
-                             (map #(reachable-in-branch store % remove-before config schema-cache))
+                             (map #(reachable-in-branch store % remove-before config
+                                                        schema-cache {:sync? false}))
                              async/merge
                              (<<? S))
                  ;; Store-refs are unioned into the whitelist here. For an object that
@@ -288,17 +307,34 @@
 
    Retention comes for free: pass `remove-before` and objects named only by commits
    older than it drop out of the set, exactly as index nodes do."
-  ([db] (reachable-store-refs db (#?(:clj Date. :cljs js/Date.) 0)))
-  ([db remove-before]
-   (go-try S
-           (let [{:keys [config store]} db
-                 branches (<? S (k/get store :branches))
-                 schema-cache (atom {})
-                 walked (->> branches
-                             (map #(reachable-in-branch store % remove-before config schema-cache))
-                             async/merge
-                             (<<? S))]
-             (apply set/union (map :store-refs walked))))))
+  ([db] (reachable-store-refs db (#?(:clj Date. :cljs js/Date.) 0) {:sync? false}))
+  ([db remove-before] (reachable-store-refs db remove-before {:sync? false}))
+  ([db remove-before opts]
+   ;; `async+sync` so a caller that is ITSELF synchronous — `migrate`'s blob
+   ;; export, which has to run on both platforms — can take the value directly
+   ;; instead of blocking on a channel. The 1- and 2-arities keep the async
+   ;; default, so every existing caller is unaffected.
+   ;;
+   ;; The branch walks are SEQUENTIAL now, where they used to fan out through
+   ;; `async/merge`. One shape has to serve both modes and a channel merge has no
+   ;; synchronous counterpart; the result is identical, and the concurrency was
+   ;; across BRANCHES, of which a database normally has one. If a many-branch
+   ;; collection ever measures slow, the fan-out belongs in the async branch
+   ;; explicitly rather than as an accident of how this was first written.
+   (async+sync
+    (:sync? opts) *default-sync-translation*
+    (go-try-
+     (let [{:keys [config store]} db
+           branches (<?- (k/get store :branches nil opts))
+           schema-cache (atom {})]
+       (loop [bs (seq branches) acc #{}]
+         (if (nil? bs)
+           acc
+           (recur (next bs)
+                  (set/union acc
+                             (:store-refs (<?- (reachable-in-branch
+                                                store (first bs) remove-before
+                                                config schema-cache opts))))))))))))
 
 (defn record-store-refs
   "The store-ref blob keys named by the datom VALUES in a SINGLE stored-db record —

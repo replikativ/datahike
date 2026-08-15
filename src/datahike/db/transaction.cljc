@@ -16,7 +16,6 @@
    [replikativ.logging :as log]
    [datahike.schema :as ds]
    [datahike.index.secondary :as sec]
-   [hasch.core :as hasch]
    [org.replikativ.persistent-sorted-set.arrays :as arrays])
   #?(:cljs (:require-macros [datahike.datom :refer [datom]]))
   #?(:clj (:import [clojure.lang ExceptionInfo]
@@ -345,7 +344,22 @@
    the original asserting tx's id, but vt-aware adapters need the
    writing tx's meta to close `_valid_to` correctly."
   [db ^Datom _datom]
-  (meta-for-tx-id db (inc (long (:max-tx db)))))
+  (let [m (meta-for-tx-id db (inc (long (:max-tx db))))]
+    ;; `:db/txInstant` is a datom ON the tx entity, and the in-progress tx's
+    ;; entity is not in EAVT yet when a data datom is being applied — so the
+    ;; seek above finds nothing and a vt-aware adapter received no instant at
+    ;; all. Measured downstream in the stratum index: every row stamped
+    ;; `_valid_from 0` AND `_valid_to 0`, a zero-width window, so a superseded
+    ;; generation was valid at no instant and `FOR VALID_TIME AS OF t` could
+    ;; never see it. The system axis was unaffected because it reads a clock.
+    ;;
+    ;; The fallback is that same clock — the one `:db/txInstant` is itself
+    ;; derived from — so the stamp is the writing moment rather than the
+    ;; instant the tx entity will record. They differ by the transaction's own
+    ;; duration, which is the accuracy a secondary index can have while the tx
+    ;; that would tell it exactly is still running.
+    (cond-> m
+      (nil? (:db/txInstant m)) (assoc :db/txInstant (get-date)))))
 
 (defn- update-secondary-indices
   "Update all secondary indices that cover the given attribute.
@@ -383,12 +397,47 @@
                  db sec-idx-map))
        db))))
 
-(defn secondary-only-hash
-  "Content hash (string) of `v`, via hasch — the value the primary indexes hold
-   for a `:db.secondary/only` attribute. Deterministic, so retraction re-hashes
-   to find the stored datom and identical values dedup."
-  [v]
-  (str (hasch/uuid v)))
+(def secondary-only-hash
+  "See `datahike.index.secondary/secondary-only-hash`. Kept here as an alias
+   because this is where callers look for it and the transactor is its busiest
+   user; the definition moved because EXPORT needs the same hash to check what a
+   secondary index hands back, and a second spelling of it would be a second
+   opinion about what the primary holds."
+  sec/secondary-only-hash)
+
+(defn- assert-secondary-only-storable!
+  "Refuse a `:db.secondary/only` datom the covering index cannot store as its
+   own value.
+
+   The primary indexes keep only `secondary-only-hash`, so the secondary index
+   IS the storage. Most of them answer per ENTITY — stratum is columnar with one
+   cell per `[eid column]`, proximum is keyed by external id — and for those a
+   second value under the same `[eid attr]` overwrites the first at WRITE time.
+   Nothing said so: the transaction succeeded, the entity kept one of its
+   values, and the loss surfaced later as a backup that could not name which
+   value a datom meant.
+
+   So cardinality-many is allowed only where an index declares
+   `ISecondaryHashAddressable`, which is the claim that it stores values one per
+   datom and can find one by its content hash. Refused at the first such write,
+   next to the uncovered check, because that is the moment a value would be
+   lost and the last moment the caller can still do something about it —
+   declaring the schema alone loses nothing.
+
+   Costs a rschema lookup on a path that already does several, and only for
+   `:db.secondary/only` attributes."
+  [db a-ident datom sec-idx-idents]
+  (when (dbu/multival? db a-ident)
+    (let [idxs (keep #(get (:secondary-indices db) %) sec-idx-idents)]
+      (when-not (some sec/hash-addressable? idxs)
+        (log/raise "Attribute " a-ident " is :db.secondary/only AND :db.cardinality/many, but no "
+                   "index covering it can store more than one value per entity — the second value "
+                   "would overwrite the first and be lost silently. An index that stores values "
+                   "per datom can declare this by implementing ISecondaryHashAddressable."
+                   {:error :transact/secondary-only-multival-unstorable
+                    :attribute a-ident
+                    :datom datom
+                    :index-idents (vec sec-idx-idents)})))))
 
 (defn- project-primary
   "For an *added* `:db.secondary/only` datom, a copy with its value replaced by
@@ -417,6 +466,8 @@
     (when (and secondary-only? (datom-added datom) (not has-secondary?))
       (log/raise "Attribute " a-ident " is :db.secondary/only but no secondary index covers it — its value would be lost"
                  {:error :transact/secondary-only-uncovered :attribute a-ident :datom datom}))
+    (when (and secondary-only? (datom-added datom) has-secondary?)
+      (assert-secondary-only-storable! db a-ident datom (get-in db [:rschema :db.secondary/index a-ident])))
     (if (datom-added datom)
       (cond-> db
         true (update-in [:eavt] #(di/-insert % prim :eavt op-count))
@@ -531,6 +582,8 @@
      (when (and secondary-only? (not has-secondary?))
        (log/raise "Attribute " a-ident " is :db.secondary/only but no secondary index covers it — its value would be lost"
                   {:error :transact/secondary-only-uncovered :attribute a-ident :datom datom}))
+     (when (and secondary-only? has-secondary?)
+       (assert-secondary-only-storable! db a-ident datom (get-in db [:rschema :db.secondary/index a-ident])))
      (cond-> db
             ;; Optimistic removal of the schema entry (because we don't know whether it is already present or not)
        schema? (try
@@ -611,6 +664,36 @@
   (boolean
    (some #(get-in db [:schema % :db.secondary/config :valid-time])
          (get-in db [:rschema :db.secondary/index a-ident]))))
+
+(defn- migrated-eid
+  "The target eid for source eid `e`, or nil.
+
+   `:eids` is normally a MAP built up as the import goes. It may instead be a
+   FUNCTION, which is what lets an import state its id policy up front — offset
+   by a constant, or preserve source ids — without materialising an entry per
+   entity. That map is O(entities) and is what `estimate-import-memory` warns
+   about; a function is O(1).
+
+   `:tids` is consulted first and is always a map. Transaction entities are
+   allocated by the tx branch and aliased into `:eids`, so a lookup has to see
+   that allocation rather than route a tx entity through the caller's entity
+   policy.
+
+   Safe with a function because `max-eid` does not depend on this: `with-datom`
+   and `with-datom-upsert` advance it from the datom's own `e`, whatever chose
+   that `e`."
+  [migration-state e]
+  (or (get (:tids migration-state) e)
+      (let [m (:eids migration-state)]
+        (if (fn? m) (m e) (get m e)))))
+
+(defn- remember-eid
+  "Record source eid `e` -> `new-e`, unless `:eids` is a function — a total
+   function has nothing to memoise, and assoc-ing into it would fail."
+  [migration-state e new-e]
+  (if (fn? (:eids migration-state))
+    migration-state
+    (assoc-in migration-state [:eids e] new-e)))
 
 (defn- transact-report
   ([report datom] (transact-report report datom false))
@@ -913,7 +996,14 @@
     ;; matched on the content hash the primary index actually stores.
     (let [prim ^Datom (project-primary (dbu/secondary-only? db a-ident) new-datom)
           pv (.-v prim)
-          old ^Datom (if upsert?
+          ;; `^Datom old`, NOT `old ^Datom (if …)`. Metadata on the VALUE form
+          ;; hints the `if` expression and never reaches the local, so both
+          ;; `(.-v old)` sites below compiled to REFLECTIVE field access. That
+          ;; works on the JVM and fails in a native image, where there is no
+          ;; reflection metadata for the field: `No matching field found: v for
+          ;; class datahike.datom.Datom`, which is what has been failing the
+          ;; native bb-pod tests on main.
+          ^Datom old (if upsert?
                        (current-datom-for-ea db e a)
                        (first (di/-slice (:eavt db)
                                          (dd/datom e a pv tx0)
@@ -1695,16 +1785,48 @@
           (log/raise "Bad entity type at " entity ", expected map or vector"
                      {:error :transact/syntax, :tx-data entity}))))))
 
-(defn transact-entities-directly [initial-report initial-es]
+(defn transact-entities-directly
+  "Load `initial-es` (raw `[e a v t op]` records) into `(:db-after
+   initial-report)`, remapping source ids to target ones.
+
+   The id mapping goes IN as `:migration` on the report and comes OUT the same
+   way — it is NOT stored on the database value. An import is many calls and a
+   ref in a late batch may name an entity first seen in an early one, so the
+   mapping has to survive between calls; it used to do that by riding on the db,
+   which is the only thing the writer loop threads forward.
+
+   That was the wrong home and cost three bugs. A db value has two holders — the
+   connection atom and the writer's own loop — so neither is authoritative, and
+   `swap!`ing the connection to seed or clear the mapping never reached the
+   transactor. It also put O(entities) of import bookkeeping inside a value that
+   means \"the database\", which is why clearing it seemed to need a separate
+   finalization step at all. (`datahike.migrate/finalize-import!` and its
+   `:finalize?` option existed for that and have been removed: the map goes in
+   and comes out on the REPORT, never on `db-after`, so the step had nothing to
+   clear even before this changed.)
+
+   Now the caller owns it: pass the previous call's `:migration` back in, and
+   the map goes out of scope when the import ends."
+  [initial-report initial-es]
   (loop [report (update initial-report :db-after transient)
          es initial-es
-         migration-state (get-in initial-report [:db-before :migration] {})]
+         migration-state (or (:migration initial-report) {})]
     (if (empty? es)
+      ;; NO `max-tx` bump here. One call is one BATCH, not one transaction, and
+      ;; the per-transaction bump below (the `:tids` miss branch) has already
+      ;; advanced `max-tx` past every id this call allocated.
+      ;;
+      ;; Bumping per call made the result depend on `:batch-size`: each batch
+      ;; boundary skipped an id, so the same dump imported at `:batch-size 5`
+      ;; and at one batch produced datoms whose `tx` components differed —
+      ;; measured at 240 of 253 on a six-transaction fixture — and `as-of`,
+      ;; `since`, `tx-range` and `diff` all read that. It also left `max-tx`
+      ;; pointing at an id NO datom uses, a hole a transacted database never
+      ;; has. Dropping it restores that invariant and makes a restore
+      ;; `max-tx`-identical to its source, which is what the index-build path
+      ;; already produced.
       (-> report
-          (update-in [:db-after :max-tx] inc)
-          (update-in [:db-after :migration] #(if %
-                                               (merge % migration-state)
-                                               migration-state))
+          (assoc :migration migration-state)
           (update :db-after persistent!)
           (update :db-after finalize-secondary-indices))
       (let [[entity & entities] es
@@ -1736,25 +1858,25 @@
                    entities
                    (-> migration-state
                        (assoc-in [:tids e] new-e)
-                       (assoc-in [:eids e] new-e))))
+                       (remember-eid e new-e))))
 
           ;; tx not added yet
           (nil? (get-in migration-state [:tids t]))
           (recur (update-in report [:db-after :max-tx] inc) es (assoc-in migration-state [:tids t] max-tid))
 
           ;; ref not added yet
-          (and (dbu/ref? db a) (nil? (get-in migration-state [:eids v])))
-          (recur (allocate-eid report max-eid) es (assoc-in migration-state [:eids v] max-eid))
+          (and (dbu/ref? db a) (nil? (migrated-eid migration-state v)))
+          (recur (allocate-eid report max-eid) es (remember-eid migration-state v max-eid))
 
           :else
           (let [new-datom ^Datom (dd/datom
-                                  (or (get-in migration-state [:eids e]) max-eid)
+                                  (or (migrated-eid migration-state e) max-eid)
                                   a
                                   (if (dbu/ref? db a)
-                                    (get-in migration-state [:eids v])
+                                    (migrated-eid migration-state v)
                                     v)
                                   (get-in migration-state [:tids t])
                                   op)
                 upsert? (and (not (dbu/multival? db a-ident))
                              op)]
-            (recur (transact-report report new-datom upsert?) entities (assoc-in migration-state [:eids e] (.-e new-datom)))))))))
+            (recur (transact-report report new-datom upsert?) entities (remember-eid migration-state e (.-e new-datom)))))))))
