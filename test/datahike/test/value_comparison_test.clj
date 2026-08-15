@@ -1,4 +1,4 @@
-(ns datahike.test.nested-array-value-test
+(ns datahike.test.value-comparison-test
   "`:db.type/tuple` whose `:db/tupleTypes` names an array type.
 
    `compare-value` special-cased byte/float/double arrays only where the VALUE
@@ -135,3 +135,112 @@
         (is (every? (fn [[a b]] (not (pos? (dd/compare-value a b))))
                     (partition 2 1 sorted))
             "the sorted sequence is non-decreasing under the comparator")))))
+
+;; ---------------------------------------------------------------------------
+;; Values with no order of their own.
+;;
+;; DataScript settles these with `(int-compare (ihash x) (ihash y))` and has for
+;; years — `value-compare` in `datascript.db`. datahike inherited the shape of
+;; that function but not its last two arms, so where DataScript ranks two
+;; incomparable values, datahike compared CLASS NAMES: equal for two values of
+;; one type, hence 0, hence one datom where the user wrote four.
+
+(defn- many-conn
+  "Schema-on-read, with `:obj` DECLARED cardinality-many.
+
+   The declaration matters and is easy to get wrong: without it the attribute is
+   cardinality-ONE, so four values legitimately become one datom and a test that
+   omits it measures nothing. A first version of this measurement did exactly
+   that and reported data loss for `:db.type/long`."
+  []
+  (let [cfg {:store {:backend :memory :id (java.util.UUID/randomUUID)}
+             :keep-history? false :schema-flexibility :read}]
+    (d/create-database cfg)
+    (let [c (d/connect cfg)]
+      (d/transact c [{:db/ident :obj :db/cardinality :db.cardinality/many}])
+      c)))
+
+(defn- stored [vals]
+  (let [c (many-conn)]
+    (try
+      (d/transact c [{:db/id 100 :obj vals}])
+      (count (d/datoms @c {:index :eavt :components [100 :obj]}))
+      (finally (d/release c)))))
+
+(deftest values-without-an-order-are-ranked-not-merged
+  (testing "each of these stored ONE datom before: the comparator had no answer
+            and said 0, which a sorted set reads as a duplicate."
+    (is (= 4 (stored [{:a 1} {:b 2} {:c 3} {:d 4}])) "maps")
+    (is (= 4 (stored [#{1} #{2} #{3} #{4}])) "sets")
+    (is (= 4 (stored (vec (repeatedly 4 #(Object.))))) "opaque java objects")
+    (is (= 4 (stored (vec (map atom (range 4))))) "atoms — an in-memory cache of
+                                                   mutable cells is a real use
+                                                   for schema-on-read + :memory")
+
+    (testing "and mixed types in one attribute, which schema-on-read permits.
+              `(compare 1 \"x\")` throws, and only `cmp-nil` caught it — so the
+              same pair ordered fine through a slice and crashed through
+              `cmp-datoms-avet-quick`."
+      (is (= 4 (stored [1 "x" :k {:a 1}]))))
+
+    (testing "controls: types that always worked must be unaffected"
+      (is (= 4 (stored [1 2 3 4])))
+      (is (= 4 (stored ["a" "b" "c" "d"]))))))
+
+(deftest equality-is-decided-by-equality-never-by-a-hash
+  (testing "the property that keeps value semantics intact. `a=` answers before
+            the hash is consulted, so the hash only RANKS values already known
+            to be unequal — it never decides that two things are the same."
+    (is (= 2 (stored [{:a 1} {:b 2} {:a 1} {:b 2}]))
+        "four values, two distinct: equal maps still deduplicate")
+    (is (zero? (dd/compare-value {:a 1} {:a 1})) "distinct but equal maps")
+    (is (zero? (dd/compare-value #{1 2} #{2 1})) "sets ignore insertion order")
+    (is (not (zero? (dd/compare-value {:a 1} {:b 2}))))
+
+    (testing "an opaque object is equal to itself and ordered against another"
+      (let [a (Object.) b (Object.)]
+        (is (zero? (dd/compare-value a a)))
+        (is (not (zero? (dd/compare-value a b))))))
+
+    (testing "different types are ordered by type name — a tie-break that is
+              only valid BECAUSE the types differ"
+      (is (not (zero? (dd/compare-value {:a 1} 5))))
+      (is (= (- (dd/compare-value {:a 1} 5)) (dd/compare-value 5 {:a 1}))))))
+
+(deftest a-hash-collision-refuses-rather-than-dropping-a-value
+  (testing "32 bits collide somewhere in a few tens of thousands of values, and
+            returning 0 there would silently drop one — the bug this whole
+            change removes. DataScript accepts that residual; we make it loud.
+
+            Forced with two objects whose `hash` is equal by construction but
+            which are not `=`."
+    (let [fixed (fn [] (reify Object (hashCode [_] 42)))
+          a (fixed) b (fixed)]
+      (is (= 42 (hash a) (hash b)) "precondition: the hashes really do collide")
+      (is (not (= a b)) "and the values really are distinct")
+      (is (zero? (dd/compare-value a a)) "self is still equal")
+      (is (= :datahike/incomparable-values
+             (try (dd/compare-value a b) ::no-throw
+                  (catch clojure.lang.ExceptionInfo e (:error (ex-data e)))))
+          "distinct values with colliding hashes are refused, not merged"))))
+
+(deftest a-nil-inside-a-tuple-sorts-first
+  (testing "not a defensive edge case: a COMPOSITE tuple is nil-padded when its
+            components are missing, so nil inside a vector is ordinary. `compare`
+            used to absorb it — nil sorts before everything — and routing
+            elements through `compare-value` instead reached `class-order`,
+            where `(class nil)` is nil and `class-name` threw a
+            NullPointerException. `tuples-test` caught it; these pin it.
+
+            Nil-first is what `compare` already did, so the order does not move."
+    (is (neg? (dd/compare-value [nil "b"] ["a" "b"])) "nil before a value")
+    (is (pos? (dd/compare-value ["a" "b"] [nil "b"])))
+    (is (zero? (dd/compare-value [nil "b"] [nil "b"])) "nil equals nil")
+    (is (zero? (dd/compare-value [nil nil] [nil nil])))
+    (is (neg? (dd/compare-value [nil nil] [nil "b"])))
+    (is (= (- (dd/compare-value [nil 1] [2 1])) (dd/compare-value [2 1] [nil 1]))
+        "antisymmetric across the nil boundary")
+
+    (testing "and it agrees with what plain `compare` answered before"
+      (is (= (compare [nil "b"] ["a" "b"]) (dd/compare-value [nil "b"] ["a" "b"])))
+      (is (= (compare ["a" nil] ["a" "b"]) (dd/compare-value ["a" nil] ["a" "b"]))))))

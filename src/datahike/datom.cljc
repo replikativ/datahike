@@ -255,9 +255,85 @@
      :clj
      (.compareTo ^Comparable a1 a2)))
 
-(defn- class-name [x]
-  #?(:clj (.getName (class x))
-     :cljs (type x)))
+(defn- class-name
+  "A STRING naming the type, on both platforms.
+
+   The cljs branch used to return `(type x)` — a constructor object — and the
+   only caller compared two of them with `compare`, which throws on cljs for
+   anything that is not a number, string, array or boolean. So the fallback that
+   exists to keep the order total was itself an exception there."
+  [x]
+  #?(:clj (when (some? x) (.getName (class x)))
+     :cljs (when (some? x) (str (type x)))))
+
+(defn- class-identical? [a b]
+  #?(:clj (identical? (class a) (class b))
+     :cljs (identical? (type a) (type b))))
+
+(defn- class-order
+  "Order two values of DIFFERENT types by type name.
+
+   A tie-break, not a judgement: it exists so that an attribute holding both a
+   long and a string still has a total order. It is only correct BECAUSE the
+   types differ — for two values of the same type it returns 0, which a sorted
+   set reads as \"the same datom\". That is what `safe-compare` did for every
+   incomparable pair, and it is why a card-many attribute holding four maps
+   stored one."
+  [a b]
+  (compare (class-name a) (class-name b)))
+
+(defn- hash-order
+  "Order two values of the same type that have no order of their own.
+
+   DataScript settles this with `(int-compare (ihash x) (ihash y))` and has for
+   years; this is the same idea with the collision made loud. The hash never
+   decides EQUALITY — `a=` has already answered that — so this only ranks values
+   already known to be unequal, and value semantics are preserved: equal values
+   compare 0 through `a=`, never through a hash.
+
+   What a hash cannot do is separate two unequal values that happen to share one.
+   32 bits means a collision is near-certain somewhere in a few tens of thousands
+   of values, and returning 0 there would silently drop one — the exact bug this
+   whole change exists to remove. So a collision throws instead. It is
+   astronomically rare per pair, and when it happens the caller learns rather
+   than loses data."
+  [a b]
+  (let [ha (hash a) hb (hash b)]
+    (cond
+      (< ha hb) -1
+      (> ha hb) 1
+      :else
+      (throw (ex-info (str "Cannot order two distinct values of type "
+                           (class-name a) ": they are not comparable and their "
+                           "hashes collide. Give this attribute a comparable "
+                           ":db/valueType.")
+                      {:error :datahike/incomparable-values
+                       :type (class-name a)
+                       :hash ha})))))
+
+(defn- comparable?
+  "Does this value carry its own order — i.e. will `compare` answer for it?
+
+   The cljs arm is NOT just `satisfies? IComparable`, and getting that wrong is
+   expensive. `cljs.core/compare` handles numbers BEFORE the protocol check and
+   strings, booleans and arrays after it, so none of those satisfy `IComparable`
+   — a JS number is a primitive, not a type that can extend a protocol. Asking
+   only the protocol therefore answered FALSE for every number and string, which
+   sent them to `hash-order` and ordered the indices by HASH. The Node suite
+   showed it as updates that appeared not to take effect (an `as-of` read
+   returning the pre-update value): 111 failures.
+
+   So this mirrors `cljs.core/compare`'s own capability set, which is also what
+   DataScript's `value-compare` does with its explicit
+   `(or (number? x) (string? x) (array? x) (true? x) (false? x))` arm."
+  [x]
+  #?(:clj (instance? Comparable x)
+     :cljs (or (number? x)
+               (string? x)
+               (true? x)
+               (false? x)
+               (array? x)
+               (satisfies? IComparable x))))
 
 (declare compare-value)
 
@@ -267,7 +343,15 @@
    Deliberately the same shape as `clojure.lang.APersistentVector.compareTo`:
    SHORTER FIRST, then element by element. Matching it is the point — a plain
    vector of Comparables must sort exactly where it always did, because any
-   change here reorders live indices."
+   change here reorders live indices.
+
+   NIL ELEMENTS are handled here rather than left to `compare-value`, and that
+   is not defensive coding: a COMPOSITE tuple is nil-padded when its components
+   are missing, so a nil inside a vector is ordinary rather than exotic.
+   `compare` used to absorb them (nil sorts before everything); routing them
+   through `compare-value` instead reached `class-order`, and `(class nil)` is
+   nil, so `tuples-test` died with a NullPointerException out of `class-name`.
+   Nil-first preserves what `compare` did, so the order does not move."
   [a b]
   (let [ca (count a) cb (count b)]
     (cond
@@ -276,7 +360,13 @@
       :else (loop [xs (seq a) ys (seq b)]
               (if (nil? xs)
                 0
-                (let [c (compare-value (first xs) (first ys))]
+                (let [x (first xs)
+                      y (first ys)
+                      c (cond
+                          (and (nil? x) (nil? y)) 0
+                          (nil? x) -1
+                          (nil? y) 1
+                          :else (compare-value x y))]
                   (if (zero? c)
                     (recur (next xs) (next ys))
                     c)))))))
@@ -313,48 +403,100 @@
    Only values that CONTAIN an array change order; anything already Comparable
    takes the same path it always did, so existing indices do not move."
   [v1 v2]
-  #?(:clj (cond
-            (and (da/value-array? v1) (da/value-array? v2))
-            (da/compare-arrays v1 v2)
+  #?(:clj (try
+            (cond
+              (and (da/value-array? v1) (da/value-array? v2))
+              (da/compare-arrays v1 v2)
 
             ;; Checked AFTER the array case and before `compare`, so a scalar —
             ;; every value in an ordinary database — reaches `compare` having
             ;; paid one extra predicate.
-            (and (sequential? v1) (sequential? v2))
-            (compare-sequential v1 v2)
+              (and (sequential? v1) (sequential? v2))
+              (compare-sequential v1 v2)
 
-            :else (compare v1 v2))
+            ;; Carries its own order: the ordinary case, and the only one an
+            ;; ordinary database ever reaches. `compare` can still throw here
+            ;; when the two are Comparable but of DIFFERENT types (a long
+            ;; against a string, under `:schema-flexibility :read`) — the catch
+            ;; below settles that by type name.
+              (comparable? v1) (compare v1 v2)
+
+              ;; No order of its own. Checked BEFORE the hash so that equality is
+              ;; decided by `a=` and never by a hash — which is what keeps value
+              ;; semantics intact.
+              (da/a= v1 v2) 0
+              (not (class-identical? v1 v2)) (class-order v1 v2)
+              :else (hash-order v1 v2))
+            ;; Two Comparables of DIFFERENT types — a long against a string in
+            ;; one attribute, which `:schema-flexibility :read` permits.
+            ;; `(compare 1 "x")` throws, and only `cmp-nil` used to catch it, so
+            ;; the same pair ordered fine through a slice and crashed through
+            ;; `cmp-datoms-avet-quick`. Settled here so every caller agrees.
+            ;; A hash collision from `hash-order` is an ex-info, not a
+            ;; ClassCastException, so it passes through untouched.
+            (catch ClassCastException e
+              (if (class-identical? v1 v2)
+                (throw e)
+                (class-order v1 v2))))
      :cljs
-     (cond
-       (and (uuid? v1) (uuid? v2))
+     (try
+       (cond
+         (and (uuid? v1) (uuid? v2))
        ;; Match Java's signed UUID comparison where MSB is treated as signed
        ;; In signed comparison: 0x8... is negative, so 0x8... < 0x0...
-       (let [s1 (.-uuid ^cljs.core/UUID v1)
-             s2 (.-uuid ^cljs.core/UUID v2)
-             c1 (.charCodeAt s1 0)
-             c2 (.charCodeAt s2 0)
+         (let [s1 (.-uuid ^cljs.core/UUID v1)
+               s2 (.-uuid ^cljs.core/UUID v2)
+               c1 (.charCodeAt s1 0)
+               c2 (.charCodeAt s2 0)
              ;; charCode 56 = "8", chars 8-F are "negative" in signed
-             neg1 (>= c1 56)
-             neg2 (>= c2 56)]
-         (cond
-           (and neg1 (not neg2)) -1  ;; v1 "negative", v2 "positive" → v1 < v2
-           (and neg2 (not neg1)) 1   ;; v2 "negative", v1 "positive" → v1 > v2
-           :else (compare s1 s2)))   ;; same sign → string compare works
+               neg1 (>= c1 56)
+               neg2 (>= c2 56)]
+           (cond
+             (and neg1 (not neg2)) -1  ;; v1 "negative", v2 "positive" → v1 < v2
+             (and neg2 (not neg1)) 1   ;; v2 "negative", v1 "positive" → v1 > v2
+             :else (compare s1 s2)))   ;; same sign → string compare works
 
-       (and (da/value-array? v1) (da/value-array? v2))
-       (da/compare-arrays v1 v2)
+         (and (da/value-array? v1) (da/value-array? v2))
+         (da/compare-arrays v1 v2)
 
-       (and (sequential? v1) (sequential? v2))
-       (compare-sequential v1 v2)
+         (and (sequential? v1) (sequential? v2))
+         (compare-sequential v1 v2)
 
-       :else (compare v1 v2))))
+         (comparable? v1) (compare v1 v2)
 
-(defn- safe-compare [a b]
+         (da/a= v1 v2) 0
+         (not (class-identical? v1 v2)) (class-order v1 v2)
+         :else (hash-order v1 v2))
+       (catch :default e
+         ;; cljs has no ClassCastException, so this catch is broad — which is
+         ;; why the class check comes first: a hash collision has identical
+         ;; classes and rethrows, and only a genuine cross-type comparison is
+         ;; settled by name.
+         (if (class-identical? v1 v2)
+           (throw e)
+           (class-order v1 v2))))))
+
+(defn- safe-compare
+  "`compare-value`, with the last resort for two values of DIFFERENT types.
+
+   This used to catch everything and answer with `class-order` unconditionally —
+   which is right when the types differ and catastrophic when they do not, since
+   two values of one type get 0 and a sorted set reads 0 as \"already present\".
+   That is how a card-many attribute holding four maps stored one, and why the
+   same root cause showed up as a crash in the `*-quick` comparators (no catch)
+   and as silent deduplication here.
+
+   `compare-value` now settles same-type values itself, so the only thing that
+   should still reach this catch is a pair of mutually-incomparable types — and
+   if the types are in fact identical, we have no answer and must not invent
+   one, so it rethrows."
+  [a b]
   (try
     (compare-value a b)
-    (catch #?(:clj Exception :cljs js/Error) _e
-      (compare (class-name a)
-               (class-name b)))))
+    (catch #?(:clj Exception :cljs js/Error) e
+      (if (class-identical? a b)
+        (throw e)
+        (class-order a b)))))
 
 (defn cmp-nil [o1 o2]
   (if (nil? o1) nil
