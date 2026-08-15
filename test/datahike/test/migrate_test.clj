@@ -1122,6 +1122,59 @@
 
       (teardown src))))
 
+(deftest deleting-any-integrity-key-is-refused
+  (testing "the shape of bug this file has now seen twice: a key is absent, the
+            `when` that reads it yields nil, `(not (false? nil))` is true, and
+            the guard silently evaporates. It happened to `:semantic-digest` and
+            then, one commit later, to the `:stats` check added to replace it.
+
+            So this asserts the PROPERTY rather than the two instances. Every
+            key that carries integrity information must fail closed when
+            deleted, on BOTH media — the store cannot list itself to notice
+            missing data (`konserve.core/keys` is store-wide), so a manifest
+            edit is all a forgery costs there.
+
+            Descriptive keys are deliberately not in this set: `:schema`,
+            `:history?`, `:requires`, `:source-config`, `:system-idents`,
+            `:serialization` and `:datahike/meta` describe what the dump MEANS,
+            not whether its bytes are what was written, and a dump missing one
+            is degraded rather than corrupt."
+    (let [src (utils/setup-db (mem-cfg {:history? false}))]
+      (d/transact src [{:db/ident :name :db/valueType :db.type/string
+                        :db/cardinality :db.cardinality/one}])
+      (d/transact src (vec (for [i (range 60)] {:name (str "p" i)})))
+      (let [integrity-keys [:chunks :semantic-digest :stats :compression
+                            :datahike.migrate/format-version]]
+
+        (testing "filesystem. Exported with the DEFAULT compression, not
+                  `:none`: an absent `:compression` reads as `:none`, so
+                  deleting the key from an uncompressed dump is a no-op and the
+                  assertion would be vacuous. It is a real edit only when the
+                  bytes on disk actually are gzip."
+          (doseq [kk integrity-keys]
+            (let [path (str (System/getProperty "java.io.tmpdir") "/dh-ik-" (utils/get-time))
+                  _ (m/export-db @src path {:chunk-size 20})
+                  mpath (str path "/manifest.edn")
+                  _ (spit mpath (pr-str (dissoc (edn/read-string (slurp mpath)) kk)))
+                  r (try (m/verify path)
+                         (catch clojure.lang.ExceptionInfo e {:ok? false :threw (ex-data e)}))]
+              (is (false? (:ok? r)) (str "deleting " kk " must not still verify")))))
+
+        (testing "store — the medium where a manifest edit is the whole cost"
+          (let [store (ks/create-store {:backend :memory :id (java.util.UUID/randomUUID)}
+                                       {:sync? true})
+                target {:store store :prefix "ik"}
+                _ (m/export-db @src target {:chunk-size 20})
+                mkey ["datahike.migrate" "ik" "manifest"]
+                mf (k/get store mkey nil {:sync? true})]
+            (is (true? (:ok? (m/verify target))) "precondition: it verified intact")
+            (doseq [kk integrity-keys]
+              (k/assoc store mkey (dissoc mf kk) {:sync? true})
+              (let [r (try (m/verify target)
+                           (catch clojure.lang.ExceptionInfo e {:ok? false :threw (ex-data e)}))]
+                (is (false? (:ok? r)) (str "deleting " kk " must not still verify")))))))
+      (teardown src))))
+
 (deftest verify-accepts-the-two-dumps-that-legitimately-hash-nothing
   (testing "wiring `:ok?` to `:checksums :none` was too blunt. THREE different
             things reach `:none` and they need three answers, and two of them
