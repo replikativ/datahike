@@ -1060,9 +1060,27 @@
       (d/transact src (vec (for [i (range 100)] {:name (str "p" i)})))
       (let [r (m/verify (dump-with src #(dissoc % :semantic-digest)))]
         (is (false? (:ok? r)) "a manifest with no digest is not a verified dump")
-        (is (nil? (get-in r [:tier1 :digest-match?]))
-            "and the report says the comparison did not happen, rather than
-             claiming it passed"))
+        (is (pos? (get-in r [:tier1 :recomputed-count]))
+            "the recompute still RAN — the refusal is about the manifest having
+             nothing to check against, not about failing to read the dump"))
+
+      (testing "a manifest truncated to zero chunks, with the data still beside
+                it. `:stats :datom-count` is what the export says it WROTE and
+                the digest's `:count` is what it HASHED; a forger who empties
+                `:chunks` and the digest together leaves those two disagreeing.
+                Free, and it is the only guard the store medium has — listing a
+                store to find undeclared chunks is a whole-store operation, so
+                the filesystem's `:import/undeclared-chunks` has no cheap mirror."
+        (let [r (m/verify (dump-with src #(assoc % :chunks []
+                                                 :semantic-digest
+                                                 {:algo :xor64+sum64
+                                                  :xor "0000000000000000"
+                                                  :sum "0000000000000000"
+                                                  :count 0})))]
+          (is (false? (:ok? r)))
+          (is (false? (get-in r [:tier1 :stats-agree?])))
+          (is (pos? (get-in r [:tier1 :stats-count]))
+              "the manifest still remembers what the export wrote")))
 
       (testing "a chunk descriptor with no `:count` is UNKNOWN, not wrong.
                 `(keep :count …)` summed the survivors, so dropping the counts
@@ -1100,6 +1118,22 @@
           (let [r (m/verify f)]
             (is (true? (:ok? r)) "a legacy dump that decodes is intact")
             (is (= 25 (get-in r [:tier1 :manifest-count]))))))
+
+      (testing "a file that decodes as CBOR but is not a sequence of DATOMS is
+                not a backup. `count-records` only asked whether the bytes
+                decoded, so five CBOR integers counted as five records — and
+                once `verify` learned to accept a legacy dump that decodes, that
+                file reported `:ok? true`. Reported, not thrown: this call is an
+                operator asking about a file, and \"that is not a dump\" is the
+                commonest answer there is."
+        (let [f (str (System/getProperty "java.io.tmpdir") "/dh-junk-" (utils/get-time) ".cbor")]
+          (io/make-parents f)
+          (with-open [o (io/output-stream f)]
+            (.write o ^bytes (mcbor/concat-records (mapv mcbor/encode-record [1 2 3 4 5]))))
+          (is (= :import/not-a-dump
+                 (try (m/verify f) ::no-throw
+                      (catch clojure.lang.ExceptionInfo e (:error (ex-data e)))))
+              "same category as a plain text file, and refused the same way")))
 
       (testing "an EMPTY chunked dump is a real dump: `export-transformed` with
                 an `:xform` that filters everything writes one, with a manifest

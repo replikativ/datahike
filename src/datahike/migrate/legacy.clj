@@ -48,7 +48,19 @@
   [path]
   (try
     (with-open [in (io/input-stream path)]
-      (count (mcbor/decode-records in)))
+      ;; Record SHAPE, not merely "these bytes decode". `decode-records` is
+      ;; happy with any CBOR sequence, so a five-byte file holding the integers
+      ;; 1 2 3 4 5 counted as five records — and once `verify` learned to accept
+      ;; a legacy dump that decodes (it had briefly rejected every one of them),
+      ;; that file reported `{:ok? true}`. A legacy dump is a sequence of
+      ;; `[e a v t op]` vectors and nothing else, so checking the shape is what
+      ;; the count was always standing in for.
+      (reduce (fn [n r]
+                (if (and (vector? r) (= 5 (count r)) (boolean? (nth r 4)))
+                  (inc n)
+                  (throw (ex-info "not a datom record" {:record r}))))
+              0
+              (mcbor/decode-records in)))
     (catch Exception e
       ;; The decoder's complaint is about bytes ("declared count 16 needs at
       ;; least 16 bytes but only 9 remain"), which answers a question nobody

@@ -136,16 +136,23 @@
   "Normalise the `cmp` argument, which is either a keyed order or a bare
    comparator. Accepting both is what lets every signature here stay as it was.
 
-   The assertion is not decoration: a map without `::key-fn` falls through to
-   `(sort nil records)`, i.e. natural ordering on RECORDS, which throws on a
-   heterogeneous `v` — or worse, silently succeeds on a homogeneous one and
-   writes a dump in the wrong order. It costs one `contains?` per sort call, not
-   per record."
+   A `throw` rather than an `assert`, deliberately. A map without `::key-fn`
+   falls through to `(sort nil records)` — natural ordering on RECORDS, which
+   throws on a heterogeneous `v` and, worse, SUCCEEDS on a homogeneous one and
+   writes a dump in the wrong order. `shadow-cljs.edn` sets `:elide-asserts
+   false` on the dev and test builds but not on `:browser-release` or
+   `:npm-release`, where `:advanced` elides them by default — so an assertion
+   here would exist everywhere except the artifacts we publish, which is where a
+   silently misordered dump would be hardest to notice. It costs one `contains?`
+   per SORT CALL, not per record: measured at 204 calls for a 2000-record sort
+   spilling to 200 runs."
   [x]
   (if (map? x)
-    (do (assert (contains? x ::key-fn)
-                "a map order must carry ::key-fn; pass a bare comparator otherwise")
-        x)
+    (if (contains? x ::key-fn)
+      x
+      (throw (ex-info (str "A map passed as a sort order must carry "
+                           "`::key-fn`; pass a bare comparator otherwise.")
+                      {:error :migrate/invalid-sort-order :order x})))
     {::cmp x}))
 
 (defn- sort-window

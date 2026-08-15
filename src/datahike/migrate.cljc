@@ -982,11 +982,16 @@
         ;; so the store equivalent would enumerate a store that commonly also
         ;; holds a live database — every index node — and on S3 that is a full
         ;; bucket listing on a call an operator may run often. The motivating
-        ;; case is covered there anyway: `:chunks []` now leaves `:checksums
-        ;; :none`, which `:ok?` refuses. What remains uncovered is a manifest
-        ;; that declares a PROPER SUBSET of the chunks present and has had its
-        ;; counts and digest adjusted to match — which is internally consistent,
-        ;; and so indistinguishable from a legitimately smaller dump. That is a
+        ;; case is covered there anyway, though NOT the way this note first
+        ;; claimed: it said `:chunks []` leaves `:checksums :none` and `:ok?`
+        ;; refuses it — and then the fix that stopped calling a legitimately
+        ;; empty dump broken removed that refusal, so the note outlived its
+        ;; reason for a commit. It is `:stats :datom-count` against the digest's
+        ;; `:count` that catches a manifest truncated to zero chunks; see
+        ;; `stats-agree?` in `verify`. What remains uncovered is a manifest that
+        ;; declares a PROPER SUBSET of the chunks present and has had its stats,
+        ;; counts AND digest adjusted to match — internally consistent, and so
+        ;; indistinguishable from a legitimately smaller dump. That is a
         ;; completeness question, answered at export.
        (let [declared (set (map :file chunks))
              extra    (->> (fs/list-names (str source))
@@ -3269,6 +3274,15 @@
                ;; a plain text file — from the one call an operator makes to ask
                ;; whether a backup is intact. Decoding it is the only check the
                ;; format admits: it carries no manifest, no chunk list, no hashes.
+               ;; `count-records` THROWS `:import/not-a-dump` here, and that is
+               ;; deliberate rather than an oversight — `verify-refuses-things-
+               ;; that-are-not-dumps` pins it. The findings-not-exceptions rule
+               ;; above is about a DAMAGED dump, where an operator asked a
+               ;; question and deserves an answer; "this file is not a dump at
+               ;; all" is a different category, and the caller pointed at the
+               ;; wrong thing. Now that `count-records` also checks record
+               ;; SHAPE, arbitrary CBOR joins plain text in that category
+               ;; instead of counting as a backup.
                {:manifest (:manifest dump)
                 :legacy-count #?(:clj (mlegacy/count-records (str source))
                                  :cljs (throw (ex-info
@@ -3320,6 +3334,21 @@
                        (reduce + 0 chunk-counts))
            counts-add-up? (when (and chunk-sum (:count declared))
                             (= (long chunk-sum) (long (:count declared))))
+        ;; What the export SAYS it wrote against what it HASHED. Also free, also
+        ;; manifest-internal, and it is what catches a manifest truncated to
+        ;; `:chunks []` with the data still sitting beside it: the digest is then
+        ;; honestly empty and agrees with itself, but `:stats` still remembers
+        ;; the 103 records the export wrote. The filesystem medium catches that
+        ;; forgery by listing the directory (`:import/undeclared-chunks`); the
+        ;; store medium cannot afford to, because `konserve.core/keys` is
+        ;; store-wide. `open-dump`'s note on that asymmetry rested on
+        ;; `:chunks []` leaving `:checksums :none` and `:ok?` refusing it — and
+        ;; then the fix that stopped calling a legitimately empty dump broken
+        ;; removed exactly that refusal, leaving the two media disagreeing about
+        ;; a two-key manifest edit. This restores it without any IO.
+           stats-count (get-in manifest [:stats :datom-count])
+           stats-agree? (when (and stats-count (:count declared))
+                          (= (long stats-count) (long (:count declared))))
         ;; The dump against what the manifest SAYS about it. `verify` used to
         ;; hash the bytes and then echo the manifest's own numbers back as if
         ;; they had been checked — so a manifest claiming 999999 records for a
@@ -3349,6 +3378,7 @@
                           (:ok? blobs)
                           anything-verified?
                           (not (false? counts-add-up?))
+                          (not (false? stats-agree?))
                           (not (false? digest-match?)))
                 :tier0 {:checksums checksums
                         :chunks-verified (or chunks-verified 0)
@@ -3356,8 +3386,10 @@
                 :tier1 (cond-> {:manifest-count (or (:count declared) legacy-count)
                                 :recomputed-count (:count recomputed)
                                 :digest-match? digest-match?}
-                         chunk-sum (assoc :chunk-count-sum chunk-sum
-                                          :counts-add-up? counts-add-up?))
+                         chunk-sum   (assoc :chunk-count-sum chunk-sum
+                                            :counts-add-up? counts-add-up?)
+                         stats-count (assoc :stats-count stats-count
+                                            :stats-agree? stats-agree?))
                 :blobs blobs}
          finding (assoc :integrity finding)
          ;; The comparison keys are present-but-nil so that ONE handler works
