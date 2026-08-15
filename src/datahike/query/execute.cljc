@@ -4015,10 +4015,21 @@
 (defn- execute-or [db op ctx]
   ;; Project to OR's visible vars — critical for rules where branches
   ;; introduce auto-generated temp vars.
-  (combine-or-branches
-   ctx op
-   (mapv #(or-branch-rel db % (assoc ctx :rels (:rels ctx)) (:vars op))
-         (:branches op))))
+  ;;
+  ;; `limit-context` for the same reason `execute-or-join` does it. Without it
+  ;; every branch was handed the FULL relation set, including relations sharing
+  ;; no variable with the branch — and `hash-join` on an empty common-attribute
+  ;; set degenerates to a Cartesian product (`tuple-key-fn` over zero getters
+  ;; returns one constant key, so every left tuple matches every right tuple).
+  ;; `limit-rel` then reprojects the columns WITHOUT touching `:tuples`, so the
+  ;; duplicate copies survive into the enclosing scope and the next nested OR
+  ;; multiplies them again. Three nested OR levels therefore cost |in|^3.
+  ;; The previous `(assoc ctx :rels (:rels ctx))` was a no-op.
+  (let [limited-ctx (rel/limit-context ctx (:vars op))]
+    (combine-or-branches
+     ctx op
+     (mapv #(or-branch-rel db % limited-ctx (:vars op))
+           (:branches op)))))
 
 (defn- execute-or-join [db op ctx]
   (let [join-vars (:join-vars op)
