@@ -259,17 +259,71 @@
   #?(:clj (.getName (class x))
      :cljs (type x)))
 
+(declare compare-value)
+
+(defn- compare-sequential
+  "Order two sequential values element-wise, recursing through `compare-value`.
+
+   Deliberately the same shape as `clojure.lang.APersistentVector.compareTo`:
+   SHORTER FIRST, then element by element. Matching it is the point — a plain
+   vector of Comparables must sort exactly where it always did, because any
+   change here reorders live indices."
+  [a b]
+  (let [ca (count a) cb (count b)]
+    (cond
+      (< ca cb) -1
+      (> ca cb) 1
+      :else (loop [xs (seq a) ys (seq b)]
+              (if (nil? xs)
+                0
+                (let [c (compare-value (first xs) (first ys))]
+                  (if (zero? c)
+                    (recur (next xs) (next ys))
+                    c)))))))
+
 (defn compare-value
   "Compare two values with cross-platform UUID compatibility.
    CLJS UUID comparison is adjusted to match CLJ's signed comparison,
    ensuring consistent ordering when indices are built on CLJ and queried on CLJS.
    Byte/float/double arrays are compared element-wise via
    datahike.array/compare-arrays, since primitive arrays do not implement
-   Comparable."
+   Comparable.
+
+   ## Arrays INSIDE a value, not only as one
+
+   A `:db.type/tuple` whose `:db/tupleTypes` names one of the three array types
+   arrives as a VECTOR holding an array, and the array check above only looks at
+   the top level. `compare` then reached the array through
+   `APersistentVector.compareTo` and threw `ClassCastException: class [B cannot
+   be cast to class java.lang.Comparable` — so on released datahike that schema
+   was not merely mis-ordered, it was unusable. Measured, per operation:
+
+     first write, explicit retract          worked
+     card-many, several values              8 transacted, 1 STORED (silent)
+     card-one update                        threw, from `transact-add`
+     `:db/index true`                       threw, from `cmp-datoms-avet-quick`
+     `:db.unique/identity`                  threw, from `transact-add`
+
+   Two faces, one cause. The throwing sites call this directly; the silent one
+   goes through `safe-compare`, whose fallback compares CLASS NAMES — equal for
+   two vectors, so it answered \"incomparable\" with \"equal\", and a sorted set
+   reads equal as a duplicate. Repairing this function fixes all four, which is
+   why the fix is here and not at the call sites.
+
+   Only values that CONTAIN an array change order; anything already Comparable
+   takes the same path it always did, so existing indices do not move."
   [v1 v2]
-  #?(:clj (if (and (da/value-array? v1) (da/value-array? v2))
+  #?(:clj (cond
+            (and (da/value-array? v1) (da/value-array? v2))
             (da/compare-arrays v1 v2)
-            (compare v1 v2))
+
+            ;; Checked AFTER the array case and before `compare`, so a scalar —
+            ;; every value in an ordinary database — reaches `compare` having
+            ;; paid one extra predicate.
+            (and (sequential? v1) (sequential? v2))
+            (compare-sequential v1 v2)
+
+            :else (compare v1 v2))
      :cljs
      (cond
        (and (uuid? v1) (uuid? v2))
@@ -289,6 +343,9 @@
 
        (and (da/value-array? v1) (da/value-array? v2))
        (da/compare-arrays v1 v2)
+
+       (and (sequential? v1) (sequential? v2))
+       (compare-sequential v1 v2)
 
        :else (compare v1 v2))))
 
