@@ -86,7 +86,10 @@
     load-entities "Batch loading - use transact instead"
     query-stats   "Not yet exposed in pod"
     index-range   "Advanced index operation - can add later"
-    gc-storage    "Maintenance operation - can add later"})
+    gc-storage    "Maintenance operation - can add later"
+    warm-index    "EXPERIMENTAL prefetch of a process-local node cache; a pod's JVM is not the caller's"
+    warm-datoms   "EXPERIMENTAL prefetch of a process-local node cache; a pod's JVM is not the caller's"
+    warm-db       "EXPERIMENTAL prefetch of a process-local node cache; a pod's JVM is not the caller's"})
 
 (def pod-additions
   "Pod-specific operations not in main API specification."

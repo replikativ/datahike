@@ -154,7 +154,15 @@
   (-persistent! [tree]
     (identity tree))
   (-mark [tree]
-    (mark tree)))
+    (mark tree))
+  (-warm! [_tree opts]
+    ;; EXPERIMENTAL, and a deliberate NO-OP here. The breadth-first warm needs a
+    ;; node's child ADDRESSES to be readable before those children are fetched;
+    ;; the hitchhiker-tree's async node resolution gives no such one-level-ahead
+    ;; view, so there is nothing to prefetch in waves. Answering with the empty
+    ;; report (rather than omitting the method) is what lets `d/warm-db` be
+    ;; called unconditionally against any index type.
+    (di/warm-result (di/zero-warm-report opts) opts)))
 
 (extend-type IndexNode
   IIndex
@@ -189,7 +197,15 @@
   (-persistent! [tree]
     (identity tree))
   (-mark [tree]
-    (mark tree)))
+    (mark tree))
+  (-warm! [_tree opts]
+    ;; EXPERIMENTAL, and a deliberate NO-OP here. The breadth-first warm needs a
+    ;; node's child ADDRESSES to be readable before those children are fetched;
+    ;; the hitchhiker-tree's async node resolution gives no such one-level-ahead
+    ;; view, so there is nothing to prefetch in waves. Answering with the empty
+    ;; report (rather than omitting the method) is what lets `d/warm-db` be
+    ;; called unconditionally against any index type.
+    (di/warm-result (di/zero-warm-report opts) opts)))
 
 ;; HHT does not currently expose a content-addressed merkle root. Audit
 ;; falls back to advisory mode when this index is in use.

@@ -19,6 +19,7 @@
             [datahike.query :as dq]
             [datahike.schema :as ds]
             [datahike.tools :as dt]
+            [datahike.warm]
             [datahike.db :as db #?@(:cljs [:refer [HistoricalDB AsOfDB SinceDB FilteredDB]])]
             [datahike.db.interface :as dbi]
             [datahike.db.transaction :as dbt]
