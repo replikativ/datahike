@@ -661,8 +661,16 @@
     (do (swap! oracle-stats update :skipped inc) true)
     (let [_ (swap! oracle-stats update :checked inc)
           agree? (= base oracle)
+          ;; `:kind` restricts what an allowlist entry is allowed to excuse. An
+          ;; entry that documents a RAISE cannot also explain a wrong shared
+          ;; ANSWER: here both engines returned values and agreed, so the
+          ;; entry's stated failure mode did not occur and it must not silence
+          ;; this. Honouring `:match?` alone would let one narrow entry blanket
+          ;; every oracle disagreement its spec predicate happens to cover.
           known (when-not agree?
-                  (first (filter (fn [e] ((:match? e) spec)) known-shared-wrong)))]
+                  (first (filter (fn [e] (and (not= :raise (:kind e))
+                                              ((:match? e) spec)))
+                                 known-shared-wrong)))]
       (when-not agree?
         (swap! oracle-reports conj
                {:query query :args args :spec (select-keys spec [:dataset :temporal])

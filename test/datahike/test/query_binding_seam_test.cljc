@@ -133,3 +133,36 @@
         (both #{[1] [2] [3]}
               '[:find ?e :in $ % :where [?e :score _] (not-join [?e] (same ?e ?e))]
               db '[[(same ?a ?a) [?e :score ?a]]])))))
+
+(deftest-async binding-seam-law-temporal
+  ;; The temporal kernel is a SEPARATE merge kernel from the current-db ones,
+  ;; and each temporal view (`history`, `as-of`, `since`) takes a different
+  ;; branch through it. The law has to hold on all of them: `get-else` is total
+  ;; over entities on every view, so "present but disagreeing" must exclude the
+  ;; row there too. Two ways it failed here: the presence probe was asked over a
+  ;; slice already bounded by the obligated value — which can only ever answer
+  ;; about that ONE value, making the check a no-op — and the whole `:cljs` half
+  ;; of the kernel kept planting defaults unconditionally while every JVM run
+  ;; was green. That twin-nobody-executes shape is #917 exactly, which is why
+  ;; these run on both platforms.
+  (let [cfg {:store {:backend :memory :id (random-uuid)}
+             :schema-flexibility :write
+             :keep-history? true}
+        conn (<! (connect! cfg))]
+    (<! (d/transact! conn [{:db/ident :name :db/valueType :db.type/string
+                            :db/cardinality :db.cardinality/one}
+                           {:db/ident :nick :db/valueType :db.type/string
+                            :db/cardinality :db.cardinality/one}]))
+    (<! (d/transact! conn [{:db/id 1 :name "a" :nick "aaa"}
+                           {:db/id 2 :name "b" :nick "bbb"}
+                           {:db/id 3 :name "c" :nick "ccc"}
+                           {:db/id 4 :name "d"}]))
+    (let [db (d/db conn)
+          ;; only 4 has no nick, so only 4 may take the default — the other
+          ;; three are PRESENT with a value that disagrees with "zzz"
+          query '[:find ?e ?v :in $ ?v :where
+                  [?e :name _] [(get-else $ ?e :nick "zzz") ?v]]]
+      (testing "current"   (both #{[4 "zzz"]} query db "zzz"))
+      (testing "history"   (both #{[4 "zzz"]} query (d/history db) "zzz"))
+      (testing "as-of"     (both #{[4 "zzz"]} query (d/as-of db (:max-tx db)) "zzz"))
+      (testing "since"     (both #{[4 "zzz"]} query (d/since db 0) "zzz")))))

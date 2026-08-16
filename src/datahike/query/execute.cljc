@@ -1947,6 +1947,18 @@
                                            mslice (if (aget merge-temporal-only mi)
                                                     (di/-slice temporal-eavt-pss from-d to-d :eavt)
                                                     (temporal-merge-slice origin-db from-d to-d temporal-type temporal-tx-filter db))
+                                           ;; PRESENCE slice. `mslice`'s bounds carry `vgv`, so
+                                           ;; asking it whether the attribute exists can only ever
+                                           ;; answer about that ONE value — judging presence from
+                                           ;; it is a no-op. An optional merge with a v-ground
+                                           ;; needs the unrestricted range.
+                                           pslice (if (and vg? (aget merge-optional mi))
+                                                    (let [pf (datom eid ra nil tx0)
+                                                          pt (datom eid ra nil txmax)]
+                                                      (if (aget merge-temporal-only mi)
+                                                        (di/-slice temporal-eavt-pss pf pt :eavt)
+                                                        (temporal-merge-slice origin-db pf pt temporal-type temporal-tx-filter db)))
+                                                    mslice)
                                            eq-v (aget merge-eq-v mi)
                                            eq-tx (aget merge-eq-tx mi)]
                                        (if anti?
@@ -1971,7 +1983,7 @@
                                              (let [present? (some (fn [^Datom d]
                                                                     (temporal-merge-datom-present?
                                                                      d eid ra scan-d temporal-tx-filter added-filter))
-                                                                  mslice)
+                                                                  pslice)
                                                    dv (aget merge-defaults mi)
                                                    dd (datom eid ra dv tx0)]
                                                (when (and (not present?)
@@ -2069,6 +2081,14 @@
                                      (let [from-d (datom eid ra (when vg? vgv) tx0)
                                            to-d (datom eid ra (when vg? vgv) txmax)
                                            mslice (temporal-merge-slice origin-db from-d to-d temporal-type temporal-tx-filter db)
+                                           ;; See the note on `pslice` above: mslice is bounded by
+                                           ;; vgv, so presence must be asked of the unrestricted
+                                           ;; range or it can only answer about that one value.
+                                           pslice (if (and vg? (aget merge-optional mi))
+                                                    (temporal-merge-slice origin-db (datom eid ra nil tx0)
+                                                                          (datom eid ra nil txmax)
+                                                                          temporal-type temporal-tx-filter db)
+                                                    mslice)
                                            eq-v (aget merge-eq-v mi)
                                            eq-tx (aget merge-eq-tx mi)]
                                        (if anti?
@@ -2086,7 +2106,7 @@
                                              (let [present? (some (fn [^Datom d]
                                                                     (temporal-merge-datom-present?
                                                                      d eid ra scan-d temporal-tx-filter added-filter))
-                                                                  mslice)
+                                                                  pslice)
                                                    dv (aget merge-defaults mi)
                                                    dd (datom eid ra dv tx0)]
                                                (when (and (not present?)
@@ -2120,6 +2140,15 @@
                                    mslice (if temporal-only?
                                             (di/-slice temporal-eavt-pss from-d to-d :eavt)
                                             (temporal-merge-slice origin-db from-d to-d temporal-type temporal-tx-filter db))
+                                   ;; mslice's bounds carry vgv, so it can only answer about that
+                                   ;; ONE value — presence needs the unrestricted range.
+                                   pslice (if (and vg? merge-optional (aget merge-optional mi))
+                                            (let [pf (datom eid ra nil tx0)
+                                                  pt (datom eid ra nil txmax)]
+                                              (if temporal-only?
+                                                (di/-slice temporal-eavt-pss pf pt :eavt)
+                                                (temporal-merge-slice origin-db pf pt temporal-type temporal-tx-filter db)))
+                                            mslice)
                                    eq-v (aget merge-eq-v mi)
                                    eq-tx (aget merge-eq-tx mi)]
                                (if anti?
@@ -2130,12 +2159,27 @@
                                      (when (temporal-merge-datom-match? d eid ra vg? vgv eq-v eq-tx scan-d temporal-tx-filter added-filter merge-datoms)
                                        (vreset! matched? true)
                                        (aset merge-datoms mi d) (process-merges (inc mi))))
-                                   ;; Optional merge (get-else): emit default when no version
-                                   ;; matched (:historical forces card-many, so card-one
-                                   ;; get-else like valid-at :db.valid/to lands here).
+                                   ;; Optional merge (get-else): only GENUINE ABSENCE licenses
+                                   ;; the default. `matched?` was asked with the obligations
+                                   ;; folded in, so a false there may equally mean the attribute
+                                   ;; is present but disagrees — which excludes the row rather
+                                   ;; than defaulting it. Ask presence separately, and require
+                                   ;; the default to satisfy the obligations itself.
+                                   ;; (:historical forces card-many, so card-one get-else like
+                                   ;; valid-at :db.valid/to lands here.)
                                    (when (and (not @matched?) merge-optional (aget merge-optional mi))
-                                     (aset merge-datoms mi (datom eid ra (aget merge-defaults mi) tx0))
-                                     (process-merges (inc mi))))))
+                                     (let [present? (some (fn [^Datom d]
+                                                            (temporal-merge-datom-present?
+                                                             d eid ra scan-d temporal-tx-filter added-filter))
+                                                          pslice)
+                                           dv (aget merge-defaults mi)
+                                           dd (datom eid ra dv tx0)]
+                                       (when (and (not present?)
+                                                  (or (not vg?) (val-eq? dv vgv))
+                                                  (eq-ok? eq-v dv dd scan-d merge-datoms)
+                                                  (eq-ok? eq-tx (datom/datom-tx dd) dd scan-d merge-datoms))
+                                         (aset merge-datoms mi dd)
+                                         (process-merges (inc mi))))))))
                              (let [probe (datom eid ra vgv tx0)
                                    ^Datom d (pss-lookup-ge eavt-pss probe)
                                    eq-v (aget merge-eq-v mi)
@@ -2151,11 +2195,29 @@
                                  (cond
                                    found-d
                                    (do (aset merge-datoms mi found-d) (process-merges (inc mi)))
-                                   ;; Optional merge: emit synthetic default datom on miss
+                                   ;; Optional merge: a miss here was asked with the obligations
+                                   ;; folded in, so it is not yet evidence of absence. Ask again
+                                   ;; for presence alone; if the attribute IS there, the row is
+                                   ;; excluded rather than defaulted.
                                    (and merge-optional (aget merge-optional mi))
-                                   (do (aset merge-datoms mi
-                                             (datom eid ra (aget merge-defaults mi) tx0))
-                                       (process-merges (inc mi))))))))))]
+                                   (let [^Datom od (pss-lookup-ge eavt-pss (datom eid ra nil tx0))
+                                         present-now? (and od (temporal-merge-datom-present?
+                                                               od eid ra scan-d temporal-tx-filter added-filter))
+                                         present-t? (and (not present-now?)
+                                                         (= temporal-type :as-of)
+                                                         (some? (visible-eavt-datom
+                                                                 origin-db db temporal-type (:temporal-eavt origin-db)
+                                                                 eid ra false nil -1 -1 scan-d
+                                                                 temporal-tx-filter added-filter
+                                                                 merge-datoms)))
+                                         dv (aget merge-defaults mi)
+                                         dd (datom eid ra dv tx0)]
+                                     (when (and (not present-now?) (not present-t?)
+                                                (or (not vg?) (val-eq? dv vgv))
+                                                (eq-ok? eq-v dv dd scan-d merge-datoms)
+                                                (eq-ok? eq-tx (datom/datom-tx dd) dd scan-d merge-datoms))
+                                       (aset merge-datoms mi dd)
+                                       (process-merges (inc mi)))))))))))]
                (process-merges 0))))))))
 
 ;; ---------------------------------------------------------------------------
