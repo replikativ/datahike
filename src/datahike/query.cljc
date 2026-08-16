@@ -9,7 +9,7 @@
    [datahike.db.interface :as dbi]
    [datahike.db.utils :as dbu]
    [datahike.index.interface :as di]
-   [datahike.array :refer [wrap-comparable]]
+   [datahike.array :refer [a= wrap-comparable]]
    [datahike.impl.entity :as de]
    [datahike.lru]
    [datahike.pull-api :as dpa]
@@ -782,7 +782,12 @@
       (reduce
        (fn [acc t1]
          (reduce (fn [acc t2]
-                   (if (every? (fn [[i1 i2]] (= (get t1 i1) (get t2 i2)))
+                   ;; `a=`, not `=`: a byte array (or any value-array type) is a
+                   ;; VALUE here, and Clojure's `=` compares those by identity —
+                   ;; so an obligation between two equal-content arrays failed and
+                   ;; the row was silently dropped. Every other equality in the
+                   ;; engine already goes through an array-aware comparison.
+                   (if (every? (fn [[i1 i2]] (a= (get t1 i1) (get t2 i2)))
                                obligations)
                      (conj! acc (join-tuples t1 idxs1 t2 idxs2))
                      acc))

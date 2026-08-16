@@ -1943,12 +1943,12 @@
                                            (process-merges (inc mi)))
                                          (if optional?
                                            ;; An optional merge is SINGLE-VALUED on every view: `get-else` returns
-                                           ;; the FIRST version this view holds for the attribute, so the obligations
-                                           ;; are about THAT version. Judging them against every version instead
-                                           ;; answers "does SOME version equal the obligated value" — which on
-                                           ;; `history` admits a row this query's own `get-else` would never produce.
-                                           ;; `pslice` is the unrestricted range: the only one that can name the
-                                           ;; first version when the obligated value bounds `mslice`.
+43;; the FIRST version this view holds for the attribute, so the obligations
+43;; are about THAT version. Emitting every version that matches instead
+43;; answers "does SOME version equal the obligated value" — which on
+43;; `history` admits a row this query's own `get-else` would never produce.
+43;; `pslice` is the unrestricted range: the only one that can name the
+43;; first version when the obligated value bounds `mslice`.
                                            (let [od (first (filter (fn [d] (temporal-merge-datom-present?
                                                                             d eid ra scan-d temporal-tx-filter added-filter))
                                                                    pslice))]
@@ -1959,8 +1959,8 @@
                                                ;; present, but its value fails an obligation → drop the row
                                                od nil
 
-                                               ;; genuinely absent: the default must satisfy the obligations a real
-                                               ;; value would have had to satisfy
+                                               ;; genuinely absent: the default must satisfy the obligations a
+                                               ;; real value would have had to satisfy
                                                :else
                                                (let [dv (aget merge-defaults mi)
                                                      dd (datom eid ra dv tx0)]
@@ -2078,12 +2078,12 @@
                                            (process-merges (inc mi)))
                                          (if optional?
                                            ;; An optional merge is SINGLE-VALUED on every view: `get-else` returns
-                                           ;; the FIRST version this view holds for the attribute, so the obligations
-                                           ;; are about THAT version. Judging them against every version instead
-                                           ;; answers "does SOME version equal the obligated value" — which on
-                                           ;; `history` admits a row this query's own `get-else` would never produce.
-                                           ;; `pslice` is the unrestricted range: the only one that can name the
-                                           ;; first version when the obligated value bounds `mslice`.
+43;; the FIRST version this view holds for the attribute, so the obligations
+43;; are about THAT version. Emitting every version that matches instead
+43;; answers "does SOME version equal the obligated value" — which on
+43;; `history` admits a row this query's own `get-else` would never produce.
+43;; `pslice` is the unrestricted range: the only one that can name the
+43;; first version when the obligated value bounds `mslice`.
                                            (let [od (first (filter (fn [d] (temporal-merge-datom-present?
                                                                             d eid ra scan-d temporal-tx-filter added-filter))
                                                                    pslice))]
@@ -2094,8 +2094,8 @@
                                                ;; present, but its value fails an obligation → drop the row
                                                od nil
 
-                                               ;; genuinely absent: the default must satisfy the obligations a real
-                                               ;; value would have had to satisfy
+                                               ;; genuinely absent: the default must satisfy the obligations a
+                                               ;; real value would have had to satisfy
                                                :else
                                                (let [dv (aget merge-defaults mi)
                                                      dd (datom eid ra dv tx0)]
@@ -2151,12 +2151,12 @@
                                    (process-merges (inc mi)))
                                  (if optional?
                                    ;; An optional merge is SINGLE-VALUED on every view: `get-else` returns
-                                   ;; the FIRST version this view holds for the attribute, so the obligations
-                                   ;; are about THAT version. Judging them against every version instead
-                                   ;; answers "does SOME version equal the obligated value" — which on
-                                   ;; `history` admits a row this query's own `get-else` would never produce.
-                                   ;; `pslice` is the unrestricted range: the only one that can name the
-                                   ;; first version when the obligated value bounds `mslice`.
+35;; the FIRST version this view holds for the attribute, so the obligations
+35;; are about THAT version. Emitting every version that matches instead
+35;; answers "does SOME version equal the obligated value" — which on
+35;; `history` admits a row this query's own `get-else` would never produce.
+35;; `pslice` is the unrestricted range: the only one that can name the
+35;; first version when the obligated value bounds `mslice`.
                                    (let [od (first (filter (fn [d] (temporal-merge-datom-present?
                                                                     d eid ra scan-d temporal-tx-filter added-filter))
                                                            pslice))]
@@ -2167,8 +2167,8 @@
                                        ;; present, but its value fails an obligation → drop the row
                                        od nil
 
-                                       ;; genuinely absent: the default must satisfy the obligations a real
-                                       ;; value would have had to satisfy
+                                       ;; genuinely absent: the default must satisfy the obligations a
+                                       ;; real value would have had to satisfy
                                        :else
                                        (let [dv (aget merge-defaults mi)
                                              dd (datom eid ra dv tx0)]

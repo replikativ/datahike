@@ -20,6 +20,12 @@
    ABSOLUTE expected value as well as engine agreement — two engines agreeing
    on a wrong answer is exactly how these survived.
 
+   ONE site is deliberately NOT covered, so this file is not read as an
+   exhaustive enumeration: a variable repeated inside a SINGLE binding form
+   (`[(vector 1 2) [?x ?x]]`) still overwrites on both engines, because the
+   #912/#913 normalisation rewrites data patterns only. Both engines agree
+   there, so no differential test can reach it either.
+
    Written with `deftest-async` and listed in `nodejs_test.cljs` so it runs on
    ClojureScript too. Being `.cljc` is NOT enough: a `.cljc` test only runs on
    cljs if the Node runner names it, and that gap is precisely why a CLJS merge
@@ -106,6 +112,19 @@
               '[:find ?e ?v :in $ ?v :where [?e :name _] [?e :tag _] [(get-else $ ?e :nick "zzz") ?v]]
               db "zzz"))
 
+      (testing "a get-else on a card-many attribute is still single-valued"
+        ;; `get-else` returns ONE value per entity — the entity's first datom
+        ;; for the attribute — whatever the attribute's cardinality. Judging the
+        ;; obligation by seeking AT the obligated value instead asks "does SOME
+        ;; datom equal it", so alice, whose tags are #{:x :y}, was admitted for
+        ;; :y as well as :x — a row her own `get-else` would never produce.
+        (both #{[1 :x] [2 :x]}
+              '[:find ?e ?v :in $ ?v :where [?e :name _] [(get-else $ ?e :tag :zz) ?v]]
+              db :x)
+        (both #{[3 :y]}
+              '[:find ?e ?v :in $ ?v :where [?e :name _] [(get-else $ ?e :tag :zz) ?v]]
+              db :y))
+
       (testing "the bound value may come from :in rather than a pattern"
         (both #{[2 "carol"]}
               '[:find ?e ?v :in $ ?v :where [?e :name _] [(get-else $ ?e :nick "zzz") ?v]]
@@ -183,3 +202,54 @@
       (testing "history"   (both #{[4 "zzz"]} query (d/history db) "zzz"))
       (testing "as-of"     (both #{[4 "zzz"]} query (d/as-of db (:max-tx db)) "zzz"))
       (testing "since"     (both #{[4 "zzz"]} query (d/since db 0) "zzz")))))
+
+(deftest-async binding-seam-law-history-versions
+  ;; `history` holds EVERY version of a card-one attribute, so it is the view
+  ;; where "the value `get-else` returns" and "some value the attribute ever
+  ;; had" come apart. The obligation is about the first — asking it of every
+  ;; version admits a row the query's own `get-else` would never produce.
+  (let [cfg {:store {:backend :memory :id (random-uuid)}
+             :schema-flexibility :write
+             :keep-history? true}
+        conn (<! (connect! cfg))]
+    (<! (d/transact! conn [{:db/ident :name :db/valueType :db.type/string
+                            :db/cardinality :db.cardinality/one}
+                           {:db/ident :nick :db/valueType :db.type/string
+                            :db/cardinality :db.cardinality/one}]))
+    (<! (d/transact! conn [{:db/id 1 :name "n1b" :nick "n1"}
+                           {:db/id 2 :name "n1"  :nick "n1"}
+                           {:db/id 3 :name "zzz"}]))
+    ;; second versions: entity 1's nick BECOMES its name, entity 2's stops
+    ;; being it. Only the first version of each counts.
+    (<! (d/transact! conn [{:db/id 1 :nick "n1b"} {:db/id 2 :nick "n1b"}]))
+    (let [db (d/db conn)
+          query '[:find ?e ?v :where [?e :name ?v] [(get-else $ ?e :nick "zzz") ?v]]]
+      ;; current: entity 1's nick IS "n1b" now, and 3 takes the default
+      (testing "current" (both #{[1 "n1b"] [3 "zzz"]} query db))
+      ;; history: entity 1's first nick is "n1", which is not its name — so it
+      ;; is excluded even though a LATER version would have matched. Entity 2's
+      ;; first nick "n1" is its name, so it stays.
+      (testing "history" (both #{[2 "n1"] [3 "zzz"]} query (d/history db)))
+      (testing "as-of"   (both #{[1 "n1b"] [3 "zzz"]} query (d/as-of db (:max-tx db))))
+      (testing "since"   (both #{[1 "n1b"] [3 "zzz"]} query (d/since db 0))))))
+
+(deftest-async binding-seam-law-byte-arrays
+  ;; A byte array is a VALUE in datahike, and Clojure's `=` compares byte
+  ;; arrays by identity — so an obligation between two equal-content arrays
+  ;; failed and the row was dropped. Every equality the engine makes about
+  ;; values has to be array-aware, unification included.
+  (let [cfg {:store {:backend :memory :id (random-uuid)}
+             :schema-flexibility :write}
+        conn (<! (connect! cfg))]
+    (<! (d/transact! conn [{:db/ident :blob :db/valueType :db.type/bytes
+                            :db/cardinality :db.cardinality/one}
+                           {:db/ident :blob2 :db/valueType :db.type/bytes
+                            :db/cardinality :db.cardinality/one}]))
+    (<! (d/transact! conn [{:db/id 1 :blob #?(:clj (byte-array [1 2 3]) :cljs (js/Int8Array. #js [1 2 3]))
+                            :blob2 #?(:clj (byte-array [1 2 3]) :cljs (js/Int8Array. #js [1 2 3]))}
+                           {:db/id 2 :blob #?(:clj (byte-array [1 2 3]) :cljs (js/Int8Array. #js [1 2 3]))
+                            :blob2 #?(:clj (byte-array [9 9 9]) :cljs (js/Int8Array. #js [9 9 9]))}]))
+    (let [db (d/db conn)]
+      ;; only entity 1 holds the same bytes in both attributes
+      (both #{[1]}
+            '[:find ?e :where [?e :blob ?v] [(get-else $ ?e :blob2 "x") ?v]] db))))
