@@ -25,6 +25,11 @@
             [datahike.test.query-or-test]
             [datahike.test.query-aggregates-test]
             [datahike.test.query-rules-test]
+            ;; The binding-seam law. It is .cljc, but a .cljc test only runs on
+            ;; cljs if it is listed HERE — and that gap is exactly why a CLJS
+            ;; merge kernel kept the pre-law behaviour while every JVM run was
+            ;; green. Same shape as #917: the twin nobody executed.
+            [datahike.test.query-binding-seam-test]
             ;; Background GC (start-background-gc! / gc-storage!) — portable smoke.
             [datahike.test.background-gc-test]
             ;; :db.type/store-ref — blob GC contract, content-addressing, external
@@ -782,6 +787,7 @@
                'datahike.test.query-or-test
                'datahike.test.query-aggregates-test
                'datahike.test.query-rules-test
+               'datahike.test.query-binding-seam-test
                'datahike.test.background-gc-test
                'datahike.test.store-ref-test
                'datahike.test.async-storage-test

@@ -18,29 +18,28 @@
    Four bugs, one law. The tests are grouped by site rather than by engine so
    that a future site is obviously missing from the list, and each asserts an
    ABSOLUTE expected value as well as engine agreement — two engines agreeing
-   on a wrong answer is exactly how these survived."
-  (:require
-   #?(:cljs [cljs.test :as t :refer-macros [is deftest testing]]
-      :clj  [clojure.test :as t :refer [is deftest testing]])
-   [datahike.api :as d]
-   [datahike.query :as q]))
+   on a wrong answer is exactly how these survived.
 
-(defn- seam-db []
-  (let [cfg {:store {:backend :memory :id (random-uuid)}
-             :schema-flexibility :write}]
-    (d/create-database cfg)
-    (let [conn (d/connect cfg)]
-      (d/transact conn [{:db/ident :name :db/valueType :db.type/string
-                         :db/cardinality :db.cardinality/one}
-                        {:db/ident :nick :db/valueType :db.type/string
-                         :db/cardinality :db.cardinality/one}
-                        {:db/ident :score :db/valueType :db.type/long
-                         :db/cardinality :db.cardinality/one}])
-      ;; carol's nick EQUALS her name: the one row a unifying engine keeps
-      (d/transact conn [{:db/id 1 :name "alice" :nick "al"    :score 20}
-                        {:db/id 2 :name "carol" :nick "carol" :score 30}
-                        {:db/id 3 :name "dave"                :score 10}])
-      (d/db conn))))
+   Written with `deftest-async` and listed in `nodejs_test.cljs` so it runs on
+   ClojureScript too. Being `.cljc` is NOT enough: a `.cljc` test only runs on
+   cljs if the Node runner names it, and that gap is precisely why a CLJS merge
+   kernel kept the pre-law behaviour while every JVM run was green — the same
+   shape as #917, the twin nobody executed."
+  (:require
+   #?(:cljs [cljs.test :as t :refer-macros [is testing]]
+      :clj  [clojure.test :as t :refer [is testing]])
+   [clojure.core.async :refer [<!]]
+   [datahike.api :as d]
+   [datahike.query :as q]
+   [datahike.test.async #?(:clj :refer :cljs :refer-macros) [deftest-async]]))
+
+(defn- connect!
+  "Create + connect. Returns a channel so the body works on the JVM (sync) and
+   on cljs (async writer) alike."
+  [cfg]
+  (clojure.core.async/go
+    #?(:clj  (do (d/create-database cfg) (d/connect cfg))
+       :cljs (do (<! (d/create-database cfg)) (<! (d/connect cfg {:sync? false}))))))
 
 (defn- planner [query db & args]
   (binding [q/*disable-planner* false q/*query-result-cache?* false]
@@ -54,57 +53,83 @@
   (is (= expected (apply base query db args)) "base engine")
   (is (= expected (apply planner query db args)) "planner"))
 
-(deftest pattern-occurrence-is-an-obligation
-  (testing "the case that was ALREADY correct — the reference for the rest"
-    (let [db (seam-db)]
-      (both #{[2 "carol"]}
-            '[:find ?e ?v :where [?e :name ?v] [?e :nick ?v]] db))))
+(deftest-async binding-seam-law
+  (let [cfg {:store {:backend :memory :id (random-uuid)}
+             :schema-flexibility :write}
+        conn (<! (connect! cfg))]
+    (<! (d/transact! conn [{:db/ident :name :db/valueType :db.type/string
+                            :db/cardinality :db.cardinality/one}
+                           {:db/ident :nick :db/valueType :db.type/string
+                            :db/cardinality :db.cardinality/one}
+                           {:db/ident :score :db/valueType :db.type/long
+                            :db/cardinality :db.cardinality/one}
+                           {:db/ident :tag :db/valueType :db.type/keyword
+                            :db/cardinality :db.cardinality/many}]))
+    ;; carol's nick EQUALS her name: the one row a unifying engine keeps.
+    ;; :tag is card-many so the group routes through the card-many merge kernel,
+    ;; which is a DIFFERENT code path from the card-one one and was the last to
+    ;; be fixed — on cljs it was the last of all.
+    (<! (d/transact! conn [{:db/id 1 :name "alice" :nick "al"    :score 20 :tag [:x :y]}
+                           {:db/id 2 :name "carol" :nick "carol" :score 30 :tag [:x]}
+                           {:db/id 3 :name "dave"                :score 10 :tag [:y]}]))
+    (let [db (d/db conn)]
 
-(deftest get-else-output-unifies
-  (testing "a get-else writing into a bound var constrains it"
-    (let [db (seam-db)]
-      ;; only carol's nick equals her name; dave has no nick, and the default
-      ;; "zzz" is not his name either
-      (both #{[2 "carol"]}
-            '[:find ?e ?v :where [?e :name ?v] [(get-else $ ?e :nick "zzz") ?v]] db)
-      ;; …and the default DOES satisfy the obligation when it matches: dave
-      ;; has no nick so the default "dave" is compared, and carol still
-      ;; qualifies on her real nick
-      (both #{[2 "carol"] [3 "dave"]}
-            '[:find ?e ?v :where [?e :name ?v] [(get-else $ ?e :nick "dave") ?v]] db))))
+      (testing "pattern occurrence — the case that was ALREADY correct"
+        (both #{[2 "carol"]}
+              '[:find ?e ?v :where [?e :name ?v] [?e :nick ?v]] db))
 
-(deftest get-else-output-unifies-with-an-in-constant
-  (testing "the bound value may come from :in rather than a pattern"
-    (let [db (seam-db)]
-      (both #{[2 "carol"]}
-            '[:find ?e ?v :in $ ?v :where [?e :name _] [(get-else $ ?e :nick "zzz") ?v]]
-            db "carol"))))
+      (testing "a get-else writing into a bound var constrains it"
+        (both #{[2 "carol"]}
+              '[:find ?e ?v :where [?e :name ?v] [(get-else $ ?e :nick "zzz") ?v]] db)
+        ;; the default DOES satisfy the obligation when it matches: dave has no
+        ;; nick so "dave" is compared, and carol still qualifies on her real one
+        (both #{[2 "carol"] [3 "dave"]}
+              '[:find ?e ?v :where [?e :name ?v] [(get-else $ ?e :nick "dave") ?v]] db))
 
-(deftest function-output-unifies
-  (testing "a plain function output writing into a bound var constrains it"
-    (let [db (seam-db)]
-      (both #{[3 10]}
-            '[:find ?e ?s :where [?e :score ?s] [(+ 5 5) ?s]] db))))
+      (testing "a real value sorting BEFORE the obligated one is still present"
+        ;; the presence probe used to seek at the obligated value, so alice's
+        ;; "al" was skipped, the attribute read as absent, and the default was
+        ;; planted — keeping a row whose real nick disagrees
+        (both #{[3 "zzz"]}
+              '[:find ?e ?v :in $ ?v :where [?e :name _] [(get-else $ ?e :nick "zzz") ?v]]
+              db "zzz"))
 
-(deftest tuple-binding-unifies
-  (testing "each slot of a tuple binding is its own obligation"
-    (let [db (seam-db)]
-      ;; [?n 10] against a bound ?n and a bound ?s: only the entity whose
-      ;; score is 10 survives, and ?n keeps the value the database holds
-      (both #{[3 "dave" 10]}
-            '[:find ?e ?n ?s :where
-              [?e :name ?n] [?e :score ?s] [(vector ?n 10) [?n ?s]]] db))))
+      (testing "the same, through the card-many merge kernel"
+        (both #{[3 "zzz"]}
+              '[:find ?e ?v :in $ ?v :where [?e :name _] [?e :tag _] [(get-else $ ?e :nick "zzz") ?v]]
+              db "zzz"))
 
-(deftest collection-binding-unifies
-  (testing "a collection binding filters rather than overwrites"
-    (let [db (seam-db)]
-      (both #{[1 20] [3 10]}
-            '[:find ?e ?s :where
-              [?e :score ?s] [(identity [10 20]) [?s ...]]] db))))
+      (testing "the bound value may come from :in rather than a pattern"
+        (both #{[2 "carol"]}
+              '[:find ?e ?v :in $ ?v :where [?e :name _] [(get-else $ ?e :nick "zzz") ?v]]
+              db "carol"))
 
-(deftest repeated-rule-head-var-unifies
-  (testing "a variable repeated in a rule HEAD binds one value, not nil"
-    (let [db (seam-db)]
-      (both #{[20 20] [30 30] [10 10]}
-            '[:find ?x ?y :in $ % :where (same ?x ?y)]
-            db '[[(same ?a ?a) [?e :score ?a]]]))))
+      (testing "a plain function output writing into a bound var constrains it"
+        (both #{[3 10]}
+              '[:find ?e ?s :where [?e :score ?s] [(+ 5 5) ?s]] db))
+
+      (testing "each slot of a tuple binding is its own obligation"
+        (both #{[3 "dave" 10]}
+              '[:find ?e ?n ?s :where
+                [?e :name ?n] [?e :score ?s] [(vector ?n 10) [?n ?s]]] db))
+
+      (testing "a collection binding filters rather than overwrites"
+        (both #{[1 20] [3 10]}
+              '[:find ?e ?s :where
+                [?e :score ?s] [(identity [10 20]) [?s ...]]] db))
+
+      (testing "a variable repeated in a rule HEAD binds one value, not nil"
+        (both #{[20 20] [30 30] [10 10]}
+              '[:find ?x ?y :in $ % :where (same ?x ?y)]
+              db '[[(same ?a ?a) [?e :score ?a]]]))
+
+      (testing "a rule head obligation the caller collapses is not an error"
+        ;; substitution turns the appended [(identity ?a) ?a__1] into
+        ;; [(identity ?e) ?e], which the planner cannot resolve inside not-join
+        ;; — it used to raise "Cannot resolve any more clauses" here. No entity
+        ;; id equals a score, so `(same ?e ?e)` matches nothing, the negation
+        ;; excludes nothing, and every entity is returned. ANSWERING is the
+        ;; property under test.
+        (both #{[1] [2] [3]}
+              '[:find ?e :in $ % :where [?e :score _] (not-join [?e] (same ?e ?e))]
+              db '[[(same ?a ?a) [?e :score ?a]]])))))
