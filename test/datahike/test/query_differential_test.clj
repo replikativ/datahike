@@ -626,14 +626,18 @@
    classes still fails the build immediately, and `known-shared-wrong-is-still-
    needed` fails when an entry stops matching — so the change that fixes a
    class is forced to delete its entry rather than leave it accumulating."
-  [{:id :output-var-rebind
-    :why (str "an output binding whose target var is already bound must UNIFY "
-              "(Datomic; and datahike already unifies for repeated vars inside "
-              "one clause, #912/#913). Today get-else ignores the obligation on "
-              "the planner and the base engine overwrites it; tuple bindings "
-              "overwrite on both. Fixed by the binding-seam work — delete this "
-              "entry then.")
-    :match? (fn [spec] (boolean (:rebind? spec)))}])
+  ;; EMPTY — and that is the point. The one entry here was :output-var-rebind:
+  ;; an output binding whose target var is already bound must UNIFY (Datomic,
+  ;; and datahike already did so for a var repeated inside ONE clause,
+  ;; #912/#913). get-else ignored the obligation on the planner while the base
+  ;; engine overwrote it, and tuple bindings overwrote on both.
+  ;;
+  ;; The binding-seam work fixed the law at every site, so the class stopped
+  ;; reproducing and `known-shared-wrong-is-still-needed` FAILED — which is
+  ;; precisely what forced this deletion instead of leaving a whole class of
+  ;; divergence permanently unreported. Keep it empty until something genuinely
+  ;; needs listing.
+  [])
 
 (def ^:private oracle-known (atom {}))
 
@@ -811,8 +815,20 @@
                    [?e :name ?v] [(get-else $ ?e :nick "zzz") ?v]]
           answer (binding [q/*disable-planner* false q/*query-result-cache?* false]
                    (set (d/q canary db)))]
-      (doseq [{:keys [id why]} known-shared-wrong]
+      (if-let [entry (first known-shared-wrong)]
+        ;; Something is listed: the canary must still reproduce, or the entry is
+        ;; stale and is silencing a class that now works.
         (is (seq answer)
-            (str "the canary for known-wrong class " id " now answers correctly — "
-                 "DELETE the entry from known-shared-wrong so the class is "
-                 "enforced again, and drop this canary with it. Context: " why))))))
+            (str "the canary for known-wrong class " (:id entry) " now answers "
+                 "correctly — DELETE the entry from known-shared-wrong so the "
+                 "class is enforced again. Context: " (:why entry)))
+        ;; Nothing is listed, which is the goal state. Assert the law the empty
+        ;; list is claiming: the canary selects only entities whose nick equals
+        ;; their name, and alice's does not. This keeps the test meaningful with
+        ;; an empty allowlist — a `doseq` over nothing asserts nothing, and a
+        ;; test that cannot fail is the exact silence this file exists to remove.
+        (is (empty? answer)
+            (str "known-shared-wrong is empty, so the binding-seam law is "
+                 "claimed to hold everywhere — but the canary still answers "
+                 (pr-str answer)
+                 ". Either re-list the class or fix the regression."))))))
