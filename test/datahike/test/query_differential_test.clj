@@ -626,18 +626,27 @@
    classes still fails the build immediately, and `known-shared-wrong-is-still-
    needed` fails when an entry stops matching — so the change that fixes a
    class is forced to delete its entry rather than leave it accumulating."
-  ;; EMPTY — and that is the point. The one entry here was :output-var-rebind:
-  ;; an output binding whose target var is already bound must UNIFY (Datomic,
-  ;; and datahike already did so for a var repeated inside ONE clause,
-  ;; #912/#913). get-else ignored the obligation on the planner while the base
-  ;; engine overwrote it, and tuple bindings overwrote on both.
+  ;; The :output-var-rebind entry that lived here is GONE: the binding-seam
+  ;; work fixed the law at every site, the canary failed, and the entry was
+  ;; deleted — which is the mechanism working as designed.
   ;;
-  ;; The binding-seam work fixed the law at every site, so the class stopped
-  ;; reproducing and `known-shared-wrong-is-still-needed` FAILED — which is
-  ;; precisely what forced this deletion instead of leaving a whole class of
-  ;; divergence permanently unreported. Keep it empty until something genuinely
-  ;; needs listing.
-  [])
+  ;; What remains is a DIFFERENT bug the same axis reaches, previously hidden
+  ;; inside that blanket entry: a scalar :in constant is folded into a function
+  ;; clause's OUTPUT BINDING position, producing `[(upper-case "alice") "alice"]`,
+  ;; which the binding parser rejects. The planner therefore RAISES where the
+  ;; base engine answers. Loud, not silent, and pre-existing — the fix belongs
+  ;; in const-folding (#932's seam), not in the binding seam.
+  [{:id :fn-output-folded-in-const
+    :why (str "a scalar :in constant is folded into a function clause's output "
+              "binding position, so the planner raises \"Cannot parse binding\" "
+              "where the base engine answers. Fix in const-folding: do not "
+              "substitute into a binding position. Delete this entry then.")
+    ;; Matches the whole rebind axis rather than the function modifiers,
+    ;; because `build-query` DEGRADES modifiers (`:pred-lt` becomes `:fn-upper`
+    ;; when the shape has no :score), so the spec does not name the modifier the
+    ;; query actually used. Coarser than ideal; the canary below is what pins
+    ;; the specific bug, and it fails the moment const-folding is fixed.
+    :match? (fn [spec] (boolean (:rebind? spec)))}])
 
 (def ^:private oracle-known (atom {}))
 
@@ -804,24 +813,24 @@
                                :db/cardinality :db.cardinality/one}])
           _ (d/transact conn [{:db/id 1 :name "alice" :nick "al"}])
           db (d/db conn)
-          ;; `?v` is bound by the pattern; the get-else writes into it. Under
-          ;; the law this selects the entities whose nick equals their name —
-          ;; alice's does not — so an answer with any row IS the bug.
-          ;;
-          ;; Deliberately NOT a plain function output: the planner already
-          ;; unifies those, so a canary built on one reports "fixed" while
-          ;; get-else is still broken.
-          canary '[:find ?e ?v :where
-                   [?e :name ?v] [(get-else $ ?e :nick "zzz") ?v]]
-          answer (binding [q/*disable-planner* false q/*query-result-cache?* false]
-                   (set (d/q canary db)))]
+          ;; The canary must reproduce the class that is STILL listed: a
+          ;; function output written into a variable bound by a scalar :in.
+          ;; Const-folding substitutes the constant into the binding position,
+          ;; so the planner raises while the base engine answers.
+          canary '[:find ?e :in $ ?n :where
+                   [?e :name ?n] [(clojure.string/upper-case ?n) ?n]]
+          answer (try
+                   (binding [q/*disable-planner* false q/*query-result-cache?* false]
+                     (set (d/q canary db "alice")))
+                   (catch Exception _ ::raised))]
       (if-let [entry (first known-shared-wrong)]
         ;; Something is listed: the canary must still reproduce, or the entry is
         ;; stale and is silencing a class that now works.
-        (is (seq answer)
+        (is (= ::raised answer)
             (str "the canary for known-wrong class " (:id entry) " now answers "
-                 "correctly — DELETE the entry from known-shared-wrong so the "
-                 "class is enforced again. Context: " (:why entry)))
+                 (pr-str answer) " instead of raising — DELETE the entry from "
+                 "known-shared-wrong so the class is enforced again. Context: "
+                 (:why entry)))
         ;; Nothing is listed, which is the goal state. Assert the law the empty
         ;; list is claiming: the canary selects only entities whose nick equals
         ;; their name, and alice's does not. This keeps the test meaningful with
