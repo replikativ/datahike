@@ -400,6 +400,33 @@
           (eq-ok? eq-tx (datom/datom-tx d) d scan-d merge-datoms))))
 
 #?(:clj
+   (defmacro ^:private temporal-merge-datom-present?
+     "Does merge datom `d` show the attribute PRESENT for this entity at this
+      point in time — entity, attribute and the temporal filters — WITHOUT
+      testing the equality obligations (v-ground, eq-v, eq-tx)?
+
+      For an OPTIONAL merge those are different questions. `get-else` is total
+      over ENTITIES: absent means plant the default, but present-and-failing-an-
+      obligation means EXCLUDE the row. Folding both into one `found?` made a
+      failed obligation look like a miss, so the default was planted and the
+      planner asserted values the database never held — on every temporal view.
+      v-ground counts as an obligation here because the planner substitutes a
+      bound output variable into it."
+     [d eid ra scan-d temporal-tx-filter added-filter]
+     (let [d# (with-meta d {:tag 'datahike.datom.Datom})]
+       `(and (== (.-e ~d#) ~eid) (= (.-a ~d#) ~ra)
+             (or (nil? ~temporal-tx-filter) (~temporal-tx-filter ~d#))
+             (or (nil? ~added-filter) (= (datom/datom-added ~d#) ~added-filter))))))
+
+#?(:cljs
+   (defn- temporal-merge-datom-present?
+     "See the :clj macro of the same name."
+     [d eid ra _scan-d temporal-tx-filter added-filter]
+     (and (== (.-e d) eid) (= (.-a d) ra)
+          (or (nil? temporal-tx-filter) (temporal-tx-filter d))
+          (or (nil? added-filter) (= (datom/datom-added d) added-filter)))))
+
+#?(:clj
    (defmacro ^:private temporal-merge-datom-match?
      "Like merge-datom-match? but also checks temporal-tx-filter and added-filter.
       Type-hints d and scan-d internally."
@@ -1935,9 +1962,24 @@
                                            ;; datom when no version matched. :historical forces
                                            ;; every merge card-many, so a card-one get-else (e.g.
                                            ;; the valid-at :db.valid/to default) lands here.
+                                           ;; Nothing matched. Two different reasons, and only
+                                           ;; one of them licenses the default: the attribute may
+                                           ;; be ABSENT at this point in time, or present with a
+                                           ;; value that fails an obligation — in which case the
+                                           ;; row is excluded rather than defaulted.
                                            (when (and (not @matched?) merge-optional (aget merge-optional mi))
-                                             (aset merge-datoms mi (datom eid ra (aget merge-defaults mi) tx0))
-                                             (process-merges (inc mi))))))))
+                                             (let [present? (some (fn [^Datom d]
+                                                                    (temporal-merge-datom-present?
+                                                                     d eid ra scan-d temporal-tx-filter added-filter))
+                                                                  mslice)
+                                                   dv (aget merge-defaults mi)
+                                                   dd (datom eid ra dv tx0)]
+                                               (when (and (not present?)
+                                                          (or (not vg?) (val-eq? dv vgv))
+                                                          (eq-ok? eq-v dv dd scan-d merge-datoms)
+                                                          (eq-ok? eq-tx (datom/datom-tx dd) dd scan-d merge-datoms))
+                                                 (aset merge-datoms mi dd)
+                                                 (process-merges (inc mi))))))))))
                                ;; Card-one merge
                                  (if (nil? temporal-type)
                                    (let [probe (datom eid ra vgv tx0)
@@ -1951,12 +1993,27 @@
                                          found?
                                          (do (aset merge-datoms mi d)
                                              (process-merges (inc mi)))
-                                         ;; Optional merge (get-else): emit synthetic
-                                         ;; default-valued datom on miss.
+                                         ;; Optional merge (get-else). Presence is re-sought at
+                                         ;; the entity's FIRST datom for the attribute, because
+                                         ;; the probe above seeks at `vgv` and a real value
+                                         ;; sorting before it would look absent. Present-but-
+                                         ;; failing-an-obligation excludes the row; only genuine
+                                         ;; absence licenses the default, which must itself
+                                         ;; satisfy the obligations.
                                          (and merge-optional (aget merge-optional mi))
-                                         (do (aset merge-datoms mi
-                                                   (datom eid ra (aget merge-defaults mi) tx0))
-                                             (process-merges (inc mi))))))
+                                         (let [^Datom od (if vg?
+                                                           (.lookupGE ^PersistentSortedSet eavt-pss (datom eid ra nil tx0))
+                                                           d)
+                                               present? (and od (temporal-merge-datom-present?
+                                                                 od eid ra scan-d temporal-tx-filter added-filter))
+                                               dv (aget merge-defaults mi)
+                                               dd (datom eid ra dv tx0)]
+                                           (when (and (not present?)
+                                                      (or (not vg?) (val-eq? dv vgv))
+                                                      (eq-ok? eq-v dv dd scan-d merge-datoms)
+                                                      (eq-ok? eq-tx (datom/datom-tx dd) dd scan-d merge-datoms))
+                                             (aset merge-datoms mi dd)
+                                             (process-merges (inc mi)))))))
                                  ;; Temporal card-one: for as-of/since, try direct lookupGE
                                  ;; on current EAVT (avoids lazy-seq merge overhead per entity).
                                    (if (and (not= temporal-type :historical) temporal-tx-filter)
@@ -1981,11 +2038,33 @@
                                                    (process-merges (inc mi))))
                                            (cond
                                              anti? (process-merges (inc mi))
-                                             ;; Optional merge: emit default on miss
+                                             ;; Optional merge. Neither the current-EAVT probe nor
+                                             ;; visible-eavt-datom produced a match, but BOTH were
+                                             ;; asked with the obligations folded in, so this is
+                                             ;; not yet evidence of absence. Ask again for presence
+                                             ;; alone (entity + attribute + temporal filters); if
+                                             ;; the attribute IS there, the row is excluded rather
+                                             ;; than defaulted.
                                              (and merge-optional (aget merge-optional mi))
-                                             (do (aset merge-datoms mi
-                                                       (datom eid ra (aget merge-defaults mi) tx0))
-                                                 (process-merges (inc mi)))))))
+                                             (let [^Datom od (.lookupGE ^PersistentSortedSet eavt-pss
+                                                                        (datom eid ra nil tx0))
+                                                   present-now? (and od (temporal-merge-datom-present?
+                                                                         od eid ra scan-d temporal-tx-filter added-filter))
+                                                   present-t? (and (not present-now?)
+                                                                   (= temporal-type :as-of)
+                                                                   (some? (visible-eavt-datom
+                                                                           origin-db db temporal-type (:temporal-eavt origin-db)
+                                                                           eid ra false nil -1 -1 scan-d
+                                                                           temporal-tx-filter added-filter
+                                                                           merge-datoms)))
+                                                   dv (aget merge-defaults mi)
+                                                   dd (datom eid ra dv tx0)]
+                                               (when (and (not present-now?) (not present-t?)
+                                                          (or (not vg?) (val-eq? dv vgv))
+                                                          (eq-ok? eq-v dv dd scan-d merge-datoms)
+                                                          (eq-ok? eq-tx (datom/datom-tx dd) dd scan-d merge-datoms))
+                                                 (aset merge-datoms mi dd)
+                                                 (process-merges (inc mi))))))))
                                    ;; Historical: full temporal-merge-slice (needs all versions)
                                      (let [from-d (datom eid ra (when vg? vgv) tx0)
                                            to-d (datom eid ra (when vg? vgv) txmax)
@@ -2000,11 +2079,22 @@
                                                                  mslice)]
                                            (do (aset merge-datoms mi d)
                                                (process-merges (inc mi)))
-                                           ;; Optional merge: emit default when no version matched
+                                           ;; Optional merge: only genuine absence licenses the
+                                           ;; default — a version that exists but fails an
+                                           ;; obligation excludes the row instead.
                                            (when (and merge-optional (aget merge-optional mi))
-                                             (aset merge-datoms mi
-                                                   (datom eid ra (aget merge-defaults mi) tx0))
-                                             (process-merges (inc mi))))))))))))]
+                                             (let [present? (some (fn [^Datom d]
+                                                                    (temporal-merge-datom-present?
+                                                                     d eid ra scan-d temporal-tx-filter added-filter))
+                                                                  mslice)
+                                                   dv (aget merge-defaults mi)
+                                                   dd (datom eid ra dv tx0)]
+                                               (when (and (not present?)
+                                                          (or (not vg?) (val-eq? dv vgv))
+                                                          (eq-ok? eq-v dv dd scan-d merge-datoms)
+                                                          (eq-ok? eq-tx (datom/datom-tx dd) dd scan-d merge-datoms))
+                                                 (aset merge-datoms mi dd)
+                                                 (process-merges (inc mi))))))))))))))]
                    (process-merges 0)))))))
        :cljs
        (doseq [scan-d slice
