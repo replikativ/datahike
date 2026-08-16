@@ -2825,9 +2825,15 @@
    For new vars: adds columns to each tuple.
    For already-bound vars: acts as a filter (keeps tuple only when function result = existing value).
    Returns updated var-index with new var positions.
+   `consts` matters as much as `var-index`: a variable bound by a scalar `:in`
+   has NO tuple column, so without it an output written into such a variable
+   was never checked and the clause silently bound instead of constraining —
+   `[?e :name ?n] [(upper-case ?n) ?n]` with `?n` supplied as \"alice\" answered
+   with the row instead of excluding it.
+
    No exception catching — matches the Relation engine (bind-by-fn) which lets
    exceptions propagate and only treats nil return as tuple filter."
-  [result-list fn-ops var-index]
+  [result-list fn-ops var-index consts]
   (let [resolved (resolve-pred-fns fn-ops)]
     (reduce
      (fn [vi [fn-op f]]
@@ -2836,6 +2842,10 @@
              bvars (binding-vars bind-form)
              ;; Separate already-bound vars from new vars
              already-bound (filterv #(and (symbol? %) (analyze/free-var? %) (contains? vi %)) bvars)
+             ;; …and the ones bound by a scalar :in, which have no column
+             const-bound (filterv #(and (symbol? %) (analyze/free-var? %)
+                                        consts (contains? consts %))
+                                  bvars)
              ;; New vars get appended to tuple
              new-vi (reduce (fn [m bv]
                               (if (and (symbol? bv) (analyze/free-var? bv)
@@ -2859,9 +2869,10 @@
                    val (apply f argv)]
                (if (some? val)
                  ;; Check already-bound vars: function result must match existing value
-                 (if (every? (fn [bv]
-                               (= val (aget tuple (int (get vi bv)))))
-                             already-bound)
+                 (if (and (every? (fn [bv]
+                                    (= val (aget tuple (int (get vi bv)))))
+                                  already-bound)
+                          (every? (fn [bv] (= val (get consts bv))) const-bound))
                    (let [;; Extend tuple with new value(s) for unbound vars
                          old-len (alength tuple)
                          new-len (count new-vi)
@@ -3645,7 +3656,7 @@
               (when (and has-post-ops? (seq pred-ops))
                 (post-filter-preds result-list pred-ops var-index))
               (let [var-index (if (and has-post-ops? (seq fn-ops))
-                                (post-apply-fns result-list fn-ops var-index)
+                                (post-apply-fns result-list fn-ops var-index consts)
                                 var-index)]
                 (when (or has-post-ops? (not= layout find-vars))
                   (project-tuples result-list find-vars var-index consts))))))
@@ -3658,7 +3669,7 @@
             (when (seq not-join-ops)
               (post-filter-not-joins result-list not-join-ops var-index db outer-ctx))
             (let [var-index (if (seq fn-ops)
-                              (post-apply-fns result-list fn-ops var-index)
+                              (post-apply-fns result-list fn-ops var-index consts)
                               var-index)]
               (project-tuples result-list find-vars var-index consts))))
         ;; Convert result-list → final result with appropriate dedup strategy

@@ -626,26 +626,24 @@
    classes still fails the build immediately, and `known-shared-wrong-is-still-
    needed` fails when an entry stops matching — so the change that fixes a
    class is forced to delete its entry rather than leave it accumulating."
-  ;; The :output-var-rebind entry that lived here is GONE: the binding-seam
-  ;; work fixed the law at every site, the canary failed, and the entry was
-  ;; deleted — which is the mechanism working as designed.
-  ;;
-  ;; What remains is a DIFFERENT bug the same axis reaches, previously hidden
-  ;; inside that blanket entry: a scalar :in constant is folded into a function
-  ;; clause's OUTPUT BINDING position, producing `[(upper-case "alice") "alice"]`,
-  ;; which the binding parser rejects. The planner therefore RAISES where the
-  ;; base engine answers. Loud, not silent, and pre-existing — the fix belongs
-  ;; in const-folding (#932's seam), not in the binding seam.
+  ;; An entry may excuse ONLY the failure KIND it declares. That restriction is
+  ;; not decoration: the previous entry matched the whole rebind axis with no
+  ;; kind, and while it sat here it swallowed 5 SILENT wrong answers on
+  ;; history/as-of that the corpus had genuinely found. A coarse entry is a hole
+  ;; the size of its matcher. With `:kind :raise`, a divergence on this axis
+  ;; where the planner RAISES is excused, and one where it quietly answers
+  ;; differently still fails the build.
   [{:id :fn-output-folded-in-const
+    :kind :raise
     :why (str "a scalar :in constant is folded into a function clause's output "
-              "binding position, so the planner raises \"Cannot parse binding\" "
-              "where the base engine answers. Fix in const-folding: do not "
-              "substitute into a binding position. Delete this entry then.")
-    ;; Matches the whole rebind axis rather than the function modifiers,
-    ;; because `build-query` DEGRADES modifiers (`:pred-lt` becomes `:fn-upper`
-    ;; when the shape has no :score), so the spec does not name the modifier the
-    ;; query actually used. Coarser than ideal; the canary below is what pins
-    ;; the specific bug, and it fails the moment const-folding is fixed.
+              "binding position, producing e.g. [(upper-case \"alice\") \"alice\"], "
+              "which the binding parser rejects — so the planner raises where the "
+              "base engine answers. The folding is also how the planner ENCODES "
+              "the obligation for a get-else (it becomes v-ground, which the merge "
+              "kernels now enforce), so the fix is not simply to stop folding: the "
+              "binding position needs to carry the obligation without being parsed "
+              "as a binding. Belongs in const-folding, #932's seam. "
+              "Delete this entry then.")
     :match? (fn [spec] (boolean (:rebind? spec)))}])
 
 (def ^:private oracle-known (atom {}))
@@ -731,7 +729,12 @@
                                                  known-shared-wrong))
                       diverged? (or (not= base planner)
                                     (and orig-planner (not= orig-planner planner)))
-                      known-rebind? (boolean (and known-class diverged?))]
+                      ;; …and only when the failure is the KIND the entry declares.
+                      raised? (= ::raised planner)
+                      known-rebind? (boolean (and known-class diverged?
+                                                  (case (:kind known-class)
+                                                    :raise raised?
+                                                    true)))]
                   (when known-rebind?
                     (swap! oracle-known update (:id known-class) (fnil inc 0)))
                   (when orig-planner
