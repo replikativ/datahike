@@ -284,31 +284,74 @@
 (defn- normalize-repeated-var-clauses [clauses fresh!]
   (into [] (mapcat #(normalize-repeated-var-clause % fresh!)) clauses))
 
+(defn- query-var? [x]
+  (and (symbol? x) (= \? (first (name x)))))
+
+(defn- head-repeats-var?
+  "True when a rule head names the same variable in two argument positions."
+  [head]
+  (and (seq? head)
+       (let [vs (filter query-var? (rest head))]
+         (not= (count vs) (count (distinct vs))))))
+
+(defn- normalize-rule-head
+  "Rewrite `[(same ?a ?a) body…]` into `[(same ?a ?a__1) body… [(identity ?a) ?a__1]]`.
+
+   A repeated head parameter says the caller's two arguments must be EQUAL —
+   `(same ?x ?y)` may only answer where `?x` = `?y`. Both engines substitute
+   head parameters through a `zipmap` KEYED ON THE PARAMETER LIST
+   (`expand-rule` here, `rename-rule-branch` in lower.cljc), and a repeated key
+   collapses last-wins, so the earlier position vanished from the substitution
+   entirely and projected `nil`. Worse, a GROUND argument in that position was
+   silently dropped, so `(same 20 ?y)` answered over every value.
+
+   The obligation is emitted as a BINDING clause rather than an `=` predicate
+   because it has to work in both directions: the caller may pass an unbound
+   variable there (which the binding fills in) or a bound one (which it
+   filters). It is APPENDED, since the body is normally what produces the
+   value."
+  [rule fresh!]
+  (let [head (first rule)
+        [params _seen extra]
+        (reduce (fn [[ps seen extra] p]
+                  (if (and (query-var? p) (contains? seen p))
+                    (let [f (fresh! p)]
+                      [(conj ps f) seen (conj extra [(list 'identity p) f])])
+                    [(conj ps p) (conj seen p) extra]))
+                [[] #{} []]
+                (rest head))]
+    (into [(cons (first head) params)]
+          (concat (rest rule) extra))))
+
 (defn- normalize-rule-bodies
-  "Rewrite repeated vars in rule BODIES. Rules arrive as the argument bound to
-   `%`, never as `:where` clauses, so this is the only place the seam can reach
-   them — and it is the one scope where BOTH engines get a self-join wrong, so no
-   differential test can flag it.
+  "Rewrite repeated vars in rule BODIES and HEADS. Rules arrive as the argument
+   bound to `%`, never as `:where` clauses, so this is the only place the seam
+   can reach them — and it is the one scope where BOTH engines get a self-join
+   wrong, so no differential test can flag it.
 
-   Only bodies are rewritten. A repeated var in a rule HEAD — `[(pair ?a ?a) …]`
-   — is a constraint between the caller's arguments, which the rule-invocation
-   machinery already handles, not a pattern position.
+   Heads were originally excluded on the reasoning that a repeated parameter is
+   a constraint between the caller's arguments which the rule-invocation
+   machinery already handles. It does not: see `normalize-rule-head`.
 
-   Returns `rules` unchanged (identical object) when no body repeats a var."
+   Returns `rules` unchanged (identical object) when nothing repeats a var."
   [rules taken]
   (if-not (sequential? rules)
     rules
     (let [needs? (some (fn [rule]
                          (and (sequential? rule)
-                              (where-has-repeated-var? (rest rule))))
+                              (or (where-has-repeated-var? (rest rule))
+                                  (head-repeats-var? (first rule)))))
                        rules)]
       (if-not needs?
         rules
         (let [fresh! (fresh-var-fn (into taken (filter symbol?) (tree-seq coll? seq rules)))]
           (mapv (fn [rule]
                   (if (sequential? rule)
-                    (into [(first rule)]
-                          (normalize-repeated-var-clauses (rest rule) fresh!))
+                    (let [rule (if (head-repeats-var? (first rule))
+                                 (normalize-rule-head rule fresh!)
+                                 rule)]
+                      (into [(first rule)]
+                            (normalize-repeated-var-clauses (rest rule) fresh!)))
                     rule))
                 rules))))))
 
