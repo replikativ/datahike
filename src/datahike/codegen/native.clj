@@ -155,7 +155,6 @@
     ;; it, so the whole point of the operation is gone before it returns.
     warm-index! "Prefetches into a live connection's node cache - the FFI shape has no connection to warm"
     warm-datoms! "Prefetches into a live connection's node cache - the FFI shape has no connection to warm"
-    warm-seek! "Prefetches into a live connection's node cache - the FFI shape has no connection to warm"
     warm-db! "Prefetches into a live connection's node cache - the FFI shape has no connection to warm"})
 
 ;; =============================================================================

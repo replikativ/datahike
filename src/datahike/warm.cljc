@@ -1,7 +1,6 @@
 (ns datahike.warm
   "EXPERIMENTAL. Budget-bounded breadth-first index warming — the db-level entry
-   points behind `datahike.api/warm-index!`, `warm-datoms!`, `warm-seek!` and
-   `warm-db!`.
+   points behind `datahike.api/warm-index!`, `warm-datoms!` and `warm-db!`.
 
    > ⚠️ **EXPERIMENTAL.** The names and the option map may still change. Nothing
    > here affects results: a warm only moves nodes into the index's node cache
@@ -22,20 +21,34 @@
 
    ## Which entry point
 
-   `warm-datoms!` / `warm-seek!` take the same `[e a v tx]` components as
-   `d/datoms` / `d/seek-datoms` and are what you want whenever you know the scan
-   you are warming for. They build their bounds with datahike's OWN
-   `components->pattern` — the same call `datahike.db/contextual-datoms` makes —
-   so a warm and its scan cannot disagree. Hand-built `:from`/`:to` can, silently:
-   the pattern builder PERMUTES components per index (`:avet` reads `[a v e tx]`
-   and produces `datom(v, a, e, tx)`) and resolves idents and lookup refs on the
-   way. Get that wrong and you warm a valid-but-different subtree — no error, no
-   wrong answer, just a warm that misses and a query that quietly pays full price.
+   Three, and they differ only in WHAT gets warmed — the option map is the same
+   everywhere.
 
-   `warm-db!` is the connect-time shape: warm every index at once, sharing one
-   budget round-robin so `eavt` cannot eat it before `avet` gets any.
+   `warm-db!` is the connect-time shape: every index at once, sharing one budget
+   round-robin so `eavt` cannot eat it before `avet` gets any. Its `:indices`
+   option narrows that to a chosen few.
 
-   `warm-index!` is the raw form, taking `:from`/`:to` directly."
+   `warm-datoms!` is the scan-scoped one: it takes the same `[e a v tx]`
+   components as `d/datoms` (and, with `:unbounded? true`, as `d/seek-datoms`)
+   and warms exactly the subtree that scan will read.
+
+   `warm-index!` warms one whole index, bounded only by `:depth`/`:budget`.
+
+   ## Why range scoping has exactly ONE entry point
+
+   Scoping a warm to a key range means building datom bounds in the index's own
+   key order, and that is a step a caller cannot check. `components->pattern`
+   PERMUTES components per index (`:avet` reads `[a v e tx]` and produces
+   `datom(v, a, e, tx)`) and resolves idents and lookup refs on the way. Hand a
+   warm the wrong permutation and it warms a valid-but-different subtree: no
+   error, no wrong answer, just a warm that misses and a query that quietly pays
+   full price. Nothing short of a coverage check catches it.
+
+   So `warm-datoms!` is the only way to scope a warm to a range, and it builds
+   its bounds with datahike's OWN `components->pattern` — the same call
+   `datahike.db/contextual-datoms` makes — so a warm and its scan agree by
+   construction. `warm-index!` deliberately takes no `:from`/`:to`: shipping the
+   trap next to the fix is worse than shipping only the fix."
   (:require [datahike.index :as di]
             [datahike.db.utils :as dbu]
             [datahike.constants :as const]
@@ -66,11 +79,22 @@
   [db index-type]
   (get db index-type))
 
-(defn- base-opts [db opts]
-  (assoc opts :store-cache-size (get-in db [:config :store-cache-size])))
+(defn- base-opts
+  "The option map the walk gets, with `:store-cache-size` read off the db.
+
+   `:from`/`:to` are DROPPED here, and this is the only place they can be. The
+   walk supports key bounds and `warm-datoms!` puts them back immediately below;
+   what must not exist is a public entry point that takes them from a caller —
+   see this namespace's docstring on why a hand-built bound is a silent miss
+   rather than an error."
+  [db opts]
+  (-> opts
+      (dissoc :from :to)
+      (assoc :store-cache-size (get-in db [:config :store-cache-size]))))
 
 (defn warm-index!
-  "EXPERIMENTAL. Breadth-first warm of ONE index into its node cache.
+  "EXPERIMENTAL. Breadth-first warm of ONE whole index into its node cache,
+   bounded by `:depth` and `:budget`.
 
    Options:
      :depth   `:interior` (default) | `:with-leaves` | integer
@@ -78,16 +102,21 @@
               `:store-cache-size` — that cache is ENTRY-counted, so warming past
               it fetches nodes only to evict them
      :width   concurrent in-flight restores (default 64 on the JVM, 6 on cljs)
-     :from    :to  key bounds, as datoms in the index's own order
      :sync?   return the report (default true on the JVM) or a channel
+
+   Deliberately takes NO key range. Range scoping has exactly one entry point,
+   `warm-datoms!`, and it is the safe one: bounds must be datoms in the index's
+   own key order, which `components->pattern` reaches by PERMUTING the
+   components per index (`:avet` reads `[a v e tx]` and produces
+   `datom(v, a, e, tx)`) and resolving idents. A hand-built bound that gets that
+   wrong warms a valid-but-different subtree — no error, no wrong answer, just a
+   warm that misses — and nothing short of a coverage check notices. Shipping
+   the trap beside the fix is worse than shipping only the fix.
 
    Returns {:fetched :by-level :rounds :height :by-index :budget-left
    :budget-exhausted? :budget-clamped? :ms}. `:by-level` and `:budget-exhausted?`
    are the point of the report: they make a decaying warm visible as a metric
-   before it is visible in p99.
-
-   Prefer `warm-datoms!` / `warm-seek!` when you know the scan you are warming
-   for — see this namespace's docstring on why hand-built bounds are a footgun."
+   before it is visible in p99."
   ([db index-type] (warm-index! db index-type {}))
   ([db index-type opts]
    (if-let [idx (present db index-type)]
@@ -95,56 +124,57 @@
      (di/warm-result (di/zero-warm-report opts) opts))))
 
 (defn warm-datoms!
-  "EXPERIMENTAL. Warm exactly the subtree that `(d/datoms db index-type &
-   components)` will scan.
+  "EXPERIMENTAL. Warm exactly the subtree a components-scoped scan will read.
 
-   `components` is the same `[e a v tx]` prefix `d/datoms` takes, in the index's
-   own component order (`:avet` -> `[a v e tx]`), and may be shorter or empty.
+   Mirrors the two datahike scans that take `[e a v tx]` components:
+
+     (warm-datoms! db idx cs)                    <-> (d/datoms db idx & cs)
+     (warm-datoms! db idx cs {:unbounded? true}) <-> (d/seek-datoms db idx & cs)
+
+   (Looking for a `warm-seek!`? It is the second line. It was folded in here
+   rather than kept as a fourth entry point.)
+
+   `components` is that same prefix, in the index's own component order
+   (`:avet` -> `[a v e tx]`), and may be shorter or empty.
 
    The bounds come from `datahike.db.utils/components->pattern` — the SAME call
    `datahike.db/contextual-datoms` makes to build its `-slice` arguments, with
    the same `e0`/`tx0` and `emax`/`txmax` fills. That is the point of this
-   function: warm and scan derive their range from one function, so they agree by
-   construction rather than by the caller getting a permutation right.
+   function: warm and scan derive their range from one function, so they agree
+   by construction rather than by the caller getting a permutation right. It is
+   also why this is the ONLY entry point that scopes a warm to a range.
 
-   Takes the same options as `warm-index!` apart from `:from`/`:to`, which it
-   supplies. Returns `warm-index!`'s report."
+   Options are `warm-index!`'s, plus:
+
+     :unbounded?  false (default) — a bounded range, `d/datoms` semantics: the
+                  upper bound is the components pattern, so the work is
+                  proportional to the RANGE.
+                  true — READAHEAD, `d/seek-datoms` semantics: the upper bound
+                  is the END of the index (`datahike.db/contextual-seek-datoms`
+                  is asymmetric that way), so there is no range to be
+                  proportional to and `:budget` is the only thing bounding the
+                  work. That is the right shape for a cursor about to consume an
+                  unknown amount and the wrong shape for one reading a single
+                  head — size the budget to what you expect to consume.
+
+   Returns `warm-index!`'s report."
   ([db index-type components] (warm-datoms! db index-type components {}))
-  ([db index-type components opts]
+  ([db index-type components {:keys [unbounded?] :as opts}]
    (if-let [idx (present db index-type)]
      (let [bt (base-index-type index-type)]
        (di/-warm! idx (assoc (base-opts db opts)
                              :index-key index-type
                              :from (dbu/components->pattern db bt components
                                                             const/e0 const/tx0)
-                             :to   (dbu/components->pattern db bt components
-                                                            const/emax const/txmax))))
-     (di/warm-result (di/zero-warm-report opts) opts))))
-
-(defn warm-seek!
-  "EXPERIMENTAL. Warm forward from a `seek-datoms` position — READAHEAD, not a
-   bounded range.
-
-   `d/seek-datoms` is asymmetric: its lower bound is the components pattern but
-   its upper bound is `(datom emax nil nil txmax)`, i.e. the end of the index
-   (`datahike.db/contextual-seek-datoms`). So there is no range to be
-   proportional to here and `:budget` is the only thing bounding the work —
-   which is the right shape for a cursor that will consume an unknown amount,
-   and the wrong shape for one that will read a single head. Size the budget to
-   what you expect to consume."
-  ([db index-type components] (warm-seek! db index-type components {}))
-  ([db index-type components opts]
-   (if-let [idx (present db index-type)]
-     (di/-warm! idx (assoc (base-opts db opts)
-                           :index-key index-type
-                           :from (dbu/components->pattern db (base-index-type index-type)
-                                                          components const/e0 const/tx0)
-                           :to   (datom const/emax nil nil const/txmax)))
+                             :to   (if unbounded?
+                                     (datom const/emax nil nil const/txmax)
+                                     (dbu/components->pattern db bt components
+                                                              const/emax const/txmax)))))
      (di/warm-result (di/zero-warm-report opts) opts))))
 
 (defn warm-db!
   "EXPERIMENTAL. Warm every present index of `db`, sharing ONE budget
-   round-robin across them.
+   round-robin across them. The common case, and the connect-time shape.
 
    Round-robin rather than one index at a time: warming `eavt` to exhaustion
    while `avet` gets nothing is the wrong answer for a query that reads `avet`,
@@ -153,9 +183,8 @@
    the indices is SPLIT rather than eaten by whichever is enumerated first.
 
    Takes `warm-index!`'s options plus `:indices` — the index keys to consider,
-   defaulting to `index-keys`. `:from`/`:to` apply to every index, which is
-   rarely what you want across different orders; scope with `warm-datoms!`
-   instead.
+   defaulting to `index-keys`. A single-element `:indices` covers the one-index
+   case too.
 
    `:by-index` in the report says where the budget actually went."
   ([db] (warm-db! db {}))

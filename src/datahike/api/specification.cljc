@@ -888,9 +888,16 @@
     ;;
     ;; A cold reader's wall time is `misses x RTT` with NOTHING overlapping: a
     ;; scan asks for a node, blocks on the GET, and only then learns the next
-    ;; address. These four walk the index breadth-first instead, fetching each
+    ;; address. These three walk the index breadth-first instead, fetching each
     ;; level concurrently — a branch node holds every child address the moment
     ;; it is materialized, so no prediction is involved. See `datahike.warm`.
+    ;;
+    ;; Three and not more, on purpose. This is experimental surface: adding an
+    ;; entry point later is cheap, removing one is breaking. In particular there
+    ;; is exactly ONE way to scope a warm to a key range — `warm-datoms!`, which
+    ;; builds its bounds from datahike's own components->pattern — because a
+    ;; hand-built bound in the wrong permutation warms a valid-but-different
+    ;; subtree silently.
     ;;
     ;; `:supports-remote? false` deliberately: a warm moves nodes into the node
     ;; cache of the process that holds the index. Over HTTP that would be the
@@ -906,7 +913,7 @@
      :stability :experimental
      :supports-remote? false
      :referentially-transparent? false
-     :doc "EXPERIMENTAL. Budget-bounded breadth-first warm of ONE index into its node cache, fetching each level concurrently instead of discovering it one blocking round trip at a time. Options: :depth (:interior | :with-leaves | integer), :budget, :width, :from/:to, :sync?. Prefer warm-datoms! / warm-seek! when the scan is known — they build their bounds from datahike's own components->pattern, so warm and scan cannot disagree."
+     :doc "EXPERIMENTAL. Budget-bounded breadth-first warm of ONE whole index into its node cache, fetching each level concurrently instead of discovering it one blocking round trip at a time. Options: :depth (:interior | :with-leaves | integer), :budget, :width, :sync?. Takes no key range on purpose: range scoping has exactly one entry point, warm-datoms!, which builds its bounds from datahike's own components->pattern — a hand-built bound in the wrong per-index permutation warms a valid-but-different subtree with no error and no wrong answer, just a warm that misses."
      :examples [{:desc "Warm the interior (branch levels only) of eavt"
                  :code "(warm-index! @conn :eavt {:depth :interior :budget 2000})"}
                 {:desc "Warm everything, leaves included, with a small budget"
@@ -922,26 +929,14 @@
      :stability :experimental
      :supports-remote? false
      :referentially-transparent? false
-     :doc "EXPERIMENTAL. Warm exactly the subtree that the matching `datoms` call will scan. `components` is the same [e a v tx] prefix `datoms` takes, in the index's own component order (:avet -> [a v e tx]), and may be shorter or empty. Bounds are built with datahike's own components->pattern, which permutes components per index and resolves idents — a hand-built :from/:to gets that wrong silently, warming a valid-but-different subtree."
+     :doc "EXPERIMENTAL. Warm exactly the subtree a components-scoped scan will read. Mirrors both component-taking scans: without :unbounded? it corresponds to `datoms` (upper bound = the components pattern, cost proportional to the range), with {:unbounded? true} to `seek-datoms` (upper bound = the end of the index, so it is readahead and :budget is the only bound). `components` is the same [e a v tx] prefix those take, in the index's own component order (:avet -> [a v e tx]), and may be shorter or empty. Bounds are built with datahike's own components->pattern, which permutes components per index and resolves idents — which is why this is the only entry point that scopes a warm to a range."
      :examples [{:desc "Warm what (datoms db :eavt 300) will read"
                  :code "(warm-datoms! @conn :eavt [300])"}
                 {:desc "Warm an avet range, components in avet order"
-                 :code "(warm-datoms! @conn :avet [:item/id 300] {:depth :with-leaves})"}]
+                 :code "(warm-datoms! @conn :avet [:item/id 300] {:depth :with-leaves})"}
+                {:desc "Read ahead from a seek-datoms position"
+                 :code "(warm-datoms! @conn :eavt [300] {:unbounded? true :budget 64})"}]
      :impl datahike.warm/warm-datoms!}
-
-    warm-seek!
-    {:args [:function
-            [:=> [:cat :datahike/SDB :datahike/SWarmIndex [:vector :any]] :map]
-            [:=> [:cat :datahike/SDB :datahike/SWarmIndex [:vector :any] :map] :map]]
-     :ret :map
-     :categories [:maintenance :index :advanced]
-     :stability :experimental
-     :supports-remote? false
-     :referentially-transparent? false
-     :doc "EXPERIMENTAL. Warm forward from a `seek-datoms` position — READAHEAD, not a bounded range. `seek-datoms` is asymmetric: its lower bound is the components pattern but its upper bound is the end of the index, so :budget is the only thing bounding the work. Size it to what you expect to consume."
-     :examples [{:desc "Read ahead from a seek position"
-                 :code "(warm-seek! @conn :eavt [300] {:budget 64})"}]
-     :impl datahike.warm/warm-seek!}
 
     warm-db!
     {:args [:function
@@ -952,11 +947,13 @@
      :stability :experimental
      :supports-remote? false
      :referentially-transparent? false
-     :doc "EXPERIMENTAL. Warm every present index of a database, sharing ONE budget round-robin across them so eavt cannot eat it before avet gets any. The connect-time shape. Budget is clamped to 0.8x :store-cache-size, which is entry-counted — warming past it fetches nodes only to evict them. :by-index in the returned report says where the budget went."
+     :doc "EXPERIMENTAL. Warm every present index of a database, sharing ONE budget round-robin across them so eavt cannot eat it before avet gets any. The connect-time shape, and the one to reach for. Takes warm-index!'s options plus :indices, the index keys to consider — which covers warming a chosen few, or one. Budget is clamped to 0.8x :store-cache-size, which is entry-counted — warming past it fetches nodes only to evict them. :by-index in the returned report says where the budget went."
      :examples [{:desc "Warm the interior of every index at connect"
                  :code "(warm-db! @conn)"}
                 {:desc "Spend a fixed budget across all indices, leaves included"
-                 :code "(warm-db! @conn {:depth :with-leaves :budget 500})"}]
+                 :code "(warm-db! @conn {:depth :with-leaves :budget 500})"}
+                {:desc "Narrow it to the indices a workload actually reads"
+                 :code "(warm-db! @conn {:indices [:eavt :avet] :budget 500})"}]
      :impl datahike.warm/warm-db!}
 
     ;; =========================================================================

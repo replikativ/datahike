@@ -14,12 +14,18 @@
        zero delta on the storage's `:reads` counter, since a warm of the wrong
        subtree fails nothing weaker
 
+   Every range assertion goes through `warm-datoms!`, because that is the only
+   public way to scope a warm to a range: bounds must be datoms in the index's
+   own key order and `components->pattern` gets there by permuting per index, so
+   `warm-index!` deliberately takes no `:from`/`:to` at all.
+
    A small branching factor gets a multi-level tree out of a few hundred datoms;
    the walk is branching-factor-independent, only the interior/total ratio is not.
 
    JVM-only (`.clj`, not `.cljc`): the walk's ClojureScript arm is a marked TODO
    and `-warm!` short-circuits there with `:unsupported :cljs`."
   (:require [clojure.test :refer [deftest is testing]]
+            [clojure.string :as str]
             [clojure.core.async :as async]
             [datahike.api :as d]
             [datahike.warm :as warm])
@@ -154,38 +160,64 @@
         (finally (d/release conn))))))
 
 ;; ── range scoping ───────────────────────────────────────────────────────────
+;;
+;; Through `warm-datoms!` only. `warm-index!` used to take `:from`/`:to` and no
+;; longer does — see `warm-index-takes-no-key-range` below for that as an
+;; assertion rather than an absence.
 
 (defn- datom-at [db i] (nth (seq (d/datoms db :eavt)) i))
 
 (deftest a-range-warms-less-than-the-whole-tree
-  (testing ":from/:to restrict the walk to the covering subtree"
+  (testing "components restrict the walk to the covering subtree, and cost tracks the range"
     (let [conn (fresh-db 1200 8)
           db   @conn]
       (try
-        (let [all    (:fetched (warm/warm-index! db :eavt {:depth :with-leaves :budget 100000}))
-              ds     (vec (take 400 (d/datoms db :eavt)))
-              narrow (:fetched (warm/warm-index! db :eavt
-                                                 {:depth :with-leaves :budget 100000
-                                                  :from (nth ds 10) :to (nth ds 20)}))
-              wide   (:fetched (warm/warm-index! db :eavt
-                                                 {:depth :with-leaves :budget 100000
-                                                  :from (nth ds 0) :to (nth ds 399)}))]
+        (let [opts   {:depth :with-leaves :budget 100000}
+              all    (:fetched (warm/warm-index! db :avet opts))
+              ;; :avet components are [a v e tx]: one attribute is a WIDE range,
+              ;; that attribute at one value is a narrow one inside it.
+              ;; :item/id, not :item/name — avet holds only indexed/unique
+              ;; attributes, so a range over :item/name would be empty and
+              ;; every assertion below would pass vacuously.
+              wide   (:fetched (warm/warm-datoms! db :avet [:item/id] opts))
+              narrow (:fetched (warm/warm-datoms! db :avet [:item/id 300] opts))]
           (is (pos? narrow) "a range that exists warms something")
-          (is (< narrow all) "and strictly less than the unbounded walk")
-          (is (<= narrow wide) "a wider range warms at least as much — cost tracks the range"))
+          (is (< narrow all) "and strictly less than the whole-index walk")
+          (is (<= narrow wide) "a wider range warms at least as much — cost tracks the range")
+          (is (<= wide all) "and the widest of them is still bounded by the whole tree"))
         (finally (d/release conn))))))
 
 (deftest a-point-range-warms-one-path
-  (testing "from = to descends a single path per level"
+  (testing "a fully-specified [e a v tx] prefix descends a single path per level"
     (let [conn (fresh-db 1200 8)
           db   @conn]
       (try
+        ;; All four components given, so `components->pattern` fills nothing and
+        ;; the lower and upper bounds are the SAME datom — a point range.
         (let [d0 (datom-at db 50)
-              r  (warm/warm-index! db :eavt {:depth :with-leaves :budget 100000
-                                             :from d0 :to d0})]
+              r  (warm/warm-datoms! db :eavt [(:e d0) (:a d0) (:v d0) (:tx d0)]
+                                    {:depth :with-leaves :budget 100000})]
           (is (= (:rounds r) (count (:by-level r))))
           (is (every? #(= 1 %) (:by-level r))
               "one child per level — a range this narrow cannot straddle"))
+        (finally (d/release conn))))))
+
+(deftest warm-index-takes-no-key-range
+  (testing "`warm-index!` warms the whole index; stray :from/:to cannot narrow it"
+    ;; The trim, as an assertion. Range scoping has exactly ONE entry point and
+    ;; it is the safe one: a hand-built bound in the wrong per-index permutation
+    ;; warms a valid-but-different subtree and fails nothing weaker than a
+    ;; coverage check. So the options are dropped rather than honoured — a
+    ;; caller who passes them gets the whole index, never a silently wrong
+    ;; sliver.
+    (let [conn (fresh-db 1200 8)
+          db   @conn]
+      (try
+        (let [ds   (vec (take 400 (d/datoms db :eavt)))
+              full (:fetched (warm/warm-index! db :eavt {:depth :with-leaves :budget 100000}))
+              with (:fetched (warm/warm-index! db :eavt {:depth :with-leaves :budget 100000
+                                                         :from (nth ds 10) :to (nth ds 20)}))]
+          (is (= full with)))
         (finally (d/release conn))))))
 
 ;; ── multi-index fairness ────────────────────────────────────────────────────
@@ -278,17 +310,56 @@
             "warmed via components: the avet scan is served from cache")
         (finally (d/release conn))))))
 
-(deftest warm-seek-is-readahead-not-a-range
-  (testing "seek's upper bound is the end of the index, so :budget is the only bound"
+(deftest unbounded-warm-datoms-is-readahead-not-a-range
+  (testing ":unbounded? gives seek-datoms' end-of-index upper bound, so :budget is the only bound"
+    ;; What `warm-seek!` used to assert, on the flag that absorbed it.
     (let [conn (fresh-db 1200 8)
           db   @conn]
       (try
-        (let [small (warm/warm-seek! db :eavt [300] {:depth :with-leaves :budget 5})
-              big   (warm/warm-seek! db :eavt [300] {:depth :with-leaves :budget 100000})]
+        (let [small (warm/warm-datoms! db :eavt [300] {:unbounded? true
+                                                       :depth :with-leaves :budget 5})
+              big   (warm/warm-datoms! db :eavt [300] {:unbounded? true
+                                                       :depth :with-leaves :budget 100000})]
           (is (= 5 (:fetched small)))
           (is (true? (:budget-exhausted? small))
-              "a seek always has more index ahead of it — the budget is what stops it")
+              "a readahead always has more index ahead of it — the budget is what stops it")
           (is (< (:fetched small) (:fetched big))))
+        (finally (d/release conn))))))
+
+(deftest unbounded-warms-strictly-more-than-the-bounded-range
+  (testing "the flag is the difference between d/datoms' bound and d/seek-datoms'"
+    ;; The mapping the docstring promises, as a measurement: same components,
+    ;; same budget, and the only thing that moves is the upper bound — from the
+    ;; components pattern (a range around entity 300) to the end of the index
+    ;; (everything from 300 on, ~900 more entities).
+    (let [conn (fresh-db 1200 8)
+          db   @conn]
+      (try
+        (let [opts    {:depth :with-leaves :budget 100000}
+              bounded (:fetched (warm/warm-datoms! db :eavt [300] opts))
+              ahead   (:fetched (warm/warm-datoms! db :eavt [300] (assoc opts :unbounded? true)))
+              all     (:fetched (warm/warm-index! db :eavt opts))]
+          (is (pos? bounded))
+          (is (< bounded ahead)
+              "readahead covers the tail of the index, the bounded range covers one entity")
+          (is (<= ahead all)
+              "and is still a suffix of the index, not more than the index"))
+        (finally (d/release conn))))))
+
+(deftest unbounded-warm-datoms-covers-the-seek-it-was-built-for
+  (testing "after an unbounded warm, the matching d/seek-datoms head reads nothing more"
+    (let [conn (fresh-db 1200 8)
+          db   @conn]
+      (try
+        (let [cold (reads-during db :eavt #(count (take 50 (d/seek-datoms db :eavt 300))))]
+          (is (pos? cold) "control: the same seek on a cold tree does read"))
+        (finally (d/release conn))))
+    (let [conn (fresh-db 1200 8)
+          db   @conn]
+      (try
+        (warm/warm-datoms! db :eavt [300] {:unbounded? true :depth :with-leaves :budget 100000})
+        (is (zero? (reads-during db :eavt #(count (take 50 (d/seek-datoms db :eavt 300)))))
+            "warmed: the seek is served entirely from cache")
         (finally (d/release conn))))))
 
 (deftest warming-an-absent-index-is-a-no-op
@@ -339,5 +410,13 @@
   (testing "d/warm-* are wired through api-specification to datahike.warm"
     (is (= @#'warm/warm-index!  @#'d/warm-index!))
     (is (= @#'warm/warm-datoms! @#'d/warm-datoms!))
-    (is (= @#'warm/warm-seek!   @#'d/warm-seek!))
     (is (= @#'warm/warm-db!     @#'d/warm-db!))))
+
+(deftest the-warm-surface-is-three-functions
+  (testing "no fourth entry point — an experimental surface is cheap to grow and breaking to shrink"
+    ;; `warm-seek!` was folded into `warm-datoms!`'s `:unbounded?`. Asserted so
+    ;; that reintroducing it is a deliberate act rather than a drift.
+    (is (= #{'warm-index! 'warm-datoms! 'warm-db!}
+           (set (filter #(str/starts-with? (name %) "warm-")
+                        (keys (ns-publics 'datahike.warm))))))
+    (is (nil? (resolve 'datahike.api/warm-seek!)))))

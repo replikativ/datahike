@@ -4,8 +4,8 @@
    them one blocking round trip at a time.
 
    > ⚠️ **EXPERIMENTAL.** Names and the option map may still move. The public
-   > entry points are `datahike.api/warm-index!`, `warm-datoms!`, `warm-seek!`
-   > and `warm-db!`; this namespace is the persistent-set walk behind them.
+   > entry points are `datahike.api/warm-index!`, `warm-datoms!` and
+   > `warm-db!`; this namespace is the persistent-set walk behind them.
 
    ## Why
 
@@ -65,9 +65,16 @@
    `:from`/`:to` scope the walk to a key range: at every level only the child
    indices covering the range are expanded, so cost is proportional to the RANGE
    rather than to the database. That is how warming stays affordable on a store
-   too large to warm whole. `datahike.warm/warm-datoms!` and `warm-seek!` build
-   those bounds from datahike's own `components->pattern`; prefer them over
-   passing `:from`/`:to` by hand.
+   too large to warm whole.
+
+   They are an INTERNAL option, and the only public caller that sets them is
+   `datahike.warm/warm-datoms!`, which derives them from datahike's own
+   `components->pattern` (with `:unbounded? true` giving `seek-datoms`'
+   end-of-index upper bound). No public entry point takes raw datom bounds: they
+   have to be in the index's own key order, which `components->pattern` reaches
+   by PERMUTING the components per index, and a bound built by hand in the wrong
+   permutation warms a valid-but-different subtree with no error and no wrong
+   answer — just a warm that misses.
 
    ## What it cannot do
 

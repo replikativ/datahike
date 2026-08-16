@@ -60,7 +60,7 @@
   #{'listen 'unlisten 'release 'db 'tempid 'entity-db
     'as-of 'since 'history 'filter
     'connect 'db-with 'is-filtered 'transact!
-    'warm-index! 'warm-datoms! 'warm-seek! 'warm-db!})
+    'warm-index! 'warm-datoms! 'warm-db!})
 
 (defn cli-spec
   "Get merged specification with CLI-specific config."
