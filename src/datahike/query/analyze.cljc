@@ -260,3 +260,25 @@
        :indexed? (dbu/indexing? db a)
        :unique? (dbu/is-attr? db a :db/unique)
        :ref? (dbu/ref? db a)})))
+
+(defn tautological-identity-obligation?
+  "True for `[(identity X) X]` — the shape a normalised rule head's obligation
+   collapses to when a caller passes the SAME variable in two head positions.
+
+   `identity(x) = x` always holds, so the clause constrains nothing and can be
+   dropped. It must be: the planner cannot resolve a self-binding function
+   clause inside a `not-join` body, and before rule heads were normalised
+   nothing ever emitted one — so leaving it in turned
+   `(not-join [?e] (same ?e ?e))` from an answer into \"Cannot resolve any more
+   clauses\".
+
+   Lives here because BOTH substitution paths must drop it — `expand-rule` in
+   datahike.query and `rename-rule-branch` in datahike.query.lower — and a
+   second copy is how #917 happened."
+  [clause]
+  (and (vector? clause)
+       (= 2 (count clause))
+       (seq? (first clause))
+       (= 'identity (ffirst clause))
+       (= 2 (count (first clause)))
+       (= (second (first clause)) (second clause))))

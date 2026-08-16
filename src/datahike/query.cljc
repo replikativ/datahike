@@ -1710,13 +1710,14 @@
     [(for [branch branches
            :let [[[_ & rule-args] & clauses] branch
                  replacements (zipmap rule-args call-args-new)]]
-       (walk/postwalk
-        #(if (free-var? %)
-           (some-of
-            (replacements %)
-            (symbol (str (name %) "__auto__" seqid)))
-           %)
-        clauses))
+       (remove analyze/tautological-identity-obligation?
+               (walk/postwalk
+                #(if (free-var? %)
+                   (some-of
+                    (replacements %)
+                    (symbol (str (name %) "__auto__" seqid)))
+                   %)
+                clauses)))
      consts]))
 
 (defn remove-pairs [xs ys]
