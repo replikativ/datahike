@@ -88,13 +88,28 @@
           ;; the primary store backend.
           secondary-index-keys
           #?(:clj
-             (when (and flush? (seq (:secondary-indices db)))
-               (reduce-kv
-                (fn [acc idx-ident idx]
-                  (if (satisfies? sec/IVersionedSecondaryIndex idx)
-                    (assoc acc idx-ident (sec/-sec-flush idx store (:branch config)))
-                    acc))
-                {} (:secondary-indices db)))
+             (when flush?
+               (let [flushed (reduce-kv
+                              (fn [acc idx-ident idx]
+                                (if (satisfies? sec/IVersionedSecondaryIndex idx)
+                                  (assoc acc idx-ident (sec/-sec-flush idx store (:branch config)))
+                                  acc))
+                              {} (:secondary-indices db))
+                     ;; Carry forward the stored pointer of every index the
+                     ;; SCHEMA still declares but that has no live instance
+                     ;; right now. A restore that failed once (it is caught and
+                     ;; the ident dropped, see restore-secondary-indices) must
+                     ;; not durably DELETE the index: writing a head without its
+                     ;; key would make the next reconnect build an empty
+                     ;; skeleton marked :ready, which nothing ever backfills
+                     ;; (only :building is). Removal is explicit — retract the
+                     ;; index's schema entry and its key goes with it; "no live
+                     ;; instance" is never read as "delete".
+                     carried (into {}
+                                   (filter (fn [[ident _]]
+                                             (get-in db [:schema ident :db.secondary/type])))
+                                   (:secondary-index-keys db))]
+                 (not-empty (merge carried flushed))))
              :cljs nil)
           ;; Audit roots: per-index content-addressed UUIDs that feed
           ;; into the commit-id via merkle-leaves.
@@ -225,14 +240,8 @@
      :cljs {}))
 
 (defn stored->db
-  "Constructs in-memory db instance from stored map value.
-
-   `reuse-secondary-indices` (optional) adopts already-open secondary index
-   instances instead of restoring them from storage. Restoring re-opens native
-   resources (a Lucene writer and its per-branch lock), which is right at
-   connect and wrong for a caller that re-materializes the same db over and
-   over — see [[reload-branch-head]]."
-  [stored-db store & [reuse-secondary-indices]]
+  "Constructs in-memory db instance from stored map value."
+  [stored-db store]
   (let [{:keys [eavt-key aevt-key avet-key
                 temporal-eavt-key temporal-aevt-key temporal-avet-key
                 eavt-root aevt-root avet-root
@@ -248,9 +257,8 @@
                           schema-meta))
         effective-schema (or (:schema schema-meta) schema)
         effective-ident-ref-map (or (:ident-ref-map schema-meta) ident-ref-map)
-        sec-indices (or reuse-secondary-indices
-                        (restore-secondary-indices effective-schema effective-ident-ref-map
-                                                   secondary-index-keys store))
+        sec-indices (restore-secondary-indices effective-schema effective-ident-ref-map
+                                               secondary-index-keys store)
         empty       (db/empty-db nil config store)
         ;; Bind each index to THIS connection's storage (as a copy). Stored
         ;; values are storage-detached (db->stored) and deserializing
@@ -290,12 +298,40 @@
             :ident-ref-map ident-ref-map
             :ref-ident-map ref-ident-map
             :store store)
+     ;; Kept on the db so the next db->stored can carry forward the pointer of
+     ;; an index whose restore failed (see there). Only when there is one: an
+     ;; explicit nil would make every db built from storage unequal to the
+     ;; same db built in memory.
+     (when (seq secondary-index-keys)
+       {:secondary-index-keys secondary-index-keys})
      (when (seq sec-indices)
        {:secondary-indices sec-indices})
      schema-meta)))
 
+(defn reload-head
+  "`old` itself when `stored` is the very commit `old` already is, otherwise a
+   fresh in-memory db built from `stored`.
+
+   Identity is the commit-id: the same cid means the same stored record, hence
+   the same primary index roots AND the same secondary-index key-maps, so there
+   is nothing to rebuild and nothing to re-open. A moved head rebuilds
+   everything, secondary indices included — index creation and removal ride on
+   the cid too. This is what makes a re-read cheap enough to do per transaction
+   without re-opening a Lucene writer and its lock every time.
+
+   The runtime config and the `:writer` are carried over from `old`: neither
+   lives in storage (`:writer` is the connection's own transactor), and dropping
+   it would leave the connection without a transactor."
+  [old stored store]
+  (if (= (get-in stored [:meta :datahike/commit-id])
+         (get-in old [:meta :datahike/commit-id]))
+    old
+    (assoc (stored->db (assoc stored :config (:config old)) store)
+           :writer (:writer old))))
+
 (defn reload-branch-head
-  "Re-read `old`'s branch head from storage and rebuild an in-memory db from it.
+  "Re-read `old`'s branch head from storage and rebuild an in-memory db from it
+   when it moved (see [[reload-head]]).
 
    This is the synchronization point of a NON-STREAMING self writer (`:writer
    {:backend :self :streaming? false}`): datahike's default assumes this JVM is
@@ -307,28 +343,21 @@
    Costs ONE konserve read (one S3 GET) — plus, on a lazily-loaded index, the
    node reads the transaction itself touches, exactly as after a fresh connect.
 
-   The runtime config and the `:writer` are carried over from `old`: neither
-   lives in storage (`:writer` is the connection's own transactor), and the
-   commit loop resets the connection to the committed db, so dropping it would
-   leave the connection without a writer.
-
-   So are already-open SECONDARY INDICES. Restoring them per transaction would
-   re-open native resources (a Lucene writer and its per-branch lock) on every
-   commit. That makes them the one part of the db a non-streaming writer does
-   NOT re-read — they live outside the commit anyway (own directories, own
-   locks) and are not multi-process safe to begin with."
+   SECONDARY INDICES are re-read with the rest of the head whenever it moved.
+   Stratum and proximum are konserve-backed copy-on-write values, so that is
+   exactly right for them: another process's commit is picked up. Scriptum is
+   the exception — it keeps its own Lucene directory with a per-branch write
+   lock and is NOT multi-process safe. That is transitional (its konserve
+   backing is a late addition), not a property of secondary indices."
   [old]
-  (let [store    (:store old)
-        config   (:config old)
-        branch   (:branch config)
-        sec-idxs (:secondary-indices old)
-        stored   (k/get store branch nil {:sync? true})]
+  (let [store  (:store old)
+        branch (:branch (:config old))
+        stored (k/get store branch nil {:sync? true})]
     (when-not stored
       (log/raise "Branch head vanished from the store; the database may have been deleted."
                  {:type   :branch-head-does-not-exist-in-store
                   :branch branch}))
-    (assoc (stored->db (assoc stored :config config) store sec-idxs)
-           :writer (:writer old))))
+    (reload-head old stored store)))
 
 (defn branch-heads-as-commits
   "Resolve keyword parents (branch names) to their head commit-ids.
@@ -642,7 +671,12 @@
                       (when (get-in config [:online-gc :enabled?])
                         (<?- (online-gc/online-gc! store (assoc (:online-gc config) :sync? false))))
 
-                      db)
+                      ;; Keep what we just wrote on the db we hand back, so the
+                      ;; NEXT db->stored can carry a pointer forward for an
+                      ;; index whose live instance went missing meanwhile.
+                      (cond-> db
+                        (seq (:secondary-index-keys db-to-store))
+                        (assoc :secondary-index-keys (:secondary-index-keys db-to-store))))
                     (catch #?(:clj Error :cljs :default) e
                       #?(:clj  (throw (ex-info "Fatal error during commit."
                                                {:type :fatal-commit-error}

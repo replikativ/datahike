@@ -321,10 +321,14 @@ every transaction, so each one is applied to whatever is actually stored, and
   (compare-and-set on the branch head, [issue #878]). So `:streaming? false` is
   correct under an external guarantee of non-overlap — Lambda reserved
   concurrency 1, a lease, a queue — not by construction.
-- **Does not cover secondary indices.** Those live in their own directories with
-  their own locks and were never multi-process safe; the re-read deliberately
-  keeps the writer's already-open instances rather than re-opening them per
-  transaction.
+- **Secondary indices are re-read too**, whenever the head moved — they are
+  named by the same commit, so another process's writes reach them like any
+  other part of the db. Stratum and proximum are konserve-backed copy-on-write
+  values, which is what makes that work (and what makes them usable on S3).
+  Scriptum is the exception: it keeps its own Lucene directory with a
+  per-branch write lock and is NOT multi-process safe. That is transitional —
+  its konserve backing is a late addition — not a property of secondary
+  indices.
 
 [issue #878]: https://github.com/replikativ/datahike/issues/878
 

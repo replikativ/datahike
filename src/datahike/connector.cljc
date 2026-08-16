@@ -72,10 +72,16 @@
       (throw (ex-info "Connection has been released."
                       {:type :connection-has-been-released})))
     (if (not (w/streaming? (get @wrapped-atom :writer)))
-      (let [store  (:store @wrapped-atom)
-            stored (k/get store (:branch (:config @wrapped-atom)) nil {:sync? true})]
+      (let [db     @wrapped-atom
+            store  (:store db)
+            stored (k/get store (:branch (:config db)) nil {:sync? true})]
         (log/trace :datahike/db-deref {:config (:config stored)})
-        (dsi/stored->db stored store))
+        ;; Head-cid identity, exactly as in the writer's per-transaction
+        ;; re-read: an unmoved head hands back the db we already hold instead
+        ;; of rebuilding it — which would re-run the secondary index restore on
+        ;; EVERY deref, contend with the live writer's lock (scriptum) and drop
+        ;; the index. It also keeps the connection's :writer on the result.
+        (dsi/reload-head db stored store))
       @wrapped-atom)))
 
 (defn conn-from-db
@@ -134,6 +140,13 @@
         stored-config (if (empty? (:index-config stored-config))
                         (dissoc stored-config :index-config)
                         stored-config)
+        ;; :streaming? is a RUNTIME choice of the connecting process (one JVM
+        ;; owns the branch, or several take turns), not a property of the
+        ;; stored database — a database created with the default must be
+        ;; connectable with :streaming? false. It sits INSIDE :writer, so the
+        ;; flat dissoc of runtime keys above does not reach it.
+        config        (cond-> config        (:writer config)        (update :writer dissoc :streaming?))
+        stored-config (cond-> stored-config (:writer stored-config) (update :writer dissoc :streaming?))
         ;; if we connect to remote allow writer to be different
         [config stored-config] (if-not (= dc/self-writer config)
                                  [(dissoc config :writer)
@@ -284,6 +297,19 @@
                                    :config cfg
                                    :existing-connections-config conn-cfg
                                    :diff (diff cfg conn-cfg)}))
+                     ;; normalize-config dissocs :writer, so a second connect
+                     ;; asking for a DIFFERENT :streaming? silently gets the
+                     ;; cached connection's writer. Say so rather than let the
+                     ;; caller believe the multi-process-safe setting took
+                     ;; effect (release the connection to change it).
+                     (let [existing (some-> (:writer @(:wrapped-atom conn)) w/streaming?)]
+                       (when (and (some? existing)
+                                  (= :self (get-in config [:writer :backend] :self))
+                                  (not= (get-in config [:writer :streaming?] true) existing))
+                         (log/warn :datahike/writer-streaming-ignored
+                                   "Reusing the existing connection and its writer; the requested :streaming? is ignored. Release the connection everywhere first if you need a different writer."
+                                   {:requested (get-in config [:writer :streaming?] true)
+                                    :existing  existing})))
                      conn)
                    (let [raw-store (<?- (ks/connect-store store-config opts))
                          _         (when-not raw-store

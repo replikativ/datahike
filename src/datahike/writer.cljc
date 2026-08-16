@@ -84,7 +84,26 @@
                             ;; (one storage read) and apply on top of that. Safe
                             ;; to read here because the previous transaction's
                             ;; commit has already landed — see commit-done below.
-                            old (if streaming? old (w/reload-branch-head old))
+                            ;;
+                            ;; A FAILED read is surfaced to THIS caller and not
+                            ;; retried. It must not escape the loop either: that
+                            ;; would kill the loop without closing
+                            ;; transaction-queue, so every later -dispatch! would
+                            ;; still enqueue successfully and hang forever. And
+                            ;; retrying here would block every queued transaction
+                            ;; unboundedly on a raise
+                            ;; (:branch-head-does-not-exist-in-store) that cannot
+                            ;; tell a storage hiccup from a deleted database —
+                            ;; retry belongs in the konserve backend.
+                            old (if streaming?
+                                  old
+                                  (try (w/reload-branch-head old)
+                                       (catch #?(:clj Throwable :cljs js/Error) e
+                                         (log/error :datahike/head-reload-failed
+                                                    {:invocation invocation :error e})
+                                         (put! callback e)
+                                         ::reload-failed)))
+                            reload-failed? (= ::reload-failed old)
                             ;; TODO remove this after import is ported to writer API
                             ;; Skipped when non-streaming: `old` was just read
                             ;; from the head, so its :max-tx is authoritative,
@@ -102,31 +121,41 @@
 
                             op-fn (write-fn-map op)
                             res   (try
-                              ;; NAMED before it is applied. `write-fn-map` is a
-                              ;; plain map, so an op it does not hold gave `nil`
-                              ;; and `(apply nil …)` threw a NullPointerException
-                              ;; — which the handler below then rewrote as
-                              ;; "connection may have been invalidated, e.g.
-                              ;; through db deletion". A caller whose only fault
-                              ;; was naming an operation this writer does not
-                              ;; have was sent to look at their storage.
-                              ;;
-                              ;; That is the version-skew case: a newer client
-                              ;; against an older remote writer sends an op the
-                              ;; server has never heard of. There is no version
-                              ;; exchange on this wire to catch it earlier, so
-                              ;; the honest thing is to say which op is missing
-                              ;; and which exist. `load-entities-migrating` is
-                              ;; simply the newest op to reach this; every op
-                              ;; ever added had the same failure.
-                                    (when-not op-fn
-                                      (throw (ex-info (str "This writer has no operation `" op "`. It supports: "
-                                                           (str/join ", " (sort (map str (keys write-fn-map))))
-                                                           ". A remote writer older than the client is the usual cause.")
-                                                      {:type :writer/unknown-op
-                                                       :op op
-                                                       :supported (set (keys write-fn-map))})))
-                                    (apply op-fn old args)
+                                    ;; Nothing to apply when the head read
+                                    ;; failed: `old` is only a sentinel and the
+                                    ;; caller already holds that error — which is
+                                    ;; also the more useful one, so the unknown-op
+                                    ;; check below is skipped rather than
+                                    ;; delivering a second error nobody sees.
+                                    (if reload-failed?
+                                      :error
+                                      (do
+                                        ;; The op has to be NAMED before it is
+                                        ;; applied. `write-fn-map` is a plain map,
+                                        ;; so an op it does not hold gave `nil` and
+                                        ;; `(apply nil …)` threw a
+                                        ;; NullPointerException — which the handler
+                                        ;; below then rewrote as "connection may
+                                        ;; have been invalidated, e.g. through db
+                                        ;; deletion". A caller whose only fault was
+                                        ;; naming an operation this writer does not
+                                        ;; have was sent to look at their storage.
+                                        ;;
+                                        ;; That is the version-skew case: a newer
+                                        ;; client against an older remote writer
+                                        ;; sends an op the server has never heard
+                                        ;; of. There is no version exchange on this
+                                        ;; wire to catch it earlier, so the honest
+                                        ;; thing is to say which op is missing and
+                                        ;; which exist.
+                                        (when-not op-fn
+                                          (throw (ex-info (str "This writer has no operation `" op "`. It supports: "
+                                                               (str/join ", " (sort (map str (keys write-fn-map))))
+                                                               ". A remote writer older than the client is the usual cause.")
+                                                          {:type :writer/unknown-op
+                                                           :op op
+                                                           :supported (set (keys write-fn-map))})))
+                                        (apply op-fn old args)))
                             ;; Catch all Throwables to handle AssertionError and other Errors
                             ;; These should crash the writer, but we deliver to callback first to prevent hangs
                                     (catch #?(:clj Throwable :cljs js/Error) e
@@ -163,7 +192,14 @@
                                                 (close! commit-queue)
                                                 (throw e)))
                                       :error))]
-                        (cond (chan? res)
+                        (cond reload-failed?
+                              ;; Resume from the last committed db rather than
+                              ;; the sentinel, and NEVER fall through to the
+                              ;; commit path below — it would park on a
+                              ;; commit-done that no commit will ever signal.
+                              (recur @(:wrapped-atom connection))
+
+                              (chan? res)
                               ;; async op, run in parallel in background, no sequential commit handling needed
                               (do
                                 ;; `>!` REFUSES nil, so forwarding a closed `res`
@@ -199,7 +235,16 @@
                                 ;; head we re-read above already contains it.
                                 (when-not streaming?
                                   (<! commit-done))
-                                (recur (:db-after res)))
+                                ;; Non-streaming: recur on the COMMITTED db, not
+                                ;; the report db — its meta carries the cid the
+                                ;; commit loop just wrote, which is what lets the
+                                ;; next reload-branch-head recognise an unmoved
+                                ;; head and skip rebuilding. Safe: `reset!
+                                ;; connection commit-db` happens before the
+                                ;; commit-done we just took.
+                                (recur (if streaming?
+                                         (:db-after res)
+                                         @(:wrapped-atom connection))))
                               :else
                               (recur old))))
                     (do
@@ -344,11 +389,26 @@
   (fn [writer-config _]
     (:backend writer-config)))
 
+(def self-writer-keys
+  "Every key the `:self` writer understands. Closed, and checked at
+   create-writer: a typo like `:streaming` (no `?`) would otherwise select the
+   unsafe default silently, and the whole point of the option is to be safe in
+   a setting where the failure is silent data loss. A spec cannot do this —
+   `s/keys` accepts unqualified keys it does not list."
+  #{:backend :streaming? :transaction-queue-size :commit-queue-size
+    :commit-wait-time :write-fn-map})
+
 (defmethod create-writer :self
   [{:keys [transaction-queue-size commit-queue-size write-fn-map commit-wait-time
            streaming?]
-    :or   {streaming? true}}
+    :or   {streaming? true}
+    :as   writer-config}
    connection]
+  (when-let [unknown (seq (remove self-writer-keys (keys writer-config)))]
+    (log/raise "Unknown key(s) in the :self writer config."
+               {:type    :unknown-self-writer-config-keys
+                :unknown (vec unknown)
+                :known   (vec (sort self-writer-keys))}))
   (let [transaction-queue-size (or transaction-queue-size DEFAULT_QUEUE_SIZE)
         commit-queue-size (or commit-queue-size DEFAULT_QUEUE_SIZE)
         commit-wait-time (or commit-wait-time DEFAULT_COMMIT_WAIT_TIME)
