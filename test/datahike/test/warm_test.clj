@@ -24,7 +24,8 @@
 
    JVM-only (`.clj`, not `.cljc`): the walk's ClojureScript arm is a marked TODO
    and `-warm!` short-circuits there with `:unsupported :cljs`."
-  (:require [clojure.test :refer [deftest is testing]]
+  (:require [clojure.test :refer [deftest is testing use-fixtures]]
+            [clojure.java.io :as io]
             [clojure.string :as str]
             [clojure.core.async :as async]
             [datahike.api :as d]
@@ -38,6 +39,33 @@
 
 (defn- tmp-path []
   (str (System/getProperty "java.io.tmpdir") "/warm-test-" (random-uuid)))
+
+(def ^:private created
+  "Configs `fresh-db` has built, drained after every test by the fixture below.
+
+   Not optional hygiene. These fixtures must be FILE-backed — the memory backend
+   does not split the tree into per-node blobs, so there would be nothing for a
+   warm to fetch — and a 1200-item tree at branching factor 8, rebuilt by six
+   transactions, is thousands of small blobs. Left behind, this namespace alone
+   writes GIGABYTES into java.io.tmpdir: measured at 9.5 GB across two runs,
+   which is enough to fill a 16 GB tmpfs and take the REST of the suite down
+   with `No space left on device` errors that look nothing like their cause.
+   Cleaning up per-test rather than per-namespace also caps the peak at one
+   test's databases instead of all of them at once."
+  (atom []))
+
+(defn- rm-rf! [path]
+  (let [f (io/file path)]
+    (when (.exists f)
+      ;; children before parents
+      (doseq [^java.io.File c (reverse (file-seq f))] (.delete c)))))
+
+(defn- delete-created! []
+  (doseq [cfg (first (reset-vals! created []))]
+    ;; `delete-database` first so datahike drops its own connection state, then
+    ;; the directory, because it does not necessarily remove the store root.
+    (try (d/delete-database cfg) (catch Exception _ nil))
+    (try (rm-rf! (get-in cfg [:store :path])) (catch Exception _ nil))))
 
 (defn- config [bf & {:as extra}]
   (merge {:store {:backend :file :path (tmp-path) :id (random-uuid)}
@@ -74,6 +102,7 @@
    ratio is not."
   ([n bf] (fresh-db n bf (config bf)))
   ([n bf cfg]
+   (swap! created conj cfg)
    (d/create-database cfg)
    (let [conn (d/connect cfg)]
      (d/transact conn schema)
@@ -82,6 +111,11 @@
                                {:item/id i :item/name (str "item-" i)}))))
      (d/release conn))
    (d/connect cfg)))
+
+(use-fixtures :each
+  (fn [run-test]
+    (try (run-test)
+         (finally (delete-created!)))))
 
 (defn- height [db idx] (.level (.root ^PersistentSortedSet (get db idx))))
 
