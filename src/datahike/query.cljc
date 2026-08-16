@@ -707,6 +707,45 @@
                   acc (:tuples rel2)))
         (transient []) (:tuples rel1)))))))
 
+(defn- unify-rel-plan
+  "The attr-map-derived half of `unify-rel`: nil when the two relations share no
+   variable (so `prod-rel` applies), otherwise the output attr map, the two
+   column-index arrays and the equality obligations.
+
+   Separated from the tuple loop because `bind-by-fn` unifies once per tuple
+   while this depends only on the two attr maps — and the binding form fixes
+   rel2's, so it is identical for every tuple of a call."
+  [attrs1 attrs2]
+  (let [shared (filterv #(contains? attrs1 %) (keys attrs2))]
+    (when (seq shared)
+      (let [keys1 (vec (keys attrs1))
+            only2 (filterv #(not (contains? attrs1 %)) (keys attrs2))]
+        {:attrs (zipmap (concat keys1 only2) (range))
+         :idxs1 (to-array (map attrs1 keys1))
+         :idxs2 (to-array (map attrs2 only2))
+         ;; [index in rel1, index in rel2] for every shared variable
+         :obligations (mapv (fn [v] [(attrs1 v) (attrs2 v)]) shared)}))))
+
+(defn- unify-rel-with-plan
+  "The tuple loop of `unify-rel`, given the plan from `unify-rel-plan`."
+  [plan rel1 rel2]
+  (let [idxs1 (:idxs1 plan)
+        idxs2 (:idxs2 plan)
+        obligations (:obligations plan)
+        tuples2 (:tuples rel2)]
+    (rel/->Relation
+     (:attrs plan)
+     (persistent!
+      (reduce
+       (fn [acc t1]
+         (reduce (fn [acc t2]
+                   (if (every? (fn [[i1 i2]] (= (get t1 i1) (get t2 i2)))
+                               obligations)
+                     (conj! acc (join-tuples t1 idxs1 t2 idxs2))
+                     acc))
+                 acc tuples2))
+       (transient []) (:tuples rel1))))))
+
 (defn unify-rel
   "Like `prod-rel`, except that a variable present in BOTH relations is an
    equality obligation rather than a second column: the pair is kept only when
@@ -723,29 +762,9 @@
 
    Falls through to `prod-rel` when nothing is shared, which is the common case."
   [rel1 rel2]
-  (let [attrs1 (:attrs rel1)
-        attrs2 (:attrs rel2)
-        shared (filterv #(contains? attrs1 %) (keys attrs2))]
-    (if (empty? shared)
-      (prod-rel rel1 rel2)
-      (let [keys1 (vec (keys attrs1))
-            only2 (filterv #(not (contains? attrs1 %)) (keys attrs2))
-            idxs1 (to-array (map attrs1 keys1))
-            idxs2 (to-array (map attrs2 only2))
-            ;; [index in rel1, index in rel2] for every shared variable
-            obligations (mapv (fn [v] [(attrs1 v) (attrs2 v)]) shared)]
-        (rel/->Relation
-         (zipmap (concat keys1 only2) (range))
-         (persistent!
-          (reduce
-           (fn [acc t1]
-             (reduce (fn [acc t2]
-                       (if (every? (fn [[i1 i2]] (= (get t1 i1) (get t2 i2)))
-                                   obligations)
-                         (conj! acc (join-tuples t1 idxs1 t2 idxs2))
-                         acc))
-                     acc (:tuples rel2)))
-           (transient []) (:tuples rel1))))))))
+  (if-let [plan (unify-rel-plan (:attrs rel1) (:attrs rel2))]
+    (unify-rel-with-plan plan rel1 rel2)
+    (prod-rel rel1 rel2)))
 
 ;; built-ins
 
@@ -1563,15 +1582,38 @@
                                                          (count (:tuples production))))))
             new-rel (if fun
                       (let [tuple-fn (-call-fn context production fun args)
-                            rels (for [tuple (:tuples production)
-                                       :let [val (tuple-fn tuple)]
-                                       :when (not (nil? val))]
-                                   ;; unify-rel, not prod-rel: when the binding
-                                   ;; names a variable this tuple already binds,
-                                   ;; the clause CONSTRAINS it — the tuple
-                                   ;; survives only if the computed value agrees.
-                                   (unify-rel (rel/->Relation (:attrs production) [tuple])
-                                              (in->rel binding val)))]
+                            attrs1 (:attrs production)
+                            ;; unify-rel, not prod-rel: when the binding names a
+                            ;; variable this tuple already binds, the clause
+                            ;; CONSTRAINS it — the tuple survives only if the
+                            ;; computed value agrees.
+                            ;;
+                            ;; The unification shape is derived from the two attr
+                            ;; MAPS, and `binding` fixes rel2's, so it is the same
+                            ;; for every tuple here. Build it once on the first
+                            ;; surviving tuple and reuse it; `plan-attrs2` guards
+                            ;; the reuse so a binding that ever produced a
+                            ;; differing attr map would still be correct.
+                            rels (loop [ts (seq (:tuples production))
+                                        plan-attrs2 nil
+                                        plan nil
+                                        acc []]
+                                   (if-not ts
+                                     acc
+                                     (let [tuple (first ts)
+                                           val (tuple-fn tuple)]
+                                       (if (nil? val)
+                                         (recur (next ts) plan-attrs2 plan acc)
+                                         (let [r2 (in->rel binding val)
+                                               attrs2 (:attrs r2)
+                                               [pa2 pl] (if (= attrs2 plan-attrs2)
+                                                          [plan-attrs2 plan]
+                                                          [attrs2 (unify-rel-plan attrs1 attrs2)])
+                                               r1 (rel/->Relation attrs1 [tuple])]
+                                           (recur (next ts) pa2 pl
+                                                  (conj acc (if pl
+                                                              (unify-rel-with-plan pl r1 r2)
+                                                              (prod-rel r1 r2)))))))))]
                         (if (empty? rels)
                           (unify-rel production (empty-rel binding))
                           (reduce sum-rel rels)))
