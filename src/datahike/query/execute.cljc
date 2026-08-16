@@ -1127,9 +1127,20 @@
                                        ;; disagrees. v-ground belongs with the
                                        ;; obligations here, since the planner
                                        ;; substitutes a bound output var into it.
-                                       present? (and optional? d
-                                                     (== (.-e d) eid)
-                                                     (= (.-a d) ra))]
+                                       ;; Presence must be decided INDEPENDENTLY of the
+                                       ;; obligated value: the probe above seeks at `vgv`, so a
+                                       ;; real value sorting BEFORE it is skipped and the
+                                       ;; attribute looks absent — which planted the default and
+                                       ;; kept a row the obligation excludes. Re-seek at the
+                                       ;; entity's first datom for this attribute (which is also
+                                       ;; the value legacy `get-else` returns) and judge from it.
+                                       ^Datom opt-d (when optional?
+                                                      (if vg?
+                                                        (pss-lookup-ge eavt-pss (datom eid ra nil tx0))
+                                                        d))
+                                       present? (and optional? opt-d
+                                                     (== (.-e opt-d) eid)
+                                                     (= (.-a opt-d) ra))]
                                    (if anti?
                                      (when (not found?)
                                        (process-merges (inc mi)))
@@ -1183,7 +1194,18 @@
                                      (process-merges (inc mi))))))
                              (let [probe (datom eid ra vgv tx0)
                                    ^Datom d (pss-lookup-ge eavt-pss probe)
-                                   found? (and d (merge-datom-match? d eid ra vg? vgv eq-v eq-tx scan-d merge-datoms))]
+                                   found? (and d (merge-datom-match? d eid ra vg? vgv eq-v eq-tx scan-d merge-datoms))
+                                   optional? (and merge-optional (aget merge-optional mi))
+                                   ;; CLJS twin of the JVM branch above. Presence is decided
+                                   ;; independently of the obligated value, because the probe
+                                   ;; seeks at `vgv` and a real value sorting before it would
+                                   ;; otherwise look absent. #917 was two copies of one loop
+                                   ;; drifting apart; keep these identical.
+                                   opt-d (when optional?
+                                           (if vg? (pss-lookup-ge eavt-pss (datom eid ra nil tx0)) d))
+                                   present? (and optional? opt-d
+                                                 (== (.-e opt-d) eid)
+                                                 (= (.-a opt-d) ra))]
                                (if anti?
                                  (when (not found?)
                                    (process-merges (inc mi)))
@@ -1191,12 +1213,19 @@
                                    found?
                                    (do (aset merge-datoms mi d)
                                        (process-merges (inc mi)))
-                                   ;; Optional merge (get-else): synthetic
-                                   ;; default-valued datom on miss.
-                                   (and merge-optional (aget merge-optional mi))
-                                   (do (aset merge-datoms mi
-                                             (datom eid ra (aget merge-defaults mi) tx0))
-                                       (process-merges (inc mi))))))))))]
+
+                                   ;; present, but its value fails an obligation → drop
+                                   present? nil
+
+                                   ;; absent: the default must satisfy the same obligations
+                                   optional?
+                                   (let [dv (aget merge-defaults mi)
+                                         dd (datom eid ra dv tx0)]
+                                     (when (and (or (not vg?) (val-eq? dv vgv))
+                                                (eq-ok? eq-v dv dd scan-d merge-datoms)
+                                                (eq-ok? eq-tx (datom/datom-tx dd) dd scan-d merge-datoms))
+                                       (aset merge-datoms mi dd)
+                                       (process-merges (inc mi)))))))))))]
                (process-merges 0))))))))
 
 #?(:clj
@@ -1366,9 +1395,17 @@
                                    ;; bound output variable into v-ground, so for
                                    ;; an optional merge it expresses "must equal
                                    ;; what is already bound".
-                                   present? (and optional? d
-                                                 (== (.-e d) eid)
-                                                 (= (.-a d) ra))]
+                                   ;; Presence decided independently of the obligated value —
+                                   ;; see the note in execute-card-many-merge.
+                                   ^Datom opt-d (when optional?
+                                                  (if vg?
+                                                    (if merge-cursors
+                                                      (.lookupGE ^PersistentSortedSet eavt-pss (datom eid ra nil tx0))
+                                                      (.lookupGE ^PersistentSortedSet eavt-pss (datom eid ra nil tx0)))
+                                                    d))
+                                   present? (and optional? opt-d
+                                                 (== (.-e opt-d) eid)
+                                                 (= (.-a opt-d) ra))]
                                (if anti?
                                  (recur (unchecked-inc-int mi) (not found?))
                                  (cond
@@ -1428,9 +1465,13 @@
                                ;; why v-ground counts as an obligation. Kept
                                ;; deliberately identical in shape: #917 was two
                                ;; copies of one loop drifting apart.
-                               present? (and optional? d
-                                             (== (.-e d) eid)
-                                             (= (.-a d) ra))]
+                               ;; Presence decided independently of the obligated value —
+                               ;; see the note in execute-card-many-merge.
+                               opt-d (when optional?
+                                       (if vg? (pss-lookup-ge eavt-pss (datom eid ra nil tx0)) d))
+                               present? (and optional? opt-d
+                                             (== (.-e opt-d) eid)
+                                             (= (.-a opt-d) ra))]
                            (if anti?
                              (recur (inc mi) (not found?))
                              (cond
@@ -3935,9 +3976,13 @@
                                     ;; so a failed obligation looked like a miss
                                     ;; and the default was planted — keeping a row
                                     ;; whose real value disagrees.
-                                    present? (and optional? d
-                                                  (== (.-e d) eid)
-                                                  (= (.-a d) ra))]
+                                    ;; Presence decided independently of the obligated value —
+                                    ;; see the note in execute-card-many-merge.
+                                    ^Datom opt-d (when optional?
+                                                   (if vg? (pss-lookup-ge eavt-pss (datom eid ra nil tx0)) d))
+                                    present? (and optional? opt-d
+                                                  (== (.-e opt-d) eid)
+                                                  (= (.-a opt-d) ra))]
                                 (cond
                                   anti?
                                   (when (not found?)
