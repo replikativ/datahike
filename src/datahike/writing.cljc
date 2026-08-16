@@ -314,10 +314,9 @@
 
    Identity is the commit-id: the same cid means the same stored record, hence
    the same primary index roots AND the same secondary-index key-maps, so there
-   is nothing to rebuild and nothing to re-open. A moved head rebuilds
-   everything, secondary indices included — index creation and removal ride on
-   the cid too. This is what makes a re-read cheap enough to do per transaction
-   without re-opening a Lucene writer and its lock every time.
+   is nothing to rebuild and nothing to re-open — which is what makes a re-read
+   cheap enough to do per transaction. A moved head rebuilds everything,
+   secondary indices included; index creation and removal ride on the cid too.
 
    The runtime config and the `:writer` are carried over from `old`: neither
    lives in storage (`:writer` is the connection's own transactor), and dropping
