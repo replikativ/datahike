@@ -883,6 +883,83 @@
      :impl datahike.writer/gc-storage!}
 
     ;; =========================================================================
+    ;; Index Warming (EXPERIMENTAL)
+    ;; =========================================================================
+    ;;
+    ;; A cold reader's wall time is `misses x RTT` with NOTHING overlapping: a
+    ;; scan asks for a node, blocks on the GET, and only then learns the next
+    ;; address. These four walk the index breadth-first instead, fetching each
+    ;; level concurrently — a branch node holds every child address the moment
+    ;; it is materialized, so no prediction is involved. See `datahike.warm`.
+    ;;
+    ;; `:supports-remote? false` deliberately: a warm moves nodes into the node
+    ;; cache of the process that holds the index. Over HTTP that would be the
+    ;; SERVER's cache, which is a different (and unrequested) operation from the
+    ;; one the caller means.
+
+    warm-index!
+    {:args [:function
+            [:=> [:cat :datahike/SDB :datahike/SWarmIndex] :map]
+            [:=> [:cat :datahike/SDB :datahike/SWarmIndex :map] :map]]
+     :ret :map
+     :categories [:maintenance :index :advanced]
+     :stability :experimental
+     :supports-remote? false
+     :referentially-transparent? false
+     :doc "EXPERIMENTAL. Budget-bounded breadth-first warm of ONE index into its node cache, fetching each level concurrently instead of discovering it one blocking round trip at a time. Options: :depth (:interior | :with-leaves | integer), :budget, :width, :from/:to, :sync?. Prefer warm-datoms! / warm-seek! when the scan is known — they build their bounds from datahike's own components->pattern, so warm and scan cannot disagree."
+     :examples [{:desc "Warm the interior (branch levels only) of eavt"
+                 :code "(warm-index! @conn :eavt {:depth :interior :budget 2000})"}
+                {:desc "Warm everything, leaves included, with a small budget"
+                 :code "(warm-index! @conn :avet {:depth :with-leaves :budget 200})"}]
+     :impl datahike.warm/warm-index!}
+
+    warm-datoms!
+    {:args [:function
+            [:=> [:cat :datahike/SDB :datahike/SWarmIndex [:vector :any]] :map]
+            [:=> [:cat :datahike/SDB :datahike/SWarmIndex [:vector :any] :map] :map]]
+     :ret :map
+     :categories [:maintenance :index :advanced]
+     :stability :experimental
+     :supports-remote? false
+     :referentially-transparent? false
+     :doc "EXPERIMENTAL. Warm exactly the subtree that the matching `datoms` call will scan. `components` is the same [e a v tx] prefix `datoms` takes, in the index's own component order (:avet -> [a v e tx]), and may be shorter or empty. Bounds are built with datahike's own components->pattern, which permutes components per index and resolves idents — a hand-built :from/:to gets that wrong silently, warming a valid-but-different subtree."
+     :examples [{:desc "Warm what (datoms db :eavt 300) will read"
+                 :code "(warm-datoms! @conn :eavt [300])"}
+                {:desc "Warm an avet range, components in avet order"
+                 :code "(warm-datoms! @conn :avet [:item/id 300] {:depth :with-leaves})"}]
+     :impl datahike.warm/warm-datoms!}
+
+    warm-seek!
+    {:args [:function
+            [:=> [:cat :datahike/SDB :datahike/SWarmIndex [:vector :any]] :map]
+            [:=> [:cat :datahike/SDB :datahike/SWarmIndex [:vector :any] :map] :map]]
+     :ret :map
+     :categories [:maintenance :index :advanced]
+     :stability :experimental
+     :supports-remote? false
+     :referentially-transparent? false
+     :doc "EXPERIMENTAL. Warm forward from a `seek-datoms` position — READAHEAD, not a bounded range. `seek-datoms` is asymmetric: its lower bound is the components pattern but its upper bound is the end of the index, so :budget is the only thing bounding the work. Size it to what you expect to consume."
+     :examples [{:desc "Read ahead from a seek position"
+                 :code "(warm-seek! @conn :eavt [300] {:budget 64})"}]
+     :impl datahike.warm/warm-seek!}
+
+    warm-db!
+    {:args [:function
+            [:=> [:cat :datahike/SDB] :map]
+            [:=> [:cat :datahike/SDB :map] :map]]
+     :ret :map
+     :categories [:maintenance :index :advanced]
+     :stability :experimental
+     :supports-remote? false
+     :referentially-transparent? false
+     :doc "EXPERIMENTAL. Warm every present index of a database, sharing ONE budget round-robin across them so eavt cannot eat it before avet gets any. The connect-time shape. Budget is clamped to 0.8x :store-cache-size, which is entry-counted — warming past it fetches nodes only to evict them. :by-index in the returned report says where the budget went."
+     :examples [{:desc "Warm the interior of every index at connect"
+                 :code "(warm-db! @conn)"}
+                {:desc "Spend a fixed budget across all indices, leaves included"
+                 :code "(warm-db! @conn {:depth :with-leaves :budget 500})"}]
+     :impl datahike.warm/warm-db!}
+
+    ;; =========================================================================
     ;; Utility Operations
     ;; =========================================================================
 

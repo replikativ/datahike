@@ -139,6 +139,12 @@
    [:temporal-count {:optional true} :int]
    [:temporal-avet-count {:optional true} :int]])
 
+(def SWarmIndex
+  "EXPERIMENTAL. An index a warm may be pointed at. The three primary orders
+   plus their temporal twins, which exist only under `:keep-history?` — a warm
+   of an absent index is a no-op, not an error."
+  [:enum :eavt :aevt :avet :temporal-eavt :temporal-aevt :temporal-avet])
+
 (def time-point?
   "Time point - transaction ID (int) or Date."
   [:or :int
@@ -171,6 +177,7 @@
     :datahike/SIndexRangeArgs SIndexRangeArgs
     :datahike/SSchema SSchema
     :datahike/SMetrics SMetrics
+    :datahike/SWarmIndex SWarmIndex
     :datahike/time-point? time-point?}))
 
 ;; =============================================================================
@@ -194,6 +201,7 @@
    :SIndexLookupArgs "Map<String, Object>"
    :SIndexRangeArgs "Map<String, Object>"
    :SWithArgs "Map<String, Object>"
+   :SWarmIndex "Object"
    ;; Primitives
    :boolean "boolean"
    :int "int"
@@ -226,6 +234,7 @@
    :SIndexLookupArgs "IndexLookupArgs"
    :SIndexRangeArgs "IndexRangeArgs"
    :SWithArgs "WithArgs"
+   :SWarmIndex "\"eavt\" | \"aevt\" | \"avet\" | \"temporal-eavt\" | \"temporal-aevt\" | \"temporal-avet\""
    ;; Primitives
    :boolean "boolean"
    :int "number"

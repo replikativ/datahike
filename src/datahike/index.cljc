@@ -21,6 +21,13 @@
 (def -mark di/-mark)
 (def -root-node di/-root-node)
 (def -seed-root! di/-seed-root!)
+(def -warm! di/-warm!)
+
+;; EXPERIMENTAL warm helpers, re-exported so a caller of `-warm!` can build the
+;; empty report and the sync/async shape without reaching into the interface ns.
+(def default-warm-budget di/default-warm-budget)
+(def zero-warm-report di/zero-warm-report)
+(def warm-result di/warm-result)
 
 ;; Aliases for multimethods
 

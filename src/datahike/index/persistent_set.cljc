@@ -18,6 +18,7 @@
             [datahike.constants :refer [tx0 txmax]]
             [datahike.index.audit :as audit :refer [IAuditable]]
             [datahike.index.interface :as di :refer [IIndex]]
+            [datahike.index.persistent-set.warm :as warm]
             [datahike.tools :as dt]
             [konserve.core :as k]
             [konserve.serializers :refer [fressian-serializer]]
@@ -260,6 +261,11 @@
     (persistent! pset))
   (-mark [^PersistentSortedSet pset]
     (mark pset))
+  (-warm! [^PersistentSortedSet pset opts]
+    ;; EXPERIMENTAL. Breadth-first, budget-bounded prefetch — see
+    ;; datahike.index.persistent-set.warm for why this exists at all, and for
+    ;; the ClojureScript arm, which is a marked TODO rather than a rewrite.
+    (warm/warm! pset opts))
   (-root-node [^PersistentSortedSet pset]
     ;; In-memory top node; populated after -flush set the root/address.
     ;;

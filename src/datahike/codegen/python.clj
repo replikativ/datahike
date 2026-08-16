@@ -147,7 +147,14 @@
     branch-as-db "Returns DB object - use input_format='branch:NAME' instead"
     commit-as-db "Returns DB object - use input_format='commit:UUID' instead"
     merge-db! "Async variant - use merge-db (FFI calls are naturally synchronous)"
-    force-branch! "Takes DB value as input + reset-hard semantics - deferred to a follow-up PR"})
+    force-branch! "Takes DB value as input + reset-hard semantics - deferred to a follow-up PR"
+    ;; Index warming (EXPERIMENTAL). A warm prefetches into the node cache of a
+    ;; LIVE connection; the FFI shape connects per call and drops the cache with
+    ;; it, so the whole point of the operation is gone before it returns.
+    warm-index! "Prefetches into a live connection's node cache - the FFI shape has no connection to warm"
+    warm-datoms! "Prefetches into a live connection's node cache - the FFI shape has no connection to warm"
+    warm-seek! "Prefetches into a live connection's node cache - the FFI shape has no connection to warm"
+    warm-db! "Prefetches into a live connection's node cache - the FFI shape has no connection to warm"})
 
 ;; =============================================================================
 ;; Type Derivation: Malli → Python
