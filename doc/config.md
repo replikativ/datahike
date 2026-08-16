@@ -292,6 +292,42 @@ them.
 
 For distributed deployments, configure a writer to handle all transactions while readers access storage directly via Distributed Index Space.
 
+#### Alternating Processes (`:streaming? false`)
+
+Datahike's default writer (`{:backend :self}`) assumes every writer for a
+database lives in one JVM: it keeps the branch head in memory and never re-reads
+it. Serverless runtimes break that assumption. Each AWS Lambda execution
+environment is a separate JVM that believes it is the only writer, and Lambda
+keeps several warm and routes to them *alternately*. Each one then commits on
+top of its own stale head and silently overwrites the other's transactions — no
+error, lost data.
+
+```clojure
+{:store  {:backend :s3 :bucket "my-bucket"}
+ :writer {:backend :self :streaming? false}}
+```
+
+With `:streaming? false` the writer re-reads the branch head from storage before
+every transaction, so each one is applied to whatever is actually stored, and
+`@conn` reads through to storage as well.
+
+- **Cost:** one branch-head GET per commit (~10-40 ms on S3, ~$0.0000004 at
+  $0.0004/1000 GET), and no commit batching — every transaction is its own
+  commit.
+- **Required when:** more than one process may hold a writer for this database.
+- **Not a fence:** this avoids the race by *serialisation*, it does not *detect*
+  it. Two processes writing **concurrently** still lose updates; the loser's
+  head write just lands last. Detecting that needs head fencing
+  (compare-and-set on the branch head, [issue #878]). So `:streaming? false` is
+  correct under an external guarantee of non-overlap — Lambda reserved
+  concurrency 1, a lease, a queue — not by construction.
+- **Does not cover secondary indices.** Those live in their own directories with
+  their own locks and were never multi-process safe; the re-read deliberately
+  keeps the writer's already-open instances rather than re-opening them per
+  transaction.
+
+[issue #878]: https://github.com/replikativ/datahike/issues/878
+
 #### HTTP Server Writer
 
 ```clojure

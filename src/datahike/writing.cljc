@@ -225,8 +225,14 @@
      :cljs {}))
 
 (defn stored->db
-  "Constructs in-memory db instance from stored map value."
-  [stored-db store]
+  "Constructs in-memory db instance from stored map value.
+
+   `reuse-secondary-indices` (optional) adopts already-open secondary index
+   instances instead of restoring them from storage. Restoring re-opens native
+   resources (a Lucene writer and its per-branch lock), which is right at
+   connect and wrong for a caller that re-materializes the same db over and
+   over — see [[reload-branch-head]]."
+  [stored-db store & [reuse-secondary-indices]]
   (let [{:keys [eavt-key aevt-key avet-key
                 temporal-eavt-key temporal-aevt-key temporal-avet-key
                 eavt-root aevt-root avet-root
@@ -242,8 +248,9 @@
                           schema-meta))
         effective-schema (or (:schema schema-meta) schema)
         effective-ident-ref-map (or (:ident-ref-map schema-meta) ident-ref-map)
-        sec-indices (restore-secondary-indices effective-schema effective-ident-ref-map
-                                               secondary-index-keys store)
+        sec-indices (or reuse-secondary-indices
+                        (restore-secondary-indices effective-schema effective-ident-ref-map
+                                                   secondary-index-keys store))
         empty       (db/empty-db nil config store)
         ;; Bind each index to THIS connection's storage (as a copy). Stored
         ;; values are storage-detached (db->stored) and deserializing
@@ -287,6 +294,42 @@
        {:secondary-indices sec-indices})
      schema-meta)))
 
+(defn reload-branch-head
+  "Re-read `old`'s branch head from storage and rebuild an in-memory db from it.
+
+   This is the synchronization point of a NON-STREAMING self writer (`:writer
+   {:backend :self :streaming? false}`): datahike's default assumes this JVM is
+   the only writer and keeps the branch head in memory, so a second process
+   holding a writer for the same database would transact on top of its own
+   stale snapshot and overwrite the other's commits. Re-reading before every
+   transaction makes each one apply to whatever is actually stored.
+
+   Costs ONE konserve read (one S3 GET) — plus, on a lazily-loaded index, the
+   node reads the transaction itself touches, exactly as after a fresh connect.
+
+   The runtime config and the `:writer` are carried over from `old`: neither
+   lives in storage (`:writer` is the connection's own transactor), and the
+   commit loop resets the connection to the committed db, so dropping it would
+   leave the connection without a writer.
+
+   So are already-open SECONDARY INDICES. Restoring them per transaction would
+   re-open native resources (a Lucene writer and its per-branch lock) on every
+   commit. That makes them the one part of the db a non-streaming writer does
+   NOT re-read — they live outside the commit anyway (own directories, own
+   locks) and are not multi-process safe to begin with."
+  [old]
+  (let [store    (:store old)
+        config   (:config old)
+        branch   (:branch config)
+        sec-idxs (:secondary-indices old)
+        stored   (k/get store branch nil {:sync? true})]
+    (when-not stored
+      (log/raise "Branch head vanished from the store; the database may have been deleted."
+                 {:type   :branch-head-does-not-exist-in-store
+                  :branch branch}))
+    (assoc (stored->db (assoc stored :config config) store sec-idxs)
+           :writer (:writer old))))
+
 (defn branch-heads-as-commits
   "Resolve keyword parents (branch names) to their head commit-ids.
 
@@ -294,7 +337,8 @@
    caller already holds in memory: under datahike's single-writer invariant
    the writer's current db carries its own branch's head cid in
    [:meta :datahike/commit-id], so re-reading the branch record from storage
-   (3 sequential requests on S3-class backends) is redundant for it. A nil or
+   (one konserve read per parent branch, i.e. one S3 GET for the single parent
+   of an ordinary commit) is redundant for it. A nil or
    missing entry falls back to the storage read — first load, foreign
    branches (merge parents), or writers without an in-memory head. This is a
    read elision, not a fence: head-flip semantics on concurrent writer misuse
@@ -492,8 +536,11 @@
                         ;; parents) the writer's own head cid is already in
                         ;; memory — stamped by the previous commit!, or by
                         ;; stored->db at connect — so skip the per-commit
-                        ;; branch-head storage read (3 sequential requests on
-                        ;; S3 backends). Explicit-parents commits (merge!,
+                        ;; branch-head storage read (ONE konserve read = one
+                        ;; S3 GET: konserve-s3 >= 0.1.33 is PReadMissSafe and
+                        ;; serves header, metadata and value out of that
+                        ;; single response body, with no HEAD probe in front
+                        ;; of it). Explicit-parents commits (merge!,
                         ;; branch machinery) keep the read: their db may
                         ;; descend from ANOTHER branch's lineage, so its meta
                         ;; cid is not necessarily this branch's head.

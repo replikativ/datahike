@@ -43,12 +43,27 @@
 (def ^:const DEFAULT_COMMIT_WAIT_TIME 0) ;; in ms
 
 (defn create-thread
-  "Creates new transaction thread"
-  [connection write-fn-map transaction-queue-size commit-queue-size commit-wait-time]
+  "Creates new transaction thread.
+
+   `streaming?` (default true) is datahike's single-writer assumption: this JVM
+   owns the branch, so the head commit-id is kept in memory and never re-read.
+   With `streaming?` false every transaction instead re-reads the branch head
+   from storage before it is applied, so a database can be handed between
+   processes that write to it one after another. See [[create-writer]]."
+  [connection write-fn-map transaction-queue-size commit-queue-size commit-wait-time
+   streaming?]
   (let [transaction-queue-buffer    (buffer transaction-queue-size)
         transaction-queue           (chan transaction-queue-buffer)
         commit-queue-buffer         (buffer commit-queue-size)
-        commit-queue                (chan commit-queue-buffer)]
+        commit-queue                (chan commit-queue-buffer)
+        ;; Non-streaming only: the commit loop signals here after each batch
+        ;; has landed in storage. The transaction loop waits for that signal
+        ;; before it re-reads the head for the next transaction — otherwise a
+        ;; second transaction could re-read a head that does not yet contain
+        ;; the first one and silently drop it. It also holds batches to one
+        ;; commit, which is what makes the head cid we hand the commit loop
+        ;; (below) exactly the head that transaction was applied to.
+        commit-done                 (chan)]
     [transaction-queue commit-queue
      (#?(:clj thread-try :cljs try)
       S
@@ -63,10 +78,27 @@
                     (do
                       (when (> (count transaction-queue-buffer) (* 0.9 transaction-queue-size))
                         (log/warn :datahike/tx-queue-pressure "Transaction queue buffer >90% full" {:count (count transaction-queue-buffer) :size transaction-queue-size}))
-                      (let [;; TODO remove this after import is ported to writer API
-                            old (if-not (= (:max-tx old) (:max-tx @(:wrapped-atom connection)))
+                      (let [;; NON-STREAMING: another process may have committed
+                            ;; to this branch since our last transaction, so the
+                            ;; db we hold is not necessarily the head. Re-read it
+                            ;; (one storage read) and apply on top of that. Safe
+                            ;; to read here because the previous transaction's
+                            ;; commit has already landed — see commit-done below.
+                            old (if streaming? old (w/reload-branch-head old))
+                            ;; TODO remove this after import is ported to writer API
+                            ;; Skipped when non-streaming: `old` was just read
+                            ;; from the head, so its :max-tx is authoritative,
+                            ;; while the connection's may lag another process.
+                            old (if (and streaming?
+                                         (not= (:max-tx old)
+                                               (:max-tx @(:wrapped-atom connection))))
                                   (assoc old :max-tx (:max-tx @(:wrapped-atom connection)))
                                   old)
+                            ;; The head cid `old` was applied to. Handed to the
+                            ;; commit loop so commit! records the right parent
+                            ;; without reading the head a SECOND time.
+                            head-cid (when-not streaming?
+                                       (get-in old [:meta :datahike/commit-id]))
 
                             op-fn (write-fn-map op)
                             res   (try
@@ -161,7 +193,12 @@
                                 (when (> (count commit-queue-buffer) (/ commit-queue-size 2))
                                   (log/warn :datahike/commit-queue-pressure "Commit queue buffer >50% full" {:count (count commit-queue-buffer) :size commit-queue-size})
                                   (<! (timeout 50)))
-                                (put! commit-queue [res callback])
+                                (put! commit-queue [res callback head-cid])
+                                ;; Non-streaming: do not take the next
+                                ;; transaction until this one is durable, so the
+                                ;; head we re-read above already contains it.
+                                (when-not streaming?
+                                  (<! commit-done))
                                 (recur (:db-after res)))
                               :else
                               (recur old))))
@@ -174,14 +211,21 @@
                        ;; last committed cid of OUR branch: nil on the first
                        ;; iteration (commit! falls back to the storage read),
                        ;; threaded through afterwards so ordinary commits skip
-                       ;; the per-commit branch-head read (S3: 3 requests)
+                       ;; the per-commit branch-head read (one S3 GET).
+                       ;;
+                       ;; Non-streaming writers do NOT thread it: their head can
+                       ;; move under them between commits. The transaction loop
+                       ;; re-read the head anyway and passes the cid it applied
+                       ;; to along with the transaction, so the parent is still
+                       ;; correct and still costs only that one read.
                        last-cid nil]
                   (when tx
                     (let [txs (into [tx] (take-while some?) (repeatedly #(poll! commit-queue)))]
               ;; empty channel of pending transactions
                       (log/trace :datahike/batch-commit {:batch-size (count txs)})
               ;; commit latest tx to disk
-                      (let [db (:db-after (first (peek txs)))
+                      (let [last-cid (if streaming? last-cid (nth (peek txs) 2 nil))
+                            db (:db-after (first (peek txs)))
                             ;; Check for merge parents (set by merge-writer!)
                             merge-parents (get-in db [:meta :datahike/merge-parents])
                             ;; Clear merge-parents from db meta before persisting
@@ -212,20 +256,35 @@
                             ;; closed queue and fail loudly (:writer-shut-down).
                             (close! commit-queue)
                             (close! transaction-queue)
+                            ;; Release a non-streaming transaction loop that is
+                            ;; parked on commit-done, or it never observes the
+                            ;; closed transaction-queue and never shuts down.
+                            (close! commit-done)
                             (doseq [[_ callback] txs]
                               (put! callback e))
                             (log/error :datahike/writer-shutdown {:error e})
                             ;; Re-throw Errors (AssertionError, OutOfMemoryError, etc.) to crash the writer
                             #?(:clj (when (instance? Error e)
                                       (throw e)))))
+                        ;; Signalled AFTER the head flip (or after the failure
+                        ;; path closed everything), so the transaction loop's
+                        ;; next head read sees this commit.
+                        (when-not streaming?
+                          (put! commit-done true))
                         (<! (timeout commit-wait-time))
                         (recur (<?- commit-queue)
-                               ;; Non-throwing read: `@connection` routes through `deref-conn`,
-                               ;; which throws once the connection is released. `release` marks
-                               ;; the connection released before shutting the writer down, so
-                               ;; closing the queue unparks the `<?-` above and this argument
-                               ;; would then deref an already-released connection.
-                               (get-in @(:wrapped-atom connection) [:meta :datahike/commit-id])))))))))]))
+                               ;; Non-throwing read, for two reasons that meet
+                               ;; here: `@connection` routes through `deref-conn`,
+                               ;; which throws once the connection is released
+                               ;; (`release` marks it released before shutting the
+                               ;; writer down, so closing the queue unparks the
+                               ;; `<?-` above and this argument would deref an
+                               ;; already-released connection — #929); and on a
+                               ;; NON-STREAMING connection it would additionally
+                               ;; round-trip to storage. The wrapped atom holds
+                               ;; the same value with neither hazard.
+                               (when streaming?
+                                 (get-in @(:wrapped-atom connection) [:meta :datahike/commit-id]))))))))))]))
 
 (defn- with-tx-pred
   "Wrap a report-producing write-fn so a store-level tx-pred (if registered)
@@ -257,11 +316,39 @@
                            'publish-built-db! w/publish-built-db!})
 
 (defmulti create-writer
+  "Create the writer described by the connection's `:writer` config.
+
+   The `:self` backend (the default, `{:backend :self}`) transacts in this JVM
+   and takes these options:
+
+   - `:streaming?` (default `true`) — keep the branch head in memory between
+     commits. `false` re-reads the branch head from storage before every
+     transaction and after every commit.
+
+     COST: one branch-head GET per commit (~10-40 ms on S3, ~$0.0000004), plus
+     the loss of commit batching: each transaction becomes its own commit.
+
+     REQUIRED whenever more than one process may hold a writer for this
+     database. The serverless case is the reason it exists: each AWS Lambda
+     execution environment is a separate JVM that believes it is the only
+     writer, and Lambda keeps several of them warm and routes to them
+     alternately. With the default, each environment commits from its own
+     stale head and silently overwrites the other's transactions.
+
+     It does NOT detect the race, it avoids it by serialisation. Two processes
+     writing CONCURRENTLY still lose updates — the loser's head write simply
+     lands last. Preventing that needs head fencing (compare-and-set on the
+     branch head, issue #878). So `:streaming? false` is correct only under an
+     external guarantee that the processes never overlap (e.g. Lambda reserved
+     concurrency 1), not by construction."
   (fn [writer-config _]
     (:backend writer-config)))
 
 (defmethod create-writer :self
-  [{:keys [transaction-queue-size commit-queue-size write-fn-map commit-wait-time]} connection]
+  [{:keys [transaction-queue-size commit-queue-size write-fn-map commit-wait-time
+           streaming?]
+    :or   {streaming? true}}
+   connection]
   (let [transaction-queue-size (or transaction-queue-size DEFAULT_QUEUE_SIZE)
         commit-queue-size (or commit-queue-size DEFAULT_QUEUE_SIZE)
         commit-wait-time (or commit-wait-time DEFAULT_COMMIT_WAIT_TIME)
@@ -271,14 +358,15 @@
                               write-fn-map)
                        transaction-queue-size
                        commit-queue-size
-                       commit-wait-time)]
+                       commit-wait-time
+                       streaming?)]
     (map->LocalWriter
      {:transaction-queue transaction-queue
       :transaction-queue-size transaction-queue-size
       :commit-queue commit-queue
       :commit-queue-size commit-queue-size
       :thread thread
-      :streaming? true})))
+      :streaming? streaming?})))
 
 ;; Note: :kabel backend is implemented in datahike.kabel.writer
 ;; Require that namespace to register the defmethod

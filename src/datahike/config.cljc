@@ -57,6 +57,11 @@
 ;; record garbage disappears. Presence-based and store-fixed like
 ;; ::fuse-index-roots?; connect adopts the stored value.
 (s/def ::commit-graph? boolean?)
+;; Which transactor handles writes: {:backend :self} (default, in this JVM),
+;; :datahike-server, :kabel. The :self backend also takes :streaming? — set it
+;; false when more than one PROCESS may hold a writer for this database (the
+;; serverless case), so every transaction re-reads the branch head instead of
+;; trusting the one it holds in memory. See datahike.writer/create-writer.
 (s/def ::writer map?)
 (s/def ::branch keyword?)
 (s/def ::entity (s/or :map associative? :vec vector?))
