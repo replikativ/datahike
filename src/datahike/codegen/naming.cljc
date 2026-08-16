@@ -10,7 +10,7 @@
 ;;             explicit TODO (see datahike.index.persistent-set.warm), so these
 ;;             would export as functions that always report :unsupported :cljs.
 ;;             Remove them from this set when that arm lands.
-(def js-skip-list #{'transact 'warm-index! 'warm-datoms! 'warm-db!})
+(def js-skip-list #{'transact 'warm-index 'warm-datoms 'warm-db})
 
 (defn clj-name->js-name
   "Convert Clojure kebab-case to JavaScript camelCase.

@@ -160,7 +160,7 @@
     ;; node's child ADDRESSES to be readable before those children are fetched;
     ;; the hitchhiker-tree's async node resolution gives no such one-level-ahead
     ;; view, so there is nothing to prefetch in waves. Answering with the empty
-    ;; report (rather than omitting the method) is what lets `d/warm-db!` be
+    ;; report (rather than omitting the method) is what lets `d/warm-db` be
     ;; called unconditionally against any index type.
     (di/warm-result (di/zero-warm-report opts) opts)))
 
@@ -203,7 +203,7 @@
     ;; node's child ADDRESSES to be readable before those children are fetched;
     ;; the hitchhiker-tree's async node resolution gives no such one-level-ahead
     ;; view, so there is nothing to prefetch in waves. Answering with the empty
-    ;; report (rather than omitting the method) is what lets `d/warm-db!` be
+    ;; report (rather than omitting the method) is what lets `d/warm-db` be
     ;; called unconditionally against any index type.
     (di/warm-result (di/zero-warm-report opts) opts)))
 

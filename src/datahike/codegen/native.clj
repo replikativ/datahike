@@ -153,9 +153,9 @@
     ;; Index warming (EXPERIMENTAL). A warm prefetches into the node cache of a
     ;; LIVE connection; the FFI shape connects per call and drops the cache with
     ;; it, so the whole point of the operation is gone before it returns.
-    warm-index! "Prefetches into a live connection's node cache - the FFI shape has no connection to warm"
-    warm-datoms! "Prefetches into a live connection's node cache - the FFI shape has no connection to warm"
-    warm-db! "Prefetches into a live connection's node cache - the FFI shape has no connection to warm"})
+    warm-index "Prefetches into a live connection's node cache - the FFI shape has no connection to warm"
+    warm-datoms "Prefetches into a live connection's node cache - the FFI shape has no connection to warm"
+    warm-db "Prefetches into a live connection's node cache - the FFI shape has no connection to warm"})
 
 ;; =============================================================================
 ;; Naming Conventions

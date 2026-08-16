@@ -1,6 +1,6 @@
 (ns datahike.warm
   "EXPERIMENTAL. Budget-bounded breadth-first index warming — the db-level entry
-   points behind `datahike.api/warm-index!`, `warm-datoms!` and `warm-db!`.
+   points behind `datahike.api/warm-index`, `warm-datoms` and `warm-db`.
 
    > ⚠️ **EXPERIMENTAL.** The names and the option map may still change. Nothing
    > here affects results: a warm only moves nodes into the index's node cache
@@ -18,6 +18,14 @@
    See `datahike.index.persistent-set.warm` for the walk itself, the two bounds
    (`:depth` bounds shape, `:budget` bounds cost, whichever binds first wins),
    and why there is deliberately no `preload everything` mode.
+
+   The fns here keep their `!`; the API names they back do not
+   (`warm-index!` -> `d/warm-index`), the same split
+   `datahike.writer/gc-storage!` -> `d/gc-storage` uses. In the API
+   specification a trailing `!` marks the ASYNC variant of a sibling
+   (`transact!`, `merge-db!`), which none of these is — and a warm changes no
+   database state at all: the db value is immutable and results are identical
+   warm or cold, only latency and GET count move.
 
    ## Which entry point
 

@@ -407,16 +407,26 @@
 ;; ── the public API surface ──────────────────────────────────────────────────
 
 (deftest the-api-vars-are-the-warm-namespace
-  (testing "d/warm-* are wired through api-specification to datahike.warm"
-    (is (= @#'warm/warm-index!  @#'d/warm-index!))
-    (is (= @#'warm/warm-datoms! @#'d/warm-datoms!))
-    (is (= @#'warm/warm-db!     @#'d/warm-db!))))
+  (testing "the UNBANGED d/warm-* are wired through api-specification to the banged impls"
+    ;; The `gc-storage` -> `datahike.writer/gc-storage!` split: in the API
+    ;; specification a trailing `!` marks the ASYNC variant of a sibling
+    ;; (`transact!`, `merge-db!`), which none of these is.
+    (is (= @#'warm/warm-index!  @#'d/warm-index))
+    (is (= @#'warm/warm-datoms! @#'d/warm-datoms))
+    (is (= @#'warm/warm-db!     @#'d/warm-db))))
 
 (deftest the-warm-surface-is-three-functions
   (testing "no fourth entry point — an experimental surface is cheap to grow and breaking to shrink"
-    ;; `warm-seek!` was folded into `warm-datoms!`'s `:unbounded?`. Asserted so
-    ;; that reintroducing it is a deliberate act rather than a drift.
+    ;; `warm-seek` was folded into `warm-datoms`' `:unbounded?`. Asserted so that
+    ;; reintroducing it is a deliberate act rather than a drift.
+    (is (= #{'warm-index 'warm-datoms 'warm-db}
+           (set (filter #(str/starts-with? (name %) "warm")
+                        (keys (ns-publics 'datahike.api)))))
+        "the public surface: three, unbanged, no warm-seek")
     (is (= #{'warm-index! 'warm-datoms! 'warm-db!}
-           (set (filter #(str/starts-with? (name %) "warm-")
-                        (keys (ns-publics 'datahike.warm))))))
-    (is (nil? (resolve 'datahike.api/warm-seek!)))))
+           (set (filter #(str/starts-with? (name %) "warm")
+                        (keys (ns-publics 'datahike.warm)))))
+        "and the impls behind them keep their bangs")
+    (is (nil? (resolve 'datahike.api/warm-seek)))
+    (is (nil? (resolve 'datahike.api/warm-index!))
+        "no banged alias survives on the public namespace")))

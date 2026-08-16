@@ -4,8 +4,8 @@
    them one blocking round trip at a time.
 
    > ⚠️ **EXPERIMENTAL.** Names and the option map may still move. The public
-   > entry points are `datahike.api/warm-index!`, `warm-datoms!` and
-   > `warm-db!`; this namespace is the persistent-set walk behind them.
+   > entry points are `datahike.api/warm-index`, `warm-datoms` and
+   > `warm-db`; this namespace is the persistent-set walk behind them.
 
    ## Why
 

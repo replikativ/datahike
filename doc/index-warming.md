@@ -35,22 +35,22 @@ Three functions, all on a database value:
 
 ;; Every index at once, sharing one budget. The connect-time shape, and the
 ;; one to reach for. `:indices` narrows it — to a few, or to one.
-(d/warm-db! @conn {:depth :with-leaves :budget 500})
-(d/warm-db! @conn {:indices [:eavt :avet] :budget 500})
+(d/warm-db @conn {:depth :with-leaves :budget 500})
+(d/warm-db @conn {:indices [:eavt :avet] :budget 500})
 
 ;; Warm what a components-scoped scan will read.
-(d/warm-datoms! @conn :eavt [300])                          ; <-> d/datoms
-(d/warm-datoms! @conn :avet [:item/id 300] {:depth :with-leaves})
-(d/warm-datoms! @conn :eavt [300] {:unbounded? true :budget 64})  ; <-> d/seek-datoms
+(d/warm-datoms @conn :eavt [300])                          ; <-> d/datoms
+(d/warm-datoms @conn :avet [:item/id 300] {:depth :with-leaves})
+(d/warm-datoms @conn :eavt [300] {:unbounded? true :budget 64})  ; <-> d/seek-datoms
 
 ;; One whole index, bounded by :depth/:budget.
-(d/warm-index! @conn :eavt {:depth :interior :budget 2000})
+(d/warm-index @conn :eavt {:depth :interior :budget 2000})
 ```
 
 Three and not more, on purpose. This is experimental surface, and the asymmetry
 is the whole argument: adding a function later is cheap, removing one is
-breaking. `warm-datoms!` absorbs what a `warm-seek!` would have been, and
-`warm-index!` takes no key range at all — see [Warm what you are going to
+breaking. `warm-datoms` absorbs what a `warm-seek` would have been, and
+`warm-index` takes no key range at all — see [Warm what you are going to
 scan](#warm-what-you-are-going-to-scan).
 
 Each returns a report:
@@ -105,13 +105,13 @@ leaves without evicting the spine you just warmed.
 
 ## Warm what you are going to scan
 
-`warm-datoms!` takes the same `[e a v tx]` component prefix the two
+`warm-datoms` takes the same `[e a v tx]` component prefix the two
 component-taking scans take, and mirrors both:
 
 | call | corresponds to | upper bound | cost |
 |---|---|---|---|
-| `(warm-datoms! db idx cs)` | `(d/datoms db idx & cs)` | the components pattern | proportional to the range |
-| `(warm-datoms! db idx cs {:unbounded? true})` | `(d/seek-datoms db idx & cs)` | the end of the index | bounded only by `:budget` |
+| `(warm-datoms db idx cs)` | `(d/datoms db idx & cs)` | the components pattern | proportional to the range |
+| `(warm-datoms db idx cs {:unbounded? true})` | `(d/seek-datoms db idx & cs)` | the end of the index | bounded only by `:budget` |
 
 `d/seek-datoms` is asymmetric — its lower bound is the components pattern but
 its upper bound is `(datom emax nil nil txmax)` — so under `:unbounded?` there is
@@ -133,9 +133,9 @@ wrong and you warm a valid-but-different subtree — no error, no wrong answer,
 just a warm that misses and a query that quietly pays full price. Nothing short
 of a coverage check notices.
 
-So `warm-index!` takes no `:from`/`:to`: it warms one whole index, bounded by
+So `warm-index` takes no `:from`/`:to`: it warms one whole index, bounded by
 `:depth`/`:budget`. The walk underneath still supports key bounds — that is what
-`warm-datoms!` drives it with — but no public entry point accepts them from a
+`warm-datoms` drives it with — but no public entry point accepts them from a
 caller. Shipping the trap beside the fix is worse than shipping only the fix.
 
 ## Where a warm does and does not help
@@ -210,7 +210,7 @@ See the `TODO(cljs)` markers in `datahike.index.persistent-set.warm`.
   hitchhiker-tree, whose async node resolution gives no one-level-ahead view of
   child addresses. Clojure protocols have no true defaults, so each index type
   says which it is.
-- `warm-db!` shares **one** budget round-robin across the indices rather than
+- `warm-db` shares **one** budget round-robin across the indices rather than
   giving each a slice or spending them in sequence: warming `eavt` to exhaustion
   while `avet` gets nothing is the wrong answer for a query that reads `avet`,
   and which index a query needs is not knowable at warm time. `:by-index` in the
@@ -218,6 +218,16 @@ See the `TODO(cljs)` markers in `datahike.index.persistent-set.warm`.
 - Concurrent `restore` is safe: nodes are immutable and content/uuid-keyed, and
   the node cache is a `clojure.core.cache.wrapped` atom. Two threads racing the
   same address duplicate a fetch — wasted work, never a wrong answer.
+- **No trailing `!` on the public names**, though the fns behind them keep one
+  (`datahike.warm/warm-index!` -> `d/warm-index`) — the split
+  `datahike.writer/gc-storage!` -> `d/gc-storage` already uses. In datahike's API
+  a trailing `!` marks the *async variant* of a sibling (`transact!`,
+  `merge-db!`, `branch!`); every synchronous op is unbanged however destructive,
+  and `gc-storage` deletes data. A warm changes no database state at all: the db
+  value is immutable, results are identical warm or cold, and only latency and
+  GET count move. It also matters mechanically — `clj-name->java-method` maps a
+  trailing `!` to an `Async` suffix, so a banged name would have generated
+  `warmIndexAsync` for a call that is synchronous on the JVM.
 - The three operations are **not** exposed over HTTP, the pod, the CLI, or the
   FFI bindings. A warm prefetches into the node cache of the process holding the
   index; over any of those boundaries that is either a different process's cache
