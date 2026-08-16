@@ -49,6 +49,13 @@
   (binding [q/*disable-planner* true q/*query-result-cache?* false]
     (set (apply d/q query db args))))
 
+(defn- outcome
+  "The engine's answer, or ::raised — so a test can assert that BOTH engines
+   decline a query rather than one of them quietly inventing a row."
+  [f query db args]
+  (try (apply f query db args)
+       (catch #?(:clj Exception :cljs js/Error) _ ::raised)))
+
 (defn- both [expected query db & args]
   (is (= expected (apply base query db args)) "base engine")
   (is (= expected (apply planner query db args)) "planner"))
@@ -132,7 +139,17 @@
         ;; property under test.
         (both #{[1] [2] [3]}
               '[:find ?e :in $ % :where [?e :score _] (not-join [?e] (same ?e ?e))]
-              db '[[(same ?a ?a) [?e :score ?a]]])))))
+              db '[[(same ?a ?a) [?e :score ?a]]]))
+
+      (testing "a tautology the USER wrote is not covered by that drop"
+        ;; the clause above is dropped because SUBSTITUTION collapsed it. This
+        ;; one is already `[(identity ?x) ?x]` as written, and dropping it would
+        ;; leave ?x unbound and answer #{[nil]} — inventing a row out of a query
+        ;; neither engine can resolve. Declining is the agreed answer.
+        (let [query '[:find ?x :in $ % :where (t ?x)]
+              rules '[[(t ?x) [(identity ?x) ?x]]]]
+          (is (= ::raised (outcome base query db [rules])) "base engine")
+          (is (= ::raised (outcome planner query db [rules])) "planner"))))))
 
 (deftest-async binding-seam-law-temporal
   ;; The temporal kernel is a SEPARATE merge kernel from the current-db ones,

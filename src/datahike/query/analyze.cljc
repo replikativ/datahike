@@ -261,20 +261,9 @@
        :unique? (dbu/is-attr? db a :db/unique)
        :ref? (dbu/ref? db a)})))
 
-(defn tautological-identity-obligation?
-  "True for `[(identity X) X]` — the shape a normalised rule head's obligation
-   collapses to when a caller passes the SAME variable in two head positions.
-
-   `identity(x) = x` always holds, so the clause constrains nothing and can be
-   dropped. It must be: the planner cannot resolve a self-binding function
-   clause inside a `not-join` body, and before rule heads were normalised
-   nothing ever emitted one — so leaving it in turned
-   `(not-join [?e] (same ?e ?e))` from an answer into \"Cannot resolve any more
-   clauses\".
-
-   Lives here because BOTH substitution paths must drop it — `expand-rule` in
-   datahike.query and `rename-rule-branch` in datahike.query.lower — and a
-   second copy is how #917 happened."
+(defn- tautological-identity?
+  "Does `clause` have the shape `[(identity X) X]` — binding a value to the
+   variable it was just read from?"
   [clause]
   (and (vector? clause)
        (= 2 (count clause))
@@ -282,3 +271,28 @@
        (= 'identity (ffirst clause))
        (= 2 (count (first clause)))
        (= (second (first clause)) (second clause))))
+
+(defn collapsed-identity-obligation?
+  "True when substituting a caller's arguments COLLAPSED `[(identity X) Y]`
+   into `[(identity X) X]` — the shape a normalised rule head's obligation
+   takes when the caller passes the SAME variable in two head positions.
+
+   `identity(x) = x` always holds, so the collapsed clause constrains nothing
+   and can be dropped. It must be: the planner cannot resolve a self-binding
+   function clause inside a `not-join` body, and before rule heads were
+   normalised nothing ever emitted one — so leaving it in turned
+   `(not-join [?e] (same ?e ?e))` from an answer into \"Cannot resolve any
+   more clauses\".
+
+   It takes BOTH forms because the collapse is what licenses the drop, not the
+   shape. A clause a user wrote as `[(identity ?a) ?a]` is already tautological
+   before substitution; silently dropping that one would leave `?a` unbound and
+   answer `nil` where the engine used to raise. Whatever that clause deserves,
+   it is not this rule.
+
+   Lives here because BOTH substitution paths must apply it — `expand-rule` in
+   datahike.query and `rename-rule-branch` in datahike.query.lower — and a
+   second copy is how #917 happened."
+  [original substituted]
+  (and (tautological-identity? substituted)
+       (not (tautological-identity? original))))

@@ -438,14 +438,13 @@
                               x))
                           c)))
                       clauses)
-        ;; `[(identity X) X]` — what `normalize-rule-head`'s obligation collapses
-        ;; to when a caller passes the SAME variable in two head positions. It
-        ;; constrains nothing (identity(x) = x always holds) and the planner
-        ;; cannot resolve a self-binding function clause inside a `not-join`
-        ;; body, so leaving it in turned `(not-join [?e] (same ?e ?e))` from an
-        ;; answer into "Cannot resolve any more clauses". Dropped on both
-        ;; substitution paths — the base engine's `expand-rule` does the same.
-        renamed (into [] (remove analyze/tautological-identity-obligation?) renamed)]
+        ;; Drop a head obligation the caller COLLAPSED into `[(identity X) X]`
+        ;; — see analyze/collapsed-identity-obligation?. Paired with the
+        ;; pre-substitution clause because the collapse is what licenses the
+        ;; drop; a user-written tautology is a different question.
+        renamed (into [] (keep (fn [[c c']]
+                                 (when-not (analyze/collapsed-identity-obligation? c c') c')))
+                      (map vector clauses renamed))]
     ;; Put const-bindings first so synthetic vars are bound before body uses them
     (into const-bindings renamed)))
 
