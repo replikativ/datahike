@@ -77,12 +77,14 @@
                            {:db/ident :score :db/valueType :db.type/long
                             :db/cardinality :db.cardinality/one}
                            {:db/ident :tag :db/valueType :db.type/keyword
-                            :db/cardinality :db.cardinality/many}]))
+                            :db/cardinality :db.cardinality/many}
+                           {:db/ident :flag :db/valueType :db.type/boolean
+                            :db/cardinality :db.cardinality/one}]))
     ;; carol's nick EQUALS her name: the one row a unifying engine keeps.
     ;; :tag is card-many so the group routes through the card-many merge kernel,
     ;; which is a DIFFERENT code path from the card-one one and was the last to
     ;; be fixed — on cljs it was the last of all.
-    (<! (d/transact! conn [{:db/id 1 :name "alice" :nick "al"    :score 20 :tag [:x :y]}
+    (<! (d/transact! conn [{:db/id 1 :name "alice" :nick "al"    :score 20 :tag [:x :y] :flag true}
                            {:db/id 2 :name "carol" :nick "carol" :score 30 :tag [:x]}
                            {:db/id 3 :name "dave"                :score 10 :tag [:y]}]))
     (let [db (d/db conn)]
@@ -129,6 +131,17 @@
         (both #{[2 "carol"]}
               '[:find ?e ?v :in $ ?v :where [?e :name _] [(get-else $ ?e :nick "zzz") ?v]]
               db "carol"))
+
+      (testing "an obligation whose value is FALSE is still an obligation"
+        ;; `false` was read as "no constant" wherever presence was tested by
+        ;; truthiness, and the obligation vanished: the folded-constant filter
+        ;; admitted the entities whose flag is TRUE, and a false scalar `:in`
+        ;; reached a function as nil.
+        (both #{[2] [3]}
+              '[:find ?e :in $ ?v :where [?e :name _] [(get-else $ ?e :flag false) ?v]]
+              db false)
+        (both #{[1]}
+              '[:find ?e :in $ ?f :where [?e :flag ?v] [(= ?v ?f)]] db true))
 
       (testing "a plain function output writing into a bound var constrains it"
         (both #{[3 10]}

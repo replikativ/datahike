@@ -1522,8 +1522,13 @@
     (dotimes [i len]
       (let [arg (nth args i)]
         (if (symbol? arg)
-          (if-let [const (get (:consts context) arg)]
-            (da/aset static-args i const)
+          ;; `contains?`, not truthiness: a constant of FALSE is a constant.
+          ;; Reading it as "no constant" fell through to the tuple-index
+          ;; branch, where the var has no column — so `[(= ?v ?f)]` with `?f`
+          ;; bound to false compared against nil and answered nothing, and
+          ;; `[(vector ?v ?f) ?o]` built `[true nil]`.
+          (if (contains? (:consts context) arg)
+            (da/aset static-args i (get (:consts context) arg))
             (if-some [source (get sources arg)]
               (da/aset static-args i source)
               (da/aset tuples-args i (get attrs arg))))
@@ -1666,12 +1671,17 @@
                           (unify-rel production (empty-rel binding))
                           (reduce sum-rel rels)))
                       (unify-rel (assoc production :tuples []) (empty-rel binding)))
-            idx->const (reduce-kv (fn [m k v]
-                                    (if-let [c (k (:consts context))]
-                                      (assoc m v c) ;; different value at v for each tuple
-                                      m))
-                                  {}
-                                  (:attrs new-rel))]
+            ;; `contains?`, not `if-let`: a folded constant of FALSE is a
+            ;; constant like any other, and truthiness silently dropped the
+            ;; obligation — `[(get-else $ ?e :flag false) ?v]` with `?v` bound
+            ;; to false then admitted the entities whose flag is TRUE.
+            idx->const (let [consts (:consts context)]
+                         (reduce-kv (fn [m k v]
+                                      (if (contains? consts k)
+                                        (assoc m v (get consts k)) ;; different value at v for each tuple
+                                        m))
+                                    {}
+                                    (:attrs new-rel)))]
         (if (empty? (:tuples new-rel))
           (update context :rels collapse-rels new-rel)
           (-> context ;; filter output binding
@@ -4291,7 +4301,12 @@
                                                          (let [a (resolve-attr (or (:attr sub-op) (get-in sub-op [:schema-info :attr])))]
                                                            (and a
                                                                 (not (contains? indexed-attrs a))
-                                                                (:v-ground sub-op))))
+                                                                ;; `some?`: `:v-ground` holds the ground
+                                                                ;; VALUE and is nil when there is none, so
+                                                                ;; truthiness reads a ground `false` as "not
+                                                                ;; ground" and drops the filter — the
+                                                                ;; aggregate then covers rows it excludes.
+                                                                (some? (:v-ground sub-op)))))
                                                        sub-ops)
                          ;; Execute uncovered filter patterns via PSS → RoaringBitmap
                          entity-filter (when (seq uncovered-filter-ops)
@@ -4321,7 +4336,8 @@
                          ;; Convert keyword ground values to strings to match stratum's
                          ;; dict-encoded column storage (keywords stored via str)
                          where-equality (vec (keep (fn [sub-op]
-                                                     (when-let [v-ground (:v-ground sub-op)]
+                                                     ;; `some?`, not truthiness — see uncovered-filter-ops
+                                                     (when-some [v-ground (:v-ground sub-op)]
                                                        (let [a (resolve-attr (or (:attr sub-op) (get-in sub-op [:schema-info :attr])))]
                                                          (when (contains? indexed-attrs a)
                                                            [:= (attr-col-key a) (if (keyword? v-ground) (str v-ground) v-ground)]))))
