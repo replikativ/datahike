@@ -189,6 +189,26 @@
               (recur r (conj visited to-check) reachable refs)))
           {:reachable reachable :store-refs refs}))))))
 
+(def ^:const DEFAULT_SWEEP_MIN_AGE_MS
+  "No floor by default: OFF, so in-process collection behaves exactly as it always
+   has.
+
+   Not a hedge — where the writer lives, `safe-point` is EXACT, so a wall-clock
+   floor on top of it can only retain garbage the collector was right about. The
+   floor is not a safety margin for that case, it is a SUBSTITUTE for information
+   that a different process does not have.
+
+   And the substitute cannot have a useful default: the value has to exceed the
+   longest values-then-pointer window a deployment's writers can have, which is a
+   property of the deployment and not of datahike. A default large enough to be
+   meaningful would be wrong for most stores and would silently slow reclamation
+   for everyone; a default small enough to be harmless would not protect anyone
+   while looking as though it did.
+
+   So it is opt-in, and collecting from outside the writer process without it is
+   warned about by name. See [[gc-storage!]]."
+  0)
+
 (defn gc-storage!
   "Invokes garbage collection on the database by whitelisting currently known branches.
   All db snapshots on these branches before remove-before date will also be
@@ -214,21 +234,40 @@
   makes GC collect MORE. The safe point is a SWEEP-side bound (how recently written
   an object may be and still be judged) and makes it collect LESS.
 
-  RUN IT WHERE THE WRITERS ARE. This follows from datahike's writer model, not from
-  anything specific to GC: ALL WRITERS FOR A DATABASE RUN IN ONE JVM — they coordinate
-  in memory, not through the store — and writer-side maintenance runs with them.
-  `d/gc-storage` is a writer op, so it is already in the right place; the note is here
-  because \"collect from a cron sidecar\" is a tempting shape and it is outside the
-  model. Such a collector cannot observe the writer's in-flight sequences, and datahike
-  cannot warn you: a second process gets a `:self` writer by default and looks like a
-  writer too. (Cross-process writers are outside the model for a more basic reason as
-  well — there is no head fencing yet, so they can lose each other's commits regardless
-  of GC. See issue #878.) Readers are unconstrained."
-  ([db] (gc-storage! db (#?(:clj Date. :cljs js/Date.) 0)))
-  ([db remove-before]
+  PREFER TO RUN IT WHERE THE WRITERS ARE. This follows from datahike's writer model,
+  not from anything specific to GC: ALL WRITERS FOR A DATABASE RUN IN ONE JVM — they
+  coordinate in memory, not through the store — and writer-side maintenance runs with
+  them. `d/gc-storage` is a writer op, so it is already in the right place.
+
+  COLLECTING FROM ANOTHER PROCESS — a cron sidecar, an offline job against the bucket
+  — is possible, but ONLY because of `:min-age-ms`, and only if you choose that number
+  deliberately. Such a collector cannot observe the writer's in-flight sequences: its
+  `safe-point` reports `now` because ITS heap is idle, not because the store is quiet.
+  `:min-age-ms` replaces that missing information with a wall-clock bound — spare
+  anything written within the last N — so it must EXCEED THE LONGEST VALUES-THEN-POINTER
+  WINDOW any writer can have.
+
+  Sizing it: a writer that AWAITS ITS TRANSACTS has no such window open once the call
+  returns, so the bound is one request — 15 minutes on AWS Lambda, which makes hours
+  orders of magnitude conservative. A writer that dispatches a transaction and returns
+  WITHOUT awaiting it breaks that reasoning, and so does a suspended process (see
+  issue #960: a frozen Lambda resumes mid-sequence arbitrarily later). The price of a
+  generous value is only delayed reclamation.
+
+  A duration and not an instant, deliberately: the cutoff is compared against konserve's
+  `:last-write` stamps, which come from its monotonic write clock, and a wall-clock
+  `Date` from the caller is not comparable to those in a way anything would detect.
+
+  (Cross-process writers are outside the model for a more basic reason as well — there
+  is no head fencing yet, so they can lose each other's commits regardless of GC. See
+  issue #878.) Readers are unconstrained."
+  ([db] (gc-storage! db (#?(:clj Date. :cljs js/Date.) 0) nil))
+  ([db remove-before] (gc-storage! db remove-before nil))
+  ([db remove-before {:keys [min-age-ms]}]
    (go-try S
            (let [{:keys [config store]} db
                  store-id (:id (:store config))
+                 min-age-ms (or min-age-ms DEFAULT_SWEEP_MIN_AGE_MS)
                  ;; Cutoff from konserve's monotonic write clock — the SAME
                  ;; source that stamps :last-write. Strictly increasing, so a
                  ;; cutoff acquired after a write is strictly greater than the
@@ -239,13 +278,37 @@
                  ;; and closed between the two reads has landed its pointer, and the
                  ;; mark (which runs after) sees it. Reading the guard first would
                  ;; miss a sequence that opens in between.
-                 cutoff (let [sp (guard/safe-point store-id)]
-                          (if (< (get-time sp) (get-time now)) sp now))
-                 _ (log/debug :datahike/gc-start {:time now :cutoff cutoff})
-                 _ (when-not (= :self (:backend (:writer config)))
-                     (log/warn :datahike/gc-without-local-writer
-                               {:writer (:backend (:writer config))
-                                :note "collecting a store this process does not write: in-flight commits elsewhere are invisible and may be swept"}))
+                 ;; The FLOOR: spare anything written within `min-age-ms`
+                 ;; regardless of what the guard says. `min` is the safe
+                 ;; direction — an earlier cutoff sweeps LESS — so this can only
+                 ;; ever retain garbage, never delete a live object. In this
+                 ;; process the safe point is the tighter bound and wins; outside
+                 ;; it, where the safe point degenerates to `now` because this
+                 ;; heap has no in-flight sequences to report, the wall clock is
+                 ;; the only bound there is.
+                 floor (#?(:clj Date. :cljs js/Date.) (- (get-time now) min-age-ms))
+                 cutoff (->> [(guard/safe-point store-id) now floor]
+                             (sort-by get-time)
+                             first)
+                 _ (log/debug :datahike/gc-start {:time now :cutoff cutoff :min-age-ms min-age-ms})
+                 ;; The condition that matters is not which writer backend this
+                 ;; config names — a second process connecting to the same store
+                 ;; gets a `:self` writer by default and looks like the writer —
+                 ;; it is whether anything in THIS process has ever written here.
+                 ;; If not, `safe-point` is `now` because this heap is idle, not
+                 ;; because the store is quiet, and only `min-age-ms` is holding
+                 ;; the line.
+                 _ (when-not (guard/ever-guarded? store-id)
+                     (if (pos? min-age-ms)
+                       (log/info :datahike/gc-outside-writer-process
+                                 {:min-age-ms min-age-ms
+                                  :note "collecting a store this process has never written: the sweep is bounded by :min-age-ms alone"})
+                       (log/warn :datahike/gc-outside-writer-process
+                                 {:min-age-ms min-age-ms
+                                  :note (str "collecting a store this process has never written, and with no sweep floor. "
+                                             "Another process's in-flight commit is invisible here — its objects are on disk, "
+                                             "reachable from nothing yet, and this sweep can delete them. "
+                                             "Set :min-age-ms above the longest values-then-pointer window your writers can have.")})))
                  _ (sc/clear-write-cache (:store config)) ; Clear the schema write cache for this store
                  branches (<? S (k/get store :branches))
                  _ (log/trace :datahike/gc-retain-branches {:branches branches})

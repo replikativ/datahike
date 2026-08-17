@@ -868,6 +868,7 @@
 
     gc-storage
     {:args [:function
+            [:=> [:cat :datahike/SConnection :datahike/time-point? [:map [:min-age-ms {:optional true} :int]]] :any]
             [:=> [:cat :datahike/SConnection :datahike/time-point?] :any]
             [:=> [:cat :datahike/SConnection] :any]]
      :ret :any
@@ -875,11 +876,13 @@
      :stability :stable
      :supports-remote? true
      :referentially-transparent? false
-     :doc "Invokes garbage collection on connection's store. Removes old snapshots before given time point."
+     :doc "Invokes garbage collection on connection's store. Removes old snapshots before given time point. `:min-age-ms` spares anything written more recently than that, which is what makes collecting from outside the writer process possible — it must exceed the longest values-then-pointer window any writer can have."
      :examples [{:desc "GC all old snapshots"
                  :code "(gc-storage conn)"}
                 {:desc "GC snapshots before date"
-                 :code "(gc-storage conn (java.util.Date.))"}]
+                 :code "(gc-storage conn (java.util.Date.))"}
+                {:desc "Collect from a cron job or offline process: spare anything written in the last 24h"
+                 :code "(gc-storage conn (java.util.Date. 0) {:min-age-ms 86400000})"}]
      :impl datahike.writer/gc-storage!}
 
     ;; =========================================================================
