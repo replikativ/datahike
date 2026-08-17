@@ -2225,43 +2225,43 @@
                                          (aset merge-datoms mi d)
                                          (process-merges (inc mi)))))))
                                (let [probe (datom eid ra vgv tx0)
-                                   ^Datom d (pss-lookup-ge eavt-pss probe)
-                                   eq-v (aget merge-eq-v mi)
-                                   eq-tx (aget merge-eq-tx mi)
-                                   found-d (or (when (and d (temporal-merge-datom-match? d eid ra vg? vgv eq-v eq-tx scan-d temporal-tx-filter added-filter merge-datoms))
-                                                 d)
-                                               (when (= temporal-type :as-of)
-                                                 (visible-eavt-datom origin-db db temporal-type (:temporal-eavt origin-db)
-                                                                     eid ra vg? vgv eq-v eq-tx scan-d
-                                                                     temporal-tx-filter added-filter merge-datoms)))]
-                               (if anti?
-                                 (when (not found-d) (process-merges (inc mi)))
-                                 (cond
-                                   found-d
-                                   (do (aset merge-datoms mi found-d) (process-merges (inc mi)))
+                                     ^Datom d (pss-lookup-ge eavt-pss probe)
+                                     eq-v (aget merge-eq-v mi)
+                                     eq-tx (aget merge-eq-tx mi)
+                                     found-d (or (when (and d (temporal-merge-datom-match? d eid ra vg? vgv eq-v eq-tx scan-d temporal-tx-filter added-filter merge-datoms))
+                                                   d)
+                                                 (when (= temporal-type :as-of)
+                                                   (visible-eavt-datom origin-db db temporal-type (:temporal-eavt origin-db)
+                                                                       eid ra vg? vgv eq-v eq-tx scan-d
+                                                                       temporal-tx-filter added-filter merge-datoms)))]
+                                 (if anti?
+                                   (when (not found-d) (process-merges (inc mi)))
+                                   (cond
+                                     found-d
+                                     (do (aset merge-datoms mi found-d) (process-merges (inc mi)))
                                    ;; Optional merge: a miss here was asked with the obligations
                                    ;; folded in, so it is not yet evidence of absence. Ask again
                                    ;; for presence alone; if the attribute IS there, the row is
                                    ;; excluded rather than defaulted.
-                                   (and merge-optional (aget merge-optional mi))
-                                   (let [^Datom od (pss-lookup-ge eavt-pss (datom eid ra nil tx0))
-                                         present-now? (and od (temporal-merge-datom-present?
-                                                               od eid ra scan-d temporal-tx-filter added-filter))
-                                         present-t? (and (not present-now?)
-                                                         (= temporal-type :as-of)
-                                                         (some? (visible-eavt-datom
-                                                                 origin-db db temporal-type (:temporal-eavt origin-db)
-                                                                 eid ra false nil -1 -1 scan-d
-                                                                 temporal-tx-filter added-filter
-                                                                 merge-datoms)))
-                                         dv (aget merge-defaults mi)
-                                         dd (datom eid ra dv tx0)]
-                                     (when (and (not present-now?) (not present-t?)
-                                                (or (not vg?) (val-eq? dv vgv))
-                                                (eq-ok? eq-v dv dd scan-d merge-datoms)
-                                                (eq-ok? eq-tx (datom/datom-tx dd) dd scan-d merge-datoms))
-                                       (aset merge-datoms mi dd)
-                                       (process-merges (inc mi))))))))))))]
+                                     (and merge-optional (aget merge-optional mi))
+                                     (let [^Datom od (pss-lookup-ge eavt-pss (datom eid ra nil tx0))
+                                           present-now? (and od (temporal-merge-datom-present?
+                                                                 od eid ra scan-d temporal-tx-filter added-filter))
+                                           present-t? (and (not present-now?)
+                                                           (= temporal-type :as-of)
+                                                           (some? (visible-eavt-datom
+                                                                   origin-db db temporal-type (:temporal-eavt origin-db)
+                                                                   eid ra false nil -1 -1 scan-d
+                                                                   temporal-tx-filter added-filter
+                                                                   merge-datoms)))
+                                           dv (aget merge-defaults mi)
+                                           dd (datom eid ra dv tx0)]
+                                       (when (and (not present-now?) (not present-t?)
+                                                  (or (not vg?) (val-eq? dv vgv))
+                                                  (eq-ok? eq-v dv dd scan-d merge-datoms)
+                                                  (eq-ok? eq-tx (datom/datom-tx dd) dd scan-d merge-datoms))
+                                         (aset merge-datoms mi dd)
+                                         (process-merges (inc mi))))))))))))]
                (process-merges 0))))))))
 
 ;; ---------------------------------------------------------------------------
