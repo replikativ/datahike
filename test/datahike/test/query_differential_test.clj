@@ -882,3 +882,141 @@
                  "claimed to hold everywhere — but the canary still answers "
                  (pr-str answer)
                  ". Either re-list the class or fix the regression."))))))
+
+;; ---------------------------------------------------------------------------
+;; Axis: VALUES THAT ARE NOT SCALARS.
+;;
+;; Every axis above varies the query's SHAPE over scalar data. That is how a
+;; whole class stayed invisible: a byte/float/double array is a VALUE in
+;; datahike (`datahike.array/a=` and the index comparator both say so), but the
+;; JVM and JavaScript give arrays IDENTITY semantics, so each site that hashed
+;; or compared one silently answered by reference. Eight distinct wrong-answer
+;; classes were found here BY REVIEWERS, one at a time, each in the fix for the
+;; previous one — which is exactly the loop a generator exists to close.
+;;
+;; The `:find` projects ENTITIES, never the array itself: a result containing
+;; an array would be compared with `=` by the harness (and by `normalize`), so
+;; the comparison would inherit the very defect under test.
+
+(defonce ^:private test-db-arrays
+  (delay
+    (let [cfg {:store {:backend :memory :id (random-uuid)}
+               :schema-flexibility :write}]
+      (d/create-database cfg)
+      (let [conn (d/connect cfg)
+            b (fn [& xs] (byte-array xs))
+            f (fn [& xs] (float-array xs))
+            dd (fn [& xs] (double-array xs))]
+        (d/transact conn [{:db/ident :ba  :db/valueType :db.type/bytes :db/cardinality :db.cardinality/one}
+                          {:db/ident :ba2 :db/valueType :db.type/bytes :db/cardinality :db.cardinality/one}
+                          ;; indexed, so a value-position probe can drive an AVET seek
+                          {:db/ident :bai :db/valueType :db.type/bytes :db/index true
+                           :db/cardinality :db.cardinality/one}
+                          {:db/ident :bam :db/valueType :db.type/bytes :db/cardinality :db.cardinality/many}
+                          {:db/ident :fa  :db/valueType :db.type/float-array :db/cardinality :db.cardinality/one}
+                          {:db/ident :fa2 :db/valueType :db.type/float-array :db/cardinality :db.cardinality/one}
+                          {:db/ident :da  :db/valueType :db.type/double-array :db/cardinality :db.cardinality/one}
+                          {:db/ident :da2 :db/valueType :db.type/double-array :db/cardinality :db.cardinality/one}
+                          {:db/ident :anchor :db/valueType :db.type/long :db/cardinality :db.cardinality/one}])
+        ;; Every array object is allocated separately, so nothing is equal by
+        ;; identity and only value semantics can make a join match. The awkward
+        ;; values are the point: bytes at and above 0x80 (which are NEGATIVE on
+        ;; the JVM and were once rendered through `(char …)`), NaN (which the
+        ;; JVM calls equal to itself and JavaScript's `<`/`>` call equal to
+        ;; everything), and signed zero (ordered on the JVM, tied in JS).
+        (d/transact conn [{:db/id 1 :anchor 1 :ba (b 1 2 3) :ba2 (b 1 2 3) :bai (b 1 2 3)
+                           :bam [(b 1 2 3) (b 4 5 6)]
+                           :fa (f 1.5 2.5) :fa2 (f 1.5 2.5) :da (dd 1.5) :da2 (dd 1.5)}
+                          {:db/id 2 :anchor 2 :ba (b 1 2 3) :ba2 (b 9 9 9) :bai (b 9 9 9)
+                           :bam [(b 9 9 9)]
+                           :fa (f 1.5 2.5) :fa2 (f 9.5) :da (dd 9.5) :da2 (dd 1.5)}
+                          {:db/id 3 :anchor 3 :ba (b -1 -128 0) :ba2 (b -1 -128 0) :bai (b -1 -128 0)
+                           :fa (f ##NaN) :fa2 (f ##NaN) :da (dd ##NaN 1.5) :da2 (dd ##NaN 1.5)}
+                          {:db/id 4 :anchor 4 :ba (b -1 -128 0) :ba2 (b 0 0 0) :bai (b 0)
+                           :fa (f -0.0) :fa2 (f 0.0) :da (dd -0.0) :da2 (dd 0.0)}
+                          ;; no :ba2 / :fa2 at all — the default side of get-else
+                          {:db/id 5 :anchor 5 :ba (b 7) :bai (b 7) :fa (f 7.5) :da (dd 7.5)}])
+        (d/db conn)))))
+
+(def ^:private array-attr-pairs
+  ;; [own paired indexed-own card-many-own]
+  {:bytes  {:a :ba  :b :ba2 :indexed :bai :many :bam}
+   :floats {:a :fa  :b :fa2}
+   :doubles {:a :da :b :da2}})
+
+(def ^:private gen-array-spec
+  (gen/hash-map
+   :kind      (gen/elements [:bytes :floats :doubles])
+   :shape     (gen/elements [:same-entity :cross-group :get-else :not-join
+                             :coll-in :in-const :probe-join :card-many-get-else
+                             :missing-guard :or-join])
+   :find      (gen/elements [:e :count])))
+
+(defn- array-value-for
+  "A concrete array value from the dataset, for the shapes that bind one as an
+   argument. Allocated fresh, so an engine can only match it by VALUE."
+  [kind]
+  (case kind
+    :bytes   (byte-array [1 2 3])
+    :floats  (float-array [1.5 2.5])
+    :doubles (double-array [1.5])))
+
+(defn- build-array-query [{:keys [kind shape find]}]
+  (let [{:keys [a b indexed many]} (get array-attr-pairs kind)
+        find-clause (if (= find :count) '[(count ?e)] '[?e])
+        q (fn [& where] (into (into [:find] find-clause) (cons :where where)))]
+    (case shape
+      :same-entity  [(q [(quote ?e) a (quote ?v)] [(quote ?e) b (quote ?v)]) []]
+      :cross-group  [(q [(quote ?e) a (quote ?v)] [(quote ?f) b (quote ?v)]) []]
+      :get-else     [(q [(quote ?e) a (quote ?v)]
+                        [(list 'get-else '$ '?e b "zz") '?v]) []]
+      :not-join     [(q [(quote ?e) a (quote ?v)]
+                        (list 'not-join '[?v] [(quote ?f) b (quote ?v)])) []]
+      :or-join      [(q [(quote ?e) :anchor (quote _)]
+                        (list 'or-join '[?e]
+                              [(quote ?e) a (array-value-for kind)]
+                              [(quote ?e) b (array-value-for kind)])) []]
+      :missing-guard [(q [(quote ?e) a (quote ?v)]
+                         [(list 'missing? '$ '?e b)]) []]
+      :coll-in      [(into (into [:find] find-clause)
+                           (list :in '$ '[?v ...] :where [(quote ?e) a (quote ?v)]))
+                     [[(array-value-for kind)]]]
+      :in-const     [(into (into [:find] find-clause)
+                           (list :in '$ '?v :where
+                                 [(quote ?e) :anchor (quote _)]
+                                 [(list 'get-else '$ '?e a "zz") '?v]))
+                     [(array-value-for kind)]]
+      :probe-join   (if indexed
+                      [(q [(quote ?p) :anchor 1] [(quote ?p) a (quote ?v)]
+                          [(quote ?e) indexed (quote ?v)]) []]
+                      [(q [(quote ?e) a (quote ?v)] [(quote ?f) b (quote ?v)]) []])
+      :card-many-get-else (if many
+                            [(q [(quote ?e) :anchor (quote _)]
+                                [(list 'get-else '$ '?e many "zz") '?v]) []]
+                            [(q [(quote ?e) a (quote ?v)] [(quote ?e) b (quote ?v)]) []]))))
+
+(defspec array-values-are-values
+  {:num-tests (max 200 (quot num-cases 6)) :seed 1721160000042}
+  (prop/for-all [spec gen-array-spec]
+                (let [[query args] (build-array-query spec)
+                      db @test-db-arrays
+                      base (run-engine true query db args {})
+                      planner (run-engine false query db args {})
+                      oracle (run-oracle query db args)]
+                  (and
+                   (is (= base planner)
+                       (str "engines diverge on an ARRAY value\n"
+                            "  spec:    " (pr-str spec) "\n"
+                            "  query:   " (pr-str query) "\n"
+                            "  base:    " (pr-str base) "\n"
+                            "  planner: " (pr-str planner)))
+                   ;; the oracle is the reference: two engines agreeing is not
+                   ;; evidence, and every class found here was a SHARED wrong
+                   ;; answer at least once
+                   (or (#{::unsupported ::timeout ::raised} oracle)
+                       (is (= base oracle)
+                           (str "both engines agree but the oracle disagrees on an ARRAY value\n"
+                                "  spec:    " (pr-str spec) "\n"
+                                "  query:   " (pr-str query) "\n"
+                                "  engines: " (pr-str base) "\n"
+                                "  oracle:  " (pr-str oracle))))))))

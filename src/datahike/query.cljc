@@ -355,6 +355,38 @@
                     rule))
                 rules))))))
 
+(defn- fn-clause-written-as-list?
+  "Is `clause` a function/predicate clause written with an outer LIST instead of
+   a vector — `((get-else $ ?e :a \"d\") ?v)` rather than `[(get-else …) ?v]`?
+
+   Unambiguous: every other list-shaped clause form — `(not …)`, `(not-join …)`,
+   `(or …)`, `(and …)`, a rule invocation — starts with a SYMBOL. Only this one
+   has a call form in head position."
+  [clause]
+  (and (seq? clause)
+       (not (vector? clause))
+       (seq? (first clause))))
+
+(defn normalize-list-fn-clauses
+  "Rewrite `((f …) out)` to `[(f …) out]` in `:where`.
+
+   Both engines accept the list form, and they answered DIFFERENTLY: the
+   relational engine honoured the clause, the planner did not recognise it and
+   dropped the obligation entirely, so `[?e :anchor _] ((get-else $ ?e :anchor 0) ?v)`
+   with `?v` bound returned every entity instead of the one that matches. Worse,
+   the two forms share a plan-cache entry, so running the list form FIRST left
+   the wrong plan cached for the ordinary vector form — one query silently
+   breaking another.
+
+   Normalising here means both engines and both cache keys see one shape.
+   Returns `query` UNCHANGED (identical object) when nothing matches, so caches
+   are not perturbed for queries this does not affect."
+  [query]
+  (let [where (:where query)]
+    (if (and (seq where) (some fn-clause-written-as-list? where))
+      (assoc query :where (mapv (fn [c] (if (fn-clause-written-as-list? c) (vec c) c)) where))
+      query)))
+
 (defn normalize-repeated-vars
   "Rewrite every data pattern that mentions a variable twice into a pattern of
    distinct variables plus an explicit `=` join predicate. Returns `query`
@@ -443,7 +475,9 @@
                    (:args query-input))
                arg-inputs)
         extra-ks [:offset :limit :order-by :stats? :count-fns? :settings :cancel]]
-    (-> (cond-> {:query (normalize-repeated-vars (apply dissoc query extra-ks))
+    (-> (cond-> {:query (-> (apply dissoc query extra-ks)
+                            normalize-list-fn-clauses
+                            normalize-repeated-vars)
                  ;; Rules ride in as the argument bound to `%`; normalise their
                  ;; bodies too, or a self-join inside a rule stays wrong on BOTH
                  ;; engines.

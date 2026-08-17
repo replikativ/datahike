@@ -358,6 +358,21 @@
               '[:find ?e :in $ [?v ...] :where [?e :blob ?v] [?e :anchor _]]
               db [(bytes-of [1 2 3])]))
 
+      (testing "a fn clause written as a LIST is the same clause"
+        ;; `((get-else …) ?v)` instead of `[(get-else …) ?v]`. Both engines
+        ;; accept it and they answered differently — the planner did not
+        ;; recognise the form and dropped the obligation — and because the two
+        ;; forms share a plan-cache entry, running the list form first left the
+        ;; wrong plan cached FOR THE VECTOR FORM. One query silently breaking
+        ;; another is why this is normalised rather than merely fixed.
+        ;; entities 1 and 2 both hold :blob [1 2 3]
+        (both #{[1] [2]}
+              '[:find ?e :in $ ?v :where [?e :anchor _] ((get-else $ ?e :blob "zz") ?v)]
+              db (bytes-of [1 2 3]))
+        (both #{[1] [2]}
+              '[:find ?e :in $ ?v :where [?e :anchor _] [(get-else $ ?e :blob "zz") ?v]]
+              db (bytes-of [1 2 3])))
+
       (testing "a NEGATION keys its exclusion set by value too"
         ;; `not-join` builds an exclusion set from the negated relation. It
         ;; keyed raw values, so an array in the negation excluded nothing and
