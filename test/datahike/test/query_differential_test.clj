@@ -635,8 +635,9 @@
   ;; differently still fails the build.
   [{:id :fn-output-folded-in-const
     :kind :raise
-    :why (str "a scalar :in constant is folded into a function clause's output "
-              "binding position, producing e.g. [(upper-case \"alice\") \"alice\"], "
+    :why (str "a scalar :in constant is folded into a function or get-else "
+              "clause's output binding position, producing e.g. "
+              "[(upper-case \"alice\") \"alice\"], "
               "which the binding parser rejects — so the planner raises where the "
               "base engine answers. The folding is also how the planner ENCODES "
               "the obligation for a get-else (it becomes v-ground, which the merge "
@@ -659,9 +660,12 @@
                        (and (vector? form)
                             (= 2 (count form))
                             (seq? (first form))
-                            (not= 'get-else (ffirst form))
                             ;; `?n` is bound by the always-present [?e :name ?n],
-                            ;; so a function writing into it is the rebind shape
+                            ;; so a clause writing into it is the rebind shape.
+                            ;; `get-else` counts: the fold is into the BINDING
+                            ;; POSITION and does not care which fn is in head
+                            ;; position — measured, both raise with the same
+                            ;; "Cannot parse binding" message.
                             (= '?n (second form))))
                      (tree-seq coll? seq query))))}])
 
