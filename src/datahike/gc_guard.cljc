@@ -64,11 +64,20 @@
 ;; `(js/Object.)` implements neither IHash nor IEquiv in cljs, so it cannot be one.
 (defonce ^:private token-seq (atom 0))
 
+;; `in-flight` only knows about sequences that are open RIGHT NOW — `done!`
+;; removes the entry. So it cannot answer "has this process ever written to this
+;; store", which is what distinguishes a collector running beside its writer from
+;; one running outside it. That distinction has no other reliable signal: a second
+;; process connecting to the same store gets a `:self` writer by default and looks
+;; exactly like the writer.
+(defonce ^:private ever (atom #{}))
+
 (defn writing!
   "Open an unreferenced-write sequence on `store-id`. Returns a token to close it
    with. Call BEFORE the first value is written."
   [store-id]
   (let [token (swap! token-seq inc)]
+    (swap! ever conj store-id)
     (swap! in-flight assoc-in [store-id token] (now))
     token))
 
@@ -91,6 +100,17 @@
    compares timestamps cannot tell a held guard from a missing one. This can."
   [store-id]
   (boolean (seq (get @in-flight store-id))))
+
+(defn ever-guarded?
+  "Has THIS PROCESS ever opened an unreferenced-write sequence on `store-id`?
+
+   False means nothing here has ever written to that store, so a collector
+   running here cannot see any writer's in-flight window and its safe point is
+   meaningless — it is `now` only because this heap is idle. Unlike
+   [[in-flight?]] this stays true after the sequence closes, which is what makes
+   it usable as a \"is this the writer process\" test at collection time."
+  [store-id]
+  (contains? @ever store-id))
 
 (defn safe-point
   "The instant before which every object written to `store-id` is either

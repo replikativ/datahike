@@ -9,6 +9,7 @@
    [datahike.versioning :refer [branch! delete-branch! merge!
                                 branch-history]]
    [konserve.core :as k]
+   [datahike.gc]
    [datahike.test.core-test])
   (:import [java.util Date]))
 
@@ -157,3 +158,64 @@
         (is (= 7 (count history-after-gc)))))
     (d/release conn)
     (d/release conn-branch1)))
+
+;; ---------------------------------------------------------------------------
+;; The sweep FLOOR (:min-age-ms). The exact bound — the in-process safe point —
+;; is only available where the writing happens; a collector anywhere else gets
+;; `now` from it, because ITS heap is idle rather than because the store is
+;; quiet. The floor is what stands in for the missing information.
+
+(defn- churned-conn
+  "A connection with collectable garbage: history is on, and every snapshot
+   before `remove-before` is erasable, so the superseded roots are unreachable.
+   `(Date. 0)` as remove-before would keep ALL history and leave nothing to
+   collect, which makes any \"the floor spared it\" assertion pass vacuously."
+  [path]
+  (let [cfg (assoc-in cfg [:store :path] path)]
+    (d/delete-database cfg)
+    (d/create-database cfg)
+    (let [conn (d/connect cfg)]
+      (d/transact conn schema)
+      (d/transact conn txs)
+      conn)))
+
+(deftest min-age-spares-recent-garbage
+  (testing "an object young enough is spared even though the mark called it
+            garbage — the property an offline collector rests on"
+    (let [conn (churned-conn "/tmp/dh-gc-min-age")]
+      (try
+        (let [before (count-store @conn)
+              swept  (<?? S (d/gc-storage conn (Date.) {:min-age-ms 86400000}))]
+          (is (empty? swept)
+              "nothing written in the last day may be deleted, reachable or not")
+          (is (= before (count-store @conn))
+              "and the store is untouched"))
+        ;; The control, and it is the assertion that matters: the same store,
+        ;; the same remove-before, no floor. If this collects nothing then the
+        ;; scenario had no garbage and the assertion above proved nothing.
+        (let [swept (<?? S (d/gc-storage conn (Date.) {:min-age-ms 0}))]
+          (is (seq swept)
+              "with no floor the same store does have collectable garbage"))
+        (finally (d/release conn))))))
+
+(deftest min-age-is-off-by-default
+  (testing "the floor is opt-in: where the writer lives the safe point is exact,
+            so a wall-clock floor there would only retain garbage the collector
+            was right about. Passing nothing must collect exactly as before."
+    (is (zero? datahike.gc/DEFAULT_SWEEP_MIN_AGE_MS))
+    (let [conn (churned-conn "/tmp/dh-gc-min-age-default")]
+      (try
+        (is (seq (<?? S (d/gc-storage conn (Date.))))
+            "the default collects the garbage it always did")
+        (finally (d/release conn))))))
+
+(deftest min-age-is-a-floor-not-a-replacement
+  (testing "cutoff is the MINIMUM of the guard and the floor, so the floor can
+            only ever collect LESS — never more than the safe point allows"
+    (let [conn (churned-conn "/tmp/dh-gc-min-age-floor")]
+      (try
+        (let [with-floor (<?? S (d/gc-storage conn (Date.) {:min-age-ms 86400000}))
+              no-floor   (<?? S (d/gc-storage conn (Date.) {:min-age-ms 0}))]
+          (is (empty? (clojure.set/difference (set with-floor) (set no-floor)))
+              "a floored sweep deletes nothing an unfloored one would keep"))
+        (finally (d/release conn))))))
