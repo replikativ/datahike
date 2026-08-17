@@ -357,4 +357,3 @@
       (testing "history takes the EAVT-first version, not the earliest"
         (both #{["new"]} query (d/history db)))
       (testing "current is unambiguous" (both #{["new"]} query db)))))
-
