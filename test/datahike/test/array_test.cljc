@@ -48,7 +48,27 @@
       (is (cmp (double-array [1.5 2.5]) (double-array [1.5 2.5])))
       (is (not (cmp (double-array [1.5 2.5]) (double-array [9.0 2.5]))))
       ;; a float[] and a double[] with the same numbers are NOT equal
-      (is (not (cmp (float-array [1.5 2.5]) (double-array [1.5 2.5])))))))
+      (is (not (cmp (float-array [1.5 2.5]) (double-array [1.5 2.5]))))
+
+      ;; The congruence has to hold over the WHOLE value domain, and these are
+      ;; the values where it did not: `wrap-comparable` represented bytes as a
+      ;; String built with `(char signed-byte)`, which THREW from 0x80 up, and
+      ;; float/double arrays as plain vectors, whose `=` disagrees with `a=` in
+      ;; both directions on NaN and on signed zero. Asserting `a=` and `a2=`
+      ;; together is the point: either one alone would have passed throughout.
+      (is (cmp (byte-array [-1]) (byte-array [-1])))
+      (is (cmp (byte-array [-1 -128 0 127]) (byte-array [-1 -128 0 127])))
+      (is (not (cmp (byte-array [-1]) (byte-array [-2]))))
+      #?(:clj
+         (do
+           ;; NaN: `Arrays/compare` and `Arrays/equals` both call two NaNs
+           ;; equal, while Clojure's `=` on the boxed values does not
+           (is (cmp (float-array [##NaN]) (float-array [##NaN])))
+           (is (cmp (double-array [##NaN]) (double-array [##NaN])))
+           (is (cmp (float-array [##NaN 1.5]) (float-array [##NaN 1.5])))
+           ;; signed zero: ordered, so NOT equal — the reverse disagreement
+           (is (not (cmp (float-array [-0.0]) (float-array [0.0]))))
+           (is (not (cmp (double-array [-0.0]) (double-array [0.0])))))))))
 
 (deftest test-primitive-array-predicates
   (testing "value-array type predicates"

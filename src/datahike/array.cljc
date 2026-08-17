@@ -143,27 +143,71 @@ compared element-wise; a mismatched pair falls back to a stable class ordering."
            n (alength x)
            dst (char-array n)]
        (dotimes [i n]
-         (aset dst i (char (aget x i))))
+         ;; `(char -1)` throws — a byte is SIGNED, and every byte from 0x80 up
+         ;; is negative. Mask to the unsigned value so the representation
+         ;; exists for the whole domain.
+         (aset dst i (char (bit-and (aget x i) 0xff))))
        (String. dst))))
 
-(defrecord WrappedBytes [string-repr])
+#?(:clj
+   (deftype ArrayKey [kind arr ^int hsh]
+     Object
+     (hashCode [_] hsh)
+     (equals [this o]
+       (or (identical? this o)
+           (and (instance? ArrayKey o)
+                (let [^ArrayKey o o]
+                  (and (identical? kind (.-kind o))
+                       (case kind
+                         :byte   (java.util.Arrays/equals ^bytes (.-arr this) ^bytes (.-arr o))
+                         :float  (java.util.Arrays/equals ^floats (.-arr this) ^floats (.-arr o))
+                         :double (java.util.Arrays/equals ^doubles (.-arr this) ^doubles (.-arr o))))))))
+     (toString [_] (str "#datahike/array-key[" (name kind) "]"))))
 
-;; float[]/double[] have identity equality/hashCode. `(vec …)` gives a
-;; value-equal representation usable as a key, but Clojure's `=` treats
-;; `(float 1.5)` and `(double 1.5)` as equal, so a vec of Floats would collide
-;; with a vec of Doubles — while `compare-arrays` keeps float[] and double[]
-;; distinct (by class). The `kind` tag restores that distinction so
-;; `wrap-comparable` and `a=` agree (the property test-extended-equality checks).
+;; The `kind` tag keeps float[] and double[] distinct, which `compare-arrays`
+;; does by class: without it a vec of Floats and a vec of Doubles holding the
+;; same numbers would be `=`.
 (defrecord WrappedArray [kind vals])
 
+#?(:cljs
+   (defn- canonical-element
+     "Normalises an element so that vector equality reproduces what
+      `compare-arrays` says on this platform: `goog.array/compare3` finds
+      neither `<` nor `>` between two NaNs and calls them equal, and likewise
+      does not separate -0.0 from 0.0."
+     [x]
+     (cond
+       (js/Number.isNaN x) ::nan
+       (and (zero? x) (neg? (/ 1 x))) 0
+       :else x)))
+
 (defn wrap-comparable
-  "This functions is such that `(a= x y)` is equivalent to `(= (wrap-comparable x) (wrap-comparable y))`. This lets us also use these semantics in hash-sets or as keys in maps."
+  "A key `k` such that `(a= x y)` iff `(= (wrap-comparable x) (wrap-comparable y))`,
+   so array VALUES can be used in hash sets and as map keys.
+
+   This has to hold over the WHOLE value domain, and it did not. Byte arrays
+   were represented as a String built with `(char signed-byte)`, which THREW
+   for every byte from 0x80 up; and float/double arrays as `(vec …)`, whose
+   equality disagrees with `a=` in both directions — Clojure's `=` says two
+   NaNs differ (`a=`, via `Arrays/compare`, says they are equal) and that -0.0
+   equals 0.0 (`a=` says they differ). A join keyed on any of those either
+   crashed or silently put equal values in different buckets.
+
+   On the JVM the key holds the array itself and defers to `Arrays/equals`,
+   which is bit-based for float/double and therefore agrees with
+   `Arrays/compare` on exactly these cases — and allocates nothing per key
+   beyond the wrapper. ClojureScript has no such primitive, so it keeps a
+   canonicalised vector, matching what `compare3` reports there.
+
+   Identity for every non-array value."
   [x]
   (cond
-    (bytes? x) (WrappedBytes. #?(:clj (string-from-bytes x)
-                                 :cljs x))
-    (float-array? x) (WrappedArray. :float (vec x))
-    (double-array? x) (WrappedArray. :double (vec x))
+    (bytes? x) #?(:clj (ArrayKey. :byte x (java.util.Arrays/hashCode ^bytes x))
+                  :cljs (WrappedArray. :byte (mapv canonical-element (array-seq x))))
+    (float-array? x) #?(:clj (ArrayKey. :float x (java.util.Arrays/hashCode ^floats x))
+                        :cljs (WrappedArray. :float (mapv canonical-element (array-seq x))))
+    (double-array? x) #?(:clj (ArrayKey. :double x (java.util.Arrays/hashCode ^doubles x))
+                         :cljs (WrappedArray. :double (mapv canonical-element (array-seq x))))
     :else x))
 
 (defn a=

@@ -252,6 +252,9 @@
 (defn- floats-of [xs]
   #?(:clj (float-array xs) :cljs (js/Float32Array. (clj->js xs))))
 
+(defn- doubles-of [xs]
+  #?(:clj (double-array xs) :cljs (js/Float64Array. (clj->js xs))))
+
 (deftest-async binding-seam-law-value-arrays
   ;; Byte, float and double arrays are VALUES in datahike — `datahike.array/a=`
   ;; is what decides that — but Clojure's `=` compares them by identity. Every
@@ -272,6 +275,14 @@
                            {:db/ident :fa :db/valueType :db.type/float-array
                             :db/cardinality :db.cardinality/one}
                            {:db/ident :fa2 :db/valueType :db.type/float-array
+                            :db/cardinality :db.cardinality/one}
+                           {:db/ident :hi :db/valueType :db.type/bytes
+                            :db/cardinality :db.cardinality/one}
+                           {:db/ident :hi2 :db/valueType :db.type/bytes
+                            :db/cardinality :db.cardinality/one}
+                           {:db/ident :nan :db/valueType :db.type/double-array
+                            :db/cardinality :db.cardinality/one}
+                           {:db/ident :nan2 :db/valueType :db.type/double-array
                             :db/cardinality :db.cardinality/one}]))
     ;; entity 1 holds equal CONTENT in both attributes of each pair, in
     ;; distinct array objects; entity 2 does not
@@ -280,7 +291,11 @@
                             :fa (floats-of [1.5 2.5]) :fa2 (floats-of [1.5 2.5])}
                            {:db/id 2 :anchor 2
                             :blob (bytes-of [1 2 3]) :blob2 (bytes-of [9 9 9])
-                            :fa (floats-of [1.5 2.5]) :fa2 (floats-of [9.5 9.5])}]))
+                            :fa (floats-of [1.5 2.5]) :fa2 (floats-of [9.5 9.5])}
+                           ;; bytes above 0x7f, and a NaN
+                           {:db/id 3 :anchor 3
+                            :hi (bytes-of [-1 -128 5]) :hi2 (bytes-of [-1 -128 5])
+                            :nan (doubles-of [##NaN 1.5]) :nan2 (doubles-of [##NaN 1.5])}]))
     (let [db (d/db conn)]
 
       (testing "an optional merge obligation — byte arrays"
@@ -302,7 +317,19 @@
 
       (testing "an ordinary pattern occurrence, for comparison"
         (both #{[1]}
-              '[:find ?e :where [?e :blob ?v] [?e :blob2 ?v]] db)))))
+              '[:find ?e :where [?e :blob ?v] [?e :blob2 ?v]] db))
+
+      (testing "the values where the key representation disagreed with a="
+        ;; A join key has to hash BY VALUE over the whole domain. It did not:
+        ;; a byte from 0x80 up threw building the key, two NaNs hashed apart
+        ;; though `a=` calls them equal, and -0.0 hashed together with 0.0
+        ;; though `a=` separates them. Entity 3 carries all three.
+        (both #{[3]}
+              '[:find ?e :where [?e :hi ?v] [?e :hi2 ?v]] db)
+        (both #{[3]}
+              '[:find ?e :where [?e :nan ?v] [?e :nan2 ?v]] db)
+        (both #{[3]}
+              '[:find ?e :where [?e :hi ?v] [(get-else $ ?e :hi2 "x") ?v]] db)))))
 
 (deftest-async binding-seam-law-history-value-order
   ;; `get-else` returns the FIRST datom `search` yields, and on `history` that
@@ -315,12 +342,19 @@
              :keep-history? true}
         conn (<! (connect! cfg))]
     (<! (d/transact! conn [{:db/ident :nick :db/valueType :db.type/string
+                            :db/cardinality :db.cardinality/one}
+                           {:db/ident :anchor :db/valueType :db.type/long
                             :db/cardinality :db.cardinality/one}]))
-    (<! (d/transact! conn [{:db/id 1 :nick "old"}]))
+    (<! (d/transact! conn [{:db/id 1 :anchor 1 :nick "old"}]))
     (<! (d/transact! conn [{:db/id 1 :nick "new"}]))
     (let [db (d/db conn)
-          query '[:find ?v :in $ ?e :where [(get-else $ ?e :nick "D") ?v]]]
+          ;; the `[?e :anchor _]` pattern is what makes this reach the temporal
+          ;; fused merge kernel. With the get-else alone and `?e` bound through
+          ;; `:in`, the planner treats it as a standalone optional scan and
+          ;; routes it through `bind-by-fn`/legacy `-get-else` — so the test
+          ;; would pass on a merge kernel that took the earliest version.
+          query '[:find ?v :where [?e :anchor _] [(get-else $ ?e :nick "D") ?v]]]
       (testing "history takes the EAVT-first version, not the earliest"
-        (both #{["new"]} query (d/history db) 1))
-      (testing "current is unambiguous" (both #{["new"]} query db 1)))))
+        (both #{["new"]} query (d/history db)))
+      (testing "current is unambiguous" (both #{["new"]} query db)))))
 
