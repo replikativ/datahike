@@ -113,12 +113,36 @@
              (double-array? x) (alength ^doubles x))
      :cljs (.-length x)))
 
+#?(:cljs
+   (defn- array-kind-rank
+     "Ranks a value-array kind to match the JVM's class-name ordering of
+      `[B` < `[D` < `[F` — byte, then double, then float. Non-arrays rank last;
+      `compare-arrays` only sees them through `a=`, which guards with
+      `value-array?`."
+     [x]
+     (cond (bytes? x) 0
+           (double-array? x) 1
+           (float-array? x) 2
+           :else 3)))
+
 (defn compare-arrays
   "Compare two arrays a and b element-wise in ascending order. If one array is a
 prefix of another then it comes first. Same-typed byte/float/double arrays are
 compared element-wise; a mismatched pair falls back to a stable class ordering."
   [a b]
-  #?(:cljs (goog.array/compare3 a b)
+  #?(:cljs (let [ka (array-kind-rank a)
+                 kb (array-kind-rank b)]
+             ;; `goog.array/compare3` compares elements and ignores the typed-array
+             ;; KIND, so it called a Float32Array equal to a Float64Array holding
+             ;; the same numbers — and an empty Int8Array equal to an empty
+             ;; Float32Array. The JVM never does: its mismatched-kind pair falls
+             ;; back to class-name ordering, which is byte < double < float
+             ;; ("[B" < "[D" < "[F"). Ranking the kinds first reproduces that
+             ;; order here, so the two platforms agree on both ordering AND the
+             ;; equality that `a=` derives from it.
+             (if (== ka kb)
+               (goog.array/compare3 a b)
+               (if (< ka kb) -1 1)))
      :clj
      (cond
        (and (bytes? a) (bytes? b)) (raw-array-compare a b)
@@ -137,7 +161,11 @@ compared element-wise; a mismatched pair falls back to a stable class ordering."
 (defn string-from-bytes
   "Represents a byte array as a string. Two byte arrays are said to be equal iff their corresponding values after applying this function are equal. That way, we rely on the equality and hash code implementations of the String class to compare byte arrays."
   [x]
-  #?(:cljs (.decode (js/TextDecoder. "utf8") x)
+  ;; NOT `TextDecoder`: it maps every invalid UTF-8 byte to the SAME
+  ;; replacement character, so 0x80 and 0x81 produced equal strings for arrays
+  ;; `a=` calls different — the opposite of what this function promises. One
+  ;; character per byte, as on the JVM.
+  #?(:cljs (.apply js/String.fromCharCode nil (.map (js/Uint8Array. (.-buffer x)) identity))
      :clj
      (let [^bytes x x
            n (alength x)
@@ -202,30 +230,40 @@ compared element-wise; a mismatched pair falls back to a stable class ordering."
    Identity for every non-array value."
   [x]
   (cond
-    (bytes? x) #?(:clj (ArrayKey. :byte x (java.util.Arrays/hashCode ^bytes x))
+    (bytes? x) #?(:clj (let [^bytes c (java.util.Arrays/copyOf ^bytes x (alength ^bytes x))]
+                          (ArrayKey. :byte c (java.util.Arrays/hashCode c)))
                   :cljs (WrappedArray. :byte (mapv canonical-element (array-seq x))))
-    (float-array? x) #?(:clj (ArrayKey. :float x (java.util.Arrays/hashCode ^floats x))
+    (float-array? x) #?(:clj (let [^floats c (java.util.Arrays/copyOf ^floats x (alength ^floats x))]
+                               (ArrayKey. :float c (java.util.Arrays/hashCode c)))
                         :cljs (WrappedArray. :float (mapv canonical-element (array-seq x))))
-    (double-array? x) #?(:clj (ArrayKey. :double x (java.util.Arrays/hashCode ^doubles x))
+    (double-array? x) #?(:clj (let [^doubles c (java.util.Arrays/copyOf ^doubles x (alength ^doubles x))]
+                                (ArrayKey. :double c (java.util.Arrays/hashCode c)))
                          :cljs (WrappedArray. :double (mapv canonical-element (array-seq x))))
     :else x))
 
 (defn a=
   "Extension of Clojure's equality to things we also want to treat like values,
-  e.g. certain array types."
+  e.g. certain array types.
+
+  A value array is decided by `compare-arrays` ALONE — never by `=` first.
+  ClojureScript's `=` compares typed arrays structurally and ignores the kind,
+  so `(= (js/Int8Array. #js [1]) (js/Float32Array. #js [1]))` is TRUE there,
+  and an `(or (= a b) ...)` short-circuited on it before any kind check could
+  run: a byte array equalled a float array holding the same numbers, which the
+  JVM never says, and which broke the contract `wrap-comparable` states, since
+  the key keeps the kind.
+
+  The `value-array?` guard on BOTH sides is not symmetry for its own sake:
+  without it this handed ANY two values to `compare-arrays`, and
+  `goog.array/compare3` on two non-arrays reads `.length` (undefined on both),
+  skips its loop and returns 0 — so `a=` answered TRUE for every pair.
+  Measured on Node: `(a= {:a 1} {:b 2})`, `(a= 5 7)`, `(a= #{1} #{2})` were all
+  true. Anything downstream that asks \"are these the same value\" —
+  `compare-value`'s equality arm, and `db.search`'s value matching — was told
+  yes about everything."
   [a b]
-  (or (= a b)
-      #?(:clj (and (value-array? a)
-                   (value-array? b)
-                   (zero? (compare-arrays a b)))
-         ;; The `value-array?` guard is not symmetry-for-its-own-sake: without
-         ;; it this branch handed ANY two values to `compare-arrays`, and
-         ;; `goog.array/compare3` on two non-arrays reads `.length` (undefined
-         ;; on both), skips its loop and returns 0 — so `a=` answered TRUE for
-         ;; every pair. Measured on Node: `(a= {:a 1} {:b 2})`, `(a= 5 7)`,
-         ;; `(a= #{1} #{2})` were all true. Anything downstream that asks "are
-         ;; these the same value" — `compare-value`'s equality arm, and
-         ;; `db.search`'s value matching — was told yes about everything.
-         :cljs (and (value-array? a)
-                    (value-array? b)
-                    (zero? (compare-arrays a b))))))
+  (if (or (value-array? a) (value-array? b))
+    (and (value-array? a)
+         (value-array? b)
+         (zero? (compare-arrays a b)))
+    (= a b)))

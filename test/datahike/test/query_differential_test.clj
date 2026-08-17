@@ -644,7 +644,26 @@
               "binding position needs to carry the obligation without being parsed "
               "as a binding. Belongs in const-folding, #932's seam. "
               "Delete this entry then.")
-    :match? (fn [spec] (boolean (:rebind? spec)))}])
+    ;; The matcher names the CLAUSE SHAPE, not just the axis, and reads it off
+    ;; the BUILT QUERY rather than the spec: `:rebind?` also drives the
+    ;; generated get-else cases, and matching the axis alone let this entry
+    ;; excuse a planner raise anywhere on it — the too-coarse mistake the note
+    ;; above describes, one level down. The spec's `:modifiers` cannot answer
+    ;; it either, because the builder DEGRADES them (a `:pred-lt` with no `?s`
+    ;; becomes `:fn-upper`), so a spec saying `[:pred-lt]` can still produce a
+    ;; function clause. Only a function-output clause writing into an
+    ;; already-bound var folds a constant into a binding position.
+    :match? (fn [_spec query]
+              (boolean
+               (some (fn [form]
+                       (and (vector? form)
+                            (= 2 (count form))
+                            (seq? (first form))
+                            (not= 'get-else (ffirst form))
+                            ;; `?n` is bound by the always-present [?e :name ?n],
+                            ;; so a function writing into it is the rebind shape
+                            (= '?n (second form))))
+                     (tree-seq coll? seq query))))}])
 
 (def ^:private oracle-known (atom {}))
 
@@ -669,7 +688,7 @@
           ;; every oracle disagreement its spec predicate happens to cover.
           known (when-not agree?
                   (first (filter (fn [e] (and (not= :raise (:kind e))
-                                              ((:match? e) spec)))
+                                              ((:match? e) spec query)))
                                  known-shared-wrong)))]
       (when-not agree?
         (swap! oracle-reports conj
@@ -733,7 +752,7 @@
                       ;; shows up three ways — planner-vs-base, oracle-vs-both,
                       ;; and (because an overwrite's outcome depends on var hash
                       ;; order) alpha-renaming — and all three are the same bug.
-                      known-class (first (filter (fn [e] ((:match? e) spec))
+                      known-class (first (filter (fn [e] ((:match? e) spec query))
                                                  known-shared-wrong))
                       diverged? (or (not= base planner)
                                     (and orig-planner (not= orig-planner planner)))

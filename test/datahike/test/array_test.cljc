@@ -2,10 +2,15 @@
   (:require
    #?(:cljs [cljs.test :as t :refer-macros [is deftest testing]]
       :clj  [clojure.test :as t :refer [is deftest testing]])
-   [clojure.core :refer [byte-array]]
+   #?(:clj [clojure.core :refer [byte-array]])
    [datahike.array :refer [compare-arrays a= wrap-comparable
                            float-array? double-array? value-array?]]))
 
+;; ClojureScript has no byte-array/float-array/double-array; datahike's own
+;; array values are typed arrays there. Shimmed so this namespace runs on BOTH
+;; platforms — it asserts the contract `wrap-comparable` states, and half of
+;; that contract is platform-specific, so a JVM-only run cannot check it.
+#?(:cljs (def byte-array #(js/Int8Array. (clj->js %))))
 #?(:cljs (def float-array #(js/Float32Array. (clj->js %))))
 #?(:cljs (def double-array #(js/Float64Array. (clj->js %))))
 
@@ -59,16 +64,28 @@
       (is (cmp (byte-array [-1]) (byte-array [-1])))
       (is (cmp (byte-array [-1 -128 0 127]) (byte-array [-1 -128 0 127])))
       (is (not (cmp (byte-array [-1]) (byte-array [-2]))))
-      #?(:clj
-         (do
-           ;; NaN: `Arrays/compare` and `Arrays/equals` both call two NaNs
-           ;; equal, while Clojure's `=` on the boxed values does not
-           (is (cmp (float-array [##NaN]) (float-array [##NaN])))
-           (is (cmp (double-array [##NaN]) (double-array [##NaN])))
-           (is (cmp (float-array [##NaN 1.5]) (float-array [##NaN 1.5])))
-           ;; signed zero: ordered, so NOT equal — the reverse disagreement
-           (is (not (cmp (float-array [-0.0]) (float-array [0.0]))))
-           (is (not (cmp (double-array [-0.0]) (double-array [0.0])))))))))
+      ;; NaN is equal to itself on both platforms — `Arrays/compare` says so on
+      ;; the JVM, and `compare3` finds neither `<` nor `>` on ClojureScript —
+      ;; while Clojure's `=` on the boxed values does not, which is what the
+      ;; old vector-based key got wrong
+      (is (cmp (float-array [##NaN]) (float-array [##NaN])))
+      (is (cmp (double-array [##NaN]) (double-array [##NaN])))
+      (is (cmp (float-array [##NaN 1.5]) (float-array [##NaN 1.5])))
+
+      ;; Signed zero is where the platforms genuinely differ, so assert each
+      ;; rather than pretending they agree: `Float/compare` ORDERS -0.0 before
+      ;; 0.0, while `compare3` finds them equal.
+      #?(:clj  (do (is (not (cmp (float-array [-0.0]) (float-array [0.0]))))
+                   (is (not (cmp (double-array [-0.0]) (double-array [0.0])))))
+         :cljs (do (is (cmp (float-array [-0.0]) (float-array [0.0])))
+                   (is (cmp (double-array [-0.0]) (double-array [0.0])))))
+
+      ;; Zero-length arrays are equal within a kind and never across one
+      (is (cmp (byte-array []) (byte-array [])))
+      (is (cmp (float-array []) (float-array [])))
+      (is (not (cmp (float-array []) (double-array []))))
+      (is (not (cmp (byte-array []) (float-array []))))
+      (is (not (cmp (byte-array [1]) (float-array [1])))))))
 
 (deftest test-primitive-array-predicates
   (testing "value-array type predicates"
