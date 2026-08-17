@@ -5,7 +5,8 @@
    [clojure.test :refer [is are deftest testing]]
    [datahike.api :as d]
    [datahike.db :as db]
-   [datahike.query :as q]))
+   [datahike.query :as q]
+   [datahike.query.execute :as ex]))
 
 ;; ---------------------------------------------------------------------------
 ;; Test infrastructure
@@ -963,3 +964,80 @@
     (testing "AVET-seek path returns exactly the matching entities (large target)"
       (is (= expected (binding [q/*disable-planner* false] (d/q query dba dbb))))
       (is (= expected (binding [q/*disable-planner* true] (d/q query dba dbb)))))))
+
+;; ---------------------------------------------------------------------------
+;; A probe set is BOTH a membership filter and a source of index SEEK keys.
+;; Those want opposite representations — a content key so equal-content arrays
+;; collide, and the raw value because an ArrayKey is not the stored value and
+;; is not Comparable. Carrying only one of them cost, at various times, an
+;; empty result, a ClassCastException, and (when the conflict was resolved by
+;; DECLINING arrays) the loss of the seek optimisation altogether.
+
+(deftest array-valued-probe-drives-index-seeks
+  (let [cfg {:store {:backend :memory :id (random-uuid)}
+             :schema-flexibility :write}]
+    (d/create-database cfg)
+    (let [conn (d/connect cfg)]
+      (d/transact conn [{:db/ident :tag :db/valueType :db.type/bytes :db/index true
+                         :db/cardinality :db.cardinality/one}
+                        {:db/ident :nm :db/valueType :db.type/string
+                         :db/cardinality :db.cardinality/one}
+                        {:db/ident :want :db/valueType :db.type/bytes
+                         :db/cardinality :db.cardinality/many}])
+      ;; The SIP seek path engages only when the scan estimate clears
+      ;; `probe-driven-threshold` (2500) times the probe-set size, so this needs
+      ;; MANY datoms sharing ONE value — a small fixture asserts the answer
+      ;; without ever reaching the path.
+      (d/transact conn (vec (for [i (range 6000)]
+                              {:db/id (+ 100 i) :tag (byte-array [1 2 3]) :nm (str "n" i)})))
+      ;; a DIFFERENT array object with equal content: only value semantics match it
+      (d/transact conn [{:db/id 50 :want [(byte-array [1 2 3])]}])
+      (let [db (d/db conn)
+            query '[:find ?n :where [?p :want ?x] [?e :tag ?x] [?e :nm ?n]]
+            seeks (atom 0)
+            orig @#'ex/probe-driven-iterable]
+        (with-redefs [ex/probe-driven-iterable (fn [& args] (swap! seeks inc) (apply orig args))]
+          (binding [q/*disable-planner* false q/*query-result-cache?* false]
+            (testing "the array probe answers correctly"
+              (is (= 6000 (count (d/q query db)))))
+            ;; BOTH assertions are the test. The answer alone cannot tell
+            ;; "the seek path ran" from "the seek path was declined and a full
+            ;; scan produced the same rows" — which is exactly what it did
+            ;; before, measured: 0 seeks, same 6000 rows.
+            (testing "and it does so by SEEKING, not by scanning the attribute"
+              (is (pos? @seeks))))
+          (binding [q/*disable-planner* true q/*query-result-cache?* false]
+            (testing "the relational engine agrees"
+              (is (= 6000 (count (d/q query db)))))))))))
+
+(deftest probe-set-seek-values-are-deduplicated
+  ;; The seek list is parallel to the membership set, and the temporal branch
+  ;; builds one index slice PER value in it and concatenates. A duplicate would
+  ;; duplicate its whole slice — silently doubling rows — so `probe-set-add`
+  ;; appends only when the key was new. Two producer tuples carrying
+  ;; equal-content-but-distinct arrays are the case that exercises it.
+  (let [cfg {:store {:backend :memory :id (random-uuid)}
+             :schema-flexibility :write :keep-history? true}]
+    (d/create-database cfg)
+    (let [conn (d/connect cfg)]
+      (d/transact conn [{:db/ident :tag :db/valueType :db.type/bytes :db/index true
+                         :db/cardinality :db.cardinality/one}
+                        {:db/ident :nm :db/valueType :db.type/string
+                         :db/cardinality :db.cardinality/one}
+                        {:db/ident :want :db/valueType :db.type/bytes
+                         :db/cardinality :db.cardinality/one}])
+      (d/transact conn (vec (for [i (range 3000)]
+                              {:db/id (+ 100 i) :tag (byte-array [1 2 3]) :nm (str "n" i)})))
+      ;; two producers, equal content, distinct objects
+      (d/transact conn [{:db/id 50 :want (byte-array [1 2 3])}
+                        {:db/id 51 :want (byte-array [1 2 3])}])
+      (let [db (d/db conn)
+            query '[:find ?e ?n :where [?p :want ?x] [?e :tag ?x] [?e :nm ?n]]]
+        (doseq [[label view] [["current" db] ["history" (d/history db)]]]
+          (testing (str "no duplicated rows on " label)
+            (let [planner (binding [q/*disable-planner* false q/*query-result-cache?* false]
+                            (d/q query view))
+                  base (binding [q/*disable-planner* true q/*query-result-cache?* false]
+                         (d/q query view))]
+              (is (= (count base) (count planner)))
+              (is (= (set base) (set planner))))))))))

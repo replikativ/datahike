@@ -117,11 +117,26 @@
                (recur (dec i))))
      :cljs (.splice list from)))
 
+;; A probe set plays TWO roles, and they want opposite representations.
+;; Membership (`contains?`) needs a content KEY, so two equal-content arrays
+;; collide as they should. Index seeks need the RAW value: an ArrayKey is not
+;; the stored value and is not Comparable, and handing one to a seek returned
+;; nothing for one probe value and threw a ClassCastException for two.
+;;
+;; Carrying both in one type, built by one constructor, is what makes that
+;; unrepresentable: there is no accessor that hands `members` to a seek, and no
+;; way to obtain one half without the other. Before this the invariant lived in
+;; two unrelated guards in two files, and it was already incomplete — a RAW set
+;; from `pattern-probe-set` was handed to `scan-filter`, which wraps its
+;; argument, so the hazard ran in both directions and only one had a guard.
+(deftype ProbeSet [members seekvals])
+
 (defn- make-probe-set
-  "Create a mutable set for hash-probe joins."
+  "A mutable probe set for hash-probe joins: content keys for membership, raw
+   values for seeks."
   [capacity]
-  #?(:clj  (java.util.HashSet. (int capacity))
-     :cljs (js/Set.)))
+  #?(:clj  (ProbeSet. (java.util.HashSet. (int capacity)) (java.util.ArrayList. (int capacity)))
+     :cljs (ProbeSet. (js/Set.) (array))))
 
 (defn- probe-key
   "The key a hash-probe join stores and looks a value up by.
@@ -157,19 +172,50 @@
                       (interpose "," (map str (:vals w))))))
     x))
 
-(defn- probe-set-add [s x]
-  (let [x (probe-key x)]
-    #?(:clj  (.add ^java.util.HashSet s x)
-       :cljs (.add s x))))
+(defn- probe-set-add
+  "Add `x` — its content key for membership, and the raw value for seeks.
 
-(defn- probe-set-contains? [s x]
-  (let [x (probe-key x)]
-    #?(:clj  (.contains ^java.util.HashSet s x)
-       :cljs (.has s x))))
+   The raw value is appended ONLY when the key was new. A HashSet dedupes by
+   definition and a parallel list does not, and the temporal seek branch builds
+   one slice PER value in that list and concatenates: a duplicate would
+   duplicate its whole slice and silently duplicate rows. It also keeps
+   `probe-set-size` — which is the K in the cost threshold — equal to the
+   number of seeks the decision is actually buying."
+  [^ProbeSet s x]
+  (let [k (probe-key x)]
+    #?(:clj  (when (.add ^java.util.HashSet (.-members s) k)  ; true iff new
+               (.add ^java.util.ArrayList (.-seekvals s) x))
+       :cljs (let [ms (.-members s)
+                   n (.-size ms)]
+               (.add ms k)
+               (when (> (.-size ms) n) (.push (.-seekvals s) x))))))
 
-(defn- probe-set-size [s]
-  #?(:clj  (.size ^java.util.HashSet s)
-     :cljs (.-size s)))
+(defn- probe-set-contains? [^ProbeSet s x]
+  (let [k (probe-key x)]
+    #?(:clj  (.contains ^java.util.HashSet (.-members s) k)
+       :cljs (.has (.-members s) k))))
+
+(defn- probe-set-size [^ProbeSet s]
+  #?(:clj  (.size ^java.util.HashSet (.-members s))
+     :cljs (.-size (.-members s))))
+
+(defn- probe-set-seek-vals
+  "The RAW values, for index seeks only. Call sites: the two seek paths, and
+   nowhere else — this is per-scan work, not per-datom."
+  [^ProbeSet s]
+  (.-seekvals s))
+
+#?(:clj
+   (defn- probe-set-sorted-seek-array
+     "Raw probe values as an array in INDEX order — `compare-value` is what the
+      *-quick datom comparators use, so a ForwardCursor seeking these never
+      moves backwards. Never the members: an ArrayKey is not the stored value
+      and is not Comparable."
+     ^objects [^ProbeSet s]
+     (let [vs (sort datom/compare-value (vec (probe-set-seek-vals s)))]
+       (assert (not-any? da/array-key? vs)
+               "a wrapped key reached an index seek")
+       (object-array vs))))
 
 ;; Probe-map: HashMap<probe-value → ArrayList<Object[]>> for producer find-var propagation.
 ;; Each key is a probe-value (join-var), each value is a list of producer find-var tuples.
@@ -202,14 +248,6 @@
     #?(:clj  (.get ^java.util.HashMap m k)
        :cljs (.get m k))))
 
-(defn- probe-map->set
-  "Extract keys from a probe-map into a probe-set for consumer scan filtering."
-  [m]
-  #?(:clj  (java.util.HashSet. (.keySet ^java.util.HashMap m))
-     :cljs (let [s (js/Set.)]
-             (.forEach m (fn [_v k] (.add s k)))
-             s)))
-
 (defn- probe-map-entry-size [entry]
   #?(:clj  (.size ^java.util.ArrayList entry)
      :cljs (.-length entry)))
@@ -232,16 +270,8 @@
 
       probe-field: 0 = entity position (seeks EAVT), 2 = value position (seeks AVET).
       Caller should pass nil for probe-set since filtering is baked into the seeks."
-     ^Iterable [^PersistentSortedSet pss resolved-a ^java.util.HashSet probe-set probe-field]
-     ;; `compare-value`, not `compare`: these values are seeked against the
-     ;; index with a FORWARD-only cursor, and `compare-value` is exactly what
-     ;; the *-quick datom comparators use (`cmp-datoms-avet-quick` calls it on
-     ;; the value component), so the seek order matches the tree's order and
-     ;; the cursor never has to move backwards. Plain `compare` also THROWS on
-     ;; two Comparables of different types — which `:schema-flexibility :read`
-     ;; permits in one attribute — and mis-orders BigInt against the index.
-     (let [sorted-vals (sort datom/compare-value (vec (.toArray probe-set)))
-           ^objects val-arr (object-array sorted-vals)
+     ^Iterable [^PersistentSortedSet pss resolved-a ^ProbeSet probe-set probe-field]
+     (let [^objects val-arr (probe-set-sorted-seek-array probe-set)
            n-vals (alength val-arr)
            by-entity? (== (int probe-field) 0)]
        (reify Iterable
@@ -582,33 +612,23 @@
                            ;; with an early-exit once it reaches scan-n — at that
                            ;; point it isn't selective, so fall back to a full scan.
                            ;; Bounds build cost to O(min(n, until scan-n distinct)).
-                           (let [hs (java.util.HashSet.)
-                                 ;; This set is BOTH a membership filter and a
-                                 ;; source of SEEK keys (probe-driven-iterable
-                                 ;; hands `:values` to the index), so its
-                                 ;; contents must stay raw — which means it
-                                 ;; cannot hash arrays by value the way
-                                 ;; `probe-key` does. It is only ever an
-                                 ;; optimisation (it restricts the scan to
-                                 ;; already-bound values), so an array value
-                                 ;; declines it rather than filtering by
-                                 ;; identity and dropping rows.
-                                 arrays? (volatile! false)]
+                           ;; A `ProbeSet` carries the content keys for membership
+                           ;; AND the raw values for seeks, so an array value no
+                           ;; longer has to decline the whole optimisation to keep
+                           ;; the seek keys raw.
+                           (let [ps (make-probe-set 16)]
                              (reduce (fn [_ t]
                                        (let [val (cond
                                                    (instance? clojure.lang.Indexed t) (.nth ^clojure.lang.Indexed t col-idx)
                                                    (sequential? t) (nth t col-idx)
                                                    :else (get t col-idx))]
                                          (when (some? val)
-                                           (if (da/value-array? val)
-                                             (vreset! arrays? true)
-                                             (.add hs val))))
-                                       (if (or @arrays? (>= (.size hs) scan-n)) (reduced nil) nil))
+                                           (probe-set-add ps val)))
+                                       (if (>= (probe-set-size ps) scan-n) (reduced nil) nil))
                                      nil tuples)
-                             (when (and (not @arrays?)
-                                        (pos? (.size hs))
-                                        (< (.size hs) scan-n))
-                               hs)))))
+                             (when (and (pos? (probe-set-size ps))
+                                        (< (probe-set-size ps) scan-n))
+                               ps)))))
              e-probe (when (and (symbol? e) (analyze/free-var? e))
                        (some (fn [rel]
                                (when-let [ci (get (:attrs rel) e)]
@@ -694,7 +714,7 @@
                    (di/-slice (:avet db) (datom e0 pa pv tx0) (datom emax pa pv txmax) :avet))
                  avet-pairs)
          (if-let [probe (pattern-probe-set db clause resolved-a rels scan-n)]
-           (let [k     (.size ^java.util.HashSet (:values probe))
+           (let [k     (probe-set-size (:values probe))
                  field (int (:field probe))
                  seek-index (if (== field 2) (:avet db) (:eavt db))]
            ;; Seeks build (entity attr nil)/(e0 attr value) probe datoms and use
@@ -708,9 +728,13 @@
                       (pss-instance? seek-index)
                       (< (* (long k) (long probe-driven-threshold)) scan-n))
                (probe-driven-iterable seek-index resolved-a (:values probe) field)
-               (let [^java.util.HashSet hs (:values probe)]
+               ;; `probe-set-contains?`, not a raw `.contains`: this bypassed
+               ;; the key function entirely, which was correct only while arrays
+               ;; were declined above. With the decline gone it would filter by
+               ;; identity and silently drop every array-valued row.
+               (let [ps (:values probe)]
                  (filter (fn [^Datom d]
-                           (.contains hs (if (== field 0) (.-e d) (.-v d))))
+                           (probe-set-contains? ps (if (== field 0) (.-e d) (.-v d))))
                          (full)))))
            (full)))
        :cljs (full))))
@@ -2492,14 +2516,10 @@
                                     (and probe-set
                                          resolved-a
                                          (or (= probe-field 0) (= probe-field 2)) ;; entity or value position
-                                         ;; This set is BOTH a membership filter and a source of
-                                         ;; SEEK keys — the same dual role `pattern-probe-set`
-                                         ;; guards. Its values are stored through `probe-key`, so
-                                         ;; an array arrives as an ArrayKey: not the stored value,
-                                         ;; not Comparable, and handing it to a seek returned
-                                         ;; nothing for one value and threw a ClassCastException
-                                         ;; for two. Decline, exactly as the other probe set does.
-                                         (not-any? da/array-key? probe-set)
+                                         ;; No array guard here any more: a ProbeSet hands the
+                                         ;; seek its RAW values and the filter its content keys,
+                                         ;; so both roles are served without either declining.
+
                                          ;; Value-position seeks read the AVET index, which only
                                          ;; contains :db/index / :db/unique attributes. For a
                                          ;; non-indexed attr the AVET slice is empty, so gate on
@@ -2543,8 +2563,8 @@
                   ;; Temporal probe-driven: build concatenated temporal slices per probe value
                   #?(:clj
                      (let [pf (int probe-datom-field)
-                           ;; index order — see probe-driven-iterable
-                           sorted-vals (sort datom/compare-value (vec (.toArray ^java.util.HashSet probe-set)))
+                           ;; index order — see probe-set-sorted-seek-array
+                           sorted-vals (seq (probe-set-sorted-seek-array probe-set))
                            result (java.util.ArrayList.)]
                        (doseq [v sorted-vals]
                          (let [[from to] (if (== pf 0)
@@ -3839,15 +3859,20 @@
                                 probe-var (:probe-var pinfo)
                                 probe-idx (int (get p-var-index probe-var))
                                 n-producer (result-list-size result-list)
-                                pmap (make-probe-map n-producer)]
+                                pmap (make-probe-map n-producer)
+                                ;; built here rather than derived from `pmap`: a
+                                ;; probe-map's keys are already content KEYS, so it
+                                ;; has no raw value to give a seek
+                                pset (make-probe-set n-producer)]
                             (dotimes [i n-producer]
                               (let [^objects tuple (result-list-get result-list i)
                                     probe-val (aget tuple probe-idx)]
-                                (probe-map-add pmap probe-val tuple)))
+                                (probe-map-add pmap probe-val tuple)
+                                (probe-set-add pset probe-val)))
                             #?(:clj  (.clear ^java.util.ArrayList result-list)
                                :cljs (.splice result-list 0))
                             (recur (inc gi)
-                                   (assoc probe-sets [gi probe-var] (probe-map->set pmap))
+                                   (assoc probe-sets [gi probe-var] pset)
                                    (assoc probe-maps [gi probe-var]
                                           {:map pmap :p-all-vars p-all-vars})
                                    consumed-cgi)))

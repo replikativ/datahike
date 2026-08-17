@@ -285,7 +285,7 @@ compared element-wise; a mismatched pair falls back to a stable class ordering."
   [x]
   (cond
     (bytes? x) #?(:clj (let [^bytes c (java.util.Arrays/copyOf ^bytes x (alength ^bytes x))]
-                          (ArrayKey. :byte c (java.util.Arrays/hashCode c)))
+                         (ArrayKey. :byte c (java.util.Arrays/hashCode c)))
                   :cljs (WrappedArray. :byte (mapv canonical-element (array-seq x))))
     (float-array? x) #?(:clj (let [^floats c (java.util.Arrays/copyOf ^floats x (alength ^floats x))]
                                (ArrayKey. :float c (java.util.Arrays/hashCode c)))
