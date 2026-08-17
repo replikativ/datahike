@@ -1221,14 +1221,14 @@
                                        ;; value-seeded seek.
                                        single? (and optional? (not anti?))
                                        probe (datom eid ra (when-not single? vgv) tx0)
-                                       ;; An optional merge does NOT use the cursor. It probes at
-                                       ;; `[e a nil]`, and the scan is not always monotonic in
-                                       ;; `e`: a value-position SIP probe turns an AEVT consumer
-                                       ;; into a series of AVET seeks ordered by VALUE, so the
-                                       ;; entities arrive in value order — measured, 6010 before
-                                       ;; 10 — and a forward cursor cannot seek back. It silently
-                                       ;; dropped the second row.
-                                       ^Datom d (if (and merge-cursors (not single?))
+                                       ;; The cursor is safe here because `use-cursors?` is
+                                       ;; already false for a scan that is not monotonic in `e`
+                                       ;; (see the note there). Gating on the MERGE as well was
+                                       ;; belt-and-braces that cost a root lookup per entity on
+                                       ;; every `get-else` — and it protected optional merges from
+                                       ;; a hazard that non-optional merges faced unprotected,
+                                       ;; which is how it was the wrong mechanism.
+                                       ^Datom d (if merge-cursors
                                                   (.seekGE ^PersistentSortedSet$ForwardCursor
                                                    (aget merge-cursors mi) probe)
                                                   (.lookupGE ^PersistentSortedSet eavt-pss probe))
@@ -1476,10 +1476,9 @@
                                    ;; value-seeded seek.
                                    single? (and optional? (not anti?))
                                    probe (datom eid ra (when-not single? vgv) tx0)
-                                   ;; See execute-card-many-merge: an optional merge cannot use
-                                   ;; the cursor, because a probe-driven scan is not monotonic
-                                   ;; in `e`.
-                                   ^Datom d (if (and merge-cursors (not single?))
+                                   ;; See execute-card-many-merge: the SCAN gate is what makes
+                                   ;; the cursor safe, so an optional merge uses it too.
+                                   ^Datom d (if merge-cursors
                                               (.seekGE ^PersistentSortedSet$ForwardCursor
                                                (aget merge-cursors mi) probe)
                                               (.lookupGE ^PersistentSortedSet eavt-pss probe))

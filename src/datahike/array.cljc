@@ -359,9 +359,21 @@ compared element-wise; a mismatched pair falls back to a stable class ordering."
   made this answer nil. Every current caller uses it in boolean position; the
   next one to write `(= false (a= …))` would not."
   [a b]
-  (if (or (value-array? a) (value-array? b))
-    (boolean (and (value-array? a)
-                  (value-array? b)
-                  #?(:clj (zero? (compare-arrays a b))
-                     :cljs (cljs-arrays= a b))))
-    (= a b)))
+  #?(;; JVM: `=` FIRST, which is what every scalar comparison pays — one `=`,
+     ;; as before this work. Safe here and only here: on the JVM `=` is
+     ;; IDENTITY for arrays, so an equal-content pair falls through to the
+     ;; array arm and an identical one short-circuits correctly. This is a hot
+     ;; path — `val-eq?` calls it per candidate datom in the merge kernels.
+     :clj (boolean (or (= a b)
+                       (and (value-array? a)
+                            (value-array? b)
+                            (zero? (compare-arrays a b)))))
+     ;; ClojureScript cannot do that: `=` there compares typed arrays
+     ;; STRUCTURALLY and ignores the kind, so `(= (js/Int8Array. #js [1])
+     ;; (js/Float32Array. #js [1]))` is true and an `=`-first form would
+     ;; short-circuit on it before any kind check ran.
+     :cljs (if (or (value-array? a) (value-array? b))
+             (boolean (and (value-array? a)
+                           (value-array? b)
+                           (cljs-arrays= a b)))
+             (= a b))))
