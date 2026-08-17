@@ -626,13 +626,24 @@
    classes still fails the build immediately, and `known-shared-wrong-is-still-
    needed` fails when an entry stops matching — so the change that fixes a
    class is forced to delete its entry rather than leave it accumulating."
-  [{:id :output-var-rebind
-    :why (str "an output binding whose target var is already bound must UNIFY "
-              "(Datomic; and datahike already unifies for repeated vars inside "
-              "one clause, #912/#913). Today get-else ignores the obligation on "
-              "the planner and the base engine overwrites it; tuple bindings "
-              "overwrite on both. Fixed by the binding-seam work — delete this "
-              "entry then.")
+  ;; An entry may excuse ONLY the failure KIND it declares. That restriction is
+  ;; not decoration: the previous entry matched the whole rebind axis with no
+  ;; kind, and while it sat here it swallowed 5 SILENT wrong answers on
+  ;; history/as-of that the corpus had genuinely found. A coarse entry is a hole
+  ;; the size of its matcher. With `:kind :raise`, a divergence on this axis
+  ;; where the planner RAISES is excused, and one where it quietly answers
+  ;; differently still fails the build.
+  [{:id :fn-output-folded-in-const
+    :kind :raise
+    :why (str "a scalar :in constant is folded into a function clause's output "
+              "binding position, producing e.g. [(upper-case \"alice\") \"alice\"], "
+              "which the binding parser rejects — so the planner raises where the "
+              "base engine answers. The folding is also how the planner ENCODES "
+              "the obligation for a get-else (it becomes v-ground, which the merge "
+              "kernels now enforce), so the fix is not simply to stop folding: the "
+              "binding position needs to carry the obligation without being parsed "
+              "as a binding. Belongs in const-folding, #932's seam. "
+              "Delete this entry then.")
     :match? (fn [spec] (boolean (:rebind? spec)))}])
 
 (def ^:private oracle-known (atom {}))
@@ -650,8 +661,16 @@
     (do (swap! oracle-stats update :skipped inc) true)
     (let [_ (swap! oracle-stats update :checked inc)
           agree? (= base oracle)
+          ;; `:kind` restricts what an allowlist entry is allowed to excuse. An
+          ;; entry that documents a RAISE cannot also explain a wrong shared
+          ;; ANSWER: here both engines returned values and agreed, so the
+          ;; entry's stated failure mode did not occur and it must not silence
+          ;; this. Honouring `:match?` alone would let one narrow entry blanket
+          ;; every oracle disagreement its spec predicate happens to cover.
           known (when-not agree?
-                  (first (filter (fn [e] ((:match? e) spec)) known-shared-wrong)))]
+                  (first (filter (fn [e] (and (not= :raise (:kind e))
+                                              ((:match? e) spec)))
+                                 known-shared-wrong)))]
       (when-not agree?
         (swap! oracle-reports conj
                {:query query :args args :spec (select-keys spec [:dataset :temporal])
@@ -718,7 +737,12 @@
                                                  known-shared-wrong))
                       diverged? (or (not= base planner)
                                     (and orig-planner (not= orig-planner planner)))
-                      known-rebind? (boolean (and known-class diverged?))]
+                      ;; …and only when the failure is the KIND the entry declares.
+                      raised? (= ::raised planner)
+                      known-rebind? (boolean (and known-class diverged?
+                                                  (case (:kind known-class)
+                                                    :raise raised?
+                                                    true)))]
                   (when known-rebind?
                     (swap! oracle-known update (:id known-class) (fnil inc 0)))
                   (when orig-planner
@@ -800,19 +824,31 @@
                                :db/cardinality :db.cardinality/one}])
           _ (d/transact conn [{:db/id 1 :name "alice" :nick "al"}])
           db (d/db conn)
-          ;; `?v` is bound by the pattern; the get-else writes into it. Under
-          ;; the law this selects the entities whose nick equals their name —
-          ;; alice's does not — so an answer with any row IS the bug.
-          ;;
-          ;; Deliberately NOT a plain function output: the planner already
-          ;; unifies those, so a canary built on one reports "fixed" while
-          ;; get-else is still broken.
-          canary '[:find ?e ?v :where
-                   [?e :name ?v] [(get-else $ ?e :nick "zzz") ?v]]
-          answer (binding [q/*disable-planner* false q/*query-result-cache?* false]
-                   (set (d/q canary db)))]
-      (doseq [{:keys [id why]} known-shared-wrong]
-        (is (seq answer)
-            (str "the canary for known-wrong class " id " now answers correctly — "
-                 "DELETE the entry from known-shared-wrong so the class is "
-                 "enforced again, and drop this canary with it. Context: " why))))))
+          ;; The canary must reproduce the class that is STILL listed: a
+          ;; function output written into a variable bound by a scalar :in.
+          ;; Const-folding substitutes the constant into the binding position,
+          ;; so the planner raises while the base engine answers.
+          canary '[:find ?e :in $ ?n :where
+                   [?e :name ?n] [(clojure.string/upper-case ?n) ?n]]
+          answer (try
+                   (binding [q/*disable-planner* false q/*query-result-cache?* false]
+                     (set (d/q canary db "alice")))
+                   (catch Exception _ ::raised))]
+      (if-let [entry (first known-shared-wrong)]
+        ;; Something is listed: the canary must still reproduce, or the entry is
+        ;; stale and is silencing a class that now works.
+        (is (= ::raised answer)
+            (str "the canary for known-wrong class " (:id entry) " now answers "
+                 (pr-str answer) " instead of raising — DELETE the entry from "
+                 "known-shared-wrong so the class is enforced again. Context: "
+                 (:why entry)))
+        ;; Nothing is listed, which is the goal state. Assert the law the empty
+        ;; list is claiming: the canary selects only entities whose nick equals
+        ;; their name, and alice's does not. This keeps the test meaningful with
+        ;; an empty allowlist — a `doseq` over nothing asserts nothing, and a
+        ;; test that cannot fail is the exact silence this file exists to remove.
+        (is (empty? answer)
+            (str "known-shared-wrong is empty, so the binding-seam law is "
+                 "claimed to hold everywhere — but the canary still answers "
+                 (pr-str answer)
+                 ". Either re-list the class or fix the regression."))))))

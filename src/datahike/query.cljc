@@ -9,7 +9,7 @@
    [datahike.db.interface :as dbi]
    [datahike.db.utils :as dbu]
    [datahike.index.interface :as di]
-   [datahike.array :refer [wrap-comparable]]
+   [datahike.array :refer [a= wrap-comparable]]
    [datahike.impl.entity :as de]
    [datahike.lru]
    [datahike.pull-api :as dpa]
@@ -284,31 +284,74 @@
 (defn- normalize-repeated-var-clauses [clauses fresh!]
   (into [] (mapcat #(normalize-repeated-var-clause % fresh!)) clauses))
 
+(defn- query-var? [x]
+  (and (symbol? x) (= \? (first (name x)))))
+
+(defn- head-repeats-var?
+  "True when a rule head names the same variable in two argument positions."
+  [head]
+  (and (seq? head)
+       (let [vs (filter query-var? (rest head))]
+         (not= (count vs) (count (distinct vs))))))
+
+(defn- normalize-rule-head
+  "Rewrite `[(same ?a ?a) body…]` into `[(same ?a ?a__1) body… [(identity ?a) ?a__1]]`.
+
+   A repeated head parameter says the caller's two arguments must be EQUAL —
+   `(same ?x ?y)` may only answer where `?x` = `?y`. Both engines substitute
+   head parameters through a `zipmap` KEYED ON THE PARAMETER LIST
+   (`expand-rule` here, `rename-rule-branch` in lower.cljc), and a repeated key
+   collapses last-wins, so the earlier position vanished from the substitution
+   entirely and projected `nil`. Worse, a GROUND argument in that position was
+   silently dropped, so `(same 20 ?y)` answered over every value.
+
+   The obligation is emitted as a BINDING clause rather than an `=` predicate
+   because it has to work in both directions: the caller may pass an unbound
+   variable there (which the binding fills in) or a bound one (which it
+   filters). It is APPENDED, since the body is normally what produces the
+   value."
+  [rule fresh!]
+  (let [head (first rule)
+        [params _seen extra]
+        (reduce (fn [[ps seen extra] p]
+                  (if (and (query-var? p) (contains? seen p))
+                    (let [f (fresh! p)]
+                      [(conj ps f) seen (conj extra [(list 'identity p) f])])
+                    [(conj ps p) (conj seen p) extra]))
+                [[] #{} []]
+                (rest head))]
+    (into [(cons (first head) params)]
+          (concat (rest rule) extra))))
+
 (defn- normalize-rule-bodies
-  "Rewrite repeated vars in rule BODIES. Rules arrive as the argument bound to
-   `%`, never as `:where` clauses, so this is the only place the seam can reach
-   them — and it is the one scope where BOTH engines get a self-join wrong, so no
-   differential test can flag it.
+  "Rewrite repeated vars in rule BODIES and HEADS. Rules arrive as the argument
+   bound to `%`, never as `:where` clauses, so this is the only place the seam
+   can reach them — and it is the one scope where BOTH engines get a self-join
+   wrong, so no differential test can flag it.
 
-   Only bodies are rewritten. A repeated var in a rule HEAD — `[(pair ?a ?a) …]`
-   — is a constraint between the caller's arguments, which the rule-invocation
-   machinery already handles, not a pattern position.
+   Heads were originally excluded on the reasoning that a repeated parameter is
+   a constraint between the caller's arguments which the rule-invocation
+   machinery already handles. It does not: see `normalize-rule-head`.
 
-   Returns `rules` unchanged (identical object) when no body repeats a var."
+   Returns `rules` unchanged (identical object) when nothing repeats a var."
   [rules taken]
   (if-not (sequential? rules)
     rules
     (let [needs? (some (fn [rule]
                          (and (sequential? rule)
-                              (where-has-repeated-var? (rest rule))))
+                              (or (where-has-repeated-var? (rest rule))
+                                  (head-repeats-var? (first rule)))))
                        rules)]
       (if-not needs?
         rules
         (let [fresh! (fresh-var-fn (into taken (filter symbol?) (tree-seq coll? seq rules)))]
           (mapv (fn [rule]
                   (if (sequential? rule)
-                    (into [(first rule)]
-                          (normalize-repeated-var-clauses (rest rule) fresh!))
+                    (let [rule (if (head-repeats-var? (first rule))
+                                 (normalize-rule-head rule fresh!)
+                                 rule)]
+                      (into [(first rule)]
+                            (normalize-repeated-var-clauses (rest rule) fresh!)))
                     rule))
                 rules))))))
 
@@ -706,6 +749,70 @@
                     (conj! acc (join-tuples t1 idxs1 t2 idxs2)))
                   acc (:tuples rel2)))
         (transient []) (:tuples rel1)))))))
+
+(defn- unify-rel-plan
+  "The attr-map-derived half of `unify-rel`: nil when the two relations share no
+   variable (so `prod-rel` applies), otherwise the output attr map, the two
+   column-index arrays and the equality obligations.
+
+   Separated from the tuple loop because `bind-by-fn` unifies once per tuple
+   while this depends only on the two attr maps — and the binding form fixes
+   rel2's, so it is identical for every tuple of a call."
+  [attrs1 attrs2]
+  (let [shared (filterv #(contains? attrs1 %) (keys attrs2))]
+    (when (seq shared)
+      (let [keys1 (vec (keys attrs1))
+            only2 (filterv #(not (contains? attrs1 %)) (keys attrs2))]
+        {:attrs (zipmap (concat keys1 only2) (range))
+         :idxs1 (to-array (map attrs1 keys1))
+         :idxs2 (to-array (map attrs2 only2))
+         ;; [index in rel1, index in rel2] for every shared variable
+         :obligations (mapv (fn [v] [(attrs1 v) (attrs2 v)]) shared)}))))
+
+(defn- unify-rel-with-plan
+  "The tuple loop of `unify-rel`, given the plan from `unify-rel-plan`."
+  [plan rel1 rel2]
+  (let [idxs1 (:idxs1 plan)
+        idxs2 (:idxs2 plan)
+        obligations (:obligations plan)
+        tuples2 (:tuples rel2)]
+    (rel/->Relation
+     (:attrs plan)
+     (persistent!
+      (reduce
+       (fn [acc t1]
+         (reduce (fn [acc t2]
+                   ;; `a=`, not `=`: a byte array (or any value-array type) is a
+                   ;; VALUE here, and Clojure's `=` compares those by identity —
+                   ;; so an obligation between two equal-content arrays failed and
+                   ;; the row was silently dropped. Every other equality in the
+                   ;; engine already goes through an array-aware comparison.
+                   (if (every? (fn [[i1 i2]] (a= (get t1 i1) (get t2 i2)))
+                               obligations)
+                     (conj! acc (join-tuples t1 idxs1 t2 idxs2))
+                     acc))
+                 acc tuples2))
+       (transient []) (:tuples rel1))))))
+
+(defn unify-rel
+  "Like `prod-rel`, except that a variable present in BOTH relations is an
+   equality obligation rather than a second column: the pair is kept only when
+   the two values agree, and the result carries one column for it.
+
+   `prod-rel` builds its attr map with `(zipmap (concat attrs1 attrs2) (range))`,
+   so a repeated variable resolves to the SECOND relation's column — the later
+   binding silently overwrites the earlier one. That is wrong wherever the
+   variable was already bound: `[?e :name ?v] [(get-else $ ?e :nick \"zzz\") ?v]`
+   asks for the entities whose nick equals their name, and overwriting answers
+   with every entity instead, asserting a `?v` the database never contained.
+   Datomic unifies here, and datahike already unifies for a variable repeated
+   inside a single clause (#912/#913).
+
+   Falls through to `prod-rel` when nothing is shared, which is the common case."
+  [rel1 rel2]
+  (if-let [plan (unify-rel-plan (:attrs rel1) (:attrs rel2))]
+    (unify-rel-with-plan plan rel1 rel2)
+    (prod-rel rel1 rel2)))
 
 ;; built-ins
 
@@ -1415,8 +1522,13 @@
     (dotimes [i len]
       (let [arg (nth args i)]
         (if (symbol? arg)
-          (if-let [const (get (:consts context) arg)]
-            (da/aset static-args i const)
+          ;; `contains?`, not truthiness: a constant of FALSE is a constant.
+          ;; Reading it as "no constant" fell through to the tuple-index
+          ;; branch, where the var has no column — so `[(= ?v ?f)]` with `?f`
+          ;; bound to false compared against nil and answered nothing, and
+          ;; `[(vector ?v ?f) ?o]` built `[true nil]`.
+          (if (contains? (:consts context) arg)
+            (da/aset static-args i (get (:consts context) arg))
             (if-some [source (get sources arg)]
               (da/aset static-args i source)
               (da/aset tuples-args i (get attrs arg))))
@@ -1523,21 +1635,53 @@
                                                          (count (:tuples production))))))
             new-rel (if fun
                       (let [tuple-fn (-call-fn context production fun args)
-                            rels (for [tuple (:tuples production)
-                                       :let [val (tuple-fn tuple)]
-                                       :when (not (nil? val))]
-                                   (prod-rel (rel/->Relation (:attrs production) [tuple])
-                                             (in->rel binding val)))]
+                            attrs1 (:attrs production)
+                            ;; unify-rel, not prod-rel: when the binding names a
+                            ;; variable this tuple already binds, the clause
+                            ;; CONSTRAINS it — the tuple survives only if the
+                            ;; computed value agrees.
+                            ;;
+                            ;; The unification shape is derived from the two attr
+                            ;; MAPS, and `binding` fixes rel2's, so it is the same
+                            ;; for every tuple here. Build it once on the first
+                            ;; surviving tuple and reuse it; `plan-attrs2` guards
+                            ;; the reuse so a binding that ever produced a
+                            ;; differing attr map would still be correct.
+                            rels (loop [ts (seq (:tuples production))
+                                        plan-attrs2 nil
+                                        plan nil
+                                        acc []]
+                                   (if-not ts
+                                     acc
+                                     (let [tuple (first ts)
+                                           val (tuple-fn tuple)]
+                                       (if (nil? val)
+                                         (recur (next ts) plan-attrs2 plan acc)
+                                         (let [r2 (in->rel binding val)
+                                               attrs2 (:attrs r2)
+                                               [pa2 pl] (if (= attrs2 plan-attrs2)
+                                                          [plan-attrs2 plan]
+                                                          [attrs2 (unify-rel-plan attrs1 attrs2)])
+                                               r1 (rel/->Relation attrs1 [tuple])]
+                                           (recur (next ts) pa2 pl
+                                                  (conj acc (if pl
+                                                              (unify-rel-with-plan pl r1 r2)
+                                                              (prod-rel r1 r2)))))))))]
                         (if (empty? rels)
-                          (prod-rel production (empty-rel binding))
+                          (unify-rel production (empty-rel binding))
                           (reduce sum-rel rels)))
-                      (prod-rel (assoc production :tuples []) (empty-rel binding)))
-            idx->const (reduce-kv (fn [m k v]
-                                    (if-let [c (k (:consts context))]
-                                      (assoc m v c) ;; different value at v for each tuple
-                                      m))
-                                  {}
-                                  (:attrs new-rel))]
+                      (unify-rel (assoc production :tuples []) (empty-rel binding)))
+            ;; `contains?`, not `if-let`: a folded constant of FALSE is a
+            ;; constant like any other, and truthiness silently dropped the
+            ;; obligation — `[(get-else $ ?e :flag false) ?v]` with `?v` bound
+            ;; to false then admitted the entities whose flag is TRUE.
+            idx->const (let [consts (:consts context)]
+                         (reduce-kv (fn [m k v]
+                                      (if (contains? consts k)
+                                        (assoc m v (get consts k)) ;; different value at v for each tuple
+                                        m))
+                                    {}
+                                    (:attrs new-rel)))]
         (if (empty? (:tuples new-rel))
           (update context :rels collapse-rels new-rel)
           (-> context ;; filter output binding
@@ -1581,13 +1725,17 @@
     [(for [branch branches
            :let [[[_ & rule-args] & clauses] branch
                  replacements (zipmap rule-args call-args-new)]]
-       (walk/postwalk
-        #(if (free-var? %)
-           (some-of
-            (replacements %)
-            (symbol (str (name %) "__auto__" seqid)))
-           %)
-        clauses))
+       (let [subst #(walk/postwalk
+                     (fn [x] (if (free-var? x)
+                               (some-of
+                                (replacements x)
+                                (symbol (str (name x) "__auto__" seqid)))
+                               x))
+                     %)]
+         (keep (fn [c]
+                 (let [c' (subst c)]
+                   (when-not (analyze/collapsed-identity-obligation? c c') c')))
+               clauses)))
      consts]))
 
 (defn remove-pairs [xs ys]
@@ -4153,7 +4301,12 @@
                                                          (let [a (resolve-attr (or (:attr sub-op) (get-in sub-op [:schema-info :attr])))]
                                                            (and a
                                                                 (not (contains? indexed-attrs a))
-                                                                (:v-ground sub-op))))
+                                                                ;; `some?`: `:v-ground` holds the ground
+                                                                ;; VALUE and is nil when there is none, so
+                                                                ;; truthiness reads a ground `false` as "not
+                                                                ;; ground" and drops the filter — the
+                                                                ;; aggregate then covers rows it excludes.
+                                                                (some? (:v-ground sub-op)))))
                                                        sub-ops)
                          ;; Execute uncovered filter patterns via PSS → RoaringBitmap
                          entity-filter (when (seq uncovered-filter-ops)
@@ -4183,7 +4336,8 @@
                          ;; Convert keyword ground values to strings to match stratum's
                          ;; dict-encoded column storage (keywords stored via str)
                          where-equality (vec (keep (fn [sub-op]
-                                                     (when-let [v-ground (:v-ground sub-op)]
+                                                     ;; `some?`, not truthiness — see uncovered-filter-ops
+                                                     (when-some [v-ground (:v-ground sub-op)]
                                                        (let [a (resolve-attr (or (:attr sub-op) (get-in sub-op [:schema-info :attr])))]
                                                          (when (contains? indexed-attrs a)
                                                            [:= (attr-col-key a) (if (keyword? v-ground) (str v-ground) v-ground)]))))

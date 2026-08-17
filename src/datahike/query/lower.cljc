@@ -437,7 +437,14 @@
                                 (symbol (str (name x) "__auto__" seqid)))
                               x))
                           c)))
-                      clauses)]
+                      clauses)
+        ;; Drop a head obligation the caller COLLAPSED into `[(identity X) X]`
+        ;; — see analyze/collapsed-identity-obligation?. Paired with the
+        ;; pre-substitution clause because the collapse is what licenses the
+        ;; drop; a user-written tautology is a different question.
+        renamed (into [] (keep (fn [[c c']]
+                                 (when-not (analyze/collapsed-identity-obligation? c c') c')))
+                      (map vector clauses renamed))]
     ;; Put const-bindings first so synthetic vars are bound before body uses them
     (into const-bindings renamed)))
 
