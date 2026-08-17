@@ -346,6 +346,14 @@
                 '[:find ?e ?f :where [?e :blob ?v] [?f :blob2 ?v]
                   [(= ?e 999)]] db)))
 
+      (testing "a NEGATION keys its exclusion set by value too"
+        ;; `not-join` builds an exclusion set from the negated relation. It
+        ;; keyed raw values, so an array in the negation excluded nothing and
+        ;; the planner kept a row the base engine drops — the same identity
+        ;; hashing as the joins, one code path further along.
+        (both #{}
+              '[:find ?e :where [?e :blob ?v] (not-join [?v] [?f :blob3 ?v])] db))
+
       (testing "the values where the key representation disagreed with a="
         ;; A join key has to hash BY VALUE over the whole domain. It did not:
         ;; a byte from 0x80 up threw building the key, two NaNs hashed apart

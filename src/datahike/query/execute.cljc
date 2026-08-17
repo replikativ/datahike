@@ -2950,10 +2950,14 @@
               ;; and match nothing.
               jv-vec (filterv #(contains? neg-attrs %) join-vars)
               n-jv (count jv-vec)
+              ;; `probe-key` per component, for the same reason every other join
+              ;; key needs it: an array value hashes by IDENTITY, so a negated
+              ;; relation holding an equal-content array excluded nothing and
+              ;; `(not-join [?v] …)` kept the row the base engine drops.
               neg-key (fn [tuple]
                         (if (= 1 n-jv)
-                          (get tuple (get neg-attrs (first jv-vec)))
-                          (mapv #(get tuple (get neg-attrs %)) jv-vec)))
+                          (probe-key (get tuple (get neg-attrs (first jv-vec))))
+                          (mapv #(probe-key (get tuple (get neg-attrs %))) jv-vec)))
               ;; Exclusion set. JVM keeps the fast java.util.HashSet (value equality
               ;; via .equals/.hashCode, incl. vector keys); cljs uses a Clojure set —
               ;; js/Set would key vectors by REFERENCE and never match (and HashSet is
@@ -2984,9 +2988,10 @@
             (loop [read-i (int 0) write-i (int 0)]
               (if (< read-i n)
                 (let [^objects tuple (result-list-get result-list read-i)
+                      ;; keyed exactly as `neg-key` keys the exclusion set
                       probe (if (= 1 n-jv)
-                              ((first jv-getters) tuple)
-                              (mapv #(% tuple) jv-getters))
+                              (probe-key ((first jv-getters) tuple))
+                              (mapv #(probe-key (% tuple)) jv-getters))
                       excluded? #?(:clj (.contains ^java.util.HashSet excl-set probe)
                                    :cljs (contains? excl-set probe))]
                   (if excluded?

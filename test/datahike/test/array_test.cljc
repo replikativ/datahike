@@ -80,10 +80,14 @@
       (is (not (cmp (float-array [##NaN]) (float-array [0.0]))))
       (is (not (cmp (double-array [1.5 ##NaN]) (double-array [1.5 2.5]))))
 
-      ;; Signed zero is ORDERED, so -0.0 and 0.0 are not equal — on both
-      ;; platforms now, since cljs no longer defers to compare3 for elements
-      (is (not (cmp (float-array [-0.0]) (float-array [0.0]))))
-      (is (not (cmp (double-array [-0.0]) (double-array [0.0]))))
+      ;; Signed zero is where the platforms differ, deliberately: the JVM
+      ;; ORDERS -0.0 before 0.0, while ClojureScript keeps `compare3`'s order
+      ;; (they compare equal) because changing it would reorder stored indexes
+      ;; built since 0.8.1745. Assert each rather than pretend they agree.
+      #?(:clj  (do (is (not (cmp (float-array [-0.0]) (float-array [0.0]))))
+                   (is (not (cmp (double-array [-0.0]) (double-array [0.0])))))
+         :cljs (do (is (cmp (float-array [-0.0]) (float-array [0.0])))
+                   (is (cmp (double-array [-0.0]) (double-array [0.0])))))
       (is (cmp (double-array [-0.0]) (double-array [-0.0])))
 
       ;; Zero-length arrays are equal within a kind and never across one

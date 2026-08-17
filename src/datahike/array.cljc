@@ -155,27 +155,19 @@ compared element-wise; a mismatched pair falls back to a stable class ordering."
              ;; changed, because changing it WOULD reorder existing stored
              ;; indexes holding high bytes.
              (if (== ka kb)
-               (let [la (value-array-length a)
-                     lb (value-array-length b)
-                     n (min la lb)]
-                 (loop [i 0]
-                   (if (== i n)
-                     (compare la lb)
-                     (let [x (aget a i)
-                           y (aget b i)
-                           c (cond
-                               ;; Float/Double.compare: NaN equals itself and
-                               ;; sorts ABOVE every number; -0.0 sorts BELOW 0.0
-                               (and (js/Number.isNaN x) (js/Number.isNaN y)) 0
-                               (js/Number.isNaN x) 1
-                               (js/Number.isNaN y) -1
-                               (< x y) -1
-                               (> x y) 1
-                               (and (zero? x) (zero? y))
-                               (let [nx (neg? (/ 1 x)) ny (neg? (/ 1 y))]
-                                 (cond (= nx ny) 0 nx -1 :else 1))
-                               :else 0)]
-                       (if (zero? c) (recur (inc i)) c)))))
+               ;; Elements keep `compare3`'s plain `<`/`>` ORDER, deliberately.
+               ;; Giving NaN and signed zero their JVM order here would be more
+               ;; correct in the abstract and is NOT worth it: `cmp-datoms-avet`
+               ;; breaks a value tie on the entity id, so the old comparator IS
+               ;; a total order, and a stored tree built under it can hold
+               ;; `[NaN]`-before-`[1.0]` — an order the JVM semantics reverse.
+               ;; Changing this would silently invalidate those trees (seeks
+               ;; navigating away from stored datoms) with no migration, for
+               ;; databases that have existed since 0.8.1745. The NaN defect
+               ;; that matters — a NaN array reading as EQUAL to every numeric
+               ;; array — is fixed in `a=` instead, which decides equality and
+               ;; touches nothing on disk.
+               (goog.array/compare3 a b)
                (if (< ka kb) -1 1)))
      :clj
      (cond
@@ -250,14 +242,17 @@ compared element-wise; a mismatched pair falls back to a stable class ordering."
 #?(:cljs
    (defn- canonical-element
      "Normalises an element so that vector equality reproduces what
-      `compare-arrays` says: two NaNs are equal (and a NaN differs from every
-      number), and -0.0 is distinct from 0.0."
+      `a=` says on this platform: two NaNs are equal, a NaN differs from every
+      number, and -0.0 equals 0.0."
      [x]
      (cond
        ;; NaN is equal to itself and to nothing else, and -0.0 is distinct from
        ;; 0.0 — both as `compare-arrays` now reports them, and as the JVM does.
        (js/Number.isNaN x) ::nan
-       (and (zero? x) (neg? (/ 1 x))) ::negative-zero
+       ;; -0.0 collapses to 0.0 because `a=` calls them equal on this platform
+       ;; (see the note there); NaN gets a sentinel because `a=` calls it equal
+       ;; to nothing but itself.
+       (and (zero? x) (neg? (/ 1 x))) 0
        :else x)))
 
 (defn wrap-comparable
@@ -292,17 +287,47 @@ compared element-wise; a mismatched pair falls back to a stable class ordering."
                          :cljs (WrappedArray. :double (mapv canonical-element (array-seq x))))
     :else x))
 
+(defn- same-array-kind?
+  "Are `a` and `b` the same primitive-array kind?"
+  [a b]
+  (or (and (bytes? a) (bytes? b))
+      (and (float-array? a) (float-array? b))
+      (and (double-array? a) (double-array? b))))
+
+#?(:cljs
+   (defn- cljs-arrays=
+     "Element-wise equality for two same-kind value arrays on ClojureScript.
+
+      NOT `(zero? (compare-arrays …))`: element ORDER there is `compare3`'s,
+      which finds neither `<` nor `>` between a NaN and a number and therefore
+      reports them EQUAL — so every numeric array equalled every
+      NaN-containing array of the same shape. Deciding equality separately
+      fixes that without touching the order any stored index was built with.
+      `-0.0` stays equal to `0.0`, matching that order; the JVM separates them,
+      and that platform difference is deliberately left open."
+     [a b]
+     (and (same-array-kind? a b)
+          (== (value-array-length a) (value-array-length b))
+          (let [n (value-array-length a)]
+            (loop [i 0]
+              (if (== i n)
+                true
+                (let [x (aget a i)
+                      y (aget b i)]
+                  (if (or (== x y)
+                          (and (js/Number.isNaN x) (js/Number.isNaN y)))
+                    (recur (inc i))
+                    false))))))))
+
 (defn a=
   "Extension of Clojure's equality to things we also want to treat like values,
   e.g. certain array types.
 
-  A value array is decided by `compare-arrays` ALONE — never by `=` first.
+  A value array is decided by an ARRAY comparison, never by `=` first:
   ClojureScript's `=` compares typed arrays structurally and ignores the kind,
   so `(= (js/Int8Array. #js [1]) (js/Float32Array. #js [1]))` is TRUE there,
-  and an `(or (= a b) ...)` short-circuited on it before any kind check could
-  run: a byte array equalled a float array holding the same numbers, which the
-  JVM never says, and which broke the contract `wrap-comparable` states, since
-  the key keeps the kind.
+  and an `(or (= a b) …)` short-circuited on it before any kind check could
+  run.
 
   The `value-array?` guard on BOTH sides is not symmetry for its own sake:
   without it this handed ANY two values to `compare-arrays`, and
@@ -311,13 +336,15 @@ compared element-wise; a mismatched pair falls back to a stable class ordering."
   Measured on Node: `(a= {:a 1} {:b 2})`, `(a= 5 7)`, `(a= #{1} #{2})` were all
   true. Anything downstream that asks \"are these the same value\" —
   `compare-value`'s equality arm, and `db.search`'s value matching — was told
-  yes about everything."
+  yes about everything.
+
+  `boolean`, because `value-array?` is a `when` on the JVM and a nil operand
+  made this answer nil. Every current caller uses it in boolean position; the
+  next one to write `(= false (a= …))` would not."
   [a b]
   (if (or (value-array? a) (value-array? b))
-    ;; `boolean`: `value-array?` is a `when` on the JVM, so a nil operand made
-    ;; this answer nil rather than false. Every current caller uses it in
-    ;; boolean position; the next one to write `(= false (a= …))` would not.
     (boolean (and (value-array? a)
                   (value-array? b)
-                  (zero? (compare-arrays a b))))
+                  #?(:clj (zero? (compare-arrays a b))
+                     :cljs (cljs-arrays= a b))))
     (= a b)))
