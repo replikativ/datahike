@@ -242,18 +242,26 @@ compared element-wise; a mismatched pair falls back to a stable class ordering."
 #?(:cljs
    (defn- canonical-element
      "Normalises an element so that vector equality reproduces what
-      `a=` says on this platform: two NaNs are equal, a NaN differs from every
-      number, and -0.0 equals 0.0."
+      `a=` says: two NaNs are equal, a NaN differs from every number, and -0.0
+      differs from 0.0 — the same value semantics as the JVM. (The stored
+      ORDER still says otherwise for both; see `compare-arrays`.)"
      [x]
      (cond
        ;; NaN is equal to itself and to nothing else, and -0.0 is distinct from
        ;; 0.0 — both as `compare-arrays` now reports them, and as the JVM does.
        (js/Number.isNaN x) ::nan
-       ;; -0.0 collapses to 0.0 because `a=` calls them equal on this platform
-       ;; (see the note there); NaN gets a sentinel because `a=` calls it equal
-       ;; to nothing but itself.
-       (and (zero? x) (neg? (/ 1 x))) 0
+       ;; Sentinels, because `a=` separates both from everything else: a NaN
+       ;; equals only a NaN, and -0.0 is not 0.0 (as on the JVM).
+       (and (zero? x) (neg? (/ 1 x))) ::negative-zero
        :else x)))
+
+#?(:clj
+   (defn array-key?
+     "Is `x` a wrapped array KEY rather than a value? A key hashes by content
+      and is therefore what hash joins store — but it is NOT the stored value,
+      is not `Comparable`, and must never be handed to an index seek."
+     [x]
+     (instance? ArrayKey x)))
 
 (defn wrap-comparable
   "A key `k` such that `(a= x y)` iff `(= (wrap-comparable x) (wrap-comparable y))`,
@@ -314,8 +322,17 @@ compared element-wise; a mismatched pair falls back to a stable class ordering."
                 true
                 (let [x (aget a i)
                       y (aget b i)]
-                  (if (or (== x y)
-                          (and (js/Number.isNaN x) (js/Number.isNaN y)))
+                  (if (or (and (js/Number.isNaN x) (js/Number.isNaN y))
+                          ;; `==` alone calls -0.0 and 0.0 equal. The JVM's
+                          ;; `Arrays/equals` is bit-based and separates them, and
+                          ;; the principle applied to NaN applies here too: fix
+                          ;; EQUALITY, which touches nothing on disk, and leave
+                          ;; the stored ORDER alone. Without this the platforms
+                          ;; answered differently for the same data — a
+                          ;; `:db.unique/identity` upsert of -0.0 then 0.0 made
+                          ;; two entities on the JVM and one here.
+                          (and (== x y)
+                               (= (neg? (/ 1 x)) (neg? (/ 1 y)))))
                     (recur (inc i))
                     false))))))))
 

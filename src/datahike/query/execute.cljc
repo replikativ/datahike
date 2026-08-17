@@ -251,7 +251,11 @@
                  match-fn (fn [^Datom d v]
                             (if by-entity?
                               (and (== (.-e d) (long v)) (= (.-a d) resolved-a))
-                              (and (= (.-a d) resolved-a) (= (.-v d) v))))]
+                              ;; `da/a=` (what `val-eq?` below delegates to, and
+                              ;; defined before this point): a value match is the
+                              ;; engine's value equality, not `=`, which is
+                              ;; identity for arrays
+                              (and (= (.-a d) resolved-a) (da/a= (.-v d) v))))]
              ;; Seek to first value
              (when (pos? n-vals)
                (vreset! current (seek-fn (aget val-arr 0))))
@@ -2482,6 +2486,14 @@
                                     (and probe-set
                                          resolved-a
                                          (or (= probe-field 0) (= probe-field 2)) ;; entity or value position
+                                         ;; This set is BOTH a membership filter and a source of
+                                         ;; SEEK keys — the same dual role `pattern-probe-set`
+                                         ;; guards. Its values are stored through `probe-key`, so
+                                         ;; an array arrives as an ArrayKey: not the stored value,
+                                         ;; not Comparable, and handing it to a seek returned
+                                         ;; nothing for one value and threw a ClassCastException
+                                         ;; for two. Decline, exactly as the other probe set does.
+                                         (not-any? da/array-key? probe-set)
                                          ;; Value-position seeks read the AVET index, which only
                                          ;; contains :db/index / :db/unique attributes. For a
                                          ;; non-indexed attr the AVET slice is empty, so gate on
@@ -2502,6 +2514,24 @@
                                                   (< (* (long (probe-set-size probe-set)) (long probe-driven-threshold))
                                                      est))))))
                              :cljs false)
+        ;; A forward merge cursor is only usable when the scan visits entities in
+        ;; INCREASING `e`. A value-position probe-driven scan does not: it turns
+        ;; the scan into a series of AVET seeks ordered by VALUE, so entities
+        ;; arrive in value order — measured, an inverted fixture yielded 19900
+        ;; before 19800 — and a forward cursor cannot seek back, so the merge
+        ;; found nothing and the row was silently dropped. This is about the
+        ;; SCAN, not about the merge: it hits ordinary non-optional merges too,
+        ;; which is what an earlier fix here got wrong by gating on the merge.
+        use-cursors? (and use-cursors?
+                          (not (and use-probe-driven?
+                                    (== 2 (int probe-datom-field)))))
+        ;; `execute-sorted-merge` is cursor-driven throughout and has no
+        ;; lookup fallback, so when the scan is not monotonic it takes the
+        ;; path build-pipeline already uses for every non-sorted card-one
+        ;; group (and for groups carrying a cross-merge obligation).
+        fused-path (if (and (= fused-path :sorted-merge) (not use-cursors?))
+                     :per-cursor-merge
+                     fused-path)
         slice (if use-probe-driven?
                 (if temporal
                   ;; Temporal probe-driven: build concatenated temporal slices per probe value

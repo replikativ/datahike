@@ -346,6 +346,18 @@
                 '[:find ?e ?f :where [?e :blob ?v] [?f :blob2 ?v]
                   [(= ?e 999)]] db)))
 
+      (testing "a value-position probe join keeps its rows"
+        ;; A value-position SIP probe turns the consumer scan into AVET seeks
+        ;; ordered by VALUE, so entities arrive out of entity order. Two things
+        ;; broke on that: a forward merge cursor cannot seek back (rows silently
+        ;; dropped — for ORDINARY merges, not just optional ones), and the probe
+        ;; set doubles as a source of seek keys, so wrapping its array values
+        ;; handed the index a key instead of a value. Small here; the pinned
+        ;; large fixtures live in the commit message.
+        (both #{[1] [2]}
+              '[:find ?e :in $ [?v ...] :where [?e :blob ?v] [?e :anchor _]]
+              db [(bytes-of [1 2 3])]))
+
       (testing "a NEGATION keys its exclusion set by value too"
         ;; `not-join` builds an exclusion set from the negated relation. It
         ;; keyed raw values, so an array in the negation excluded nothing and
