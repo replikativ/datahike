@@ -71,6 +71,15 @@
                                
                   :extra-paths ["test"]}
 
+           ;; Develop against a local konserve checkout — for the conditional-write
+           ;; work the two move together, and the primitive is not released yet.
+           ;; REMOVE before merging; a :local/root cannot go to Clojars.
+           :local-konserve
+           {:override-deps {org.replikativ/konserve
+                            {:local/root "/home/christian-weilbach/Development/konserve-wt-cas"}}
+            :extra-deps {io.replikativ/konserve-s3
+                         {:local/root "/home/christian-weilbach/Development/konserve-s3-wt-cas"}}}
+
            :dev {:extra-paths ["dev" "benchmark/src"]
                  :extra-deps {org.clojure/tools.namespace {:mvn/version "1.5.0"}
                               org.clojure/clojurescript   {:mvn/version "1.12.42"}

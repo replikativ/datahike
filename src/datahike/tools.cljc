@@ -90,6 +90,20 @@
 
 ;; adapted from https://clojure.atlassian.net/browse/CLJ-2766
 #?(:clj
+   (defn- unwrap-execution
+     "The error the caller actually threw, not the CompletableFuture's wrapper.
+
+      `.completeExceptionally` + `.get` re-raises as `ExecutionException`, whose
+      message is the cause's `toString` and whose `ex-data` is NOTHING. Rethrowing
+      that hands every caller an error they can only string-match: `(ex-data e)`
+      is nil even when the original carried a perfectly good `:type`. Unwrap once
+      so a caller can dispatch on what was actually thrown."
+     [t]
+     (if (instance? java.util.concurrent.ExecutionException t)
+       (or (.getCause ^java.util.concurrent.ExecutionException t) t)
+       t)))
+
+#?(:clj
    (defn throwable-promise
      "Returns a promise object that can be read with deref/@, and set, once only, with deliver. Calls to deref/@ prior to delivery will block, unless the variant of deref with timeout is used. All subsequent derefs will return the same delivered value without blocking. Exceptions delivered to the promise will throw on deref. 
    
@@ -99,10 +113,11 @@
            p (async/promise-chan)]
        (reify
          clojure.lang.IDeref
-         (deref [_] (throw-if-exception- (try (.get cf) (catch Throwable t t))))
+         (deref [_] (throw-if-exception- (try (.get cf) (catch Throwable t (unwrap-execution t)))))
          clojure.lang.IBlockingDeref
          (deref [_ timeout-ms timeout-val]
-           (if-let [v (try (.get cf timeout-ms java.util.concurrent.TimeUnit/MILLISECONDS) (catch Throwable t t))]
+           (if-let [v (try (.get cf timeout-ms java.util.concurrent.TimeUnit/MILLISECONDS)
+                           (catch Throwable t (unwrap-execution t)))]
              (throw-if-exception- v)
              timeout-val))
          clojure.lang.IPending

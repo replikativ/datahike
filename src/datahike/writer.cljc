@@ -228,6 +228,13 @@
                               ;; the last.
                               head-cid (when (and (not streaming?) needs-reload?)
                                          (get-in old [:meta :datahike/commit-id]))
+                              ;; The konserve revision the head was read at, for the
+                              ;; commit's fence. Stamped on the SAME transaction as
+                              ;; head-cid and for the same reason: it belongs to the
+                              ;; head this batch was applied to, and a chained
+                              ;; transaction shares it.
+                              head-rev (when (and (not streaming?) needs-reload?)
+                                         (get-in old [:meta :datahike/head-revision]))
 
                               op-fn (write-fn-map op)
                               res   (try
@@ -360,7 +367,7 @@
                                     ;; Nothing was enqueued, so nothing will be
                                     ;; signalled: leave `pending` alone rather than
                                     ;; owe a take that nothing owes back.
-                                    (not (put! commit-queue [res callback head-cid]))
+                                    (not (put! commit-queue [res callback head-cid head-rev]))
                                     (do (put! callback
                                               (ex-info "Writer is shut down (a previous fatal error closed it); release and reconnect."
                                                        {:type :writer-shut-down}))
@@ -406,7 +413,14 @@
                        ;; stamp overrides whatever we threaded; the threaded
                        ;; value carries the rest of the batch. Either way the
                        ;; parent is correct and costs no extra read.
-                       last-cid nil]
+                       last-cid nil
+                       ;; The head revision OUR last commit created. Threaded for
+                       ;; the same reason as last-cid, and needed for the same
+                       ;; case: a batch can produce several commit groups, and
+                       ;; after the first lands the head has moved, so the next
+                       ;; must fence against what we just wrote rather than the
+                       ;; stamp the batch opened with.
+                       last-rev nil]
                   (when tx
                     (let [txs (into [tx] (take-while some?) (repeatedly #(poll! commit-queue)))]
               ;; empty channel of pending transactions
@@ -423,6 +437,14 @@
                             last-cid (if streaming?
                                        last-cid
                                        (or (nth (first txs) 2 nil) last-cid))
+                            ;; Same source as last-cid: the batch's opening
+                            ;; transaction carries the revision it was applied to.
+                            ;; A chained one carries nil, which is correct — the
+                            ;; commit that precedes it in this batch moved the head,
+                            ;; so its own revision is stale by construction and the
+                            ;; commit loop re-reads (see below).
+                            head-rev (when-not streaming?
+                                       (or (nth (first txs) 3 nil) last-rev))
                             db (:db-after (first (peek txs)))
                             ;; Check for merge parents (set by merge-writer!)
                             merge-parents (get-in db [:meta :datahike/merge-parents])
@@ -433,7 +455,7 @@
                         (try
                           (let [start-ts (get-time-ms)
                                 {{:keys [datahike/commit-id]} :meta
-                                 :as commit-db} (<?- (w/commit! db merge-parents false last-cid))
+                                 :as commit-db} (<?- (w/commit! db merge-parents false last-cid head-rev))
                                 commit-time (- (get-time-ms) start-ts)]
                             (log/trace :datahike/commit-time {:duration-ms commit-time})
                             (reset! connection commit-db)
@@ -444,6 +466,40 @@
                                                   (assoc :db-after commit-db))]
                                 (>! callback tx-report))))
                           (catch #?(:clj Throwable :cljs js/Error) e
+                            (if (= :konserve/revision-mismatch (:type (ex-data e)))
+                              ;; NOT FATAL. Another writer moved the branch head
+                              ;; between our head read and our head write, so this
+                              ;; commit did not land — which is the fence doing its
+                              ;; job, not the writer breaking. Report it and carry
+                              ;; on; the queues stay open and the writer stays
+                              ;; alive.
+                              ;;
+                              ;; The whole GROUP fails together, and correctly: a
+                              ;; chained transaction was applied to the previous
+                              ;; one's :db-after, so if the first never became
+                              ;; durable the rest descend from a db that never
+                              ;; existed. Later groups of the same batch carry a
+                              ;; nil stamp and fall back to the threaded revision,
+                              ;; which is now stale, so they fail the same way —
+                              ;; which is the outcome we want, reached without a
+                              ;; special case.
+                              ;;
+                              ;; `connection` is deliberately NOT reset: nothing was
+                              ;; committed, so the db this writer holds is still the
+                              ;; last one that was.
+                              (do
+                                (log/warn :datahike/head-conflict
+                                          {:branch (:branch (:config db)) :transactions (count txs)})
+                                (doseq [[_ callback] txs]
+                                  (put! callback
+                                        (ex-info (str "The branch head moved while this transaction was being "
+                                                      "prepared, so it was NOT applied — another writer committed "
+                                                      "first. Nothing was lost and nothing partially applied; "
+                                                      "re-read and transact again.")
+                                                 {:type   :datahike/head-conflict
+                                                  :branch (:branch (:config db))
+                                                  :error  e}))))
+                              (do
                             ;; Close the queues BEFORE delivering the failed
                             ;; callbacks. Delivering first unblocks the caller
                             ;; while the queues are still open, so a subsequent
@@ -462,8 +518,8 @@
                               (put! callback e))
                             (log/error :datahike/writer-shutdown {:error e})
                             ;; Re-throw Errors (AssertionError, OutOfMemoryError, etc.) to crash the writer
-                            #?(:clj (when (instance? Error e)
-                                      (throw e)))))
+                                #?(:clj (when (instance? Error e)
+                                          (throw e)))))))
                         ;; Signalled AFTER the head flip (or after the failure
                         ;; path closed everything), so the transaction loop's
                         ;; next head read sees this commit.
@@ -491,7 +547,12 @@
                                ;; NON-STREAMING connection it would additionally
                                ;; round-trip to storage. The wrapped atom holds the
                                ;; same value with neither hazard, for both writers.
-                               (get-in @(:wrapped-atom connection) [:meta :datahike/commit-id])))))))))]))
+                               (get-in @(:wrapped-atom connection) [:meta :datahike/commit-id])
+                               ;; The revision our commit just created, read off the
+                               ;; db `commit!` handed back rather than from storage —
+                               ;; the write returned it, which is the whole point of
+                               ;; asking for it.
+                               (get-in @(:wrapped-atom connection) [:meta :datahike/head-revision])))))))))]))
 
 (defn- with-tx-pred
   "Wrap a report-producing write-fn so a store-level tx-pred (if registered)

@@ -402,12 +402,23 @@
    The runtime config and the `:writer` are carried over from `old`: neither
    lives in storage (`:writer` is the connection's own transactor), and dropping
    it would leave the connection without a transactor."
-  [old stored store]
-  (let [stored-cid (get-in stored [:meta :datahike/commit-id])]
-    (if (and stored-cid (= stored-cid (get-in old [:meta :datahike/commit-id])))
-      old
-      (assoc (stored->db (assoc stored :config (:config old)) store)
-             :writer (:writer old)))))
+  ([old stored store] (reload-head old stored store nil))
+  ([old stored store head-revision]
+   (let [stored-cid (get-in stored [:meta :datahike/commit-id])
+         ;; The konserve revision the head blob was AT when we read it, carried on
+         ;; the db so a later commit can fence its head write against it. Distinct
+         ;; from the commit-id: the cid identifies datahike's state, the revision
+         ;; identifies the STORAGE write, and only the latter is what konserve can
+         ;; compare-and-set on. Kept in :meta so it travels with the db through the
+         ;; writer's transaction loop exactly as the cid does.
+         stamp (fn [db] (cond-> db head-revision
+                                (assoc-in [:meta :datahike/head-revision] head-revision)))]
+     (if (and stored-cid (= stored-cid (get-in old [:meta :datahike/commit-id])))
+       ;; Unmoved head: the db is unchanged, but the revision may not be — the blob
+       ;; can have been rewritten with identical content. Take the fresh one.
+       (stamp old)
+       (stamp (assoc (stored->db (assoc stored :config (:config old)) store)
+                     :writer (:writer old)))))))
 
 (defn reload-branch-head
   "Re-read `old`'s branch head from storage and rebuild an in-memory db from it
@@ -430,14 +441,21 @@
    lock and is NOT multi-process safe. That is transitional (its konserve
    backing is a late addition), not a property of secondary indices."
   [old]
-  (let [store  (:store old)
-        branch (:branch (:config old))
-        stored (k/get store branch nil {:sync? true})]
+  (let [store    (:store old)
+        branch   (:branch (:config old))
+        fenced?  (some? (k/conditional-write-domain store))
+        ;; ONE read for both when the store can fence. Reading the revision
+        ;; separately would cost a second round-trip AND be racy: another writer
+        ;; could move the head between the two reads, leaving us fencing against a
+        ;; revision that never belonged to the head we just applied to.
+        [stored revision] (if fenced?
+                            (k/get store branch nil {:sync? true :with-revision? true})
+                            [(k/get store branch nil {:sync? true}) nil])]
     (when-not stored
       (log/raise "Branch head vanished from the store; the database may have been deleted."
                  {:type   :branch-head-does-not-exist-in-store
                   :branch branch}))
-    (reload-head old stored store)))
+    (reload-head old stored store revision)))
 
 (defn branch-heads-as-commits
   "Resolve keyword parents (branch names) to their head commit-ids.
@@ -618,7 +636,10 @@
    (commit! db parents true))
   ([db parents sync?]
    (commit! db parents sync? nil))
-  ([db parents sync? known-head-cid]
+  ([db parents sync? known-head-cid] (commit! db parents sync? known-head-cid nil))
+  ([db parents sync? known-head-cid head-revision]
+   ;; Set by whichever write path runs; read after, to stamp the db we return.
+   (let [new-head-revision (atom nil)]
    (async+sync sync? *default-sync-translation*
                (go-try-
                 ;; Contain fatal ERRORS (AssertionError, OOM, ...): go-try- catches
@@ -710,10 +731,17 @@
                             ;; It also means a sync subscriber relaying this batch applies it
                             ;; in the order we committed it, instead of guessing an order back
                             ;; from the shape of the keys.
+                            ;; FENCED: the head leaves the batch. `multi-assoc`
+                            ;; refuses `:expected-revision`, and rightly so —
+                            ;; verifying every key and then writing every key is
+                            ;; not one atomic step when locks are per blob. The
+                            ;; ordering that matters is unaffected: values as a
+                            ;; batch, THEN the mutable pointer, which is the same
+                            ;; barrier the unfenced path spells out below.
                               writes (cond-> (vec pending-kvs)
                                        schema-meta-kv-to-write (conj [meta-key meta-val])
                                        commit-graph?           (conj [cid db-to-store])
-                                       true                    (conj [branch-key db-to-store]))
+                                       (not head-revision)     (conj [branch-key db-to-store]))
                             ;; nodes + schema-meta (uuid) + commit (cid) are content-addressed →
                             ;; immutable; the branch-head pointer stays mutable (unmarked).
                               metas  (into {}
@@ -721,7 +749,10 @@
                                                  (remove #(= % branch-key))
                                                  (map (fn [k] [k {:immutable? true}])))
                                            writes)]
-                          (<?- (k/multi-assoc store writes metas {:sync? sync?})))
+                          (<?- (k/multi-assoc store writes metas {:sync? sync?}))
+                          (when head-revision
+                            (<?- (k/assoc store branch-key db-to-store
+                                          {:sync? sync? :expected-revision head-revision}))))
                     ;; Then write schema-meta, commit-log, branch
                         (let [[meta-key meta-val] schema-meta-kv-to-write
                               schema-meta-written (when schema-meta-kv-to-write
@@ -743,9 +774,20 @@
                             ;; :sync? true k/assoc blocks, so the order already holds.)
                               _                  (when (and commit-log-written (not sync?))
                                                    (<?- commit-log-written))
-                              branch-written     (k/assoc store (:branch config) db-to-store {:sync? sync?})]
-                          (when-not sync?
-                            (<?- branch-written))))
+                            ;; THE FENCE. `head-revision` is the konserve revision
+                            ;; the head was at when this transaction was applied to
+                            ;; it; the write is rejected if anything has written
+                            ;; there since. nil means unfenced — a store that cannot
+                            ;; compare, or a caller that did not read a revision —
+                            ;; and behaves exactly as before.
+                              branch-written     (k/assoc store (:branch config) db-to-store
+                                                          (cond-> {:sync? sync?}
+                                                            head-revision
+                                                            (assoc :expected-revision head-revision
+                                                                   :with-revision? true)))]
+                          (reset! new-head-revision
+                                  (let [r (if sync? branch-written (<?- branch-written))]
+                                    (when head-revision (second r))))))
 
                   ;; Online GC: delete freed addresses after writes are committed
                       (when (get-in config [:online-gc :enabled?])
@@ -754,16 +796,22 @@
                       ;; Keep what we just wrote on the db we hand back, so the
                       ;; NEXT db->stored can carry a pointer forward for an
                       ;; index whose live instance went missing meanwhile.
+                      ;; The head revision this commit created rides along for the
+                      ;; same reason: the next commit of the same batch fences
+                      ;; against it, and asking storage for it would be a read we
+                      ;; just earned the right not to make.
                       (cond-> db
                         (seq (:secondary-index-keys db-to-store))
-                        (assoc :secondary-index-keys (:secondary-index-keys db-to-store))))
+                        (assoc :secondary-index-keys (:secondary-index-keys db-to-store))
+                        @new-head-revision
+                        (assoc-in [:meta :datahike/head-revision] @new-head-revision)))
                     (catch #?(:clj Error :cljs :default) e
                       #?(:clj  (throw (ex-info "Fatal error during commit."
                                                {:type :fatal-commit-error}
                                                e))
                          :cljs (throw e)))
                     (finally
-                      (guard/done! gc-store-id gc-token))))))))
+                      (guard/done! gc-store-id gc-token)))))))))
 
 (defn complete-db-update [old tx-report]
   (let [{:keys [writer]} old
