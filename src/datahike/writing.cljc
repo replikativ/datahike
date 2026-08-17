@@ -195,10 +195,39 @@
           {:secondary-index-keys secondary-index-keys})
         fused-roots)])))
 
+(def ^:dynamic *on-secondary-restore-failure*
+  "What to do when a secondary index that EXISTS in storage cannot be restored.
+
+   `:fail` (default) aborts materialization — see `restore-secondary-indices` for
+   why silently continuing loses the index for good. `:drop` comes up without it,
+   which is the pre-existing behaviour and is what a deployment wants when it can
+   rebuild the index and would rather be degraded than down.
+
+   Not a config key: it is a property of the PROCESS doing the restoring, not of
+   the database, and the stored config is the wrong place to record it."
+  :fail)
+
 (defn- restore-secondary-indices
   "Restore secondary index instances from stored key-maps.
    For versioned indices (IVersionedSecondaryIndex), restores from durable storage.
-   For non-versioned or missing keys, creates empty instances that need backfill."
+   For non-versioned or missing keys, creates empty instances that need backfill.
+
+   A failure to restore an index THAT HAS A STORED KEY-MAP aborts the whole
+   materialization. Dropping it instead — which is what this did — produces a db
+   that is indistinguishable from one whose index has simply never been built:
+   `finalize-secondary-indices` then creates a fresh empty instance on the next
+   transaction, the commit overwrites the stored key-map with that empty one, and
+   the index is durably gone. Nothing detects it afterwards, because an empty
+   index and a lost index look the same. Failing at connect is recoverable; that
+   is not.
+
+   An index with NO stored key-map is a different case and still yields an empty
+   skeleton: there is nothing to lose, and backfill is the normal path.
+
+   Binding `*on-secondary-restore-failure*` to `:drop` restores the old behaviour
+   for a deployment that would rather come up degraded than not at all — e.g. one
+   whose index backend is not multi-process safe (scriptum's Lucene directory)
+   and that accepts rebuilding. It logs at ERROR, not WARN."
   [schema ident-ref-map secondary-index-keys store]
   #?(:clj
      (reduce-kv
@@ -233,8 +262,29 @@
                   ;; No stored keys — empty index, needs backfill
                   (assoc acc ident skeleton)))
               (catch Exception e
-                (log/warn :datahike/secondary-index-restore-failed {:ident ident :error (.getMessage e)})
-                acc)))
+                (if (and key-map (not= :drop *on-secondary-restore-failure*))
+                  (do
+                    ;; Nobody will ever hold the indices restored before this
+                    ;; one: the accumulator dies with the raise. Close them, or
+                    ;; each failed attempt strands another native writer — and
+                    ;; for a lock-holding backend (Lucene) the leaked lock is
+                    ;; what makes the NEXT attempt fail too, turning a transient
+                    ;; failure into a permanent one.
+                    (doseq [[_ idx] acc]
+                      (when (instance? java.io.Closeable idx)
+                        (try (.close ^java.io.Closeable idx)
+                             (catch Exception close-e
+                               (log/warn :datahike/secondary-index-close-failed
+                                         {:error (.getMessage close-e)})))))
+                    (log/raise "Could not restore a secondary index that exists in storage. Continuing would overwrite it with an empty one on the next commit. Bind datahike.writing/*on-secondary-restore-failure* to :drop to come up without it anyway (the stored index is then lost on the next write)."
+                               {:type  :secondary-index-restore-failed
+                                :ident ident
+                                :index-type idx-type
+                                :error e}))
+                  (do (log/error :datahike/secondary-index-restore-failed
+                                 {:ident ident :has-stored-index? (some? key-map)
+                                  :error (.getMessage e)})
+                      acc)))))
           acc))
       {} schema)
      :cljs {}))
@@ -308,9 +358,40 @@
        {:secondary-indices sec-indices})
      schema-meta)))
 
+(defn stored->db-read-only
+  "`stored->db` for a db that can never be written back — a historical commit, a
+   branch loaded as a value, a reader-materialized db.
+
+   The reason [[*on-secondary-restore-failure*]] defaults to `:fail` is that a
+   dropped index would be overwritten with an empty one by the NEXT COMMIT on
+   that db. A db nothing can commit cannot lose an index that way, so failing
+   here buys no safety and costs availability: it turns a history walk into a
+   hard error whenever an index backend is momentarily unrestorable — which for
+   scriptum, whose Lucene directory holds a per-branch write lock, is simply
+   \"a writer is running\".
+
+   Use this ONLY where the db is a value handed to the caller AND no writer
+   reads an index off it. `deref-conn` does hand back a value — it never
+   `reset!`s the connection — but it must still keep `:fail`, because
+   `versioning/branch!` takes `(:secondary-indices @conn)` as its LIVE index set
+   and writes the resulting key-map as the new branch record's
+   `:secondary-index-keys`. An index dropped from that deref is simply absent
+   from the reduce, so the new branch is created without its pointer — the same
+   durable loss, one level removed."
+  [stored-db store]
+  (binding [*on-secondary-restore-failure* :drop]
+    (stored->db stored-db store)))
+
 (defn reload-head
   "`old` itself when `stored` is the very commit `old` already is, otherwise a
    fresh in-memory db built from `stored`.
+
+   A record with NO cid is never treated as unmoved, even against an `old` that
+   also has none: neither side knowing its identity is not evidence that the two
+   match, and reading it as a match would make the writer blind to every other
+   process's commits — precisely the failure `:streaming? false` exists to
+   prevent. Unreachable for databases this version creates (`create-database`
+   stamps a cid); the guard is for foreign or legacy records.
 
    Identity is the commit-id: the same cid means the same stored record, hence
    the same primary index roots AND the same secondary-index key-maps, so there
@@ -322,11 +403,11 @@
    lives in storage (`:writer` is the connection's own transactor), and dropping
    it would leave the connection without a transactor."
   [old stored store]
-  (if (= (get-in stored [:meta :datahike/commit-id])
-         (get-in old [:meta :datahike/commit-id]))
-    old
-    (assoc (stored->db (assoc stored :config (:config old)) store)
-           :writer (:writer old))))
+  (let [stored-cid (get-in stored [:meta :datahike/commit-id])]
+    (if (and stored-cid (= stored-cid (get-in old [:meta :datahike/commit-id])))
+      old
+      (assoc (stored->db (assoc stored :config (:config old)) store)
+             :writer (:writer old)))))
 
 (defn reload-branch-head
   "Re-read `old`'s branch head from storage and rebuild an in-memory db from it

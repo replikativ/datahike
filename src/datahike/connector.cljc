@@ -72,16 +72,23 @@
       (throw (ex-info "Connection has been released."
                       {:type :connection-has-been-released})))
     (if (not (w/streaming? (get @wrapped-atom :writer)))
-      (let [db     @wrapped-atom
-            store  (:store db)
-            stored (k/get store (:branch (:config db)) nil {:sync? true})]
-        (log/trace :datahike/db-deref {:config (:config stored)})
-        ;; Head-cid identity, exactly as in the writer's per-transaction
-        ;; re-read: an unmoved head hands back the db we already hold instead
-        ;; of rebuilding it — which would re-run the secondary index restore on
-        ;; EVERY deref, contend with the live writer's lock (scriptum) and drop
-        ;; the index. It also keeps the connection's :writer on the result.
-        (dsi/reload-head db stored store))
+      (do
+        (log/trace :datahike/db-deref {:branch (:branch (:config @wrapped-atom))})
+        ;; Exactly the writer's per-transaction re-read, and deliberately the
+        ;; SAME function rather than the same three lines: this used to inline
+        ;; them and had dropped the vanished-head check in the copy, so a
+        ;; deleted database made `reload-head` compare nil against our cid,
+        ;; conclude the head had moved, and build a db out of `{:config …}` —
+        ;; nil :max-tx, no index roots — which queries either answer emptily or
+        ;; die on much later with a bare IllegalArgumentException. Now it raises
+        ;; :branch-head-does-not-exist-in-store like every other reader.
+        ;;
+        ;; Costs one konserve read, and on an UNMOVED head (cid identity) hands
+        ;; back the db we already hold rather than rebuilding it — rebuilding
+        ;; would re-run the secondary index restore on EVERY deref, contend with
+        ;; a live writer's lock (scriptum) and drop the index. The connection's
+        ;; :writer is carried over either way.
+        (dsi/reload-branch-head @wrapped-atom))
       @wrapped-atom)))
 
 (defn conn-from-db

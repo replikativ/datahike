@@ -5,7 +5,7 @@
             [datahike.connections :refer [delete-connection!]]
             [datahike.gc-guard :as guard]
             [datahike.store :refer [store-identity]]
-            [datahike.writing :refer [stored->db db->stored stored-db?
+            [datahike.writing :refer [stored->db-read-only db->stored stored-db?
                                       commit! create-commit-id get-and-clear-pending-kvs!
                                       write-pending-kvs!]]
             [datahike.writer]
@@ -87,7 +87,7 @@
                      (recur r visited reachable)
                      (if-let [raw-db (<? S (k/get store to-check))]
                        (let [{{:keys [datahike/parents]} :meta
-                              :as db} (stored->db raw-db store)]
+                              :as db} (stored->db-read-only raw-db store)]
                          (recur (concat r parents)
                                 (conj visited to-check)
                                 (conj reachable db)))
@@ -262,7 +262,7 @@
      (async+sync (:sync? opts) *default-sync-translation*
                  (go-try-
                   (when-let [raw-db (<?- (k/get store cid nil opts))]
-                    (stored->db raw-db store)))))))
+                    (stored->db-read-only raw-db store)))))))
 
 (defn branch-as-db
   "Loads the database stored at this branch.
@@ -275,7 +275,7 @@
      (async+sync (:sync? opts) *default-sync-translation*
                  (go-try-
                   (when-let [raw-db (<?- (k/get store branch nil opts))]
-                    (stored->db raw-db store)))))))
+                    (stored->db-read-only raw-db store)))))))
 
 (defn merge!
   "Create a merge commit to the current branch of this connection for parent

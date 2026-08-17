@@ -308,12 +308,17 @@ error, lost data.
 ```
 
 With `:streaming? false` the writer re-reads the branch head from storage before
-every transaction, so each one is applied to whatever is actually stored, and
-`@conn` reads through to storage as well.
+each *batch* of transactions, so they are applied to whatever is actually
+stored, and `@conn` reads through to storage as well.
 
-- **Cost:** one branch-head GET per commit (~10-40 ms on S3, ~$0.0000004 at
-  $0.0004/1000 GET), and no commit batching — every transaction is its own
-  commit.
+- **Cost:** one branch-head GET per batch (~10-40 ms on S3, ~$0.0000004 at
+  $0.0004/1000 GET). Transactions already queued when one commits are chained
+  onto it and share its head read, the way the default writer chains onto
+  `:db-after`, so **commit batching survives**: a burst of 500 concurrent
+  transactions costs ~9 head reads and ~20 commits, not 500 of each. The chain
+  is bounded and never *waits* for more work to arrive, so it costs no latency
+  — a caller that awaits each transaction before issuing the next has nothing
+  to batch and does pay one read per commit.
 - **Required when:** more than one process may hold a writer for this database.
 - **Not a fence:** this avoids the race by *serialisation*, it does not *detect*
   it. Two processes writing **concurrently** still lose updates; the loser's

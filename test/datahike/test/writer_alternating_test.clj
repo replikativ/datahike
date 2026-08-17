@@ -12,7 +12,8 @@
    `:writer {:backend :self :streaming? false}` re-reads the branch head from
    storage before every transaction, which makes alternating processes safe. It
    does NOT make CONCURRENT processes safe — that needs head fencing (#878)."
-  (:require [clojure.test :refer [deftest is testing]]
+  (:require [clojure.core.async :as async]
+            [clojure.test :refer [deftest is testing]]
             [datahike.api :as d]
             [datahike.config :as dc]
             [datahike.connections :as conns]
@@ -21,6 +22,7 @@
             [datahike.index.secondary :as sec]
             [datahike.index.secondary.stratum]
             [datahike.writer :as w]
+            [datahike.tx-preds :as txp]
             [datahike.writing :as dw]
             [konserve.core :as k]))
 
@@ -191,6 +193,300 @@
           (finally (release-separate-process p)))))))
 
 ;; ---------------------------------------------------------------------------
+;; Batching. The head re-read is per BATCH, not per transaction: the loop chains
+;; queued transactions onto one head the way the streaming writer chains onto
+;; :db-after, and only stops to wait when the queue drains or the batch bound is
+;; reached. Without that, `:streaming? false` degrades a burst of N concurrent
+;; transacts into N round-trips — which on an object store is the whole cost.
+
+(defn- burst!
+  "Fire `n` transactions at `conn` at once and wait for all of them."
+  [conn n]
+  (->> (range n)
+       (mapv (fn [i] (future (d/transact conn [{:db/id -1 :name (str "e" i)}]))))
+       (mapv #(deref % 60000 ::timed-out))))
+
+(deftest non-streaming-batches-a-burst
+  (testing "concurrently queued transactions share one head read and one commit"
+    (let [c (cfg "batching" false)
+          n 100]
+      (fresh-db! c)
+      (let [{:keys [conn] :as p} (connect-as-separate-process c)]
+        (try
+          (d/transact conn [{:db/id -1 :name "warm"}])
+          (let [reads  (atom 0)
+                branch (:branch (:config @(:wrapped-atom conn)))
+                orig   k/get
+                reports (with-redefs [k/get (fn [store key & args]
+                                              (when (= key branch) (swap! reads inc))
+                                              (apply orig store key args))]
+                          (burst! conn n))]
+            (is (empty? (filter #{::timed-out} reports))
+                "no caller is left waiting for a signal that never comes")
+            (is (= (inc n) (count (d/datoms @conn :eavt)))
+                "and every transaction in the burst landed")
+            (is (< @reads n)
+                (str "a burst of " n " must not cost " n " head reads; got " @reads))
+            ;; The real bar is an object-store one: this used to be n GETs.
+            (is (< @reads (quot n 4))
+                (str "batching is barely working: " @reads " head reads for " n
+                     " queued transactions")))
+          (finally (release-separate-process p)))))))
+
+(deftest batched-commits-all-stay-on-the-lineage
+  (testing "each commit of a batch is the parent of the next. Stamping the
+            batch's head cid onto every member instead would make them all claim
+            the SAME parent, orphaning every commit but the last — the datom
+            count still looks right, so only the chain shows it."
+    ;; Deliberately FEW, HEAVY transactions rather than many tiny ones. The
+    ;; property only has teeth when one batch spans SEVERAL commits: that is the
+    ;; case where a chained transaction carries no parent stamp and the commit
+    ;; loop must fall back to the cid it threaded itself. Tiny transactions let
+    ;; the commit loop drain the whole batch in one group (measured: 60 tiny
+    ;; transactions collapse to ~2 commits under CI load, and the assertion below
+    ;; then holds vacuously — or flakes). Applying a transaction of this size
+    ;; takes longer than committing one, so the commit loop keeps finding the
+    ;; queue empty and each transaction becomes its own group.
+    (let [c   (cfg "batch-lineage" false)
+          n   20
+          per 400]
+      (fresh-db! c)
+      (let [{:keys [conn] :as p} (connect-as-separate-process c)]
+        (try
+          (let [reads   (atom 0)
+                branch  (:branch (:config @(:wrapped-atom conn)))
+                orig    k/get
+                reports (with-redefs [k/get (fn [store key & args]
+                                              (when (= key branch) (swap! reads inc))
+                                              (apply orig store key args))]
+                          (->> (range n)
+                               (mapv (fn [i]
+                                       (future (d/transact
+                                                conn (mapv (fn [j] {:name (str i "-" j)})
+                                                           (range per))))))
+                               (mapv #(deref % 180000 ::timed-out))))
+                cids    (into #{} (map #(get-in % [:tx-meta :db/commitId])) reports)]
+            (is (empty? (filter #{::timed-out} reports)))
+            ;; NOT (< (count cids) n): on a machine where applying 400 datoms is
+            ;; slower than committing them — the very regime this shape is chosen
+            ;; for — every transaction becomes its own commit group and cids = n.
+            ;; That is a fine outcome here; batching itself is pinned by
+            ;; non-streaming-batches-a-burst. What this test needs is only that
+            ;; SOME batch spanned several commits.
+            (is (>= (count cids) 2) "more than one commit to chain")
+            (is (< @reads (count cids))
+                (str "at least one batch must span several commits, or the "
+                     "threaded-parent path is untested: " @reads " head reads for "
+                     (count cids) " commits"))
+            (is (= (inc (count cids)) (commit-chain-length conn))
+                "and every distinct commit is reachable from the head")
+            (is (every? #(some? (get-in % [:db-after :meta :datahike/commit-id])) reports)
+                "every caller gets a committed :db-after, not its private report db"))
+          (finally (release-separate-process p))))
+      ;; and it is durable, not just live state
+      (let [o (connect-as-separate-process c)]
+        (try
+          (is (= (* n per) (count (d/datoms @(:conn o) :eavt))))
+          (finally (release-separate-process o)))))))
+
+(deftest batches-still-re-read-between-processes
+  (testing "batching moves the head read to the batch boundary, it does not
+            remove it: another process committing between our bursts must still
+            be picked up"
+    (let [c (cfg "batch-alternating" false)
+          rounds 5 per-round 8]
+      (fresh-db! c)
+      (let [a (connect-as-separate-process c)
+            b (connect-as-separate-process c)]
+        (try
+          (dotimes [r rounds]
+            (burst! (:conn a) per-round)
+            (d/transact (:conn b) [{:db/id -1 :name (str "b" r)}]))
+          (finally
+            (release-separate-process a)
+            (release-separate-process b))))
+      (let [o (connect-as-separate-process c)]
+        (try
+          (is (= (* rounds (inc per-round)) (count (d/datoms @(:conn o) :eavt)))
+              "nothing from either process was clobbered")
+          (finally (release-separate-process o)))))))
+
+(defn- head-reads-during
+  "Branch-head reads performed by `f`."
+  [conn f]
+  (let [branch (:branch (:config @(:wrapped-atom conn)))
+        reads  (atom 0)
+        orig   k/get]
+    (with-redefs [k/get (fn [store key & args]
+                          (when (= key branch) (swap! reads inc))
+                          (apply orig store key args))]
+      (f))
+    @reads))
+
+;; Determinism here is structural, not timing-based. A gated `:write-fn-map`
+;; entry holds the transaction loop INSIDE op-fn until we release it, and
+;; `w/dispatch!` enqueues synchronously (unlike `d/transact`, whose put! happens
+;; inside a go block), so "the trailing op is queued behind the gated one" is
+;; established by construction rather than by a sleep that CI can lose.
+
+(defn- register-gate!
+  "Returns a gate-state atom. While it holds {:entered p :gate p}, the next
+   transaction the loop applies delivers :entered and blocks on :gate.
+
+   A tx-pred rather than a `:write-fn-map` entry: the writer config is
+   SERIALIZED into the stored db, so it cannot carry a function, while a tx-pred
+   is registered out of band by store-id. It also runs exactly where this test
+   needs the hold — inside op-fn, on the transaction loop."
+  [c]
+  (let [state (atom nil)]
+    (txp/register-tx-pred! (get-in c [:store :id])
+                           (fn [_report]
+                             (when-let [{:keys [entered gate]} @state]
+                               (reset! state nil) ;; hold exactly one transaction
+                               (deliver entered true)
+                               @gate)))
+    state))
+
+(defn- dispatch-tx! [conn tx-data]
+  (w/dispatch! (:writer @(:wrapped-atom conn))
+               {:op 'transact! :args [{:tx-data tx-data}]}))
+
+(defn- with-trailing-noncommit!
+  "Open a batch and make `trailing-op` the LAST thing the transaction loop
+   processes in it: hold the loop inside a transaction, enqueue `trailing-op`
+   behind it, release. `trailing-op` must take a loop arm that enqueues no
+   commit, which before the fix also left the batch open."
+  [state conn held-tx-data trailing-op]
+  (let [entered (promise)
+        gate    (promise)]
+    (reset! state {:entered entered :gate gate})
+    (let [held (dispatch-tx! conn held-tx-data)]
+      (is (not= ::timed-out (deref entered 30000 ::timed-out))
+          "the loop is inside the held transaction")
+      ;; synchronous enqueue: this is now provably behind `held`
+      (let [trailing (trailing-op)]
+        (deliver gate true)
+        (is (not= ::timed-out (deref (future (async/<!! held)) 30000 ::timed-out)))
+        (is (not= ::timed-out (deref (future (async/<!! trailing)) 60000 ::timed-out)))))))
+
+(deftest a-batch-is-closed-before-the-writer-waits-for-work
+  (testing "a batch must be bounded in TIME, not only in count. If the last item
+            the loop processes neither commits nor closes the batch — a rejected
+            transaction, an async op — the loop parks with the batch still open,
+            and the NEXT transaction (seconds or hours later) skips the head read
+            and clobbers whatever another process committed in between."
+    (doseq [[label trailing] [[:rejected #(dispatch-tx! % [{:not-in-schema 1}])]
+                              ;; an async op takes the `chan? res` arm, which
+                              ;; likewise enqueues no commit
+                              [:async #(w/dispatch! (:writer @(:wrapped-atom %))
+                                                    {:op 'gc-storage! :args []})]]]
+      (let [c     (assoc (cfg (str "strand-" (name label)) false)
+                         :schema-flexibility :write)
+            state (register-gate! c)]
+        (fresh-db! c)
+        (let [{:keys [conn] :as p} (connect-as-separate-process c)]
+          (try
+            (d/transact conn [{:db/ident       :name
+                               :db/valueType   :db.type/string
+                               :db/cardinality :db.cardinality/one}])
+            (with-trailing-noncommit! state conn [{:name "held"}] #(trailing conn))
+            (is (= 1 (head-reads-during conn #(d/transact conn [{:name "after"}])))
+                (str "after a batch whose last item was a " (name label)
+                     " operation, the next transaction must re-read the head"))
+            (finally
+              (txp/unregister-tx-pred! (get-in c [:store :id]))
+              (release-separate-process p))))))))
+
+(deftest bursts-with-rejections-still-see-the-other-process
+  (testing "the integration form: each of A's batches ENDS on a rejected
+            transaction, and B commits between them. Every one of B's commits
+            must survive — this is the exact data loss :streaming? false exists
+            to prevent, and a rejected transaction must not reopen it."
+    (let [c      (assoc (cfg "strand-alternating" false) :schema-flexibility :write)
+          state  (register-gate! c)
+          rounds 6]
+      (fresh-db! c)
+      (let [a (connect-as-separate-process c)
+            b (connect-as-separate-process c)]
+        (try
+          (d/transact (:conn a) [{:db/ident       :name
+                                  :db/valueType   :db.type/string
+                                  :db/cardinality :db.cardinality/one}])
+          (dotimes [r rounds]
+            (with-trailing-noncommit! state (:conn a) [{:name (str "a" r)}]
+              #(dispatch-tx! (:conn a) [{:not-in-schema r}]))
+            (d/transact (:conn b) [{:name (str "b" r)}]))
+          (finally
+            (txp/unregister-tx-pred! (get-in c [:store :id]))
+            (release-separate-process a)
+            (release-separate-process b))))
+      (let [o (connect-as-separate-process c)]
+        (try
+          (let [names (into #{} (map :v) (d/datoms @(:conn o) :aevt :name))]
+            ;; BOTH sides, because which one loses depends on who commits last:
+            ;; a stranded A overwrites B's head, and B's next commit — B re-reads
+            ;; correctly — overwrites A's stale-head commit in turn.
+            (is (= (set (map #(str "b" %) (range rounds)))
+                   (into #{} (filter #(re-matches #"b\d+" %)) names))
+                "every one of the other process's commits survived")
+            (is (= (set (map #(str "a" %) (range rounds)))
+                   (into #{} (filter #(re-matches #"a\d+" %)) names))
+                "and so did every one of ours"))
+          (finally (release-separate-process o)))))))
+
+(deftest a-burst-larger-than-the-pending-put-cap-survives
+  (testing "commit-done is unbuffered and core.async THROWS on the 1025th pending
+            put — inside the commit loop that closes every queue and kills the
+            writer. MAX_NONSTREAMING_BATCH is what keeps the count unreachable,
+            so drive MORE transactions than the cap through one writer and check
+            that it lost nothing and is still alive."
+    (is (< w/MAX_NONSTREAMING_BATCH 1024)
+        "the bound must stay below core.async's pending-put cap")
+    (let [c (cfg "over-the-cap" false)
+          n 1200]
+      (fresh-db! c)
+      (let [{:keys [conn] :as p} (connect-as-separate-process c)]
+        (try
+          (let [rs (->> (range n)
+                        (mapv (fn [i] (future (d/transact conn [{:db/id -1 :name (str i)}]))))
+                        (mapv #(deref % 180000 ::timed-out)))]
+            (is (empty? (filter #{::timed-out} rs))
+                "no caller was left waiting — a thrown commit loop parks all of them")
+            (is (= n (count (d/datoms @conn :eavt)))))
+          (is (= ::ok (deref (future (d/transact conn [{:db/id -1 :name "still-alive"}]) ::ok)
+                             30000 ::timed-out))
+              "and the writer still works afterwards")
+          (finally (release-separate-process p)))))))
+
+(deftest a-failure-mid-batch-does-not-strand-the-batch
+  (testing "a rejected transaction commits nothing, so it must neither consume a
+            durability signal owed to another transaction nor leave one behind —
+            either way the writer parks forever"
+    (let [c (assoc (cfg "batch-failure" false) :schema-flexibility :write)
+          n 100]
+      (fresh-db! c)
+      (let [{:keys [conn] :as p} (connect-as-separate-process c)]
+        (try
+          (d/transact conn [{:db/ident       :name
+                             :db/valueType   :db.type/string
+                             :db/cardinality :db.cardinality/one}])
+          (let [rs (->> (range n)
+                        (mapv (fn [i]
+                                (future
+                                  (try (d/transact conn [(if (odd? i)
+                                                           {:not-in-schema i}
+                                                           {:name (str i)})])
+                                       ::ok
+                                       (catch Exception _ ::threw)))))
+                        (mapv #(deref % 60000 ::timed-out)))]
+            (is (empty? (filter #{::timed-out} rs)) "nobody hangs")
+            (is (= (quot n 2) (count (filter #{::ok} rs))))
+            (is (= (quot n 2) (count (filter #{::threw} rs))))
+            (is (= (quot n 2) (count (d/datoms @conn :aevt :name)))
+                "and exactly the accepted half persisted"))
+          (finally (release-separate-process p)))))))
+
+;; ---------------------------------------------------------------------------
 ;; Secondary indices. Stratum is the test target because it is konserve-backed
 ;; and copy-on-write: its key-map is a content-addressed dataset commit-id, so
 ;; it moves with every flush and restores from the store — which is what makes
@@ -293,11 +589,77 @@
                      @rebuilds)))
           (finally (release-separate-process p)))))))
 
+(deftest a-failed-restore-of-a-stored-index-fails-the-connect
+  (testing "an index that EXISTS in storage and cannot be restored must abort
+            the connect. Coming up without it is silent data loss on a delay:
+            finalize-secondary-indices cannot tell the resulting instance-less
+            ident from a brand-new index, so the next transaction builds an
+            empty one and the commit overwrites the stored pointer with it."
+    (let [c (stratum-cfg "sec-restore-fails-loudly")]
+      (fresh-db! c)
+      (let [p (connect-as-separate-process c)]
+        (try
+          (with-stratum-index! (:conn p))
+          (d/transact (:conn p) [{:p/name "alice"}])
+          (finally (release-separate-process p))))
+      (with-redefs [sec/create-index (fn [& _] (throw (ex-info "restore boom" {})))]
+        (is (thrown-with-msg? clojure.lang.ExceptionInfo
+                              #"Could not restore a secondary index"
+                              (connect-as-separate-process c))))
+      ;; the escape hatch, for a deployment that would rather be degraded
+      (with-redefs [sec/create-index (fn [& _] (throw (ex-info "restore boom" {})))]
+        (binding [dw/*on-secondary-restore-failure* :drop]
+          (let [p (connect-as-separate-process c)]
+            (try (is (nil? (strat-rows @(:wrapped-atom (:conn p)))))
+                 (finally (release-separate-process p))))))
+      ;; and an index with NO stored pointer is not a failure at all: there is
+      ;; nothing to lose, and backfill is the normal path
+      (let [p (connect-as-separate-process c)]
+        (try (is (= 1 (strat-rows @(:wrapped-atom (:conn p))))
+                 "a clean reconnect is unaffected")
+             (finally (release-separate-process p)))))))
+
+(deftest a-failed-restore-closes-the-indices-it-already-restored
+  (testing "the accumulator dies with the raise, so anything already restored is
+            unreachable. For a lock-holding backend the leaked lock is what makes
+            the NEXT attempt fail too, turning a transient failure permanent."
+    (let [c (stratum-cfg "sec-restore-leak")]
+      (fresh-db! c)
+      (let [p (connect-as-separate-process c)]
+        (try
+          (d/transact (:conn p) [{:db/ident :p/name :db/valueType :db.type/string
+                                  :db/cardinality :db.cardinality/one}
+                                 {:db/ident :p/tag :db/valueType :db.type/string
+                                  :db/cardinality :db.cardinality/one}])
+          (d/transact (:conn p) [{:db/ident :idx/one :db.secondary/type :stratum
+                                  :db.secondary/attrs [:p/name]}
+                                 {:db/ident :idx/two :db.secondary/type :stratum
+                                  :db.secondary/attrs [:p/tag]}])
+          (d/transact (:conn p) [{:p/name "alice" :p/tag "x"}])
+          (finally (release-separate-process p))))
+      ;; Fail the SECOND index whichever ident that turns out to be — schema is a
+      ;; map, so the order is not ours to choose. The stub is Closeable but not
+      ;; IVersionedSecondaryIndex, so it lands in the accumulator as-is, which is
+      ;; the state this is about.
+      (let [attempts (atom 0)
+            closed   (atom 0)]
+        (with-redefs [sec/create-index
+                      (fn [& _]
+                        (if (= 1 (swap! attempts inc))
+                          (reify java.io.Closeable (close [_] (swap! closed inc)))
+                          (throw (ex-info "restore boom" {}))))]
+          (is (thrown-with-msg? clojure.lang.ExceptionInfo
+                                #"Could not restore a secondary index"
+                                (connect-as-separate-process c))))
+        (is (= 2 @attempts) "both indices were attempted")
+        (is (= 1 @closed)
+            "and the one that succeeded was closed on the way out")))))
+
 (deftest dropped-restore-keeps-the-stored-index-pointer
-  (testing "a restore that fails is transient; DELETING the index pointer is
-            not. The next commit must carry the stored key-map forward, or a
-            reconnect gets an empty skeleton marked :ready that nothing
-            backfills."
+  (testing "under :drop, a restore that fails is transient; DELETING the index
+            pointer is not. The next commit must carry the stored key-map
+            forward, or a reconnect gets an empty skeleton marked :ready that
+            nothing backfills."
     (let [c (stratum-cfg "sec-restore-failure")]
       (fresh-db! c)
       (let [p (connect-as-separate-process c)]
@@ -315,7 +677,8 @@
         ;; :building, backfilled afterwards). Stubbing it out leaves the commit
         ;; facing an ident that is declared in the schema and has no instance.
         (with-redefs [sec/create-index (fn [& _] (throw (ex-info "restore boom" {})))
-                      dbtx/finalize-secondary-indices identity]
+                      dbtx/finalize-secondary-indices identity
+                      dw/*on-secondary-restore-failure* :drop]
           (let [p (connect-as-separate-process c)]
             (try
               (is (nil? (strat-rows @(:wrapped-atom (:conn p))))
@@ -357,6 +720,39 @@
 
 ;; ---------------------------------------------------------------------------
 ;; Failure and configuration handling
+
+(deftest a-vanished-head-raises-on-deref
+  (testing "another process deleted the database under a live connection. @conn
+            must say so — it used to build a db out of a nil head record (nil
+            :max-tx, no index roots), which queries answer emptily and then die
+            on with a bare IllegalArgumentException much further away.
+
+            Only reachable with :streaming? false, because that is the only
+            writer whose @conn reads the head from storage at all."
+    (let [c (cfg "vanished-head" false)]
+      (fresh-db! c)
+      (let [{:keys [conn] :as p} (connect-as-separate-process c)]
+        (try
+          (d/transact conn [{:db/id -1 :name "before"}])
+          (is (= 1 (count (d/datoms @conn :eavt))) "healthy to start with")
+          ;; delete the branch head out from under the live connection, the way
+          ;; another process's delete-database would
+          (let [db (:wrapped-atom conn)]
+            (k/dissoc (:store @db) (:branch (:config @db)) {:sync? true}))
+          (is (thrown-with-msg? clojure.lang.ExceptionInfo
+                                #"Branch head vanished"
+                                @conn)
+              "the deref raises rather than handing back a malformed db")
+          (is (= :branch-head-does-not-exist-in-store
+                 (try @conn (catch clojure.lang.ExceptionInfo e (:type (ex-data e)))))
+              "and it is the same typed error the writer's re-read raises")
+          (finally
+            ;; The head is gone, so `release` would deref straight back through
+            ;; the path under test and `fresh-db!` would find a store directory
+            ;; that `database-exists?` (which reads the head) says is not there.
+            ;; Drop the connection and remove the store outright.
+            (swap! (:registry p) empty)
+            (try (d/delete-database c) (catch Exception _ nil))))))))
 
 (deftest failed-head-read-fails-the-caller-not-the-writer
   (testing "a branch-head read that throws must reach the caller of THAT
@@ -401,6 +797,36 @@
       (is (thrown-with-msg? clojure.lang.ExceptionInfo
                             #"Unknown key"
                             (connect-as-separate-process c))))))
+
+(deftest self-writer-rejects-a-non-boolean-streaming-flag
+  (testing "everything but nil and false is truthy, so :streaming? \"false\" out
+            of an env var or a JSON config would read as TRUE — selecting the
+            single-writer assumption in the deployment that cannot hold it"
+    (fresh-db! (cfg "bad-streaming" nil))
+    (doseq [v ["false" 0 :false]]
+      (let [c (assoc (cfg "bad-streaming" nil) :writer {:backend :self :streaming? v})]
+        (is (thrown-with-msg? clojure.lang.ExceptionInfo
+                              #"must be true or false"
+                              (connect-as-separate-process c))
+            (str ":streaming? " (pr-str v))))))
+
+  (testing "and an explicit nil, which is not reachable through connect —
+            `remove-nils` in config loading strips it, so the documented default
+            correctly applies there — but IS reachable by calling create-writer
+            directly, where Clojure's `:or` would not fire for a present key and
+            the writer would silently run non-streaming"
+    (let [c (cfg "nil-streaming" nil)]
+      (fresh-db! c)
+      (let [{:keys [conn] :as p} (connect-as-separate-process
+                                  (assoc c :writer {:backend :self :streaming? nil}))]
+        (try
+          (is (true? (w/streaming? (:writer @(:wrapped-atom conn))))
+              "connect strips the nil and takes the default")
+          (is (thrown-with-msg? clojure.lang.ExceptionInfo
+                                #"must be true or false"
+                                (w/create-writer {:backend :self :streaming? nil} conn))
+              "create-writer itself does not accept it")
+          (finally (release-separate-process p)))))))
 
 (deftest streaming-flag-is-not-part-of-the-stored-config
   (testing "a database CREATED with :streaming? false can be connected to
