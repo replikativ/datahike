@@ -137,9 +137,23 @@ compared element-wise; a mismatched pair falls back to a stable class ordering."
              ;; reports 0 and calls a NaN equal to every number, not just to
              ;; another NaN. It also ignores the typed-array KIND, where the
              ;; JVM orders a mismatched pair by class name — byte < double <
-             ;; float (`[B` < `[D` < `[F`). Both are reproduced here, so the
-             ;; two platforms agree on ordering and on the equality `a=`
-             ;; derives from it.
+             ;; float (`[B` < `[D` < `[F`).
+             ;;
+             ;; ORDER CHANGE, and which stored indexes it can touch: for values
+             ;; the old comparator could actually ORDER — one kind per
+             ;; attribute, no NaN, no signed zero — it did the same lexicographic
+             ;; `<`/`>` walk this does, so their order is unchanged and a stored
+             ;; tree stays valid. It differs only where the old comparator
+             ;; returned 0 for values that are NOT equal (a NaN against any
+             ;; number, -0.0 against 0.0, one kind against another). A tree
+             ;; holding those was already built with a comparator that is not a
+             ;; total order — two distinct values compared equal, so placement
+             ;; depended on insertion order and a seek could already miss.
+             ;; NOTE what is NOT reconciled here: a byte array is UNSIGNED on
+             ;; ClojureScript (typed arrays) and SIGNED on the JVM, so 0xff
+             ;; sorts last there and first here. That predates this and is not
+             ;; changed, because changing it WOULD reorder existing stored
+             ;; indexes holding high bytes.
              (if (== ka kb)
                (let [la (value-array-length a)
                      lb (value-array-length b)

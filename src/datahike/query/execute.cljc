@@ -143,10 +143,18 @@
        ;; `js/Set`/`js/Map` key by SameValueZero, which is IDENTITY for any
        ;; non-primitive — so a wrapper record would still miss, since two
        ;; equal records are two objects. Only a primitive is compared by
-       ;; value there, so the wrapper is printed: it prints its kind and its
-       ;; canonicalised elements, which is exactly what distinguishes the
-       ;; values (the NaN and -0.0 sentinels included).
-       :cljs (pr-str (da/wrap-comparable x)))
+       ;; value there, so the key is a STRING built from the wrapper's kind
+       ;; and its canonicalised elements (NaN and -0.0 sentinels included).
+       ;;
+       ;; Built here rather than with `pr-str`, which honours `*print-length*`
+       ;; and `*print-level*`: under a caller's `(binding [*print-length* 1] …)`
+       ;; every array printed the same prefix and unequal values collided in
+       ;; the join — measured, a query answering `#{[1 2]}` where both the base
+       ;; engine and the reference say `#{}`. A join key may not depend on
+       ;; print settings.
+       :cljs (let [w (da/wrap-comparable x)]
+               (apply str (name (:kind w)) "|"
+                      (interpose "," (map str (:vals w))))))
     x))
 
 (defn- probe-set-add [s x]
@@ -1209,15 +1217,14 @@
                                        ;; value-seeded seek.
                                        single? (and optional? (not anti?))
                                        probe (datom eid ra (when-not single? vgv) tx0)
-                                       ;; The cursor stays. `single?` and `vg?` are constants for
-                                       ;; this merge position, so every probe it makes has the
-                                       ;; same shape — `[e a nil]` for an optional merge,
-                                       ;; `[e a vgv]` otherwise — and the scan visits entities in
-                                       ;; increasing `e` wherever cursors are enabled at all. The
-                                       ;; probe never moves backwards, so there is nothing to give
-                                       ;; up: giving it up cost a root lookup per entity on
-                                       ;; exactly the obligated `get-else` this work is about.
-                                       ^Datom d (if merge-cursors
+                                       ;; An optional merge does NOT use the cursor. It probes at
+                                       ;; `[e a nil]`, and the scan is not always monotonic in
+                                       ;; `e`: a value-position SIP probe turns an AEVT consumer
+                                       ;; into a series of AVET seeks ordered by VALUE, so the
+                                       ;; entities arrive in value order — measured, 6010 before
+                                       ;; 10 — and a forward cursor cannot seek back. It silently
+                                       ;; dropped the second row.
+                                       ^Datom d (if (and merge-cursors (not single?))
                                                   (.seekGE ^PersistentSortedSet$ForwardCursor
                                                    (aget merge-cursors mi) probe)
                                                   (.lookupGE ^PersistentSortedSet eavt-pss probe))
@@ -1465,9 +1472,10 @@
                                    ;; value-seeded seek.
                                    single? (and optional? (not anti?))
                                    probe (datom eid ra (when-not single? vgv) tx0)
-                                   ;; See the note in execute-card-many-merge: the probe shape is
-                                   ;; constant per merge position, so the cursor stays.
-                                   ^Datom d (if merge-cursors
+                                   ;; See execute-card-many-merge: an optional merge cannot use
+                                   ;; the cursor, because a probe-driven scan is not monotonic
+                                   ;; in `e`.
+                                   ^Datom d (if (and merge-cursors (not single?))
                                               (.seekGE ^PersistentSortedSet$ForwardCursor
                                                (aget merge-cursors mi) probe)
                                               (.lookupGE ^PersistentSortedSet eavt-pss probe))

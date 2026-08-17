@@ -333,7 +333,18 @@
               '[:find ?e ?f :where [?e :blob ?v] [?f :blob3 ?v]] db)
         ;; and the same value arriving as a COLLECTION binding
         (both #{[1] [2]}
-              '[:find ?e :in $ [?v ...] :where [?e :blob ?v]] db [(bytes-of [1 2 3])]))
+              '[:find ?e :in $ [?v ...] :where [?e :blob ?v]] db [(bytes-of [1 2 3])])
+        ;; A join key may not depend on PRINT settings. The ClojureScript key
+        ;; has to be a primitive — `js/Set`/`js/Map` compare objects by
+        ;; identity — and building it with `pr-str` made it honour
+        ;; `*print-length*`, so under a caller's binding every array printed
+        ;; the same prefix and unequal values collided.
+        (binding [*print-length* 1 *print-level* 1]
+          (both #{[1 2] [2 2]}
+                '[:find ?e ?f :where [?e :blob ?v] [?f :blob3 ?v]] db)
+          (both #{}
+                '[:find ?e ?f :where [?e :blob ?v] [?f :blob2 ?v]
+                  [(= ?e 999)]] db)))
 
       (testing "the values where the key representation disagreed with a="
         ;; A join key has to hash BY VALUE over the whole domain. It did not:
