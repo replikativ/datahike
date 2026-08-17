@@ -316,7 +316,22 @@
                          (log/warn :datahike/writer-streaming-ignored
                                    "Reusing the existing connection and its writer; the requested :streaming? is ignored. Release the connection everywhere first if you need a different writer."
                                    {:requested (get-in config [:writer :streaming?] true)
-                                    :existing  existing})))
+                                    :existing  existing}))
+                       ;; A DEMAND, not a preference, so it is checked against the
+                       ;; writer this caller actually gets — which on this path is
+                       ;; the cached one, whatever it was built with. Checking it
+                       ;; only where a writer is created skipped it precisely
+                       ;; here: `:require-fencing` exists for deployments with
+                       ;; more than one writer, and the second `connect` in a
+                       ;; process is the one that comes out of the cache.
+                       ;;
+                       ;; `existing` rather than the requested `:streaming?`: what
+                       ;; matters is whether the writer in hand re-reads the head,
+                       ;; and the warning above has already said the requested
+                       ;; flag is ignored.
+                       (w/check-fencing! (get-in config [:writer :require-fencing])
+                                         (if (some? existing) existing true)
+                                         (:store @(:wrapped-atom conn))))
                      conn)
                    (let [raw-store (<?- (ks/connect-store store-config opts))
                          _         (when-not raw-store

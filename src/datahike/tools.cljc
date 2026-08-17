@@ -104,6 +104,23 @@
        t)))
 
 #?(:clj
+   (defn- throw-if-throwable-
+     "Rethrow anything throwable, not just `Exception`.
+
+      `superv.async/throw-if-exception-` rethrows an `Exception` (rewrapped, so
+      `ex-data` survives) and returns everything else UNCHANGED — an `Error`
+      included. That was harmless while `.get` still handed us the
+      `ExecutionException` wrapper, because the wrapper IS an `Exception` and got
+      rethrown. Unwrapping it (see `unwrap-execution`) turned a thrown `Error`
+      into a RETURNED one: `d/transact` delivered an `AssertionError` to the
+      caller in the tx-report position, so a commit that never became durable was
+      reported as a success. An `Error` must not become a value."
+     [x]
+     (if (and (instance? Throwable x) (not (instance? Exception x)))
+       (throw x)
+       (throw-if-exception- x))))
+
+#?(:clj
    (defn throwable-promise
      "Returns a promise object that can be read with deref/@, and set, once only, with deliver. Calls to deref/@ prior to delivery will block, unless the variant of deref with timeout is used. All subsequent derefs will return the same delivered value without blocking. Exceptions delivered to the promise will throw on deref. 
    
@@ -113,12 +130,12 @@
            p (async/promise-chan)]
        (reify
          clojure.lang.IDeref
-         (deref [_] (throw-if-exception- (try (.get cf) (catch Throwable t (unwrap-execution t)))))
+         (deref [_] (throw-if-throwable- (try (.get cf) (catch Throwable t (unwrap-execution t)))))
          clojure.lang.IBlockingDeref
          (deref [_ timeout-ms timeout-val]
            (if-let [v (try (.get cf timeout-ms java.util.concurrent.TimeUnit/MILLISECONDS)
                            (catch Throwable t (unwrap-execution t)))]
-             (throw-if-exception- v)
+             (throw-if-throwable- v)
              timeout-val))
          clojure.lang.IPending
          (isRealized [_] (.isDone cf))

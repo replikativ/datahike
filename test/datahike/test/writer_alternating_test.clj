@@ -347,6 +347,21 @@
                                @gate)))
     state))
 
+(defn- await-ch
+  "Take from `ch`, or give up after `ms`.
+
+   NOT `(deref (future (async/<!! ch)) ms ::timed-out)`: the deref returns but
+   the future's thread stays parked on the take forever, and `future` threads are
+   NOT daemons — so a test that catches a stranded caller then leaves a thread
+   that keeps the JVM alive after `main` returns. The negative control for
+   `a-fatal-error-does-not-strand-queued-retries` did exactly that: it reported
+   its failure correctly and then hung until the outer `timeout` killed it, which
+   in CI is a build that never ends rather than a test that fails."
+  [ch ms]
+  (let [t (async/timeout ms)
+        [v c] (async/alts!! [ch t])]
+    (if (= c t) ::timed-out v)))
+
 (defn- dispatch-tx! [conn tx-data]
   (w/dispatch! (:writer @(:wrapped-atom conn))
                {:op 'transact! :args [{:tx-data tx-data}]}))
@@ -368,6 +383,170 @@
         (deliver gate true)
         (is (not= ::timed-out (deref (future (async/<!! held)) 30000 ::timed-out)))
         (is (not= ::timed-out (deref (future (async/<!! trailing)) 60000 ::timed-out)))))))
+
+;; ---------------------------------------------------------------------------
+;; Head fencing and replay (#878).
+;;
+;; A conflict is forced by making `commit!` raise the konserve error, rather than
+;; by racing: the retry policy is what is under test here, and a race cannot say
+;; how many attempts happened or in what order they were re-applied. The genuine
+;; cross-process race lives in dev/two_jvm_head_race.clj, which needs two JVMs.
+
+(deftest a-conflicted-transaction-is-replayed-and-succeeds
+  (testing "the caller sees success, not the conflict: the transaction was
+            re-applied against the head that moved under it"
+    (let [c (cfg "fence-replay" false)]
+      (fresh-db! c)
+      (let [{:keys [conn] :as p} (connect-as-separate-process c)]
+        (try
+          (let [orig dw/commit!
+                left (atom 1)
+                r    (with-redefs [dw/commit!
+                                   (fn [db & args]
+                                     (if (pos? @left)
+                                       (do (swap! left dec)
+                                           (throw (ex-info "forced" {:type :konserve/revision-mismatch :key :db})))
+                                       (apply orig db args)))]
+                       (d/transact conn [{:db/id -1 :name "a"}]))]
+            (is (map? r) "the caller got a tx-report, not an error")
+            (is (= ["a"] (map :v (d/datoms @conn :aevt :name)))
+                "and the transaction really landed"))
+          (finally (release-separate-process p)))))))
+
+(deftest a-replayed-batch-keeps-its-order
+  (testing "a conflicting commit group fails together and is re-applied in the
+            SAME order — a chained transaction was built on its predecessor's
+            :db-after, so replaying them out of order would apply them to a db
+            that never existed"
+    (let [c (cfg "fence-order" false)
+          n 8]
+      (fresh-db! c)
+      (let [{:keys [conn] :as p} (connect-as-separate-process c)]
+        (try
+          (let [orig dw/commit!
+                left (atom 1)
+                rs   (with-redefs [dw/commit!
+                                   (fn [db & args]
+                                     (if (pos? @left)
+                                       (do (swap! left dec)
+                                           (throw (ex-info "forced" {:type :konserve/revision-mismatch :key :db})))
+                                       (apply orig db args)))]
+                       (->> (range n)
+                            (mapv (fn [i] (future (d/transact conn [{:db/id -1 :name (str i)}]))))
+                            (mapv #(deref % 60000 ::timed-out))))]
+            (is (empty? (filter #{::timed-out} rs)) "nobody hangs")
+            (is (= (set (map str (range n)))
+                   (into #{} (map :v) (d/datoms @conn :aevt :name)))
+                "every transaction landed exactly once — none lost, none duplicated"))
+          (finally (release-separate-process p)))))))
+
+(deftest a-conflict-delivers-exactly-one-outcome
+  (testing "an invocation is either replayed or its caller is told, never both:
+            the caller waits on ONE callback, and a second delivery would be
+            silently dropped — hiding whichever outcome came second"
+    (let [c (cfg "fence-once" false)
+          n 5]
+      (fresh-db! c)
+      (let [{:keys [conn] :as p} (connect-as-separate-process c)]
+        (try
+          ;; Exhaust the retries, so every caller must get exactly one error.
+          (let [rs (with-redefs [dw/commit!
+                                 (fn [& _] (throw (ex-info "forced"
+                                                           {:type :konserve/revision-mismatch :key :db})))]
+                     (->> (range n)
+                          (mapv (fn [i] (future (try (d/transact conn [{:db/id -1 :name (str i)}])
+                                                     ::committed
+                                                     (catch Throwable e (:type (ex-data e)))))))
+                          (mapv #(deref % 60000 ::timed-out))))]
+            (is (empty? (filter #{::timed-out} rs))
+                "every caller was answered — a missing delivery shows up as a hang")
+            (is (every? #{:datahike/head-conflict} rs)
+                (str "and answered with the conflict, once each: " (pr-str rs))))
+          (is (= ::ok (deref (future (d/transact conn [{:db/id -1 :name "after"}]) ::ok) 30000 ::timed-out))
+              "the writer survived exhaustion")
+          (finally (release-separate-process p)))))))
+
+(deftest retry-policy-is-configurable
+  (testing ":head-conflict-retries 0 reports instead of replaying, which is the
+            escape hatch for a deployment that would rather handle conflicts itself"
+    (let [c (assoc (cfg "fence-noretry" false)
+                   :writer {:backend :self :streaming? false :head-conflict-retries 0})]
+      (fresh-db! c)
+      (let [{:keys [conn] :as p} (connect-as-separate-process c)]
+        (try
+          (let [calls (atom 0)
+                r     (with-redefs [dw/commit! (fn [& _]
+                                                 (swap! calls inc)
+                                                 (throw (ex-info "forced"
+                                                                 {:type :konserve/revision-mismatch :key :db})))]
+                        (try (d/transact conn [{:db/id -1 :name "x"}]) ::committed
+                             (catch Throwable e (ex-data e))))]
+            (is (= 1 @calls) "exactly one commit attempt: no replay")
+            (is (= :datahike/head-conflict (:type r)))
+            (is (= 1 (:attempt r))))
+          (finally (release-separate-process p))))))
+
+  (testing "an out-of-range value is refused rather than coerced"
+    (doseq [[k v] [[:max-batch 0] [:head-conflict-retries -1] [:head-conflict-backoff-ms -5]]]
+      (let [c (assoc (cfg "fence-badcfg" false)
+                     :writer {:backend :self :streaming? false k v})]
+        (fresh-db! (cfg "fence-badcfg" false))
+        (is (thrown-with-msg? clojure.lang.ExceptionInfo #"must be an integer"
+                              (connect-as-separate-process c))
+            (str k " " v))))))
+
+(deftest require-fencing-is-checked-at-connect
+  (testing "a deployment that needs fencing says so, and is REFUSED rather than
+            run unfenced. Without this datahike degrades quietly: a store that
+            cannot compare-and-set reports no domain and the head is written
+            unconditionally — correct for one writer, and exactly wrong for the
+            deployment that asked."
+    (let [c (cfg "require-fencing" false)]
+      (fresh-db! c)
+      (let [with-w (fn [w] (assoc c :writer (merge {:backend :self :streaming? false} w)))]
+        (testing "the filestore fences at :machine, so it satisfies :machine and below"
+          (doseq [d [:process :machine]]
+            (let [p (connect-as-separate-process (with-w {:require-fencing d}))]
+              (is (some? (:conn p)) (str "should connect for " d))
+              (release-separate-process p))))
+
+        (testing "but not :global — an OS lock does not reach another machine"
+          (is (thrown-with-msg? clojure.lang.ExceptionInfo #"cannot fence branch-head writes"
+                                (connect-as-separate-process (with-w {:require-fencing :global})))))
+
+        (testing "and it is inert with a streaming writer, so that is refused too:
+                  a streaming writer never re-reads the head, so there is no
+                  revision to fence against"
+          (is (thrown-with-msg? clojure.lang.ExceptionInfo #"needs :streaming\? false"
+                                (connect-as-separate-process
+                                 (assoc c :writer {:backend :self :streaming? true
+                                                   :require-fencing :machine})))))
+
+        (testing "a domain that does not exist is a typo, not a weaker request"
+          (is (thrown-with-msg? clojure.lang.ExceptionInfo #"must name a conditional-write domain"
+                                (connect-as-separate-process (with-w {:require-fencing :planet})))))
+
+        (testing "and asking for nothing still connects, unfenced, as before"
+          (let [p (connect-as-separate-process (with-w {}))]
+            (is (some? (:conn p)))
+            (release-separate-process p)))
+
+        ;; The cached path, which is the one that matters most: a demand checked
+        ;; only where a writer is CREATED is skipped exactly when a second
+        ;; connection appears in the same process — and a second writer is what
+        ;; :require-fencing is about. `*connections*` is left at the real
+        ;; registry here on purpose, so the second connect hits the cache.
+        (testing "the check is not skipped when the connection comes from the cache"
+          (let [conn (d/connect (with-w {:require-fencing :machine}))]
+            (try
+              (is (thrown-with-msg? clojure.lang.ExceptionInfo #"cannot fence branch-head writes"
+                                    (d/connect (with-w {:require-fencing :global})))
+                  "a cached connection is still refused when it cannot fence as far as asked")
+              (is (some? (d/connect (with-w {:require-fencing :machine})))
+                  "and still returned when it can")
+              (finally
+                (d/release conn)
+                (try (d/release conn) (catch Throwable _ nil))))))))))
 
 (deftest a-batch-is-closed-before-the-writer-waits-for-work
   (testing "a batch must be bounded in TIME, not only in count. If the last item
@@ -854,3 +1033,80 @@
           stored {:branch :db :writer {:backend :self :streaming? false}}]
       (with-redefs [dc/self-writer conf]
         (is (nil? (dcon/ensure-stored-config-consistency conf stored)))))))
+
+(deftest a-fatal-error-does-not-strand-queued-retries
+  (testing "a head conflict racing a fatal error answers the invocations sitting
+            in the retry queue instead of leaving them there.
+
+            The retry queue is drained by exactly one thing: the TRANSACTION
+            loop. A fatal Error inside `op-fn` is rethrown and kills it, and
+            everything the conflict just handed back is then held by a channel
+            nobody reads, while its callers block on a promise nobody will ever
+            deliver — a permanent hang with no diagnostic, strictly worse than
+            the error they should have got.
+
+            Note which loop has to die. A fatal error in the COMMIT loop does not
+            strand anything: the transaction loop is still running, takes the
+            retries, finds `commit-queue` closed and fails them through the
+            existing `put!` guard. A first version of this test used that path
+            and passed with the fix reverted, which is no test at all."
+    (let [n 6
+          ;; Retries are raised so no invocation can exhaust them and leave the
+          ;; queue early: every conflict below must put its invocation BACK.
+          c (assoc-in (cfg "fence-fatal" false) [:writer :head-conflict-retries] 50)]
+      (fresh-db! c)
+      (let [{:keys [conn] :as p} (connect-as-separate-process c)
+            calls (atom 0)]
+        ;; A tx-pred runs inside `op-fn`, on the transaction loop, which is
+        ;; exactly where the fatal Error has to come from. It stays quiet until
+        ;; the conflicts have filled the retry queue.
+        (txp/register-tx-pred! (get-in c [:store :id])
+                               (fn [_report]
+                                 (when (>= @calls n)
+                                   (throw (AssertionError. "forced fatal")))))
+        (try
+          ;; Every commit conflicts, whatever the writer groups them into: one
+          ;; group of six, six groups of one, or anything between. In every case
+          ;; all six invocations are in the retry queue by the time the pred
+          ;; above fires, and only the one being replayed has been taken back
+          ;; out — the rest are exactly the population that used to be stranded.
+          (let [rs (with-redefs [dw/commit!
+                                 (fn [& _]
+                                   (swap! calls inc)
+                                   (throw (ex-info "forced conflict"
+                                                   {:type :konserve/revision-mismatch :key :db})))]
+                     (let [chs (mapv #(dispatch-tx! conn [{:db/id -1 :name (str %)}]) (range n))]
+                       (mapv #(await-ch % 30000) chs)))]
+            (is (empty? (filter #{::timed-out} rs))
+                (str "every caller was answered rather than left parked: " (pr-str rs)))
+            (is (not-any? map? rs)
+                "and none of them got a tx-report — nothing committed")
+            (is (>= @calls n)
+                "the conflicts really happened before the writer went down"))
+          (finally
+            (txp/unregister-tx-pred! (get-in c [:store :id]))
+            (try (release-separate-process p)
+                 (catch Throwable _ nil))))))))
+
+(deftest non-streaming-works-on-the-memory-backend
+  (testing "`:streaming? false` re-reads the branch head on every batch, so it
+            exercises store paths the default writer never touches. The memory
+            backend is what most tests and every getting-started example use, and
+            a writer that only works on a filestore would be found by users
+            rather than by CI."
+    (let [c {:store {:backend :memory
+                     :id #uuid "a17e2a71-0000-0000-0000-0000000000ff"}
+             :schema-flexibility :read
+             :keep-history? false
+             :writer {:backend :self :streaming? false}}]
+      (fresh-db! c)
+      (let [conn (d/connect c)]
+        (try
+          (dotimes [i 5]
+            (d/transact conn [{:db/id -1 :name (str "e" i)}]))
+          (is (= (set (map #(str "e" %) (range 5)))
+                 (into #{} (map :v) (d/datoms @conn :aevt :name)))
+              "every transaction landed")
+          (is (= 6 (commit-chain-length conn))
+              "and each one is on the lineage, the create included")
+          (finally (d/release conn)))))))

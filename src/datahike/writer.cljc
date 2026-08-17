@@ -6,6 +6,7 @@
             [datahike.tx-preds :as txp]
             [datahike.gc :as gc]
             [datahike.tools :as dt :refer [throwable-promise get-time-ms]]
+            [konserve.core :as k]
             [clojure.string :as str]
             [clojure.core.async :refer [chan close! promise-chan put! go go-loop <! >! poll! buffer timeout]]
             #?(:cljs [cljs.core.async.impl.channels :refer [ManyToManyChannel]]))
@@ -55,7 +56,46 @@
 ;; closing every queue and killing the writer. In-flight transactions can never
 ;; exceed this bound, so 1024 is unreachable. (DEFAULT_QUEUE_SIZE is 120000, so
 ;; an unbounded chain would reach it easily.)
-(def ^:const MAX_NONSTREAMING_BATCH 64)
+(def ^:const MAX_NONSTREAMING_BATCH
+  "Default for `:max-batch`. See [[create-writer]] — this is a contention/latency
+   lever as much as a throughput one, because the batch is also the window a
+   competing writer can slip into."
+  64)
+
+(def ^:const MAX_HEAD_CONFLICT_RETRIES
+  "How many times a transaction is re-applied after the branch head moved under it
+   before the conflict is handed to its caller.
+
+   Bounded because retrying is not free and not guaranteed to converge: under
+   sustained contention an unbounded loop livelocks, and each attempt re-applies
+   the transaction AND re-flushes the secondary indices — for a Lucene-backed one
+   that is a re-index. Retry is the safety net; keeping writers serialized is
+   still the way to be fast. Default for `:head-conflict-retries`."
+  3)
+
+(def ^:const DEFAULT_HEAD_CONFLICT_BACKOFF_MS
+  "Default for `:head-conflict-backoff-ms`: the base of an exponential, JITTERED
+   wait before a rejected transaction is re-applied.
+
+   Zero would be the worst possible policy. Every attempt would land inside the
+   same contention window that just rejected it, so a writer that lost one race
+   is likely to lose all of its retries and surface a failure that a few
+   milliseconds would have avoided. The jitter matters as much as the delay: two
+   writers backing off by the same amount collide again in lockstep."
+  25)
+
+(def retryable-ops
+  "Operations a head conflict may re-apply on the caller's behalf.
+
+   `transact!` and `load-entities` are functions of `db -> report`: re-applying
+   them to a newer head is the same operation against a newer world, which is
+   what the caller asked for.
+
+   `merge!` is deliberately absent. It carries EXPLICIT parents, so re-applying it
+   against a head that moved would silently change what the merge means; that
+   conflict belongs to the caller. Async ops never reach here — they write no
+   head."
+  #{'transact! 'load-entities})
 
 #?(:clj
    (defn- fail-queued-invocations!
@@ -84,7 +124,10 @@
    from storage before it is applied, so a database can be handed between
    processes that write to it one after another. See [[create-writer]]."
   [connection write-fn-map transaction-queue-size commit-queue-size commit-wait-time
-   streaming?]
+   streaming? {:keys [max-batch retries backoff]
+               :or   {max-batch MAX_NONSTREAMING_BATCH
+                      retries   MAX_HEAD_CONFLICT_RETRIES
+                      backoff   DEFAULT_HEAD_CONFLICT_BACKOFF_MS}}]
   (let [transaction-queue-buffer    (buffer transaction-queue-size)
         transaction-queue           (chan transaction-queue-buffer)
         commit-queue-buffer         (buffer commit-queue-size)
@@ -96,7 +139,21 @@
         ;; the first one and silently drop it. It also holds batches to one
         ;; commit, which is what makes the head cid we hand the commit loop
         ;; (below) exactly the head that transaction was applied to.
-        commit-done                 (chan)]
+        commit-done                 (chan)
+        ;; Invocations handed BACK by the commit loop after a head conflict, for
+        ;; the transaction loop to re-apply against a freshly read head. A
+        ;; dedicated channel rather than re-queueing onto transaction-queue:
+        ;; core.async is FIFO, so a re-queued transaction would land BEHIND work
+        ;; that arrived after it, and under repeated conflicts could be starved by
+        ;; a steady stream of new writes. Bounded by the batch size — only a
+        ;; committing group can conflict, and a group is at most one batch.
+        retry-queue-buffer          (buffer (max 1 max-batch))
+        retry-queue                 (chan retry-queue-buffer)
+        ;; Set before the fatal path closes anything. A retry is only worth
+        ;; queueing while a loop remains to drain it, and there is no
+        ;; non-destructive way to ask a core.async channel whether it is closed —
+        ;; `poll!` would CONSUME an invocation to find out.
+        writer-down?                (atom false)]
     [transaction-queue commit-queue
      (#?(:clj thread-try :cljs try)
       S
@@ -138,7 +195,7 @@
                   ;; at worst, never left open wrongly.
                   (if (and (not streaming?)
                            (pos? pending)
-                           (or (>= pending MAX_NONSTREAMING_BATCH)
+                           (or (>= pending max-batch)
                                (zero? (count transaction-queue-buffer))))
                     (do
                       ;; One signal per COMMITTED TRANSACTION, so this balances
@@ -153,7 +210,40 @@
                       ;; rebuilding. Safe — `reset! connection commit-db` happens
                       ;; before the signals we just took.
                       (recur @(:wrapped-atom connection) true 0))
-                    (if-let [{:keys [op args callback] :as invocation} (<?- transaction-queue)]
+                    ;; RETRIES FIRST, and only with `pending` 0 — which by the
+                    ;; loop's invariant means the head was just re-read. A retry
+                    ;; taken mid-batch would be chained onto the very db that was
+                    ;; rejected, which is the opposite of re-applying it. Nothing
+                    ;; is starved: a non-empty transaction-queue keeps the batch
+                    ;; open only until the bound, after which it closes, `pending`
+                    ;; reaches 0, and the retry is taken.
+                    (if-let [{:keys [op args callback] :as invocation}
+                             (or (when (and (zero? pending) (pos? (count retry-queue-buffer)))
+                                   (let [inv (poll! retry-queue)
+                                         n   (get inv :datahike/attempt 1)]
+                                     ;; BACKOFF, exponential and JITTERED, before
+                                     ;; re-applying. Zero would put every attempt
+                                     ;; back inside the contention window that just
+                                     ;; rejected it, so a writer that lost one race
+                                     ;; loses all of its retries. The jitter matters
+                                     ;; as much as the delay: without it two writers
+                                     ;; back off by the same amount and collide again
+                                     ;; in lockstep. Waiting HERE rather than in the
+                                     ;; commit loop keeps the commit loop free to
+                                     ;; drain other groups meanwhile.
+                                     ;; The shift is CAPPED. `:head-conflict-retries`
+                                     ;; is a user number, and `bit-shift-left` on a
+                                     ;; long takes its count modulo 64: attempt 65
+                                     ;; shifts by 0 and the backoff collapses back to
+                                     ;; one unit, while the attempts just below it
+                                     ;; ask for a wait measured in millennia. Neither
+                                     ;; is a delay anyone chose. 2^16 units is already
+                                     ;; far past any useful contention window.
+                                     (when (pos? backoff)
+                                       (<! (timeout (+ (* backoff (bit-shift-left 1 (min 16 (dec n))))
+                                                       (rand-int (inc backoff))))))
+                                     inv))
+                                 (<?- transaction-queue))]
                       (do
                         (when (> (count transaction-queue-buffer) (* 0.9 transaction-queue-size))
                           (log/warn :datahike/tx-queue-pressure "Transaction queue buffer >90% full" {:count (count transaction-queue-buffer) :size transaction-queue-size}))
@@ -197,10 +287,13 @@
                                                       {:invocation invocation :error e})
                                            (put! callback e)
                                            #?(:clj (when (instance? Error e)
+                                                     (reset! writer-down? true)
                                                      (close! transaction-queue)
                                                      (close! commit-queue)
                                                      (close! commit-done)
+                                                     (close! retry-queue)
                                                      (fail-queued-invocations! transaction-queue e)
+                                                     (fail-queued-invocations! retry-queue e)
                                                      (throw e)))
                                            ::reload-failed)))
                               reload-failed? (= ::reload-failed old)
@@ -306,10 +399,13 @@
                                 ;; further transacts whose callbacks can never be delivered — every
                                 ;; subsequent transact would hang silently instead of failing loudly.
                                         #?(:clj (when (instance? Error e)
+                                                  (reset! writer-down? true)
                                                   (close! transaction-queue)
                                                   (close! commit-queue)
                                                   (close! commit-done)
+                                                  (close! retry-queue)
                                                   (fail-queued-invocations! transaction-queue e)
+                                                  (fail-queued-invocations! retry-queue e)
                                                   (throw e)))
                                         :error))]
                           (cond reload-failed?
@@ -367,7 +463,21 @@
                                     ;; Nothing was enqueued, so nothing will be
                                     ;; signalled: leave `pending` alone rather than
                                     ;; owe a take that nothing owes back.
-                                    (not (put! commit-queue [res callback head-cid head-rev]))
+                                    (not (put! commit-queue
+                                               [res callback head-cid head-rev
+                                                ;; The invocation rides along ONLY
+                                                ;; when it could actually be
+                                                ;; replayed. It holds the whole
+                                                ;; :tx-data, so carrying it for ops
+                                                ;; that are never retried — or for a
+                                                ;; writer configured not to retry at
+                                                ;; all — keeps every queued
+                                                ;; transaction's data alive for the
+                                                ;; depth of the commit queue, which
+                                                ;; defaults to a large number.
+                                                (when (and (pos? retries)
+                                                           (contains? retryable-ops op))
+                                                  invocation)]))
                                     (do (put! callback
                                               (ex-info "Writer is shut down (a previous fatal error closed it); release and reconnect."
                                                        {:type :writer-shut-down}))
@@ -490,15 +600,43 @@
                               (do
                                 (log/warn :datahike/head-conflict
                                           {:branch (:branch (:config db)) :transactions (count txs)})
-                                (doseq [[_ callback] txs]
-                                  (put! callback
-                                        (ex-info (str "The branch head moved while this transaction was being "
-                                                      "prepared, so it was NOT applied — another writer committed "
-                                                      "first. Nothing was lost and nothing partially applied; "
-                                                      "re-read and transact again.")
-                                                 {:type   :datahike/head-conflict
-                                                  :branch (:branch (:config db))
-                                                  :error  e}))))
+                                ;; EXACTLY ONE outcome per invocation: it is either
+                                ;; handed back for replay or its caller is told.
+                                ;; Never both — the caller is still waiting on that
+                                ;; one callback.
+                                (doseq [[_ callback _ _ invocation] txs]
+                                  (let [attempt (inc (get invocation :datahike/attempt 0))
+                                        op      (:op invocation)]
+                                    (if (and (contains? retryable-ops op)
+                                             (<= attempt retries)
+                                             invocation
+                                             ;; A retry is only worth queueing while
+                                             ;; a loop remains to drain it. `put!`
+                                             ;; alone cannot tell us that — it
+                                             ;; returns true on an OPEN channel
+                                             ;; whatever its buffer state — so the
+                                             ;; flag is the real check and the `put!`
+                                             ;; below is the last line of defence for
+                                             ;; the narrow race where the writer goes
+                                             ;; down between the two: `put!` returns
+                                             ;; false on a CLOSED channel, and a
+                                             ;; dropped invocation whose caller is
+                                             ;; still holding the callback is exactly
+                                             ;; the permanent hang we are closing.
+                                             (not @writer-down?)
+                                             (put! retry-queue
+                                                   (assoc invocation :datahike/attempt attempt)))
+                                      (log/trace :datahike/head-conflict-retry {:op op :attempt attempt})
+                                      (put! callback
+                                            (ex-info (str "The branch head moved while this transaction was being "
+                                                          "prepared, so it was NOT applied — another writer committed "
+                                                          "first. Nothing was lost and nothing partially applied; "
+                                                          "re-read and transact again.")
+                                                     {:type    :datahike/head-conflict
+                                                      :branch  (:branch (:config db))
+                                                      :op      op
+                                                      :attempt attempt
+                                                      :error   e}))))))
                               (do
                             ;; Close the queues BEFORE delivering the failed
                             ;; callbacks. Delivering first unblocks the caller
@@ -508,15 +646,24 @@
                             ;; saw the "dead" writer accept a further write).
                             ;; Closing first makes that transact observe the
                             ;; closed queue and fail loudly (:writer-shut-down).
-                            (close! commit-queue)
-                            (close! transaction-queue)
+                                (reset! writer-down? true)
+                                (close! commit-queue)
+                                (close! transaction-queue)
                             ;; Release a non-streaming transaction loop that is
                             ;; parked on commit-done, or it never observes the
                             ;; closed transaction-queue and never shuts down.
-                            (close! commit-done)
-                            (doseq [[_ callback] txs]
-                              (put! callback e))
-                            (log/error :datahike/writer-shutdown {:error e})
+                                (close! commit-done)
+                            ;; And the retry queue, which NOTHING else drains once
+                            ;; this loop is gone. A head conflict racing a fatal
+                            ;; error hands its whole group here; with no loop left,
+                            ;; every one of those callers derefs a promise that is
+                            ;; never delivered. That is a silent permanent hang, so
+                            ;; the queued invocations get the fatal error instead.
+                                (close! retry-queue)
+                                #?(:clj (fail-queued-invocations! retry-queue e))
+                                (doseq [[_ callback] txs]
+                                  (put! callback e))
+                                (log/error :datahike/writer-shutdown {:error e})
                             ;; Re-throw Errors (AssertionError, OutOfMemoryError, etc.) to crash the writer
                                 #?(:clj (when (instance? Error e)
                                           (throw e)))))))
@@ -613,12 +760,41 @@
      alternately. With the default, each environment commits from its own
      stale head and silently overwrites the other's transactions.
 
-     It does NOT detect the race, it avoids it by serialisation. Two processes
-     writing CONCURRENTLY still lose updates — the loser's head write simply
-     lands last. Preventing that needs head fencing (compare-and-set on the
-     branch head, issue #878). So `:streaming? false` is correct only under an
-     external guarantee that the processes never overlap (e.g. Lambda reserved
-     concurrency 1), not by construction."
+     Serialisation alone would not cover processes that OVERLAP: the loser's
+     head write would simply land last. So the head write is also CONDITIONAL on
+     the revision that was read (issue #878) — the commit is rejected rather than
+     applied over another process's, and the transaction is re-applied against
+     the head that moved. Nothing is lost and nothing is partially applied: what
+     a commit writes before the head flip is immutable and content-addressed, so
+     a rejected commit leaves collectable orphans, never a dangling pointer.
+
+     Fencing needs a store that can compare-and-set, and konserve reports how far
+     a store's guarantee reaches as a domain: `:process` (memory), `:machine`
+     (filestore, via an OS advisory lock), `:global` (S3, via `If-Match`). It is
+     used where available and skipped where it is not, so single-writer setups
+     are unchanged on every backend.
+
+   - `:require-fencing` (default `nil`) — the domain this deployment NEEDS.
+     Refuses the connect on a store that cannot fence that far, instead of
+     running unfenced. Skipping is silent by design, which is exactly why a
+     deployment that depends on fencing should demand it: `:machine` for several
+     processes on one host, `:global` for several hosts. A store offering more
+     than asked passes. Requires `:streaming? false`.
+
+   - `:head-conflict-retries` (default `MAX_HEAD_CONFLICT_RETRIES`) — how many
+     times a rejected transaction is re-applied against the re-read head before
+     its caller is told. `0` reports `:datahike/head-conflict` immediately, which
+     is what you want when the caller must see every conflict. Only `transact!`
+     and `load-entities` are ever retried: re-running a branch merge against a
+     head that moved would silently change what the merge means.
+
+   - `:head-conflict-backoff-ms` (default `DEFAULT_HEAD_CONFLICT_BACKOFF_MS`) —
+     base for the jittered exponential backoff between retries. `0` disables the
+     wait, which puts every attempt straight back into the window that just
+     rejected it.
+
+   - `:max-batch` (default `MAX_NONSTREAMING_BATCH`) — upper bound on the chain
+     described above."
   (fn [writer-config _]
     (:backend writer-config)))
 
@@ -629,11 +805,44 @@
    a setting where the failure is silent data loss. A spec cannot do this —
    `s/keys` accepts unqualified keys it does not list."
   #{:backend :streaming? :transaction-queue-size :commit-queue-size
-    :commit-wait-time :write-fn-map})
+    :commit-wait-time :write-fn-map
+    :max-batch :head-conflict-retries :head-conflict-backoff-ms
+    :require-fencing})
+
+(defn check-fencing!
+  "Raise unless `store` can fence branch-head writes as far as `require-fencing`
+   asks. No-op when it asks for nothing.
+
+   A separate fn because `connect` has two paths and only one of them builds a
+   writer. Left inside `create-writer`, the check was skipped entirely whenever
+   the connection came out of the registry cache — so the SECOND `connect` in a
+   process, the one that makes concurrency possible in the first place, was the
+   one that ran unchecked."
+  [require-fencing streaming? store]
+  (when require-fencing
+    (when-not (contains? (set k/conditional-write-domains) require-fencing)
+      (log/raise ":require-fencing must name a conditional-write domain."
+                 {:type :invalid-require-fencing
+                  :require-fencing require-fencing
+                  :known (vec k/conditional-write-domains)}))
+    (when streaming?
+      (log/raise ":require-fencing needs :streaming? false. A streaming writer keeps the branch head in memory and never re-reads it, so it has no revision to fence against — the option would be silently inert."
+                 {:type :fencing-requires-non-streaming}))
+    (let [have (k/conditional-write-domain store)]
+      (when-not (k/conditional-write? store require-fencing)
+        (log/raise (str "This store cannot fence branch-head writes as far as :require-fencing asks, "
+                        "so the connection was refused rather than run unfenced.")
+                   {:type            :insufficient-conditional-write-domain
+                    :required        require-fencing
+                    :store-offers    have
+                    :note            (if have
+                                       "The store fences, but not that far."
+                                       "The store cannot compare-and-set at all; concurrent writers would silently overwrite each other.")})))))
 
 (defmethod create-writer :self
   [{:keys [transaction-queue-size commit-queue-size write-fn-map commit-wait-time
-           streaming?]
+           streaming? max-batch head-conflict-retries head-conflict-backoff-ms
+           require-fencing]
     :or   {streaming? true}
     :as   writer-config}
    connection]
@@ -656,9 +865,33 @@
     (log/raise ":streaming? in the :self writer config must be true or false."
                {:type      :invalid-streaming-flag
                 :streaming? (:streaming? writer-config)}))
+  ;; FENCING IS A PRECONDITION, NOT A PREFERENCE — when asked for, it is checked
+  ;; HERE, at connect, and refused rather than silently skipped.
+  ;;
+  ;; Without this datahike degrades quietly: a store that cannot compare-and-set
+  ;; reports no domain, `reload-branch-head` reads no revision, and `commit!`
+  ;; writes the head unconditionally. That is correct for a single writer and
+  ;; exactly wrong for the deployment that asked for fencing — it would run
+  ;; believing concurrent writers were safe, which is the failure this whole
+  ;; mechanism exists to remove, reappearing one layer above konserve.
+  ;;
+  ;; The domain says how far the guarantee reaches, so state what the deployment
+  ;; needs: `:machine` for several processes on one host (dthk across shells),
+  ;; `:global` for several hosts (Lambda on S3). A store offering MORE than asked
+  ;; passes; a memory store asked for :machine does not.
+  (check-fencing! require-fencing streaming? (:store @(:wrapped-atom connection)))
+  (doseq [[k v lo] [[:max-batch max-batch 1]
+                    [:head-conflict-retries head-conflict-retries 0]
+                    [:head-conflict-backoff-ms head-conflict-backoff-ms 0]]]
+    (when (and (some? v) (not (and (integer? v) (>= v lo))))
+      (log/raise (str k " in the :self writer config must be an integer >= " lo ".")
+                 {:type :invalid-writer-config-value :key k :value v})))
   (let [transaction-queue-size (or transaction-queue-size DEFAULT_QUEUE_SIZE)
         commit-queue-size (or commit-queue-size DEFAULT_QUEUE_SIZE)
         commit-wait-time (or commit-wait-time DEFAULT_COMMIT_WAIT_TIME)
+        retry-policy {:max-batch (or max-batch MAX_NONSTREAMING_BATCH)
+                      :retries   (or head-conflict-retries MAX_HEAD_CONFLICT_RETRIES)
+                      :backoff   (or head-conflict-backoff-ms DEFAULT_HEAD_CONFLICT_BACKOFF_MS)}
         [transaction-queue commit-queue thread]
         (create-thread connection
                        (merge default-write-fn-map
@@ -666,7 +899,8 @@
                        transaction-queue-size
                        commit-queue-size
                        commit-wait-time
-                       streaming?)]
+                       streaming?
+                       retry-policy)]
     (map->LocalWriter
      {:transaction-queue transaction-queue
       :transaction-queue-size transaction-queue-size

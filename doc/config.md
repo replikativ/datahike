@@ -320,20 +320,71 @@ stored, and `@conn` reads through to storage as well.
   — a caller that awaits each transaction before issuing the next has nothing
   to batch and does pay one read per commit.
 - **Required when:** more than one process may hold a writer for this database.
-- **Not a fence:** this avoids the race by *serialisation*, it does not *detect*
-  it. Two processes writing **concurrently** still lose updates; the loser's
-  head write just lands last. Detecting that needs head fencing
-  (compare-and-set on the branch head, [issue #878]). So `:streaming? false` is
-  correct under an external guarantee of non-overlap — Lambda reserved
-  concurrency 1, a lease, a queue — not by construction.
+- **Serialisation, plus a fence:** re-reading the head avoids the race between
+  writers that alternate. Writers that **overlap** need the head write itself to
+  be conditional, which is what head fencing does ([issue #878]) — see
+  [Concurrent processes](#concurrent-processes-head-fencing) below. Fencing is
+  automatic wherever the store supports it, so `:streaming? false` is safe for
+  alternating writers on any store and for concurrent writers on a store that
+  can compare-and-set.
 - **Secondary indices are re-read too**, whenever the head moved — they are
   named by the same commit, so another process's writes reach them like any
   other part of the db. Stratum and proximum are konserve-backed copy-on-write
   values, which is what makes that work (and what makes them usable on S3).
   Scriptum is the exception: it keeps its own Lucene directory with a
   per-branch write lock and is NOT multi-process safe. That is transitional —
-  its konserve backing is a late addition — not a property of secondary
-  indices.
+  what it still lacks is a conditional write on its manifest — not a property
+  of secondary indices.
+
+#### Concurrent Processes (head fencing)
+
+`:streaming? false` re-reads the branch head, and datahike also writes it back
+*conditionally*: the commit lands only if the head is still the one that was
+read. If another process moved it in between, this commit is rejected rather
+than overwriting theirs, and the transaction is re-applied against the new head.
+Nothing is lost and nothing is partially applied — the values a commit writes
+before the head flip are immutable and content-addressed, so a rejected commit
+leaves collectable orphans, never a dangling pointer.
+
+This needs a store that can compare-and-set. Konserve reports how far its
+guarantee reaches as a *domain*:
+
+| Domain | Meaning | Stores |
+| --- | --- | --- |
+| `:process` | threads in one JVM | memory |
+| `:machine` | processes on one host | filestore (OS advisory file lock) |
+| `:global` | processes on any host | S3 (`If-Match` on the object) |
+
+Fencing is used automatically when the store offers it and skipped when it does
+not, which keeps single-writer setups working unchanged on every backend. **If
+your deployment depends on it, say so** — otherwise a store that cannot fence
+degrades quietly to the unconditional write, which is exactly the failure the
+mechanism exists to remove:
+
+```clojure
+{:store  {:backend :s3 :bucket "my-bucket"}
+ :writer {:backend :self
+          :streaming? false
+          :require-fencing :global}}   ; refuse to connect without it
+```
+
+`:require-fencing` names the domain the deployment needs — `:machine` for
+several processes on one host (`dthk` from two shells), `:global` for several
+hosts (Lambda on S3). A store offering more than asked passes. It requires
+`:streaming? false`: a streaming writer never re-reads the head, so it has no
+revision to fence against and the option would be inert.
+
+Three further knobs, all optional:
+
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `:head-conflict-retries` | 3 | How many times a rejected transaction is re-applied against the re-read head before the caller is told. `0` reports `:datahike/head-conflict` immediately, which is what you want if the caller must see every conflict. |
+| `:head-conflict-backoff-ms` | 25 | Base for the jittered exponential backoff between retries. |
+| `:max-batch` | 64 | Upper bound on transactions chained into one commit. |
+
+Only `transact!` and `load-entities` are retried. Anything that merges branches
+carries a conflict that belongs to the caller, and re-running it against a head
+that moved would silently change what the merge means.
 
 [issue #878]: https://github.com/replikativ/datahike/issues/878
 

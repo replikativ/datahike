@@ -1,10 +1,14 @@
 {:deps {org.clojure/clojure                         {:mvn/version "1.12.4"}
         org.replikativ/hasch                        {:mvn/version "0.4.102"
                                                      :exclusions [org.clojure/clojurescript]}
-        org.replikativ/konserve                     {:mvn/version "0.9.372"
-                                                     :exclusions [org.clojure/clojurescript
-                                                                  org.clojars.mmb90/cljs-cache]}
-                                                     
+        ;; LOCAL CHECKOUT — MUST NOT MERGE. konserve's conditional-write API is
+        ;; unreleased, and this has to be the TOP-LEVEL dep rather than an alias:
+        ;; `bb test` runs codegen-java first, which loads datahike's spec (and so
+        ;; datahike.writing) through the plain deps.edn and never sees an alias.
+        ;; With an alias the whole bb pipeline fails to build, which is a sharper
+        ;; way of saying this branch is not mergeable until konserve ships.
+        org.replikativ/konserve                     {:local/root "/home/christian-weilbach/Development/konserve-wt-cas"}
+
         org.replikativ/superv.async                 {:mvn/version "0.3.50"
                                                      :exclusions [org.clojure/clojurescript]}
         org.replikativ/datalog-parser               {:mvn/version "0.2.37"}
@@ -71,13 +75,9 @@
                                
                   :extra-paths ["test"]}
 
-           ;; Develop against a local konserve checkout — for the conditional-write
-           ;; work the two move together, and the primitive is not released yet.
-           ;; REMOVE before merging; a :local/root cannot go to Clojars.
+           ;; konserve-s3 too, for the two-JVM race over :global (dev/ only).
            :local-konserve
-           {:override-deps {org.replikativ/konserve
-                            {:local/root "/home/christian-weilbach/Development/konserve-wt-cas"}}
-            :extra-deps {io.replikativ/konserve-s3
+           {:extra-deps {io.replikativ/konserve-s3
                          {:local/root "/home/christian-weilbach/Development/konserve-s3-wt-cas"}}}
 
            :dev {:extra-paths ["dev" "benchmark/src"]
