@@ -2181,7 +2181,50 @@
                                      (when (temporal-merge-datom-match? d eid ra vg? vgv eq-v eq-tx scan-d temporal-tx-filter added-filter merge-datoms)
                                        (aset merge-datoms mi d)
                                        (process-merges (inc mi)))))))
-                             (let [probe (datom eid ra vgv tx0)
+                             (if (= temporal-type :historical)
+                               ;; The JVM arm has a dedicated `:historical` branch here; this one had
+                               ;; none, so it answered from the CURRENT eavt — every `history` query
+                               ;; whose merge is card-one (which `get-else` always is) got the current
+                               ;; value back. `history` needs the merged slice, and an optional merge
+                               ;; reads ONE version from it: the first, the one `get-else` returns.
+                               (let [optional? (and merge-optional (aget merge-optional mi))
+                                     eq-v (aget merge-eq-v mi)
+                                     eq-tx (aget merge-eq-tx mi)
+                                     mslice (temporal-merge-slice origin-db
+                                                                  (datom eid ra (when vg? vgv) tx0)
+                                                                  (datom eid ra (when vg? vgv) txmax)
+                                                                  temporal-type temporal-tx-filter db)
+                                     pslice (if (and vg? optional?)
+                                              (temporal-merge-slice origin-db (datom eid ra nil tx0)
+                                                                    (datom eid ra nil txmax)
+                                                                    temporal-type temporal-tx-filter db)
+                                              mslice)]
+                                 (if anti?
+                                   (when (not-any? (fn [d] (temporal-merge-datom-match? d eid ra vg? vgv eq-v eq-tx scan-d temporal-tx-filter added-filter merge-datoms)) mslice)
+                                     (process-merges (inc mi)))
+                                   (if optional?
+                                     (let [od (first (filter (fn [d] (temporal-merge-datom-present?
+                                                                      d eid ra scan-d temporal-tx-filter added-filter))
+                                                             pslice))]
+                                       (cond
+                                         (and od (temporal-merge-datom-match? od eid ra vg? vgv eq-v eq-tx scan-d temporal-tx-filter added-filter merge-datoms))
+                                         (do (aset merge-datoms mi od) (process-merges (inc mi)))
+
+                                         od nil
+
+                                         :else
+                                         (let [dv (aget merge-defaults mi)
+                                               dd (datom eid ra dv tx0)]
+                                           (when (and (or (not vg?) (val-eq? dv vgv))
+                                                      (eq-ok? eq-v dv dd scan-d merge-datoms)
+                                                      (eq-ok? eq-tx (datom/datom-tx dd) dd scan-d merge-datoms))
+                                             (aset merge-datoms mi dd)
+                                             (process-merges (inc mi))))))
+                                     (doseq [d mslice]
+                                       (when (temporal-merge-datom-match? d eid ra vg? vgv eq-v eq-tx scan-d temporal-tx-filter added-filter merge-datoms)
+                                         (aset merge-datoms mi d)
+                                         (process-merges (inc mi)))))))
+                               (let [probe (datom eid ra vgv tx0)
                                    ^Datom d (pss-lookup-ge eavt-pss probe)
                                    eq-v (aget merge-eq-v mi)
                                    eq-tx (aget merge-eq-tx mi)
@@ -2218,7 +2261,7 @@
                                                 (eq-ok? eq-v dv dd scan-d merge-datoms)
                                                 (eq-ok? eq-tx (datom/datom-tx dd) dd scan-d merge-datoms))
                                        (aset merge-datoms mi dd)
-                                       (process-merges (inc mi)))))))))))]
+                                       (process-merges (inc mi))))))))))))]
                (process-merges 0))))))))
 
 ;; ---------------------------------------------------------------------------
