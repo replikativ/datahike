@@ -4,6 +4,7 @@
    between datahike.query and datahike.query.execute."
   (:require
    [clojure.set :as set]
+   [datahike.array :as arr]
    [datahike.db.utils :as dbu]
    [datahike.tools :as dt]
    [replikativ.logging :as log]
@@ -66,13 +67,39 @@
       (fn [tuple]
         (get tuple idx)))))
 
-(defn tuple-key-fn [getters]
+(defn join-key
+  "The key a relation is hashed by for a join, for ONE value.
+
+   A byte/float/double array is a VALUE in datahike, and Clojure's `=` (and
+   hashing) treat arrays by IDENTITY — so two equal-content arrays landed in
+   different buckets and `[?e :blob ?v] [?f :blob2 ?v]` silently returned
+   nothing. `wrap-comparable` exists for exactly this: `(a= x y)` iff the
+   wrappings are `=`. It is identity for every non-array value.
+
+   `value-array?` guards it rather than calling `wrap-comparable` outright:
+   the guard is one `getClass` plus three `identical?` on final classes, where
+   `wrap-comparable` opens with a `bytes?` that costs a `getClass` plus a
+   `getComponentType` on every scalar key.
+
+   Only KEY positions go through this. `getter-fn` is also used to read VALUES
+   (see `tuple-var-mapper` in datahike.query), and a wrapper leaking there
+   would be visible in query results."
+  [x]
+  (if (arr/value-array? x) (arr/wrap-comparable x) x))
+
+(defn tuple-key-fn
+  "Builds the join key for a tuple. THE implementation — `datahike.query`'s
+   var of the same name delegates here, because the planner joins through this
+   namespace and the base engine through that one, and two copies of one rule
+   is how a fix lands on one engine only."
+  [getters]
   (if (== (count getters) 1)
-    (first getters)
+    (let [g (first getters)]
+      (fn [tuple] (join-key (g tuple))))
     (let [getters (to-array getters)]
       (fn [tuple]
-        (list* #?(:cljs (.map getters #(% tuple))
-                  :clj (to-array (map #(% tuple) getters))))))))
+        (list* #?(:cljs (.map getters #(join-key (% tuple)))
+                  :clj (to-array (map #(join-key (% tuple)) getters))))))))
 
 (defn hash-attrs [key-fn tuples]
   ;; Equivalent to group-by except that it uses a list instead of a vector.

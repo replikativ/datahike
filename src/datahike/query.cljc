@@ -1321,29 +1321,12 @@
       (fn [tuple]
         (get tuple idx)))))
 
-(defn tuple-key-fn
-  "Builds the key a relation is hashed by for a join.
-
-   Keys go through `wrap-comparable`, which is exactly what it exists for:
-   `(a= x y)` iff `(= (wrap-comparable x) (wrap-comparable y))`, so array
-   values hash and compare BY VALUE. Without it a byte or float array hashes
-   by identity, so two equal-content arrays landed in different buckets and
-   `[?e :blob ?v] [?e :blob2 ?v]` — an ordinary pattern occurrence, the case
-   the binding-seam law was already right about everywhere else — silently
-   returned nothing on the relational engine. It is identity for every
-   non-array value, so nothing else changes.
-
-   Only key positions are wrapped: `tuple-var-mapper` uses `getter-fn`
-   directly to read VALUES, and a wrapper leaking there would be visible in
-   results."
-  [getters]
-  (if (== (count getters) 1)
-    (let [g (first getters)]
-      (fn [tuple] (wrap-comparable (g tuple))))
-    (let [getters (to-array getters)]
-      (fn [tuple]
-        (list* #?(:cljs (.map getters #(wrap-comparable (% tuple)))
-                  :clj (to-array (map #(wrap-comparable (% tuple)) getters))))))))
+;; ONE implementation, in datahike.query.relation — the planner joins through
+;; that namespace and this engine through this one, and when this var carried
+;; its own copy the array-key fix landed on the base engine only: a
+;; cross-entity-group join on an array value then answered #{} under the
+;; DEFAULT engine while the base engine answered correctly.
+(def tuple-key-fn rel/tuple-key-fn)
 
 (defn hash-attrs [key-fn tuples]
   ;; Equivalent to group-by except that it uses a list instead of a vector.
@@ -1542,7 +1525,8 @@
           ;; Reading it as "no constant" fell through to the tuple-index
           ;; branch, where the var has no column — so `[(= ?v ?f)]` with `?f`
           ;; bound to false compared against nil and answered nothing, and
-          ;; `[(vector ?v ?f) ?o]` built `[true nil]`.
+          ;; `[(vector ?v ?f) ?o]` built `[true nil]`. Same class as the
+          ;; `idx->const` fold below.
           (if (contains? (:consts context) arg)
             (da/aset static-args i (get (:consts context) arg))
             (if-some [source (get sources arg)]

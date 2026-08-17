@@ -132,16 +132,36 @@ compared element-wise; a mismatched pair falls back to a stable class ordering."
   [a b]
   #?(:cljs (let [ka (array-kind-rank a)
                  kb (array-kind-rank b)]
-             ;; `goog.array/compare3` compares elements and ignores the typed-array
-             ;; KIND, so it called a Float32Array equal to a Float64Array holding
-             ;; the same numbers — and an empty Int8Array equal to an empty
-             ;; Float32Array. The JVM never does: its mismatched-kind pair falls
-             ;; back to class-name ordering, which is byte < double < float
-             ;; ("[B" < "[D" < "[F"). Ranking the kinds first reproduces that
-             ;; order here, so the two platforms agree on both ordering AND the
-             ;; equality that `a=` derives from it.
+             ;; `goog.array/compare3` is NOT usable here. It orders with plain
+             ;; `<`/`>`, which are false in BOTH directions for NaN — so it
+             ;; reports 0 and calls a NaN equal to every number, not just to
+             ;; another NaN. It also ignores the typed-array KIND, where the
+             ;; JVM orders a mismatched pair by class name — byte < double <
+             ;; float (`[B` < `[D` < `[F`). Both are reproduced here, so the
+             ;; two platforms agree on ordering and on the equality `a=`
+             ;; derives from it.
              (if (== ka kb)
-               (goog.array/compare3 a b)
+               (let [la (value-array-length a)
+                     lb (value-array-length b)
+                     n (min la lb)]
+                 (loop [i 0]
+                   (if (== i n)
+                     (compare la lb)
+                     (let [x (aget a i)
+                           y (aget b i)
+                           c (cond
+                               ;; Float/Double.compare: NaN equals itself and
+                               ;; sorts ABOVE every number; -0.0 sorts BELOW 0.0
+                               (and (js/Number.isNaN x) (js/Number.isNaN y)) 0
+                               (js/Number.isNaN x) 1
+                               (js/Number.isNaN y) -1
+                               (< x y) -1
+                               (> x y) 1
+                               (and (zero? x) (zero? y))
+                               (let [nx (neg? (/ 1 x)) ny (neg? (/ 1 y))]
+                                 (cond (= nx ny) 0 nx -1 :else 1))
+                               :else 0)]
+                       (if (zero? c) (recur (inc i)) c)))))
                (if (< ka kb) -1 1)))
      :clj
      (cond
@@ -165,7 +185,23 @@ compared element-wise; a mismatched pair falls back to a stable class ordering."
   ;; replacement character, so 0x80 and 0x81 produced equal strings for arrays
   ;; `a=` calls different — the opposite of what this function promises. One
   ;; character per byte, as on the JVM.
-  #?(:cljs (.apply js/String.fromCharCode nil (.map (js/Uint8Array. (.-buffer x)) identity))
+  #?(:cljs (let [n (.-length x)
+                 ;; `(.-buffer x)` would read the whole underlying ArrayBuffer,
+                 ;; ignoring a view's byteOffset/length, and `.apply` on the
+                 ;; result blows the stack past ~64k arguments. Walk the VIEW,
+                 ;; in chunks.
+                 sb (js/Array.)]
+             (loop [i 0]
+               (when (< i n)
+                 (let [end (min n (+ i 8192))
+                       chunk (js/Array.)]
+                   (loop [j i]
+                     (when (< j end)
+                       (.push chunk (bit-and (aget x j) 0xff))
+                       (recur (inc j))))
+                   (.push sb (.apply js/String.fromCharCode nil chunk))
+                   (recur end))))
+             (.join sb ""))
      :clj
      (let [^bytes x x
            n (alength x)
@@ -200,13 +236,14 @@ compared element-wise; a mismatched pair falls back to a stable class ordering."
 #?(:cljs
    (defn- canonical-element
      "Normalises an element so that vector equality reproduces what
-      `compare-arrays` says on this platform: `goog.array/compare3` finds
-      neither `<` nor `>` between two NaNs and calls them equal, and likewise
-      does not separate -0.0 from 0.0."
+      `compare-arrays` says: two NaNs are equal (and a NaN differs from every
+      number), and -0.0 is distinct from 0.0."
      [x]
      (cond
+       ;; NaN is equal to itself and to nothing else, and -0.0 is distinct from
+       ;; 0.0 — both as `compare-arrays` now reports them, and as the JVM does.
        (js/Number.isNaN x) ::nan
-       (and (zero? x) (neg? (/ 1 x))) 0
+       (and (zero? x) (neg? (/ 1 x))) ::negative-zero
        :else x)))
 
 (defn wrap-comparable
@@ -263,7 +300,10 @@ compared element-wise; a mismatched pair falls back to a stable class ordering."
   yes about everything."
   [a b]
   (if (or (value-array? a) (value-array? b))
-    (and (value-array? a)
-         (value-array? b)
-         (zero? (compare-arrays a b)))
+    ;; `boolean`: `value-array?` is a `when` on the JVM, so a nil operand made
+    ;; this answer nil rather than false. Every current caller uses it in
+    ;; boolean position; the next one to write `(= false (a= …))` would not.
+    (boolean (and (value-array? a)
+                  (value-array? b)
+                  (zero? (compare-arrays a b))))
     (= a b)))

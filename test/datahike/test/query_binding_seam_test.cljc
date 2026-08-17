@@ -283,6 +283,8 @@
                            {:db/ident :nan :db/valueType :db.type/double-array
                             :db/cardinality :db.cardinality/one}
                            {:db/ident :nan2 :db/valueType :db.type/double-array
+                            :db/cardinality :db.cardinality/one}
+                           {:db/ident :blob3 :db/valueType :db.type/bytes
                             :db/cardinality :db.cardinality/one}]))
     ;; entity 1 holds equal CONTENT in both attributes of each pair, in
     ;; distinct array objects; entity 2 does not
@@ -290,6 +292,7 @@
                             :blob (bytes-of [1 2 3]) :blob2 (bytes-of [1 2 3])
                             :fa (floats-of [1.5 2.5]) :fa2 (floats-of [1.5 2.5])}
                            {:db/id 2 :anchor 2
+                            :blob3 (bytes-of [1 2 3])
                             :blob (bytes-of [1 2 3]) :blob2 (bytes-of [9 9 9])
                             :fa (floats-of [1.5 2.5]) :fa2 (floats-of [9.5 9.5])}
                            ;; bytes above 0x7f, and a NaN
@@ -318,6 +321,19 @@
       (testing "an ordinary pattern occurrence, for comparison"
         (both #{[1]}
               '[:find ?e :where [?e :blob ?v] [?e :blob2 ?v]] db))
+
+      (testing "a join ACROSS entity groups, which the planner hashes separately"
+        ;; the same-entity case above fuses into ONE group and never reaches a
+        ;; hash-probe join. This one does — and the planner joins through
+        ;; `relation.cljc`'s key fn while the base engine went through
+        ;; `query.cljc`'s, so fixing one copy left the DEFAULT engine returning
+        ;; nothing for any array-valued join.
+        ;; entities 1 AND 2 both hold :blob [1 2 3]; only 2 holds :blob3
+        (both #{[1 2] [2 2]}
+              '[:find ?e ?f :where [?e :blob ?v] [?f :blob3 ?v]] db)
+        ;; and the same value arriving as a COLLECTION binding
+        (both #{[1] [2]}
+              '[:find ?e :in $ [?v ...] :where [?e :blob ?v]] db [(bytes-of [1 2 3])]))
 
       (testing "the values where the key representation disagreed with a="
         ;; A join key has to hash BY VALUE over the whole domain. It did not:

@@ -72,13 +72,19 @@
       (is (cmp (double-array [##NaN]) (double-array [##NaN])))
       (is (cmp (float-array [##NaN 1.5]) (float-array [##NaN 1.5])))
 
-      ;; Signed zero is where the platforms genuinely differ, so assert each
-      ;; rather than pretending they agree: `Float/compare` ORDERS -0.0 before
-      ;; 0.0, while `compare3` finds them equal.
-      #?(:clj  (do (is (not (cmp (float-array [-0.0]) (float-array [0.0]))))
-                   (is (not (cmp (double-array [-0.0]) (double-array [0.0])))))
-         :cljs (do (is (cmp (float-array [-0.0]) (float-array [0.0])))
-                   (is (cmp (double-array [-0.0]) (double-array [0.0])))))
+      ;; A NaN is equal to itself and to NOTHING ELSE. This is the assertion
+      ;; ClojureScript used to fail and no test made: `goog.array/compare3`
+      ;; orders with plain `<`/`>`, both false for a NaN, so it reported 0 and
+      ;; called a NaN array equal to EVERY numeric array of the same shape.
+      (is (not (cmp (double-array [##NaN]) (double-array [1.5]))))
+      (is (not (cmp (float-array [##NaN]) (float-array [0.0]))))
+      (is (not (cmp (double-array [1.5 ##NaN]) (double-array [1.5 2.5]))))
+
+      ;; Signed zero is ORDERED, so -0.0 and 0.0 are not equal — on both
+      ;; platforms now, since cljs no longer defers to compare3 for elements
+      (is (not (cmp (float-array [-0.0]) (float-array [0.0]))))
+      (is (not (cmp (double-array [-0.0]) (double-array [0.0]))))
+      (is (cmp (double-array [-0.0]) (double-array [-0.0])))
 
       ;; Zero-length arrays are equal within a kind and never across one
       (is (cmp (byte-array []) (byte-array [])))

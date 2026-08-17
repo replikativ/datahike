@@ -655,19 +655,26 @@
     ;; function clause. Only a function-output clause writing into an
     ;; already-bound var folds a constant into a binding position.
     :match? (fn [_spec query]
-              (boolean
-               (some (fn [form]
-                       (and (vector? form)
-                            (= 2 (count form))
-                            (seq? (first form))
-                            ;; `?n` is bound by the always-present [?e :name ?n],
-                            ;; so a clause writing into it is the rebind shape.
-                            ;; `get-else` counts: the fold is into the BINDING
-                            ;; POSITION and does not care which fn is in head
-                            ;; position — measured, both raise with the same
-                            ;; "Cannot parse binding" message.
-                            (= '?n (second form))))
-                     (tree-seq coll? seq query))))}])
+              (let [ins (->> query (drop-while (complement #{:in})) rest
+                             (take-while (complement keyword?)) set)]
+                (boolean
+                 ;; BOTH conditions: a clause writing into `?n`, AND `?n`
+                 ;; arriving as an :in constant — the fold has nothing to fold
+                 ;; otherwise, so without this the entry would excuse a raise
+                 ;; that has some other cause entirely. `get-else` is included
+                 ;; because the fold is into the BINDING POSITION and does not
+                 ;; care what sits in head position: measured, a get-else whose
+                 ;; output var is ALSO pattern-bound raises with the same
+                 ;; "Cannot parse binding" message. (One that is only :in-bound
+                 ;; does not — there the fold becomes v-ground, which the merge
+                 ;; kernels enforce, and both engines answer.)
+                 (and (contains? ins '?n)
+                      (some (fn [form]
+                              (and (vector? form)
+                                   (= 2 (count form))
+                                   (seq? (first form))
+                                   (= '?n (second form))))
+                            (tree-seq coll? seq query))))))}])
 
 (def ^:private oracle-known (atom {}))
 
