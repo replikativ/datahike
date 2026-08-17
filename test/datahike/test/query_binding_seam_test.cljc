@@ -246,23 +246,81 @@
       (testing "as-of"   (both #{[1 "n1b"] [3 "zzz"]} query (d/as-of db (:max-tx db))))
       (testing "since"   (both #{[1 "n1b"] [3 "zzz"]} query (d/since db 0))))))
 
-(deftest-async binding-seam-law-byte-arrays
-  ;; A byte array is a VALUE in datahike, and Clojure's `=` compares byte
-  ;; arrays by identity — so an obligation between two equal-content arrays
-  ;; failed and the row was dropped. Every equality the engine makes about
-  ;; values has to be array-aware, unification included.
+(defn- bytes-of [xs]
+  #?(:clj (byte-array xs) :cljs (js/Int8Array. (clj->js xs))))
+
+(defn- floats-of [xs]
+  #?(:clj (float-array xs) :cljs (js/Float32Array. (clj->js xs))))
+
+(deftest-async binding-seam-law-value-arrays
+  ;; Byte, float and double arrays are VALUES in datahike — `datahike.array/a=`
+  ;; is what decides that — but Clojure's `=` compares them by identity. Every
+  ;; equality the engine makes about values therefore has to be array-aware,
+  ;; and unification is one of them. Four seams, because each had its own
+  ;; comparison and they disagreed in BOTH directions: the base engine dropped
+  ;; every byte-valued unification while the planner kept it, and the planner
+  ;; dropped every float-valued one while the base engine kept it.
   (let [cfg {:store {:backend :memory :id (random-uuid)}
              :schema-flexibility :write}
         conn (<! (connect! cfg))]
-    (<! (d/transact! conn [{:db/ident :blob :db/valueType :db.type/bytes
+    (<! (d/transact! conn [{:db/ident :anchor :db/valueType :db.type/long
+                            :db/cardinality :db.cardinality/one}
+                           {:db/ident :blob :db/valueType :db.type/bytes
                             :db/cardinality :db.cardinality/one}
                            {:db/ident :blob2 :db/valueType :db.type/bytes
+                            :db/cardinality :db.cardinality/one}
+                           {:db/ident :fa :db/valueType :db.type/float-array
+                            :db/cardinality :db.cardinality/one}
+                           {:db/ident :fa2 :db/valueType :db.type/float-array
                             :db/cardinality :db.cardinality/one}]))
-    (<! (d/transact! conn [{:db/id 1 :blob #?(:clj (byte-array [1 2 3]) :cljs (js/Int8Array. #js [1 2 3]))
-                            :blob2 #?(:clj (byte-array [1 2 3]) :cljs (js/Int8Array. #js [1 2 3]))}
-                           {:db/id 2 :blob #?(:clj (byte-array [1 2 3]) :cljs (js/Int8Array. #js [1 2 3]))
-                            :blob2 #?(:clj (byte-array [9 9 9]) :cljs (js/Int8Array. #js [9 9 9]))}]))
+    ;; entity 1 holds equal CONTENT in both attributes of each pair, in
+    ;; distinct array objects; entity 2 does not
+    (<! (d/transact! conn [{:db/id 1 :anchor 1
+                            :blob (bytes-of [1 2 3]) :blob2 (bytes-of [1 2 3])
+                            :fa (floats-of [1.5 2.5]) :fa2 (floats-of [1.5 2.5])}
+                           {:db/id 2 :anchor 2
+                            :blob (bytes-of [1 2 3]) :blob2 (bytes-of [9 9 9])
+                            :fa (floats-of [1.5 2.5]) :fa2 (floats-of [9.5 9.5])}]))
     (let [db (d/db conn)]
-      ;; only entity 1 holds the same bytes in both attributes
-      (both #{[1]}
-            '[:find ?e :where [?e :blob ?v] [(get-else $ ?e :blob2 "x") ?v]] db))))
+
+      (testing "an optional merge obligation — byte arrays"
+        (both #{[1]}
+              '[:find ?e :where [?e :blob ?v] [(get-else $ ?e :blob2 "x") ?v]] db))
+
+      (testing "an optional merge obligation — float arrays"
+        (both #{[1]}
+              '[:find ?e :where [?e :fa ?v] [(get-else $ ?e :fa2 "x") ?v]] db))
+
+      (testing "the obligated value may be an :in constant"
+        (both #{[1] [2]}
+              '[:find ?e :in $ ?v :where [?e :anchor _] [(get-else $ ?e :blob "x") ?v]]
+              db (bytes-of [1 2 3])))
+
+      (testing "a function output unifying with a bound array"
+        (both #{[1]}
+              '[:find ?e :where [?e :blob ?v] [?e :blob2 ?w] [(identity ?w) ?v]] db))
+
+      (testing "an ordinary pattern occurrence, for comparison"
+        (both #{[1]}
+              '[:find ?e :where [?e :blob ?v] [?e :blob2 ?v]] db)))))
+
+(deftest-async binding-seam-law-history-value-order
+  ;; `get-else` returns the FIRST datom `search` yields, and on `history` that
+  ;; is first in EAVT order — by VALUE, not the earliest transaction. The two
+  ;; coincide whenever the older value also sorts first, so this fixture makes
+  ;; them disagree: the newer value sorts BEFORE the older one. An
+  ;; "earliest version" implementation would answer "old" here.
+  (let [cfg {:store {:backend :memory :id (random-uuid)}
+             :schema-flexibility :write
+             :keep-history? true}
+        conn (<! (connect! cfg))]
+    (<! (d/transact! conn [{:db/ident :nick :db/valueType :db.type/string
+                            :db/cardinality :db.cardinality/one}]))
+    (<! (d/transact! conn [{:db/id 1 :nick "old"}]))
+    (<! (d/transact! conn [{:db/id 1 :nick "new"}]))
+    (let [db (d/db conn)
+          query '[:find ?v :in $ ?e :where [(get-else $ ?e :nick "D") ?v]]]
+      (testing "history takes the EAVT-first version, not the earliest"
+        (both #{["new"]} query (d/history db) 1))
+      (testing "current is unambiguous" (both #{["new"]} query db 1)))))
+

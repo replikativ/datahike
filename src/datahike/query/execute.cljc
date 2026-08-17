@@ -4,6 +4,7 @@
    anti-merge NOT, and direct-to-HashSet output."
   (:require
    [datahike.constants :refer [e0 tx0 emax txmax]]
+   [datahike.array :as da]
    [datahike.datom :as datom :refer [datom]]
    [datahike.db.interface :as dbi]
    [datahike.db.utils :as dbu]
@@ -294,12 +295,16 @@
     a))
 
 (defn- val-eq?
-  "Value equality that handles byte arrays (which don't support Clojure =)."
+  "Value equality for datahike VALUES.
+
+   `da/a=` rather than `=`: byte, float and double arrays are values here, and
+   Clojure's `=` compares them by identity. This used to test byte arrays only,
+   and only on the JVM, so an equality obligation between two equal-content
+   float arrays failed and the row was silently dropped — on cljs, every array
+   comparison was identity. `a=` short-circuits on `=`, so scalars pay nothing
+   beyond the call."
   [a b]
-  #?(:clj (if (and (bytes? a) (bytes? b))
-            (java.util.Arrays/equals ^bytes a ^bytes b)
-            (= a b))
-     :cljs (= a b)))
+  (da/a= a b))
 
 ;; ---------------------------------------------------------------------------
 ;; Equality obligations for fused merge positions
@@ -1156,7 +1161,12 @@
                                        ;; value-seeded seek.
                                        single? (and optional? (not anti?))
                                        probe (datom eid ra (when-not single? vgv) tx0)
-                                       ^Datom d (if (and merge-cursors (not single?))
+                                       ;; The cursor only has to be given up when the probe MOVED
+                                       ;; BACKWARDS — i.e. when there was an obligated value to
+                                       ;; seek at. Without one the probe is `[e a nil]` either
+                                       ;; way, so a plain `get-else` keeps the monotonic cursor
+                                       ;; walk rather than paying a root lookup per entity.
+                                       ^Datom d (if (and merge-cursors (or (not single?) (not vg?)))
                                                   (.seekGE ^PersistentSortedSet$ForwardCursor
                                                    (aget merge-cursors mi) probe)
                                                   (.lookupGE ^PersistentSortedSet eavt-pss probe))
@@ -1404,7 +1414,10 @@
                                    ;; value-seeded seek.
                                    single? (and optional? (not anti?))
                                    probe (datom eid ra (when-not single? vgv) tx0)
-                                   ^Datom d (if (and merge-cursors (not single?))
+                                   ;; See the note in execute-card-many-merge: the cursor is only
+                                   ;; given up when the probe moved backwards, which needs an
+                                   ;; obligated value to have been seeking at.
+                                   ^Datom d (if (and merge-cursors (or (not single?) (not vg?)))
                                               (.seekGE ^PersistentSortedSet$ForwardCursor
                                                (aget merge-cursors mi) probe)
                                               (.lookupGE ^PersistentSortedSet eavt-pss probe))
@@ -2975,10 +2988,13 @@
                    val (apply f argv)]
                (if (some? val)
                  ;; Check already-bound vars: function result must match existing value
+                 ;; `val-eq?`, not `=`: this is the same value equality the merge
+                 ;; kernels make, and a function output that IS an array must
+                 ;; unify with an equal-content one rather than be dropped.
                  (if (and (every? (fn [bv]
-                                    (= val (aget tuple (int (get vi bv)))))
+                                    (val-eq? val (aget tuple (int (get vi bv)))))
                                   already-bound)
-                          (every? (fn [bv] (= val (get consts bv))) const-bound))
+                          (every? (fn [bv] (val-eq? val (get consts bv))) const-bound))
                    (let [;; Extend tuple with new value(s) for unbound vars
                          old-len (alength tuple)
                          new-len (count new-vi)

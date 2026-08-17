@@ -1321,13 +1321,29 @@
       (fn [tuple]
         (get tuple idx)))))
 
-(defn tuple-key-fn [getters]
+(defn tuple-key-fn
+  "Builds the key a relation is hashed by for a join.
+
+   Keys go through `wrap-comparable`, which is exactly what it exists for:
+   `(a= x y)` iff `(= (wrap-comparable x) (wrap-comparable y))`, so array
+   values hash and compare BY VALUE. Without it a byte or float array hashes
+   by identity, so two equal-content arrays landed in different buckets and
+   `[?e :blob ?v] [?e :blob2 ?v]` — an ordinary pattern occurrence, the case
+   the binding-seam law was already right about everywhere else — silently
+   returned nothing on the relational engine. It is identity for every
+   non-array value, so nothing else changes.
+
+   Only key positions are wrapped: `tuple-var-mapper` uses `getter-fn`
+   directly to read VALUES, and a wrapper leaking there would be visible in
+   results."
+  [getters]
   (if (== (count getters) 1)
-    (first getters)
+    (let [g (first getters)]
+      (fn [tuple] (wrap-comparable (g tuple))))
     (let [getters (to-array getters)]
       (fn [tuple]
-        (list* #?(:cljs (.map getters #(% tuple))
-                  :clj (to-array (map #(% tuple) getters))))))))
+        (list* #?(:cljs (.map getters #(wrap-comparable (% tuple)))
+                  :clj (to-array (map #(wrap-comparable (% tuple)) getters))))))))
 
 (defn hash-attrs [key-fn tuples]
   ;; Equivalent to group-by except that it uses a list instead of a vector.
@@ -1688,9 +1704,13 @@
               (update :rels collapse-rels
                       (update new-rel
                               :tuples
+                              ;; `a=`: an obligation against a CONSTANT is the same
+                              ;; value equality as one against a bound variable, and
+                              ;; `=` compares arrays by identity — so a byte-array
+                              ;; constant never matched an equal-content value.
                               #(filter (fn [tuple]
                                          (every? (fn [[ind c]]
-                                                   (= c (get tuple ind)))
+                                                   (a= c (get tuple ind)))
                                                  idx->const))
                                        %)))))))))
 
