@@ -233,7 +233,14 @@
       probe-field: 0 = entity position (seeks EAVT), 2 = value position (seeks AVET).
       Caller should pass nil for probe-set since filtering is baked into the seeks."
      ^Iterable [^PersistentSortedSet pss resolved-a ^java.util.HashSet probe-set probe-field]
-     (let [sorted-vals (sort (vec (.toArray probe-set)))
+     ;; `compare-value`, not `compare`: these values are seeked against the
+     ;; index with a FORWARD-only cursor, and `compare-value` is exactly what
+     ;; the *-quick datom comparators use (`cmp-datoms-avet-quick` calls it on
+     ;; the value component), so the seek order matches the tree's order and
+     ;; the cursor never has to move backwards. Plain `compare` also THROWS on
+     ;; two Comparables of different types — which `:schema-flexibility :read`
+     ;; permits in one attribute — and mis-orders BigInt against the index.
+     (let [sorted-vals (sort datom/compare-value (vec (.toArray probe-set)))
            ^objects val-arr (object-array sorted-vals)
            n-vals (alength val-arr)
            by-entity? (== (int probe-field) 0)]
@@ -2536,7 +2543,8 @@
                   ;; Temporal probe-driven: build concatenated temporal slices per probe value
                   #?(:clj
                      (let [pf (int probe-datom-field)
-                           sorted-vals (sort (vec (.toArray ^java.util.HashSet probe-set)))
+                           ;; index order — see probe-driven-iterable
+                           sorted-vals (sort datom/compare-value (vec (.toArray ^java.util.HashSet probe-set)))
                            result (java.util.ArrayList.)]
                        (doseq [v sorted-vals]
                          (let [[from to] (if (== pf 0)
