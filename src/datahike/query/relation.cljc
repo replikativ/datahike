@@ -67,25 +67,10 @@
       (fn [tuple]
         (get tuple idx)))))
 
-(defn join-key
-  "The key a relation is hashed by for a join, for ONE value.
-
-   A byte/float/double array is a VALUE in datahike, and Clojure's `=` (and
-   hashing) treat arrays by IDENTITY — so two equal-content arrays landed in
-   different buckets and `[?e :blob ?v] [?f :blob2 ?v]` silently returned
-   nothing. `wrap-comparable` exists for exactly this: `(a= x y)` iff the
-   wrappings are `=`. It is identity for every non-array value.
-
-   `value-array?` guards it rather than calling `wrap-comparable` outright:
-   the guard is one `getClass` plus three `identical?` on final classes, where
-   `wrap-comparable` opens with a `bytes?` that costs a `getClass` plus a
-   `getComponentType` on every scalar key.
-
-   Only KEY positions go through this. `getter-fn` is also used to read VALUES
-   (see `tuple-var-mapper` in datahike.query), and a wrapper leaking there
-   would be visible in query results."
-  [x]
-  (if (arr/value-array? x) (arr/wrap-comparable x) x))
+;; THE key rule lives in datahike.array — see `value-key` there, and its twin
+;; `native-key` for the planner's java.util/JS probe containers. A join hashes
+;; into Clojure containers, so this is the Clojure-equality one.
+(def join-key arr/value-key)
 
 (defn tuple-key-fn
   "Builds the join key for a tuple. THE implementation — `datahike.query`'s

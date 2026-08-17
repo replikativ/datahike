@@ -138,39 +138,11 @@
   #?(:clj  (ProbeSet. (java.util.HashSet. (int capacity)) (java.util.ArrayList. (int capacity)))
      :cljs (ProbeSet. (js/Set.) (array))))
 
-(defn- probe-key
-  "The key a hash-probe join stores and looks a value up by.
-
-   A byte/float/double array is a VALUE in datahike, and both `java.util.HashSet`
-   and `js/Set` hash it by IDENTITY — so a producer's array and a consumer's
-   equal-content array landed in different buckets and the join silently
-   returned nothing. The relational engine hashes through `tuple-key-fn`, which
-   wraps; the planner joins through these sets and did not, so fixing only the
-   former turned a shared wrong answer into a DIVERGENCE with the default
-   engine wrong.
-
-   `value-array?` first, then wrap: the guard is one `getClass` plus three
-   `identical?` on final classes, where `wrap-comparable` starts with a
-   `bytes?` that costs a `getClass` + `getComponentType` on every scalar key."
-  [x]
-  (if (da/value-array? x)
-    #?(:clj (da/wrap-comparable x)
-       ;; `js/Set`/`js/Map` key by SameValueZero, which is IDENTITY for any
-       ;; non-primitive — so a wrapper record would still miss, since two
-       ;; equal records are two objects. Only a primitive is compared by
-       ;; value there, so the key is a STRING built from the wrapper's kind
-       ;; and its canonicalised elements (NaN and -0.0 sentinels included).
-       ;;
-       ;; Built here rather than with `pr-str`, which honours `*print-length*`
-       ;; and `*print-level*`: under a caller's `(binding [*print-length* 1] …)`
-       ;; every array printed the same prefix and unequal values collided in
-       ;; the join — measured, a query answering `#{[1 2]}` where both the base
-       ;; engine and the reference say `#{}`. A join key may not depend on
-       ;; print settings.
-       :cljs (let [w (da/wrap-comparable x)]
-               (apply str (name (:kind w)) "|"
-                      (interpose "," (map str (:vals w))))))
-    x))
+;; THE key rule lives in datahike.array — see `native-key` there, and its twin
+;; `value-key` for the relational engine's Clojure containers. These probe
+;; structures are `java.util.HashSet`/`HashMap` and `js/Set`/`js/Map`, which
+;; compare by identity unless the key is a primitive, so this is the native one.
+(def ^:private probe-key da/native-key)
 
 (defn- probe-set-add
   "Add `x` — its content key for membership, and the raw value for seeks.
@@ -2548,9 +2520,22 @@
         ;; found nothing and the row was silently dropped. This is about the
         ;; SCAN, not about the merge: it hits ordinary non-optional merges too,
         ;; which is what an earlier fix here got wrong by gating on the merge.
-        use-cursors? (and use-cursors?
-                          (not (and use-probe-driven?
-                                    (== 2 (int probe-datom-field)))))
+        ;; THE INVARIANT EVERY MERGE CURSOR DEPENDS ON, named rather than
+        ;; implied. A forward cursor can only ever move forward, so a merge may
+        ;; use one exactly when the scan hands it entities in increasing `e`.
+        ;; Cursor-enabled scans normally do — EAVT, fixed-attribute AEVT,
+        ;; fixed-value AVET are all ordered by entity within their attribute —
+        ;; but a VALUE-position probe turns the scan into a series of AVET seeks
+        ;; ordered by VALUE, and then entities arrive in value order. Measured:
+        ;; an inverted fixture yielded 19900 before 19800 and the merge silently
+        ;; dropped the second row.
+        ;;
+        ;; It cannot be decided at plan time, which is why it lives here: the
+        ;; probe-driven decision reads the RUNTIME size of the probe set against
+        ;; the scan estimate.
+        e-monotonic-scan? (not (and use-probe-driven?
+                                    (== 2 (int probe-datom-field))))
+        use-cursors? (and use-cursors? e-monotonic-scan?)
         ;; `execute-sorted-merge` is cursor-driven throughout and has no
         ;; lookup fallback, so when the scan is not monotonic it takes the
         ;; path build-pipeline already uses for every non-sorted card-one
@@ -2634,6 +2619,8 @@
 
         :card-many-merge
         (let [merge-cursors #?(:clj (when use-cursors?
+                                      (assert e-monotonic-scan?
+                                              "a merge cursor needs a scan monotonic in `e`")
                                       (let [cursors (object-array n-merges)]
                                         (dotimes [i n-merges]
                                           (aset cursors i
@@ -2681,6 +2668,8 @@
 
         :per-cursor-merge
         (let [merge-cursors #?(:clj (when use-cursors?
+                                      (assert e-monotonic-scan?
+                                              "a merge cursor needs a scan monotonic in `e`")
                                       (let [cursors (object-array n-merges)]
                                         (dotimes [i n-merges]
                                           (aset cursors i

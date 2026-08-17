@@ -295,6 +295,52 @@ compared element-wise; a mismatched pair falls back to a stable class ordering."
                          :cljs (WrappedArray. :double (mapv canonical-element (array-seq x))))
     :else x))
 
+;; ---------------------------------------------------------------------------
+;; KEYS. Hashing a datahike VALUE needs a representation whose `=`/`hash` are
+;; the value's, not the reference's — and WHICH representation depends on the
+;; container, which is why there are exactly two and they live together here
+;; rather than one per call site.
+;;
+;;   `value-key`  for containers that use CLOJURE equality — a hash-map, a set,
+;;                a transient, `group-by`. The wrapper record/deftype is enough,
+;;                because those containers ask `=`/`hash`.
+;;
+;;   `native-key` for containers that DO NOT — `java.util.HashSet`/`HashMap`,
+;;                and `js/Set`/`js/Map`, which key by SameValueZero, i.e. by
+;;                IDENTITY for anything that is not a primitive. On the JVM the
+;;                wrapper's `equals`/`hashCode` do the job; on ClojureScript
+;;                nothing but a primitive will, so the key is a STRING built
+;;                from the wrapper's kind and canonicalised elements.
+;;
+;; Both guard with `value-array?` before wrapping: that guard is one `getClass`
+;; plus three `identical?` on final classes, where `wrap-comparable` opens with
+;; a `bytes?` costing a `getClass` plus a `getComponentType` on every scalar
+;; key — and these run per tuple.
+;;
+;; Only KEY positions may use them. Values read out for RESULTS must stay
+;; unwrapped, or the wrapper is visible in query output.
+
+(defn value-key
+  "Key for a container that uses Clojure equality (map, set, transient)."
+  [x]
+  (if (value-array? x) (wrap-comparable x) x))
+
+(defn native-key
+  "Key for a java.util or JS container, which compares by identity unless the
+   key is a primitive.
+
+   The ClojureScript string is built here rather than with `pr-str`, which
+   honours `*print-length*` and `*print-level*`: under a caller's
+   `(binding [*print-length* 1] …)` every array printed the same prefix and
+   unequal values collided in a join. A key may not depend on print settings."
+  [x]
+  (if (value-array? x)
+    #?(:clj (wrap-comparable x)
+       :cljs (let [w (wrap-comparable x)]
+               (apply str (name (:kind w)) "|"
+                      (interpose "," (map str (:vals w))))))
+    x))
+
 (defn- same-array-kind?
   "Are `a` and `b` the same primitive-array kind?"
   [a b]
