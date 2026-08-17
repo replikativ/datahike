@@ -42,13 +42,61 @@
 ;; at the cost of higher latency
 (def ^:const DEFAULT_COMMIT_WAIT_TIME 0) ;; in ms
 
+;; How many transactions a NON-STREAMING writer chains onto one head read before
+;; it stops and waits for them to commit. The head read synchronises us with
+;; OTHER processes, and under this writer's stated precondition (no two writers
+;; run concurrently) no other process can commit while we are running — so one
+;; read per BATCH is as correct as one per transaction, and far cheaper.
+;;
+;; The bound is not a tuning knob, it is a safety limit. The commit loop signals
+;; commit-done once per committed transaction, and those signals are pending puts
+;; on an unbuffered channel until we take them. core.async allows exactly 1024
+;; pending puts and THROWS on the 1025th — inside the commit loop that means
+;; closing every queue and killing the writer. In-flight transactions can never
+;; exceed this bound, so 1024 is unreachable. (DEFAULT_QUEUE_SIZE is 120000, so
+;; an unbounded chain would reach it easily.)
+(def ^:const MAX_NONSTREAMING_BATCH 64)
+
+#?(:clj
+   (defn- fail-queued-invocations!
+     "Deliver `e` to every invocation still sitting in a CLOSED `queue`.
+
+      Closing a core.async channel does not discard its buffer, and nothing takes
+      from the transaction queue except the loop that is about to die. Without
+      this, those callers deref a promise-chan nobody ever delivers or closes — a
+      permanent hang with no diagnostic, which is strictly worse than the error
+      they should have got. (`-dispatch!` only covers callers who arrive AFTER
+      the closure; these were already inside.)
+
+      clj only: the Error paths that call it are themselves `#?(:clj …)`."
+     [queue e]
+     (loop []
+       (when-let [{:keys [callback]} (poll! queue)]
+         (put! callback e)
+         (recur)))))
+
 (defn create-thread
-  "Creates new transaction thread"
-  [connection write-fn-map transaction-queue-size commit-queue-size commit-wait-time]
+  "Creates new transaction thread.
+
+   `streaming?` (default true) is datahike's single-writer assumption: this JVM
+   owns the branch, so the head commit-id is kept in memory and never re-read.
+   With `streaming?` false every transaction instead re-reads the branch head
+   from storage before it is applied, so a database can be handed between
+   processes that write to it one after another. See [[create-writer]]."
+  [connection write-fn-map transaction-queue-size commit-queue-size commit-wait-time
+   streaming?]
   (let [transaction-queue-buffer    (buffer transaction-queue-size)
         transaction-queue           (chan transaction-queue-buffer)
         commit-queue-buffer         (buffer commit-queue-size)
-        commit-queue                (chan commit-queue-buffer)]
+        commit-queue                (chan commit-queue-buffer)
+        ;; Non-streaming only: the commit loop signals here after each batch
+        ;; has landed in storage. The transaction loop waits for that signal
+        ;; before it re-reads the head for the next transaction — otherwise a
+        ;; second transaction could re-read a head that does not yet contain
+        ;; the first one and silently drop it. It also holds batches to one
+        ;; commit, which is what makes the head cid we hand the commit loop
+        ;; (below) exactly the head that transaction was applied to.
+        commit-done                 (chan)]
     [transaction-queue commit-queue
      (#?(:clj thread-try :cljs try)
       S
@@ -58,130 +106,324 @@
          ;; delay processing until the writer we are part of in connection is set
                 (while (not (:writer @(:wrapped-atom connection)))
                   (<! (timeout 10)))
-                (loop [old @(:wrapped-atom connection)]
-                  (if-let [{:keys [op args callback] :as invocation} (<?- transaction-queue)]
+                ;; needs-reload? — has our previous batch committed, so the head
+                ;;   must be re-read before applying anything else? INVARIANT:
+                ;;   needs-reload? is true exactly when pending is 0, so a failed
+                ;;   reload can never strand undrained commit-done signals.
+                ;;   `close-batch` below is the ONLY place that sets it true with
+                ;;   a drain, which is what keeps the two in step.
+                ;; pending    — transactions enqueued for commit but not yet
+                ;;   confirmed; the number of commit-done signals we still owe a
+                ;;   take. Bounded by MAX_NONSTREAMING_BATCH.
+                (loop [old @(:wrapped-atom connection)
+                       needs-reload? true
+                       pending 0]
+                  ;; THE WHOLE BATCHING POLICY, in one place and BEFORE we can
+                  ;; park on an empty queue. A batch stays open only while there
+                  ;; is queued work to chain onto it and it is under the bound;
+                  ;; the moment either stops holding we wait for it to land and
+                  ;; re-arm the head read.
+                  ;;
+                  ;; Deciding this per-arm instead is what makes it wrong: the
+                  ;; arms that neither commit nor close (a rejected transaction,
+                  ;; an async op) would leave a batch open across the park on
+                  ;; `<?- transaction-queue`, and the next transaction — seconds
+                  ;; or hours later — would skip the head read and clobber
+                  ;; whatever another process committed in between. Bounding a
+                  ;; batch by COUNT is not enough; it has to be bounded in TIME,
+                  ;; and "about to wait for work" is that boundary.
+                  ;;
+                  ;; Only this loop takes from transaction-queue, so a count seen
+                  ;; here cannot shrink under us — an open batch is closed early
+                  ;; at worst, never left open wrongly.
+                  (if (and (not streaming?)
+                           (pos? pending)
+                           (or (>= pending MAX_NONSTREAMING_BATCH)
+                               (zero? (count transaction-queue-buffer))))
                     (do
-                      (when (> (count transaction-queue-buffer) (* 0.9 transaction-queue-size))
-                        (log/warn :datahike/tx-queue-pressure "Transaction queue buffer >90% full" {:count (count transaction-queue-buffer) :size transaction-queue-size}))
-                      (let [;; TODO remove this after import is ported to writer API
-                            old (if-not (= (:max-tx old) (:max-tx @(:wrapped-atom connection)))
-                                  (assoc old :max-tx (:max-tx @(:wrapped-atom connection)))
-                                  old)
-
-                            op-fn (write-fn-map op)
-                            res   (try
-                              ;; NAMED before it is applied. `write-fn-map` is a
-                              ;; plain map, so an op it does not hold gave `nil`
-                              ;; and `(apply nil …)` threw a NullPointerException
-                              ;; — which the handler below then rewrote as
-                              ;; "connection may have been invalidated, e.g.
-                              ;; through db deletion". A caller whose only fault
-                              ;; was naming an operation this writer does not
-                              ;; have was sent to look at their storage.
+                      ;; One signal per COMMITTED TRANSACTION, so this balances
+                      ;; however the commit loop grouped them into commits.
+                      (loop [n pending]
+                        (when (pos? n)
+                          (<! commit-done)
+                          (recur (dec n))))
+                      ;; Resume from the COMMITTED db, not a report db: its meta
+                      ;; carries the cid the commit loop just wrote, which is what
+                      ;; lets the next reload recognise an unmoved head and skip
+                      ;; rebuilding. Safe — `reset! connection commit-db` happens
+                      ;; before the signals we just took.
+                      (recur @(:wrapped-atom connection) true 0))
+                    (if-let [{:keys [op args callback] :as invocation} (<?- transaction-queue)]
+                      (do
+                        (when (> (count transaction-queue-buffer) (* 0.9 transaction-queue-size))
+                          (log/warn :datahike/tx-queue-pressure "Transaction queue buffer >90% full" {:count (count transaction-queue-buffer) :size transaction-queue-size}))
+                        (let [;; NON-STREAMING: another process may have committed
+                              ;; to this branch since our last transaction, so the
+                              ;; db we hold is not necessarily the head. Re-read it
+                              ;; (one storage read) and apply on top of that. Safe
+                              ;; to read here because the previous transaction's
+                              ;; commit has already landed — see commit-done below.
                               ;;
-                              ;; That is the version-skew case: a newer client
-                              ;; against an older remote writer sends an op the
-                              ;; server has never heard of. There is no version
-                              ;; exchange on this wire to catch it earlier, so
-                              ;; the honest thing is to say which op is missing
-                              ;; and which exist. `load-entities-migrating` is
-                              ;; simply the newest op to reach this; every op
-                              ;; ever added had the same failure.
-                                    (when-not op-fn
-                                      (throw (ex-info (str "This writer has no operation `" op "`. It supports: "
-                                                           (str/join ", " (sort (map str (keys write-fn-map))))
-                                                           ". A remote writer older than the client is the usual cause.")
-                                                      {:type :writer/unknown-op
-                                                       :op op
-                                                       :supported (set (keys write-fn-map))})))
-                                    (apply op-fn old args)
-                            ;; Catch all Throwables to handle AssertionError and other Errors
-                            ;; These should crash the writer, but we deliver to callback first to prevent hangs
-                                    (catch #?(:clj Throwable :cljs js/Error) e
-                                      (log/error :datahike/write-error {:invocation invocation :error e :args args})
-                              ;; short circuit on errors
-                                      #?(:cljs (put! callback e)
-                                         :clj
-                                         (put! callback
-                              ;; An NPE from INSIDE an op is still most often a
-                              ;; released connection, so the hint stays — but as
-                              ;; a hint, not a rewrite. It used to replace the
-                              ;; exception outright, on a guess its own comment
-                              ;; admitted to ("take a guess"), which meant every
-                              ;; unrelated NPE arrived wearing that explanation
-                              ;; and the real stack trace only in `:error`.
-                                               (if (= (type e) NullPointerException)
-                                                 (ex-info (str "NullPointerException during `" op "`. If this connection's "
-                                                               "database was deleted or released elsewhere, that is the "
-                                                               "usual cause; otherwise see :error for the original.")
-                                                          {:type       :writer-error-during-invocation
-                                                           :op         op
-                                                           :invocation invocation
-                                                           :connection connection
-                                                           :error      e}
-                                                          e)
-                                                 e)))
-                              ;; Re-throw Errors (AssertionError, OutOfMemoryError, etc.) to crash the writer
-                              ;; Only Exceptions should be handled and allow the writer to continue.
-                              ;; CLOSE the queues first: a dead loop with open queues would accept
-                              ;; further transacts whose callbacks can never be delivered — every
-                              ;; subsequent transact would hang silently instead of failing loudly.
-                                      #?(:clj (when (instance? Error e)
-                                                (close! transaction-queue)
-                                                (close! commit-queue)
-                                                (throw e)))
-                                      :error))]
-                        (cond (chan? res)
-                              ;; async op, run in parallel in background, no sequential commit handling needed
-                              (do
-                                ;; `>!` REFUSES nil, so forwarding a closed `res`
-                                ;; throws inside this bare `go` — which closes the
-                                ;; go's own channel, silently, and the callback is
-                                ;; never delivered. The caller's promise then never
-                                ;; resolves: a HANG, not an error. `res` closes
-                                ;; whenever the op failed in a way `go-try-` could
-                                ;; not turn into a value (a JVM Error, a cljs throw
-                                ;; of a non-js/Error), and `gc-storage` reaches
-                                ;; here on every call.
-                                (go (let [v (<! res)]
-                                      (>! callback
-                                          (if (nil? v)
-                                            (ex-info (str "The " op " operation produced no result"
-                                                          " — its channel closed without a value,"
-                                                          " which means it failed in a way that"
-                                                          " could not be reported.")
-                                                     {:error :async/no-result
-                                                      :type :writer-no-result
-                                                      :op op})
-                                            v))))
-                                (recur old))
+                              ;; A failed read is surfaced to THIS caller and not
+                              ;; retried. An EXCEPTION must not escape the loop
+                              ;; either: that would kill it without closing
+                              ;; transaction-queue, so every later -dispatch! would
+                              ;; still enqueue successfully and hang forever. And
+                              ;; retrying here would block every queued transaction
+                              ;; unboundedly on a raise
+                              ;; (:branch-head-does-not-exist-in-store) that cannot
+                              ;; tell a storage hiccup from a deleted database —
+                              ;; retry belongs in the konserve backend.
+                              ;;
+                              ;; An ERROR is a different thing and is treated the
+                              ;; same way the op-apply path below treats it: an
+                              ;; AssertionError out of `reload-branch-head` means
+                              ;; an invariant about the stored head does not hold,
+                              ;; and a writer that keeps committing after that is
+                              ;; writing on top of state it has already failed to
+                              ;; validate. Close the queues FIRST so later callers
+                              ;; fail loudly instead of enqueueing into a dead
+                              ;; writer, then crash.
+                              ;;
+                              ;; Only the FIRST transaction of a batch re-reads
+                              ;; the head; the rest chain onto it, exactly as the
+                              ;; streaming path chains onto :db-after. See
+                              ;; MAX_NONSTREAMING_BATCH for why that is sound.
+                              old (if (or streaming? (not needs-reload?))
+                                    old
+                                    (try (w/reload-branch-head old)
+                                         (catch #?(:clj Throwable :cljs js/Error) e
+                                           (log/error :datahike/head-reload-failed
+                                                      {:invocation invocation :error e})
+                                           (put! callback e)
+                                           #?(:clj (when (instance? Error e)
+                                                     (close! transaction-queue)
+                                                     (close! commit-queue)
+                                                     (close! commit-done)
+                                                     (fail-queued-invocations! transaction-queue e)
+                                                     (throw e)))
+                                           ::reload-failed)))
+                              reload-failed? (= ::reload-failed old)
+                              ;; TODO remove this after import is ported to writer API
+                              ;; Skipped when non-streaming: `old` was just read
+                              ;; from the head, so its :max-tx is authoritative,
+                              ;; while the connection's may lag another process.
+                              old (if (and streaming?
+                                           (not= (:max-tx old)
+                                                 (:max-tx @(:wrapped-atom connection))))
+                                    (assoc old :max-tx (:max-tx @(:wrapped-atom connection)))
+                                    old)
+                              ;; The head cid `old` was applied to. Handed to the
+                              ;; commit loop so commit! records the right parent
+                              ;; without reading the head a SECOND time.
+                              ;; It doubles as the BATCH BOUNDARY MARKER: set on
+                              ;; the first transaction of a batch, nil on every
+                              ;; chained one. nil tells the commit loop "your own
+                              ;; previous commit is my parent" — which it is, since
+                              ;; a chained transaction is only enqueued after the
+                              ;; one before it, and the tx loop reads no head in
+                              ;; between. Recording the batch's head cid on all of
+                              ;; them instead would make each commit in the batch
+                              ;; claim the SAME parent, orphaning every commit but
+                              ;; the last.
+                              head-cid (when (and (not streaming?) needs-reload?)
+                                         (get-in old [:meta :datahike/commit-id]))
 
-                              (not= res :error)
-                              (do
-                                (when (> (count commit-queue-buffer) (/ commit-queue-size 2))
-                                  (log/warn :datahike/commit-queue-pressure "Commit queue buffer >50% full" {:count (count commit-queue-buffer) :size commit-queue-size})
-                                  (<! (timeout 50)))
-                                (put! commit-queue [res callback])
-                                (recur (:db-after res)))
-                              :else
-                              (recur old))))
-                    (do
-                      (close! commit-queue)
-                      (log/debug :datahike/writer-closed "Writer thread gracefully closed")))))
+                              op-fn (write-fn-map op)
+                              res   (try
+                                      ;; Nothing to apply when the head read
+                                      ;; failed: `old` is only a sentinel and the
+                                      ;; caller already holds that error — which is
+                                      ;; also the more useful one, so the
+                                      ;; unknown-op check below is skipped rather
+                                      ;; than delivering a second error nobody sees.
+                                      (if reload-failed?
+                                        :error
+                                        (do
+                                          ;; The op has to be NAMED before it is
+                                          ;; applied. `write-fn-map` is a plain map,
+                                          ;; so an op it does not hold gave `nil`
+                                          ;; and `(apply nil …)` threw a
+                                          ;; NullPointerException — which the
+                                          ;; handler below then rewrote as
+                                          ;; "connection may have been invalidated,
+                                          ;; e.g. through db deletion". A caller
+                                          ;; whose only fault was naming an
+                                          ;; operation this writer does not have was
+                                          ;; sent to look at their storage.
+                                          ;;
+                                          ;; That is the version-skew case: a newer
+                                          ;; client against an older remote writer
+                                          ;; sends an op the server has never heard
+                                          ;; of. There is no version exchange on
+                                          ;; this wire to catch it earlier, so the
+                                          ;; honest thing is to say which op is
+                                          ;; missing and which exist.
+                                          (when-not op-fn
+                                            (throw (ex-info (str "This writer has no operation `" op "`. It supports: "
+                                                                 (str/join ", " (sort (map str (keys write-fn-map))))
+                                                                 ". A remote writer older than the client is the usual cause.")
+                                                            {:type :writer/unknown-op
+                                                             :op op
+                                                             :supported (set (keys write-fn-map))})))
+                                          (apply op-fn old args)))
+                              ;; Catch all Throwables to handle AssertionError and other Errors
+                              ;; These should crash the writer, but we deliver to callback first to prevent hangs
+                                      (catch #?(:clj Throwable :cljs js/Error) e
+                                        (log/error :datahike/write-error {:invocation invocation :error e :args args})
+                                ;; short circuit on errors
+                                        #?(:cljs (put! callback e)
+                                           :clj
+                                           (put! callback
+                                ;; An NPE from INSIDE an op is still most often a
+                                ;; released connection, so the hint stays — but as
+                                ;; a hint, not a rewrite. It used to replace the
+                                ;; exception outright, on a guess its own comment
+                                ;; admitted to ("take a guess"), which meant every
+                                ;; unrelated NPE arrived wearing that explanation
+                                ;; and the real stack trace only in `:error`.
+                                                 (if (= (type e) NullPointerException)
+                                                   (ex-info (str "NullPointerException during `" op "`. If this connection's "
+                                                                 "database was deleted or released elsewhere, that is the "
+                                                                 "usual cause; otherwise see :error for the original.")
+                                                            {:type       :writer-error-during-invocation
+                                                             :op         op
+                                                             :invocation invocation
+                                                             :connection connection
+                                                             :error      e}
+                                                            e)
+                                                   e)))
+                                ;; Re-throw Errors (AssertionError, OutOfMemoryError, etc.) to crash the writer
+                                ;; Only Exceptions should be handled and allow the writer to continue.
+                                ;; CLOSE the queues first: a dead loop with open queues would accept
+                                ;; further transacts whose callbacks can never be delivered — every
+                                ;; subsequent transact would hang silently instead of failing loudly.
+                                        #?(:clj (when (instance? Error e)
+                                                  (close! transaction-queue)
+                                                  (close! commit-queue)
+                                                  (close! commit-done)
+                                                  (fail-queued-invocations! transaction-queue e)
+                                                  (throw e)))
+                                        :error))]
+                          (cond reload-failed?
+                                ;; Resume from the last committed db rather than
+                                ;; the sentinel, and NEVER fall through to the
+                                ;; commit path below — it would park on a
+                                ;; commit-done that no commit will ever signal.
+                                ;; pending is 0 here by the loop invariant: we only
+                                ;; reload when the previous batch has drained.
+                                (recur @(:wrapped-atom connection) true 0)
+
+                                (chan? res)
+                                ;; async op, run in parallel in background, no sequential commit handling needed
+                                (do
+                                  ;; `>!` REFUSES nil, so forwarding a closed `res`
+                                  ;; throws inside this bare `go` — which closes the
+                                  ;; go's own channel, silently, and the callback is
+                                  ;; never delivered. The caller's promise then never
+                                  ;; resolves: a HANG, not an error. `res` closes
+                                  ;; whenever the op failed in a way `go-try-` could
+                                  ;; not turn into a value (a JVM Error, a cljs throw
+                                  ;; of a non-js/Error), and `gc-storage` reaches
+                                  ;; here on every call.
+                                  (go (let [v (<! res)]
+                                        (>! callback
+                                            (if (nil? v)
+                                              (ex-info (str "The " op " operation produced no result"
+                                                            " — its channel closed without a value,"
+                                                            " which means it failed in a way that"
+                                                            " could not be reported.")
+                                                       {:error :async/no-result
+                                                        :type :writer-no-result
+                                                        :op op})
+                                              v))))
+                                  ;; Async op: nothing committed, so the whole
+                                  ;; batch state carries over untouched. It is safe
+                                  ;; for this arm to be ignorant of batching — the
+                                  ;; check at the top of the loop closes the batch
+                                  ;; if this turns out to be the last work there is.
+                                  (recur old needs-reload? pending))
+
+                                (not= res :error)
+                                (do
+                                  (when (> (count commit-queue-buffer) (/ commit-queue-size 2))
+                                    (log/warn :datahike/commit-queue-pressure "Commit queue buffer >50% full" {:count (count commit-queue-buffer) :size commit-queue-size})
+                                    (<! (timeout 50)))
+                                  (cond
+                                    ;; Same hazard as -dispatch!, one queue further
+                                    ;; in: a fatal commit error closes commit-queue
+                                    ;; while transaction-queue still holds buffered
+                                    ;; invocations, and this loop drains and applies
+                                    ;; them before it observes the closure. put!
+                                    ;; then returns false, and without this their
+                                    ;; callers deref a promise nobody delivers.
+                                    ;; Nothing was enqueued, so nothing will be
+                                    ;; signalled: leave `pending` alone rather than
+                                    ;; owe a take that nothing owes back.
+                                    (not (put! commit-queue [res callback head-cid]))
+                                    (do (put! callback
+                                              (ex-info "Writer is shut down (a previous fatal error closed it); release and reconnect."
+                                                       {:type :writer-shut-down}))
+                                        (recur old needs-reload? pending))
+
+                                    streaming?
+                                    (recur (:db-after res) false 0)
+
+                                    ;; Chain onto this transaction's db-after
+                                    ;; without re-reading the head, so a batch
+                                    ;; becomes ONE commit and ONE head read. The
+                                    ;; commit loop commits the LAST db of a batch,
+                                    ;; which contains all of them precisely because
+                                    ;; they are chained. Whether the batch may stay
+                                    ;; open is not decided here — see the top of
+                                    ;; the loop.
+                                    :else
+                                    (recur (:db-after res) false (inc pending))))
+
+                                :else
+                                ;; Failed op: same as above — no commit, so the
+                                ;; batch state is unchanged, and the top of the loop
+                                ;; closes the batch if nothing else is queued.
+                                (recur old needs-reload? pending))))
+                      ;; Graceful shutdown. Any batch still open was closed by
+                      ;; the check at the top of the loop before we could park
+                      ;; here, so there is nothing left owed.
+                      (do
+                        (close! commit-queue)
+                        (log/debug :datahike/writer-closed "Writer thread gracefully closed"))))))
         ;; commit loop
         (go-try S
                 (loop [tx (<?- commit-queue)
                        ;; last committed cid of OUR branch: nil on the first
                        ;; iteration (commit! falls back to the storage read),
                        ;; threaded through afterwards so ordinary commits skip
-                       ;; the per-commit branch-head read (S3: 3 requests)
+                       ;; the per-commit branch-head read (one S3 GET).
+                       ;;
+                       ;; Non-streaming writers thread it only WITHIN a batch:
+                       ;; their head can move under them between batches, so the
+                       ;; transaction loop re-reads it and stamps the cid it
+                       ;; applied to onto the batch's first transaction. That
+                       ;; stamp overrides whatever we threaded; the threaded
+                       ;; value carries the rest of the batch. Either way the
+                       ;; parent is correct and costs no extra read.
                        last-cid nil]
                   (when tx
                     (let [txs (into [tx] (take-while some?) (repeatedly #(poll! commit-queue)))]
               ;; empty channel of pending transactions
                       (log/trace :datahike/batch-commit {:batch-size (count txs)})
               ;; commit latest tx to disk
-                      (let [db (:db-after (first (peek txs)))
+                      (let [;; FIRST, not peek: only a batch's opening
+                            ;; transaction carries a cid, and it is the parent of
+                            ;; the commit we are about to make. The chained ones
+                            ;; carry nil and mean "you committed my parent
+                            ;; yourself" — which is `last-cid`. A drained group
+                            ;; can never put a stamped transaction after a nil
+                            ;; one: the transaction loop does not enqueue a new
+                            ;; batch until the previous one is confirmed durable.
+                            last-cid (if streaming?
+                                       last-cid
+                                       (or (nth (first txs) 2 nil) last-cid))
+                            db (:db-after (first (peek txs)))
                             ;; Check for merge parents (set by merge-writer!)
                             merge-parents (get-in db [:meta :datahike/merge-parents])
                             ;; Clear merge-parents from db meta before persisting
@@ -212,19 +454,43 @@
                             ;; closed queue and fail loudly (:writer-shut-down).
                             (close! commit-queue)
                             (close! transaction-queue)
+                            ;; Release a non-streaming transaction loop that is
+                            ;; parked on commit-done, or it never observes the
+                            ;; closed transaction-queue and never shuts down.
+                            (close! commit-done)
                             (doseq [[_ callback] txs]
                               (put! callback e))
                             (log/error :datahike/writer-shutdown {:error e})
                             ;; Re-throw Errors (AssertionError, OutOfMemoryError, etc.) to crash the writer
                             #?(:clj (when (instance? Error e)
                                       (throw e)))))
+                        ;; Signalled AFTER the head flip (or after the failure
+                        ;; path closed everything), so the transaction loop's
+                        ;; next head read sees this commit.
+                        ;;
+                        ;; ONE SIGNAL PER TRANSACTION, not per commit: how this
+                        ;; loop groups queued transactions into commits is its own
+                        ;; business and the transaction loop cannot predict it, so
+                        ;; counting commits would leave the two sides out of step
+                        ;; — a permanently parked writer if we under-signal, and a
+                        ;; growing pile of pending puts if we over-signal. Puts
+                        ;; are capped at 1024 and THROW past it; MAX_NONSTREAMING_BATCH
+                        ;; keeps the count far below that.
+                        (when-not streaming?
+                          (dotimes [_ (count txs)]
+                            (put! commit-done true)))
                         (<! (timeout commit-wait-time))
                         (recur (<?- commit-queue)
-                               ;; Non-throwing read: `@connection` routes through `deref-conn`,
-                               ;; which throws once the connection is released. `release` marks
-                               ;; the connection released before shutting the writer down, so
-                               ;; closing the queue unparks the `<?-` above and this argument
-                               ;; would then deref an already-released connection.
+                               ;; Non-throwing read, for two reasons that meet
+                               ;; here: `@connection` routes through `deref-conn`,
+                               ;; which throws once the connection is released
+                               ;; (`release` marks it released before shutting the
+                               ;; writer down, so closing the queue unparks the
+                               ;; `<?-` above and this argument would then deref an
+                               ;; already-released connection — #929); and on a
+                               ;; NON-STREAMING connection it would additionally
+                               ;; round-trip to storage. The wrapped atom holds the
+                               ;; same value with neither hazard, for both writers.
                                (get-in @(:wrapped-atom connection) [:meta :datahike/commit-id])))))))))]))
 
 (defn- with-tx-pred
@@ -257,11 +523,78 @@
                            'publish-built-db! w/publish-built-db!})
 
 (defmulti create-writer
+  "Create the writer described by the connection's `:writer` config.
+
+   The `:self` backend (the default, `{:backend :self}`) transacts in this JVM
+   and takes these options:
+
+   - `:streaming?` (default `true`) — keep the branch head in memory between
+     commits. `false` re-reads the branch head from storage before every
+     transaction and after every commit.
+
+     COST: one branch-head GET per BATCH (~10-40 ms on S3, ~$0.0000004).
+     Transactions that are already queued when one commits are chained onto it
+     and share its head read, exactly as the streaming writer chains onto
+     `:db-after` — so a burst of concurrent writers pays a handful of reads, not
+     one per transaction, and commit batching is preserved. A caller that waits
+     for each transaction before issuing the next has nothing to batch and does
+     pay one read per commit.
+
+     The chain is bounded (`MAX_NONSTREAMING_BATCH`) and never waits for more
+     work to arrive, so batching costs no latency. It does widen the window
+     between the head read and the commit that lands on it — see the fencing
+     note below, which is what actually closes that window.
+
+     REQUIRED whenever more than one process may hold a writer for this
+     database. The serverless case is the reason it exists: each AWS Lambda
+     execution environment is a separate JVM that believes it is the only
+     writer, and Lambda keeps several of them warm and routes to them
+     alternately. With the default, each environment commits from its own
+     stale head and silently overwrites the other's transactions.
+
+     It does NOT detect the race, it avoids it by serialisation. Two processes
+     writing CONCURRENTLY still lose updates — the loser's head write simply
+     lands last. Preventing that needs head fencing (compare-and-set on the
+     branch head, issue #878). So `:streaming? false` is correct only under an
+     external guarantee that the processes never overlap (e.g. Lambda reserved
+     concurrency 1), not by construction."
   (fn [writer-config _]
     (:backend writer-config)))
 
+(def self-writer-keys
+  "Every key the `:self` writer understands. Closed, and checked at
+   create-writer: a typo like `:streaming` (no `?`) would otherwise select the
+   unsafe default silently, and the whole point of the option is to be safe in
+   a setting where the failure is silent data loss. A spec cannot do this —
+   `s/keys` accepts unqualified keys it does not list."
+  #{:backend :streaming? :transaction-queue-size :commit-queue-size
+    :commit-wait-time :write-fn-map})
+
 (defmethod create-writer :self
-  [{:keys [transaction-queue-size commit-queue-size write-fn-map commit-wait-time]} connection]
+  [{:keys [transaction-queue-size commit-queue-size write-fn-map commit-wait-time
+           streaming?]
+    :or   {streaming? true}
+    :as   writer-config}
+   connection]
+  (when-let [unknown (seq (remove self-writer-keys (keys writer-config)))]
+    (log/raise "Unknown key(s) in the :self writer config."
+               {:type    :unknown-self-writer-config-keys
+                :unknown (vec unknown)
+                :known   (vec (sort self-writer-keys))}))
+  ;; Rejected rather than coerced, for the same reason the key set is closed:
+  ;; every non-boolean is truthy except nil and false, so `:streaming? "false"`
+  ;; out of an env var or a JSON config would read as TRUE — silently selecting
+  ;; the single-writer assumption in the deployment that cannot hold it.
+  ;; `contains?`, not a nil check: Clojure's `:or` default only applies when the
+  ;; key is ABSENT, so an explicit `:streaming? nil` destructures to nil — which
+  ;; every `if` reads as false. That happens to fail safe, but it means the
+  ;; documented default silently does not apply, so reject it like any other
+  ;; non-boolean.
+  (when-not (or (not (contains? writer-config :streaming?))
+                (boolean? (:streaming? writer-config)))
+    (log/raise ":streaming? in the :self writer config must be true or false."
+               {:type      :invalid-streaming-flag
+                :streaming? (:streaming? writer-config)}))
   (let [transaction-queue-size (or transaction-queue-size DEFAULT_QUEUE_SIZE)
         commit-queue-size (or commit-queue-size DEFAULT_QUEUE_SIZE)
         commit-wait-time (or commit-wait-time DEFAULT_COMMIT_WAIT_TIME)
@@ -271,14 +604,15 @@
                               write-fn-map)
                        transaction-queue-size
                        commit-queue-size
-                       commit-wait-time)]
+                       commit-wait-time
+                       streaming?)]
     (map->LocalWriter
      {:transaction-queue transaction-queue
       :transaction-queue-size transaction-queue-size
       :commit-queue commit-queue
       :commit-queue-size commit-queue-size
       :thread thread
-      :streaming? true})))
+      :streaming? streaming?})))
 
 ;; Note: :kabel backend is implemented in datahike.kabel.writer
 ;; Require that namespace to register the defmethod
