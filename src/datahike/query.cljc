@@ -9,7 +9,7 @@
    [datahike.db.interface :as dbi]
    [datahike.db.utils :as dbu]
    [datahike.index.interface :as di]
-   [datahike.array :refer [a= wrap-comparable]]
+   [datahike.array :refer [a= value-array? wrap-comparable]]
    [datahike.impl.entity :as de]
    [datahike.lru]
    [datahike.pull-api :as dpa]
@@ -3515,10 +3515,23 @@
                               (= \$ (first (name (first clause)))))))
                (let [rule-name (first clause)
                      args (rest clause)
+                     ;; An ALLOWLIST is the wrong shape here and this is the second
+                     ;; value type to fall through it: whatever is not substituted
+                     ;; leaves the rule's parameter a free var with nothing to bind
+                     ;; it, so the rule matches EVERYTHING — silently. The lookup-ref
+                     ;; case below is the first one, patched individually.
+                     ;;
+                     ;; Byte/float/double arrays are data values like any other (the
+                     ;; index comparator orders them, `a=` compares them), so
+                     ;; `(has ?e ?v)` with an array `:in` constant returned every
+                     ;; entity where the relational engine returned the matching two.
+                     ;; What the allowlist exists to exclude is a FUNCTION reference,
+                     ;; used as a higher-order rule argument and resolved at execution
+                     ;; time — so exclude that, and let data through.
                      scalar? (fn [v]
                                (or (number? v) (string? v) (keyword? v)
                                    (boolean? v) (nil? v) (uuid? v)
-                                   (inst? v)))
+                                   (inst? v) (value-array? v)))
                      substituted-args (map (fn [x]
                                              (if (and (symbol? x) (contains? consts x))
                                                (let [v (get consts x)]

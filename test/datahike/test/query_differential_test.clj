@@ -949,7 +949,7 @@
    :kind      (gen/elements [:bytes :floats :doubles])
    :shape     (gen/elements [:same-entity :cross-group :get-else :not-join
                              :coll-in :in-const :probe-join :card-many-get-else
-                             :missing-guard :or-join])
+                             :missing-guard :or-join :rule-in :rule-body])
    :find      (gen/elements [:e :count])))
 
 (defn- array-value-for
@@ -990,6 +990,20 @@
                       [(q [(quote ?p) :anchor 1] [(quote ?p) a (quote ?v)]
                           [(quote ?e) indexed (quote ?v)]) []]
                       [(q [(quote ?e) a (quote ?v)] [(quote ?f) b (quote ?v)]) []])
+      ;; A rule argument is its own substitution path, and it was the one this
+      ;; axis did not generate: an array `:in` constant folded into a rule head
+      ;; was left unsubstituted, so the rule's parameter stayed a free var with
+      ;; nothing to bind it and the rule matched EVERY entity — on the planner
+      ;; only, silently, for nine review rounds.
+      :rule-in      [(into (into [:find] find-clause)
+                           (list :in '$ '% '?v :where (list 'has (quote ?e) (quote ?v))))
+                     [[[(list 'has (quote ?e) (quote ?v)) [(quote ?e) a (quote ?v)]]]
+                      (array-value-for kind)]]
+      ;; the same rule with the array reached through the BODY rather than the
+      ;; argument, which is the path that already worked — a control
+      :rule-body    [(into (into [:find] find-clause)
+                           (list :in '$ '% :where (list 'hasv (quote ?e))))
+                     [[[(list 'hasv (quote ?e)) [(quote ?e) a (quote ?v)] [(quote ?e) b (quote ?v)]]]]]
       :card-many-get-else (if many
                             [(q [(quote ?e) :anchor (quote _)]
                                 [(list 'get-else '$ '?e many "zz") '?v]) []]
