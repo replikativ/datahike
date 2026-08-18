@@ -583,3 +583,36 @@
                                :name "Updated"}])]
         (is (= "Updated" (-> (d/entity db :my.entity) :name)))
         (is (= "Updated" (-> (d/entity db [:db/ident :my.entity]) :name)))))))
+
+;; ---------------------------------------------------------------------------
+;; `:db.fn/cas` asks "is the stored value the one I expected", and the INDEX
+;; says two equal-content arrays are one value. Comparing with `=` meant the
+;; answer was yes only when the caller passed back the very object it had read
+;; out of the database — a value reconstructed from the wire, a file, or
+;; another process failed the compare-and-swap with nothing wrong.
+
+(deftest test-cas-on-array-values
+  (let [cfg {:store {:backend :memory :id (random-uuid)}
+             :schema-flexibility :write}
+        _ (d/create-database cfg)
+        conn (d/connect cfg)]
+    (d/transact conn [{:db/ident :ba :db/valueType :db.type/bytes
+                       :db/cardinality :db.cardinality/one}
+                      {:db/ident :bam :db/valueType :db.type/bytes
+                       :db/cardinality :db.cardinality/many}])
+    (d/transact conn [{:db/id 1
+                       :ba #?(:clj (byte-array [1 2 3]) :cljs (js/Int8Array. #js [1 2 3]))
+                       :bam [#?(:clj (byte-array [1 2 3]) :cljs (js/Int8Array. #js [1 2 3]))]}])
+    (testing "a RECONSTRUCTED expected value compares by content, not identity"
+      (is (some? (d/transact conn [[:db.fn/cas 1 :ba
+                                    #?(:clj (byte-array [1 2 3]) :cljs (js/Int8Array. #js [1 2 3]))
+                                    #?(:clj (byte-array [9]) :cljs (js/Int8Array. #js [9]))]])))
+      (is (some? (d/transact conn [[:db.fn/cas 1 :bam
+                                    #?(:clj (byte-array [1 2 3]) :cljs (js/Int8Array. #js [1 2 3]))
+                                    #?(:clj (byte-array [8]) :cljs (js/Int8Array. #js [8]))]]))))
+    (testing "and a genuinely wrong expected value still fails"
+      (is (thrown? #?(:clj Exception :cljs js/Error)
+                   (d/transact conn [[:db.fn/cas 1 :ba
+                                      #?(:clj (byte-array [7 7]) :cljs (js/Int8Array. #js [7 7]))
+                                      #?(:clj (byte-array [1]) :cljs (js/Int8Array. #js [1]))]]))))
+    (d/release conn)))
