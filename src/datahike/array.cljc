@@ -155,7 +155,8 @@ compared element-wise; a mismatched pair falls back to a stable class ordering."
              ;; changed, because changing it WOULD reorder existing stored
              ;; indexes holding high bytes.
              (if (== ka kb)
-               ;; Elements keep `compare3`'s plain `<`/`>` ORDER, deliberately.
+               ;; Float/double elements keep `compare3`'s plain `<`/`>` ORDER,
+               ;; deliberately — bytes do not, see below.
                ;; Giving NaN and signed zero their JVM order here would be more
                ;; correct in the abstract and is NOT worth it: `cmp-datoms-avet`
                ;; breaks a value tie on the entity id, so the old comparator IS
@@ -167,7 +168,40 @@ compared element-wise; a mismatched pair falls back to a stable class ordering."
                ;; that matters — a NaN array reading as EQUAL to every numeric
                ;; array — is fixed in `a=` instead, which decides equality and
                ;; touches nothing on disk.
-               (goog.array/compare3 a b)
+               (if (== ka 0)
+                 ;; BYTES ARE SIGNED, as they are on the JVM. datahike's cljs
+                 ;; bytes representation is a `Uint8Array`, so `aget` hands back
+                 ;; 0..255 and `0xff` sorted LAST, while a JVM `byte[]` reads the
+                 ;; same byte as -1 and sorts it FIRST. That is not a cosmetic
+                 ;; platform difference: the two runtimes share a STORE, so a
+                 ;; JVM-built index holding a high byte, opened from
+                 ;; ClojureScript, was seeked in an order the tree was not built
+                 ;; in — a seek could navigate away from a datom that is there.
+                 ;; It also made the two accepted byte representations disagree
+                 ;; with EACH OTHER: an Int8Array already reads signed.
+                 ;;
+                 ;; One definition of order, and it is the JVM's — that is the
+                 ;; platform the stored format was built on, and
+                 ;; `java.util.Arrays/compare` is what every JVM-side consumer
+                 ;; assumes. ClojureScript is beta; a cljs-BUILT index holding a
+                 ;; byte >= 0x80 must be rebuilt.
+                 ;;
+                 ;; The conversion is idempotent — an Int8Array already reads
+                 ;; signed, so the branch never fires for one.
+                 (let [la (value-array-length a)
+                       lb (value-array-length b)
+                       n (min la lb)]
+                   (loop [i 0]
+                     (if (== i n)
+                       (compare la lb)
+                       (let [x (aget a i)
+                             y (aget b i)
+                             x (if (> x 127) (- x 256) x)
+                             y (if (> y 127) (- y 256) y)]
+                         (cond (< x y) -1
+                               (> x y) 1
+                               :else (recur (inc i)))))))
+                 (goog.array/compare3 a b))
                (if (< ka kb) -1 1)))
      :clj
      (cond

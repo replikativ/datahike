@@ -94,6 +94,28 @@
       (is (not (cmp (byte-array []) (float-array []))))
       (is (not (cmp (byte-array [1]) (float-array [1])))))))
 
+(deftest test-byte-order-matches-the-jvm
+  ;; datahike's ClojureScript bytes representation is a `Uint8Array`, whose
+  ;; elements read 0..255, while a JVM `byte[]` reads the same byte as
+  ;; -128..127. The two runtimes SHARE A STORE, so a JVM-built index holding a
+  ;; high byte, opened from ClojureScript, was seeked in an order the tree was
+  ;; not built in. One definition of order, and it is the JVM's.
+  (testing "0xff is NEGATIVE, so it sorts before 0x00"
+    (is (neg? (compare-arrays (byte-array [-1]) (byte-array [0]))))
+    (is (pos? (compare-arrays (byte-array [0]) (byte-array [-1]))))
+    (is (neg? (compare-arrays (byte-array [-128]) (byte-array [127])))))
+  (testing "and the ordinary low-byte order is untouched"
+    (is (neg? (compare-arrays (byte-array [1]) (byte-array [2]))))
+    (is (zero? (compare-arrays (byte-array [1 2 3]) (byte-array [1 2 3]))))
+    (is (neg? (compare-arrays (byte-array [1 2]) (byte-array [1 2 3])))))
+  #?(:cljs
+     (testing "a Uint8Array orders exactly as the Int8Array of the same bytes"
+       ;; `bytes?` accepts both, and before this they disagreed with each other:
+       ;; 255 read unsigned sorted last, -1 read signed sorted first.
+       (is (neg? (compare-arrays (js/Uint8Array. #js [255]) (js/Uint8Array. #js [0]))))
+       (is (zero? (compare-arrays (js/Uint8Array. #js [255]) (js/Int8Array. #js [-1]))))
+       (is (neg? (compare-arrays (js/Uint8Array. #js [128]) (js/Uint8Array. #js [127])))))))
+
 (deftest test-primitive-array-predicates
   (testing "value-array type predicates"
     (is (float-array? (float-array [1.0])))
