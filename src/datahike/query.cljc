@@ -1011,9 +1011,31 @@
                 :else acc))
             [] coll))))
 
-(def built-ins {'=          =, '== ==, 'not= not=, '!= not=, '< lesser?, '> greater?, '<= lesser-equal?, '>= greater-equal?, '+ +, '- -
+(defn- value=
+  "`=` for query predicates, over datahike VALUES.
+
+   A byte/float/double array is a value here — the index comparator says so,
+   and after the binding-seam work `[?e :ba ?v] [?e :bau ?v]` correctly selects
+   the entities whose two arrays hold the same bytes. Clojure's `=` compares
+   arrays by IDENTITY, so the EXPLICIT spelling of that same equality,
+   `[(= ?v ?w)]`, answered `#{}` for those very rows — two spellings of one
+   question disagreeing. `not=` was the dangerous direction: it ADMITTED every
+   row it should have excluded.
+
+   Variadic like `=`: every argument must equal the first."
+  ([_] true)
+  ([x y] (a= x y))
+  ([x y & more] (and (a= x y) (every? #(a= x %) more))))
+
+(defn- value-not=
+  "`not=` over datahike values — the complement of `value=`."
+  ([_] false)
+  ([x y] (not (a= x y)))
+  ([x y & more] (not (apply value= x y more))))
+
+(def built-ins {'=          value=, '== ==, 'not= value-not=, '!= value-not=, '< lesser?, '> greater?, '<= lesser-equal?, '>= greater-equal?, '+ +, '- -
                 '*          *, '/ /, 'quot quot, 'rem rem, 'mod mod, 'inc inc, 'dec dec, 'max -max, 'min -min
-                'zero?      zero?, 'pos? pos?, 'neg? neg?, 'even? even?, 'odd? odd?, 'compare compare
+                'zero?      zero?, 'pos? pos?, 'neg? neg?, 'even? even?, 'odd? odd?, 'compare datom/compare-value
                 'rand       rand, 'rand-int rand-int
                 'true?      true?, 'false? false?, 'nil? nil?, 'some? some?, 'not not, 'and and-fn, 'or or-fn
                 'complement complement, 'identical? identical?

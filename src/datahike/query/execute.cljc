@@ -2619,8 +2619,11 @@
 
         :card-many-merge
         (let [merge-cursors #?(:clj (when use-cursors?
-                                      (assert e-monotonic-scan?
-                                              "a merge cursor needs a scan monotonic in `e`")
+                                      ;; no assert here: `use-cursors?` is already
+                                      ;; `(and … e-monotonic-scan?)`, so one would be
+                                      ;; unreachable. The invariant is enforced at
+                                      ;; the binding, which is the only place that
+                                      ;; can decide it.
                                       (let [cursors (object-array n-merges)]
                                         (dotimes [i n-merges]
                                           (aset cursors i
@@ -2668,8 +2671,11 @@
 
         :per-cursor-merge
         (let [merge-cursors #?(:clj (when use-cursors?
-                                      (assert e-monotonic-scan?
-                                              "a merge cursor needs a scan monotonic in `e`")
+                                      ;; no assert here: `use-cursors?` is already
+                                      ;; `(and … e-monotonic-scan?)`, so one would be
+                                      ;; unreachable. The invariant is enforced at
+                                      ;; the binding, which is the only place that
+                                      ;; can decide it.
                                       (let [cursors (object-array n-merges)]
                                         (dotimes [i n-merges]
                                           (aset cursors i

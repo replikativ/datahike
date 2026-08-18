@@ -184,41 +184,6 @@ compared element-wise; a mismatched pair falls back to a stable class ordering."
            ;; by class name so the index stays totally ordered.
            (compare (str (class a)) (str (class b))))))))
 
-(defn string-from-bytes
-  "Represents a byte array as a string. Two byte arrays are said to be equal iff their corresponding values after applying this function are equal. That way, we rely on the equality and hash code implementations of the String class to compare byte arrays."
-  [x]
-  ;; NOT `TextDecoder`: it maps every invalid UTF-8 byte to the SAME
-  ;; replacement character, so 0x80 and 0x81 produced equal strings for arrays
-  ;; `a=` calls different — the opposite of what this function promises. One
-  ;; character per byte, as on the JVM.
-  #?(:cljs (let [n (.-length x)
-                 ;; `(.-buffer x)` would read the whole underlying ArrayBuffer,
-                 ;; ignoring a view's byteOffset/length, and `.apply` on the
-                 ;; result blows the stack past ~64k arguments. Walk the VIEW,
-                 ;; in chunks.
-                 sb (js/Array.)]
-             (loop [i 0]
-               (when (< i n)
-                 (let [end (min n (+ i 8192))
-                       chunk (js/Array.)]
-                   (loop [j i]
-                     (when (< j end)
-                       (.push chunk (bit-and (aget x j) 0xff))
-                       (recur (inc j))))
-                   (.push sb (.apply js/String.fromCharCode nil chunk))
-                   (recur end))))
-             (.join sb ""))
-     :clj
-     (let [^bytes x x
-           n (alength x)
-           dst (char-array n)]
-       (dotimes [i n]
-         ;; `(char -1)` throws — a byte is SIGNED, and every byte from 0x80 up
-         ;; is negative. Mask to the unsigned value so the representation
-         ;; exists for the whole domain.
-         (aset dst i (char (bit-and (aget x i) 0xff))))
-       (String. dst))))
-
 #?(:clj
    (deftype ArrayKey [kind arr ^int hsh]
      Object

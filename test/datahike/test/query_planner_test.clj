@@ -6,6 +6,7 @@
    [datahike.api :as d]
    [datahike.db :as db]
    [datahike.query :as q]
+   [datahike.array :as arr]
    [datahike.query.execute :as ex]))
 
 ;; ---------------------------------------------------------------------------
@@ -1000,10 +1001,12 @@
           (binding [q/*disable-planner* false q/*query-result-cache?* false]
             (testing "the array probe answers correctly"
               (is (= 6000 (count (d/q query db)))))
-            ;; BOTH assertions are the test. The answer alone cannot tell
-            ;; "the seek path ran" from "the seek path was declined and a full
-            ;; scan produced the same rows" — which is exactly what it did
-            ;; before, measured: 0 seeks, same 6000 rows.
+            ;; The ANSWER is the guard against the decline: measured on
+            ;; origin/main with this fixture, the same query returns 0 rows.
+            ;; The seek count is the guard against a future change quietly
+            ;; routing this to a full scan — it does NOT discriminate against
+            ;; main on its own (main also seeks here, it just seeks with a key
+            ;; the index cannot match).
             (testing "and it does so by SEEKING, not by scanning the attribute"
               (is (pos? @seeks))))
           (binding [q/*disable-planner* true q/*query-result-cache?* false]
@@ -1014,30 +1017,24 @@
   ;; The seek list is parallel to the membership set, and the temporal branch
   ;; builds one index slice PER value in it and concatenates. A duplicate would
   ;; duplicate its whole slice — silently doubling rows — so `probe-set-add`
-  ;; appends only when the key was new. Two producer tuples carrying
-  ;; equal-content-but-distinct arrays are the case that exercises it.
-  (let [cfg {:store {:backend :memory :id (random-uuid)}
-             :schema-flexibility :write :keep-history? true}]
-    (d/create-database cfg)
-    (let [conn (d/connect cfg)]
-      (d/transact conn [{:db/ident :tag :db/valueType :db.type/bytes :db/index true
-                         :db/cardinality :db.cardinality/one}
-                        {:db/ident :nm :db/valueType :db.type/string
-                         :db/cardinality :db.cardinality/one}
-                        {:db/ident :want :db/valueType :db.type/bytes
-                         :db/cardinality :db.cardinality/one}])
-      (d/transact conn (vec (for [i (range 3000)]
-                              {:db/id (+ 100 i) :tag (byte-array [1 2 3]) :nm (str "n" i)})))
-      ;; two producers, equal content, distinct objects
-      (d/transact conn [{:db/id 50 :want (byte-array [1 2 3])}
-                        {:db/id 51 :want (byte-array [1 2 3])}])
-      (let [db (d/db conn)
-            query '[:find ?e ?n :where [?p :want ?x] [?e :tag ?x] [?e :nm ?n]]]
-        (doseq [[label view] [["current" db] ["history" (d/history db)]]]
-          (testing (str "no duplicated rows on " label)
-            (let [planner (binding [q/*disable-planner* false q/*query-result-cache?* false]
-                            (d/q query view))
-                  base (binding [q/*disable-planner* true q/*query-result-cache?* false]
-                         (d/q query view))]
-              (is (= (count base) (count planner)))
-              (is (= (set base) (set planner))))))))))
+  ;; appends only when the key was new.
+  ;;
+  ;; Asserted on the STRUCTURE, not through `d/q`: a query returns a SET, so
+  ;; duplicated rows collapse before any assertion sees them, and an aggregate
+  ;; dedupes its input projection. This test was first written as a query and
+  ;; PASSED with the dedupe removed — measured — which made it no guard at all.
+  (let [ps (#'ex/make-probe-set 8)
+        b1 (byte-array [1 2 3])
+        b2 (byte-array [1 2 3])          ; equal content, distinct object
+        b3 (byte-array [9])]
+    (#'ex/probe-set-add ps b1)
+    (#'ex/probe-set-add ps b2)
+    (#'ex/probe-set-add ps b3)
+    (testing "an equal-content array is not a second member"
+      (is (= 2 (#'ex/probe-set-size ps))))
+    (testing "and not a second SEEK value — the one that doubles rows"
+      (is (= 2 (count (#'ex/probe-set-seek-vals ps)))))
+    (testing "membership answers by value, for a third distinct object"
+      (is (boolean (#'ex/probe-set-contains? ps (byte-array [1 2 3])))))
+    (testing "seek values are the RAW arrays, never the wrapped keys"
+      (is (every? arr/value-array? (#'ex/probe-set-seek-vals ps))))))
