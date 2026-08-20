@@ -1906,7 +1906,31 @@
                       (dbi/-ident-for db a)
                       a)
             a (if (:attribute-refs? config)
-                (dbi/-ref-for db a-ident)
+                ;; `-ref-for` answers nil for an ident this database has not
+                ;; installed, and a nil here becomes the datom's ATTRIBUTE — which
+                ;; does not fail here. It fails much later and much worse, inside
+                ;; the index comparator, as
+                ;;
+                ;;   NullPointerException: Cannot read field "value"
+                ;;     because "anotherLong" is null   (datom/cmp-attr-quick)
+                ;;
+                ;; naming neither the attribute nor the record that carried it.
+                ;; Only attribute-refs databases can reach it: without them `a`
+                ;; IS the keyword and an undeclared attribute is simply stored.
+                ;;
+                ;; `import-source` already requires a source to emit its schema
+                ;; datoms before the data using them (contract item 4), so this
+                ;; enforces a stated rule rather than inventing one — in the same
+                ;; place, and the same way, as the configuration-mismatch raise
+                ;; below.
+                (or (dbi/-ref-for db a-ident)
+                    (log/raise (str "Attribute " a-ident " is not installed in this"
+                                    " :attribute-refs? database. A source must emit an"
+                                    " attribute's schema datoms before any datom using"
+                                    " it; with :attribute-refs? the attribute has to be"
+                                    " an entity before it can be referenced.")
+                               {:error :import/unknown-attribute
+                                :attribute a-ident :data entity}))
                 (if (number? a)
                   (log/raise "Configuration mismatch: import data with attribute references can not be imported into a database with no attribute references."
                              {:error :import/mismatch :data entity})
