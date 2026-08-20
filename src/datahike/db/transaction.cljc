@@ -1929,7 +1929,7 @@
                                     " attribute's schema datoms before any datom using"
                                     " it; with :attribute-refs? the attribute has to be"
                                     " an entity before it can be referenced.")
-                               {:error :import/unknown-attribute
+                               {:error :transact/unknown-attribute
                                 :attribute a-ident :data entity}))
                 (if (number? a)
                   (log/raise "Configuration mismatch: import data with attribute references can not be imported into a database with no attribute references."

@@ -155,7 +155,7 @@
                                 (recur c (or (ex-data c) found))
                                 (or (ex-data x) found)))))]
               (is (some? ex) "the import must refuse rather than write a nil attribute")
-              (is (= :import/unknown-attribute (:error ex)))
+              (is (= :transact/unknown-attribute (:error ex)))
               (is (= :person/nickname (:attribute ex))
                   "and say WHICH attribute, which the NullPointerException never did"))
             (finally (teardown conn)))))
