@@ -730,7 +730,7 @@ anywhere in between.
 
 1. **Records are `[e a v t op]`** — `a` a keyword ident, `v` a real value (`nil`
    is not storable), `t` the source's transaction id, `op` a boolean.
-2. **Order is `(t, txInstant-first, e, a)`** — schema before the data using it,
+2. **Order is `(t, txInstant-first, e, a, op)`** — schema before the data using it,
    the transaction entity before its own datoms.
 3. **`t` must vary.** The batcher flushes when `t` changes; a source stamping
    every record with one `t` never flushes and buffers the whole stream.

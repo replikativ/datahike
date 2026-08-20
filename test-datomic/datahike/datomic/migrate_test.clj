@@ -635,3 +635,57 @@
                                   (dt/q '[:find ?v :where [_ :p/b ?v]] (dt/db c)))))
               (finally (dt/release c) (dt/delete-database uri)))))
         (finally (d/release conn) (d/delete-database cfg))))))
+
+;; ---------------------------------------------------------------------------
+;; ident renames
+
+(deftest an-ident-rename-is-emitted-retraction-first-and-imports
+  (testing "A rename retracts and asserts :db/ident on the SAME entity in the
+            SAME transaction, so both records share (t, e, :db/ident) exactly.
+            `sort-by` is stable, so without `op` in the key their order was
+            whatever `d/tx-range` returned — and Datomic returns them
+            ASSERTION-first, which lands a second :db/ident on an entity that
+            still holds its first. That is the ClassCastException a 393M-datom
+            production import died on, six hours in, at a user attribute renamed
+            years earlier. `op` in the sort key is what makes the order a
+            guarantee rather than a coincidence."
+    (let [uri (str "datomic:mem://dh-rename-" (rand-int 1000000))]
+      (dt/create-database uri)
+      (let [c (dt/connect uri)]
+        (try
+          @(dt/transact c [{:db/ident :m/before :db/valueType :db.type/string
+                            :db/cardinality :db.cardinality/one}])
+          @(dt/transact c [{:db/id "e1" :m/before "kept"}])
+          ;; the rename itself — Datomic's own alterSchema spelling
+          @(dt/transact c [{:db/id :m/before :db/ident :m/after}])
+          (testing "the source normalises the tie to retraction-first"
+            (let [src (dtm/source c {:window 100})
+                  idents (->> (:chunks src)
+                              (mapcat (fn [ch] ((:read src) ch {})))
+                              (filter (fn [[_ a v _ _]]
+                                        (and (= a :db/ident)
+                                             (contains? #{:m/before :m/after} v))))
+                              (mapv (fn [[_ _ v _ op]] [v op])))]
+              ;; Both records are present and the RETRACTION comes first. The
+              ;; assertion of :m/before at declaration time precedes both.
+              (is (= [:m/before true] (first idents))
+                  (str "the original naming leads, got " (pr-str idents)))
+              (is (< (.indexOf idents [:m/before false])
+                     (.indexOf idents [:m/after true]))
+                  (str "retraction must precede the assertion, got " (pr-str idents)))))
+          (testing "and the import completes, with the data under the new name"
+            (let [cfg {:store {:backend :memory :id (random-uuid)}
+                       :keep-history? true :schema-flexibility :write}]
+              (d/create-database cfg)
+              (let [conn (d/connect cfg)]
+                (try
+                  (let [rep (dtm/import-from-datomic! conn c)]
+                    (is (true? (:verified? rep))
+                        "the import must not abort on the rename")
+                    (is (= #{["kept"]}
+                           (into #{} (d/q '[:find ?v :where [?e :m/after ?v]] @conn)))
+                        "the renamed attribute carries its data")
+                    (is (contains? (:schema @conn) :m/after)
+                        "and is installed under the new ident"))
+                  (finally (d/release conn) (d/delete-database cfg))))))
+          (finally (dt/release c) (dt/delete-database uri)))))))
