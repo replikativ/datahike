@@ -343,7 +343,8 @@
 
 (defn- resolve-attr [db a]
   (if (and (:attribute-refs? (dbi/-config db)) (keyword? a))
-    (dbi/-ref-for db a)
+    ;; :no-match — an undeclared attribute matches nothing, as it always has without :attribute-refs?
+    (dbi/ref-for db a :no-match)
     a))
 
 (defn- val-eq?
@@ -855,7 +856,7 @@
 (defn- resolve-date-to-tx-id*
   [origin-db date]
   (let [txInstant-attr (if (:attribute-refs? (dbi/-config origin-db))
-                         (dbi/-ref-for origin-db :db/txInstant)
+                         (dbi/ref-for origin-db :db/txInstant :error-on-missing)
                          :db/txInstant)
         all-instants (dbi/-datoms origin-db :aevt [txInstant-attr] dbu/temporal-context)
         matching (filter (fn [^Datom d]
