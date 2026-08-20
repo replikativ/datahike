@@ -325,7 +325,7 @@
 
 (defn export-records
   "Lazy seq of encoded record vectors for `db` (UNSORTED — the external merge sort
-   in `export-db` imposes the `(t, txInstant-first, e, a)` order). Emits only
+   in `export-db` imposes the `(t, txInstant-first, e, a, op)` order). Emits only
    user-transaction datoms (tx > tx0): this drops the bootstrap in attribute-refs
    dbs — system entities are already present in the target, so refs to them are
    translated (#508/#531) rather than re-inserted — and is a no-op for plain dbs,

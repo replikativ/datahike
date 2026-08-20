@@ -105,7 +105,24 @@
                    (if (schema v-ident)
                      (log/raise (str "Schema with attribute " v-ident " already exists")
                                 {:error :transact/schema :attribute v-ident})
-                     (-> (assoc-in db [:schema v-ident] (merge (or (schema e) {}) (hash-map a-ident v-ident)))
+                     ;; `[:schema e]` holds a POINTER to the ident's entry as soon as
+                     ;; :db/ident has been asserted for `e` — the `assoc-in` on the
+                     ;; very next line is what puts it there. FOLLOW IT, exactly as
+                     ;; the non-ident branch below and `remove-schema` both do.
+                     ;;
+                     ;; Without this a SECOND :db/ident assertion on the same entity —
+                     ;; an attribute RENAME — reaches `merge` with a keyword where a
+                     ;; map belongs, and `conj` throws ClassCastException. Whether it
+                     ;; threw depended on the CALLER's ordering: a retraction clears
+                     ;; the pointer, so retract-before-assert survived while
+                     ;; assert-before-retract did not. Resolving here makes the
+                     ;; function total on its own input rather than dependent on an
+                     ;; ordering it cannot see. Whether a rename is ALLOWED is a
+                     ;; separate question, decided by `validate-ident-renames!`.
+                     (-> (assoc-in db [:schema v-ident]
+                                   (merge (let [prev (schema e)]
+                                            (if (keyword? prev) (or (schema prev) {}) (or prev {})))
+                                          (hash-map a-ident v-ident)))
                          (assoc-in [:schema e] v-ident)
                          (assoc-in [:ident-ref-map v-ident] e)
                          (assoc-in [:ref-ident-map e] v-ident)))
@@ -1569,6 +1586,52 @@
                              db))))
                      db enabled))))))))
 
+(defn- validate-ident-renames!
+  "Refuse an attribute RENAME that would silently split the attribute in two.
+
+   A rename is invisible to `validate-schema-changes!`: the old schema entry is
+   left untouched and the new one is indistinguishable from a brand-new
+   attribute, so `assess-schema-transition` sees nil -> entry and waves it
+   through. The two names are tied together in exactly one place —
+   `:ref-ident-map`, which maps the attribute ENTITY to its CURRENT ident.
+
+   Whether a rename MEANS anything depends on how a datom stores its attribute,
+   which is what `:attribute-refs?` decides:
+
+     true  — datoms hold the attribute's ENTITY ID, so every existing datom is
+             reachable under the new name the moment the ident changes. This is
+             Datomic's representation, and Datomic's rename semantics come with
+             it. Allowed.
+     false — the attribute KEYWORD is the storage key in every datom. Renaming
+             the ident renames nothing: the old datoms keep answering to the old
+             keyword while the new name starts empty, both names resolve, and the
+             attribute is SPLIT across the two with no error. Refused while the
+             old name still has data.
+
+   Deliberately NOT inside `update-schema`. This is policy, and the import path
+   (`transact-entities-directly`) bypasses the deferred validators on purpose: an
+   importing source relabels its own datoms to the final ident before they ever
+   arrive, so the split cannot happen there and the rename must pass."
+  [{:keys [db-before db-after] :as _report}]
+  (let [old-rim (:ref-ident-map db-before)
+        new-rim (:ref-ident-map db-after)]
+    (when-not (identical? old-rim new-rim)
+      (when-not (:attribute-refs? (dbi/-config db-after))
+        (doseq [[e new-ident] new-rim]
+          (let [old-ident (get old-rim e)]
+            (when (and old-ident
+                       (not= old-ident new-ident)
+                       (or (seq (schema-attr-current-datoms db-after old-ident))
+                           (seq (schema-attr-history-datoms db-after old-ident))))
+              (log/raise (str "Cannot rename " old-ident " to " new-ident
+                              " while it has existing (or history) datoms: without"
+                              " :attribute-refs? the attribute keyword is stored in every"
+                              " datom, so the data would not follow the rename and the"
+                              " attribute would be split across both names. Migrate the data"
+                              " to a new attribute instead, or use :attribute-refs?.")
+                         {:error :transact/schema :attribute old-ident
+                          :new-attribute new-ident :entity-id e}))))))))
+
 (defn- validate-schema-changes!
   "End-of-transaction schema validation on the RESULTING state.
 
@@ -1721,6 +1784,7 @@
             ;; raw datom vectors, retracts and any datom order uniformly
             ;; (check-schema-update only sees the entity-map path).
             (validate-schema-changes! report)
+            (validate-ident-renames! report)
             (-> report
                 ;; Index-backfill migration for :db/index / :db/unique
                 ;; enabled on existing attributes — must run while

@@ -59,7 +59,7 @@
 
 (deftest a-sink-receives-the-dump-stream-in-dump-order
   (testing "the same records export-db writes, in the same
-            `(t, txInstant-first, e, a)` order"
+            `(t, txInstant-first, e, a, op)` order"
     (let [conn (populate! (fresh-conn))
           seen (atom [])
           result (m/export-to-sink @conn (collecting-sink seen)

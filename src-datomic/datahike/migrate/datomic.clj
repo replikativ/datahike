@@ -198,7 +198,7 @@
         (dt/q '[:find ?i :where [?a :db/valueType :db.type/ref] [?a :db/ident ?i]] db)))
 
 (defn- tx->records
-  "One Datomic log entry -> datahike records, in `(t, txInstant-first, e, a)` order.
+  "One Datomic log entry -> datahike records, in `(t, txInstant-first, e, a, op)` order.
 
    `a` becomes a keyword ident.
 
@@ -254,9 +254,19 @@
          ;; `extra` is the provenance SCHEMA, emitted once with the first
          ;; transaction — a source owes its own schema before the data using it.
          (concat prov (map (fn [r] (assoc r 3 dh-t)) extra))
-         ;; :db/txInstant first within the transaction, then by (e, a) — the
+         ;; :db/txInstant first within the transaction, then by (e, a, op) — the
          ;; order `migrate.sort/sort-key` documents and the importer assumes.
-         (sort-by (fn [[e a _ _ _]] [(if (= a :db/txInstant) 0 1) e (str a)]))
+         ;;
+         ;; `op` LAST but present, retraction before assertion, and it is not
+         ;; decoration: for an ident RENAME the retraction and the assertion of
+         ;; :db/ident share [1, e, ":db/ident"] exactly, so without `op` in the key
+         ;; `sort-by`'s stability hands their order to whatever `d/tx-range`
+         ;; happened to return. Datomic returns them ASSERTION-first, which lands
+         ;; a second :db/ident on an entity that still holds its old one — the case
+         ;; `update-schema` used to throw a ClassCastException on, six hours into a
+         ;; 393M-datom import. `migrate.sort/sort-key` has carried `op` for this
+         ;; reason all along; this sort claimed to implement that order and did not.
+         (sort-by (fn [[e a _ _ op]] [(if (= a :db/txInstant) 0 1) e (str a) (if op 1 0)]))
          vec)))
 
 (defn- provenance-schema

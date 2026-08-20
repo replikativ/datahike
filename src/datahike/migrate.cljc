@@ -655,7 +655,7 @@
    ## What a sink gets, and what it does NOT get
 
    It gets the same `[e a v t op]` records `export-db` writes, in the same
-   `(t, txInstant-first, e, a)` order, transformed by the same `:xform`.
+   `(t, txInstant-first, e, a, op)` order, transformed by the same `:xform`.
 
    It does NOT get what makes a dump a dump: no manifest, no per-chunk SHA-256,
    no semantic digest, nothing `verify` can later read back. Those are properties
@@ -2636,9 +2636,18 @@
 
    1. Records are `[e a v t op]`: `a` a keyword ident, `v` a real value (`nil` is
       not storable), `t` the source's transaction id, `op` a boolean.
-   2. ORDER is `(t, txInstant-first, e, a)` — the same order `export-db` writes
+   2. ORDER is `(t, txInstant-first, e, a, op)` — the same order `export-db` writes
       and `datahike.migrate.sort/sort-key` documents. Schema before the data that
       uses it, the tx entity before its own datoms, causally ordered.
+
+      `op` LAST but REQUIRED, retraction before assertion. It used to be missing
+      from this list, which made it missing from every source written against
+      this list: two records that agree on `(t, e, a)` were left in whatever order
+      the source happened to produce. That is not a rare tie — it is exactly an
+      ident RENAME, whose retraction and assertion share `(t, e, :db/ident)`, and
+      taking them assertion-first hands `update-schema` a second `:db/ident` for an
+      entity that still holds its first. `sort-key` has carried `op` for this
+      reason all along; only the prose here had dropped it.
    3. `t` MUST VARY. The batcher flushes on `(and (>= n batch-size) (not= t last-t))`,
       so a source that stamps every record with one `t` never reaches a flush and
       buffers the whole stream. `:max-pending` is the backstop, not the design.
