@@ -16,6 +16,11 @@
    [replikativ.logging :as log]
    [datahike.schema :as ds]
    [datahike.index.secondary :as sec]
+   ;; The id-mapping vocabulary. `migrated-eid`/`remember-eid` below serve
+   ;; `transact-entities-directly` and nothing else — they are import helpers
+   ;; that happen to live here — so taking the rule from the namespace that
+   ;; owns mappings is the direction that keeps the two import paths agreeing.
+   [datahike.migrate.ids :as mids]
    [org.replikativ.persistent-sorted-set.arrays :as arrays])
   #?(:cljs (:require-macros [datahike.datom :refer [datom]]))
   #?(:clj (:import [clojure.lang ExceptionInfo]
@@ -701,16 +706,46 @@
    that `e`."
   [migration-state e]
   (or (get (:tids migration-state) e)
-      (let [m (:eids migration-state)]
-        (if (fn? m) (m e) (get m e)))))
+      ;; `mids/lookup-id` rather than a local branch: the bulk-index path reads the
+      ;; SAME `:eids` through `ids/apply-mapping`, and when the two spelled the rule
+      ;; out separately they disagreed — a function was called here and `get`-ed
+      ;; there, so it silently mapped nothing on that path. One owner now.
+      (mids/lookup-id (:eids migration-state) e nil)
+      ;; then what WE allocated for an id the caller's mapping does not name. See
+      ;; `remember-eid`: a caller mapping may be partial, and the allocations made
+      ;; for the ids it skips have to be remembered somewhere it can be written to.
+      (get (:allocated migration-state) e)))
 
 (defn- remember-eid
-  "Record source eid `e` -> `new-e`, unless `:eids` is a function — a total
-   function has nothing to memoise, and assoc-ing into it would fail."
+  "Record source eid `e` -> `new-e`, in whichever table can hold it.
+
+   Keyed on whether `:eids` can HOLD the entry, not on `fn?`. A reified `ILookup`
+   is neither a function nor associative, so the `fn?` test let it through to
+   `assoc-in`, which threw from `clojure.lang.RT/assoc`.
+
+   `nil` MEMOISES, and that is not a detail: `:allocate` — the default policy —
+   supplies no `:eids` at all and relies on this to build the map up as it goes.
+   Testing `map?` alone silently skipped every memoisation there, so each id was
+   allocated afresh on every reference and the streaming path drifted away from
+   the bulk one (measured: `:max-eid` 9 against 4, with the two hashes
+   disagreeing). Only comparing the two paths on the same records caught it.
+
+   A COMPUTED mapping memoises into `:allocated`. It used to memoise nowhere, on
+   the reasoning that a total function has nothing to memoise — true, and the
+   trap is that nothing enforces totality. A PARTIAL function was already
+   accepted, and for every id it did not name, each datom of that entity got a
+   SEPARATE fresh eid: measured on unpatched main, a two-attribute schema came
+   out at eids `(1 4)` with one attribute's three datoms scattered, so `:pal`
+   never became a ref and its ref value was left pointing at the untranslated
+   source id — a dangling reference, silently. Writing allocations to a table the
+   mapping does not own makes a partial computed mapping behave exactly like a
+   partial map, which is the only defensible answer: both are the caller naming
+   some ids and not others."
   [migration-state e new-e]
-  (if (fn? (:eids migration-state))
-    migration-state
-    (assoc-in migration-state [:eids e] new-e)))
+  (let [m (:eids migration-state)]
+    (if (or (nil? m) (map? m))
+      (assoc-in migration-state [:eids e] new-e)
+      (assoc-in migration-state [:allocated e] new-e))))
 
 (defn- transact-report
   ([report datom] (transact-report report datom false))

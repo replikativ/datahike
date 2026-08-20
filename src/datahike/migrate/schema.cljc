@@ -90,8 +90,14 @@
                  [:on-error         {:optional true} [:enum :abort :collect]]
                  [:checksums        {:optional true} [:enum :require :skip]]
                  [:merge?           {:optional true} :boolean]
+                 ;; a policy keyword, a materialised map, a function, or any
+                 ;; ILookup — the COMPUTED case, which is what lets a caller state
+                 ;; final ids without an entry per entity. See `ids/lookup-id`, the
+                 ;; one place both import paths read a mapping through.
                  [:eids             {:optional true} [:or [:enum :allocate :offset :preserve]
-                                                      [:map-of :any :any] fn?]]
+                                                      [:map-of :any :any] fn?
+                                                      [:fn {:error/message "should be a map, a function or an ILookup"}
+                                                       (fn [x] (instance? #?(:clj clojure.lang.ILookup :cljs ILookup) x))]]]
                  [:build-indexes?   {:optional true} :boolean]
                  [:schema           {:optional true} [:maybe [:map-of :any :any]]]
                  [:source-meta      {:optional true} [:maybe [:map-of :any :any]]]

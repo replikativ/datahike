@@ -1613,7 +1613,12 @@
     (= :offset eids)
     (let [delta (- (long (:max-eid db)) (long c/e0))]
       (fn [e] (+ (long e) delta)))
-    (or (map? eids) (fn? eids)) eids
+    ;; A map, a function, or any `ILookup` — see `ids/lookup-id`, which is what
+    ;; both import paths read a mapping through. `ILookup` is the COMPUTED case:
+    ;; a mapping with a handful of entries instead of one per entity, which is
+    ;; the whole point for a source whose id space is dense and huge.
+    (or (map? eids) (fn? eids)
+        (instance? #?(:clj clojure.lang.ILookup :cljs ILookup) eids)) eids
     :else (throw (ex-info (str "Unknown :eids strategy " (pr-str eids)
                                ". Expected :allocate, :offset, :preserve, a map or a function.")
                           {:error :import/bad-eid-strategy :value eids}))))
@@ -2112,14 +2117,25 @@
           (not (contains? manifest :schema))
           (conj ":build-indexes? needs the dump's schema to remap ref values, and this manifest carries none")
 
-          ;; `:preserve` (the default here) and `:allocate` are the two this
-          ;; path can honour. `:offset` and a caller-supplied map/fn are about
-          ;; fitting a dump AROUND data that is already there, which is the
-          ;; `:merge?` case this path refuses outright.
-          (not (contains? #{nil :preserve :allocate} (:eids opts)))
-          (conj (str ":build-indexes? supports :eids :preserve (default) and :allocate; "
-                     (pr-str (:eids opts)) " is for fitting a dump around existing data,"
-                     " which this path does not do")))]
+          ;; `:offset` is the one policy this path cannot honour: it positions a
+          ;; dump ABOVE the target's current `:max-eid`, which only means something
+          ;; when the target has data — and a non-empty target is refused by
+          ;; `check-target!`, `:merge?` on the line above.
+          ;;
+          ;; A caller-supplied mapping used to be refused alongside it, on the
+          ;; reasoning that both are for fitting a dump around existing data. True
+          ;; of `:offset` and not of a mapping: a mapping is how a caller states
+          ;; final ids UP FRONT, which is precisely what a bulk build needs — the
+          ;; sort order is over those ids, so they must be known before the sort,
+          ;; and `ids/build-mapping` exists only because the streaming path cannot
+          ;; supply them. A caller who already had them was made to pay for the
+          ;; O(entities) map anyway; `estimate-import-memory` calls that map the
+          ;; dominant, unavoidable term, and at ~1e8 entities it is what puts the
+          ;; import out of reach of the machine running it.
+          (= :offset (:eids opts))
+          (conj (str ":build-indexes? does not support :eids :offset; it positions a dump"
+                     " above a target's existing ids, and this path only ever builds into"
+                     " an empty database")))]
     (when (seq reasons)
       (apply str "cannot build indexes directly: " (interpose "; " reasons)))))
 
@@ -2392,14 +2408,25 @@
                     ;; channel unchanged. The park happens inside
                     ;; `reduce-source-records`' own go block, not inside this
                     ;; closure — which the state machine could not enter.
-                    mapping  (when (= :allocate (:eids opts))
+                    ;; A caller-supplied mapping is used AS the mapping and pass 1 is
+                    ;; skipped entirely — that is the point of supplying one. It needs no
+                    ;; `:tids`: transaction ids are not remapped by an `:eids` policy on
+                    ;; either path (`eid-policy` says so), so `lookup-id` on an absent
+                    ;; `:tids` returns them unchanged, and a caller who wants them moved
+                    ;; owes that in the records themselves.
+                    caller-mapping (let [m (:eids opts)]
+                                     (when-not (keyword? m) m))
+                    mapping  (cond
+                               caller-mapping {:eids caller-mapping :tids nil}
+                               (= :allocate (:eids opts))
                                (<?- (ids/build-mapping
                                      {:schema source-schema
                                       :system-entities (:system-entities db0)
                                       :max-eid (:max-eid db0)
                                       :max-tx (:max-tx db0)}
                                      (fn [rf init]
-                                       (reduce-source-records db0 chunk-src opts nil rf init)))))
+                                       (reduce-source-records db0 chunk-src opts nil rf init))))
+                               :else nil)
                     ;; ---- pass 2: normalise to the spool, collecting what we can see ----
                     ;; COMPRESSED scratch. This spool holds the whole database,
                     ;; and it used to be raw CBOR while the dump it came from was
@@ -2427,6 +2454,30 @@
                                                record)
                                            n (inc (long (:n acc)))
                                            e (nth r 0) a (nth r 1) v (nth r 2) t (nth r 3)]
+                                       ;; `tx0` PARTITIONS the id space — entity ids below
+                                       ;; it, transaction ids at or above — and every
+                                       ;; consumer downstream reads it that way, the running
+                                       ;; `:max-eid` below included. A caller-supplied
+                                       ;; mapping is the one thing that can land an ENTITY
+                                       ;; above the line, and nothing further on would
+                                       ;; notice: the datom is written, `:max-eid` counts it
+                                       ;; as 0, and the import reports success while
+                                       ;; publishing a `:max-eid` a later transact will
+                                       ;; allocate straight through, on top of live data.
+                                       ;; Sizing a mapping against `emax` rather than `tx0`
+                                       ;; is the easy way to get here — it looks like four
+                                       ;; times the room — so it is checked, not documented.
+                                       (when (and caller-mapping
+                                                  (not= (long e) (long t))
+                                                  (>= (long e) (long c/tx0)))
+                                         (throw (ex-info
+                                                 (str "The :eids mapping put entity " e
+                                                      " at or above tx0 (" c/tx0 "). Entity ids"
+                                                      " must stay below it — that is where"
+                                                      " transaction ids begin, and an entity"
+                                                      " there is indistinguishable from one.")
+                                                 {:error :import/eid-above-tx0 :entity-id e
+                                                  :tx0 c/tx0 :record record})))
                                        ((:add! spool) r)
                                        (when (>= (long t) (long c/tx0))
                                          (tx-seen! txs t))
@@ -2487,18 +2538,23 @@
                                                        #(init/spool-records spool-files spool-codec)
                                                        run-size tmp (:sync? opts)))
                     fields   (merge sfields indexes
-                                    ;; Under `:allocate` the mapping already
-                                    ;; knows both maxima exactly — it allocated
-                                    ;; them — and using it costs nothing. Under
-                                    ;; `:preserve` the running maxima from pass 2
-                                    ;; are the whole answer. Both are exact,
-                                    ;; neither scans the finished trees.
-                                    {:max-eid (if mapping
-                                                (dec (long (:next-eid mapping)))
-                                                (:max-eid state))
-                                     :max-tx  (if mapping
-                                                (dec (long (:next-tx mapping)))
-                                                (:max-tx state))
+                                    ;; The running maxima from pass 2, for EVERY
+                                    ;; mapping. They are folded over the records
+                                    ;; AFTER remapping and already count ref values,
+                                    ;; so they are exact by construction and do not
+                                    ;; scan the finished trees.
+                                    ;;
+                                    ;; This used to read `(dec (:next-eid mapping))`
+                                    ;; whenever a mapping existed, on the grounds that
+                                    ;; an allocator knows its own maxima. True, and
+                                    ;; equal to the fold — asserted below in
+                                    ;; `migrate-init-import-test` so the two cannot
+                                    ;; drift — but it made the field depend on the
+                                    ;; mapping's SHAPE rather than on the records: a
+                                    ;; computed mapping has no `:next-eid`, so
+                                    ;; `(long nil)` threw. One source for both.
+                                    {:max-eid (:max-eid state)
+                                     :max-tx  (:max-tx state)
                                      :hash    (:hash state)
                                      ;; inert for persistent-set (every index op
                                      ;; takes it as `_op-count`), and
@@ -2547,7 +2603,12 @@
                          :merged?     false
                          ;; ZERO under `:preserve`, which is the point of it: the
                          ;; heap warning is about this number.
-                         :id-map-size (if mapping (count (:eids mapping)) 0)
+                         ;; `map?`-guarded, mirroring the streaming path's own
+                         ;; `:id-map-size`: a computed mapping is not counted, and
+                         ;; `count` on one throws rather than answering 0. Reporting 0
+                         ;; is right in substance — no id map exists, which is the
+                         ;; reason to supply one.
+                         :id-map-size (let [m (:eids mapping)] (if (map? m) (count m) 0))
                          :eid-range   (let [after (long (:max-eid @conn))
                                             before (long (:max-eid db0))]
                                         (when (> after before) [(inc before) after]))

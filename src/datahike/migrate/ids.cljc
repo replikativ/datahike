@@ -35,6 +35,40 @@
    channel. It is the piece of the import path with no platform coupling at all."
   (:require [datahike.schema :as ds]))
 
+(defn lookup-id
+  "One id through a caller's mapping, or `nf` when it does not name one.
+
+   THE mapping vocabulary, in one place, because the two import paths used to
+   disagree about it and that disagreement was a silent wrong answer rather than
+   an error:
+
+     `db.transaction/migrated-eid`  (streaming)      called a function
+     `apply-mapping`               (bulk index build) `get`-ed it
+
+   `(get some-fn k nf)` returns `nf` — a function is not `ILookup` — so a mapping
+   that worked on the streaming path silently mapped NOTHING on the other one,
+   leaving every id unchanged with no error at any point. A caller who had a
+   working import and switched on `:build-indexes?` got wrong ids and a clean
+   report. Both paths come through here now, so the two cannot drift again.
+
+   Accepts what an id mapping can reasonably be:
+
+     a map      the materialised case, and what `build-mapping` returns
+     ILookup    a COMPUTED mapping — `(get lk k nf)` is its whole contract, so a
+                caller can pack an id space with a handful of entries instead of
+                one per entity. A map is `ILookup` too; this is the general case.
+     a function O(1), and already documented by the streaming path's `:eids`
+                policy, which is why refusing it here would have been a trap of
+                its own.
+
+   `nil` means no mapping and returns `nf`."
+  [m k nf]
+  (cond
+    (nil? m) nf
+    (map? m) (get m k nf)
+    (fn? m) (let [v (m k)] (if (nil? v) nf v))
+    :else (get m k nf)))
+
 (defn- ref-attr?
   "Is `a` a `:db.type/ref` in `schema`? The dump carries attributes as idents, so
    this is a schema lookup rather than anything db-dependent."
@@ -116,12 +150,12 @@
   [{:keys [eids tids]} schema record]
   (let [[e a v t op] record
         ;; structural, matching `build-mapping`: e names the transaction iff e = t
-        e' (if (= e t) (get tids e e) (get eids e e))
+        e' (if (= e t) (lookup-id tids e e) (lookup-id eids e e))
         ;; a ref may point at a transaction, so :tids is consulted as a fallback
         v' (if (and (ref-attr? schema a) (number? v))
-             (get eids v (get tids v v))
+             (lookup-id eids v (lookup-id tids v v))
              v)
-        t' (get tids t t)]
+        t' (lookup-id tids t t)]
     [e' a v' t' op]))
 
 (defn identity-mapping?
@@ -130,5 +164,11 @@
    source's own ids. Worth knowing because it means a bulk build can skip the
    rewrite pass entirely."
   [{:keys [eids tids]}]
-  (and (every? (fn [[k v]] (= k v)) eids)
+  ;; Only a MATERIALISED mapping can answer this: a computed one cannot be
+  ;; enumerated, and `every?` over a reified `ILookup` or a function throws
+  ;; rather than returning false. Unknown is reported as not-the-identity, the
+  ;; conservative answer — it costs a rewrite pass that may turn out to have been
+  ;; unnecessary, where the opposite would skip one that was needed.
+  (and (map? eids) (map? tids)
+       (every? (fn [[k v]] (= k v)) eids)
        (every? (fn [[k v]] (= k v)) tids)))
