@@ -117,3 +117,54 @@
           "reading every chunk in order reproduces the input exactly")
       (is (= recs (vec (mapcat #((:read src) % {:sync? true}) chunks)))
           ":read is RE-ENTRANT — verify and the index build both read twice"))))
+
+(deftest an-undeclared-attribute-is-named-not-a-nil-datom
+  (testing "Contract item 4 — a source emits an attribute's schema datoms before
+            the data using it. Only an :attribute-refs? database can DETECT the
+            violation: there `a` is the attribute's entity id, and `-ref-for`
+            answers nil for an ident that was never installed. That nil used to
+            become the datom's attribute and survive the write, detonating later
+            in the index comparator as a bare NullPointerException naming neither
+            the attribute nor the record.
+
+            Reachable from a real Datomic source, which is why it is not
+            hypothetical: `migrate.datomic` resolves idents against the CURRENT
+            database, so every historical datom of a RENAMED attribute already
+            carries the final ident while the `:db/ident` records still replay
+            the rename — the data arrives before the name it is labelled with
+            exists."
+    (let [recs [[t1 :db/txInstant #inst "2021-01-01" t1 true]
+                [100 :db/ident :person/name t1 true]
+                [100 :db/valueType :db.type/string t1 true]
+                [100 :db/cardinality :db.cardinality/one t1 true]
+                [t2 :db/txInstant #inst "2021-02-01" t2 true]
+                ;; never declared
+                [200 :person/nickname "Annie" t2 true]]]
+      (testing "attribute-refs: refused, and the attribute is named"
+        (let [conn (utils/setup-db {:store {:backend :memory :id (java.util.UUID/randomUUID)}
+                                    :keep-history? true
+                                    :schema-flexibility :write
+                                    :attribute-refs? true})]
+          (try
+            (let [ex (try (m/import-source conn (m/records->chunk-src recs)
+                                           {:sync? true :verify? false :schema {}})
+                          nil
+                          (catch Exception e
+                            (loop [x e, found (ex-data e)]
+                              (if-let [c (.getCause x)]
+                                (recur c (or (ex-data c) found))
+                                (or (ex-data x) found)))))]
+              (is (some? ex) "the import must refuse rather than write a nil attribute")
+              (is (= :transact/unknown-attribute (:error ex)))
+              (is (= :person/nickname (:attribute ex))
+                  "and say WHICH attribute, which the NullPointerException never did"))
+            (finally (teardown conn)))))
+      (testing "without attribute-refs the keyword IS the attribute, so it stores"
+        (let [conn (fresh-conn)]
+          (try
+            (m/import-source conn (m/records->chunk-src recs)
+                             {:sync? true :verify? false :schema {}})
+            (is (= #{["Annie"]}
+                   (into #{} (d/q '[:find ?v :where [?e :person/nickname ?v]] @conn)))
+                "unchanged behaviour — this path has no entity to resolve")
+            (finally (teardown conn))))))))
