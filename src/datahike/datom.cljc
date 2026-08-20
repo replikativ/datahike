@@ -98,15 +98,35 @@
 
 (defn datom? [x] (instance? Datom x))
 
+(defn- value-hash
+  "`hash` of a datom's VALUE, by content for the types datahike treats as
+   values.
+
+   A byte/float/double array hashes by IDENTITY, and that leaks out of memory:
+   `:hash` on a database is a SUM of datom hashes, so a database holding an
+   array had a `:hash` that no recomputation could reproduce — measured, two
+   loads of the same stored database recompute to different numbers. The
+   `:build-indexes?` import path recomputes exactly this way, which is why a
+   rebuilt array database could not be `:hash`-equal to its source.
+
+   `wrap-comparable` is identity for every non-array value, so scalars hash
+   exactly as before — no existing array-free database changes by one bit."
+  [v]
+  (if (da/value-array? v) (hash (da/wrap-comparable v)) (hash v)))
+
 (defn- hash-datom [^Datom d]
   (-> (hash (.-e d))
       (combine-hashes (hash (.-a d)))
-      (combine-hashes (hash (.-v d)))))
+      (combine-hashes (value-hash (.-v d)))))
 
 (defn- equiv-datom [^Datom d ^Datom o]
   (and (== (.-e d) (.-e o))
        (= (.-a d) (.-a o))
-       (= (.-v d) (.-v o))))
+       ;; `a=`, not `=`: the INDEX already calls two equal-content arrays the
+       ;; same value (`compare-value` returns 0), so datom equality has to
+       ;; agree or `distinct`, a set of datoms, and `:hash` disagree with the
+       ;; tree they came out of.
+       (da/a= (.-v d) (.-v o))))
 
 (defn- seq-datom [^Datom d]
   (list (.-e d) (.-a d) (.-v d) (datom-tx d) (datom-added d)))

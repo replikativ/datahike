@@ -355,6 +355,38 @@
                     rule))
                 rules))))))
 
+(defn- fn-clause-written-as-list?
+  "Is `clause` a function/predicate clause written with an outer LIST instead of
+   a vector — `((get-else $ ?e :a \"d\") ?v)` rather than `[(get-else …) ?v]`?
+
+   Unambiguous: every other list-shaped clause form — `(not …)`, `(not-join …)`,
+   `(or …)`, `(and …)`, a rule invocation — starts with a SYMBOL. Only this one
+   has a call form in head position."
+  [clause]
+  (and (seq? clause)
+       (not (vector? clause))
+       (seq? (first clause))))
+
+(defn normalize-list-fn-clauses
+  "Rewrite `((f …) out)` to `[(f …) out]` in `:where`.
+
+   Both engines accept the list form, and they answered DIFFERENTLY: the
+   relational engine honoured the clause, the planner did not recognise it and
+   dropped the obligation entirely, so `[?e :anchor _] ((get-else $ ?e :anchor 0) ?v)`
+   with `?v` bound returned every entity instead of the one that matches. Worse,
+   the two forms share a plan-cache entry, so running the list form FIRST left
+   the wrong plan cached for the ordinary vector form — one query silently
+   breaking another.
+
+   Normalising here means both engines and both cache keys see one shape.
+   Returns `query` UNCHANGED (identical object) when nothing matches, so caches
+   are not perturbed for queries this does not affect."
+  [query]
+  (let [where (:where query)]
+    (if (and (seq where) (some fn-clause-written-as-list? where))
+      (assoc query :where (mapv (fn [c] (if (fn-clause-written-as-list? c) (vec c) c)) where))
+      query)))
+
 (defn normalize-repeated-vars
   "Rewrite every data pattern that mentions a variable twice into a pattern of
    distinct variables plus an explicit `=` join predicate. Returns `query`
@@ -443,7 +475,9 @@
                    (:args query-input))
                arg-inputs)
         extra-ks [:offset :limit :order-by :stats? :count-fns? :settings :cancel]]
-    (-> (cond-> {:query (normalize-repeated-vars (apply dissoc query extra-ks))
+    (-> (cond-> {:query (-> (apply dissoc query extra-ks)
+                            normalize-list-fn-clauses
+                            normalize-repeated-vars)
                  ;; Rules ride in as the argument bound to `%`; normalise their
                  ;; bodies too, or a self-join inside a rule stays wrong on BOTH
                  ;; engines.
@@ -977,9 +1011,31 @@
                 :else acc))
             [] coll))))
 
-(def built-ins {'=          =, '== ==, 'not= not=, '!= not=, '< lesser?, '> greater?, '<= lesser-equal?, '>= greater-equal?, '+ +, '- -
+(defn- value=
+  "`=` for query predicates, over datahike VALUES.
+
+   A byte/float/double array is a value here — the index comparator says so,
+   and after the binding-seam work `[?e :ba ?v] [?e :bau ?v]` correctly selects
+   the entities whose two arrays hold the same bytes. Clojure's `=` compares
+   arrays by IDENTITY, so the EXPLICIT spelling of that same equality,
+   `[(= ?v ?w)]`, answered `#{}` for those very rows — two spellings of one
+   question disagreeing. `not=` was the dangerous direction: it ADMITTED every
+   row it should have excluded.
+
+   Variadic like `=`: every argument must equal the first."
+  ([_] true)
+  ([x y] (a= x y))
+  ([x y & more] (and (a= x y) (every? #(a= x %) more))))
+
+(defn- value-not=
+  "`not=` over datahike values — the complement of `value=`."
+  ([_] false)
+  ([x y] (not (a= x y)))
+  ([x y & more] (not (apply value= x y more))))
+
+(def built-ins {'=          value=, '== ==, 'not= value-not=, '!= value-not=, '< lesser?, '> greater?, '<= lesser-equal?, '>= greater-equal?, '+ +, '- -
                 '*          *, '/ /, 'quot quot, 'rem rem, 'mod mod, 'inc inc, 'dec dec, 'max -max, 'min -min
-                'zero?      zero?, 'pos? pos?, 'neg? neg?, 'even? even?, 'odd? odd?, 'compare compare
+                'zero?      zero?, 'pos? pos?, 'neg? neg?, 'even? even?, 'odd? odd?, 'compare datom/compare-value
                 'rand       rand, 'rand-int rand-int
                 'true?      true?, 'false? false?, 'nil? nil?, 'some? some?, 'not not, 'and and-fn, 'or or-fn
                 'complement complement, 'identical? identical?
@@ -1321,13 +1377,12 @@
       (fn [tuple]
         (get tuple idx)))))
 
-(defn tuple-key-fn [getters]
-  (if (== (count getters) 1)
-    (first getters)
-    (let [getters (to-array getters)]
-      (fn [tuple]
-        (list* #?(:cljs (.map getters #(% tuple))
-                  :clj (to-array (map #(% tuple) getters))))))))
+;; ONE implementation, in datahike.query.relation — the planner joins through
+;; that namespace and this engine through this one, and when this var carried
+;; its own copy the array-key fix landed on the base engine only: a
+;; cross-entity-group join on an array value then answered #{} under the
+;; DEFAULT engine while the base engine answered correctly.
+(def tuple-key-fn rel/tuple-key-fn)
 
 (defn hash-attrs [key-fn tuples]
   ;; Equivalent to group-by except that it uses a list instead of a vector.
@@ -1526,7 +1581,8 @@
           ;; Reading it as "no constant" fell through to the tuple-index
           ;; branch, where the var has no column — so `[(= ?v ?f)]` with `?f`
           ;; bound to false compared against nil and answered nothing, and
-          ;; `[(vector ?v ?f) ?o]` built `[true nil]`.
+          ;; `[(vector ?v ?f) ?o]` built `[true nil]`. Same class as the
+          ;; `idx->const` fold below.
           (if (contains? (:consts context) arg)
             (da/aset static-args i (get (:consts context) arg))
             (if-some [source (get sources arg)]
@@ -1688,9 +1744,13 @@
               (update :rels collapse-rels
                       (update new-rel
                               :tuples
+                              ;; `a=`: an obligation against a CONSTANT is the same
+                              ;; value equality as one against a bound variable, and
+                              ;; `=` compares arrays by identity — so a byte-array
+                              ;; constant never matched an equal-content value.
                               #(filter (fn [tuple]
                                          (every? (fn [[ind c]]
-                                                   (= c (get tuple ind)))
+                                                   (a= c (get tuple ind)))
                                                  idx->const))
                                        %)))))))))
 

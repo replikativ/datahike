@@ -28,6 +28,7 @@
      :attribute-refs? true databases, nested `q` calls, and any clause form
      not listed in `eval-clause`."
   (:require
+   [datahike.array :refer [a=]]
    [datahike.api :as d]
    [datahike.db.interface :as dbi]
    [datahike.db.utils :as dbu]
@@ -121,10 +122,15 @@
   [env x v]
   (cond
     (blank? x)  env
+    ;; `a=`, not `=`: a byte/float/double array is a VALUE in datahike (the
+    ;; index comparator says so), and Clojure's `=` compares them by identity.
+    ;; The reference engine has to hold the same value semantics as the thing
+    ;; it is a reference FOR, or every array case reports a divergence that is
+    ;; the oracle's own.
     (qvar? x)   (if-some [[_ bound] (find env x)]
-                  (when (= bound v) env)
+                  (when (a= bound v) env)
                   (assoc env x v))
-    :else       (when (= x v) env)))
+    :else       (when (a= x v) env)))
 
 (defn- bind-form
   "Unify a :in / function-output BINDING FORM against a value.

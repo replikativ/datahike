@@ -246,23 +246,176 @@
       (testing "as-of"   (both #{[1 "n1b"] [3 "zzz"]} query (d/as-of db (:max-tx db))))
       (testing "since"   (both #{[1 "n1b"] [3 "zzz"]} query (d/since db 0))))))
 
-(deftest-async binding-seam-law-byte-arrays
-  ;; A byte array is a VALUE in datahike, and Clojure's `=` compares byte
-  ;; arrays by identity — so an obligation between two equal-content arrays
-  ;; failed and the row was dropped. Every equality the engine makes about
-  ;; values has to be array-aware, unification included.
+(defn- bytes-of [xs]
+  #?(:clj (byte-array xs) :cljs (js/Int8Array. (clj->js xs))))
+
+(defn- floats-of [xs]
+  #?(:clj (float-array xs) :cljs (js/Float32Array. (clj->js xs))))
+
+(defn- doubles-of [xs]
+  #?(:clj (double-array xs) :cljs (js/Float64Array. (clj->js xs))))
+
+(deftest-async binding-seam-law-value-arrays
+  ;; Byte, float and double arrays are VALUES in datahike — `datahike.array/a=`
+  ;; is what decides that — but Clojure's `=` compares them by identity. Every
+  ;; equality the engine makes about values therefore has to be array-aware,
+  ;; and unification is one of them. Four seams, because each had its own
+  ;; comparison and they disagreed in BOTH directions: the base engine dropped
+  ;; every byte-valued unification while the planner kept it, and the planner
+  ;; dropped every float-valued one while the base engine kept it.
   (let [cfg {:store {:backend :memory :id (random-uuid)}
              :schema-flexibility :write}
         conn (<! (connect! cfg))]
-    (<! (d/transact! conn [{:db/ident :blob :db/valueType :db.type/bytes
+    (<! (d/transact! conn [{:db/ident :anchor :db/valueType :db.type/long
+                            :db/cardinality :db.cardinality/one}
+                           {:db/ident :blob :db/valueType :db.type/bytes
                             :db/cardinality :db.cardinality/one}
                            {:db/ident :blob2 :db/valueType :db.type/bytes
+                            :db/cardinality :db.cardinality/one}
+                           {:db/ident :fa :db/valueType :db.type/float-array
+                            :db/cardinality :db.cardinality/one}
+                           {:db/ident :fa2 :db/valueType :db.type/float-array
+                            :db/cardinality :db.cardinality/one}
+                           {:db/ident :hi :db/valueType :db.type/bytes
+                            :db/cardinality :db.cardinality/one}
+                           {:db/ident :hi2 :db/valueType :db.type/bytes
+                            :db/cardinality :db.cardinality/one}
+                           {:db/ident :nan :db/valueType :db.type/double-array
+                            :db/cardinality :db.cardinality/one}
+                           {:db/ident :nan2 :db/valueType :db.type/double-array
+                            :db/cardinality :db.cardinality/one}
+                           {:db/ident :blob3 :db/valueType :db.type/bytes
                             :db/cardinality :db.cardinality/one}]))
-    (<! (d/transact! conn [{:db/id 1 :blob #?(:clj (byte-array [1 2 3]) :cljs (js/Int8Array. #js [1 2 3]))
-                            :blob2 #?(:clj (byte-array [1 2 3]) :cljs (js/Int8Array. #js [1 2 3]))}
-                           {:db/id 2 :blob #?(:clj (byte-array [1 2 3]) :cljs (js/Int8Array. #js [1 2 3]))
-                            :blob2 #?(:clj (byte-array [9 9 9]) :cljs (js/Int8Array. #js [9 9 9]))}]))
+    ;; entity 1 holds equal CONTENT in both attributes of each pair, in
+    ;; distinct array objects; entity 2 does not
+    (<! (d/transact! conn [{:db/id 1 :anchor 1
+                            :blob (bytes-of [1 2 3]) :blob2 (bytes-of [1 2 3])
+                            :fa (floats-of [1.5 2.5]) :fa2 (floats-of [1.5 2.5])}
+                           {:db/id 2 :anchor 2
+                            :blob3 (bytes-of [1 2 3])
+                            :blob (bytes-of [1 2 3]) :blob2 (bytes-of [9 9 9])
+                            :fa (floats-of [1.5 2.5]) :fa2 (floats-of [9.5 9.5])}
+                           ;; bytes above 0x7f, and a NaN
+                           {:db/id 3 :anchor 3
+                            :hi (bytes-of [-1 -128 5]) :hi2 (bytes-of [-1 -128 5])
+                            :nan (doubles-of [##NaN 1.5]) :nan2 (doubles-of [##NaN 1.5])}]))
     (let [db (d/db conn)]
-      ;; only entity 1 holds the same bytes in both attributes
-      (both #{[1]}
-            '[:find ?e :where [?e :blob ?v] [(get-else $ ?e :blob2 "x") ?v]] db))))
+
+      (testing "an optional merge obligation — byte arrays"
+        (both #{[1]}
+              '[:find ?e :where [?e :blob ?v] [(get-else $ ?e :blob2 "x") ?v]] db))
+
+      (testing "an optional merge obligation — float arrays"
+        (both #{[1]}
+              '[:find ?e :where [?e :fa ?v] [(get-else $ ?e :fa2 "x") ?v]] db))
+
+      (testing "the obligated value may be an :in constant"
+        (both #{[1] [2]}
+              '[:find ?e :in $ ?v :where [?e :anchor _] [(get-else $ ?e :blob "x") ?v]]
+              db (bytes-of [1 2 3])))
+
+      (testing "a function output unifying with a bound array"
+        (both #{[1]}
+              '[:find ?e :where [?e :blob ?v] [?e :blob2 ?w] [(identity ?w) ?v]] db))
+
+      (testing "an ordinary pattern occurrence, for comparison"
+        (both #{[1]}
+              '[:find ?e :where [?e :blob ?v] [?e :blob2 ?v]] db))
+
+      (testing "a join ACROSS entity groups, which the planner hashes separately"
+        ;; the same-entity case above fuses into ONE group and never reaches a
+        ;; hash-probe join. This one does — and the planner joins through
+        ;; `relation.cljc`'s key fn while the base engine went through
+        ;; `query.cljc`'s, so fixing one copy left the DEFAULT engine returning
+        ;; nothing for any array-valued join.
+        ;; entities 1 AND 2 both hold :blob [1 2 3]; only 2 holds :blob3
+        (both #{[1 2] [2 2]}
+              '[:find ?e ?f :where [?e :blob ?v] [?f :blob3 ?v]] db)
+        ;; and the same value arriving as a COLLECTION binding
+        (both #{[1] [2]}
+              '[:find ?e :in $ [?v ...] :where [?e :blob ?v]] db [(bytes-of [1 2 3])])
+        ;; A join key may not depend on PRINT settings. The ClojureScript key
+        ;; has to be a primitive — `js/Set`/`js/Map` compare objects by
+        ;; identity — and building it with `pr-str` made it honour
+        ;; `*print-length*`, so under a caller's binding every array printed
+        ;; the same prefix and unequal values collided.
+        (binding [*print-length* 1 *print-level* 1]
+          (both #{[1 2] [2 2]}
+                '[:find ?e ?f :where [?e :blob ?v] [?f :blob3 ?v]] db)
+          (both #{}
+                '[:find ?e ?f :where [?e :blob ?v] [?f :blob2 ?v]
+                  [(= ?e 999)]] db)))
+
+      (testing "a value-position probe join keeps its rows"
+        ;; A value-position SIP probe turns the consumer scan into AVET seeks
+        ;; ordered by VALUE, so entities arrive out of entity order. Two things
+        ;; broke on that: a forward merge cursor cannot seek back (rows silently
+        ;; dropped — for ORDINARY merges, not just optional ones), and the probe
+        ;; set doubles as a source of seek keys, so wrapping its array values
+        ;; handed the index a key instead of a value. Small here; the pinned
+        ;; large fixtures live in the commit message.
+        (both #{[1] [2]}
+              '[:find ?e :in $ [?v ...] :where [?e :blob ?v] [?e :anchor _]]
+              db [(bytes-of [1 2 3])]))
+
+      (testing "a fn clause written as a LIST is the same clause"
+        ;; `((get-else …) ?v)` instead of `[(get-else …) ?v]`. Both engines
+        ;; accept it and they answered differently — the planner did not
+        ;; recognise the form and dropped the obligation — and because the two
+        ;; forms share a plan-cache entry, running the list form first left the
+        ;; wrong plan cached FOR THE VECTOR FORM. One query silently breaking
+        ;; another is why this is normalised rather than merely fixed.
+        ;; entities 1 and 2 both hold :blob [1 2 3]
+        (both #{[1] [2]}
+              '[:find ?e :in $ ?v :where [?e :anchor _] ((get-else $ ?e :blob "zz") ?v)]
+              db (bytes-of [1 2 3]))
+        (both #{[1] [2]}
+              '[:find ?e :in $ ?v :where [?e :anchor _] [(get-else $ ?e :blob "zz") ?v]]
+              db (bytes-of [1 2 3])))
+
+      (testing "a NEGATION keys its exclusion set by value too"
+        ;; `not-join` builds an exclusion set from the negated relation. It
+        ;; keyed raw values, so an array in the negation excluded nothing and
+        ;; the planner kept a row the base engine drops — the same identity
+        ;; hashing as the joins, one code path further along.
+        (both #{}
+              '[:find ?e :where [?e :blob ?v] (not-join [?v] [?f :blob3 ?v])] db))
+
+      (testing "the values where the key representation disagreed with a="
+        ;; A join key has to hash BY VALUE over the whole domain. It did not:
+        ;; a byte from 0x80 up threw building the key, two NaNs hashed apart
+        ;; though `a=` calls them equal, and -0.0 hashed together with 0.0
+        ;; though `a=` separates them. Entity 3 carries all three.
+        (both #{[3]}
+              '[:find ?e :where [?e :hi ?v] [?e :hi2 ?v]] db)
+        (both #{[3]}
+              '[:find ?e :where [?e :nan ?v] [?e :nan2 ?v]] db)
+        (both #{[3]}
+              '[:find ?e :where [?e :hi ?v] [(get-else $ ?e :hi2 "x") ?v]] db)))))
+
+(deftest-async binding-seam-law-history-value-order
+  ;; `get-else` returns the FIRST datom `search` yields, and on `history` that
+  ;; is first in EAVT order — by VALUE, not the earliest transaction. The two
+  ;; coincide whenever the older value also sorts first, so this fixture makes
+  ;; them disagree: the newer value sorts BEFORE the older one. An
+  ;; "earliest version" implementation would answer "old" here.
+  (let [cfg {:store {:backend :memory :id (random-uuid)}
+             :schema-flexibility :write
+             :keep-history? true}
+        conn (<! (connect! cfg))]
+    (<! (d/transact! conn [{:db/ident :nick :db/valueType :db.type/string
+                            :db/cardinality :db.cardinality/one}
+                           {:db/ident :anchor :db/valueType :db.type/long
+                            :db/cardinality :db.cardinality/one}]))
+    (<! (d/transact! conn [{:db/id 1 :anchor 1 :nick "old"}]))
+    (<! (d/transact! conn [{:db/id 1 :nick "new"}]))
+    (let [db (d/db conn)
+          ;; the `[?e :anchor _]` pattern is what makes this reach the temporal
+          ;; fused merge kernel. With the get-else alone and `?e` bound through
+          ;; `:in`, the planner treats it as a standalone optional scan and
+          ;; routes it through `bind-by-fn`/legacy `-get-else` — so the test
+          ;; would pass on a merge kernel that took the earliest version.
+          query '[:find ?v :where [?e :anchor _] [(get-else $ ?e :nick "D") ?v]]]
+      (testing "history takes the EAVT-first version, not the earliest"
+        (both #{["new"]} query (d/history db)))
+      (testing "current is unambiguous" (both #{["new"]} query db)))))

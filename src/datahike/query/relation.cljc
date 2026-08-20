@@ -4,6 +4,7 @@
    between datahike.query and datahike.query.execute."
   (:require
    [clojure.set :as set]
+   [datahike.array :as arr]
    [datahike.db.utils :as dbu]
    [datahike.tools :as dt]
    [replikativ.logging :as log]
@@ -66,13 +67,24 @@
       (fn [tuple]
         (get tuple idx)))))
 
-(defn tuple-key-fn [getters]
+;; THE key rule lives in datahike.array — see `value-key` there, and its twin
+;; `native-key` for the planner's java.util/JS probe containers. A join hashes
+;; into Clojure containers, so this is the Clojure-equality one.
+(def join-key arr/value-key)
+
+(defn tuple-key-fn
+  "Builds the join key for a tuple. THE implementation — `datahike.query`'s
+   var of the same name delegates here, because the planner joins through this
+   namespace and the base engine through that one, and two copies of one rule
+   is how a fix lands on one engine only."
+  [getters]
   (if (== (count getters) 1)
-    (first getters)
+    (let [g (first getters)]
+      (fn [tuple] (join-key (g tuple))))
     (let [getters (to-array getters)]
       (fn [tuple]
-        (list* #?(:cljs (.map getters #(% tuple))
-                  :clj (to-array (map #(% tuple) getters))))))))
+        (list* #?(:cljs (.map getters #(join-key (% tuple)))
+                  :clj (to-array (map #(join-key (% tuple)) getters))))))))
 
 (defn hash-attrs [key-fn tuples]
   ;; Equivalent to group-by except that it uses a list instead of a vector.

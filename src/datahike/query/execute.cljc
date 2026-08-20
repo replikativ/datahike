@@ -4,6 +4,7 @@
    anti-merge NOT, and direct-to-HashSet output."
   (:require
    [datahike.constants :refer [e0 tx0 emax txmax]]
+   [datahike.array :as da]
    [datahike.datom :as datom :refer [datom]]
    [datahike.db.interface :as dbi]
    [datahike.db.utils :as dbu]
@@ -116,23 +117,77 @@
                (recur (dec i))))
      :cljs (.splice list from)))
 
+;; A probe set plays TWO roles, and they want opposite representations.
+;; Membership (`contains?`) needs a content KEY, so two equal-content arrays
+;; collide as they should. Index seeks need the RAW value: an ArrayKey is not
+;; the stored value and is not Comparable, and handing one to a seek returned
+;; nothing for one probe value and threw a ClassCastException for two.
+;;
+;; Carrying both in one type, built by one constructor, is what makes that
+;; unrepresentable: there is no accessor that hands `members` to a seek, and no
+;; way to obtain one half without the other. Before this the invariant lived in
+;; two unrelated guards in two files, and it was already incomplete — a RAW set
+;; from `pattern-probe-set` was handed to `scan-filter`, which wraps its
+;; argument, so the hazard ran in both directions and only one had a guard.
+(deftype ProbeSet [members seekvals])
+
 (defn- make-probe-set
-  "Create a mutable set for hash-probe joins."
+  "A mutable probe set for hash-probe joins: content keys for membership, raw
+   values for seeks."
   [capacity]
-  #?(:clj  (java.util.HashSet. (int capacity))
-     :cljs (js/Set.)))
+  #?(:clj  (ProbeSet. (java.util.HashSet. (int capacity)) (java.util.ArrayList. (int capacity)))
+     :cljs (ProbeSet. (js/Set.) (array))))
 
-(defn- probe-set-add [s x]
-  #?(:clj  (.add ^java.util.HashSet s x)
-     :cljs (.add s x)))
+;; THE key rule lives in datahike.array — see `native-key` there, and its twin
+;; `value-key` for the relational engine's Clojure containers. These probe
+;; structures are `java.util.HashSet`/`HashMap` and `js/Set`/`js/Map`, which
+;; compare by identity unless the key is a primitive, so this is the native one.
+(def ^:private probe-key da/native-key)
 
-(defn- probe-set-contains? [s x]
-  #?(:clj  (.contains ^java.util.HashSet s x)
-     :cljs (.has s x)))
+(defn- probe-set-add
+  "Add `x` — its content key for membership, and the raw value for seeks.
 
-(defn- probe-set-size [s]
-  #?(:clj  (.size ^java.util.HashSet s)
-     :cljs (.-size s)))
+   The raw value is appended ONLY when the key was new. A HashSet dedupes by
+   definition and a parallel list does not, and the temporal seek branch builds
+   one slice PER value in that list and concatenates: a duplicate would
+   duplicate its whole slice and silently duplicate rows. It also keeps
+   `probe-set-size` — which is the K in the cost threshold — equal to the
+   number of seeks the decision is actually buying."
+  [^ProbeSet s x]
+  (let [k (probe-key x)]
+    #?(:clj  (when (.add ^java.util.HashSet (.-members s) k)  ; true iff new
+               (.add ^java.util.ArrayList (.-seekvals s) x))
+       :cljs (let [ms (.-members s)
+                   n (.-size ms)]
+               (.add ms k)
+               (when (> (.-size ms) n) (.push (.-seekvals s) x))))))
+
+(defn- probe-set-contains? [^ProbeSet s x]
+  (let [k (probe-key x)]
+    #?(:clj  (.contains ^java.util.HashSet (.-members s) k)
+       :cljs (.has (.-members s) k))))
+
+(defn- probe-set-size [^ProbeSet s]
+  #?(:clj  (.size ^java.util.HashSet (.-members s))
+     :cljs (.-size (.-members s))))
+
+(defn- probe-set-seek-vals
+  "The RAW values, for index seeks only. Call sites: the two seek paths, and
+   nowhere else — this is per-scan work, not per-datom."
+  [^ProbeSet s]
+  (.-seekvals s))
+
+#?(:clj
+   (defn- probe-set-sorted-seek-array
+     "Raw probe values as an array in INDEX order — `compare-value` is what the
+      *-quick datom comparators use, so a ForwardCursor seeking these never
+      moves backwards. Never the members: an ArrayKey is not the stored value
+      and is not Comparable."
+     ^objects [^ProbeSet s]
+     (let [vs (sort datom/compare-value (vec (probe-set-seek-vals s)))]
+       (assert (not-any? da/array-key? vs)
+               "a wrapped key reached an index seek")
+       (object-array vs))))
 
 ;; Probe-map: HashMap<probe-value → ArrayList<Object[]>> for producer find-var propagation.
 ;; Each key is a probe-value (join-var), each value is a list of producer find-var tuples.
@@ -147,11 +202,13 @@
   "Add a producer find-var tuple to the probe-map under the given probe-value.
    Supports multiple producer tuples per probe-value (card-many joins)."
   [m k v]
-  #?(:clj  (let [^java.util.ArrayList existing (.get ^java.util.HashMap m k)]
+  #?(:clj  (let [k (probe-key k)
+                 ^java.util.ArrayList existing (.get ^java.util.HashMap m k)]
              (if existing
                (.add existing v)
                (.put ^java.util.HashMap m k (doto (java.util.ArrayList. 4) (.add v)))))
-     :cljs (let [existing (.get m k)]
+     :cljs (let [k (probe-key k)
+                 existing (.get m k)]
              (if existing
                (.push existing v)
                (.set m k #js [v])))))
@@ -159,16 +216,9 @@
 (defn- probe-map-get
   "Get the list of producer find-var tuples for a probe-value, or nil."
   [m k]
-  #?(:clj  (.get ^java.util.HashMap m k)
-     :cljs (.get m k)))
-
-(defn- probe-map->set
-  "Extract keys from a probe-map into a probe-set for consumer scan filtering."
-  [m]
-  #?(:clj  (java.util.HashSet. (.keySet ^java.util.HashMap m))
-     :cljs (let [s (js/Set.)]
-             (.forEach m (fn [_v k] (.add s k)))
-             s)))
+  (let [k (probe-key k)]
+    #?(:clj  (.get ^java.util.HashMap m k)
+       :cljs (.get m k))))
 
 (defn- probe-map-entry-size [entry]
   #?(:clj  (.size ^java.util.ArrayList entry)
@@ -192,9 +242,8 @@
 
       probe-field: 0 = entity position (seeks EAVT), 2 = value position (seeks AVET).
       Caller should pass nil for probe-set since filtering is baked into the seeks."
-     ^Iterable [^PersistentSortedSet pss resolved-a ^java.util.HashSet probe-set probe-field]
-     (let [sorted-vals (sort (vec (.toArray probe-set)))
-           ^objects val-arr (object-array sorted-vals)
+     ^Iterable [^PersistentSortedSet pss resolved-a ^ProbeSet probe-set probe-field]
+     (let [^objects val-arr (probe-set-sorted-seek-array probe-set)
            n-vals (alength val-arr)
            by-entity? (== (int probe-field) 0)]
        (reify Iterable
@@ -211,7 +260,11 @@
                  match-fn (fn [^Datom d v]
                             (if by-entity?
                               (and (== (.-e d) (long v)) (= (.-a d) resolved-a))
-                              (and (= (.-a d) resolved-a) (= (.-v d) v))))]
+                              ;; `da/a=` (what `val-eq?` below delegates to, and
+                              ;; defined before this point): a value match is the
+                              ;; engine's value equality, not `=`, which is
+                              ;; identity for arrays
+                              (and (= (.-a d) resolved-a) (da/a= (.-v d) v))))]
              ;; Seek to first value
              (when (pos? n-vals)
                (vreset! current (seek-fn (aget val-arr 0))))
@@ -294,12 +347,16 @@
     a))
 
 (defn- val-eq?
-  "Value equality that handles byte arrays (which don't support Clojure =)."
+  "Value equality for datahike VALUES.
+
+   `da/a=` rather than `=`: byte, float and double arrays are values here, and
+   Clojure's `=` compares them by identity. This used to test byte arrays only,
+   and only on the JVM, so an equality obligation between two equal-content
+   float arrays failed and the row was silently dropped — on cljs, every array
+   comparison was identity. `a=` tests `value-array?` on both sides before
+   anything else, so a scalar pays two class checks and then plain `=`."
   [a b]
-  #?(:clj (if (and (bytes? a) (bytes? b))
-            (java.util.Arrays/equals ^bytes a ^bytes b)
-            (= a b))
-     :cljs (= a b)))
+  (da/a= a b))
 
 ;; ---------------------------------------------------------------------------
 ;; Equality obligations for fused merge positions
@@ -527,16 +584,23 @@
                            ;; with an early-exit once it reaches scan-n — at that
                            ;; point it isn't selective, so fall back to a full scan.
                            ;; Bounds build cost to O(min(n, until scan-n distinct)).
-                           (let [hs (java.util.HashSet.)]
+                           ;; A `ProbeSet` carries the content keys for membership
+                           ;; AND the raw values for seeks, so an array value no
+                           ;; longer has to decline the whole optimisation to keep
+                           ;; the seek keys raw.
+                           (let [ps (make-probe-set 16)]
                              (reduce (fn [_ t]
                                        (let [val (cond
                                                    (instance? clojure.lang.Indexed t) (.nth ^clojure.lang.Indexed t col-idx)
                                                    (sequential? t) (nth t col-idx)
                                                    :else (get t col-idx))]
-                                         (when (some? val) (.add hs val)))
-                                       (if (>= (.size hs) scan-n) (reduced nil) nil))
+                                         (when (some? val)
+                                           (probe-set-add ps val)))
+                                       (if (>= (probe-set-size ps) scan-n) (reduced nil) nil))
                                      nil tuples)
-                             (when (and (pos? (.size hs)) (< (.size hs) scan-n)) hs)))))
+                             (when (and (pos? (probe-set-size ps))
+                                        (< (probe-set-size ps) scan-n))
+                               ps)))))
              e-probe (when (and (symbol? e) (analyze/free-var? e))
                        (some (fn [rel]
                                (when-let [ci (get (:attrs rel) e)]
@@ -622,7 +686,7 @@
                    (di/-slice (:avet db) (datom e0 pa pv tx0) (datom emax pa pv txmax) :avet))
                  avet-pairs)
          (if-let [probe (pattern-probe-set db clause resolved-a rels scan-n)]
-           (let [k     (.size ^java.util.HashSet (:values probe))
+           (let [k     (probe-set-size (:values probe))
                  field (int (:field probe))
                  seek-index (if (== field 2) (:avet db) (:eavt db))]
            ;; Seeks build (entity attr nil)/(e0 attr value) probe datoms and use
@@ -636,9 +700,13 @@
                       (pss-instance? seek-index)
                       (< (* (long k) (long probe-driven-threshold)) scan-n))
                (probe-driven-iterable seek-index resolved-a (:values probe) field)
-               (let [^java.util.HashSet hs (:values probe)]
+               ;; `probe-set-contains?`, not a raw `.contains`: this bypassed
+               ;; the key function entirely, which was correct only while arrays
+               ;; were declined above. With the decline gone it would filter by
+               ;; identity and silently drop every array-valued row.
+               (let [ps (:values probe)]
                  (filter (fn [^Datom d]
-                           (.contains hs (if (== field 0) (.-e d) (.-v d))))
+                           (probe-set-contains? ps (if (== field 0) (.-e d) (.-v d))))
                          (full)))))
            (full)))
        :cljs (full))))
@@ -1156,7 +1224,14 @@
                                        ;; value-seeded seek.
                                        single? (and optional? (not anti?))
                                        probe (datom eid ra (when-not single? vgv) tx0)
-                                       ^Datom d (if (and merge-cursors (not single?))
+                                       ;; The cursor is safe here because `use-cursors?` is
+                                       ;; already false for a scan that is not monotonic in `e`
+                                       ;; (see the note there). Gating on the MERGE as well was
+                                       ;; belt-and-braces that cost a root lookup per entity on
+                                       ;; every `get-else` — and it protected optional merges from
+                                       ;; a hazard that non-optional merges faced unprotected,
+                                       ;; which is how it was the wrong mechanism.
+                                       ^Datom d (if merge-cursors
                                                   (.seekGE ^PersistentSortedSet$ForwardCursor
                                                    (aget merge-cursors mi) probe)
                                                   (.lookupGE ^PersistentSortedSet eavt-pss probe))
@@ -1404,7 +1479,9 @@
                                    ;; value-seeded seek.
                                    single? (and optional? (not anti?))
                                    probe (datom eid ra (when-not single? vgv) tx0)
-                                   ^Datom d (if (and merge-cursors (not single?))
+                                   ;; See execute-card-many-merge: the SCAN gate is what makes
+                                   ;; the cursor safe, so an optional merge uses it too.
+                                   ^Datom d (if merge-cursors
                                               (.seekGE ^PersistentSortedSet$ForwardCursor
                                                (aget merge-cursors mi) probe)
                                               (.lookupGE ^PersistentSortedSet eavt-pss probe))
@@ -2220,10 +2297,19 @@
                                                       (eq-ok? eq-tx (datom/datom-tx dd) dd scan-d merge-datoms))
                                              (aset merge-datoms mi dd)
                                              (process-merges (inc mi))))))
-                                     (doseq [d mslice]
-                                       (when (temporal-merge-datom-match? d eid ra vg? vgv eq-v eq-tx scan-d temporal-tx-filter added-filter merge-datoms)
-                                         (aset merge-datoms mi d)
-                                         (process-merges (inc mi)))))))
+                                     ;; `some`, matching the JVM arm: ONE version, not a
+                                     ;; row per matching version. Both arms are dead
+                                     ;; today — `merge-card-many` forces card-many for
+                                     ;; every non-optional merge under :historical, so
+                                     ;; only `:optional?` reaches here — but two dead
+                                     ;; arms behaving differently is the #917 shape
+                                     ;; exactly, so they are kept identical rather than
+                                     ;; left for whoever revives the branch.
+                                     (when-let [d (some (fn [d]
+                                                          (when (temporal-merge-datom-match? d eid ra vg? vgv eq-v eq-tx scan-d temporal-tx-filter added-filter merge-datoms) d))
+                                                        mslice)]
+                                       (aset merge-datoms mi d)
+                                       (process-merges (inc mi))))))
                                (let [probe (datom eid ra vgv tx0)
                                      ^Datom d (pss-lookup-ge eavt-pss probe)
                                      eq-v (aget merge-eq-v mi)
@@ -2402,6 +2488,10 @@
                                     (and probe-set
                                          resolved-a
                                          (or (= probe-field 0) (= probe-field 2)) ;; entity or value position
+                                         ;; No array guard here any more: a ProbeSet hands the
+                                         ;; seek its RAW values and the filter its content keys,
+                                         ;; so both roles are served without either declining.
+
                                          ;; Value-position seeks read the AVET index, which only
                                          ;; contains :db/index / :db/unique attributes. For a
                                          ;; non-indexed attr the AVET slice is empty, so gate on
@@ -2422,12 +2512,44 @@
                                                   (< (* (long (probe-set-size probe-set)) (long probe-driven-threshold))
                                                      est))))))
                              :cljs false)
+        ;; A forward merge cursor is only usable when the scan visits entities in
+        ;; INCREASING `e`. A value-position probe-driven scan does not: it turns
+        ;; the scan into a series of AVET seeks ordered by VALUE, so entities
+        ;; arrive in value order — measured, an inverted fixture yielded 19900
+        ;; before 19800 — and a forward cursor cannot seek back, so the merge
+        ;; found nothing and the row was silently dropped. This is about the
+        ;; SCAN, not about the merge: it hits ordinary non-optional merges too,
+        ;; which is what an earlier fix here got wrong by gating on the merge.
+        ;; THE INVARIANT EVERY MERGE CURSOR DEPENDS ON, named rather than
+        ;; implied. A forward cursor can only ever move forward, so a merge may
+        ;; use one exactly when the scan hands it entities in increasing `e`.
+        ;; Cursor-enabled scans normally do — EAVT, fixed-attribute AEVT,
+        ;; fixed-value AVET are all ordered by entity within their attribute —
+        ;; but a VALUE-position probe turns the scan into a series of AVET seeks
+        ;; ordered by VALUE, and then entities arrive in value order. Measured:
+        ;; an inverted fixture yielded 19900 before 19800 and the merge silently
+        ;; dropped the second row.
+        ;;
+        ;; It cannot be decided at plan time, which is why it lives here: the
+        ;; probe-driven decision reads the RUNTIME size of the probe set against
+        ;; the scan estimate.
+        e-monotonic-scan? (not (and use-probe-driven?
+                                    (== 2 (int probe-datom-field))))
+        use-cursors? (and use-cursors? e-monotonic-scan?)
+        ;; `execute-sorted-merge` is cursor-driven throughout and has no
+        ;; lookup fallback, so when the scan is not monotonic it takes the
+        ;; path build-pipeline already uses for every non-sorted card-one
+        ;; group (and for groups carrying a cross-merge obligation).
+        fused-path (if (and (= fused-path :sorted-merge) (not use-cursors?))
+                     :per-cursor-merge
+                     fused-path)
         slice (if use-probe-driven?
                 (if temporal
                   ;; Temporal probe-driven: build concatenated temporal slices per probe value
                   #?(:clj
                      (let [pf (int probe-datom-field)
-                           sorted-vals (sort (vec (.toArray ^java.util.HashSet probe-set)))
+                           ;; index order — see probe-set-sorted-seek-array
+                           sorted-vals (seq (probe-set-sorted-seek-array probe-set))
                            result (java.util.ArrayList.)]
                        (doseq [v sorted-vals]
                          (let [[from to] (if (== pf 0)
@@ -2497,6 +2619,11 @@
 
         :card-many-merge
         (let [merge-cursors #?(:clj (when use-cursors?
+                                      ;; no assert here: `use-cursors?` is already
+                                      ;; `(and … e-monotonic-scan?)`, so one would be
+                                      ;; unreachable. The invariant is enforced at
+                                      ;; the binding, which is the only place that
+                                      ;; can decide it.
                                       (let [cursors (object-array n-merges)]
                                         (dotimes [i n-merges]
                                           (aset cursors i
@@ -2544,6 +2671,11 @@
 
         :per-cursor-merge
         (let [merge-cursors #?(:clj (when use-cursors?
+                                      ;; no assert here: `use-cursors?` is already
+                                      ;; `(and … e-monotonic-scan?)`, so one would be
+                                      ;; unreachable. The invariant is enforced at
+                                      ;; the binding, which is the only place that
+                                      ;; can decide it.
                                       (let [cursors (object-array n-merges)]
                                         (dotimes [i n-merges]
                                           (aset cursors i
@@ -2870,10 +3002,14 @@
               ;; and match nothing.
               jv-vec (filterv #(contains? neg-attrs %) join-vars)
               n-jv (count jv-vec)
+              ;; `probe-key` per component, for the same reason every other join
+              ;; key needs it: an array value hashes by IDENTITY, so a negated
+              ;; relation holding an equal-content array excluded nothing and
+              ;; `(not-join [?v] …)` kept the row the base engine drops.
               neg-key (fn [tuple]
                         (if (= 1 n-jv)
-                          (get tuple (get neg-attrs (first jv-vec)))
-                          (mapv #(get tuple (get neg-attrs %)) jv-vec)))
+                          (probe-key (get tuple (get neg-attrs (first jv-vec))))
+                          (mapv #(probe-key (get tuple (get neg-attrs %))) jv-vec)))
               ;; Exclusion set. JVM keeps the fast java.util.HashSet (value equality
               ;; via .equals/.hashCode, incl. vector keys); cljs uses a Clojure set —
               ;; js/Set would key vectors by REFERENCE and never match (and HashSet is
@@ -2904,9 +3040,10 @@
             (loop [read-i (int 0) write-i (int 0)]
               (if (< read-i n)
                 (let [^objects tuple (result-list-get result-list read-i)
+                      ;; keyed exactly as `neg-key` keys the exclusion set
                       probe (if (= 1 n-jv)
-                              ((first jv-getters) tuple)
-                              (mapv #(% tuple) jv-getters))
+                              (probe-key ((first jv-getters) tuple))
+                              (mapv #(probe-key (% tuple)) jv-getters))
                       excluded? #?(:clj (.contains ^java.util.HashSet excl-set probe)
                                    :cljs (contains? excl-set probe))]
                   (if excluded?
@@ -2975,10 +3112,20 @@
                    val (apply f argv)]
                (if (some? val)
                  ;; Check already-bound vars: function result must match existing value
+                 ;; `val-eq?`, not `=`: the same value equality the merge kernels
+                 ;; make, so a function output that IS an array unifies with an
+                 ;; equal-content one rather than being dropped.
+                 ;;
+                 ;; The `const-bound` arm is a GUARD, not a fix for an observed
+                 ;; bug: with the stock planner a scalar output var that is also
+                 ;; an :in constant is substituted into the binding position and
+                 ;; raises before execution, and prepared mode declines the
+                 ;; shape — so nothing reaches it today. It is here so the
+                 ;; obligation is enforced if either of those changes.
                  (if (and (every? (fn [bv]
-                                    (= val (aget tuple (int (get vi bv)))))
+                                    (val-eq? val (aget tuple (int (get vi bv)))))
                                   already-bound)
-                          (every? (fn [bv] (= val (get consts bv))) const-bound))
+                          (every? (fn [bv] (val-eq? val (get consts bv))) const-bound))
                    (let [;; Extend tuple with new value(s) for unbound vars
                          old-len (alength tuple)
                          new-len (count new-vi)
@@ -3707,15 +3854,20 @@
                                 probe-var (:probe-var pinfo)
                                 probe-idx (int (get p-var-index probe-var))
                                 n-producer (result-list-size result-list)
-                                pmap (make-probe-map n-producer)]
+                                pmap (make-probe-map n-producer)
+                                ;; built here rather than derived from `pmap`: a
+                                ;; probe-map's keys are already content KEYS, so it
+                                ;; has no raw value to give a seek
+                                pset (make-probe-set n-producer)]
                             (dotimes [i n-producer]
                               (let [^objects tuple (result-list-get result-list i)
                                     probe-val (aget tuple probe-idx)]
-                                (probe-map-add pmap probe-val tuple)))
+                                (probe-map-add pmap probe-val tuple)
+                                (probe-set-add pset probe-val)))
                             #?(:clj  (.clear ^java.util.ArrayList result-list)
                                :cljs (.splice result-list 0))
                             (recur (inc gi)
-                                   (assoc probe-sets [gi probe-var] (probe-map->set pmap))
+                                   (assoc probe-sets [gi probe-var] pset)
                                    (assoc probe-maps [gi probe-var]
                                           {:map pmap :p-all-vars p-all-vars})
                                    consumed-cgi)))

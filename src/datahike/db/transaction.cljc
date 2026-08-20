@@ -1215,12 +1215,18 @@
       (let [ov (if (dbu/ref? db a) (dbu/entid-strict db ov) ov)]
         (validate-val nv op-vec db)
         (if (dbu/multival? db a)
-          (if (some (fn [^Datom d] (= (.-v d) ov)) datoms)
+          ;; `a=`: CAS asks "is the stored value the one I expected", and the
+          ;; INDEX says two equal-content arrays are one value. With `=` this
+          ;; succeeded only when the caller passed back the very object it read
+          ;; out of the database — a value reconstructed from the wire, a file
+          ;; or another process failed the compare-and-swap with nothing wrong.
+          (if (some (fn [^Datom d] (arr/a= (.-v d) ov)) datoms)
             [(transact-add report [:db/add e a nv]) []]
             (log/raise ":db.fn/cas failed on datom [" e " " a " " (map :v datoms) "], expected " ov
                        {:error :transact/cas, :old datoms, :expected ov, :new nv}))
           (let [v (:v (first datoms))]
-            (if (= v ov)
+            ;; `a=` here too — see the card-many arm above
+            (if (arr/a= v ov)
               [(transact-add report [:db/add e a nv]) []]
               (log/raise ":db.fn/cas failed on datom [" e " " a " " v "], expected " ov
                          {:error :transact/cas, :old (first datoms), :expected ov, :new nv}))))))))
