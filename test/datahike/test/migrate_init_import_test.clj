@@ -25,6 +25,8 @@
             [datahike.migrate :as m]
             [datahike.schema :as ds]
             [datahike.test.utils :as utils]
+            [datahike.migrate.ids :as ids]
+            [datahike.constants :as const]
             [konserve.store :as ks]))
 
 (defn- teardown [conn]
@@ -455,3 +457,178 @@
         (is (true? (:verified? rep))
             "the count check holds: the dump describes what the filter produced")
         (teardown src) (teardown tgt)))))
+
+;; ---------------------------------------------------------------------------
+;; a COMPUTED `:eids` mapping
+
+(defn- packer
+  "A mapping with a handful of entries rather than one per entity — the shape a
+   Datomic source needs. Source ids are astronomically large (~1.76e13) and dense
+   within a partition, so a base per partition and an offset within it names every
+   id in constant space.
+
+   TOTAL — identity below `lo` — and that is the contract, not a convenience. The
+   bulk path has no allocator: it needs FINAL ids before it sorts, which is the
+   whole reason a caller supplies a mapping, so an id the mapping does not name
+   can only pass through unchanged. The streaming path allocates instead. The two
+   therefore agree only on a mapping that names everything, which
+   `a-partial-mapping-is-the-callers-contract` pins directly."
+  [lo base]
+  (reify clojure.lang.ILookup
+    (valAt [_ k] (if (and (number? k) (>= (long k) lo)) (+ base (- (long k) lo)) k))
+    (valAt [this k nf] (let [v (.valAt this k)] (if (nil? v) nf v)))))
+
+(defn- partial-packer
+  "The same thing with a hole in it: nil for anything below `lo`, so the schema
+   entities this fixture's records declare are unnamed."
+  [lo base]
+  (reify clojure.lang.ILookup
+    (valAt [_ k] (when (and (number? k) (>= (long k) lo)) (+ base (- (long k) lo))))
+    (valAt [this k nf] (or (.valAt this k) nf))))
+
+(def ^:private dtm-lo 13194139534312)
+
+(defn- dtm-records
+  "Datomic-shaped: enormous entity ids, a ref between two of them, and a tx
+   entity — the three things a mapping has to get right."
+  []
+  (let [t1 (+ const/tx0 1) t2 (+ const/tx0 2)]
+    [[t1 :db/txInstant #inst "2021-01-01" t1 true]
+     [100 :db/ident :name t1 true]
+     [100 :db/valueType :db.type/string t1 true]
+     [100 :db/cardinality :db.cardinality/one t1 true]
+     [101 :db/ident :pal t1 true]
+     [101 :db/valueType :db.type/ref t1 true]
+     [101 :db/cardinality :db.cardinality/one t1 true]
+     [t2 :db/txInstant #inst "2021-02-01" t2 true]
+     [dtm-lo :name "a" t2 true]
+     [(+ dtm-lo 1) :name "b" t2 true]
+     [dtm-lo :pal (+ dtm-lo 1) t2 true]]))
+
+(def ^:private dtm-schema
+  {:name {:db/valueType :db.type/string :db/cardinality :db.cardinality/one}
+   :pal  {:db/valueType :db.type/ref :db/cardinality :db.cardinality/one}})
+
+(defn- import-with
+  "Import the Datomic-shaped records under `opts`; return the fields a mapping
+   can move, or the failure's ex-data."
+  [opts]
+  (let [conn (fresh true)]
+    (try
+      (m/import-source conn (m/records->chunk-src (dtm-records))
+                       (merge {:sync? true :verify? false :schema dtm-schema} opts))
+      {:max-eid (:max-eid @conn)
+       :max-tx  (:max-tx @conn)
+       :hash    (:hash @conn)
+       :names   (into #{} (map first) (d/q '[:find ?n :where [?e :name ?n]] @conn))
+       :eids    (vec (sort (map first (d/q '[:find ?e :where [?e :name _]] @conn))))
+       :ref     (first (d/q '[:find ?a ?b :where [?x :pal ?y] [?x :name ?a] [?y :name ?b]]
+                            @conn))}
+      (catch Exception e (or (ex-data e) {:threw (ex-message e)}))
+      (finally (teardown conn)))))
+
+(deftest a-computed-mapping-agrees-with-a-materialised-one
+  (testing "`apply-mapping` reads ids with `get … not-found`, so an ILookup is
+            already its whole contract. What was missing was everything AROUND
+            it: the option schema rejected one, the refusal excluded it, and two
+            fields read `:next-eid`/`(count …)` off a map a computed mapping does
+            not have."
+    (let [materialised (merge {dtm-lo 1000 (+ dtm-lo 1) 1001}
+                              ;; total over this fixture's ids, so the two shapes
+                              ;; are the SAME mapping and may be compared at all
+                              {100 100 101 101})
+          computed     (packer dtm-lo 1000)
+          a (import-with {:eids materialised :build-indexes? true})
+          b (import-with {:eids computed :build-indexes? true})]
+      (is (= [1000 1001] (:eids a)) "the caller's ids are the ids that land")
+      (is (= a b)
+          "field for field — :hash, :max-eid, :max-tx, the ref and the values")
+      (is (= ["a" "b"] (:ref b)) "including a ref VALUE remapped through the same mapping"))))
+
+(deftest both-import-paths-agree-on-the-same-mapping
+  (testing "The two paths used to disagree about what a mapping IS — the
+            streaming one CALLED a function, the bulk one `get`-ed it, and
+            `(get some-fn k nf)` is `nf`. So a mapping that worked on one
+            silently mapped NOTHING on the other, with no error anywhere.
+            `ids/lookup-id` is now the single owner, and this is the test that
+            can tell.
+
+            It earns its keep: keying `remember-eid` on `map?` alone — correct
+            for a computed mapping, wrong for `nil` — silently stopped
+            `:allocate` memoising, and the streaming path drifted to :max-eid 9
+            where the bulk path said 4. Nothing else in the suite noticed."
+    (doseq [[label eids] [["ILookup"   (packer dtm-lo 1000)]
+                          ["fn"        (fn [e] (if (and (number? e) (>= (long e) dtm-lo))
+                                                 (+ 1000 (- (long e) dtm-lo))
+                                                 e))]
+                          [":allocate" :allocate]]]
+      (let [streaming (import-with {:eids eids})
+            bulk      (import-with {:eids eids :build-indexes? true})]
+        (is (= streaming bulk)
+            (str label ": the streaming and bulk paths must produce the same database"))))))
+
+(deftest an-allocated-mapping-and-the-running-fold-agree
+  (testing "`run-index-build` used to take `:max-eid` from `(dec (:next-eid mapping))`
+            whenever a mapping existed, and from the pass-2 running maxima
+            otherwise. It now always uses the fold, because the fold is exact for
+            EVERY mapping — computed over records that have already been remapped
+            — while `:next-eid` exists only on what `build-mapping` returns, so a
+            computed mapping made `(long nil)` throw.
+
+            The two agreed, and this pins that so the simplification cannot
+            silently become a behaviour change."
+    (let [recs (dtm-records)
+          mapping (ids/build-mapping
+                   {:schema dtm-schema :system-entities #{} :max-eid const/e0 :max-tx const/tx0}
+                   (fn [rf init] (reduce rf init recs)))
+          imported (import-with {:eids :allocate :build-indexes? true})]
+      (is (= (dec (long (:next-eid mapping))) (:max-eid imported))
+          ":max-eid — the allocator's own answer and the fold's")
+      (is (= (dec (long (:next-tx mapping))) (:max-tx imported))
+          ":max-tx likewise"))))
+
+(deftest a-partial-mapping-is-the-callers-contract
+  (testing "A mapping that does not name an id leaves the two paths with different
+            jobs, and neither is wrong: the streaming path ALLOCATES a fresh id,
+            because it allocates anyway; the bulk path passes the id through
+            UNCHANGED, because it has no allocator — it needs final ids before it
+            sorts, which is the entire reason a caller supplies a mapping.
+
+            So a caller mapping must be TOTAL for the two to agree. Pinned rather
+            than fixed, because the alternative is giving the bulk path an
+            allocator and losing the property that makes it a bulk path.
+
+            What is NOT allowed, and used to happen silently, is the partial case
+            CORRUPTING the streaming side: a computed mapping memoised nowhere, so
+            every datom of an unnamed entity got its own fresh id. Measured on
+            unpatched main with a partial function — schema eids `(1 4)` with one
+            attribute's three datoms scattered across them, `:pal` therefore never
+            a ref, and its ref value left as the untranslated source id."
+    (let [streaming (import-with {:eids (partial-packer dtm-lo 1000)})
+          bulk      (import-with {:eids (partial-packer dtm-lo 1000) :build-indexes? true})
+          as-a-map  (import-with {:eids {dtm-lo 1000 (+ dtm-lo 1) 1001}})]
+      (testing "the mapped ids land on both, and the ref value is remapped on both"
+        (is (= [1000 1001] (:eids streaming)))
+        (is (= [1000 1001] (:eids bulk)))
+        (is (= ["a" "b"] (:ref streaming)) "NOT a dangling ref")
+        (is (= ["a" "b"] (:ref bulk))))
+      (testing "a partial computed mapping behaves exactly like a partial map"
+        (is (= as-a-map streaming)
+            "an unnamed id is allocated, once, and remembered — not re-allocated per datom"))
+      (testing "and the bulk path differs from both, by passing unnamed ids through"
+        (is (not= streaming bulk))))))
+
+(deftest a-mapping-may-not-put-an-entity-at-or-above-tx0
+  (testing "`tx0` PARTITIONS the id space, and every consumer downstream reads it
+            that way — the running `:max-eid` counts anything at or above it as
+            0. So a mapping that lands an entity there imports SUCCESSFULLY and
+            publishes a `:max-eid` a later transact will allocate straight
+            through, on top of live data.
+
+            Sizing against `emax` (2,147,483,647) rather than `tx0` (536,870,912)
+            is the easy way to get there — it looks like four times the room — and
+            is what the report this came from actually hit."
+    (let [r (import-with {:eids (packer dtm-lo 600000000) :build-indexes? true})]
+      (is (= :import/eid-above-tx0 (:error r))
+          (str "expected a refusal, got " (pr-str r)))
+      (is (>= (long (:entity-id r)) (long const/tx0))))))
