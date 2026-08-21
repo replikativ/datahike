@@ -309,10 +309,26 @@
   [{:keys [kind] :as source}]
   (case kind
     :pattern
-    (let [{:keys [classified db]} source
+    (let [{:keys [classified db bound-var-cards]} source
           si (analyze/pattern-schema-info db classified)
-          est (or (estimate/estimate-pattern db classified si)
-                  (di/-count (:eavt db)))
+          base (or (estimate/estimate-pattern db classified si)
+                   (di/-count (:eavt db)))
+          ;; BOUND-AWARE when the caller knows what is bound entering this
+          ;; clause. A scan cannot OUTPUT more rows than it matches, so
+          ;; advertising the unconstrained attribute extent over-states every
+          ;; var it binds — and a downstream consumer inherits that.
+          ;;
+          ;; This is where a selective probe used to evaporate. `[?c :concept/id
+          ;; ?from-id]` with `?from-id` bound to a one-element `:in` collection
+          ;; matched one row and costed itself at one, then advertised `?c` at
+          ;; the full 2000-concept extent — so `[?r :relation/concept-1 ?c]` was
+          ;; priced against 2000 and came out at the whole 8000-row relation.
+          ;; See `lower/node->output-cards` for the other half. (#973)
+          est (if (seq bound-var-cards)
+                (or (estimate/estimate-pattern-with-bindings
+                     db classified si bound-var-cards base)
+                    base)
+                base)
           free-output-vars (filter analyze/free-var? (:vars classified))]
       (when (seq free-output-vars)
         (zipmap free-output-vars (repeat (long est)))))
