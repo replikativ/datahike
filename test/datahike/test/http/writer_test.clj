@@ -84,3 +84,51 @@
       (is (thrown? Exception
                    (d/transact (d/connect cfg)
                                [{:name "Should fail."}]))))))
+
+(deftest test-http-writer-integer-widths
+  (testing "Integers survive the writer transport at every width."
+    ;; datahike has a single integer value type, :db.type/long. A writer
+    ;; transport that does not carry integer width therefore cannot be fixed up
+    ;; downstream: a value arriving as a 32-bit Integer fails the Long schema
+    ;; check rather than being coerced. The values that land in that range are
+    ;; the ordinary ones — epoch seconds, ids, counts — so the symptom is
+    ;; "most transactions fail", not an edge case.
+    ;;
+    ;; The existing tests above use 18 and 25, which are the same shape as each
+    ;; other. This one pins the boundaries so a future transport change has to
+    ;; keep carrying them.
+    (let [port   31284
+          server (start-server {:port  port
+                                :join? false
+                                :token "securerandompassword"})]
+      (try
+        (let [cfg    {:store              {:backend :file
+                                           :path "/tmp/writer_integer_widths"
+                                           :id #uuid "17100000-0000-0000-0000-000000000002"}
+                      :keep-history?      true
+                      :schema-flexibility :read
+                      :writer             {:backend :datahike-server
+                                           :url     (str "http://localhost:" port)
+                                           :token   "securerandompassword"}}
+              widths {:tiny          1
+                      :zero          0
+                      :small         42
+                      :negative      -12345
+                      :int-max       (long Integer/MAX_VALUE)
+                      :int-min       (long Integer/MIN_VALUE)
+                      :above-int-max (inc (long Integer/MAX_VALUE))
+                      :below-int-min (dec (long Integer/MIN_VALUE))
+                      :epoch-seconds 1755820800
+                      :big           1099511627776}   ; 2^40
+              conn   (do (when (d/database-exists? cfg) (d/delete-database cfg))
+                         (d/create-database cfg)
+                         (d/connect cfg))]
+          (d/transact conn [(assoc widths :db/ident :widths)])
+          (let [read-back (d/pull @conn '[*] [:db/ident :widths])]
+            (doseq [[k expected] widths]
+              (is (= expected (get read-back k))
+                  (str k " round-trips through the writer"))))
+          (d/release conn)
+          (d/delete-database cfg))
+        (finally
+          (stop-server server))))))
