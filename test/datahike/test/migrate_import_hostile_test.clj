@@ -566,17 +566,18 @@
                            :db.secondary/attrs [:doc/tag]
                            :db.secondary/config {:path p}}])
         (Thread/sleep 600)
-        ;; Asserted on the MESSAGE, not `ex-data`: the transact path rewraps a
-        ;; raised error and the replacement carries `{}` with no cause, so the
-        ;; keyword survives only in the printed map. That is worth its own fix
-        ;; and is not this test's subject.
-        (let [msg (try (d/transact conn [{:db/id -1 :doc/tag "alpha"}]) nil
-                       (catch clojure.lang.ExceptionInfo e (ex-message e)))]
-          (is (some? msg) "the write must be refused, not accepted")
-          (is (re-find #":transact/secondary-only-multival-unstorable" (str msg))
+        ;; The writer preserves the original ExceptionInfo, including its
+        ;; structured error data, rather than replacing it with a message-only
+        ;; wrapper. Assert the contract directly so wording changes cannot hide
+        ;; or manufacture the refusal.
+        (let [error (try (d/transact conn [{:db/id -1 :doc/tag "alpha"}]) nil
+                         (catch clojure.lang.ExceptionInfo e e))]
+          (is (some? error) "the write must be refused, not accepted")
+          (is (= :transact/secondary-only-multival-unstorable
+                 (:error (ex-data error)))
               "refused at the first write, which is the last moment the caller
                can still choose a different schema")
-          (is (re-find #":doc/tag" (str msg)) "and it names the attribute"))
+          (is (= :doc/tag (:attribute (ex-data error))) "and it names the attribute"))
         (finally (release! conn))))))
 
 (deftest secondary-only-history-export-is-refused-rather-than-falsified
