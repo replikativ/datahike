@@ -896,20 +896,24 @@
    types return nil — their downstream propagation falls back to the existing
    all-vars-treated-as-free behavior; LEntityJoin / LRuleCall / LUnion arms can
    be added as follow-ups."
-  [node db provenance]
-  (cond
-    (ir/scan? node)
-    (plan/source-cards {:kind :pattern :classified (scan->classified node) :db db})
+  ([node db provenance] (estimate-node-output-cards node db provenance nil))
+  ([node db provenance bound-var-cards]
+   (cond
+     (ir/scan? node)
+     ;; `bound-var-cards` is what is already bound ENTERING this node, so the
+     ;; output estimate reflects the probe rather than the attribute extent.
+     (plan/source-cards {:kind :pattern :classified (scan->classified node) :db db
+                         :bound-var-cards bound-var-cards})
 
-    ;; Function binds whose var advertises :datahike/output-cardinality (e.g.
-    ;; a graph algorithm whose result size is data-dependent). Without this the
-    ;; bind is opaque and downstream patterns over its output var fall back to
-    ;; the full attribute extent. Only the binding's own free vars are bounded.
-    (ir/bind? node)
-    (plan/source-cards {:kind :bind :classified (bind->classified node) :db db
-                        :provenance provenance})
+     ;; Function binds whose var advertises :datahike/output-cardinality (e.g.
+     ;; a graph algorithm whose result size is data-dependent). Without this the
+     ;; bind is opaque and downstream patterns over its output var fall back to
+     ;; the full attribute extent. Only the binding's own free vars are bounded.
+     (ir/bind? node)
+     (plan/source-cards {:kind :bind :classified (bind->classified node) :db db
+                         :provenance provenance})
 
-    :else nil))
+     :else nil)))
 
 (defn- bind-provenance
   "Map each var bound by a scalar function bind to the form that produced it,
@@ -1103,7 +1107,6 @@
         ;; so source-idx is a reasonable proxy for "what's bound entering
         ;; this clause." The execution path itself is reordered later by
         ;; order-plan-ops based on actual cost, independent of this.
-        node->output-cards (zipmap nodes (map #(estimate-node-output-cards % db provenance) nodes))
         ;; Per-node BINDING vars — the free vars a node binds for
         ;; downstream consumption. Distinct from output-cards (which
         ;; carries numeric cardinality estimates and is restricted to
@@ -1163,6 +1166,41 @@
                                    (if (contains? m v) m (assoc m v ::in-scope)))
                                  acc-map
                                  (or vs [])))
+        ;; NOT a pre-pass. Output cards are computed in SOURCE ORDER, each node
+        ;; under the bindings accumulated from the nodes before it, because an
+        ;; unbound pre-pass throws away exactly the information this map exists
+        ;; to carry.
+        ;;
+        ;; A scan cannot output more rows than it matches. `[?c :concept/id
+        ;; ?from-id]` with `?from-id` bound to a one-element `:in` collection
+        ;; matches one row and costed itself at one — but the pre-pass then
+        ;; advertised `?c` at the full 2000-concept extent, so the next clause
+        ;; `[?r :relation/concept-1 ?c]` was priced against 2000 rather than 1
+        ;; and came out at the whole 8000-row relation. The planner duly drove
+        ;; from the relation and hash-joined the probe in.
+        ;;
+        ;; The visible symptom was a plan that did not change at all between a
+        ;; 1-element and a 1000-element probe — constant time in the input,
+        ;; where the base engine scales with it (#973).
+        ;;
+        ;; Order is by `source-idx`, the same proxy the bvc propagation below
+        ;; already uses, and the same caveat applies: correctness never depends
+        ;; on cardinality accuracy (Datalog is set semantics), only plan
+        ;; quality. `merge-cards` takes the MIN, so a bound-aware estimate can
+        ;; only tighten what a later node sees, never loosen it.
+        ordered-nodes (sort-by node->src-idx nodes)
+        node->output-cards
+        (:cards
+         (reduce (fn [{:keys [bvc] :as acc} n]
+                   (let [outs (estimate-node-output-cards n db provenance bvc)]
+                     (-> acc
+                         (assoc-in [:cards n] outs)
+                         (assoc :bvc (cond-> bvc
+                                       (some? outs) (merge-cards outs)
+                                       (seq (node-binding-vars logical-plan n))
+                                       (merge-bindings (node-binding-vars logical-plan n)))))))
+                 {:cards {} :bvc initial-bvc}
+                 ordered-nodes))
         ;; Pre-compute bvc per node from PRECEDING source-idx nodes'
         ;; outputs (cardinality, scan-only) and bindings (every binder
         ;; node).
