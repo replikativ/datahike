@@ -1,17 +1,11 @@
-{:deps {org.clojure/clojure                         {:mvn/version "1.12.4"}
+{:deps {org.clojure/clojure                         {:mvn/version "1.12.5"}
         org.replikativ/hasch                        {:mvn/version "0.4.102"
                                                      :exclusions [org.clojure/clojurescript]}
-        ;; LOCAL CHECKOUT — MUST NOT MERGE. konserve's conditional-write API is
-        ;; unreleased, and this has to be the TOP-LEVEL dep rather than an alias:
-        ;; `bb test` runs codegen-java first, which loads datahike's spec (and so
-        ;; datahike.writing) through the plain deps.edn and never sees an alias.
-        ;; With an alias the whole bb pipeline fails to build, which is a sharper
-        ;; way of saying this branch is not mergeable until konserve ships.
-        org.replikativ/konserve                     {:local/root "/home/christian-weilbach/Development/konserve-wt-cas"}
+        org.replikativ/konserve                     {:mvn/version "0.9.376"}
 
         org.replikativ/superv.async                 {:mvn/version "0.3.50"
                                                      :exclusions [org.clojure/clojurescript]}
-        org.replikativ/datalog-parser               {:mvn/version "0.2.37"}
+        org.replikativ/datalog-parser               {:mvn/version "0.2.42"}
         ;; canonical fressian node+root handlers + MST boundary (0.4.126); diff-buf write-buffering
         ;; (opt-in, Settings diffBufSize); 0.4.132 serializes the CACHED root count (may be -1) so
         ;; writing a storage-detached root never forces a recompute (cures the cljs side too);
@@ -26,7 +20,7 @@
         ;; :cljs + :test (shadow-cljs.edn:1), and `bb test cljs-node` sees only
         ;; :cljs — so this is the one placement all three see. The old :bulk
         ;; alias reached none of the cljs ones.
-        org.replikativ/persistent-sorted-set        {:mvn/version "0.5.140"}
+        org.replikativ/persistent-sorted-set        {:mvn/version "0.5.141"}
         ;; MAIN deps, not a test alias. `datahike.cbor` is src/, so boring is a
         ;; real runtime dependency: the dump codec and the kabel wire format
         ;; both go through it. It used to be declared only under :test, which
@@ -44,8 +38,8 @@
         ;; output was never affected — it writes tag 0 — so no round trip could
         ;; show it; `migrate-legacy-golden-test` reads bytes from the real old
         ;; writer, which is what caught it. replikativ/boring#18.
-        org.replikativ/boring                       {:mvn/version "0.1.21"}
-        is.simm/partial-cps                         {:mvn/version "0.1.59"}
+        org.replikativ/boring                       {:mvn/version "0.1.28"}
+        is.simm/partial-cps                         {:mvn/version "0.1.60"}
         environ/environ                             {:mvn/version "1.2.0"}
         nrepl/bencode                               {:mvn/version "1.2.0"}
         org.replikativ/logging                      {:mvn/version "0.1.3"}
@@ -53,10 +47,10 @@
         medley/medley                               {:mvn/version "1.4.0"}
         metosin/spec-tools                          {:mvn/version "0.10.8"}
         metosin/malli                               {:mvn/version "0.20.1"}
-        org.babashka/http-client                    {:mvn/version "0.4.23"}
-        metosin/jsonista                            {:mvn/version "0.3.14"}
+        org.babashka/http-client                    {:mvn/version "0.4.24"}
+        metosin/jsonista                            {:mvn/version "1.0.0"}
         com.github.pkpkpk/cljs-cache                {:mvn/version "1.0.21"}
-        org.roaringbitmap/RoaringBitmap             {:mvn/version "1.3.0"}}
+        org.roaringbitmap/RoaringBitmap             {:mvn/version "1.6.20"}}
 
  :paths ["src" "target/classes" "resources"]
 
@@ -70,8 +64,8 @@
 
            :1.10 {:override-deps {org.clojure/clojure {:mvn/version "1.10.0"}}}
 
-           :cljs {:extra-deps {org.clojure/clojurescript {:mvn/version "1.12.134"}
-                               thheller/shadow-cljs      {:mvn/version "3.3.6"}}
+           :cljs {:extra-deps {org.clojure/clojurescript {:mvn/version "1.12.145"}
+                               thheller/shadow-cljs      {:mvn/version "3.4.12"}}
                                
                   :extra-paths ["test"]}
 
@@ -81,12 +75,12 @@
                          {:local/root "/home/christian-weilbach/Development/konserve-s3-wt-cas"}}}
 
            :dev {:extra-paths ["dev" "benchmark/src"]
-                 :extra-deps {org.clojure/tools.namespace {:mvn/version "1.5.0"}
-                              org.clojure/clojurescript   {:mvn/version "1.12.42"}
-                              thheller/shadow-cljs        {:mvn/version "3.3.6"}
+                 :extra-deps {org.clojure/tools.namespace {:mvn/version "1.5.1"}
+                              org.clojure/clojurescript   {:mvn/version "1.12.145"}
+                              thheller/shadow-cljs        {:mvn/version "3.4.12"}
                               clj-http/clj-http           {:mvn/version "3.13.1"}
                               com.gfredericks/user.clj    {:mvn/version "0.1.0"}
-                              org.clojure/tools.cli       {:mvn/version "1.1.230"}
+                              org.clojure/tools.cli       {:mvn/version "1.4.256"}
                               incanter/incanter-core      {:mvn/version "1.9.3"}
                               incanter/incanter-charts    {:mvn/version "1.9.3"}
                               hashp/hashp                 {:mvn/version "0.2.2"}
@@ -96,7 +90,7 @@
                   :jvm-opts ["-ea" "--add-modules" "jdk.incubator.vector"]
                   :extra-deps {lambdaisland/kaocha         {:mvn/version "1.91.1392"}
                                lambdaisland/kaocha-cljs    {:mvn/version "1.9.181"}
-                               org.clojure/test.check      {:mvn/version "1.1.1"}
+                               org.clojure/test.check      {:mvn/version "1.1.3"}
                                orchestra/orchestra         {:mvn/version "2021.01.01-1"}
 
                                ;; TEST SCOPE ONLY. The dump codec is boring now and
@@ -116,15 +110,15 @@
 
                                ;; http server
                                buddy/buddy-auth              {:mvn/version "3.0.323"}
-                               ring/ring-core                {:mvn/version "1.15.3"}
-                               ring/ring-jetty-adapter       {:mvn/version "1.15.3"}
+                               ring/ring-core                {:mvn/version "1.15.5"}
+                               ring/ring-jetty-adapter       {:mvn/version "1.15.5"}
                                metosin/reitit                {:mvn/version "0.10.1"}
                                ring-cors/ring-cors           {:mvn/version "0.1.13"}
 
                                ;; secondary index integrations (for testing)
-                               org.replikativ/proximum       {:mvn/version "0.1.25"}
-                               org.replikativ/scriptum       {:mvn/version "0.1.27"}
-                               org.replikativ/stratum        {:mvn/version "0.3.80"}
+                               org.replikativ/proximum       {:mvn/version "0.1.35"}
+                               org.replikativ/scriptum       {:mvn/version "0.1.29"}
+                               org.replikativ/stratum        {:mvn/version "0.3.81"}
 
                                ;; kabel integration for distributed datahike.
                                ;; src-kabel's connector requires datahike.cbor,
@@ -133,8 +127,8 @@
                                ;; longer duplicated here: it is a main dep now,
                                ;; because declaring it twice is precisely how the
                                ;; tested and shipped versions came apart.
-                               org.replikativ/kabel          {:mvn/version "0.3.102"}
-                               is.simm/distributed-scope     {:mvn/version "0.1.6"}
+                               org.replikativ/kabel          {:mvn/version "0.3.108"}
+                               is.simm/distributed-scope     {:mvn/version "0.1.9"}
                                org.replikativ/konserve-sync  {:mvn/version "0.1.39"}
 
                                ;; S3-compatible store integration test (migrate-s3-test, needs docker; runs Garage)
@@ -147,26 +141,26 @@
            ;; puts the peer jar on the classpath, which is why it is a .clj that
            ;; nothing else requires.
            :datomic {:extra-paths ["test" "test-datomic" "src-datomic"]
-                     :extra-deps {com.datomic/peer {:mvn/version "1.0.7622"}}}
+                     :extra-deps {com.datomic/peer {:mvn/version "1.0.7705"}}}
 
            :ffix {:extra-deps {cljfmt/cljfmt {:mvn/version "0.9.2"}}
                   :main-opts ["-m" "cljfmt.main" "fix"]}
 
            ;; Build
 
-           :build {:deps {io.github.clojure/tools.build {:mvn/version "0.9.5"}}
+           :build {:deps {io.github.clojure/tools.build {:mvn/version "0.10.14"}}
                    :ns-default build}
 
-           :deploy {:extra-deps {slipset/deps-deploy {:mvn/version "0.2.2"}}}
+           :deploy {:extra-deps {slipset/deps-deploy {:mvn/version "0.2.5"}}}
 
            :http-server {:extra-paths ["http-server"]
                          :extra-deps {buddy/buddy-auth        {:mvn/version "3.0.323"}
-                                      ring/ring-core          {:mvn/version "1.15.3"}
-                                      ring/ring-jetty-adapter {:mvn/version "1.15.3"}
+                                      ring/ring-core          {:mvn/version "1.15.5"}
+                                      ring/ring-jetty-adapter {:mvn/version "1.15.5"}
                                       metosin/reitit          {:mvn/version "0.10.1"}
                                       ring-cors/ring-cors     {:mvn/version "0.1.13"}
                                       nrepl/bencode           {:mvn/version "1.2.0"}
-                                      org.slf4j/slf4j-simple  {:mvn/version "2.0.17"}}
+                                      org.slf4j/slf4j-simple  {:mvn/version "2.0.18"}}
                          :main-opts ["-m" "datahike.http.server"]}
 
            :libdatahike {:main-opts ["-e" "(set! *warn-on-reflection* true)"]
@@ -182,14 +176,14 @@
                                     "-o dthk"]
                         :jvm-opts  ["-Dclojure.compiler.direct-linking=true"]
                         :extra-deps
-                        {clj.native-image/clj.native-image
+                         {clj.native-image/clj.native-image
                          {:git/url "https://github.com/taylorwood/clj.native-image.git"
-                          :sha     "7708e7fd4572459c81f6a6b8e44c96f41cdd92d4"}
-                         com.cognitect/transit-clj {:mvn/version "1.0.333"}
+                          :sha     "4604ae76855e09cdabc0a2ecc5a7de2cc5b775d6"}
+                         com.cognitect/transit-clj {:mvn/version "1.1.363"}
                          babashka/pods             {:git/url "https://github.com/babashka/pods"
                                                     :git/sha "ed5e1f3390b9dfca564f66b6e79c739c3cd82d78"}}}
 
-           :pod {:extra-deps {com.cognitect/transit-clj {:mvn/version "1.0.333"}
+           :pod {:extra-deps {com.cognitect/transit-clj {:mvn/version "1.1.363"}
                               babashka/pods             {:git/url "https://github.com/babashka/pods"
                                                          :git/sha "ed5e1f3390b9dfca564f66b6e79c739c3cd82d78"}}}
                                     
@@ -199,7 +193,7 @@
 
            :benchmark {:extra-paths ["benchmark/src"]
                        :extra-deps {clj-http/clj-http {:mvn/version "3.13.1"}
-                                    org.clojure/tools.cli {:mvn/version "1.1.230"}
+                                    org.clojure/tools.cli {:mvn/version "1.4.256"}
                                     incanter/incanter-core {:mvn/version "1.9.3"}
                                     incanter/incanter-charts {:mvn/version "1.9.3"}}
                        :main-opts ["-m" "benchmark.cli"]}
@@ -215,8 +209,8 @@
            ;; Run via: clj -M:bench-compare -m benchmark.datascript-bench all
            :bench-compare {:extra-paths ["benchmark/src" "src-secondary"]
                            :jvm-opts ["--add-modules" "jdk.incubator.vector"]
-                           :extra-deps {datalevin/datalevin {:mvn/version "0.10.18"}
-                                        com.datomic/peer {:mvn/version "1.0.7387"}
+                           :extra-deps {datalevin/datalevin {:mvn/version "1.0.2"}
+                                        com.datomic/peer {:mvn/version "1.0.7705"}
                                         ;; stratum columnar secondary index — lets the
                                         ;; aggregate suite measure the DH+stratum column
                                         ;; instead of reporting N/A (ns datahike.index.secondary.stratum
@@ -224,20 +218,20 @@
                                         ;; slf4j-reload4j binding: with datomic's log4j-over-slf4j
                                         ;; on the same classpath the two form an org.apache.log4j.MDC
                                         ;; bridge loop (StackOverflowError on Datomic init).
-                                        org.replikativ/stratum {:mvn/version "0.3.77"
+                                        org.replikativ/stratum {:mvn/version "0.3.81"
                                                                 :exclusions [org.slf4j/slf4j-reload4j
                                                                              ch.qos.reload4j/reload4j]}
-                                        com.clojure-goes-fast/clj-async-profiler {:mvn/version "1.6.1"}
+                                        com.clojure-goes-fast/clj-async-profiler {:mvn/version "1.8.0"}
                                         }}
 
            :bench-sql {:extra-paths ["benchmark/src"]
-                       :extra-deps {org.postgresql/postgresql {:mvn/version "42.7.3"}
-                                    org.xerial/sqlite-jdbc {:mvn/version "3.46.1.0"}
-                                    com.clojure-goes-fast/clj-async-profiler {:mvn/version "1.6.1"}}
+                       :extra-deps {org.postgresql/postgresql {:mvn/version "42.7.13"}
+                                    org.xerial/sqlite-jdbc {:mvn/version "3.53.2.1"}
+                                    com.clojure-goes-fast/clj-async-profiler {:mvn/version "1.8.0"}}
                        :main-opts ["-m" "benchmark.sql-bench"]}
 
            :bench-profile {:extra-paths ["benchmark/src"]
-                           :extra-deps {com.clojure-goes-fast/clj-async-profiler {:mvn/version "1.6.1"}}}
+                           :extra-deps {com.clojure-goes-fast/clj-async-profiler {:mvn/version "1.8.0"}}}
 
            :format {:extra-deps {cljfmt/cljfmt {:mvn/version "0.9.2"}}
                     :main-opts ["-m" "cljfmt.main" "check"]}
