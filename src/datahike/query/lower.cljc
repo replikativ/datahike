@@ -406,7 +406,7 @@
                                  (number? (second x)))))
         resolve-attr-in-pattern (fn [pat]
                                   (if (and attr-refs? (keyword? (second pat)))
-                                    (assoc pat 1 (dbi/-ref-for db (second pat)))
+                                    (assoc pat 1 (dbi/ref-for db (second pat) :no-match))
                                     pat))
         resolve-recursive (fn resolve-recursive [form]
                             (cond

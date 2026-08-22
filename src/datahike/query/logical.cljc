@@ -229,7 +229,8 @@
                           raw-attr (nth args 2)
                           attr (if (and (keyword? raw-attr)
                                         (:attribute-refs? (dbi/-config db)))
-                                 (dbi/-ref-for db raw-attr)
+                                 ;; :no-match — an undeclared attribute matches nothing, as it always has without :attribute-refs?
+                                 (dbi/ref-for db raw-attr :no-match)
                                  raw-attr)
                           ;; (quote x) defaults unwrap to their constant here —
                           ;; matching -call-fn's arg resolution on the legacy

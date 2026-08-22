@@ -852,7 +852,7 @@
 
 (defn- translate-for [db a]
   (if (and (-> db dbi/-config :attribute-refs?) (keyword? a))
-    (dbi/-ref-for db a)
+    (dbi/ref-for db a :no-match)
     a))
 
 (defn- -differ? [& xs]
@@ -1927,7 +1927,7 @@
      (dt/with-destructured-vector pattern
        e (resolve-pattern-lookup-entity-id source e error-code)
        a (if (and (:attribute-refs? (dbi/-config source)) (keyword? a))
-           (dbi/-ref-for source a)
+           (dbi/ref-for source a :no-match)
            a)
        v (if (and v (attr? a) (dbu/ref? source a) (or (lookup-ref? v) (attr? v)))
            (dbu/entid-strict source v error-code)
@@ -2186,7 +2186,7 @@
     (case (int pattern-index)
       0 (resolve-pattern-lookup-entity-id source pattern-value error-code)
       1 (if (and (:attribute-refs? (dbi/-config source)) (keyword? pattern-value))
-          (dbi/-ref-for source pattern-value)
+          (dbi/ref-for source pattern-value :no-match)
           pattern-value)
       2 (if (and pattern-value
                  (attr? a)
