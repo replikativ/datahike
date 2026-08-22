@@ -1110,3 +1110,31 @@
           (is (= 6 (commit-chain-length conn))
               "and each one is on the lineage, the create included")
           (finally (d/release conn)))))))
+
+(deftest a-fenced-head-only-commit-does-not-issue-an-empty-multi-assoc
+  (testing "root fusion plus a disabled commit graph can leave only the fenced
+            branch head to write. A multi-key backend must receive that head as
+            the separate conditional write, not an empty transaction before it
+            (DynamoDB rejects an empty TransactWriteItems request)."
+    (let [c {:store {:backend :memory
+                     :id #uuid "a17e2a71-0000-0000-0000-000000000100"}
+             :schema-flexibility :read
+             :keep-history? false
+             :fuse-index-roots? true
+             :commit-graph? false
+             :writer {:backend :self :streaming? false}}
+          original-multi-assoc k/multi-assoc]
+      (fresh-db! c)
+      (let [conn (d/connect c)]
+        (try
+          (with-redefs [k/multi-assoc
+                        (fn [store writes & args]
+                          (when-not (seq writes)
+                            (throw (ex-info "empty multi-assoc"
+                                            {:type :test/empty-multi-assoc})))
+                          (apply original-multi-assoc store writes args))]
+            (d/transact conn [{:db/id -1 :name "head-only"}]))
+          (is (= ["head-only"]
+                 (mapv :v (d/datoms @conn :aevt :name)))
+              "the separately fenced branch head still publishes the commit")
+          (finally (d/release conn)))))))

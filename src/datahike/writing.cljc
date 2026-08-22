@@ -764,7 +764,14 @@
                                                    (remove #(= % branch-key))
                                                    (map (fn [k] [k {:immutable? true}])))
                                              writes)]
-                            (<?- (k/multi-assoc store writes metas {:sync? sync?}))
+                            ;; With root fusion and no commit graph, a small fenced
+                            ;; commit can have nothing to write before the head: the
+                            ;; roots are embedded in `db-to-store`, there is no cid
+                            ;; record, and the head deliberately left this batch.
+                            ;; Some transactional backends (DynamoDB in particular)
+                            ;; reject an empty transaction, so do not issue one.
+                            (when (seq writes)
+                              (<?- (k/multi-assoc store writes metas {:sync? sync?})))
                             (when head-revision
                               (<?- (k/assoc store branch-key db-to-store
                                             {:sync? sync? :expected-revision head-revision}))))
