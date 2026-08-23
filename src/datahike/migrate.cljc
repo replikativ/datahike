@@ -1106,6 +1106,53 @@
       (assoc record 2 (dbi/-ref-for db (:ident v)))
       record)))
 
+(defn- resolve-attr-refs
+  "Replace an `AttrRef` in a record's attribute slot with the ident this TARGET
+   needs, using the dump's `:ident-timeline`.
+
+   The dump records a renamed attribute by ENTITY precisely so that this choice
+   is the reader's. There are two right answers and which one is right depends on
+   how the target stores an attribute:
+
+     :attribute-refs? true    PERIOD-CORRECT — the name in force when the datom
+                              was written. The target resolves that ident to its
+                              own attribute entity, and it is installed by then
+                              BY CONSTRUCTION: the name a datom carries is the one
+                              asserted at the latest t0 <= t, and that assertion
+                              is replayed first. Naming it with the FINAL ident is
+                              exactly the bug — the importer meets a datom before
+                              its name exists.
+
+     :attribute-refs? false   FINAL — the target stores the KEYWORD in the datom,
+                              so a period-correct name would split the attribute
+                              across both names, which is the outcome
+                              `validate-ident-renames!` refuses on the live path.
+                              Flattening keeps every datom under one name and the
+                              database queryable; what is lost is the rename as an
+                              EVENT, which a keyword-attribute database cannot
+                              represent at all.
+
+   A dump with no renamed attribute carries no timeline and no `AttrRef`, so this
+   is a `nth` and a type check on that path."
+  [db timeline record]
+  (let [a (nth record 1)]
+    (if-not (mcbor/attr-ref? a)
+      record
+      (let [e (:eid a)
+            entries (get timeline e)
+            ident (if (:attribute-refs? (dbi/-config db))
+                    (mman/ident-at timeline e (nth record 3))
+                    (second (last entries)))]
+        (when (nil? ident)
+          (throw (ex-info (str "The dump names attribute entity " e
+                               " by reference, but its ident timeline does not cover"
+                               " transaction " (nth record 3) ". The dump is inconsistent"
+                               " with its own manifest.")
+                          {:error :import/unresolvable-attr-ref
+                           :attribute-entity e :t (nth record 3)
+                           :timeline entries})))
+        (assoc record 1 ident)))))
+
 (defn- system-eid-seed
   "Identity seed {eid eid} for every target system entity, so refs resolved to a
    system entity are not re-allocated by load-entities (#508)."
@@ -1638,7 +1685,11 @@
   [manifest]
   {:history?       (boolean (:history? manifest))
    :expected-count (:count (:semantic-digest manifest))
-   :max-tx         (:max-tx (:stats manifest))})
+   :max-tx         (:max-tx (:stats manifest))
+   ;; Present only for a dump that renamed an attribute; see
+   ;; `manifest/ident-timeline`. A source that is not a dump has none, and
+   ;; `resolve-attr-refs` is then a type check that never fires.
+   :ident-timeline (:ident-timeline manifest)})
 
 (defn- dangling-refs
   "Ref values in `db` that name an entity holding no datoms.
@@ -1853,7 +1904,10 @@
                                        rs)
                         :else (do (run! mman/validate-record! rs) rs)))
               prepare (fn [records]
-                        (let [rs (mapv #(resolve-sysrefs sref-db %) records)]
+                        (let [tl (:ident-timeline source-meta)
+                              rs (mapv #(->> % (resolve-sysrefs sref-db)
+                                             (resolve-attr-refs sref-db tl))
+                                       records)]
                           (if step
                             (let [out (into [] (mapcat (fn [r]
                                                          (let [o (step [] r)]
@@ -2218,7 +2272,8 @@
                                        "a dump chunk could not be read")]
             (recur (next cs)
                    (reduce (fn [a record]
-                             (let [r (resolve-sysrefs sref-db record)]
+                             (let [r (->> record (resolve-sysrefs sref-db)
+                                          (resolve-attr-refs sref-db (:ident-timeline opts)))]
                                (when counter (vswap! counter inc))
                                (if step
                                  (let [o (step [] r)]
@@ -2348,6 +2403,11 @@
                            :eids :preserve}
                           opts)
         opts       (update opts :eids #(or % :preserve))
+        ;; `reduce-source-records` reads the timeline from `opts`; it arrives in
+        ;; `source-meta`, which is where a dump's format dependencies live.
+        opts       (cond-> opts
+                     (:ident-timeline source-meta)
+                     (assoc :ident-timeline (:ident-timeline source-meta)))
         db0        @conn
         config     (:config db0)
         keep-hist? (boolean (:keep-history? config))
@@ -2755,10 +2815,18 @@
    Everything `import-db` takes (`:batch-size` `:xform` `:eids` `:merge?`
    `:build-indexes?` `:on-error` `:sync?` …) plus:
 
-     :source-meta  {:history? :expected-count :max-tx}, all three OPTIONAL.
-                   Absent `:expected-count` only means the count check has
-                   nothing to compare against; absent `:max-tx` only means no
+     :source-meta  {:history? :expected-count :max-tx :ident-timeline}, all
+                   OPTIONAL. Absent `:expected-count` only means the count check
+                   has nothing to compare against; absent `:max-tx` only means no
                    drift warning. A source that knows none of them passes none.
+
+                   `:ident-timeline` is `{attribute-entity [[t ident] ...]}` and
+                   is needed only by a source that names a RENAMED attribute by
+                   entity — a `#datahike/attr` in the `a` slot — which is how a
+                   source avoids baking a naming decision into its records. See
+                   `manifest/ident-timeline`; `resolve-attr-refs` then picks the
+                   name this target needs, which differs by `:attribute-refs?`.
+                   A source that names attributes by keyword needs none of it.
      :schema       source schema map, index-build path only (ref detection).
 
    ## Verification is DECLINED, not defaulted away

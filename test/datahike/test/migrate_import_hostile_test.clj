@@ -245,7 +245,11 @@
           (is (re-find #"not a 5-element vector" (str (:threw res)))))
         (let [res (import-into! b strattr-dir {})]
           (is (= :import/malformed-record (:error (:data res))))
-          (is (re-find #"a is not a keyword" (str (:threw res)))))
+          (is (re-find #"a is neither a keyword ident nor an attribute reference"
+                       (str (:threw res)))
+              "a string in the attribute slot is still refused — the message now
+               names BOTH well-formed shapes, because a dump that renamed an
+               attribute records that one by entity (see manifest/ident-timeline)"))
         (finally (release! src a b))))))
 
 ;; ---------------------------------------------------------------------------

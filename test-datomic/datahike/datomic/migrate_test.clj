@@ -689,3 +689,56 @@
                         "and is installed under the new ident"))
                   (finally (d/release conn) (d/delete-database cfg))))))
           (finally (dt/release c) (dt/delete-database uri)))))))
+
+(deftest a-renamed-attribute-imports-under-its-final-name
+  (testing "The Datomic source resolves idents through a SNAPSHOT of the current
+            database, so every historical datom of a renamed attribute came out
+            carrying the FINAL name — one that did not exist when the datom was
+            written. The `:db/ident` records still replay the rename in causal
+            order, so replaying met such a datom before its name was installed.
+
+            `ident-timeline` reads the assertions out of Datomic's own history
+            and `tx->records` names those attributes by ENTITY instead, leaving
+            the choice of name to the reader — period-correct for an
+            attribute-refs target, flattened for a keyword one. Both are checked
+            here, because a Datomic migration goes to either."
+    (let [uri (str "datomic:mem://dh-rn-" (rand-int 1000000))]
+      (dt/create-database uri)
+      (let [c (dt/connect uri)]
+        (try
+          @(dt/transact c [{:db/ident :m/before :db/valueType :db.type/string
+                            :db/cardinality :db.cardinality/one}])
+          @(dt/transact c [{:db/id "e1" :m/before "written-before"}])
+          @(dt/transact c [{:db/id :m/before :db/ident :m/after}])
+          @(dt/transact c [{:db/id "e2" :m/after "written-after"}])
+
+          (testing "the timeline names the attribute that moved"
+            (let [tl (dtm/ident-timeline (dt/db c))
+                  entry (first (filter (fn [[_ es]] (= [:m/before :m/after] (mapv second es))) tl))]
+              (is (some? entry) (str "expected a :m/before -> :m/after entry, got " (pr-str tl)))
+              (is (apply < (map first (second entry))) "ascending by t")
+              (testing "and Datomic's OWN bootstrap renames are in it too —
+                        :db/retractEntity and :db/cas are renamed in every
+                        Datomic database, which is why a timeline is never empty
+                        for one"
+                (is (some (fn [[_ es]] (= [:db/retractEntity :db.fn/retractEntity]
+                                          (mapv second es)))
+                          tl)))))
+
+          (doseq [refs? [true false]]
+            (testing (str ":attribute-refs? " refs?)
+              (let [cfg {:store {:backend :memory :id (random-uuid)}
+                         :keep-history? true :schema-flexibility :write
+                         :attribute-refs? refs?}]
+                (d/create-database cfg)
+                (let [conn (d/connect cfg)]
+                  (try
+                    (dtm/import-from-datomic! conn c)
+                    (is (= #{"written-before" "written-after"}
+                           (into #{} (map first)
+                                 (d/q '[:find ?v :where [?e :m/after ?v]] @conn)))
+                        "BOTH datoms — including the one written before the rename")
+                    (is (empty? (d/q '[:find ?v :where [?e :m/before ?v]] @conn))
+                        "and none left under the retired name")
+                    (finally (d/release conn) (d/delete-database cfg)))))))
+          (finally (dt/release c) (dt/delete-database uri)))))))

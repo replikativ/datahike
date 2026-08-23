@@ -149,6 +149,76 @@
           (dbi/-system-entities db))
     {}))
 
+(defn ident-timeline
+  "Map of attribute-entity -> [[t ident] ...] ascending, for attribute-refs dumps
+   whose history contains a RENAME. `{}` otherwise, which is the overwhelmingly
+   common case and keeps those dumps byte-identical to before.
+
+   ## Why a dump needs this at all
+
+   A datom records its attribute, and how it records it differs by config:
+
+     :attribute-refs? true    the datom holds the attribute ENTITY id
+     :attribute-refs? false   the datom holds the KEYWORD itself
+
+   An entity id is stable; a `:db/ident` is not — it is a property of that entity
+   that can change over time. So under attribute-refs the NAME of a datom`s
+   attribute is not in the datom, and the exporter has to look it up. `a-ident`
+   looks it up in the CURRENT database, i.e. against the FINAL name.
+
+   That is fine until an attribute is renamed. Then a datom written at t2 is
+   exported carrying a name that did not exist until t3, while the `:db/ident`
+   records still replay the rename in causal order. Replaying the dump, the
+   importer meets that datom BEFORE the name it carries has been installed, and
+   the import fails. Measured: a datahike -> datahike round-trip of a renamed
+   attribute under `:attribute-refs?` fails with `:transact/unknown-attribute`.
+
+   With the timeline the exporter can name each datom as of its OWN `t`, which is
+   resolvable by construction: the name a datom carries is the one asserted at the
+   latest t0 <= t, and that assertion is replayed first.
+
+   ## Why it is empty without :attribute-refs?
+
+   Not an optimisation — applying it there would be WRONG. In keyword mode the
+   datom holds the name, so the name IS the ground truth and nothing is resolved
+   at either end; the round trip is the identity and cannot mislabel anything. A
+   keyword database can still carry a two-entry timeline (an import can install
+   one, since the import path bypasses the deferred schema validators), but its
+   datoms record the name they were written with. Resolving those through a
+   timeline would emit a name the datom does not hold — turning a working path
+   into a corrupt one. Measured on such a database: the timeline reads
+   `[[t1 :p/name] [t3 :p/renamed]]` while the datom is `[2 :p/renamed \"Ann\"]`.
+
+   Built from the `:db/ident` datoms the history already holds, so it costs one
+   `:aevt` slice of a single attribute and needs no extra bookkeeping. Assertions
+   only: a retraction is implied by the assertion that supersedes it."
+  [db]
+  (if-not (and (attribute-refs? db) (dbi/-keep-history? db))
+    {}
+    (let [by-e (->> (api/datoms (api/history db) :aevt :db/ident)
+                    (filter (fn [dm] (d/datom-added dm)))
+                    (reduce (fn [m dm]
+                              (update m (nth dm 0) (fnil conj [])
+                                      [(d/datom-tx dm) (nth dm 2)]))
+                            {}))]
+      ;; only the attributes that actually changed name: a single-entry timeline
+      ;; says nothing a reader cannot already see, and emitting one for every
+      ;; attribute would put a table in every attribute-refs dump for nothing.
+      (into (sorted-map)
+            (keep (fn [[e entries]]
+                    (let [sorted (vec (sort-by first entries))]
+                      (when (> (count (distinct (map second sorted))) 1)
+                        [e sorted]))))
+            by-e))))
+
+(defn ident-at
+  "The ident attribute-entity `e` carried at time `t`, or nil when `timeline` does
+   not cover `e` (which means the name never changed — the caller`s current
+   resolution is already right)."
+  [timeline e t]
+  (when-let [entries (get timeline e)]
+    (second (last (take-while (fn [[t0 _]] (<= (long t0) (long t))) entries)))))
+
 ;; ---------------------------------------------------------------------------
 ;; the records a dump contains
 
@@ -156,9 +226,26 @@
   "Convert a datom to an EDN-encodable record vector [e a v t added]. `a` becomes a
    keyword ident; ref values pointing at a system entity become #datahike/sysref."
   ([db sys-ents sys-idents datom] (datom->record db sys-ents sys-idents nil datom))
-  ([db sys-ents sys-idents sec-read datom]
+  ([db sys-ents sys-idents sec-read datom] (datom->record db sys-ents sys-idents sec-read nil datom))
+  ([db sys-ents sys-idents sec-read renamed-attrs datom]
    (let [e (nth datom 0)
-         a (a-ident db (nth datom 1))
+         raw-a (nth datom 1)
+         ;; A RENAMED attribute is recorded by ENTITY, not by name.
+         ;;
+         ;; `a-ident` resolves against the current database, i.e. the FINAL name,
+         ;; which is right for every attribute whose name never moved — and wrong
+         ;; for one whose did: a datom written before the rename comes out
+         ;; carrying a name that did not exist yet, and replaying the dump meets
+         ;; it before that name is installed. Recording the entity instead defers
+         ;; the choice of name to the reader, which knows what its target needs
+         ;; (see `migrate/resolve-attr-refs`).
+         ;;
+         ;; Only for attributes in `renamed-attrs`, so a dump with no rename —
+         ;; and every keyword-attribute dump, where `ident-timeline` is empty by
+         ;; construction — is byte-identical to one written before this existed.
+         a (if (and renamed-attrs (number? raw-a) (contains? renamed-attrs raw-a))
+             (mcbor/->AttrRef raw-a)
+             (a-ident db raw-a))
         ;; For a `:db.secondary/only` attribute the primary holds a content hash,
         ;; so the real value comes from the secondary index instead — see
         ;; `secondary-only-values`. Falls back to the primary's value, which is
@@ -334,10 +421,11 @@
   (let [src      (if history? (api/history db) db)
         sys-ents (if (attribute-refs? db) (dbi/-system-entities db) #{})
         sidents  (system-idents db)
-        sec-read (secondary-only-reader db)]
+        sec-read (secondary-only-reader db)
+        renamed  (not-empty (set (keys (ident-timeline db))))]
     (->> (api/datoms src :eavt)
          (filter (fn [dm] (> (d/datom-tx dm) c/tx0)))
-         (map (fn [dm] (datom->record db sys-ents sidents sec-read dm))))))
+         (map (fn [dm] (datom->record db sys-ents sidents sec-read renamed dm))))))
 
 (defn export-records-streaming
   "Lazy seq of encoded records for `db` in a load-safe order WITHOUT sorting (so
@@ -361,7 +449,8 @@
                           (let [a (a-ident db (nth dm 1))]
                             (or (ds/schema-attr? a) (ds/meta-attr? a))))
         sec-read (secondary-only-reader db)
-        make     (fn [dm] (datom->record db sys-ents sidents sec-read dm))]
+        renamed  (not-empty (set (keys (ident-timeline db))))
+        make     (fn [dm] (datom->record db sys-ents sidents sec-read renamed dm))]
     (concat
      (->> (api/datoms src :eavt) (filter user?) (filter schema-or-meta?) (map make))
      (->> (api/datoms src :eavt) (filter user?) (remove schema-or-meta?) (map make)))))
@@ -403,6 +492,12 @@
          (when (seq (:carried blob-plan)) [:datahike.migrate/store-ref-blobs])
          (when (seq (:external blob-plan)) [:datahike.migrate/external-blobs])
          (when (:attribute-refs? (dbi/-config db)) [:datahike.migrate/attribute-refs])
+         ;; Declared only when the dump actually CONTAINS a rename. A reader
+         ;; without this capability would resolve those datoms against the final
+         ;; name and meet one before it is installed, so refusing by name beats
+         ;; failing mid-import — and a dump with no rename never declares it, so
+         ;; older readers keep reading everything they can read today.
+         (when (seq (ident-timeline db)) [:datahike.migrate/ident-timeline])
          ;; every declared value type in play
          (into #{}
                (keep (fn [[_ attr]] (:db/valueType attr)))
@@ -414,7 +509,8 @@
               :datahike.migrate/history
               :datahike.migrate/store-ref-blobs
               :datahike.migrate/external-blobs
-              :datahike.migrate/attribute-refs)
+              :datahike.migrate/attribute-refs
+              :datahike.migrate/ident-timeline)
         ds/builtin-value-types))
 
 (defn check-capabilities!
@@ -441,10 +537,11 @@
 
 (defn build-manifest [db {:keys [history?] :as opts} digest chunks]
   (let [cfg (dbi/-config db)]
-    (array-map
-     manifest-key                    format-version
-     :history?                       (boolean history?)
-     :serialization                  :cbor-seq
+    (merge
+     (array-map
+      manifest-key                    format-version
+      :history?                       (boolean history?)
+      :serialization                  :cbor-seq
      ;; Provenance in the SAME shape the store carries (`datahike.tools/meta-data`,
      ;; which `connector/version-check` enforces), so a dump and a store can be
      ;; reasoned about with one vocabulary.
@@ -454,16 +551,16 @@
      ;; from a browser or Node carries no provenance — diagnostics, not something
      ;; `check-capabilities!` decides on, which is exactly why the two are
      ;; separate keys.
-     :datahike/meta                  #?(:clj (dt/meta-data) :cljs nil)
+      :datahike/meta                  #?(:clj (dt/meta-data) :cljs nil)
      ;; …and, separately, what is needed to READ this dump. See `dump-requires`:
      ;; provenance is for diagnostics, capabilities are for the accept/reject
      ;; decision, and conflating them is what makes a version stamp too blunt.
-     :requires                       (vec (sort (dump-requires db opts (get opts blob-plan-key))))
-     :source-config                  (into (array-map :store-backend (get-in cfg [:store :backend]))
-                                           (map (fn [k] [k (get cfg k)]))
-                                           (sort source-config-allowlist))
-     :schema                         (ident-schema db)
-     :system-idents                  (system-idents db)
+      :requires                       (vec (sort (dump-requires db opts (get opts blob-plan-key))))
+      :source-config                  (into (array-map :store-backend (get-in cfg [:store :backend]))
+                                            (map (fn [k] [k (get cfg k)]))
+                                            (sort source-config-allowlist))
+      :schema                         (ident-schema db)
+      :system-idents                  (system-idents db)
      ;; :max-eid / :max-tx let an importer estimate the O(entities) id-remap map
      ;; (and thus the heap to give the import) without scanning the dump.
      ;; `:datom-count` is what was WRITTEN; `:source-datom-count` is what the
@@ -481,12 +578,12 @@
      ;; `:source-datom-count` is nil when `:count-source? false` — one extra index
      ;; scan is real cost on a large database, and "unknown" is an honest answer
      ;; where "equal" would be a guess.
-     :stats                          {:datom-count        (:count digest)
-                                      :source-datom-count (:source-datom-count opts)
-                                      :transformed?       (boolean (:xform opts))
-                                      :max-eid            (:max-eid db)
-                                      :max-tx             (:max-tx db)}
-     :semantic-digest                digest
+      :stats                          {:datom-count        (:count digest)
+                                       :source-datom-count (:source-datom-count opts)
+                                       :transformed?       (boolean (:xform opts))
+                                       :max-eid            (:max-eid db)
+                                       :max-tx             (:max-tx db)}
+      :semantic-digest                digest
      ;; Which `:db.type/store-ref` blobs this dump carries, and which it could
      ;; not. A store-ref names an object without saying where the bytes live, so
      ;; a dump is self-contained only for blobs that were IN the source store;
@@ -494,9 +591,16 @@
      ;; and cannot be copied. Recording both halves means an import can refuse a
      ;; dump whose referents it cannot place, instead of restoring datoms that
      ;; name objects which are not there.
-     :store-refs                     (when-let [p (get opts blob-plan-key)]
-                                       (mblobs/manifest-entry p))
-     :chunks                         (vec chunks))))
+      :store-refs                     (when-let [p (get opts blob-plan-key)]
+                                        (mblobs/manifest-entry p))
+      :chunks                         (vec chunks))
+    ;; APPENDED, and only when non-empty. A dump with no renamed attribute is
+    ;; byte-identical to one written before this key existed, which is what keeps
+    ;; the change invisible to the overwhelmingly common case (and to every
+    ;; keyword-attribute dump, where `ident-timeline` is empty by construction —
+    ;; see its docstring on why applying one there would be wrong).
+     (let [tl (ident-timeline db)]
+       (cond-> {} (seq tl) (assoc :ident-timeline tl))))))
 
 ;; ---------------------------------------------------------------------------
 ;; sizes and names
@@ -638,7 +742,8 @@
   [record]
   (letfn [(bad! [why]
             (throw (ex-info (str "Malformed dump record: " why ". Records are "
-                                 "[e a v t op] with e/t integers, a a keyword ident, "
+                                 "[e a v t op] with e/t integers, a a keyword ident "
+                                 "(or an attribute reference), "
                                  "v non-nil and op a boolean.")
                             {:error :import/malformed-record
                              :reason why
@@ -646,7 +751,12 @@
     (when-not (and (vector? record) (= 5 (count record))) (bad! "not a 5-element vector"))
     (let [[e a v t op] record]
       (when-not (integer? e) (bad! (str "e is not an integer: " (pr-str e))))
-      (when-not (keyword? a) (bad! (str "a is not a keyword ident: " (pr-str a))))
+      ;; An attribute is normally a keyword ident. A dump that renamed an
+      ;; attribute records THAT one by entity instead, so the reader can choose
+      ;; the name its target needs — see `ident-timeline`. Both are well-formed;
+      ;; anything else is not.
+      (when-not (or (keyword? a) (mcbor/attr-ref? a))
+        (bad! (str "a is neither a keyword ident nor an attribute reference: " (pr-str a))))
       (when (nil? v) (bad! "v is nil"))
       (when-not (integer? t) (bad! (str "t is not an integer: " (pr-str t))))
       (when (< (long t) (long c/tx0))

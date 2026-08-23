@@ -113,6 +113,7 @@
        recovered by any reader."
   (:require [datomic.api :as dt]
             [datahike.migrate :as m]
+            [datahike.migrate.cbor :as mcbor]
             [datahike.constants :as const]
             [replikativ.logging :as log])
   (:import [datomic Datom]))
@@ -193,6 +194,40 @@
 (defn- ident-map [db]
   (into {} (dt/q '[:find ?e ?i :where [?e :db/ident ?i]] db)))
 
+(defn ident-timeline
+  "attribute-entity -> [[dh-t ident] ...] ascending, for the attributes whose
+   ident actually CHANGED. `{}` when none did, which is the usual case.
+
+   `ident-map` is a SNAPSHOT of the current database, so resolving a historical
+   datom through it names that datom with the attribute's FINAL ident. For an
+   attribute that was never renamed those are the same string and nothing is
+   lost. For one that was, a datom written before the rename comes out carrying a
+   name that did not exist yet — while the `:db/ident` records still replay the
+   rename in causal order, so replaying meets the datom before its name is
+   installed.
+
+   Datomic keeps the ident assertions in its own history, so this is one query
+   over a handful of datoms rather than a pass over the log. `t` is converted to
+   datahike's frame with `datomic-t->dh-t`, the same conversion the records get,
+   so the timeline and the records agree about when the rename happened.
+
+   Assertions only: a retraction is implied by the assertion that supersedes it."
+  [db]
+  (let [rows (dt/q (quote [:find ?e ?i ?tx
+                           :where [?e :db/ident ?i ?tx true]])
+                   (dt/history db))]
+    (into (sorted-map)
+          (keep (fn [[e entries]]
+                  (let [sorted (vec (sort-by first
+                                             (map (fn [[_ i tx]]
+                                                    [(datomic-t->dh-t (dt/tx->t tx)) i])
+                                                  entries)))]
+                    ;; only what MOVED — a single-entry timeline says nothing the
+                    ;; snapshot does not already say
+                    (when (> (count (distinct (map second sorted))) 1)
+                      [e sorted]))))
+          (group-by first rows))))
+
 (defn- ref-attr-idents [db]
   (into #{} (map first)
         (dt/q '[:find ?i :where [?a :db/valueType :db.type/ref] [?a :db/ident ?i]] db)))
@@ -223,7 +258,7 @@
    The tx entity's own eid is rewritten to the mapped `t` so that the
    `:db/txInstant` datom names its own transaction, which is the shape datahike
    expects and `export-db` writes."
-  [{:keys [t data]} idents refs dropped {:keys [provenance? extra]}]
+  [{:keys [t data]} idents refs dropped {:keys [provenance? extra renamed-attrs]}]
   (let [dh-t   (datomic-t->dh-t t)
         tx-eid (dt/t->tx t)
         ;; tx-META: `e` equal to `t` makes these datoms ABOUT the transaction.
@@ -250,7 +285,18 @@
                                (instance? java.net.URI v) (str v)
                                :else v)
                            e (.e dm)]
-                       [(if (= e tx-eid) dh-t e) a v dh-t (.added dm)])))))
+                       ;; A RENAMED attribute goes on the wire by ENTITY, so no
+                       ;; naming decision is baked into the record and the READER
+                       ;; picks what its target needs — period-correct for an
+                       ;; attribute-refs target, flattened for a keyword one. See
+                       ;; `ident-timeline` on why the snapshot cannot name these.
+                       ;; Every other attribute keeps its ident, so a source with
+                       ;; no rename emits exactly what it emitted before.
+                       [(if (= e tx-eid) dh-t e)
+                        (if (contains? renamed-attrs (.a dm))
+                          (mcbor/->AttrRef (.a dm))
+                          a)
+                        v dh-t (.added dm)])))))
          ;; `extra` is the provenance SCHEMA, emitted once with the first
          ;; transaction — a source owes its own schema before the data using it.
          (concat prov (map (fn [r] (assoc r 3 dh-t)) extra))
@@ -352,17 +398,28 @@
    (let [db      (dt/db conn)
          idents  (ident-map db)
          refs    (ref-attr-idents db)
+         ;; The attributes the SNAPSHOT above cannot name correctly. Read once,
+         ;; like the snapshot, and exposed on the chunk-src so `import-source`
+         ;; can be handed it as `:source-meta`.
+         timeline (ident-timeline db)
+         renamed  (not-empty (set (keys timeline)))
          dropped (volatile! #{})
          [from to] (or (log-t-range conn) [0 0])
          schema  (when provenance? (provenance-schema))
          chunks  (vec (for [start (range from to window)]
                         {:from start :to (min to (+ start window))}))]
      {:chunks chunks
+      ;; NOT part of the `chunk-src` contract `import-source` reads — that is
+      ;; `:chunks` and `:read`. Carried alongside so `import-from-datomic!` can
+      ;; pass it as `:source-meta`, which is where a source's format-level facts
+      ;; belong; a caller driving `source` directly can do the same.
+      :ident-timeline timeline
       :read   (fn [{f :from t :to} _opts]
                 (let [rs (into []
                                (mapcat (fn [{:keys [t] :as tx}]
                                          (tx->records tx idents refs dropped
                                                       {:provenance? provenance?
+                                                       :renamed-attrs renamed
                                                        ;; only with the log's FIRST
                                                        ;; transaction, whichever chunk
                                                        ;; that turns out to be in
@@ -419,7 +476,10 @@
                              ;; transactions. The `:datomic/t` provenance datoms
                              ;; carry the real correspondence.
                              {:source-meta (cond-> {:history? true}
-                                             n (assoc :expected-count n))})))))
+                                             n (assoc :expected-count n)
+                                             (seq (:ident-timeline src))
+                                             (assoc :ident-timeline
+                                                    (:ident-timeline src)))})))))
 
 ;; ---------------------------------------------------------------------------
 ;; records -> Datomic

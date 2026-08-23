@@ -236,3 +236,39 @@
                  "/abs/datoms-000001.cbor" "datoms-000001.cbor.gz.gz"]]
       (is (nil? (re-matches mman/chunk-re bad))
           (str bad " must be rejected")))))
+
+;; ---------------------------------------------------------------------------
+;; ident-at — the pure half of the ident timeline (see `ident-timeline` for why
+;; a dump carries one at all). Kept here, on a plain map, because that is what
+;; makes it portable: `ident-timeline` itself needs a database.
+
+(def ^:private tl
+  "One attribute renamed twice, and one that never changed (so it is absent —
+   `ident-timeline` only records attributes whose name actually moved)."
+  {55 [[100 :p/name] [300 :p/renamed] [500 :p/final]]})
+
+(deftest ident-at-resolves-the-name-in-force-at-a-time
+  (testing "the name a datom's attribute carried when the datom was written.
+
+            This is the whole point of the timeline: an exporter resolving
+            against the CURRENT database names every historical datom with the
+            FINAL ident, and a datom written before a rename then carries a name
+            that did not exist yet. Replaying such a dump, the importer meets it
+            before the name is installed."
+    (is (= :p/name (mman/ident-at tl 55 100)) "exactly at the first assertion")
+    (is (= :p/name (mman/ident-at tl 55 299)) "up to the instant before the rename")
+    (is (= :p/renamed (mman/ident-at tl 55 300)) "at the rename")
+    (is (= :p/renamed (mman/ident-at tl 55 499)))
+    (is (= :p/final (mman/ident-at tl 55 500)) "at the second rename")
+    (is (= :p/final (mman/ident-at tl 55 99999)) "and after the last one")))
+
+(deftest ident-at-is-nil-when-it-has-nothing-to-say
+  (testing "nil means `no answer`, not `no attribute` — the caller's own
+            resolution is already right in both of these cases."
+    (is (nil? (mman/ident-at tl 55 99))
+        "before the first assertion: the attribute did not exist yet")
+    (is (nil? (mman/ident-at tl 9999 300))
+        "an attribute the timeline does not cover — i.e. one never renamed, which
+         is every attribute in almost every dump")
+    (is (nil? (mman/ident-at {} 55 300)) "an empty timeline")
+    (is (nil? (mman/ident-at nil 55 300)) "no timeline at all")))

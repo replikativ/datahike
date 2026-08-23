@@ -44,6 +44,7 @@
    A newline-delimited format cannot do this without escaping, which is why the
    EDN codec was line-oriented all the way down into the external sort."
   (:require [boring.core :as boring]
+            [boring.data :as bdata]
             [clojure.walk :as walk]
             [hasch.core :as hasch]))
 
@@ -161,6 +162,25 @@
 ;; ---------------------------------------------------------------------------
 ;; system-entity references (#508): translate, never re-insert
 
+(defrecord AttrRef [eid])
+
+(defn attr-ref?
+  "Is `a` a record's attribute given as an attribute-ENTITY reference?
+
+   The `a` slot of a dump record is normally a keyword ident, and for a
+   keyword-attribute source that is the whole truth: there the datom holds the
+   keyword, so nothing is resolved at either end.
+
+   Under `:attribute-refs?` the datom holds the attribute's entity id instead,
+   and a name is a property of that entity which can CHANGE. Naming such a datom
+   in the dump therefore requires choosing a moment, and choosing the export
+   moment is what broke: a datom written before a rename came out carrying a name
+   that did not exist yet, and replaying the dump met it before the name was
+   installed. So the record carries the entity, and the READER picks the name its
+   target needs — see `migrate/resolve-attr-refs`."
+  [a]
+  (instance? AttrRef a))
+
 (defrecord SysRef [ident])
 
 (defn sysref?
@@ -174,10 +194,31 @@
   (instance? SysRef v))
 
 (def ^:private sysref-name
-  "boring's wire name for the record — the class name with / -> . and - -> _.
-   Named explicitly rather than derived so a namespace rename is a visible
-   format change rather than a silent one."
-  "datahike.migrate.cbor.SysRef")
+  "boring's wire name for the record, DERIVED rather than written out.
+
+   This was a hand-written `\"datahike.migrate.cbor.SysRef\"` — the CLASS name,
+   dots and all. boring writes `namespace/Name`; its own `record-type-name`
+   docstring is explicit that a slash separates the two because a dot is
+   ambiguous (`a.b.c.D` could split either way). So the name never matched, the
+   registry supplied no constructor, and every encoded SysRef decoded to a
+   `boring.data/UnknownRecord`. `sysref?` is an `instance?` check, so it answered
+   false, `resolve-sysrefs` never fired, and a ref value naming a system entity
+   was imported as that opaque record rather than the target's eid. Nothing
+   raised — an unregistered record decodes and re-encodes to identical bytes by
+   design, which is what made it silent.
+
+   `boring/register-record`'s own docstring gives `\"my.ns.Point\"` as its
+   example, which is how the wrong form got written; that is a boring
+   documentation bug and is being reported upstream.
+
+   Deriving it removes the class of mistake: `record-type-name` is portable,
+   returns exactly what the writer emits on both platforms, and cannot drift from
+   it when this namespace is renamed."
+  (bdata/record-type-name (map->SysRef {})))
+
+(def ^:private attr-ref-name
+  "As `sysref-name`, derived for the same reason."
+  (bdata/record-type-name (map->AttrRef {})))
 
 (def registry
   "The dump registry. Only SysRef needs registering: boring emits a defrecord's
@@ -189,7 +230,8 @@
    tuples — boring already handles as standard CBOR, which is exactly the
    property that makes the dump readable from another language."
   (-> (boring/tag-registry)
-      (boring/register-record sysref-name map->SysRef)))
+      (boring/register-record sysref-name map->SysRef)
+      (boring/register-record attr-ref-name map->AttrRef)))
 
 (def opts
   "Encode/decode options. `:archival` plus the registry; nothing else is set,
