@@ -2815,10 +2815,18 @@
    Everything `import-db` takes (`:batch-size` `:xform` `:eids` `:merge?`
    `:build-indexes?` `:on-error` `:sync?` …) plus:
 
-     :source-meta  {:history? :expected-count :max-tx}, all three OPTIONAL.
-                   Absent `:expected-count` only means the count check has
-                   nothing to compare against; absent `:max-tx` only means no
+     :source-meta  {:history? :expected-count :max-tx :ident-timeline}, all
+                   OPTIONAL. Absent `:expected-count` only means the count check
+                   has nothing to compare against; absent `:max-tx` only means no
                    drift warning. A source that knows none of them passes none.
+
+                   `:ident-timeline` is `{attribute-entity [[t ident] ...]}` and
+                   is needed only by a source that names a RENAMED attribute by
+                   entity — a `#datahike/attr` in the `a` slot — which is how a
+                   source avoids baking a naming decision into its records. See
+                   `manifest/ident-timeline`; `resolve-attr-refs` then picks the
+                   name this target needs, which differs by `:attribute-refs?`.
+                   A source that names attributes by keyword needs none of it.
      :schema       source schema map, index-build path only (ref detection).
 
    ## Verification is DECLINED, not defaulted away
