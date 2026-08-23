@@ -742,7 +742,8 @@
   [record]
   (letfn [(bad! [why]
             (throw (ex-info (str "Malformed dump record: " why ". Records are "
-                                 "[e a v t op] with e/t integers, a a keyword ident, "
+                                 "[e a v t op] with e/t integers, a a keyword ident "
+                                 "(or an attribute reference), "
                                  "v non-nil and op a boolean.")
                             {:error :import/malformed-record
                              :reason why
