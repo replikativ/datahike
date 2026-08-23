@@ -1,17 +1,14 @@
 (ns datahike.test.writer-alternating-test
   "Two processes writing the same database ONE AFTER THE OTHER.
 
-   Datahike's `:self` writer assumes all writers for a database live in one JVM:
-   it keeps the branch head in memory ([:meta :datahike/commit-id]) and never
-   re-reads it, so a warm writer is blind to anything another process committed.
-   AWS Lambda breaks that premise — each execution environment is a separate JVM
-   that believes it is the only writer, and Lambda keeps several warm and routes
-   to them alternately. Each then commits from its own stale head and silently
-   clobbers the other's transactions.
+   Datahike's `:self` writer now defaults to re-reading and conditionally
+   publishing the branch head. Opt-in `:writer-ownership :exclusive` instead keeps
+   the head in memory, so it is safe only while one process exclusively owns the
+   writer. AWS Lambda breaks that premise — it keeps several execution
+   environments warm and routes to them alternately.
 
-   `:writer {:backend :self :streaming? false}` re-reads the branch head from
-   storage before every transaction, which makes alternating processes safe. It
-   does NOT make CONCURRENT processes safe — that needs head fencing (#878)."
+   These tests cover both alternating processes and the conditional head write
+   that makes overlapping processes safe."
   (:require [clojure.core.async :as async]
             [clojure.test :refer [deftest is testing]]
             [datahike.api :as d]
@@ -45,14 +42,14 @@
 ;; state behind our back. (The memory backend does share the konserve store
 ;; between connections of the same store id, which is fine — it is the durable
 ;; medium — but file is the unambiguous stand-in for S3 here.)
-(defn- cfg [tag streaming?]
+(defn- cfg [tag writer-ownership]
   {:store {:backend :file
            :path (str (System/getProperty "java.io.tmpdir") "/dh-alternating-" tag)
            :id #uuid "a17e2a71-0000-0000-0000-000000000001"}
    :schema-flexibility :read
    :keep-history? false
    :writer (cond-> {:backend :self}
-             (some? streaming?) (assoc :streaming? streaming?))})
+             (some? writer-ownership) (assoc :writer-ownership writer-ownership))})
 
 (defn- fresh-db! [cfg]
   (when (d/database-exists? cfg) (d/delete-database cfg))
@@ -74,8 +71,8 @@
 (defn- alternate!
   "Commit `n` transactions alternately through two independent writers, then
    report what survived as seen by a third, freshly connected process."
-  [tag streaming? n]
-  (let [c (cfg tag streaming?)]
+  [tag writer-ownership n]
+  (let [c (cfg tag writer-ownership)]
     (fresh-db! c)
     (let [a (connect-as-separate-process c)
           b (connect-as-separate-process c)]
@@ -91,13 +88,13 @@
          :commits (commit-chain-length (:conn observer))}
         (finally (release-separate-process observer))))))
 
-(deftest default-writer-loses-alternating-updates
-  (testing "the bug: with the default (:streaming? true) each warm writer commits
+(deftest exclusive-writer-loses-alternating-updates
+  (testing "the bug: with opt-in exclusive ownership each warm writer commits
             from its own stale head, so half the transactions vanish"
     (let [n 10
-          {:keys [datoms commits]} (alternate! "default" nil n)]
+          {:keys [datoms commits]} (alternate! "exclusive" :exclusive n)]
       (is (< datoms n)
-          (str "expected the default writer to LOSE updates, but all " n
+          (str "expected the exclusive writer to LOSE updates, but all " n
                " survived — if this starts passing, the head-cid threading in "
                "datahike.writer's commit loop changed and this test's premise "
                "needs revisiting"))
@@ -108,19 +105,19 @@
       (is (< commits (inc n))
           "the commit lineage is truncated too, not just the datoms"))))
 
-(deftest non-streaming-writer-survives-alternating-processes
-  (testing ":streaming? false re-reads the head, so nothing is lost"
+(deftest shared-writer-survives-alternating-processes
+  (testing "shared ownership re-reads the head, so nothing is lost"
     (let [n 10
-          {:keys [datoms commits]} (alternate! "nonstreaming" false n)]
+          {:keys [datoms commits]} (alternate! "shared" :shared n)]
       (is (= n datoms) "every alternating transaction survived")
       (is (= (inc n) commits)
           "and every commit is reachable from the head (create + n commits)"))))
 
-(deftest non-streaming-costs-one-head-read-per-commit
-  (testing "the price of :streaming? false is exactly one branch-head read per
+(deftest shared-writer-costs-one-head-read-per-commit
+  (testing "the price of shared ownership is exactly one branch-head read per
             commit — one GET on an object store, not three"
-    (doseq [[streaming? expected] [[true 0] [false 10]]]
-      (let [c (cfg (str "headreads-" streaming?) streaming?)]
+    (doseq [[ownership expected] [[:exclusive 0] [:shared 10]]]
+      (let [c (cfg (str "headreads-" (name ownership)) ownership)]
         (fresh-db! c)
         (let [{:keys [conn] :as p} (connect-as-separate-process c)]
           (try
@@ -134,39 +131,43 @@
                                     (apply orig store key args))]
                 (dotimes [i 10] (d/transact conn [{:db/id -1 :name (str i)}])))
               (is (= expected @reads)
-                  (str "streaming? " streaming? ": expected " expected
+                  (str "writer ownership " ownership ": expected " expected
                        " branch-head reads for 10 commits, got " @reads)))
             (finally (release-separate-process p))))))))
 
-(deftest streaming-flag-is-plumbed-from-the-writer-config
-  (testing ":streaming? reaches the LocalWriter and defaults to true"
-    (doseq [[streaming? expected] [[nil true] [true true] [false false]]]
-      (let [c (cfg (str "plumb-" streaming?) streaming?)]
+(deftest writer-ownership-is-plumbed-from-the-writer-config
+  (testing ":writer-ownership reaches the LocalWriter and defaults to :shared"
+    (doseq [[ownership expected] [[nil :shared] [:exclusive :exclusive] [:shared :shared]]]
+      (let [c (cfg (str "plumb-" ownership) ownership)]
         (fresh-db! c)
         (let [{:keys [conn] :as p} (connect-as-separate-process c)]
           (try
-            (is (= expected (w/streaming? (:writer @(:wrapped-atom conn))))
+            (is (= expected (w/writer-ownership (:writer @(:wrapped-atom conn))))
                 (str ":writer " (:writer c)))
+            (is (true? (w/streaming? (:writer @(:wrapped-atom conn))))
+                "self writers stream their own completed writes in both ownership modes")
+            (is (= (= :shared expected)
+                   (w/refresh-on-deref? (:writer @(:wrapped-atom conn)))))
             (finally (release-separate-process p))))))))
 
-(deftest streaming-is-a-connect-time-choice
+(deftest writer-ownership-is-a-connect-time-choice
   (testing "an existing database created with the default writer can be connected
-            to with :streaming? false — the flag comes from the CONNECT config,
-            which is what a serverless deployment can actually set"
+            to with exclusive ownership — the choice comes from the CONNECT config,
+            not from stored database metadata"
     (let [created   (cfg "connect-time" nil)
-          connected (assoc created :writer {:backend :self :streaming? false})]
+          connected (assoc created :writer {:backend :self :writer-ownership :exclusive})]
       (fresh-db! created)
       (let [{:keys [conn] :as p} (connect-as-separate-process connected)]
         (try
-          (is (false? (w/streaming? (:writer @(:wrapped-atom conn)))))
+          (is (= :exclusive (w/writer-ownership (:writer @(:wrapped-atom conn)))))
           (d/transact conn [{:db/id -1 :name "x"}])
           (is (= 1 (count (d/datoms @conn :eavt))))
           (finally (release-separate-process p)))))))
 
-(deftest non-streaming-writer-survives-a-rejected-transaction
+(deftest shared-writer-survives-a-rejected-transaction
   (testing "a transaction that fails before it reaches the commit queue must not
             leave the loop waiting for a commit that never happens"
-    (let [c (assoc (cfg "rejected" false) :schema-flexibility :write)]
+    (let [c (assoc (cfg "rejected" :shared) :schema-flexibility :write)]
       (fresh-db! c)
       (let [{:keys [conn] :as p} (connect-as-separate-process c)]
         (try
@@ -178,10 +179,10 @@
           (is (= ["after"] (map :v (d/datoms @conn :aevt :name))))
           (finally (release-separate-process p)))))))
 
-(deftest non-streaming-writer-handles-concurrent-callers-in-one-process
+(deftest shared-writer-handles-concurrent-callers-in-one-process
   (testing "the head re-read serialises transactions inside a writer without
             deadlocking or dropping any of them"
-    (let [c (cfg "concurrent" false)
+    (let [c (cfg "concurrent" :shared)
           n 20]
       (fresh-db! c)
       (let [{:keys [conn] :as p} (connect-as-separate-process c)]
@@ -196,7 +197,7 @@
 ;; Batching. The head re-read is per BATCH, not per transaction: the loop chains
 ;; queued transactions onto one head the way the streaming writer chains onto
 ;; :db-after, and only stops to wait when the queue drains or the batch bound is
-;; reached. Without that, `:streaming? false` degrades a burst of N concurrent
+;; reached. Without that, shared ownership degrades a burst of N concurrent
 ;; transacts into N round-trips — which on an object store is the whole cost.
 
 (defn- burst!
@@ -206,9 +207,9 @@
        (mapv (fn [i] (future (d/transact conn [{:db/id -1 :name (str "e" i)}]))))
        (mapv #(deref % 60000 ::timed-out))))
 
-(deftest non-streaming-batches-a-burst
+(deftest shared-writer-batches-a-burst
   (testing "concurrently queued transactions share one head read and one commit"
-    (let [c (cfg "batching" false)
+    (let [c (cfg "batching" :shared)
           n 100]
       (fresh-db! c)
       (let [{:keys [conn] :as p} (connect-as-separate-process c)]
@@ -247,7 +248,7 @@
     ;; then holds vacuously — or flakes). Applying a transaction of this size
     ;; takes longer than committing one, so the commit loop keeps finding the
     ;; queue empty and each transaction becomes its own group.
-    (let [c   (cfg "batch-lineage" false)
+    (let [c   (cfg "batch-lineage" :shared)
           n   20
           per 400]
       (fresh-db! c)
@@ -271,7 +272,7 @@
             ;; slower than committing them — the very regime this shape is chosen
             ;; for — every transaction becomes its own commit group and cids = n.
             ;; That is a fine outcome here; batching itself is pinned by
-            ;; non-streaming-batches-a-burst. What this test needs is only that
+            ;; shared-writer-batches-a-burst. What this test needs is only that
             ;; SOME batch spanned several commits.
             (is (>= (count cids) 2) "more than one commit to chain")
             (is (< @reads (count cids))
@@ -293,7 +294,7 @@
   (testing "batching moves the head read to the batch boundary, it does not
             remove it: another process committing between our bursts must still
             be picked up"
-    (let [c (cfg "batch-alternating" false)
+    (let [c (cfg "batch-alternating" :shared)
           rounds 5 per-round 8]
       (fresh-db! c)
       (let [a (connect-as-separate-process c)
@@ -347,6 +348,21 @@
                                @gate)))
     state))
 
+(defn- await-ch
+  "Take from `ch`, or give up after `ms`.
+
+   NOT `(deref (future (async/<!! ch)) ms ::timed-out)`: the deref returns but
+   the future's thread stays parked on the take forever, and `future` threads are
+   NOT daemons — so a test that catches a stranded caller then leaves a thread
+   that keeps the JVM alive after `main` returns. The negative control for
+   `a-fatal-error-does-not-strand-queued-retries` did exactly that: it reported
+   its failure correctly and then hung until the outer `timeout` killed it, which
+   in CI is a build that never ends rather than a test that fails."
+  [ch ms]
+  (let [t (async/timeout ms)
+        [v c] (async/alts!! [ch t])]
+    (if (= c t) ::timed-out v)))
+
 (defn- dispatch-tx! [conn tx-data]
   (w/dispatch! (:writer @(:wrapped-atom conn))
                {:op 'transact! :args [{:tx-data tx-data}]}))
@@ -369,6 +385,188 @@
         (is (not= ::timed-out (deref (future (async/<!! held)) 30000 ::timed-out)))
         (is (not= ::timed-out (deref (future (async/<!! trailing)) 60000 ::timed-out)))))))
 
+;; ---------------------------------------------------------------------------
+;; Head fencing and replay (#878).
+;;
+;; A conflict is forced by making `commit!` raise the konserve error, rather than
+;; by racing: the retry policy is what is under test here, and a race cannot say
+;; how many attempts happened or in what order they were re-applied. The genuine
+;; cross-process race lives in dev/two_jvm_head_race.clj, which needs two JVMs.
+
+(deftest a-conflicted-transaction-is-replayed-and-succeeds
+  (testing "the caller sees success, not the conflict: the transaction was
+            re-applied against the head that moved under it"
+    (let [c (cfg "fence-replay" :shared)]
+      (fresh-db! c)
+      (let [{:keys [conn] :as p} (connect-as-separate-process c)]
+        (try
+          (let [orig dw/commit!
+                left (atom 1)
+                r    (with-redefs [dw/commit!
+                                   (fn [db & args]
+                                     (if (pos? @left)
+                                       (do (swap! left dec)
+                                           (throw (ex-info "forced" {:type :konserve/revision-mismatch :key :db})))
+                                       (apply orig db args)))]
+                       (d/transact conn [{:db/id -1 :name "a"}]))]
+            (is (map? r) "the caller got a tx-report, not an error")
+            (is (= ["a"] (map :v (d/datoms @conn :aevt :name)))
+                "and the transaction really landed"))
+          (finally (release-separate-process p)))))))
+
+(deftest a-replayed-batch-keeps-its-order
+  (testing "a conflicting commit group fails together and is re-applied in the
+            SAME order — a chained transaction was built on its predecessor's
+            :db-after, so replaying them out of order would apply them to a db
+            that never existed"
+    (let [c (cfg "fence-order" :shared)
+          n 8]
+      (fresh-db! c)
+      (let [{:keys [conn] :as p} (connect-as-separate-process c)]
+        (try
+          (let [orig dw/commit!
+                left (atom 1)
+                rs   (with-redefs [dw/commit!
+                                   (fn [db & args]
+                                     (if (pos? @left)
+                                       (do (swap! left dec)
+                                           (throw (ex-info "forced" {:type :konserve/revision-mismatch :key :db})))
+                                       (apply orig db args)))]
+                       (->> (range n)
+                            (mapv (fn [i] (future (d/transact conn [{:db/id -1 :name (str i)}]))))
+                            (mapv #(deref % 60000 ::timed-out))))]
+            (is (empty? (filter #{::timed-out} rs)) "nobody hangs")
+            (is (= (set (map str (range n)))
+                   (into #{} (map :v) (d/datoms @conn :aevt :name)))
+                "every transaction landed exactly once — none lost, none duplicated"))
+          (finally (release-separate-process p)))))))
+
+(deftest a-conflict-delivers-exactly-one-outcome
+  (testing "an invocation is either replayed or its caller is told, never both:
+            the caller waits on ONE callback, and a second delivery would be
+            silently dropped — hiding whichever outcome came second"
+    (let [c (cfg "fence-once" :shared)
+          n 5]
+      (fresh-db! c)
+      (let [{:keys [conn] :as p} (connect-as-separate-process c)]
+        (try
+          ;; Exhaust the retries, so every caller must get exactly one error.
+          (let [rs (with-redefs [dw/commit!
+                                 (fn [& _] (throw (ex-info "forced"
+                                                           {:type :konserve/revision-mismatch :key :db})))]
+                     (->> (range n)
+                          (mapv (fn [i] (future (try (d/transact conn [{:db/id -1 :name (str i)}])
+                                                     ::committed
+                                                     (catch Throwable e (:type (ex-data e)))))))
+                          (mapv #(deref % 60000 ::timed-out))))]
+            (is (empty? (filter #{::timed-out} rs))
+                "every caller was answered — a missing delivery shows up as a hang")
+            (is (every? #{:datahike/head-conflict} rs)
+                (str "and answered with the conflict, once each: " (pr-str rs))))
+          (is (= ::ok (deref (future (d/transact conn [{:db/id -1 :name "after"}]) ::ok) 30000 ::timed-out))
+              "the writer survived exhaustion")
+          (finally (release-separate-process p)))))))
+
+(deftest head-revision-is-runtime-only
+  (testing "the Konserve CAS token travels through the writer without entering
+            durable database metadata or the content-addressed commit"
+    (let [c (cfg "runtime-revision" :shared)]
+      (fresh-db! c)
+      (let [{:keys [conn] :as p} (connect-as-separate-process c)]
+        (try
+          (d/transact conn [{:db/id -1 :name "revision"}])
+          (let [runtime-db @(:wrapped-atom conn)
+                stored-db  (k/get (:store runtime-db) :db nil {:sync? true})]
+            (is (some? (::dw/head-revision runtime-db))
+                "the next commit retains the revision it must fence against")
+            (is (nil? (::dw/head-revision stored-db))
+                "the operational token is not persisted at top level")
+            (is (nil? (get-in stored-db [:meta :datahike/head-revision]))
+                "nor exposed or hashed as database metadata"))
+          (finally (release-separate-process p)))))))
+
+(deftest retry-policy-is-configurable
+  (testing ":head-conflict-retries 0 reports instead of replaying, which is the
+            escape hatch for a deployment that would rather handle conflicts itself"
+    (let [c (assoc (cfg "fence-noretry" :shared)
+                   :writer {:backend :self :writer-ownership :shared :head-conflict-retries 0})]
+      (fresh-db! c)
+      (let [{:keys [conn] :as p} (connect-as-separate-process c)]
+        (try
+          (let [calls (atom 0)
+                r     (with-redefs [dw/commit! (fn [& _]
+                                                 (swap! calls inc)
+                                                 (throw (ex-info "forced"
+                                                                 {:type :konserve/revision-mismatch :key :db})))]
+                        (try (d/transact conn [{:db/id -1 :name "x"}]) ::committed
+                             (catch Throwable e (ex-data e))))]
+            (is (= 1 @calls) "exactly one commit attempt: no replay")
+            (is (= :datahike/head-conflict (:type r)))
+            (is (= 1 (:attempt r))))
+          (finally (release-separate-process p))))))
+
+  (testing "an out-of-range value is refused rather than coerced"
+    (doseq [[k v] [[:max-batch 0] [:head-conflict-retries -1] [:head-conflict-backoff-ms -5]]]
+      (let [c (assoc (cfg "fence-badcfg" :shared)
+                     :writer {:backend :self :writer-ownership :shared k v})]
+        (fresh-db! (cfg "fence-badcfg" :shared))
+        (is (thrown-with-msg? clojure.lang.ExceptionInfo #"must be an integer"
+                              (connect-as-separate-process c))
+            (str k " " v))))))
+
+(deftest require-fencing-is-checked-at-connect
+  (testing "a deployment that needs fencing says so, and is REFUSED rather than
+            run unfenced. Without this datahike degrades quietly: a store that
+            cannot compare-and-set reports no domain and the head is written
+            unconditionally — correct for one writer, and exactly wrong for the
+            deployment that asked."
+    (let [c (cfg "require-fencing" :shared)]
+      (fresh-db! c)
+      (let [with-w (fn [w] (assoc c :writer (merge {:backend :self :writer-ownership :shared} w)))]
+        (testing "the filestore fences at :machine, so it satisfies :machine and below"
+          (doseq [d [:process :machine]]
+            (let [p (connect-as-separate-process (with-w {:require-fencing d}))]
+              (is (some? (:conn p)) (str "should connect for " d))
+              (release-separate-process p))))
+
+        (testing "but not :global — an OS lock does not reach another machine"
+          (is (thrown-with-msg? clojure.lang.ExceptionInfo #"cannot fence branch-head writes"
+                                (connect-as-separate-process (with-w {:require-fencing :global})))))
+
+        (testing "and it is inert with an exclusive writer, so that is refused too:
+                  an exclusive writer never re-reads the head, so there is no
+                  revision to fence against"
+          (is (thrown-with-msg? clojure.lang.ExceptionInfo #"needs :writer-ownership :shared"
+                                (connect-as-separate-process
+                                 (assoc c :writer {:backend :self :writer-ownership :exclusive
+                                                   :require-fencing :machine})))))
+
+        (testing "a domain that does not exist is a typo, not a weaker request"
+          (is (thrown-with-msg? clojure.lang.ExceptionInfo #"must name a conditional-write domain"
+                                (connect-as-separate-process (with-w {:require-fencing :planet})))))
+
+        (testing "and asking for nothing still connects, unfenced, as before"
+          (let [p (connect-as-separate-process (with-w {}))]
+            (is (some? (:conn p)))
+            (release-separate-process p)))
+
+        ;; The cached path, which is the one that matters most: a demand checked
+        ;; only where a writer is CREATED is skipped exactly when a second
+        ;; connection appears in the same process — and a second writer is what
+        ;; :require-fencing is about. `*connections*` is left at the real
+        ;; registry here on purpose, so the second connect hits the cache.
+        (testing "the check is not skipped when the connection comes from the cache"
+          (let [conn (d/connect (with-w {:require-fencing :machine}))]
+            (try
+              (is (thrown-with-msg? clojure.lang.ExceptionInfo #"cannot fence branch-head writes"
+                                    (d/connect (with-w {:require-fencing :global})))
+                  "a cached connection is still refused when it cannot fence as far as asked")
+              (is (some? (d/connect (with-w {:require-fencing :machine})))
+                  "and still returned when it can")
+              (finally
+                (d/release conn)
+                (try (d/release conn) (catch Throwable _ nil))))))))))
+
 (deftest a-batch-is-closed-before-the-writer-waits-for-work
   (testing "a batch must be bounded in TIME, not only in count. If the last item
             the loop processes neither commits nor closes the batch — a rejected
@@ -380,7 +578,7 @@
                               ;; likewise enqueues no commit
                               [:async #(w/dispatch! (:writer @(:wrapped-atom %))
                                                     {:op 'gc-storage! :args []})]]]
-      (let [c     (assoc (cfg (str "strand-" (name label)) false)
+      (let [c     (assoc (cfg (str "strand-" (name label)) :shared)
                          :schema-flexibility :write)
             state (register-gate! c)]
         (fresh-db! c)
@@ -400,9 +598,9 @@
 (deftest bursts-with-rejections-still-see-the-other-process
   (testing "the integration form: each of A's batches ENDS on a rejected
             transaction, and B commits between them. Every one of B's commits
-            must survive — this is the exact data loss :streaming? false exists
+            must survive — this is the exact data loss shared ownership exists
             to prevent, and a rejected transaction must not reopen it."
-    (let [c      (assoc (cfg "strand-alternating" false) :schema-flexibility :write)
+    (let [c      (assoc (cfg "strand-alternating" :shared) :schema-flexibility :write)
           state  (register-gate! c)
           rounds 6]
       (fresh-db! c)
@@ -437,12 +635,12 @@
 (deftest a-burst-larger-than-the-pending-put-cap-survives
   (testing "commit-done is unbuffered and core.async THROWS on the 1025th pending
             put — inside the commit loop that closes every queue and kills the
-            writer. MAX_NONSTREAMING_BATCH is what keeps the count unreachable,
+            writer. MAX_SHARED_WRITER_BATCH is what keeps the count unreachable,
             so drive MORE transactions than the cap through one writer and check
             that it lost nothing and is still alive."
-    (is (< w/MAX_NONSTREAMING_BATCH 1024)
+    (is (< w/MAX_SHARED_WRITER_BATCH 1024)
         "the bound must stay below core.async's pending-put cap")
-    (let [c (cfg "over-the-cap" false)
+    (let [c (cfg "over-the-cap" :shared)
           n 1200]
       (fresh-db! c)
       (let [{:keys [conn] :as p} (connect-as-separate-process c)]
@@ -462,7 +660,7 @@
   (testing "a rejected transaction commits nothing, so it must neither consume a
             durability signal owed to another transaction nor leave one behind —
             either way the writer parks forever"
-    (let [c (assoc (cfg "batch-failure" false) :schema-flexibility :write)
+    (let [c (assoc (cfg "batch-failure" :shared) :schema-flexibility :write)
           n 100]
       (fresh-db! c)
       (let [{:keys [conn] :as p} (connect-as-separate-process c)]
@@ -493,7 +691,7 @@
 ;; it, unlike scriptum's Lucene directory, multi-process safe.
 
 (defn- stratum-cfg [tag]
-  (assoc (cfg tag false) :schema-flexibility :write))
+  (assoc (cfg tag :shared) :schema-flexibility :write))
 
 (defn- with-stratum-index! [conn]
   (d/transact conn [{:db/ident :p/name :db/valueType :db.type/string
@@ -543,7 +741,7 @@
           (finally (release-separate-process observer)))))))
 
 (deftest deref-keeps-the-secondary-index-and-follows-the-head
-  (testing "@conn on a non-streaming connection rebuilds only when the head
+  (testing "@conn under shared ownership rebuilds only when the head
             moved: rebuilding on every deref re-runs the secondary restore,
             which contends with the live writer's lock and silently drops the
             index. It must still see another process's commit."
@@ -570,7 +768,7 @@
   (testing "the head cid IS the identity of the stored record, so a re-read
             that finds the same cid rebuilds nothing — no stored->db, and in
             particular no secondary-index restore, per transaction or per deref"
-    (let [c (cfg "no-rebuild" false)]
+    (let [c (cfg "no-rebuild" :shared)]
       (fresh-db! c)
       (let [{:keys [conn] :as p} (connect-as-separate-process c)]
         (try
@@ -584,7 +782,7 @@
               (dotimes [i 10] (d/transact conn [{:db/id -1 :name (str i)}]))
               (dotimes [_ 5] (d/datoms @conn :eavt)))
             (is (zero? @rebuilds)
-                (str "a single-process non-streaming writer never moves its own "
+                (str "a single-process shared writer never moves its own "
                      "head under itself, so nothing should be rebuilt; got "
                      @rebuilds)))
           (finally (release-separate-process p)))))))
@@ -727,9 +925,9 @@
             :max-tx, no index roots), which queries answer emptily and then die
             on with a bare IllegalArgumentException much further away.
 
-            Only reachable with :streaming? false, because that is the only
+            Only reachable with shared ownership, because that is the only
             writer whose @conn reads the head from storage at all."
-    (let [c (cfg "vanished-head" false)]
+    (let [c (cfg "vanished-head" :shared)]
       (fresh-db! c)
       (let [{:keys [conn] :as p} (connect-as-separate-process c)]
         (try
@@ -759,7 +957,7 @@
             transaction and leave the writer usable. Escaping the loop would
             kill it with transaction-queue still open, so every later transact
             would enqueue happily and hang forever."
-    (let [c (cfg "head-read-failure" false)]
+    (let [c (cfg "head-read-failure" :shared)]
       (fresh-db! c)
       (let [{:keys [conn] :as p} (connect-as-separate-process c)]
         (try
@@ -790,37 +988,43 @@
           (finally (release-separate-process p)))))))
 
 (deftest self-writer-rejects-unknown-keys
-  (testing "a typo like :streaming (no ?) would silently select the unsafe
-            default, which is exactly the setting whose failure is silent"
-    (let [c (assoc (cfg "unknown-key" nil) :writer {:backend :self :streaming false})]
+  (testing "a typo in :writer-ownership must not silently ignore the caller's choice"
+    (let [c (assoc (cfg "unknown-key" nil) :writer {:backend :self :writer-ownerhip :exclusive})]
       (fresh-db! (cfg "unknown-key" nil))
       (is (thrown-with-msg? clojure.lang.ExceptionInfo
                             #"Unknown key"
                             (connect-as-separate-process c))))))
 
-(deftest self-writer-rejects-a-non-boolean-streaming-flag
-  (testing "everything but nil and false is truthy, so :streaming? \"false\" out
-            of an env var or a JSON config would read as TRUE — selecting the
-            single-writer assumption in the deployment that cannot hold it"
-    (fresh-db! (cfg "bad-streaming" nil))
-    (doseq [v ["false" 0 :false]]
-      (let [c (assoc (cfg "bad-streaming" nil) :writer {:backend :self :streaming? v})]
+(deftest self-writer-validates-ownership-and-the-legacy-alias
+  (testing "unknown ownership values are refused rather than treated as exclusive"
+    (fresh-db! (cfg "bad-ownership" nil))
+    (doseq [v ["shared" true :single]]
+      (let [c (assoc (cfg "bad-ownership" nil) :writer {:backend :self :writer-ownership v})]
         (is (thrown-with-msg? clojure.lang.ExceptionInfo
-                              #"must be true or false"
+                              #"must be :shared or :exclusive"
                               (connect-as-separate-process c))
-            (str ":streaming? " (pr-str v))))))
+            (str ":writer-ownership " (pr-str v))))))
 
-  (testing "and an explicit nil, which is not reachable through connect —
+  (testing "the experimental :streaming? option remains a validated compatibility alias"
+    (doseq [[legacy ownership] [[false :shared] [true :exclusive]]]
+      (is (= {:backend :self :writer-ownership ownership}
+             (dc/normalize-writer-config {:backend :self :streaming? legacy})))))
+
+  (testing "conflicting old and new options fail instead of guessing"
+    (is (thrown-with-msg? clojure.lang.ExceptionInfo #"conflicting"
+                          (dc/normalize-writer-config {:backend :self
+                                                       :streaming? true
+                                                       :writer-ownership :shared}))))
+
+  (testing "an explicit legacy nil, which is not reachable through connect —
             `remove-nils` in config loading strips it, so the documented default
-            correctly applies there — but IS reachable by calling create-writer
-            directly, where Clojure's `:or` would not fire for a present key and
-            the writer would silently run non-streaming"
+            correctly applies there — is still rejected by direct create-writer"
     (let [c (cfg "nil-streaming" nil)]
       (fresh-db! c)
       (let [{:keys [conn] :as p} (connect-as-separate-process
                                   (assoc c :writer {:backend :self :streaming? nil}))]
         (try
-          (is (true? (w/streaming? (:writer @(:wrapped-atom conn))))
+          (is (= :shared (w/writer-ownership (:writer @(:wrapped-atom conn))))
               "connect strips the nil and takes the default")
           (is (thrown-with-msg? clojure.lang.ExceptionInfo
                                 #"must be true or false"
@@ -828,29 +1032,168 @@
               "create-writer itself does not accept it")
           (finally (release-separate-process p)))))))
 
-(deftest streaming-flag-is-not-part-of-the-stored-config
-  (testing "a database CREATED with :streaming? false can be connected to
-            without it (the reverse is covered by streaming-is-a-connect-time-
-            choice) — the flag is a property of the connecting process"
-    (let [created   (cfg "created-with-flag" false)
+(deftest writer-ownership-is-not-part-of-the-stored-config-contract
+  (testing "a database CREATED with exclusive ownership can be connected without
+            it and takes the safe default — ownership is a property of the
+            connecting process"
+    (let [created   (cfg "created-with-ownership" :exclusive)
           connected (assoc created :writer {:backend :self})]
       (fresh-db! created)
       (let [{:keys [conn] :as p} (connect-as-separate-process connected)]
         (try
-          (is (true? (w/streaming? (:writer @(:wrapped-atom conn))))
+          (is (= :shared (w/writer-ownership (:writer @(:wrapped-atom conn))))
               "the connect config wins")
           (d/transact conn [{:db/id -1 :name "x"}])
           (is (= 1 (count (d/datoms @conn :eavt))))
           (finally (release-separate-process p))))))
 
-  (testing "and the stored/connect comparison ignores it. NOTE: connector's
+  (testing "and the stored/connect comparison ignores ownership and the legacy alias. NOTE: connector's
             'if we connect to remote allow writer to be different' test compares
             dc/self-writer against the WHOLE config, so it is always false and
             :writer is dropped from both sides — writer consistency is not
             enforced at all today (fixing that is its own change). Rebinding
             self-writer takes the branch that the eventual fix will take, and
-            pins that :streaming? must not make the pair mismatch there."
-    (let [conf   {:branch :db :writer {:backend :self}}
+            pins that runtime writer choices must not make the pair mismatch there."
+    (let [conf   {:branch :db :writer {:backend :self :writer-ownership :exclusive}}
           stored {:branch :db :writer {:backend :self :streaming? false}}]
       (with-redefs [dc/self-writer conf]
         (is (nil? (dcon/ensure-stored-config-consistency conf stored)))))))
+
+(deftest a-fatal-error-does-not-strand-queued-retries
+  (testing "a head conflict racing a fatal error answers the invocations sitting
+            in the retry queue instead of leaving them there.
+
+            The retry queue is drained by exactly one thing: the TRANSACTION
+            loop. A fatal Error inside `op-fn` is rethrown and kills it, and
+            everything the conflict just handed back is then held by a channel
+            nobody reads, while its callers block on a promise nobody will ever
+            deliver — a permanent hang with no diagnostic, strictly worse than
+            the error they should have got.
+
+            Note which loop has to die. A fatal error in the COMMIT loop does not
+            strand anything: the transaction loop is still running, takes the
+            retries, finds `commit-queue` closed and fails them through the
+            existing `put!` guard. A first version of this test used that path
+            and passed with the fix reverted, which is no test at all."
+    (let [n 6
+          ;; Retries are raised so no invocation can exhaust them and leave the
+          ;; queue early: every conflict below must put its invocation BACK.
+          c (assoc-in (cfg "fence-fatal" :shared) [:writer :head-conflict-retries] 50)]
+      (fresh-db! c)
+      (let [{:keys [conn] :as p} (connect-as-separate-process c)
+            calls (atom 0)]
+        ;; A tx-pred runs inside `op-fn`, on the transaction loop, which is
+        ;; exactly where the fatal Error has to come from. It stays quiet until
+        ;; the conflicts have filled the retry queue.
+        (txp/register-tx-pred! (get-in c [:store :id])
+                               (fn [_report]
+                                 (when (>= @calls n)
+                                   (throw (AssertionError. "forced fatal")))))
+        (try
+          ;; Every commit conflicts, whatever the writer groups them into: one
+          ;; group of six, six groups of one, or anything between. In every case
+          ;; all six invocations are in the retry queue by the time the pred
+          ;; above fires, and only the one being replayed has been taken back
+          ;; out — the rest are exactly the population that used to be stranded.
+          (let [rs (with-redefs [dw/commit!
+                                 (fn [& _]
+                                   (swap! calls inc)
+                                   (throw (ex-info "forced conflict"
+                                                   {:type :konserve/revision-mismatch :key :db})))]
+                     (let [chs (mapv #(dispatch-tx! conn [{:db/id -1 :name (str %)}]) (range n))]
+                       (mapv #(await-ch % 30000) chs)))]
+            (is (empty? (filter #{::timed-out} rs))
+                (str "every caller was answered rather than left parked: " (pr-str rs)))
+            (is (not-any? map? rs)
+                "and none of them got a tx-report — nothing committed")
+            (is (>= @calls n)
+                "the conflicts really happened before the writer went down"))
+          (finally
+            (txp/unregister-tx-pred! (get-in c [:store :id]))
+            (try (release-separate-process p)
+                 (catch Throwable _ nil))))))))
+
+(deftest shared-writer-works-on-the-memory-backend
+  (testing "shared ownership re-reads the branch head on every batch, so it
+            exercises the store paths the safe default now relies on. The memory
+            backend is what most tests and every getting-started example use, and
+            a writer that only works on a filestore would be found by users
+            rather than by CI."
+    (let [c {:store {:backend :memory
+                     :id #uuid "a17e2a71-0000-0000-0000-0000000000ff"}
+             :schema-flexibility :read
+             :keep-history? false
+             :writer {:backend :self :writer-ownership :shared}}]
+      (fresh-db! c)
+      (let [conn (d/connect c)]
+        (try
+          (dotimes [i 5]
+            (d/transact conn [{:db/id -1 :name (str "e" i)}]))
+          (is (= (set (map #(str "e" %) (range 5)))
+                 (into #{} (map :v) (d/datoms @conn :aevt :name)))
+              "every transaction landed")
+          (is (= 6 (commit-chain-length conn))
+              "and each one is on the lineage, the create included")
+          (finally (d/release conn)))))))
+
+(deftest a-fenced-head-only-commit-does-not-issue-an-empty-multi-assoc
+  (testing "root fusion plus a disabled commit graph can leave only the fenced
+            branch head to write. A multi-key backend must receive that head as
+            the separate conditional write, not an empty transaction before it
+            (DynamoDB rejects an empty TransactWriteItems request)."
+    (let [c {:store {:backend :memory
+                     :id #uuid "a17e2a71-0000-0000-0000-000000000100"}
+             :schema-flexibility :read
+             :keep-history? false
+             :fuse-index-roots? true
+             :commit-graph? false
+             :writer {:backend :self :writer-ownership :shared}}
+          original-multi-assoc k/multi-assoc]
+      (fresh-db! c)
+      (let [conn (d/connect c)]
+        (try
+          (with-redefs [k/multi-assoc
+                        (fn [store writes & args]
+                          (when-not (seq writes)
+                            (throw (ex-info "empty multi-assoc"
+                                            {:type :test/empty-multi-assoc})))
+                          (apply original-multi-assoc store writes args))]
+            (d/transact conn [{:db/id -1 :name "head-only"}]))
+          (is (= ["head-only"]
+                 (mapv :v (d/datoms @conn :aevt :name)))
+              "the separately fenced branch head still publishes the commit")
+          (finally (d/release conn)))))))
+
+(deftest a-sole-writer-never-manufactures-a-head-conflict
+  (testing "One writer, one process, no competitor: every head conflict it
+            reports is manufactured. This asserts the writer's own revision
+            threading rather than the fence — the memory backend is multi-key
+            AND fenced, so commits take the multi-assoc path, and a commit that
+            fails to capture the revision its own head write created makes the
+            next chained group fence against a revision this writer already
+            moved. Measured before the fix: 24 conflicts in 300 transactions.
+
+            :head-conflict-retries 0 is what gives the test teeth: retries
+            self-heal the conflicts into successes, and a suite that only
+            checks outcomes then stays green while every chained group burns a
+            rejection and a backoff."
+    (let [c {:store {:backend :memory
+                     :id #uuid "a17e2a71-0000-0000-0000-000000000200"}
+             :schema-flexibility :read
+             :keep-history? false
+             :writer {:backend :self :head-conflict-retries 0}}
+          _ (d/delete-database c)
+          _ (d/create-database c)
+          conn (d/connect c)]
+      (try
+        (let [results  (mapv (fn [i] (d/transact! conn {:tx-data [{:sole-writer/n i}]}))
+                             (range 300))
+              outcomes (mapv (fn [p] (try @p ::ok
+                                          (catch Exception e (:type (ex-data e)))))
+                             results)
+              conflicts (count (filter #(= :datahike/head-conflict %) outcomes))]
+          (is (zero? conflicts)
+              (str conflicts " of 300 transactions reported a head conflict "
+                   "with no competing writer in existence"))
+          (is (every? #(= ::ok %) outcomes)))
+        (finally (d/release conn))))))

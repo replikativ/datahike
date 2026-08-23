@@ -292,48 +292,114 @@ them.
 
 For distributed deployments, configure a writer to handle all transactions while readers access storage directly via Distributed Index Space.
 
-#### Alternating Processes (`:streaming? false`)
+#### Safe Default (`:writer-ownership :shared`)
 
-Datahike's default writer (`{:backend :self}`) assumes every writer for a
-database lives in one JVM: it keeps the branch head in memory and never re-reads
-it. Serverless runtimes break that assumption. Each AWS Lambda execution
+Datahike's local writer (`{:backend :self}`) defaults to shared ownership: it
+re-reads the branch head before each batch rather than assuming this JVM owns
+the branch exclusively. Serverless runtimes make that safety important. Each AWS Lambda execution
 environment is a separate JVM that believes it is the only writer, and Lambda
-keeps several warm and routes to them *alternately*. Each one then commits on
-top of its own stale head and silently overwrites the other's transactions — no
-error, lost data.
+keeps several warm and routes to them *alternately*. With exclusive ownership,
+each one would commit on top of its own stale head and silently overwrite the
+other's transactions — no error, lost data.
 
 ```clojure
 {:store  {:backend :s3 :bucket "my-bucket"}
- :writer {:backend :self :streaming? false}}
+ :writer {:backend :self}} ; :writer-ownership :shared is the default
 ```
 
-With `:streaming? false` the writer re-reads the branch head from storage before
+With shared ownership the writer re-reads the branch head from storage before
 each *batch* of transactions, so they are applied to whatever is actually
 stored, and `@conn` reads through to storage as well.
 
 - **Cost:** one branch-head GET per batch (~10-40 ms on S3, ~$0.0000004 at
   $0.0004/1000 GET). Transactions already queued when one commits are chained
-  onto it and share its head read, the way the default writer chains onto
+  onto it and share its head read, the way the exclusive writer chains onto
   `:db-after`, so **commit batching survives**: a burst of 500 concurrent
   transactions costs ~9 head reads and ~20 commits, not 500 of each. The chain
   is bounded and never *waits* for more work to arrive, so it costs no latency
   — a caller that awaits each transaction before issuing the next has nothing
   to batch and does pay one read per commit.
-- **Required when:** more than one process may hold a writer for this database.
-- **Not a fence:** this avoids the race by *serialisation*, it does not *detect*
-  it. Two processes writing **concurrently** still lose updates; the loser's
-  head write just lands last. Detecting that needs head fencing
-  (compare-and-set on the branch head, [issue #878]). So `:streaming? false` is
-  correct under an external guarantee of non-overlap — Lambda reserved
-  concurrency 1, a lease, a queue — not by construction.
+- **Opting into `:exclusive`:** do this only when one process exclusively owns the
+  writer and avoiding the branch-head GET is worth the weaker safety.
+- **Serialisation, plus a fence:** re-reading the head avoids the race between
+  writers that alternate. Writers that **overlap** need the head write itself to
+  be conditional, which is what head fencing does ([issue #878]) — see
+  [Concurrent processes](#concurrent-processes-head-fencing) below. Fencing is
+  automatic wherever the store supports it, so shared ownership is safe for
+  alternating writers on any store and for concurrent writers on a store that
+  can compare-and-set.
 - **Secondary indices are re-read too**, whenever the head moved — they are
   named by the same commit, so another process's writes reach them like any
   other part of the db. Stratum and proximum are konserve-backed copy-on-write
   values, which is what makes that work (and what makes them usable on S3).
   Scriptum is the exception: it keeps its own Lucene directory with a
   per-branch write lock and is NOT multi-process safe. That is transitional —
-  its konserve backing is a late addition — not a property of secondary
-  indices.
+  what it still lacks is a conditional write on its manifest — not a property
+  of secondary indices.
+
+#### Concurrent Processes (head fencing)
+
+Shared ownership re-reads the branch head, and datahike also writes it back
+*conditionally*: the commit lands only if the head is still the one that was
+read. If another process moved it in between, this commit is rejected rather
+than overwriting theirs, and the transaction is re-applied against the new head.
+Nothing is lost and nothing is partially applied — the values a commit writes
+before the head flip are immutable and content-addressed, so a rejected commit
+leaves collectable orphans, never a dangling pointer.
+
+This needs a store that can compare-and-set. Konserve reports how far its
+guarantee reaches as a *domain*:
+
+| Domain | Meaning | Stores |
+| --- | --- | --- |
+| `:process` | threads in one JVM | memory |
+| `:machine` | processes on one host | filestore (OS advisory file lock) |
+| `:global` | processes on any host | S3 (`If-Match` on the object) |
+
+Fencing is used automatically when the store offers it and skipped when it does
+not, which keeps single-writer setups working unchanged on every backend. **If
+your deployment depends on it, say so** — otherwise a store that cannot fence
+degrades quietly to the unconditional write, which is exactly the failure the
+mechanism exists to remove:
+
+```clojure
+{:store  {:backend :s3 :bucket "my-bucket"}
+ :writer {:backend :self
+          :writer-ownership :shared
+          :require-fencing :global}}   ; refuse to connect without it
+```
+
+`:require-fencing` names the domain the deployment needs — `:machine` for
+several processes on one host (`dthk` from two shells), `:global` for several
+hosts (Lambda on S3). A store offering more than asked passes. It requires
+`:writer-ownership :shared`: an exclusive writer never re-reads the head, so it has no
+revision to fence against and the option would be inert.
+
+The experimental self-writer `:streaming?` option from #959 remains a deprecated
+compatibility alias (`false` means `:shared`, `true` means `:exclusive`).
+Streaming itself remains a writer capability: both self writers stream their own
+completed writes into the connection, Kabel streams synchronized remote writes,
+and HTTP does not stream updates.
+
+Three further knobs, all optional:
+
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `:head-conflict-retries` | 3 | How many times a rejected transaction is re-applied against the re-read head before the caller is told. `0` reports `:datahike/head-conflict` immediately, which is what you want if the caller must see every conflict. |
+| `:head-conflict-backoff-ms` | 25 | Base for the jittered exponential backoff between retries. |
+| `:max-batch` | 64 | Upper bound on transactions chained into one commit. |
+
+Only `transact!` and `load-entities` are retried. Anything that merges branches
+carries a conflict that belongs to the caller, and re-running it against a head
+that moved would silently change what the merge means.
+
+Branch lifecycle operations use the same store capability directly. Creating a
+branch conditionally publishes its head; creating, deleting or forcing a branch
+updates the shared `:branches` GC whitelist with a CAS loop; and database
+creation conditionally claims the initial `:db` head. Stores without revisions
+retain the historical best-effort behavior. `force-branch!` remains a deliberate
+reset operation: it retries until its overwrite can be linearized, so use it as
+exclusive administration rather than ordinary application traffic.
 
 [issue #878]: https://github.com/replikativ/datahike/issues/878
 

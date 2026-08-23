@@ -71,6 +71,23 @@
                       {:index-config (di/default-index-config c/*default-index*)}))
              (update config :store dissoc :id :scope))))))
 
+(deftest writer-ownership-defaults
+  (testing "the local writer is explicitly normalized to safe shared ownership"
+    (is (= {:backend :self :writer-ownership :shared}
+           (:writer (c/load-config {:store {:backend :memory}})))))
+
+  (testing "the self-only default does not leak through deep merge into remote writers"
+    (doseq [writer [{:backend :datahike-server :url "http://localhost:3000"}
+                    {:backend :kabel :peer-id :remote :local-peer :local}]]
+      (is (= writer (:writer (c/load-config {:store {:backend :memory}
+                                             :writer writer}))))))
+
+  (testing "the experimental streaming option is translated before the default applies"
+    (is (= {:backend :self :writer-ownership :shared}
+           (:writer (c/load-config {:writer {:backend :self :streaming? false}}))))
+    (is (= {:backend :self :writer-ownership :exclusive}
+           (:writer (c/load-config {:writer {:backend :self :streaming? true}}))))))
+
 (deftest core-config-test
   (testing "Schema on write in core empty database"
     (is (thrown-with-msg? Throwable

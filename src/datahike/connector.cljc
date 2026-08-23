@@ -71,7 +71,7 @@
     (when (= @wrapped-atom :released)
       (throw (ex-info "Connection has been released."
                       {:type :connection-has-been-released})))
-    (if (not (w/streaming? (get @wrapped-atom :writer)))
+    (if (w/refresh-on-deref? (get @wrapped-atom :writer))
       (do
         (log/trace :datahike/db-deref {:branch (:branch (:config @wrapped-atom))})
         ;; Exactly the writer's per-transaction re-read, and deliberately the
@@ -147,13 +147,12 @@
         stored-config (if (empty? (:index-config stored-config))
                         (dissoc stored-config :index-config)
                         stored-config)
-        ;; :streaming? is a RUNTIME choice of the connecting process (one JVM
-        ;; owns the branch, or several take turns), not a property of the
-        ;; stored database — a database created with the default must be
-        ;; connectable with :streaming? false. It sits INSIDE :writer, so the
-        ;; flat dissoc of runtime keys above does not reach it.
-        config        (cond-> config        (:writer config)        (update :writer dissoc :streaming?))
-        stored-config (cond-> stored-config (:writer stored-config) (update :writer dissoc :streaming?))
+        ;; Writer ownership is a RUNTIME choice of the connecting process, not a
+        ;; property of the stored database. It sits INSIDE :writer, so the flat
+        ;; dissoc of runtime keys above does not reach it. Ignore the deprecated
+        ;; :streaming? alias too, for databases created while #959 was experimental.
+        config        (cond-> config        (:writer config)        (update :writer dissoc :writer-ownership :streaming?))
+        stored-config (cond-> stored-config (:writer stored-config) (update :writer dissoc :writer-ownership :streaming?))
         ;; if we connect to remote allow writer to be different
         [config stored-config] (if-not (= dc/self-writer config)
                                  [(dissoc config :writer)
@@ -305,18 +304,32 @@
                                    :existing-connections-config conn-cfg
                                    :diff (diff cfg conn-cfg)}))
                      ;; normalize-config dissocs :writer, so a second connect
-                     ;; asking for a DIFFERENT :streaming? silently gets the
-                     ;; cached connection's writer. Say so rather than let the
-                     ;; caller believe the multi-process-safe setting took
-                     ;; effect (release the connection to change it).
-                     (let [existing (some-> (:writer @(:wrapped-atom conn)) w/streaming?)]
+                     ;; asking for DIFFERENT ownership gets the cached connection's
+                     ;; writer. Say so rather than let the caller believe shared
+                     ;; ownership took effect (release the connection to change it).
+                     (let [existing (some-> (:writer @(:wrapped-atom conn)) w/writer-ownership)
+                           requested (get-in config [:writer :writer-ownership] :shared)]
                        (when (and (some? existing)
                                   (= :self (get-in config [:writer :backend] :self))
-                                  (not= (get-in config [:writer :streaming?] true) existing))
-                         (log/warn :datahike/writer-streaming-ignored
-                                   "Reusing the existing connection and its writer; the requested :streaming? is ignored. Release the connection everywhere first if you need a different writer."
-                                   {:requested (get-in config [:writer :streaming?] true)
-                                    :existing  existing})))
+                                  (not= requested existing))
+                         (log/warn :datahike/writer-ownership-ignored
+                                   "Reusing the existing connection and its writer; the requested :writer-ownership is ignored. Release the connection everywhere first if you need different ownership."
+                                   {:requested requested
+                                    :existing  existing}))
+                       ;; A DEMAND, not a preference, so it is checked against the
+                       ;; writer this caller actually gets — which on this path is
+                       ;; the cached one, whatever it was built with. Checking it
+                       ;; only where a writer is created skipped it precisely
+                       ;; here: `:require-fencing` exists for deployments with
+                       ;; more than one writer, and the second `connect` in a
+                       ;; process is the one that comes out of the cache.
+                       ;;
+                       ;; `existing` rather than the requested ownership: what
+                       ;; matters is whether the writer in hand re-reads the head,
+                       ;; and the warning above has already said the request is ignored.
+                       (w/check-fencing! (get-in config [:writer :require-fencing])
+                                         (or existing :shared)
+                                         (:store @(:wrapped-atom conn))))
                      conn)
                    (let [raw-store (<?- (ks/connect-store store-config opts))
                          _         (when-not raw-store
