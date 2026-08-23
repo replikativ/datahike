@@ -7,7 +7,7 @@
    only other write is the head itself.
 
    This elision belongs to the explicit single-owner mode
-   `:writer {:backend :self :streaming? true}`. The safe default re-reads the
+   `:writer {:backend :self :writer-ownership :exclusive}`. The safe default re-reads the
    head because trusting this cache is exactly what makes a warm writer blind
    to another process's commits. See writer-alternating-test."
   (:require [datahike.api :as d]
@@ -20,7 +20,7 @@
                        :path (str (System/getProperty "java.io.tmpdir") "/dh-head-cache-" (java.util.UUID/randomUUID))
                        :id #uuid "6ead0000-0000-0000-0000-000000000001"}
                :schema-flexibility :write :keep-history? false
-               :writer {:backend :self :streaming? true}}]
+               :writer {:backend :self :writer-ownership :exclusive}}]
       (when (d/database-exists? cfg) (d/delete-database cfg))
       (d/create-database cfg)
       (let [conn (d/connect cfg)]

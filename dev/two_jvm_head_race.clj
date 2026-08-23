@@ -90,10 +90,10 @@
   {:store  (store-config path)
    :schema-flexibility :read
    :keep-history? false
-   ;; The writer under test. `:streaming? false` re-reads the head per batch,
+   ;; The writer under test. Shared ownership re-reads the head per batch,
    ;; which is what makes two processes ALTERNATING safe; it is deliberately not
    ;; enough for the overlap this harness produces.
-   :writer {:backend :self :streaming? false}})
+   :writer {:backend :self :writer-ownership :shared}})
 
 (defn fresh!
   "Create the store. Run in ONE JVM only, before the other connects."

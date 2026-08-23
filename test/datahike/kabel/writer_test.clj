@@ -124,4 +124,6 @@
 (deftest test-streaming
   (testing "-streaming? returns true"
     (let [w (kw/kabel-writer test-peer-id test-store-id nil)]
-      (is (true? (writer/-streaming? w))))))
+      (is (true? (writer/streaming? w)))
+      (is (false? (writer/refresh-on-deref? w))
+          "konserve-sync keeps the connection current"))))

@@ -389,7 +389,7 @@
    A record with NO cid is never treated as unmoved, even against an `old` that
    also has none: neither side knowing its identity is not evidence that the two
    match, and reading it as a match would make the writer blind to every other
-   process's commits — precisely the failure `:streaming? false` exists to
+   process's commits — precisely the failure shared writer ownership exists to
    prevent. Unreachable for databases this version creates (`create-database`
    stamps a cid); the guard is for foreign or legacy records.
 
@@ -425,9 +425,9 @@
   "Re-read `old`'s branch head from storage and rebuild an in-memory db from it
    when it moved (see [[reload-head]]).
 
-   This is the synchronization point of a NON-STREAMING self writer (`:writer
-   {:backend :self :streaming? false}`), which is the default. The opt-in
-   streaming mode assumes this JVM is the only writer and keeps the branch head
+   This is the synchronization point of a SHARED self writer (`:writer
+   {:backend :self :writer-ownership :shared}`), which is the default. Opt-in
+   exclusive ownership assumes this JVM is the only writer and keeps the branch head
    in memory, so a second process
    holding a writer for the same database would transact on top of its own
    stale snapshot and overwrite the other's commits. Re-reading before every

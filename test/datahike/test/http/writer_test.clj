@@ -2,8 +2,15 @@
   (:require
    [clojure.test :as t :refer [is deftest testing]]
    [datahike.http.server :refer [start-server stop-server]]
-   [datahike.http.writer]
+   [datahike.http.writer :as http-writer]
+   [datahike.writer :as writer]
    [datahike.api :as d]))
+
+(deftest http-writer-refresh-capabilities
+  (let [w (http-writer/->DatahikeServerWriter nil nil)]
+    (is (false? (writer/streaming? w)))
+    (is (true? (writer/refresh-on-deref? w))
+        "HTTP does not push remote head updates into the connection")))
 
 (deftest test-http-writer
   (testing "Testing distributed datahike.http.writer implementation."
