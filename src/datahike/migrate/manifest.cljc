@@ -226,9 +226,26 @@
   "Convert a datom to an EDN-encodable record vector [e a v t added]. `a` becomes a
    keyword ident; ref values pointing at a system entity become #datahike/sysref."
   ([db sys-ents sys-idents datom] (datom->record db sys-ents sys-idents nil datom))
-  ([db sys-ents sys-idents sec-read datom]
+  ([db sys-ents sys-idents sec-read datom] (datom->record db sys-ents sys-idents sec-read nil datom))
+  ([db sys-ents sys-idents sec-read renamed-attrs datom]
    (let [e (nth datom 0)
-         a (a-ident db (nth datom 1))
+         raw-a (nth datom 1)
+         ;; A RENAMED attribute is recorded by ENTITY, not by name.
+         ;;
+         ;; `a-ident` resolves against the current database, i.e. the FINAL name,
+         ;; which is right for every attribute whose name never moved — and wrong
+         ;; for one whose did: a datom written before the rename comes out
+         ;; carrying a name that did not exist yet, and replaying the dump meets
+         ;; it before that name is installed. Recording the entity instead defers
+         ;; the choice of name to the reader, which knows what its target needs
+         ;; (see `migrate/resolve-attr-refs`).
+         ;;
+         ;; Only for attributes in `renamed-attrs`, so a dump with no rename —
+         ;; and every keyword-attribute dump, where `ident-timeline` is empty by
+         ;; construction — is byte-identical to one written before this existed.
+         a (if (and renamed-attrs (number? raw-a) (contains? renamed-attrs raw-a))
+             (mcbor/->AttrRef raw-a)
+             (a-ident db raw-a))
         ;; For a `:db.secondary/only` attribute the primary holds a content hash,
         ;; so the real value comes from the secondary index instead — see
         ;; `secondary-only-values`. Falls back to the primary's value, which is
@@ -404,10 +421,11 @@
   (let [src      (if history? (api/history db) db)
         sys-ents (if (attribute-refs? db) (dbi/-system-entities db) #{})
         sidents  (system-idents db)
-        sec-read (secondary-only-reader db)]
+        sec-read (secondary-only-reader db)
+        renamed  (not-empty (set (keys (ident-timeline db))))]
     (->> (api/datoms src :eavt)
          (filter (fn [dm] (> (d/datom-tx dm) c/tx0)))
-         (map (fn [dm] (datom->record db sys-ents sidents sec-read dm))))))
+         (map (fn [dm] (datom->record db sys-ents sidents sec-read renamed dm))))))
 
 (defn export-records-streaming
   "Lazy seq of encoded records for `db` in a load-safe order WITHOUT sorting (so
@@ -431,7 +449,8 @@
                           (let [a (a-ident db (nth dm 1))]
                             (or (ds/schema-attr? a) (ds/meta-attr? a))))
         sec-read (secondary-only-reader db)
-        make     (fn [dm] (datom->record db sys-ents sidents sec-read dm))]
+        renamed  (not-empty (set (keys (ident-timeline db))))
+        make     (fn [dm] (datom->record db sys-ents sidents sec-read renamed dm))]
     (concat
      (->> (api/datoms src :eavt) (filter user?) (filter schema-or-meta?) (map make))
      (->> (api/datoms src :eavt) (filter user?) (remove schema-or-meta?) (map make)))))
@@ -731,7 +750,12 @@
     (when-not (and (vector? record) (= 5 (count record))) (bad! "not a 5-element vector"))
     (let [[e a v t op] record]
       (when-not (integer? e) (bad! (str "e is not an integer: " (pr-str e))))
-      (when-not (keyword? a) (bad! (str "a is not a keyword ident: " (pr-str a))))
+      ;; An attribute is normally a keyword ident. A dump that renamed an
+      ;; attribute records THAT one by entity instead, so the reader can choose
+      ;; the name its target needs — see `ident-timeline`. Both are well-formed;
+      ;; anything else is not.
+      (when-not (or (keyword? a) (mcbor/attr-ref? a))
+        (bad! (str "a is neither a keyword ident nor an attribute reference: " (pr-str a))))
       (when (nil? v) (bad! "v is nil"))
       (when-not (integer? t) (bad! (str "t is not an integer: " (pr-str t))))
       (when (< (long t) (long c/tx0))

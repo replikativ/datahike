@@ -161,6 +161,25 @@
 ;; ---------------------------------------------------------------------------
 ;; system-entity references (#508): translate, never re-insert
 
+(defrecord AttrRef [eid])
+
+(defn attr-ref?
+  "Is `a` a record's attribute given as an attribute-ENTITY reference?
+
+   The `a` slot of a dump record is normally a keyword ident, and for a
+   keyword-attribute source that is the whole truth: there the datom holds the
+   keyword, so nothing is resolved at either end.
+
+   Under `:attribute-refs?` the datom holds the attribute's entity id instead,
+   and a name is a property of that entity which can CHANGE. Naming such a datom
+   in the dump therefore requires choosing a moment, and choosing the export
+   moment is what broke: a datom written before a rename came out carrying a name
+   that did not exist yet, and replaying the dump met it before the name was
+   installed. So the record carries the entity, and the READER picks the name its
+   target needs — see `migrate/resolve-attr-refs`."
+  [a]
+  (instance? AttrRef a))
+
 (defrecord SysRef [ident])
 
 (defn sysref?
@@ -174,10 +193,31 @@
   (instance? SysRef v))
 
 (def ^:private sysref-name
-  "boring's wire name for the record — the class name with / -> . and - -> _.
-   Named explicitly rather than derived so a namespace rename is a visible
-   format change rather than a silent one."
-  "datahike.migrate.cbor.SysRef")
+  "boring's wire name for the record: `namespace/Name`, the form `pr-str` shows
+   for an unregistered one. Named explicitly rather than derived so a namespace
+   rename is a visible format change rather than a silent one.
+
+   This read `datahike.migrate.cbor.SysRef` — the CLASS name, dots and all — and
+   that is not what boring writes. The name never matched, so the registry never
+   supplied a constructor and every encoded SysRef came back as a
+   `boring.data.UnknownRecord`. `sysref?` is an `instance?` check, so it answered
+   false, `resolve-sysrefs` never fired, and a ref value pointing at a system
+   entity was imported as that opaque record instead of the target's eid.
+   Measured on origin/main before this change:
+
+     (mcbor/decode-record (mcbor/encode-record [1 :p/x (->SysRef :db/ident) 2 true]))
+     ;; => a is #boring/record [\"datahike.migrate.cbor/SysRef\" {:ident :db/ident}]
+     ;; (sysref? …) => false
+
+   Only reachable from an `:attribute-refs?` dump carrying a user ref whose VALUE
+   is a system entity, which is why it went unnoticed. Correcting the name is
+   strictly a fix: the bytes on disk always carried the slash form, so dumps
+   written before this now decode as they were always meant to."
+  "datahike.migrate.cbor/SysRef")
+
+(def ^:private attr-ref-name
+  "As `sysref-name`, and the same form — `namespace/Name`."
+  "datahike.migrate.cbor/AttrRef")
 
 (def registry
   "The dump registry. Only SysRef needs registering: boring emits a defrecord's
@@ -189,7 +229,8 @@
    tuples — boring already handles as standard CBOR, which is exactly the
    property that makes the dump readable from another language."
   (-> (boring/tag-registry)
-      (boring/register-record sysref-name map->SysRef)))
+      (boring/register-record sysref-name map->SysRef)
+      (boring/register-record attr-ref-name map->AttrRef)))
 
 (def opts
   "Encode/decode options. `:archival` plus the registry; nothing else is set,
