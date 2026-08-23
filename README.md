@@ -18,7 +18,6 @@ database snapshots are immutable values that can be held, shared, and queried an
 
 **Key capabilities:**
 - 🌐 **[Distributed Index Space](./doc/distributed.md)**: Read scaling without database connections—readers access persistent indices directly
-- 🔗 **[Cross-database references](./doc/cross-db-references.md)**: `dh://` URIs addressing entities across databases—living or snapshot-pinned, with datalog-queryable reified links
 - 🗄️ **[Flexible storage](./doc/storage-backends.md)**: File, LMDB, S3, JDBC, Redis, IndexedDB via konserve
 - 🌍 **[Cross-platform](./doc/README.md#language-bindings-beta)**: JVM, Node.js, Browser (Clojure, ClojureScript, JavaScript, Java APIs)
 - ⚡ **[Real-time sync](./doc/distributed.md)**: WebSocket streaming with Kabel for browser ↔ server
@@ -234,6 +233,27 @@ Heidelberg University uses Datahike in an internal emotion tracking application 
 - Dual-licensed: EPL-2.0 (open source) and commercial license
 
 See [datahike.io/proximum](https://datahike.io/proximum) for details. Integration as secondary index into Datahike coming soon.
+
+## pg-datahike: Speak PostgreSQL to Datahike
+
+[pg-datahike](https://github.com/replikativ/pg-datahike) embeds a
+PostgreSQL-compatible adapter — wire protocol, SQL translator, virtual `pg_*`
+and `information_schema` catalogs — inside a Datahike process. Clients that
+speak PostgreSQL (pgjdbc, psql, psycopg2, Rails ActiveRecord, Hibernate, Odoo,
+Flyway, Alembic) connect to Datahike with no PostgreSQL install.
+
+The integration is **bidirectional at the datom layer**: tables created over SQL
+are ordinary Datahike schemas you can query with `(d/q …)`, and existing
+Datahike schemas appear as SQL tables with no setup. Temporal queries are
+exposed through `SET datahike.as_of`.
+
+It also round-trips with real PostgreSQL via `pg_dump` in both directions, which
+is the practical route on and off Postgres — see
+[Migration](./doc/migration.md#postgresql).
+
+**Beta**, and not a full PostgreSQL dialect; see its README for the
+compatibility matrix and the workloads it has been tested against. Feedback on
+what breaks is what moves it forward.
 
 ## Composable Ecosystem
 

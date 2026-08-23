@@ -192,19 +192,23 @@
                    (not (free-var? arg1)))
               [arg2 arg1 true]
 
-              ;; One var is bound from earlier, treat as const
-              (and (free-var? arg1)
-                   (free-var? arg2)
-                   (contains? bound-vars arg1)
-                   (not (contains? bound-vars arg2)))
-              [arg2 arg1 true]
-
-              (and (free-var? arg1)
-                   (free-var? arg2)
-                   (contains? bound-vars arg2)
-                   (not (contains? bound-vars arg1)))
-              [arg1 arg2 false]
-
+              ;; A var-vs-var comparison is NOT pushable. These two cases used
+              ;; to treat a "bound" var as a constant and hand the SYMBOL to
+              ;; `pushdown-to-bounds`, which wrote it straight into the index
+              ;; bounds: an AVET slice from '?y to '?y matches nothing, and a
+              ;; range op casts it to Number and throws
+              ;; `class clojure.lang.Symbol cannot be cast to class
+              ;; java.lang.Number`. It reached users three ways —
+              ;;   [:find ?x :in $ [?y ...] :where [?x :e ?v] [(= ?y ?v)]]  -> #{}
+              ;;   (not-join [?a] [?a :e ?b] [(= ?a ?b)])   -> negation ignored
+              ;;   (not-join [?a] [?a :e ?b] [(> ?b ?a)])   -> ClassCastException
+              ;; Nothing is lost by declining: a var bound to a single value is
+              ;; const-FOLDED into the clause before planning, so the ordinary
+              ;; `(op ?var const)` branch above already covers `[(> ?s ?min)]`
+              ;; with a scalar `:in`. A var that survives to here is bound to a
+              ;; DIFFERENT value per row — a collection binding, an earlier
+              ;; pattern's variable, an enclosing scope's — which is precisely
+              ;; what an index bound cannot express.
               :else nil)]
         (when var-sym
           ;; Find pattern clauses where var-sym is the value variable
@@ -256,3 +260,39 @@
        :indexed? (dbu/indexing? db a)
        :unique? (dbu/is-attr? db a :db/unique)
        :ref? (dbu/ref? db a)})))
+
+(defn- tautological-identity?
+  "Does `clause` have the shape `[(identity X) X]` — binding a value to the
+   variable it was just read from?"
+  [clause]
+  (and (vector? clause)
+       (= 2 (count clause))
+       (seq? (first clause))
+       (= 'identity (ffirst clause))
+       (= 2 (count (first clause)))
+       (= (second (first clause)) (second clause))))
+
+(defn collapsed-identity-obligation?
+  "True when substituting a caller's arguments COLLAPSED `[(identity X) Y]`
+   into `[(identity X) X]` — the shape a normalised rule head's obligation
+   takes when the caller passes the SAME variable in two head positions.
+
+   `identity(x) = x` always holds, so the collapsed clause constrains nothing
+   and can be dropped. It must be: the planner cannot resolve a self-binding
+   function clause inside a `not-join` body, and before rule heads were
+   normalised nothing ever emitted one — so leaving it in turned
+   `(not-join [?e] (same ?e ?e))` from an answer into \"Cannot resolve any
+   more clauses\".
+
+   It takes BOTH forms because the collapse is what licenses the drop, not the
+   shape. A clause a user wrote as `[(identity ?a) ?a]` is already tautological
+   before substitution; silently dropping that one would leave `?a` unbound and
+   answer `nil` where the engine used to raise. Whatever that clause deserves,
+   it is not this rule.
+
+   Lives here because BOTH substitution paths must apply it — `expand-rule` in
+   datahike.query and `rename-rule-branch` in datahike.query.lower — and a
+   second copy is how #917 happened."
+  [original substituted]
+  (and (tautological-identity? substituted)
+       (not (tautological-identity? original))))

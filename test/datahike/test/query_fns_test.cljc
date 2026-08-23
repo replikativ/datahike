@@ -455,6 +455,72 @@
                                :where [(fun ?e) ?x]]
                              [1]))))
 
+(deftest test-get-else-lookup-ref-entity
+  ;; Every other entity position in a query accepts a lookup ref; get-else and
+  ;; get-some passed theirs straight to `search`, which cast it to a number —
+  ;; a ClassCastException on BOTH engines for a literal, and on the base engine
+  ;; for an entity arriving as a scalar :in binding.
+  (let [db (d/db-with (db/empty-db {:uid {:db/unique :db.unique/identity
+                                          :db/cardinality :db.cardinality/one}})
+                      [{:db/id 100 :uid "u100" :name "alice" :nick "al"}
+                       {:db/id 101 :uid "u101" :name "bob"}])]
+    (testing "literal lookup ref"
+      (is (= #{["al"]} (d/q '[:find ?v :where [(get-else $ [:uid "u100"] :nick "none") ?v]] db)))
+      (is (= #{["none"]} (d/q '[:find ?v :where [(get-else $ [:uid "u101"] :nick "none") ?v]] db)))
+      (is (= #{[[:nick "al"]]} (d/q '[:find ?v :where [(get-some $ [:uid "u100"] :nick) ?v]] db))))
+
+    (testing "lookup ref through :in"
+      (is (= #{[[:uid "u100"] "al"]}
+             (d/q '[:find ?e ?v :in $ ?e
+                    :where [?e :name ?n] [(get-else $ ?e :nick "none") ?v]]
+                  db [:uid "u100"])))
+      (is (= #{[[:uid "u101"] "none"]}
+             (d/q '[:find ?e ?v :in $ ?e
+                    :where [?e :name ?n] [(get-else $ ?e :nick "none") ?v]]
+                  db [:uid "u101"]))))))
+
+(deftest test-get-else-ground-entity
+  ;; `get-else` on a GROUND entity — written literally, or a var the planner
+  ;; replaced with its :in value. The planner recognizes get-else as a fused
+  ;; optional scan, but with no entity var that scan is standalone rather than
+  ;; an entity-group merge, and only the merge path honours the left-outer
+  ;; semantics: a miss emitted nothing instead of the default.
+  (let [db (d/db-with (db/empty-db)
+                      [{:db/id 100 :name "alice" :nick "al"}
+                       {:db/id 101 :name "bob"}])]
+    (testing "literal entity"
+      (is (= #{["al"]} (d/q '[:find ?v :where [(get-else $ 100 :nick "none") ?v]] db)))
+      (is (= #{["none"]} (d/q '[:find ?v :where [(get-else $ 101 :nick "none") ?v]] db)))
+      (is (= #{["none"]} (d/q '[:find ?v :where [(get-else $ 999 :nick "none") ?v]] db))))
+
+    (testing "entity supplied through :in"
+      (is (= #{["al"]}
+             (d/q '[:find ?v :in $ ?E :where [(get-else $ ?E :nick "none") ?v]] db 100)))
+      (is (= #{["none"]}
+             (d/q '[:find ?v :in $ ?E :where [(get-else $ ?E :nick "none") ?v]] db 101))))
+
+    (testing "a free entity var still fuses as an optional scan"
+      (is (= #{[100 "al"] [101 "none"]}
+             (d/q '[:find ?e ?v
+                    :where [?e :name _] [(get-else $ ?e :nick "none") ?v]]
+                  db))))))
+
+(deftest test-predicate-on-unbindable-var
+  ;; A predicate over a var no clause can bind is unresolvable. The base
+  ;; engine's fixpoint resolver raises "Cannot resolve any more clauses";
+  ;; the planner used to return #{} silently — its executors feed the
+  ;; predicate a nil, the resulting IllegalArgumentException is swallowed
+  ;; as "false", and every row is filtered away. Silently dropping an
+  ;; unresolvable clause is what caused #814 and #815; both engines raise.
+  (let [db (d/db-with (db/empty-db) [{:db/id 1 :name "Ivan"}])]
+    (is (thrown-with-msg? ExceptionInfo #"Cannot resolve any more clauses|Insufficient bindings"
+                          (d/q '[:find ?n :where [?e :name ?n] [(> ?x 1)]] db)))
+    (is (thrown-with-msg? ExceptionInfo #"Cannot resolve any more clauses|Insufficient bindings"
+                          (d/q '[:find ?x :where [(> ?x 1)]] db)))
+    (testing "a predicate whose var IS bound later still resolves"
+      (is (= #{["Ivan"]}
+             (d/q '[:find ?n :where [(= ?n "Ivan")] [?e :name ?n]] db))))))
+
 (deftest test-issue-180
   (is (= #{}
          (d/q '[:find ?e ?a
@@ -619,3 +685,52 @@
                             ['(>= ?a1 ?a2 ?a3)]])
                      db)))))))
 
+(deftest test-var-vs-var-predicate-not-pushed-into-index
+  ;; A range/equality predicate over TWO variables is not an index bound. The
+  ;; pushdown analysis used to treat an already-bound variable as a constant and
+  ;; hand the SYMBOL to the index: an AVET slice from '?y to '?y matches nothing,
+  ;; and a range operator casts it to Number and throws.
+  ;;
+  ;; Nothing is lost by declining — a variable bound to a SINGLE value is
+  ;; const-folded into the clause before planning, so `[(> ?s ?min)]` with a
+  ;; scalar `:in` still pushes down (asserted at the end). A variable that
+  ;; survives to the pushdown analysis holds a different value per row, which is
+  ;; exactly what an index bound cannot express.
+  (let [db (d/db-with (db/empty-db {:e {:db/valueType :db.type/ref
+                                        :db/cardinality :db.cardinality/many}})
+                      [{:db/id 100 :e [101]}
+                       {:db/id 101 :e [102]}
+                       {:db/id 102 :e [102]}])]   ;; only 102 links to itself
+    (testing "= against a collection-bound :in var"
+      (is (= #{[100] [101] [102]}
+             (d/q '[:find ?x :in $ [?y ...] :where [?x :e ?v] [(= ?y ?v)]]
+                  db [101 102]))))
+
+    (testing "a var/var predicate inside a negation still constrains"
+      ;; 102 is excluded because it DOES have a self-edge
+      (is (= #{[100] [101]}
+             (d/q '[:find ?a :where [?a :e _] (not-join [?a] [?a :e ?b] [(= ?a ?b)])] db))))
+
+    (testing "a var/var predicate inside a disjunction still matches"
+      (is (= #{[102]}
+             (d/q '[:find ?a :where [?a :e _]
+                    (or-join [?a] (and [?a :e ?b] [(= ?a ?b)]))] db))))
+
+    (testing "a RANGE predicate over two vars inside a negation does not throw"
+      ;; used to be: ClassCastException, Symbol cannot be cast to Number
+      (is (= #{[102]}
+             (d/q '[:find ?a :where [?a :e _] (not-join [?a] [?a :e ?b] [(> ?b ?a)])] db))))
+
+    (testing "the same predicate at top level was always correct"
+      (is (= #{[102]} (d/q '[:find ?a :where [?a :e ?b] [(= ?a ?b)]] db)))))
+
+  (testing "a scalar :in var is const-folded, so its pushdown is preserved"
+    (let [db (d/db-with (db/empty-db {:salary {:db/index true}})
+                        (vec (for [i (range 1 50)] {:db/id i :salary (* i 100)})))]
+      (is (= (d/q '[:find ?e :where [?e :salary ?s] [(> ?s 2000)]] db)
+             (d/q '[:find ?e :in $ ?min :where [?e :salary ?s] [(> ?s ?min)]] db 2000)))
+      #?(:clj
+         (is (re-find #"(?i)pushdown|from-v|>="
+                      (str (d/explain '[:find ?e :in $ ?min
+                                        :where [?e :salary ?s] [(> ?s ?min)]] db 2000)))
+             "scalar :in predicate must still reach the index")))))

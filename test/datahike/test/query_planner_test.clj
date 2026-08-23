@@ -5,7 +5,9 @@
    [clojure.test :refer [is are deftest testing]]
    [datahike.api :as d]
    [datahike.db :as db]
-   [datahike.query :as q]))
+   [datahike.query :as q]
+   [datahike.array :as arr]
+   [datahike.query.execute :as ex]))
 
 ;; ---------------------------------------------------------------------------
 ;; Test infrastructure
@@ -963,3 +965,76 @@
     (testing "AVET-seek path returns exactly the matching entities (large target)"
       (is (= expected (binding [q/*disable-planner* false] (d/q query dba dbb))))
       (is (= expected (binding [q/*disable-planner* true] (d/q query dba dbb)))))))
+
+;; ---------------------------------------------------------------------------
+;; A probe set is BOTH a membership filter and a source of index SEEK keys.
+;; Those want opposite representations — a content key so equal-content arrays
+;; collide, and the raw value because an ArrayKey is not the stored value and
+;; is not Comparable. Carrying only one of them cost, at various times, an
+;; empty result, a ClassCastException, and (when the conflict was resolved by
+;; DECLINING arrays) the loss of the seek optimisation altogether.
+
+(deftest array-valued-probe-drives-index-seeks
+  (let [cfg {:store {:backend :memory :id (random-uuid)}
+             :schema-flexibility :write}]
+    (d/create-database cfg)
+    (let [conn (d/connect cfg)]
+      (d/transact conn [{:db/ident :tag :db/valueType :db.type/bytes :db/index true
+                         :db/cardinality :db.cardinality/one}
+                        {:db/ident :nm :db/valueType :db.type/string
+                         :db/cardinality :db.cardinality/one}
+                        {:db/ident :want :db/valueType :db.type/bytes
+                         :db/cardinality :db.cardinality/many}])
+      ;; The SIP seek path engages only when the scan estimate clears
+      ;; `probe-driven-threshold` (2500) times the probe-set size, so this needs
+      ;; MANY datoms sharing ONE value — a small fixture asserts the answer
+      ;; without ever reaching the path.
+      (d/transact conn (vec (for [i (range 6000)]
+                              {:db/id (+ 100 i) :tag (byte-array [1 2 3]) :nm (str "n" i)})))
+      ;; a DIFFERENT array object with equal content: only value semantics match it
+      (d/transact conn [{:db/id 50 :want [(byte-array [1 2 3])]}])
+      (let [db (d/db conn)
+            query '[:find ?n :where [?p :want ?x] [?e :tag ?x] [?e :nm ?n]]
+            seeks (atom 0)
+            orig @#'ex/probe-driven-iterable]
+        (with-redefs [ex/probe-driven-iterable (fn [& args] (swap! seeks inc) (apply orig args))]
+          (binding [q/*disable-planner* false q/*query-result-cache?* false]
+            (testing "the array probe answers correctly"
+              (is (= 6000 (count (d/q query db)))))
+            ;; The ANSWER is the guard against the decline: measured on
+            ;; origin/main with this fixture, the same query returns 0 rows.
+            ;; The seek count is the guard against a future change quietly
+            ;; routing this to a full scan — it does NOT discriminate against
+            ;; main on its own (main also seeks here, it just seeks with a key
+            ;; the index cannot match).
+            (testing "and it does so by SEEKING, not by scanning the attribute"
+              (is (pos? @seeks))))
+          (binding [q/*disable-planner* true q/*query-result-cache?* false]
+            (testing "the relational engine agrees"
+              (is (= 6000 (count (d/q query db)))))))))))
+
+(deftest probe-set-seek-values-are-deduplicated
+  ;; The seek list is parallel to the membership set, and the temporal branch
+  ;; builds one index slice PER value in it and concatenates. A duplicate would
+  ;; duplicate its whole slice — silently doubling rows — so `probe-set-add`
+  ;; appends only when the key was new.
+  ;;
+  ;; Asserted on the STRUCTURE, not through `d/q`: a query returns a SET, so
+  ;; duplicated rows collapse before any assertion sees them, and an aggregate
+  ;; dedupes its input projection. This test was first written as a query and
+  ;; PASSED with the dedupe removed — measured — which made it no guard at all.
+  (let [ps (#'ex/make-probe-set 8)
+        b1 (byte-array [1 2 3])
+        b2 (byte-array [1 2 3])          ; equal content, distinct object
+        b3 (byte-array [9])]
+    (#'ex/probe-set-add ps b1)
+    (#'ex/probe-set-add ps b2)
+    (#'ex/probe-set-add ps b3)
+    (testing "an equal-content array is not a second member"
+      (is (= 2 (#'ex/probe-set-size ps))))
+    (testing "and not a second SEEK value — the one that doubles rows"
+      (is (= 2 (count (#'ex/probe-set-seek-vals ps)))))
+    (testing "membership answers by value, for a third distinct object"
+      (is (boolean (#'ex/probe-set-contains? ps (byte-array [1 2 3])))))
+    (testing "seek values are the RAW arrays, never the wrapped keys"
+      (is (every? arr/value-array? (#'ex/probe-set-seek-vals ps))))))

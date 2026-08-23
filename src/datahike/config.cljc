@@ -57,6 +57,11 @@
 ;; record garbage disappears. Presence-based and store-fixed like
 ;; ::fuse-index-roots?; connect adopts the stored value.
 (s/def ::commit-graph? boolean?)
+;; Which transactor handles writes: {:backend :self} (default, in this JVM),
+;; :datahike-server, :kabel. The :self backend also takes :streaming? — set it
+;; false when more than one PROCESS may hold a writer for this database (the
+;; serverless case), so every transaction re-reads the branch head instead of
+;; trusting the one it holds in memory. See datahike.writer/create-writer.
 (s/def ::writer map?)
 (s/def ::branch keyword?)
 (s/def ::entity (s/or :map associative? :vec vector?))
@@ -76,6 +81,7 @@
 (s/def ::max-float-array-length (s/nilable nat-int?))
 (s/def ::max-double-array-length (s/nilable nat-int?))
 (s/def ::max-tuple-string-length (s/nilable nat-int?))
+(s/def ::allow-index-backfill? boolean?)
 
 (s/def :datahike/config (s/keys :opt-un [:datahike/store
                                          ::index
@@ -86,6 +92,7 @@
                                          ::search-cache-size
                                          ::store-cache-size
                                          ::crypto-hash?
+                                         ::allow-index-backfill?
                                          ::fuse-index-roots?
                                          ::commit-graph?
                                          ::initial-tx

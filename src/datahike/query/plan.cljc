@@ -598,9 +598,15 @@
         (if (seq candidates)
           (apply min-key :cost candidates)
           ;; Fallback: if no valid scan/merge partitioning exists (multiple variable-attr ops),
-          ;; pick lowest BOUND-AWARE cardinality as scan
-          (let [sorted (sort-by scan-cost-of pattern-ops)]
-            {:scan (first sorted) :merges (vec (rest sorted))}))))))
+          ;; pick lowest BOUND-AWARE cardinality as scan — but never an OPTIONAL op while a
+          ;; non-optional one is available. The candidate loop above already refuses to let a
+          ;; `get-else` drive a scan (a driving scan walks its attribute's index, so an entity
+          ;; lacking the attribute is never visited and its default is lost); this fallback
+          ;; skipped that rule and could hand the group's scan slot to the `get-else`.
+          (let [drivable (or (seq (remove :optional? pattern-ops)) pattern-ops)
+                scan (first (sort-by scan-cost-of drivable))
+                sorted (sort-by scan-cost-of (remove #(identical? % scan) pattern-ops))]
+            {:scan scan :merges (vec sorted)}))))))
 
 ;; ---------------------------------------------------------------------------
 ;; Pipeline construction
@@ -776,6 +782,14 @@
    Allows groups (entity-group, pattern-scan) plus predicates, functions, and
    simple NOT-JOINs for single-group plans only.
    Functions that reference source symbols ($) are excluded.
+   A STANDALONE optional scan (a `get-else` whose entity var carries no other
+   pattern to fuse with) is excluded: the fused executor implements left-outer
+   only for optional MERGES inside an entity group, where execute-group-direct
+   emits the default on a lookup miss. A standalone optional scan is instead
+   joined to its producer group by probing the consumer's scan field — an INNER
+   join, which silently drops exactly the rows the default is FOR (#920). The
+   Relation engine routes these through bind-by-fn(get-else) (#884), so leave
+   such plans to it.
    This is a necessary but not sufficient condition — runtime still checks find-var coverage."
   [ops]
   (let [groups (filterv #(#{:entity-group :pattern-scan} (:op %)) ops)
@@ -783,6 +797,14 @@
     (and (seq ops)
          (every? #(#{:entity-group :pattern-scan :predicate :function :not-join} (:op %)) ops)
          (not-any? :source ops)
+         (not-any? #(or (and (= :pattern-scan (:op %)) (:optional? %))
+                        ;; …and an entity group whose DRIVING scan is optional. Normally
+                        ;; unreachable (dp-order-fuse-ops refuses to let a `get-else` drive),
+                        ;; but a group with two variable-attribute patterns admits no valid
+                        ;; scan/merge partitioning at all and falls back to cost order. Belt
+                        ;; and braces: this is the invariant, so assert it where it is used.
+                        (:optional? (:scan-op %)))
+                   ops)
          ;; Post-ops only supported for single-group plans
          (or (not has-post-ops?)
              (= 1 (count groups)))
@@ -1286,10 +1308,12 @@
     ;; unknown → no produced vars.
     #{}))
 
-(defn- branch-produced-vars
+(defn branch-produced-vars
   "Vars that an OR-JOIN branch's sub-plan produces internally — the
    union of `op-produced-vars` over the branch's :ops. Used to compute
-   the OR(-JOIN)'s required-from-outer set."
+   the OR(-JOIN)'s required-from-outer set, and by `plan-rule-op` to find
+   a rule branch's pass-through head vars (the ones its body never binds,
+   so their value can only come from the caller)."
   [sub-plan]
   (reduce (fn [acc op] (clojure.set/union acc (op-produced-vars op)))
           #{}
@@ -1830,3 +1854,58 @@
         ;; ops will be wrongly marked as Insufficient.
         re-ordered (order-plan-ops re-estimated bound-vars db)]
     (assoc plan :ops (into (vec executed-ops) re-ordered))))
+
+(defn all-group-equalities-enforced?
+  "Does the fused multi-group loop enforce EVERY equality the query implies
+   between entity groups? If not, the plan is unsound on the direct path.
+
+   The loop joins each consumer group to ONE producer on ONE probe variable:
+   `find-probe-info` takes `(first probe-vars)` and the executor threads a single
+   probe-set keyed by [producer-idx probe-var], while `detect-inter-group-joins`
+   keeps only the earliest producer per consumer. Surplus equalities are silently
+   DROPPED — a consumer sharing two variables with its producer returns extra
+   tuples, and a consumer sharing variables with two earlier groups additionally
+   emits a nil column, because `combo-plan` finds no source for the unjoined
+   variable and falls to [:const nil].
+
+   The test is CONNECTIVITY PER VARIABLE, not \"at most one earlier sharer\":
+   for each variable, the groups containing it must be connected by probe edges
+   that carry THAT variable. Counting sharers instead wrongly declined the
+   multi-consumer star
+
+     [?a :name ?n] [?b :friend ?a] [?c :follows ?a]
+
+   where groups 1 and 2 both share `?a` with group 0 AND with each other — but
+   each is joined to group 0 on `?a`, so `?a` is equal across all three by
+   transitivity and nothing is dropped. Connectivity sees that; a sharer count
+   cannot.
+
+   An edge carries only `(first probe-vars)` because that is the single variable
+   the executor actually probes on. A consumer sharing two variables with its
+   producer therefore leaves the second one in its own component whichever
+   variable the hash-set happens to yield, so the verdict does not depend on
+   variable names even though the probe choice still does."
+  [groups group-joins]
+  (let [gvars (mapv #(or (:output-vars %) (:vars %)) groups)
+        n (count groups)
+        ;; consumer -> [producer enforced-var]; only the probed var is enforced
+        edges (into []
+                    (keep (fn [[i {:keys [producer-idx probe-vars]}]]
+                            (when-let [v (first probe-vars)]
+                              [i producer-idx v])))
+                    group-joins)]
+    (every?
+     (fn [v]
+       (let [holders (into #{} (filter #(contains? (nth gvars %) v)) (range n))]
+         (or (<= (count holders) 1)
+             (let [uf (reduce (fn [m [i pi ev]]
+                                (if (and (= ev v) (contains? holders i) (contains? holders pi))
+                                  (let [ri (loop [x i] (let [y (m x)] (if (= x y) x (recur y))))
+                                        rp (loop [x pi] (let [y (m x)] (if (= x y) x (recur y))))]
+                                    (assoc m ri rp))
+                                  m))
+                              (zipmap holders holders)
+                              edges)
+                   root (fn [x] (loop [x x] (let [y (uf x)] (if (= x y) x (recur y)))))]
+               (= 1 (count (into #{} (map root) holders)))))))
+     (into #{} (mapcat identity) gvars))))

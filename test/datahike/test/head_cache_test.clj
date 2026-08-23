@@ -2,8 +2,13 @@
   "The writer must not re-read its own branch head from storage on every
    commit: under the single-writer invariant the head commit-id is already in
    memory ([:meta :datahike/commit-id], stamped by the previous commit! or by
-   stored->db at connect). On S3-class backends that read was 3 sequential
-   requests (~150 ms at 40 ms RTT) — the dominant cost of a fused commit."
+   stored->db at connect). On S3-class backends that read is one GET (~10-40 ms
+   of round trip) added to every commit — significant for a fused commit, whose
+   only other write is the head itself.
+
+   NOTE: this elision is what `:writer {:backend :self :streaming? false}` turns
+   off, because it is exactly what makes a warm writer blind to another
+   process's commits. See writer-alternating-test."
   (:require [datahike.api :as d]
             [konserve.core :as k]
             [clojure.test :refer [deftest is testing]]))
@@ -11,7 +16,7 @@
 (deftest no-branch-head-read-per-commit
   (testing "steady-state commits do zero k/get reads of the branch-head key"
     (let [cfg {:store {:backend :file
-                       :path (str (System/getProperty "java.io.tmpdir") "/dh-head-cache")
+                       :path (str (System/getProperty "java.io.tmpdir") "/dh-head-cache-" (java.util.UUID/randomUUID))
                        :id #uuid "6ead0000-0000-0000-0000-000000000001"}
                :schema-flexibility :write :keep-history? false}]
       (when (d/database-exists? cfg) (d/delete-database cfg))

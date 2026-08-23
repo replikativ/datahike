@@ -25,6 +25,12 @@
             [datahike.test.query-or-test]
             [datahike.test.query-aggregates-test]
             [datahike.test.query-rules-test]
+            ;; The binding-seam law. It is .cljc, but a .cljc test only runs on
+            ;; cljs if it is listed HERE — and that gap is exactly why a CLJS
+            ;; merge kernel kept the pre-law behaviour while every JVM run was
+            ;; green. Same shape as #917: the twin nobody executed.
+            [datahike.test.array-test]
+            [datahike.test.query-binding-seam-test]
             ;; Background GC (start-background-gc! / gc-storage!) — portable smoke.
             [datahike.test.background-gc-test]
             ;; :db.type/store-ref — blob GC contract, content-addressing, external
@@ -38,13 +44,53 @@
             [datahike.test.experimental.graph-util-test]
             [datahike.test.experimental.graph-test]
             [datahike.test.experimental.anomaly-test]
+            ;; datahike.experimental.diff — the async arm of diff/tx-range, which
+            ;; only cljs executes.
+            [datahike.test.experimental-diff-portable-test]
+            ;; import-source on Node in the mode Node actually uses (no :sync?).
+            ;; `default-sync?` is FALSE here, so the async path is the DEFAULT —
+            ;; and it is the one that broke while being written.
+            ;; NOTE: requiring is NOT enough — `-main` below enumerates the
+            ;; namespaces it runs, so a namespace added here and not there
+            ;; compiles, reports nothing, and leaves the suite total unchanged.
+            [datahike.test.migrate-import-source-node-test]
             ;; Weighted LRU query-cache — the cljs WeightedLRU deftype has its
             ;; own implementation, so cover it (unit + test.check property) here.
             [datahike.test.lru-weighted-test]
             [datahike.test.lru-weighted-property-test]
             ;; Attribute-value constraints — registry resolution (pure, here)
             ;; and an async enforcement test below.
-            [datahike.test.attr-preds-test]))
+            [datahike.test.attr-preds-test]
+            ;; Dump digests. A dump written on the JVM is verified here, so the
+            ;; SHA-256 and the xor64+sum64 semantic digest must come out
+            ;; bit-identical — and 64-bit arithmetic is exactly what cljs does
+            ;; not have. Pinned against literal constants on both platforms.
+            [datahike.test.migrate-digest-test]
+            ;; The konserve-store dump medium, async — the only mode that exists
+            ;; here, and the branch the JVM suite never exercises.
+            [datahike.test.migrate-store-test]
+            ;; The filesystem seam. A dump directory is a FORMAT — plain files,
+            ;; byte-identical whoever wrote them — so Node has to produce the
+            ;; same bytes the JVM does, through entirely different code.
+            [datahike.test.migrate-fs-test]
+            ;; The portable half of `migrate` — capabilities, the memory
+            ;; estimate, norm-val's typed arrays. Nothing on cljs REQUIRED
+            ;; `migrate.manifest`, so none of its cljs branches were even
+            ;; compiled until this.
+            [datahike.test.migrate-manifest-test]
+            ;; Blob content ids must be IDENTICAL across platforms — the id is
+            ;; the datom value, the konserve key AND the dump filename.
+            [datahike.test.blob-identity-test]
+            ;; the external merge sort, which runs here now that it no longer
+            ;; speaks java.io.File and java.util.PriorityQueue.
+            [datahike.test.migrate-sort-test]
+            [datahike.test.value-comparison-test]
+            ;; the streaming bulk index build, which runs here now that
+            ;; persistent-sorted-set has a cljs `from-sorted-seq`.
+            [datahike.test.bulk-build-node-test]
+            ;; export/import ON NODE — the point of the whole conversion.
+            [datahike.test.migrate-node-test]
+            [datahike.test.migrate-fault-node-test]))
 
 ;; Hook cljs.test's end-of-run callback so the Node process exits with
 ;; status 0 only when all tests pass. The previous setup always exited
@@ -719,7 +765,18 @@
                (done))))))
 
 (defn -main []
-  (t/run-tests 'datahike.test.nodejs-test
+  (t/run-tests 'datahike.test.migrate-digest-test
+               'datahike.test.migrate-store-test
+               'datahike.test.migrate-fs-test
+               'datahike.test.migrate-manifest-test
+               'datahike.test.blob-identity-test
+               'datahike.test.migrate-sort-test
+               'datahike.test.value-comparison-test
+               'datahike.test.bulk-build-node-test
+               'datahike.test.migrate-node-test
+               'datahike.test.migrate-fault-node-test
+               'datahike.test.migrate-import-source-node-test
+               'datahike.test.nodejs-test
                'datahike.test.index-test
                'datahike.test.cljs-tiered-storage-test
                'datahike.test.cljs-pattern-scan-test
@@ -731,10 +788,13 @@
                'datahike.test.query-or-test
                'datahike.test.query-aggregates-test
                'datahike.test.query-rules-test
+               'datahike.test.array-test
+               'datahike.test.query-binding-seam-test
                'datahike.test.background-gc-test
                'datahike.test.store-ref-test
                'datahike.test.async-storage-test
                'datahike.kabel.walker-test
+               'datahike.test.experimental-diff-portable-test
                'datahike.test.experimental.graph-util-test
                'datahike.test.experimental.graph-test
                'datahike.test.experimental.anomaly-test

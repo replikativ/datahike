@@ -573,3 +573,92 @@
           (d/release conn))
         (finally
           (d/delete-database cfg))))))
+
+;; ---------------------------------------------------------------------------
+;; Column-less existence scans under a temporal wrapper
+;;
+;; A group with no free var — every position ground, which is what the :in fold
+;; produces — is a pure existence test. The temporal fused scan emits one tuple
+;; per emitted var, so with none it emitted nothing whether or not the datoms
+;; were there, and the group read as UNSATISFIED. A negation over it therefore
+;; failed to exclude under as-of / history while excluding correctly on the
+;; current db.
+
+(deftest test-ground-only-existence-scan-under-temporal
+  (let [cfg {:store {:backend :memory :id (UUID/randomUUID)}
+             :writer {:backend :self}
+             :schema-flexibility :read
+             :keep-history? true}]
+    (try
+      (d/create-database cfg)
+      (let [conn (d/connect cfg)]
+        (try
+          (d/transact conn [{:db/id 100 :name "alice" :tag :red}
+                            {:db/id 101 :name "bob" :tag :blue}])
+          (let [db (d/db conn)
+                q '[:find ?e
+                    :in $ ?e
+                    :where [?e :name ?n] (not [?e :tag :red])]]
+            (doseq [[label tdb] [[:current db]
+                                 [:as-of (d/as-of db (:max-tx db))]
+                                 [:history (d/history db)]]]
+              (let [excluded (run-both q tdb 100)
+                    kept (run-both q tdb 101)]
+                (is (= (:legacy excluded) (:planner excluded)) (str label " engines agree (excluded)"))
+                (is (= #{} (:planner excluded)) (str label " negation excludes the tagged entity"))
+                (is (= (:legacy kept) (:planner kept)) (str label " engines agree (kept)"))
+                (is (= #{[101]} (:planner kept)) (str label " negation keeps the untagged entity")))))
+          (finally (d/release conn))))
+      (finally (d/delete-database cfg)))))
+
+;; ---------------------------------------------------------------------------
+;; The history fast path's per-entity replay buffer vs. equality obligations
+;;
+;; `execute-temporal-merge-fast` walks ONE forward cursor over temporal-eavt for
+;; the whole scan. When an entity has several scan datoms (over history it always
+;; does — one per version) it materializes the merge candidates into a replay
+;; buffer once and replays it for the entity's remaining scan datoms. That is
+;; only sound when the merge's match set depends on the ENTITY alone. A merge
+;; that shares a variable with the scan clause carries an equality obligation
+;; against the scan DATOM, so its match set differs per version, and the buffer
+;; froze the first version's matches: a shared tx var lost every row from a later
+;; version, and a shared value var invented rows pairing a value with the first
+;; version's transactions.
+
+(deftest test-history-fast-path-buffer-respects-scan-equality
+  (let [cfg {:store {:backend :memory :id (UUID/randomUUID)}
+             :writer {:backend :self}
+             :schema-flexibility :write
+             :keep-history? true}]
+    (try
+      (d/create-database cfg)
+      (let [conn (d/connect cfg)]
+        (try
+          (d/transact conn [{:db/ident :p
+                             :db/valueType :db.type/long
+                             :db/cardinality :db.cardinality/one}])
+          (let [t1 (:max-tx (:db-after (d/transact conn [{:db/id 100 :p 1}
+                                                         {:db/id 101 :p 9}])))
+                t2 (:max-tx (:db-after (d/transact conn [{:db/id 100 :p 2}])))
+                hdb (d/history (d/db conn))]
+            ;; entity 100's history is assert(1,t1), retract(1,t2), assert(2,t2)
+            (testing "merge sharing the VALUE var — one tx var per clause"
+              (let [q '[:find ?e ?x ?t ?u
+                        :where [?e :p ?x ?t] [?e :p ?x ?u]]
+                    {:keys [legacy planner]} (run-both q hdb)]
+                (is (= #{[100 1 t1 t1] [100 1 t1 t2] [100 1 t2 t1] [100 1 t2 t2]
+                         [100 2 t2 t2] [101 9 t1 t1]}
+                       (set planner))
+                    "?x pins the merge to the scan datom's value — no row may pair value 2 with t1")
+                (is (= (set legacy) (set planner)) "engines agree")))
+            (testing "merge sharing the TX var — one value var per clause"
+              (let [q '[:find ?e ?x ?t ?y
+                        :where [?e :p ?x ?t] [?e :p ?y ?t]]
+                    {:keys [legacy planner]} (run-both q hdb)]
+                (is (= #{[100 1 t1 1] [100 1 t2 1] [100 1 t2 2]
+                         [100 2 t2 1] [100 2 t2 2] [101 9 t1 9]}
+                       (set planner))
+                    "both of t2's versions must appear as ?y, not just the first")
+                (is (= (set legacy) (set planner)) "engines agree"))))
+          (finally (d/release conn))))
+      (finally (d/delete-database cfg)))))

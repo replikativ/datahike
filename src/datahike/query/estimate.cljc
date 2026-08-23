@@ -83,12 +83,24 @@
         e-ground? (ground? e)
         a-ground? (ground? a)
         v-ground? (ground? v)
+        ;; `:allow-missing`, not `:no-match`, and the difference matters HERE
+        ;; rather than in the search: this namespace compares the attribute with
+        ;; `cmp-attr-only` -> `datom/cmp-attr-quick`, which is `.compareTo` and
+        ;; casts. An unresolved KEYWORD against stored Long attributes throws
+        ;; ClassCastException there, where a search would simply have found
+        ;; nothing. So the estimator answers the question directly: an attribute
+        ;; this database has never installed has ZERO datoms, and that needs no
+        ;; index access at all.
         resolved-a (when a-ground?
                      (if (and (:attribute-refs? (dbi/-config db)) (keyword? a))
-                       (dbi/-ref-for db a)
-                       a))]
+                       (dbi/ref-for db a :allow-missing)
+                       a))
+        unknown-attr? (and a-ground? (nil? resolved-a))]
     (cond
-      ;; [e a ?v] — single datom for card-one, count EA range for card-many
+      ;; nothing carries an attribute that was never installed
+      unknown-attr? 0
+
+;; [e a ?v] — single datom for card-one, count EA range for card-many
       (and e-ground? a-ground? (not v-ground?))
       (if (:card-one? schema-info)
         1
@@ -180,14 +192,19 @@
   (let [{:keys [a]} pattern-info
         ground? (fn [x] (and (some? x) (not (symbol? x))))]
     (when (ground? a)
-      (let [resolved-a (if (and (:attribute-refs? (dbi/-config db)) (keyword? a))
-                         (dbi/-ref-for db a)
+      (let [;; see `estimate-pattern-counted` on why this is `:allow-missing`
+            resolved-a (if (and (:attribute-refs? (dbi/-config db)) (keyword? a))
+                         (dbi/ref-for db a :allow-missing)
                          a)
-            attr-count (di/-count-slice (:aevt db)
-                                        (datom e0 resolved-a nil tx0)
-                                        (datom emax resolved-a nil txmax)
-                                        cmp-attr-only)]
+            attr-count (when (some? resolved-a)
+                         (di/-count-slice (:aevt db)
+                                          (datom e0 resolved-a nil tx0)
+                                          (datom emax resolved-a nil txmax)
+                                          cmp-attr-only))]
         (cond
+          ;; an attribute that was never installed selects nothing; 1 is this
+          ;; function's own floor for an empty slice, so it is the same answer
+          (nil? attr-count) 1
           (zero? attr-count) 1
           (:unique? schema-info) attr-count
           :else
@@ -336,7 +353,10 @@
           resolved-a (if (and a-val (not (symbol? a-val)))
                        (if (:attribute-refs? (dbi/-config db))
                          (if (keyword? a-val)
-                           (dbi/-ref-for db a-val)
+                           ;; see `estimate-pattern-counted`; nil flows on as
+                           ;; "no attribute to sample", which the callers below
+                           ;; already handle as an absent estimate
+                           (dbi/ref-for db a-val :allow-missing)
                            a-val) ;; already numeric, don't re-resolve
                          a-val)
                        nil)

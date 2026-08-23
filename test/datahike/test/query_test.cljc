@@ -1,7 +1,7 @@
 (ns datahike.test.query-test
   (:require
-   #?(:cljs [cljs.test    :as t :refer-macros [is deftest testing]]
-      :clj  [clojure.test :as t :refer        [is deftest testing]])
+   #?(:cljs [cljs.test    :as t :refer-macros [are is deftest testing]]
+      :clj  [clojure.test :as t :refer        [are is deftest testing]])
    [datahike.api :as d]
    [datahike.db :as db]
    [datahike.test.core-test :as core-test]
@@ -128,6 +128,122 @@
                     :in   ?a ?b]
                   10 20)
              #{[10 20]})))))
+
+(deftest test-in-bound-find-var-with-disjoint-clauses
+  ;; A find var supplied through :in is a constant, which is also why the
+  ;; clauses around it fall into disjoint components: they no longer share a
+  ;; free var. The Cartesian-split path then projected the wide tuple by
+  ;; looking each find var up in it — and a constant is in NO component, so the
+  ;; lookup returned nil and `nth` threw.
+  (let [db (d/db-with (db/empty-db {:tag {:db/cardinality :db.cardinality/many}
+                                    :uid {:db/unique :db.unique/identity
+                                          :db/cardinality :db.cardinality/one}})
+                      [{:db/id 100 :uid "u100" :name "alice" :tag [:red :blue]}
+                       {:db/id 101 :uid "u101" :name "bob" :tag [:green]}])]
+    (is (= #{[100]}
+           (d/q '[:find ?e :in $ ?e :where [?e :name ?n] [?e :tag ?t]] db 100)))
+    (is (= #{[100 "alice"]}
+           (d/q '[:find ?e ?n :in $ ?e :where [?e :name ?n] [?e :tag ?t]] db 100)))
+    (is (= #{[100 101]}
+           (d/q '[:find ?e ?x :in $ ?e ?x :where [?e :name ?n] [?x :tag ?t]] db 100 101)))
+
+    (testing "an :in binding given as a lookup ref is reported as written"
+      ;; …on every path: the fused one had no reverse mapping applied, and a
+      ;; SCALAR lookup ref got no reverse mapping built at all.
+      (are [q] (= #{[[:uid "u100"]]} (d/q q db [:uid "u100"]))
+        '[:find ?e :in $ ?e :where [?e :name ?n]]
+        '[:find ?e :in $ ?e :where [?e :name ?n] [?e :tag ?t]])
+      (is (= #{[[:uid "u100"] "alice"]}
+             (d/q '[:find ?e ?n :in $ ?e :where [?e :name ?n]] db [:uid "u100"]))))
+
+    (testing "a lookup ref is resolved wherever it sits in a collection binding"
+      ;; Resolution used to be gated on `(first (:tuples rel))`, so a lookup ref
+      ;; in any later row was left as a raw vector, joined against entity ids,
+      ;; matched nothing, and that row silently disappeared. Row 0 is not
+      ;; representative: a binding may mix entity ids and lookup refs freely.
+      (are [in] (= #{["alice"] ["bob"]}
+                   (d/q '[:find ?n :in $ [?e ...] :where [?e :name ?n]] db in))
+        [[:uid "u100"] [:uid "u101"]]
+        [[:uid "u100"] 101]
+        [100 [:uid "u101"]]                      ;; lookup ref NOT in row 0
+        [100 101]))
+
+    (testing "a value that merely looks like a lookup ref is left alone"
+      ;; `[:limit 5]` is a two-element keyword-led vector, i.e. shape-identical
+      ;; to a lookup ref. Resolving on shape called entid, which raises for a
+      ;; non-unique attribute, so passing an options-shaped value killed the
+      ;; query. The schema decides, not the shape.
+      (are [v] (= #{[v "alice"]}
+                  (d/q '[:find ?p ?n :in $ ?p :where [?e :name ?n] [?e :uid "u100"]] db v))
+        [:limit 5]
+        [:db/ident :name]
+        [:name "alice"]))                        ;; :name is not unique here
+
+    (testing "a second :in source does not disable lookup-ref resolution"
+      ;; Any extra source used to switch resolution off for the whole query,
+      ;; including vars that only ever touch $, so their raw vectors matched
+      ;; nothing. Scope it per var: only a var a FOREIGN source reads must be
+      ;; left alone, since a lookup ref denotes a different entity there.
+      (let [db2 (d/db-with (db/empty-db) [{:db/id 100 :name "other"}])]
+        (is (= #{[[:uid "u100"] "alice"]}
+               (d/q '[:find ?e ?n :in $ $2 ?e :where [?e :name ?n]] db db2 [:uid "u100"]))
+            "?e only reads from $, so it resolves against $")
+        (is (= #{[[:uid "u100"] "alice" "other"]}
+               (d/q '[:find ?e ?n ?m :in $ $2 ?e
+                      :where [?e :name ?n] [$2 100 :name ?m]] db db2 [:uid "u100"]))
+            "an unrelated foreign clause does not disable resolution")))
+
+    (testing "a var a foreign source reads is NOT resolved against the primary db"
+      ;; The dangerous direction. `[:uid "u100"]` denotes a different entity in
+      ;; a different database, so resolving it here and handing the primary's
+      ;; entity id to the other source answers the wrong question — silently.
+      ;; A source-taking FUNCTION carries its source as an ARGUMENT, so a test
+      ;; that only looked at the clause head missed every one of these.
+      (let [other (d/db-with (db/empty-db {:uid {:db/unique :db.unique/identity
+                                                 :db/cardinality :db.cardinality/one}
+                                           :name {:db/cardinality :db.cardinality/one}})
+                             [{:db/id 77 :uid "u100" :name "in-other-db"}])]
+        (is (= #{["in-other-db"]}
+               (d/q '[:find ?n :in $ $2 [?e ...]
+                      :where [(get-else $2 ?e :name "MISS") ?n]]
+                    db other [[:uid "u100"]]))
+            "get-else resolves its entity against the source it was given")
+        (is (= #{}
+               (d/q '[:find ?e :in $ $2 [?e ...] :where [(missing? $2 ?e :name)]]
+                    db other [[:uid "u100"]]))
+            "missing? must not report a present datom as absent")
+        (is (= #{[#{["in-other-db"]}]}
+               (d/q '[:find ?r :in $ $2 [?e ...]
+                      :where [(q '[:find ?n :in $ ?e :where [?e :name ?n]] $2 ?e) ?r]]
+                    db other [[:uid "u100"]]))
+            "a nested q over a foreign source resolves against that source")))))
+
+(deftest test-source-prefixed-pattern-uses-its-own-schema
+  ;; A source-prefixed pattern runs against a different database than the one
+  ;; the plan was built from. Index selection read `:db/index`-ness off the
+  ;; PRIMARY db: `:name` is unique there, so the scan was planned for :avet —
+  ;; an index the other source does not populate for that attribute. It read
+  ;; an empty index and the query returned nothing.
+  (let [db1 (d/db-with (db/empty-db {:name {:db/unique :db.unique/identity
+                                            :db/cardinality :db.cardinality/one}})
+                       [{:db/id 1 :name "alice"}
+                        {:db/id 2 :name "bob"}])
+        db2 (d/db-with (db/empty-db)          ;; :name NOT unique/indexed here
+                       [{:db/id 1 :name "alice-2"}
+                        {:db/id 2 :name "bob-2"}])]
+    (is (= #{[1]}
+           (d/q '[:find ?e :in $ $2 :where [$2 ?e :name "alice-2"]] db1 db2))
+        "ground value on a non-indexed attribute of the secondary source")
+
+    (is (= #{[1]}
+           (d/q '[:find ?e :in $ $2 :where [$2 ?e :name ?n] [(= ?n "alice-2")]]
+                db1 db2))
+        "same via a pushed-down predicate")
+
+    (is (= #{[1]}
+           (d/q '[:find ?e :in $ $2 :where [$ ?e :name "alice"] [$2 ?e :name "alice-2"]]
+                db1 db2))
+        "joined across both sources")))
 
 (deftest test-bindings
   (let [db (-> (db/empty-db)
@@ -1017,3 +1133,54 @@ we query all (parent, child) pairs."
       (is (= (vec (range n)) (vec (take 100 row)))))
     (testing "round-trip through (vec (take k row)) — the pgwire pattern"
       (is (= (vec (range 30)) (vec (take 30 row)))))))
+
+(deftest test-self-join-in-nested-scopes
+  ;; A variable repeated inside ONE clause is a self-join wherever that clause
+  ;; sits. Normalisation originally covered only top-level :where patterns and
+  ;; plain `not` bodies; these scopes were excluded for reasons that no longer
+  ;; hold, and each was silently wrong.
+  (let [db (d/db-with (db/empty-db {:e {:db/valueType :db.type/ref
+                                        :db/cardinality :db.cardinality/many}
+                                    :f {:db/valueType :db.type/ref
+                                        :db/cardinality :db.cardinality/many}})
+                      [{:db/id 1 :e [1 2] :f [3]}     ;; 1 links to itself
+                       {:db/id 2 :e [3] :f [1 4]}
+                       {:db/id 3 :e [3] :f [2]}       ;; 3 links to itself
+                       {:db/id 4 :e [1]}])]
+
+    (testing "inside a not-join body"
+      ;; entities with an :e edge but NO self-edge
+      (is (= #{[2] [4]}
+             (d/q '[:find ?a :where [?a :e _] (not-join [?a] [?a :e ?a])] db))))
+
+    (testing "inside an or-join branch"
+      ;; The rewritten branch must stay ONE form: every element after the var
+      ;; vector is a separate ALTERNATIVE, so appending the equality beside the
+      ;; pattern would turn one conjunctive branch into two disjuncts and match
+      ;; strictly more than was asked.
+      (is (= #{[1] [3]}
+             (d/q '[:find ?a :where [?a :e _] (or-join [?a] [?a :e ?a])] db))))
+
+    (testing "inside a plain or branch"
+      ;; `or` requires every branch to bind the same vars, so a branch that gains
+      ;; a fresh variable is promoted to `or-join` over the ORIGINAL free vars.
+      (is (= #{[1] [3]}
+             (d/q '[:find ?a :where [?a :e _] (or [?a :e ?a])] db))))
+
+    (testing "inside a rule body — the scope where BOTH engines were wrong"
+      ;; Rules arrive as an `:in %` argument and never appear in :where, so
+      ;; normalising the query alone could not reach them. Neither engine could
+      ;; serve as the other's oracle here, which is why differential testing
+      ;; never flagged it.
+      (are [q rules expected] (= expected (set (d/q q db rules)))
+        '[:find ?a :in $ % :where (loopy ?a)]
+        '[[(loopy ?a) [?a :e ?a]]]
+        #{[1] [3]}
+
+        ;; the rule's own body may also be a negation
+        '[:find ?a :in $ % :where [?a :e _] (unlooped ?a)]
+        '[[(unlooped ?a) (not [?a :e ?a])]]
+        #{[2] [4]}))
+
+    (testing "a repeated argument in a function clause is still not a self-join"
+      (is (= #{[2]} (d/q '[:find ?y :in $ [?x ...] :where [(+ ?x ?x) ?y]] db [1]))))))

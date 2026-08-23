@@ -86,7 +86,10 @@
     load-entities "Batch loading - use transact instead"
     query-stats   "Not yet exposed in pod"
     index-range   "Advanced index operation - can add later"
-    gc-storage    "Maintenance operation - can add later"})
+    gc-storage    "Maintenance operation - can add later"
+    warm-index    "EXPERIMENTAL prefetch of a process-local node cache; a pod's JVM is not the caller's"
+    warm-datoms   "EXPERIMENTAL prefetch of a process-local node cache; a pod's JVM is not the caller's"
+    warm-db       "EXPERIMENTAL prefetch of a process-local node cache; a pod's JVM is not the caller's"})
 
 (def pod-additions
   "Pod-specific operations not in main API specification."
@@ -160,10 +163,18 @@
     [[]]))
 
 (defn variadic-schema?
-  "Check if a schema element is a variadic marker like [:* :any]"
+  "Check if a schema element is a variadic marker: [:* …] (zero or more) or
+   [:+ …] (one or more).
+
+   `:+` was missing, and the omission is not cosmetic — an arity declaring
+   `[:cat A B [:+ :any]]` generated a FIXED three-argument fn instead of
+   `[a b & args]`, so `(pod/datoms db :eavt 1 :age)` raised
+   `ArityException: Wrong number of args (4)`. Both markers mean the tail is
+   variadic; only the minimum count differs, and that distinction does not
+   survive into a Clojure `& args` signature anyway."
   [schema-elem]
   (and (vector? schema-elem)
-       (= :* (first schema-elem))))
+       (contains? #{:* :+} (first schema-elem))))
 
 (defn arity-arg-names
   "Generate argument names for an arity.

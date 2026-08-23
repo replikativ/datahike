@@ -11,7 +11,7 @@
             [clojure.edn :as edn]
             [jsonista.core :as j]
             [datahike.json :as json]
-            [clj-cbor.core :as cbor]
+            [boring.core :as boring]
             [replikativ.logging :as log]
             [taoensso.trove :as trove]
             [taoensso.trove.console :as trove-console])
@@ -128,7 +128,9 @@
     :json        (println (j/write-value-as-string out))
     :edn         (println (pr-str out))
     :pprint      (pprint out)
-    :cbor        (.write System/out ^bytes (cbor/encode out))))
+    ;; `:interop` — CLI output is for whatever consumes stdout, which may be any
+    ;; language, so it must carry no boring-specific extension.
+    :cbor        (.write System/out ^bytes (boring/encode out {:profile :interop}))))
 
 (defn -main [& args]
   (let [{:keys [action command options arguments exit-message ok?]}

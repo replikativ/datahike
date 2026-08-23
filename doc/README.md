@@ -69,9 +69,12 @@ For experienced users building production systems:
 - **[Secondary Indices](./secondary-indices.md)** - Full-text search, vector similarity, columnar aggregates (experimental)
 - **[Distributed Architecture](./distributed.md)** - Distributed Index Space and real-time sync with Kabel
 - **[Reducing write amplification](./write-amplification.md)** - Cut objects-per-commit on request-priced object stores: diff buffering, root fusion, commit-graph opt-out (experimental)
+- **[Index warming](./index-warming.md)** - Cut a cold reader's `misses × RTT` on high-latency stores: budget-bounded breadth-first prefetch of index levels, fetched concurrently (experimental)
 - **[Cross-database references](./cross-db-references.md)** - `dh://` URIs and reified links across databases (living vs record references)
 - **[Optimistic Overlay](./optimistic-overlay.md)** - Zero-latency UI updates over a remote writer via `d/with` (experimental)
 - **[Versioning](./versioning.md)** - Git-like branching and merging (beta)
+- **[Migration](./migration.md)** - One record stream, three jobs: backup/restore via portable verifiable dumps, moving between storage backends, and reading from or writing to other systems via `import-source` / `export-to-sink` (beta)
+- **[Migrating from Datomic](./migrate-datomic.md)** - Datomic Pro in and out over that seam, with what survives a round trip and what cannot (experimental; may move out of datahike into its own library)
 - **[Norms](./norms.md)** - Database migration system
 - **[Unstructured Input Support](./unstructured.md)** - Schema inference from JSON/EDN (experimental)
 - **[Graph Algorithms](./graph-algorithms.md)** - Reachability, paths, centrality, community detection, flows, random walks over a `GraphSpec` (experimental)

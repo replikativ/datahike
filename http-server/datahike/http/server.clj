@@ -12,6 +12,8 @@
    [datahike.http.middleware :as middleware]
    [datahike.readers :refer [edn-readers]]
    [datahike.transit :as transit]
+   [datahike.remote.cbor :as rcbor]
+   [datahike.http.cbor :as cbor]
    [datahike.json :as json]
    [datahike.api :refer :all :as api]
    [datahike.writing]
@@ -138,9 +140,18 @@
             :parameters  {:body ~(extract-input-schema args)}
             :handler     (generic-handler ~'config ~(resolve n))}}]))))
 
+;; One registry per process, not per request: building it walks every handler
+;; and the result is immutable.
+(def ^:private cbor-registry (rcbor/server-registry))
+
 (def muuntaja-with-opts
   (m/create
    (-> m/default-options
+       ;; `application/cbor` is an addition, not a replacement — it takes its
+       ;; place beside edn/json/transit and is reached only when a client asks
+       ;; for it by Accept or Content-Type. The format carries its own codec
+       ;; options, so there is no second place for them to drift from.
+       (assoc-in [:formats "application/cbor"] (cbor/cbor-format cbor-registry))
        (assoc-in [:formats "application/edn" :decoder-opts]
                  {:readers edn-readers})
        (assoc-in [:formats "application/json" :decoder-opts]

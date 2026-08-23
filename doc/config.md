@@ -292,6 +292,51 @@ them.
 
 For distributed deployments, configure a writer to handle all transactions while readers access storage directly via Distributed Index Space.
 
+#### Alternating Processes (`:streaming? false`)
+
+Datahike's default writer (`{:backend :self}`) assumes every writer for a
+database lives in one JVM: it keeps the branch head in memory and never re-reads
+it. Serverless runtimes break that assumption. Each AWS Lambda execution
+environment is a separate JVM that believes it is the only writer, and Lambda
+keeps several warm and routes to them *alternately*. Each one then commits on
+top of its own stale head and silently overwrites the other's transactions — no
+error, lost data.
+
+```clojure
+{:store  {:backend :s3 :bucket "my-bucket"}
+ :writer {:backend :self :streaming? false}}
+```
+
+With `:streaming? false` the writer re-reads the branch head from storage before
+each *batch* of transactions, so they are applied to whatever is actually
+stored, and `@conn` reads through to storage as well.
+
+- **Cost:** one branch-head GET per batch (~10-40 ms on S3, ~$0.0000004 at
+  $0.0004/1000 GET). Transactions already queued when one commits are chained
+  onto it and share its head read, the way the default writer chains onto
+  `:db-after`, so **commit batching survives**: a burst of 500 concurrent
+  transactions costs ~9 head reads and ~20 commits, not 500 of each. The chain
+  is bounded and never *waits* for more work to arrive, so it costs no latency
+  — a caller that awaits each transaction before issuing the next has nothing
+  to batch and does pay one read per commit.
+- **Required when:** more than one process may hold a writer for this database.
+- **Not a fence:** this avoids the race by *serialisation*, it does not *detect*
+  it. Two processes writing **concurrently** still lose updates; the loser's
+  head write just lands last. Detecting that needs head fencing
+  (compare-and-set on the branch head, [issue #878]). So `:streaming? false` is
+  correct under an external guarantee of non-overlap — Lambda reserved
+  concurrency 1, a lease, a queue — not by construction.
+- **Secondary indices are re-read too**, whenever the head moved — they are
+  named by the same commit, so another process's writes reach them like any
+  other part of the db. Stratum and proximum are konserve-backed copy-on-write
+  values, which is what makes that work (and what makes them usable on S3).
+  Scriptum is the exception: it keeps its own Lucene directory with a
+  per-branch write lock and is NOT multi-process safe. That is transitional —
+  its konserve backing is a late addition — not a property of secondary
+  indices.
+
+[issue #878]: https://github.com/replikativ/datahike/issues/878
+
 #### HTTP Server Writer
 
 ```clojure

@@ -58,7 +58,7 @@ Datahike provides pluggable storage through [konserve](https://github.com/replik
 - Very low latency
 - Large file blob that cannot be as efficiently synched a the file store
 
-**Note**: The LMDB backend is available as a separate library: [datahike-lmdb](https://github.com/replikativ/datahike-lmdb), extending [konserve-lmdb](https://github.com/replikativ/lmdb).
+**Note**: The LMDB backend is available as a separate library: [datahike-lmdb](https://github.com/replikativ/datahike-lmdb), extending [konserve-lmdb](https://github.com/replikativ/konserve-lmdb).
 
 ### Memory Backend
 
@@ -270,7 +270,7 @@ All distributed backends support **Distributed Index Space (DIS)**: multiple rea
 Each backend may have additional configuration options. See the konserve backend documentation for details:
 
 - [konserve](https://github.com/replikativ/konserve) - Core abstraction
-- [konserve-lmdb](https://github.com/replikativ/lmdb) - LMDB implementation
+- [konserve-lmdb](https://github.com/replikativ/konserve-lmdb) - LMDB implementation
 - [datahike-lmdb](https://github.com/replikativ/datahike-lmdb) - Datahike LMDB integration
 - [datahike-jdbc](https://github.com/replikativ/datahike-jdbc) - JDBC backends
 - [konserve-s3](https://github.com/replikativ/konserve-s3) - S3 backend

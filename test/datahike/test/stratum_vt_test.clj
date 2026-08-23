@@ -295,19 +295,44 @@
           rows (vec (st/q {:from ds
                            :select [:eid :salary :_valid_from :_valid_to
                                     :_system_from :_system_to]}))]
-      (testing "two rows present after the SCD2 update"
-        (is (= 2 (count rows))))
-      (let [closed (first (filter #(not= Long/MAX_VALUE (:_valid_to %)) rows))
-            new-row (first (filter #(= Long/MAX_VALUE (:_valid_to %)) rows))]
-        (testing "closed row's _system_to advanced to second tx's instant"
-          (is (some? closed))
-          (is (= (* 1000 (.getTime #inst "2024-08-01T00:00:00Z"))
-                 (:_system_to closed))
-              "closed row's _system_to should equal the correcting tx's txInstant"))
-        (testing "new row's _system_from is the correcting tx's instant"
-          (is (some? new-row))
-          (is (= (* 1000 (.getTime #inst "2024-08-01T00:00:00Z"))
-                 (:_system_from new-row))
-              "new row's _system_from should equal the tx's txInstant"))
-        (testing "new row's _system_to is open (MAX_VALUE)"
-          (is (= Long/MAX_VALUE (:_system_to new-row))))))))
+      ;; THREE rows, and each answers a different question. This is a
+      ;; CORRECTION — tx2 declares no `:db.valid/to`, so it revises a belief
+      ;; that was recorded as open-ended — and a correction must not rewrite
+      ;; what the database believed BEFORE it arrived.
+      ;;
+      ;; The superseded row therefore keeps its original valid window and only
+      ;; its `_system_to` closes; the corrected history is a NEW row. Closing
+      ;; both windows on the original, as this used to, leaves no row saying
+      ;; "on 2024-07-01 we believed 100000 was valid indefinitely" — so
+      ;; `FOR SYSTEM_TIME AS OF 2024-07-01` would answer with knowledge that
+      ;; did not exist until 2024-08-01, which is the one thing a system axis
+      ;; exists to prevent.
+      (let [tx2-instant (* 1000 (.getTime #inst "2024-08-01T00:00:00Z"))
+            sys-open?   #(= Long/MAX_VALUE (:_system_to %))
+            preserved   (first (remove sys-open? rows))
+            current     (first (filter #(and (sys-open? %)
+                                             (= Long/MAX_VALUE (:_valid_to %)))
+                                       rows))
+            corrected   (first (filter #(and (sys-open? %)
+                                             (not= Long/MAX_VALUE (:_valid_to %)))
+                                       rows))]
+        (testing "three rows after the SCD2 correction"
+          (is (= 3 (count rows))))
+        (testing "the pre-correction belief is PRESERVED — system-closed at the
+                  correcting instant, valid window untouched"
+          (is (some? preserved))
+          (is (= tx2-instant (:_system_to preserved))
+              "superseded row's _system_to should equal the correcting tx's txInstant")
+          (is (= Long/MAX_VALUE (:_valid_to preserved))
+              "and its valid window is NOT rewritten — that is what makes
+               FOR SYSTEM_TIME AS OF <before the correction> answerable")
+          (is (= 100000 (:salary preserved))))
+        (testing "corrected history: the old salary, now bounded, believed since tx2"
+          (is (some? corrected))
+          (is (= 100000 (:salary corrected)))
+          (is (= tx2-instant (:_system_from corrected))))
+        (testing "current: the new salary, open on both axes"
+          (is (some? current))
+          (is (= 110000 (:salary current)))
+          (is (= tx2-instant (:_system_from current)))
+          (is (= Long/MAX_VALUE (:_system_to current))))))))

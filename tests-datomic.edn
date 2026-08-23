@@ -1,0 +1,14 @@
+#kaocha/v1
+;; Datomic Pro <-> datahike migration, in its OWN config file.
+;;
+;; NOT a tier in `tests.edn`, and that is the point: kaocha scans a suite's
+;; `:test-paths` off DISK regardless of the classpath, so merely naming
+;; `test-datomic` there makes every plain `-M:test` run try to load these
+;; namespaces and fail — `datomic.api` exists only under the `:datomic` alias.
+;;
+;; `:kaocha.testable/skip true` was the first attempt and was worse: kaocha's
+;; skip beats `--focus`, so `bb test datomic` ran 0 of 8 tests and said so only
+;; in a warning. Silent no-coverage instead of a loud failure.
+{:tests [{:id         :datomic
+          :test-paths ["test-datomic"]
+          :bindings   {datahike.config/*default-index* :datahike.index/persistent-set}}]}

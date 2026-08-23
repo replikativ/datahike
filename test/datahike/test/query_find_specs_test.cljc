@@ -49,4 +49,30 @@
                   :where [_ :name ?name]] test-db)
            3))))
 
+(deftest test-all-vars-in-bound
+  ;; Every var in the query supplied through :in, so after the planner folds
+  ;; the constants in, the pattern is fully ground and its group produces no
+  ;; column. The fused scan emits one tuple PER EMITTED VAR — with none it
+  ;; emits nothing whether or not the datom exists, so a satisfied existence
+  ;; test read as "no solution" and the answer came back empty.
+  (testing "the entity exists"
+    (are [q res] (= res (d/q q test-db 1))
+      '[:find ?e . :in $ ?e :where [?e :name _]]              1
+      '[:find ?e :in $ ?e :where [?e :name _]]                #{[1]}
+      '[:find [?e ...] :in $ ?e :where [?e :name _]]          [1]
+      '[:find (count ?e) :in $ ?e :where [?e :name _]]        [[1]]
+      '[:find (pull ?e [:name]) :in $ ?e :where [?e :name _]] [[{:name "Petr"}]]))
+
+  (testing "the entity does not exist — still empty"
+    (is (nil? (d/q '[:find ?e . :in $ ?e :where [?e :name _]] test-db 999)))
+    (is (= #{} (d/q '[:find ?e :in $ ?e :where [?e :name _]] test-db 999))))
+
+  (testing "two ground groups"
+    (is (= #{[1 2]}
+           (d/q '[:find ?e ?f :in $ ?e ?f :where [?e :name _] [?f :name _]]
+                test-db 1 2)))
+    (is (= #{}
+           (d/q '[:find ?e ?f :in $ ?e ?f :where [?e :name _] [?f :name _]]
+                test-db 1 999)))))
+
 #_(t/test-ns 'datahike.test.query-find-specs)

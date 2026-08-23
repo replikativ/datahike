@@ -1,6 +1,21 @@
 (ns datahike.index.interface
   "All the functions in this namespace must be implemented for each index type"
-  #?(:cljs (:refer-clojure :exclude [-seq -count -persistent! -flush -lookup])))
+  #?(:cljs (:refer-clojure :exclude [-seq -count -persistent! -flush -lookup]))
+  (:require
+   ;; Only for `warm-result` below — `async+sync` and `go-try-` are MACROS, so
+   ;; ClojureScript needs :refer-macros. Two whole libspecs rather than a reader
+   ;; conditional on the option key; see the note in datahike.gc.
+   #?(:clj  [konserve.utils :refer [async+sync *default-sync-translation*]]
+      :cljs [konserve.utils
+             :refer [*default-sync-translation*]
+             :refer-macros [async+sync]])
+   #?(:clj  [superv.async :refer [go-try-]]
+      :cljs [superv.async :refer-macros [go-try-]])
+   ;; Required on both runtimes: `go-try-` expands into `clojure.core.async/go`,
+   ;; whose state machine names `clojure.core.async` vars — :require-macros
+   ;; alone leaves them undeclared in a cljs build.
+   [clojure.core.async])
+  #?(:cljs (:require-macros [clojure.core.async :refer [go]])))
 
 (defprotocol IIndex
   (-all [index] "Returns a sequence of all datoms in the index")
@@ -21,7 +36,35 @@
   (-persistent! [index] "Returns a persistent version of the index")
   (-mark [index] "Return konserve addresses that should be whitelisted for mark and sweep gc.")
   (-root-node [index] "Returns the in-memory root node of a flushed index, for root fusion (inlining the root into the db-record).")
+  (-warm! [index opts] "EXPERIMENTAL. Prefetch this index's upper levels into whatever node cache it keeps, breadth-first, so a cold reader does not discover them one blocking round trip at a time. See `datahike.index.persistent-set.warm` for the rationale and the option map, and `datahike.warm` for the db-level entry points.
+
+   An index type that has no node cache, or no way to learn a level's addresses before fetching it, implements this as a NO-OP returning `(zero-warm-report opts)` — the point of the protocol is that such a type stays usable through `datahike.api/warm-db` rather than having to be special-cased there. Clojure protocols have no true defaults, so every implementation must say which it is; a type that omits the method entirely will throw, exactly as it does for `-root-node` and `-has-subtree-counts?`.")
   (-seed-root! [index root-node] "Seeds the in-memory root node after restoring a db-record that inlined it (root fusion). MUTATES the index — call it only on an OWNED, unpublished copy (e.g. the with-storage copy made at attach), never on a stored record's index: records may be shared through the store's cache by every reader of that key. Returns the index."))
+
+(def default-warm-budget
+  "EXPERIMENTAL. Nodes a warm may fetch before it stops. See
+   `datahike.index.persistent-set.warm` on sizing: the interior of a B-tree is
+   ~2/branching-factor of the whole tree, measured, not 1/branching-factor."
+  2000)
+
+(defn zero-warm-report
+  "EXPERIMENTAL. The report of a warm that had nothing to do — the shape every
+   `-warm!` implementation returns, so a caller never has to branch on whether
+   its index type prefetches at all."
+  [opts]
+  {:fetched 0 :by-level [] :rounds 0 :height 0 :by-index {}
+   :budget-left (:budget opts default-warm-budget)
+   :budget-exhausted? false :budget-clamped? false :ms 0.0})
+
+(defn warm-result
+  "EXPERIMENTAL. `report` in the shape the caller's `:sync?` asked for — the
+   value itself when synchronous, a channel carrying it otherwise. `-warm!` is
+   written `async+sync` like the rest of datahike's storage-touching API, so an
+   implementation that has nothing to await still has to answer in both shapes;
+   this is that one line."
+  [report opts]
+  (async+sync (:sync? opts #?(:clj true :cljs false)) *default-sync-translation*
+              (go-try- report)))
 
 (defmulti empty-index
   "Creates an empty index"
@@ -31,6 +74,23 @@
 (defmulti init-index
   "Creates an index with datoms"
   (fn [index-name _store _datoms _index-type _op-count _index-config]
+    index-name))
+
+(defmulti init-index-sorted
+  "Creates an index from datoms ALREADY SORTED in `index-type` order, streaming
+   them into the tree rather than materialising them.
+
+   `init-index` takes any order and sorts in memory (`arrays/asort` over the whole
+   array), which makes it O(n) in heap — fine when a database fits in memory,
+   which is exactly the case a bulk restore is not. This variant is the import
+   path's entry: the caller has already produced the right order with an external
+   merge sort, so the index build never needs more than one node per level.
+
+   The caller OWNS the ordering guarantee. Passing a wrongly ordered seq does not
+   raise here; it produces a tree whose invariants are quietly false. The
+   underlying builder checks, so the failure is loud, but it belongs to the
+   caller's contract rather than this one's."
+  (fn [index-name _store _sorted-datoms _index-type _op-count _index-config]
     index-name))
 
 (defmulti add-konserve-handlers

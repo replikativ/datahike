@@ -150,7 +150,14 @@
                              datahike.remote.RemoteHistoricalDB (transit/write-handler "datahike/HistoricalDB" map-without-remote)
                              datahike.remote.RemoteSinceDB      (transit/write-handler "datahike/SinceDB" map-without-remote)
                              datahike.remote.RemoteAsOfDB       (transit/write-handler "datahike/AsOfDB" map-without-remote)
-                             datahike.remote.RemoteEntity       (transit/write-handler "datahike/Entity" #(into {} %))})
+                             ;; `map-without-remote`, like every sibling above.
+                             ;; `(into {} %)` keeps :remote-peer, which carries
+                             ;; the peer's url and bearer TOKEN — so it went out
+                             ;; in the request body and into client.clj's
+                             ;; log/trace of that body. The far end never reads
+                             ;; it: readers/entity-from-reader takes :db and
+                             ;; :eid only.
+                             datahike.remote.RemoteEntity       (transit/write-handler "datahike/Entity" map-without-remote)})
 
 (def transit-read-handlers {"datahike/Connection"   (transit/read-handler remote-connection)
                             "datahike/Datom"        (transit/read-handler datom-from-vec)
@@ -210,9 +217,11 @@
                         :encode (write-to-generator map-without-remote)
                         :decode remote-as-of-db}
 
+                       ;; `map-without-remote`, not `(into {} %)` — see the
+                       ;; transit handler above; the token leaked here too.
                        datahike.remote.RemoteEntity
                        {:tag    "!datahike/Entity"
-                        :encode (write-to-generator #(into {} %))
+                        :encode (write-to-generator map-without-remote)
                         :decode remote-entity}})})]})
 
 (def json-mapper (j/object-mapper json-mapper-opts))

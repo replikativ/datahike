@@ -33,11 +33,19 @@
     (d/create-database cfg)
     (d/connect cfg)))
 
+;; The result cache is keyed by [query args db-snapshot] — the engine is NOT
+;; part of the key, so a cached base-engine answer would be served straight
+;; back to the planner call and every parity assertion below would compare a
+;; result against itself. Both helpers bypass it.
 (defn- planner [query & args]
-  (binding [q/*disable-planner* false] (apply d/q query args)))
+  (binding [q/*disable-planner* false
+            q/*query-result-cache?* false]
+    (apply d/q query args)))
 
 (defn- base [query & args]
-  (binding [q/*disable-planner* true] (apply d/q query args)))
+  (binding [q/*disable-planner* true
+            q/*query-result-cache?* false]
+    (apply d/q query args)))
 
 (defn- raised-cannot-resolve? [f]
   (try (f) false
@@ -121,6 +129,141 @@
       (is (= #{[100 "al"] [101 "none"]} (base standalone db [100 101])))
       (is (= (base standalone db [100 101]) (planner standalone db [100 101]))
           "standalone optional scan keeps left-outer semantics"))))
+
+(deftest multi-group-wide-tuple-is-projected-onto-find
+  (testing "a consumer group that emits WIDE tuples still projects onto :find"
+    ;; A consumer emits its own wide var vector whenever it carries
+    ;; attached-preds or feeds a probe-map. The projection back onto :find was
+    ;; gated on has-post-ops?, which is FALSE for an attached-pred on the
+    ;; CONSUMER (extra-preds harvests attached-preds from PRODUCER groups only),
+    ;; so nothing projected and the raw wide tuple was returned — in the
+    ;; consumer's `(vec :output-vars)` set-iteration order.
+    ;;
+    ;; Silent, and it needs no optional/get-else machinery at all: two entity
+    ;; groups and one predicate on the consumer's value var is enough.
+    (let [conn (fresh-conn)
+          _    (d/transact conn [{:db/ident :name :db/valueType :db.type/string
+                                  :db/cardinality :db.cardinality/one}
+                                 {:db/ident :nick :db/valueType :db.type/string
+                                  :db/cardinality :db.cardinality/one}
+                                 {:db/ident :friend :db/valueType :db.type/ref
+                                  :db/cardinality :db.cardinality/many}])
+          _    (d/transact conn [{:db/id 100 :name "alice" :nick "al" :friend [101 102]}
+                                 {:db/id 101 :name "bob" :friend [100]}
+                                 {:db/id 102 :name "carol" :nick "cc" :friend [100]}])
+          db   (d/db conn)
+          ;; [E V] with a predicate on V: the shape whose columns came back swapped
+          swapped-cols '[:find ?e ?en :where
+                         [?s :name ?n] [?s :friend ?e] [?e :name ?en] [(some? ?en)]]
+          ;; :find order is load-bearing — the reverse order was accidentally
+          ;; "correct" before the fix, so both orders are pinned
+          reverse-order '[:find ?en ?e :where
+                          [?s :name ?n] [?s :friend ?e] [?e :name ?en] [(some? ?en)]]
+          ;; a get-else in the consumer group widens the tuple further: a 2-var
+          ;; :find returned 3-tuples
+          wrong-arity '[:find ?e ?v :where
+                        [?s :name ?n] [?s :friend ?e] [?e :name ?en]
+                        [(get-else $ ?e :nick "none") ?v] [(some? ?v)]]]
+      (is (= #{[100 "alice"] [101 "bob"] [102 "carol"]} (base swapped-cols db)))
+      (is (= (base swapped-cols db) (planner swapped-cols db))
+          "columns must follow :find order, not the consumer group's var order")
+      (is (= (base reverse-order db) (planner reverse-order db))
+          "the reversed :find order must hold too")
+      (is (= #{[100 "al"] [101 "none"] [102 "cc"]} (base wrong-arity db)))
+      (is (= (base wrong-arity db) (planner wrong-arity db))
+          "a 2-var :find must return 2-tuples (BUG: returned 3-tuples)")
+      (is (every? #(= 2 (count %)) (planner wrong-arity db))
+          "arity is part of the contract, not just the values"))))
+
+(deftest get-else-on-joined-entity-var-parity
+  (testing "get-else off an entity var bound by a SIBLING clause keeps
+            left-outer semantics (issue #920)"
+    ;; The optional scan lands in its own group — its entity var (?si) carries
+    ;; no other pattern to fuse into as an optional MERGE — and the fused path
+    ;; then joined that group to its producer by probing the consumer's scan
+    ;; field: an INNER join, which silently dropped exactly the rows the
+    ;; default is FOR. planner-ON returned a strict subset of planner-OFF, no
+    ;; exception. Standalone optional scans no longer take the fused path.
+    (let [conn (fresh-conn)
+          _    (d/transact conn [{:db/ident :stmt/name :db/valueType :db.type/string
+                                  :db/cardinality :db.cardinality/one :db/index true}
+                                 {:db/ident :stmt/src :db/valueType :db.type/ref
+                                  :db/cardinality :db.cardinality/one}
+                                 {:db/ident :src/at :db/valueType :db.type/string
+                                  :db/cardinality :db.cardinality/one}
+                                 {:db/ident :src/kind :db/valueType :db.type/keyword
+                                  :db/cardinality :db.cardinality/one}])
+          ;; src1 HAS both source attrs, src2 has neither, s3 has no :stmt/src
+          _    (d/transact conn [{:db/id "src1" :src/at "2026-01-01" :src/kind :k1}
+                                 {:db/id "src2"}
+                                 {:stmt/name "s1" :stmt/src "src1"}
+                                 {:stmt/name "s2" :stmt/src "src2"}
+                                 {:stmt/name "s3"}])
+          db   (d/db conn)
+          ;; ?si comes from a plain pattern
+          joined '[:find ?name ?at :where
+                   [?stmt :stmt/name ?name]
+                   [?stmt :stmt/src ?si]
+                   [(get-else $ ?si :src/at :absent) ?at]]
+          ;; the issue's shape: ?si comes from a PRIOR get-else, so the second
+          ;; one defaults both for a real eid lacking :src/at (s2) and for the
+          ;; -1 sentinel that is not an entity at all (s3)
+          chained '[:find ?name ?at :where
+                    [?stmt :stmt/name ?name]
+                    [(get-else $ ?stmt :stmt/src -1) ?si]
+                    [(get-else $ ?si :src/at :absent) ?at]]
+          ;; every pattern on ?si is optional, so NO scan may drive that group:
+          ;; whichever one did, an entity lacking its attribute was never
+          ;; visited and the row vanished with BOTH defaults
+          all-optional '[:find ?name ?at ?kind :where
+                         [?stmt :stmt/name ?name]
+                         [?stmt :stmt/src ?si]
+                         [(get-else $ ?si :src/at :absent) ?at]
+                         [(get-else $ ?si :src/kind :none) ?kind]]
+          ;; same, plus a negation on ?si — it must not be folded as an
+          ;; anti-merge into a group that is never assembled
+          with-not '[:find ?name ?at :where
+                     [?stmt :stmt/name ?name]
+                     [?stmt :stmt/src ?si]
+                     [(get-else $ ?si :src/at :absent) ?at]
+                     (not [?si :src/kind :k1])]
+          ;; the all-optional group over a NAMED source: the group key carries
+          ;; the source, so a key comparison that dropped it would either miss
+          ;; the split or split a group that has a drivable scan
+          named-all-optional '[:find ?name ?at ?kind :in $data :where
+                               [$data ?stmt :stmt/name ?name]
+                               [$data ?stmt :stmt/src ?si]
+                               [(get-else $data ?si :src/at :absent) ?at]
+                               [(get-else $data ?si :src/kind :none) ?kind]]
+          ;; the shape that MUST keep fusing: ?si carries an ordinary pattern,
+          ;; so the get-else is an optional MERGE, which the fused path defaults
+          ;; correctly. Pinned so a future broadening of the fusability guard
+          ;; can't silently de-fuse the common case.
+          fusable '[:find ?name ?at :where
+                    [?stmt :stmt/name ?name]
+                    [(get-else $ ?stmt :src/at :absent) ?at]]]
+      (is (= #{["s1" "2026-01-01"] ["s2" :absent]} (base joined db)))
+      (is (= (base joined db) (planner joined db))
+          "planner must not drop the row whose entity lacks the attribute")
+      (is (= #{["s1" "2026-01-01"] ["s2" :absent] ["s3" :absent]} (base chained db)))
+      (is (= (base chained db) (planner chained db))
+          "get-else off a get-else-bound entity var defaults for both the real
+           eid and the sentinel")
+      (is (= #{["s1" "2026-01-01" :k1] ["s2" :absent :none]} (base all-optional db)))
+      (is (= (base all-optional db) (planner all-optional db))
+          "an all-optional entity group keeps every default")
+      (is (= #{["s2" :absent]} (base with-not db)))
+      (is (= (base with-not db) (planner with-not db))
+          "the negation still applies once the all-optional group is split")
+      (is (= #{["s1" "2026-01-01" :k1] ["s2" :absent :none]}
+             (base named-all-optional db)))
+      (is (= (base named-all-optional db) (planner named-all-optional db))
+          "an all-optional group over a named source keeps every default")
+      (is (= #{["s1" :absent] ["s2" :absent] ["s3" :absent]} (base fusable db)))
+      (is (= (base fusable db) (planner fusable db)))
+      (is (re-find #"path: direct" (q/explain fusable db))
+          "a get-else that CAN fuse as an optional merge must still take the
+           fused path — the guard is about standalone optional scans only"))))
 
 (deftest card-many-merge-with-get-else-parity
   (testing "a card-many attribute in the same group as get-else keeps ALL its
@@ -244,3 +387,155 @@
            literal ?p in the replan seed would allow the reverse)")
       ;; And end-to-end: the full query stays correct on both engines.
       (is (= (base query db) (planner query db) #{["ALICE" 0]})))))
+
+;; ---------------------------------------------------------------------------
+;; Contract 3 — a rule head var that no branch body binds takes the caller's
+;; value on both engines (#897).
+;;
+;; Threading a caller-supplied parameter through a recursion is common:
+;;
+;;   [(reachable ?anchor ?eps ?n) ...base case, never mentions ?eps...]
+;;   [(reachable ?anchor ?eps ?o) ... [(contains? ?eps ?ep)]
+;;                                (reachable ?anchor ?eps ?s)]
+;;
+;; ?eps is not range-restricted — the base body cannot produce it, so its only
+;; possible value is the one the call site passed. The base engine gets this for
+;; free by renaming head vars to the call args. The planner renames to the
+;; rule's own head vars (so a constant call-arg can be filtered after the
+;; fixpoint instead of restricting the accumulator), which left ?eps bound by
+;; nobody: the branch relation came back without that column and the fixpoint's
+;; dedup step NPE'd on the missing :attrs entry.
+
+(defn- triple-conn
+  "Anchor/edge graph as (subject, predicate, object) triples:
+   root -isa-> Anchor, root -link-> b -link-> c -link-> d -link-> b (cycle),
+   c -skip-> z, and a disconnected q -isa-> Other, q -link-> r."
+  []
+  (let [conn (fresh-conn)]
+    (d/transact conn (for [a [:triple/s :triple/p :triple/o]]
+                       {:db/ident a
+                        :db/valueType :db.type/string
+                        :db/cardinality :db.cardinality/one}))
+    (d/transact conn [{:triple/s "root" :triple/p "isa" :triple/o "Anchor"}
+                      {:triple/s "root" :triple/p "link" :triple/o "b"}
+                      {:triple/s "b" :triple/p "link" :triple/o "c"}
+                      {:triple/s "c" :triple/p "link" :triple/o "d"}
+                      {:triple/s "d" :triple/p "link" :triple/o "b"}
+                      {:triple/s "c" :triple/p "skip" :triple/o "z"}
+                      {:triple/s "q" :triple/p "isa" :triple/o "Other"}
+                      {:triple/s "q" :triple/p "link" :triple/o "r"}])
+    conn))
+
+(def ^:private reachable-rules
+  "Right-recursive reachability: anchored start, edge kinds passed in by the
+   caller and never bound by a body."
+  '[[(reachable ?anchor ?eps ?n)
+     [?e :triple/s ?n] [?e :triple/p "isa"] [?e :triple/o ?anchor]]
+    [(reachable ?anchor ?eps ?o)
+     [?e :triple/s ?s] [?e :triple/p ?ep] [?e :triple/o ?o]
+     [(contains? ?eps ?ep)]
+     (reachable ?anchor ?eps ?s)]])
+
+(deftest unbound-head-var-takes-caller-value-on-both-engines
+  (let [conn (triple-conn)
+        db (d/db conn)]
+    (testing "the reported repro: ground anchor, edge set from :in"
+      (let [query '[:find ?n :in $ % ?anchor ?eps :where (reachable ?anchor ?eps ?n)]]
+        (is (= (base query db reachable-rules "Anchor" #{"link"})
+               (planner query db reachable-rules "Anchor" #{"link"})
+               #{["root"] ["b"] ["c"] ["d"]})
+            "cycle terminates and every reachable node is found")))
+
+    (testing "the call site names the parameter differently than the rule does"
+      ;; The planner used to get away with this only when the two names
+      ;; happened to coincide and the value sat in an outer relation.
+      (let [query '[:find ?n :in $ % ?anchor ?preds :where (reachable ?anchor ?preds ?n)]]
+        (is (= (base query db reachable-rules "Anchor" #{"link"})
+               (planner query db reachable-rules "Anchor" #{"link"})
+               #{["root"] ["b"] ["c"] ["d"]}))))
+
+    (testing "the parameter selects which edges are followed"
+      (let [query '[:find ?n :in $ % ?anchor ?eps :where (reachable ?anchor ?eps ?n)]]
+        (is (= (base query db reachable-rules "Anchor" #{"link" "skip"})
+               (planner query db reachable-rules "Anchor" #{"link" "skip"})
+               #{["root"] ["b"] ["c"] ["d"] ["z"]})
+            "adding :skip to the passed-in set pulls in z")
+        (is (= (base query db reachable-rules "Anchor" #{})
+               (planner query db reachable-rules "Anchor" #{})
+               #{["root"]})
+            "an empty set follows no edges at all")))
+
+    (testing "the anchor is free too — one row per anchor/node pair"
+      (let [query '[:find ?a ?n :in $ % ?eps :where (reachable ?a ?eps ?n)]]
+        (is (= (base query db reachable-rules #{"link"})
+               (planner query db reachable-rules #{"link"})
+               #{["Anchor" "root"] ["Anchor" "b"] ["Anchor" "c"] ["Anchor" "d"]
+                 ["Other" "q"] ["Other" "r"]}))))
+
+    (testing "the parameter is multi-valued, bound by an outer clause"
+      (let [rules '[[(reach ?anchor ?pred ?n)
+                     [?e :triple/s ?n] [?e :triple/p "isa"] [?e :triple/o ?anchor]]
+                    [(reach ?anchor ?pred ?o)
+                     [?e :triple/s ?s] [?e :triple/p ?pred] [?e :triple/o ?o]
+                     (reach ?anchor ?pred ?s)]]
+            query '[:find ?n :in $ % ?anchor
+                    :where [_ :triple/p ?p] [(not= ?p "isa")] (reach ?anchor ?p ?n)]]
+        ;; Each ?p value is followed on its own: "link" walks root→b→c→d,
+        ;; "skip" only ever reaches the anchored root (no skip edge leaves it),
+        ;; so z stays out — the parameter must not be smeared across values.
+        (is (= (base query db rules "Anchor")
+               (planner query db rules "Anchor")
+               #{["root"] ["b"] ["c"] ["d"]}))))
+
+    (testing "the base body filters on the parameter without binding it"
+      (let [rules '[[(reach ?anchor ?eps ?n)
+                     [?e :triple/s ?n] [?e :triple/p "isa"] [?e :triple/o ?anchor]
+                     [(contains? ?eps "link")]]
+                    [(reach ?anchor ?eps ?o)
+                     [?e :triple/s ?s] [?e :triple/p ?ep] [?e :triple/o ?o]
+                     [(contains? ?eps ?ep)]
+                     (reach ?anchor ?eps ?s)]]
+            query '[:find ?n :in $ % ?anchor ?eps :where (reach ?anchor ?eps ?n)]]
+        (is (= (base query db rules "Anchor" #{"link"})
+               (planner query db rules "Anchor" #{"link"})
+               #{["root"] ["b"] ["c"] ["d"]})
+            "the predicate sees the caller's value inside the base branch")
+        (is (= (base query db rules "Anchor" #{"other"})
+               (planner query db rules "Anchor" #{"other"})
+               #{})
+            "and can reject the base case outright")))
+
+    (testing "nothing binds the parameter on either side — the rule still runs"
+      ;; No caller binding to take, so the planner hands the whole rule to the
+      ;; relational engine rather than inventing a value.
+      (let [rules '[[(loose ?anchor ?x ?n)
+                     [?e :triple/s ?n] [?e :triple/p "isa"] [?e :triple/o ?anchor]]
+                    [(loose ?anchor ?x ?o)
+                     [?e :triple/s ?s] [?e :triple/p "link"] [?e :triple/o ?o]
+                     (loose ?anchor ?x ?s)]]
+            query '[:find ?n :in $ % ?anchor :where (loose ?anchor ?whatever ?n)]]
+        (is (= (base query db rules "Anchor")
+               (planner query db rules "Anchor")
+               #{["root"] ["b"] ["c"] ["d"]}))))
+
+    (d/release conn)))
+
+(deftest unbound-head-var-in-mutual-recursion
+  ;; Both rules of the SCC thread ?eps; only the called rule's base branch
+  ;; leaves it unbound, so the planner can still resolve it from the call args.
+  (let [conn (triple-conn)
+        db (d/db conn)
+        rules '[[(even-step ?anchor ?eps ?n)
+                 [?e :triple/s ?n] [?e :triple/p "isa"] [?e :triple/o ?anchor]]
+                [(even-step ?anchor ?eps ?o)
+                 [?e :triple/s ?s] [?e :triple/p ?ep] [?e :triple/o ?o]
+                 [(contains? ?eps ?ep)]
+                 (odd-step ?anchor ?eps ?s)]
+                [(odd-step ?anchor ?eps ?o)
+                 [?e :triple/s ?s] [?e :triple/p ?ep] [?e :triple/o ?o]
+                 [(contains? ?eps ?ep)]
+                 (even-step ?anchor ?eps ?s)]]
+        query '[:find ?n :in $ % ?anchor ?eps :where (even-step ?anchor ?eps ?n)]]
+    (is (= #{["root"] ["b"] ["c"] ["d"]}
+           (planner query db rules "Anchor" #{"link"})))
+    (d/release conn)))

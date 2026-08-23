@@ -26,7 +26,7 @@
    content mismatch — only real errors propagate)."
   [seed {:keys [idrange cycles ops crypto? diff-buf]}]
   (let [rng  (Random. seed)
-        path (str (System/getProperty "java.io.tmpdir") "/dh-diffbuf-gen-" seed "-" diff-buf "-" (if crypto? "c" "p"))
+        path (str (System/getProperty "java.io.tmpdir") "/dh-diffbuf-gen-" seed "-" diff-buf "-" (if crypto? "c" "p") "-" (java.util.UUID/randomUUID))
         cfg  {:store {:backend :file :path path :id (java.util.UUID/randomUUID)}
               :schema-flexibility :write :keep-history? false
               :crypto-hash? (boolean crypto?)
@@ -90,7 +90,7 @@
   ;; slot-bearing branch blob is detected as a merkle mismatch.
   (testing "verify-chain :deep? is :ok over a diff-buf store, warm and cold; tampering detected"
     (let [cfg {:store {:backend :file
-                       :path (str (System/getProperty "java.io.tmpdir") "/dh-diffbuf-crypto-audit")
+                       :path (str (System/getProperty "java.io.tmpdir") "/dh-diffbuf-crypto-audit-" (java.util.UUID/randomUUID))
                        :id #uuid "d1ffb000-0000-0000-0000-00000000c0de"}
                :schema-flexibility :read :keep-history? true :crypto-hash? true
                :index-config {:diff-buf-size 64 :branching-factor 16}}]

@@ -17,11 +17,13 @@
    A failure prints the offending query; with the fixed seed it reproduces
    deterministically, and test.check shrinks it to a minimal spec."
   (:require
-   [clojure.test :refer [is]]
+   [clojure.test :refer [is deftest testing]]
+   [clojure.walk]
    [clojure.test.check.clojure-test :refer [defspec]]
    [clojure.test.check.generators :as gen]
    [clojure.test.check.properties :as prop]
    [datahike.api :as d]
+   [datahike.oracle :as o]
    [datahike.query :as q]))
 
 (def ^:private num-cases
@@ -44,13 +46,19 @@
                           {:db/ident :nick :db/valueType :db.type/string :db/cardinality :db.cardinality/one}
                           {:db/ident :score :db/valueType :db.type/long :db/cardinality :db.cardinality/one}
                           {:db/ident :tag :db/valueType :db.type/keyword :db/cardinality :db.cardinality/many}
-                          {:db/ident :friend :db/valueType :db.type/ref :db/cardinality :db.cardinality/one}])
-        (d/transact conn [{:db/id 100 :name "alice" :nick "al" :score 10 :tag [:red :blue] :friend 101}
-                          {:db/id 101 :name "bob" :score 20 :tag [:blue]}
-                          {:db/id 102 :name "carol" :nick "cc" :score 30 :friend 100}
-                          {:db/id 103 :name "dave" :tag [:red]}
-                          {:db/id 104 :name "eve" :score 20 :friend 103}
-                          {:db/id 105 :name "frank" :nick "f" :tag [:green :red] :score 5}])
+                          {:db/ident :friend :db/valueType :db.type/ref :db/cardinality :db.cardinality/one}
+                          ;; a SECOND ref relation, so a recursive rule's step can
+                          ;; traverse something other than its base case's edge
+                          {:db/ident :colleague :db/valueType :db.type/ref :db/cardinality :db.cardinality/one}
+                          ;; unique, so an :in binding can arrive as a LOOKUP REF
+                          {:db/ident :uid :db/valueType :db.type/string
+                           :db/unique :db.unique/identity :db/cardinality :db.cardinality/one}])
+        (d/transact conn [{:db/id 100 :uid "u100" :name "alice" :nick "al" :score 10 :tag [:red :blue] :friend 101 :colleague 102}
+                          {:db/id 101 :uid "u101" :name "bob" :score 20 :tag [:blue] :colleague 103}
+                          {:db/id 102 :uid "u102" :name "carol" :nick "cc" :score 30 :friend 100}
+                          {:db/id 103 :uid "u103" :name "dave" :tag [:red]}
+                          {:db/id 104 :uid "u104" :name "eve" :score 20 :friend 103}
+                          {:db/id 105 :uid "u105" :name "frank" :nick "f" :tag [:green :red] :score 5}])
         (d/transact conn [[:db/retract 101 :score 20]])
         (d/transact conn [[:db/add 101 :score 25]])
         (d/db conn)))))
@@ -76,6 +84,81 @@
                           {:db/id 105 :name "frank-2" :score 5}])
         (d/db conn)))))
 
+;; ---------------------------------------------------------------------------
+;; Axis: THE DATA. The generator above varies the query's shape across ~20
+;; dimensions, but every case used to run against one tidy dataset — values
+;; well-typed, distinct, no duplicates. Whole families of bug hid there, because
+;; the specializations classify their INPUT (a sampled row, a value's shape, a
+;; column's type) and tidy input makes every classification look right.
+
+(defonce ^:private test-db-dup
+  ;; Heavy duplication. An aggregate reads the FIND PROJECTION, so duplicate
+  ;; values are what distinguish `count`/`sum` over a deduplicated projection
+  ;; from one over raw rows — a distinction invisible when every value differs.
+  (delay
+    (let [cfg {:store {:backend :memory :id (random-uuid)}
+               :schema-flexibility :write}]
+      (d/create-database cfg)
+      (let [conn (d/connect cfg)]
+        (d/transact conn [{:db/ident :name :db/valueType :db.type/string :db/cardinality :db.cardinality/one}
+                          {:db/ident :nick :db/valueType :db.type/string :db/cardinality :db.cardinality/one}
+                          {:db/ident :score :db/valueType :db.type/long :db/cardinality :db.cardinality/one}
+                          {:db/ident :tag :db/valueType :db.type/keyword :db/cardinality :db.cardinality/many}
+                          {:db/ident :friend :db/valueType :db.type/ref :db/cardinality :db.cardinality/one}
+                          {:db/ident :colleague :db/valueType :db.type/ref :db/cardinality :db.cardinality/one}
+                          {:db/ident :uid :db/valueType :db.type/string
+                           :db/unique :db.unique/identity :db/cardinality :db.cardinality/one}])
+        ;; ACYCLIC on :friend, deliberately. A cycle here makes the reference
+        ;; engine's mutual recursion run forever (see
+        ;; query-rules-test/test-mutual-recursion-over-a-cycle), and a generator
+        ;; must not contain a combination known to hang — that belongs in a
+        ;; pinned test, not as a landmine every future run steps on.
+        (d/transact conn [{:db/id 100 :uid "u100" :name "alice" :nick "dup" :score 20 :tag [:red :blue] :friend 101 :colleague 103}
+                          {:db/id 101 :uid "u101" :name "alice" :nick "dup" :score 20 :tag [:blue] :friend 102 :colleague 104}
+                          {:db/id 102 :uid "u102" :name "alice" :score 20 :tag [:red :blue]}
+                          {:db/id 103 :uid "u103" :name "bob" :nick "dup" :score 5 :tag [:red]}
+                          {:db/id 104 :uid "u104" :name "bob" :score 5 :tag [:red :blue] :friend 103}
+                          {:db/id 105 :uid "u105" :name "bob" :nick "dup" :score 5}])
+        (d/transact conn [[:db/retract 101 :score 20]])
+        (d/transact conn [[:db/add 101 :score 20]])
+        (d/db conn)))))
+
+(defonce ^:private test-db-loose
+  ;; `:schema-flexibility :read`: :score and :name are UNDECLARED, so one
+  ;; attribute holds Long, Double and String values at once. Any code that types
+  ;; a whole column from one sampled row is wrong here, and a fast path that
+  ;; assumes numbers must decline rather than truncate. :uid stays unique so
+  ;; lookup-ref bindings still mean something, and :friend stays a ref so the
+  ;; recursive rules still traverse.
+  (delay
+    (let [cfg {:store {:backend :memory :id (random-uuid)}
+               :schema-flexibility :read}]
+      (d/create-database cfg)
+      (let [conn (d/connect cfg)]
+        (d/transact conn [{:db/ident :uid :db/valueType :db.type/string
+                           :db/unique :db.unique/identity :db/cardinality :db.cardinality/one}
+                          {:db/ident :friend :db/valueType :db.type/ref
+                           :db/cardinality :db.cardinality/one}
+                          {:db/ident :colleague :db/valueType :db.type/ref
+                           :db/cardinality :db.cardinality/one}
+                          {:db/ident :tag :db/valueType :db.type/keyword
+                           :db/cardinality :db.cardinality/many}])
+        (d/transact conn [{:db/id 100 :uid "u100" :name "alice" :nick "al" :score 10 :tag [:red :blue] :friend 101 :colleague 102}
+                          {:db/id 101 :uid "u101" :name "bob" :score 2.5 :tag [:blue] :colleague 103}
+                          {:db/id 102 :uid "u102" :name "carol" :nick "cc" :score "thirty" :friend 100}
+                          {:db/id 103 :uid "u103" :name "dave" :score 7 :tag [:red]}
+                          {:db/id 104 :uid "u104" :name 42 :score 7 :friend 103}
+                          {:db/id 105 :uid "u105" :name "frank" :nick "f" :tag [:green :red] :score 5}])
+        (d/transact conn [[:db/retract 103 :score 7]])
+        (d/transact conn [[:db/add 103 :score 7.5]])
+        (d/db conn)))))
+
+(defn- dataset-db [dataset]
+  (case dataset
+    :dup @test-db-dup
+    :loose @test-db-loose
+    @test-db))
+
 (def ^:private rule-sets
   {:plain     '[[(named ?e ?n) [?e :name ?n]]]
    :fn-body   '[[(upper-name ?e ?ru) [?e :name ?rn] [(clojure.string/upper-case ?rn) ?ru]]]
@@ -84,14 +167,30 @@
    :mutual    '[[(ehop ?a ?b) [?a :friend ?b]]
                 [(ehop ?a ?b) [?a :friend ?x] (ohop ?x ?b)]
                 [(ohop ?a ?b) [?a :friend ?x] (ehop ?x ?b)]]
-   :with-not  '[[(unred ?e) [?e :name ?rn] (not [?e :tag :red])]]})
+   :with-not  '[[(unred ?e) [?e :name ?rn] (not [?e :tag :red])]]
+   ;; Axis: RULE SHAPE. The five sets above are all closures of the SAME
+   ;; relation their base case walks, which is the one shape the recursive fast
+   ;; paths assume. The three below break that assumption in the three ways that
+   ;; matter, and each has already been a wrong answer:
+   ;;   - the step traverses a DIFFERENT relation than the base case;
+   ;;   - the step is a SUBSET of it (filtered traversal);
+   ;;   - the recursion is right-linear rather than left-linear.
+   :rec-changes-edge '[[(xreach ?a ?b) [?a :friend ?b]]
+                       [(xreach ?a ?b) [?a :colleague ?x] (xreach ?x ?b)]]
+   :rec-filtered     '[[(freach ?a ?b) [?a :friend ?b]]
+                       [(freach ?a ?b) [?a :friend ?x] [?x :tag :blue] (freach ?x ?b)]]
+   :rec-right        '[[(rreach ?a ?b) [?a :friend ?b]]
+                       [(rreach ?a ?b) (rreach ?a ?x) [?x :friend ?b]]]})
 
 (def ^:private rule-clause
   {:plain     '(named ?e ?rn2)
    :fn-body   '(upper-name ?e ?ru)
    :recursive '(reach ?e ?r)
    :mutual    '(ehop ?e ?r)
-   :with-not  '(unred ?e)})
+   :with-not  '(unred ?e)
+   :rec-changes-edge '(xreach ?e ?r)
+   :rec-filtered     '(freach ?e ?r)
+   :rec-right        '(rreach ?e ?r)})
 
 (def ^:private gen-spec
   (gen/hash-map
@@ -105,7 +204,17 @@
                (gen/elements [:pred-lt :pred-gt :fn-upper :fn-chain
                               :get-else :get-else-long :missing-nick
                               :not-tag :not-join-nick :or-tag :or-and
-                              :pred-two-vars])
+                              :pred-two-vars
+                              ;; A predicate on the CONSUMER group's value var
+                              ;; (?fn, from the friend join). Every other
+                              ;; predicate here sits on ?s or ?n, i.e. on the
+                              ;; PRODUCER — and the two are not interchangeable:
+                              ;; a consumer-side predicate is attached to the
+                              ;; consumer group, which makes it emit wide tuples
+                              ;; while leaving has-post-ops? false, the exact
+                              ;; combination under which the fused path skipped
+                              ;; its projection and returned raw wide tuples.
+                              :pred-consumer])
                {:min-elements 0 :max-elements 3})
    :pred-const (gen/choose -5 40)
    ;; deterministic clause permutation — both engines must tolerate ANY
@@ -116,13 +225,41 @@
                               [2 (gen/return :as-of)]
                               [1 (gen/return :history)]])
    :in-coll?  gen/boolean                                    ;; bind ?e via :in [?e ...]
+   ;; ---------------------------------------------------------------------
+   ;; :in binding SHAPES. The generator used to bind only `[?e ...]`, `%`
+   ;; and `$2`, which left the whole scalar-const dimension ungenerated —
+   ;; and a scalar :in is folded into the clauses before planning, so it is
+   ;; the input that makes the planner and the base engine see different
+   ;; clause text. Every divergence in the #901 family needed one.
+   ;; ---------------------------------------------------------------------
+   ;; scalar :in for a value var — :unused binds a var no clause mentions,
+   ;; the shape that proves a post-fold decision cannot be cached safely
+   :in-scalar (gen/elements [:none :none :tag :score :name :unused])
+   :in-tuple?  gen/boolean                                   ;; bind [?t ?s] as a tuple
+   :in-rel?    gen/boolean                                   ;; bind [[?t]] as a relation
+   :in-lookup? gen/boolean                                   ;; bind ?e from a lookup ref
+   ;; a rule called with a GROUND argument: :in-arg drives magic-set demand
+   ;; from the input side, :out-arg from the output side (opposite seeding)
+   :rule-ground (gen/elements [:none :none :in-arg :out-arg])
+   ;; result-shaping options. No :limit/:offset: with ties in the sort key
+   ;; the row SET at a cut-off is genuinely ambiguous, so a disagreement
+   ;; there would not be a bug. :order-by is compared as a multiset for the
+   ;; same reason — it still catches wrong or missing rows.
+   :result-mod (gen/elements [:none :none :with :order-by])
    ;; rules: a rule clause added to the body, rule set passed via :in %
    :rules     (gen/frequency [[5 (gen/return :none)]
                               [1 (gen/return :plain)]
                               [1 (gen/return :fn-body)]
                               [1 (gen/return :recursive)]
                               [1 (gen/return :mutual)]
-                              [1 (gen/return :with-not)]])
+                              [1 (gen/return :with-not)]
+                              [1 (gen/return :rec-changes-edge)]
+                              [1 (gen/return :rec-filtered)]])
+   ;; :rec-right is DEFINED above but deliberately not generated: the reference
+   ;; engine does not terminate on a rule whose body leads with the recursive
+   ;; call, so it cannot serve as the oracle for that shape. Pinned instead in
+   ;; query-rules-test/test-right-recursive-rule — a generator must not contain
+   ;; a combination known to hang.
    ;; multi-source: a $2 clause joining ?e across databases
    :multi     (gen/frequency [[4 (gen/return :none)]
                               [1 (gen/return :join-name)]
@@ -135,25 +272,109 @@
    ;; whenever ?s exists it dominates `primary`.
    :find      (gen/elements [:e :e+primary :e+modifier :primary+modifier
                              :coll-primary :agg-count :agg-min :agg-count-primary
-                             :consumer-only])))
+                             :consumer-only :consumer-pair
+                             ;; Axis: THE AGGREGATE. Only `count` and `min` were
+                             ;; generated — the two type-PRESERVING ones, which
+                             ;; is why the population-vs-sample variance split
+                             ;; and the median's type both went unnoticed.
+                             :agg-avg :agg-variance :agg-stddev :agg-median
+                             :agg-sum :agg-count-distinct :agg-min-n
+                             :agg-avg-grouped :agg-median-grouped])
+   ;; Axis: THE DATA — see the dataset defs above.
+   :dataset   (gen/frequency [[3 (gen/return :tidy)]
+                              [2 (gen/return :dup)]
+                              [2 (gen/return :loose)]])
+   ;; ---------------------------------------------------------------------
+   ;; Axis: OUTPUT-VAR REBINDING. A function/get-else clause writes its result
+   ;; into a variable a PRECEDING pattern already bound, e.g.
+   ;;   [?e :name ?n] [(clojure.string/upper-case ?n) ?n]
+   ;; which asks for the entities whose name is already upper-case. Datomic
+   ;; unifies here, as datahike itself does for repeated vars inside one clause
+   ;; (#912/#913); overwriting instead asserts a fact the database does not
+   ;; contain. Measured on this axis alone: 47% of cases answer wrongly and 19%
+   ;; are wrong on BOTH engines, i.e. structurally invisible to base-vs-planner
+   ;; comparison — which is exactly why the axis never existed and the bug
+   ;; survived. It needs the oracle to be visible at all.
+   :rebind?   (gen/frequency [[3 (gen/return false)] [1 (gen/return true)]])
+   ;; ---------------------------------------------------------------------
+   ;; Axis: FIND-VECTOR ORDER, varied INDEPENDENTLY of clause order. The
+   ;; generator has always permuted :where clauses, but derived the :find
+   ;; vector from them, so `[:find ?e ?v]` and `[:find ?v ?e]` over identical
+   ;; clauses were never both generated. The fused multi-group projection is
+   ;; sensitive to precisely that: with >=2 entity groups and a post-op it
+   ;; emits the columns in set-iteration order rather than :find order.
+   :find-perm? gen/boolean
+   ;; ---------------------------------------------------------------------
+   ;; Axis: VARIABLE NAMES. Alpha-renaming cannot change a query's meaning,
+   ;; so an engine whose answer depends on it is wrong by construction — and
+   ;; the fused path DID depend on it: a group emits its wide tuple as
+   ;; `(vec :output-vars)`, i.e. in SET-ITERATION order, which is a function
+   ;; of the variable symbols' hashes. `#{?e ?en}` iterates as [?en ?e] while
+   ;; the alpha-equivalent `#{?f ?fn}` iterates as [?f ?fn]. With fixed names
+   ;; the corpus therefore could not see the missing projection at ANY case
+   ;; count — it was deterministically invisible, not merely unlikely.
+   ;; Renaming is injective (a constant prefix on every var), so distinct
+   ;; variables stay distinct and the meaning is untouched.
+   :var-rename (gen/elements [:none :none :prefix-z :prefix-q9 :suffix-1])))
+
+(def ^:private rule-out-vars
+  "The var each rule clause BINDS — nil for the unary rule, which binds none.
+   Grounding that argument removes the var from the query, so `primary` must
+   not pick it."
+  {:plain '?rn2 :fn-body '?ru :recursive '?r :mutual '?r :with-not nil
+   :rec-changes-edge '?r :rec-filtered '?r :rec-right '?r})
+
+(defn- ground-rule-clause
+  "Rewrite a rule call to ground one argument. :out-arg grounds the rule's
+   output — the direction that seeds magic-set demand from the wrong side —
+   and :in-arg grounds its input. The unary rule has no output to ground."
+  [clause rules ground]
+  (let [args (vec (rest clause))]
+    (case ground
+      :none clause
+      :in-arg (apply list (first clause) 100 (rest args))
+      :out-arg (if (or (nil? (get rule-out-vars rules)) (< (count args) 2))
+                 clause
+                 (apply list (first clause) (first args)
+                        (case rules
+                          :plain ["alice"]
+                          :fn-body ["ALICE"]
+                          [103]))))))
 
 (defn- build-query
-  "Assemble a valid query + extra args from a spec. Returns [query args]."
+  "Assemble a valid query + extra args from a spec.
+   Returns [query args opts], where opts is the map-form extras (:order-by)."
   [{:keys [score? tag? friend? modifiers pred-const shuffle-seed shuffle?
-           in-coll? rules multi use2? find]}]
+           in-coll? rules multi use2? find
+           in-scalar in-tuple? in-rel? in-lookup? rule-ground result-mod
+           rebind? find-perm?]}]
   (let [;; :recursive/:mutual rule clauses walk :friend — force the pattern in
-        friend? (or friend? (#{:recursive :mutual} rules))
+        friend? (or friend? (#{:recursive :mutual :rec-changes-edge
+                               :rec-filtered :rec-right} rules))
+        rule-ground (if (= :none rules) :none rule-ground)
+        rule-cl (when (not= :none rules)
+                  (ground-rule-clause (get rule-clause rules) rules rule-ground))
+        ;; grounding the output removes that var from the query
+        rule-var (when (and (not= :none rules)
+                            (not= rule-cl (get rule-clause rules))
+                            (= :out-arg rule-ground))
+                   ::grounded)
+        rule-out (when (and (not= :none rules) (nil? rule-var))
+                   (get rule-out-vars rules))
         patterns (cond-> '[[?e :name ?n]]
                    score? (conj '[?e :score ?s])
                    tag? (conj '[?e :tag ?t])
                    friend? (conj '[?e :friend ?f] '[?f :name ?fn])
-                   (not= :none rules) (conj (get rule-clause rules))
+                   (not= :none rules) (conj rule-cl)
                    (= :join-name multi) (conj '[$2 ?e :name ?n2])
                    (= :join-score multi) (conj '[$2 ?e :score ?s2]))
         ;; modifiers that need ?s degrade when score? is absent
-        modifiers (mapv (fn [m] (if (and (#{:pred-lt :pred-gt :pred-two-vars} m)
-                                         (not score?))
-                                  :fn-upper m))
+        modifiers (mapv (fn [m]
+                          (cond
+                            (and (#{:pred-lt :pred-gt :pred-two-vars} m) (not score?)) :fn-upper
+                            ;; ?fn only exists when the friend join is present
+                            (and (= :pred-consumer m) (not friend?)) :fn-upper
+                            :else m))
                         (distinct modifiers))
         mod->clauses
         (fn [m]
@@ -161,10 +382,27 @@
             :pred-lt       [[[(list '< '?s pred-const)]] nil]
             :pred-gt       [[[(list '> '?s pred-const)]] nil]
             :pred-two-vars [['[(< ?s 100)] '[(not= ?s 11)]] nil]
-            :fn-upper      [['[(clojure.string/upper-case ?n) ?u]] '?u]
+            :pred-consumer [['[(not= ?fn "zzz")]] nil]
+            ;; With :rebind?, the output var is `?n` — already bound by the
+            ;; always-present [?e :name ?n]. The clause then CONSTRAINS rather
+            ;; than binds: `[(upper-case ?n) ?n]` selects the already-upper-case
+            ;; names (none, in these datasets), and `[(get-else $ ?e :nick _) ?n]`
+            ;; selects the entities whose nick equals their name. An engine that
+            ;; overwrites instead answers with every row, which is the divergence
+            ;; this axis exists to expose.
+            :fn-upper      [(if rebind?
+                              ['[(clojure.string/upper-case ?n) ?n]]
+                              ['[(clojure.string/upper-case ?n) ?u]])
+                            (if rebind? '?n '?u)]
             :fn-chain      [['[(clojure.string/upper-case ?n) ?u]
-                             '[(clojure.string/lower-case ?u) ?l]] '?l]
-            :get-else      [['[(get-else $ ?e :nick "none") ?v]] '?v]
+                             (if rebind?
+                               '[(clojure.string/lower-case ?u) ?n]
+                               '[(clojure.string/lower-case ?u) ?l])]
+                            (if rebind? '?n '?l)]
+            :get-else      [(if rebind?
+                              ['[(get-else $ ?e :nick "none") ?n]]
+                              ['[(get-else $ ?e :nick "none") ?v]])
+                            (if rebind? '?n '?v)]
             :get-else-long [['[(get-else $ ?e :score 0) ?gs]] '?gs]
             :missing-nick  [['[(missing? $ ?e :nick)]] nil]
             :not-tag       [['(not [?e :tag :red])] nil]
@@ -189,9 +427,7 @@
         primary (cond
                   (and use2? (= :join-name multi)) '?n2
                   (and use2? (= :join-score multi)) '?s2
-                  (and use2? (= :fn-body rules)) '?ru
-                  (and use2? (#{:recursive :mutual} rules)) '?r
-                  (and use2? (= :plain rules)) '?rn2
+                  (and use2? rule-out) rule-out
                   score? '?s tag? '?t friend? '?fn :else '?n)
         find-part (case find
                     :e ['?e]
@@ -204,20 +440,98 @@
                     :agg-count-primary [primary (list 'count '?e)]
                     ;; only the consumer group's var; degrades to [?n] without
                     ;; the friend join (single group — no producer/consumer split)
-                    :consumer-only [(if friend? '?fn '?n)])
-        ;; :in order must match arg order: $ [$2] [%] [coll]
-        in-part (when (or in-coll? (not= :none rules) (not= :none multi))
-                  (vec (concat '[$]
-                               (when (not= :none multi) '[$2])
-                               (when (not= :none rules) '[%])
-                               (when in-coll? '[[?e ...]]))))
-        args (vec (concat (when (not= :none multi) [::db2])
-                          (when (not= :none rules) [(get rule-sets rules)])
-                          (when in-coll? [[100 101 102 103 104 105]])))]
+                    :consumer-only [(if friend? '?fn '?n)]
+                    ;; BOTH vars of the consumer group, entity var first. The
+                    ;; consumer emits its own wide tuple as a `vec` of its
+                    ;; :output-vars SET, so this is the projection that has to
+                    ;; reorder columns — and with only one consumer var
+                    ;; projected (:consumer-only) a wrong layout is invisible,
+                    ;; because a 1-tuple cannot be permuted.
+                    :consumer-pair (if friend? '[?f ?fn] ['?e '?n])
+                    ;; the value aggregates need a numeric-ish column; without
+                    ;; :score they degrade to counting rather than build a query
+                    ;; whose divergence would only be about the wrong column
+                    :agg-avg (if score? [(list 'avg '?s)] [(list 'count '?e)])
+                    :agg-variance (if score? [(list 'variance '?s)] [(list 'count '?e)])
+                    :agg-stddev (if score? [(list 'stddev '?s)] [(list 'count '?e)])
+                    :agg-median (if score? [(list 'median '?s)] [(list 'count '?e)])
+                    :agg-sum (if score? [(list 'sum '?s)] [(list 'count '?e)])
+                    :agg-count-distinct [(list 'count-distinct (if score? '?s '?n))]
+                    ;; min/max with a COUNT argument returns a collection, a
+                    ;; different contract from scalar min/max
+                    :agg-min-n [(list 'min 2 (if score? '?s '?n))]
+                    :agg-avg-grouped (if score?
+                                       (vec (distinct [primary (list 'avg '?s)]))
+                                       [primary (list 'count '?e)])
+                    :agg-median-grouped (if score?
+                                          (vec (distinct [primary (list 'median '?s)]))
+                                          [primary (list 'count '?e)]))
+        ;; ?e comes from a collection OR a lookup ref, never both
+        e-binding (cond in-coll? ['[?e ...] [100 101 102 103 104 105]]
+                        in-lookup? ['?e [:uid "u100"]])
+        ;; A scalar wins over the tuple/relation shapes for the same vars, so
+        ;; no var is ever bound twice.
+        scalar-binding (case in-scalar
+                         :tag ['?t :red]
+                         :score ['?s 20]
+                         :name ['?n "alice"]
+                         :unused ['?unused 42]
+                         nil)
+        tuple-binding (when (and in-tuple? (= :none in-scalar))
+                        ['[?t ?s] [:red 20]])
+        rel-binding (when (and in-rel? (= :none in-scalar) (not in-tuple?))
+                      ['[[?t]] [[:red] [:blue]]])
+        ;; :in and args are assembled from ONE ordered list of pairs, so the
+        ;; two can never drift out of correspondence.
+        bindings (cond-> []
+                   (not= :none multi) (conj ['$2 ::db2])
+                   (not= :none rules) (conj ['% (get rule-sets rules)])
+                   e-binding (conj e-binding)
+                   scalar-binding (conj scalar-binding)
+                   tuple-binding (conj tuple-binding)
+                   rel-binding (conj rel-binding))
+        in-part (when (seq bindings)
+                  (into '[$] (map first) bindings))
+        args (mapv second bindings)
+        ;; :with needs plain-var find shapes; :order-by needs a symbol as the
+        ;; first find element. Both degrade to :none rather than build an
+        ;; invalid query.
+        with-part (when (and (= :with result-mod) (#{:e :e+primary} find))
+                    '[?n])
+        ;; Vary :find ORDER independently of clause order. Reversal is enough to
+        ;; separate [E V] from [V E], which is the axis the fused multi-group
+        ;; projection is sensitive to, and it stays deterministic under the
+        ;; fixed seed. Applied before :with/:order-by derive from find-part, so
+        ;; those stay consistent with whatever order we ended up with.
+        find-part (if (and find-perm? (> (count find-part) 1))
+                    (vec (reverse find-part))
+                    find-part)
+        order-by (when (and (= :order-by result-mod) (symbol? (first find-part)))
+                   [(first find-part) :asc])]
     [(vec (concat [:find] find-part
+                  (when with-part (cons :with with-part))
                   (when in-part (cons :in in-part))
                   [:where] clauses))
-     args]))
+     args
+     (cond-> {} order-by (assoc :order-by order-by))]))
+
+(defn- rename-vars
+  "Alpha-rename every query variable. Injective, so the query's meaning is
+   unchanged and any answer difference is a bug — see the :var-rename axis."
+  [form style]
+  (if (= :none style)
+    form
+    (let [ren (fn [sym]
+                (let [n (name sym)]
+                  (case style
+                    :prefix-z  (symbol (str "?z" (subs n 1)))
+                    :prefix-q9 (symbol (str "?q9" (subs n 1)))
+                    :suffix-1  (symbol (str n "_1")))))]
+      (clojure.walk/postwalk
+       (fn [x] (if (and (symbol? x) (= \? (first (name x))) (> (count (name x)) 1))
+                 (ren x)
+                 x))
+       form))))
 
 (defn- normalize
   "Order-insensitive, duplicate-preserving comparison form: collection finds
@@ -228,12 +542,33 @@
     (sequential? r) (frequencies r)
     :else r))
 
-(defn- run-engine [disable? query db args]
-  (try
-    (binding [q/*disable-planner* disable?]
-      (normalize (apply d/q query db
-                        (map (fn [a] (if (= ::db2 a) @test-db2 a)) args))))
-    (catch Exception _ ::raised)))
+(def ^:private case-timeout-ms
+  "Per-engine wall clock for one generated case. Generated cases are tiny — the
+   whole dataset is six entities — so anything this slow is not slow, it is
+   stuck, and a divergence must be REPORTED rather than hanging the run. The
+   first widened-axis run found exactly that: the reference engine does not
+   terminate on mutual recursion over a cyclic :friend graph, which no tidy
+   (acyclic) dataset could surface."
+  (or (some-> (System/getenv "DATAHIKE_DIFF_CASE_TIMEOUT_MS") parse-long) 5000))
+
+(defn- run-engine [disable? query db args opts]
+  (let [thunk (fn []
+                (try
+                  (binding [q/*disable-planner* disable?]
+                    (let [args' (into [db] (map (fn [a] (if (= ::db2 a) @test-db2 a))) args)]
+                      (normalize
+                       (if (seq opts)
+                         ;; map form — the only way to pass :order-by
+                         (d/q (assoc opts :query query :args args'))
+                         (apply d/q query args')))))
+                  (catch Exception _ ::raised)))
+        fut (future (thunk))
+        r (deref fut case-timeout-ms ::timeout)]
+    (when (= r ::timeout)
+      ;; The thread is CPU-bound and will not observe an interrupt, but the run
+      ;; must proceed; the case is already reported as a divergence.
+      (future-cancel fut))
+    r))
 
 (defn- wrap-db [db temporal]
   (case temporal
@@ -241,16 +576,447 @@
     :as-of (d/as-of db (:max-tx db))
     :history (d/history db)))
 
+;; ---------------------------------------------------------------------------
+;; Third engine: the naive oracle (datahike.oracle)
+;;
+;; base-vs-planner has a structural blind spot — when both engines share a
+;; wrong assumption they AGREE, and this spec passes. Measured on one extra
+;; generator axis (rebinding a function output to an already-bound var): 47% of
+;; cases wrong, and 19% wrong in a way NO two-engine comparison can see. The
+;; oracle is a third implementation written for obviousness, so it breaks the
+;; tie. It costs ~1.1 ms/case against the planner's ~7.8, i.e. it is the
+;; cheapest of the three.
+
+(def ^:private oracle-mode
+  "strict — an oracle disagreement fails the build (the goal state).
+   report — collect and print disagreements without failing. Use while a known
+            shared-wrong class is still being fixed, so the axis stays covered
+            instead of being switched off and forgotten.
+   off    — skip the oracle entirely."
+  (or (System/getenv "DATAHIKE_ORACLE") "strict"))
+
+(def ^:private oracle-reports (atom []))
+
+(def ^:private oracle-stats
+  "How many generated cases the oracle actually compared, vs skipped as a shape
+   it does not cover. An oracle that skips everything reports no disagreements,
+   which reads exactly like a clean sweep — so this is asserted, not logged."
+  (atom {:checked 0 :skipped 0}))
+
+(defn- run-oracle [query db args]
+  (let [thunk (fn []
+                (try
+                  (let [args' (into [db] (map (fn [a] (if (= ::db2 a) @test-db2 a))) args)]
+                    (normalize (apply o/q query args')))
+                  (catch clojure.lang.ExceptionInfo e
+                    ;; A shape the oracle does not cover is a SKIP, never a
+                    ;; mismatch — otherwise its gaps would masquerade as bugs.
+                    (if (:oracle/unsupported (ex-data e)) ::unsupported ::raised))
+                  (catch Exception _ ::raised)))
+        fut (future (thunk))
+        r (deref fut case-timeout-ms ::timeout)]
+    (when (= r ::timeout) (future-cancel fut))
+    r))
+
+(def ^:private known-shared-wrong
+  "Classes where BOTH engines are known to answer wrongly, so the oracle
+   disagreeing is expected until the class is fixed.
+
+   This is an ALLOWLIST, not a mute switch: a disagreement outside these
+   classes still fails the build immediately, and `known-shared-wrong-is-still-
+   needed` fails when an entry stops matching — so the change that fixes a
+   class is forced to delete its entry rather than leave it accumulating."
+  ;; An entry may excuse ONLY the failure KIND it declares. That restriction is
+  ;; not decoration: the previous entry matched the whole rebind axis with no
+  ;; kind, and while it sat here it swallowed 5 SILENT wrong answers on
+  ;; history/as-of that the corpus had genuinely found. A coarse entry is a hole
+  ;; the size of its matcher. With `:kind :raise`, a divergence on this axis
+  ;; where the planner RAISES is excused, and one where it quietly answers
+  ;; differently still fails the build.
+  [{:id :fn-output-folded-in-const
+    :kind :raise
+    :why (str "a scalar :in constant is folded into a function or get-else "
+              "clause's output binding position, producing e.g. "
+              "[(upper-case \"alice\") \"alice\"], "
+              "which the binding parser rejects — so the planner raises where the "
+              "base engine answers. The folding is also how the planner ENCODES "
+              "the obligation for a get-else (it becomes v-ground, which the merge "
+              "kernels now enforce), so the fix is not simply to stop folding: the "
+              "binding position needs to carry the obligation without being parsed "
+              "as a binding. Belongs in const-folding, #932's seam. "
+              "Delete this entry then.")
+    ;; The matcher names the CLAUSE SHAPE, not just the axis, and reads it off
+    ;; the BUILT QUERY rather than the spec: `:rebind?` also drives the
+    ;; generated get-else cases, and matching the axis alone let this entry
+    ;; excuse a planner raise anywhere on it — the too-coarse mistake the note
+    ;; above describes, one level down. The spec's `:modifiers` cannot answer
+    ;; it either, because the builder DEGRADES them (a `:pred-lt` with no `?s`
+    ;; becomes `:fn-upper`), so a spec saying `[:pred-lt]` can still produce a
+    ;; function clause. Only a function-output clause writing into an
+    ;; already-bound var folds a constant into a binding position.
+    :match? (fn [_spec query]
+              (let [ins (->> query (drop-while (complement #{:in})) rest
+                             (take-while (complement keyword?)) set)]
+                (boolean
+                 ;; BOTH conditions: a clause writing into `?n`, AND `?n`
+                 ;; arriving as an :in constant — the fold has nothing to fold
+                 ;; otherwise, so without this the entry would excuse a raise
+                 ;; that has some other cause entirely. `get-else` is included
+                 ;; because the fold is into the BINDING POSITION and does not
+                 ;; care what sits in head position: measured, a get-else whose
+                 ;; output var is ALSO pattern-bound raises with the same
+                 ;; "Cannot parse binding" message. (One that is only :in-bound
+                 ;; does not — there the fold becomes v-ground, which the merge
+                 ;; kernels enforce, and both engines answer.)
+                 (and (contains? ins '?n)
+                      (some (fn [form]
+                              (and (vector? form)
+                                   (= 2 (count form))
+                                   (seq? (first form))
+                                   (= '?n (second form))))
+                            (tree-seq coll? seq query))))))}])
+
+(def ^:private oracle-known (atom {}))
+
+(defn- check-oracle!
+  "Compare the oracle against the engines' agreed answer. Returns true unless
+   strict mode has found a real disagreement."
+  [query args opts spec base planner oracle]
+  (if (or (#{::unsupported ::timeout} oracle)
+          ;; opts carries :order-by/:limit/:offset, which the oracle declines
+          (seq opts)
+          ;; when the engines already disagree, that failure is reported above
+          ;; and is the one to fix first
+          (not= base planner))
+    (do (swap! oracle-stats update :skipped inc) true)
+    (let [_ (swap! oracle-stats update :checked inc)
+          agree? (= base oracle)
+          ;; `:kind` restricts what an allowlist entry is allowed to excuse. An
+          ;; entry that documents a RAISE cannot also explain a wrong shared
+          ;; ANSWER: here both engines returned values and agreed, so the
+          ;; entry's stated failure mode did not occur and it must not silence
+          ;; this. Honouring `:match?` alone would let one narrow entry blanket
+          ;; every oracle disagreement its spec predicate happens to cover.
+          known (when-not agree?
+                  (first (filter (fn [e] (and (not= :raise (:kind e))
+                                              ((:match? e) spec query)))
+                                 known-shared-wrong)))]
+      (when-not agree?
+        (swap! oracle-reports conj
+               {:query query :args args :spec (select-keys spec [:dataset :temporal])
+                :engines base :oracle oracle :known (:id known)
+                ;; the verdict that matters: both engines agree AND are wrong
+                :verdict (if known :known-shared-wrong :oracle-vs-both)}))
+      (when known (swap! oracle-known update (:id known) (fnil inc 0)))
+      (if (and known (not agree?))
+        true
+        (if (= "strict" oracle-mode)
+          (do (is agree?
+                  (str "both engines agree but the oracle disagrees — a shared "
+                       "wrong assumption is invisible to differential testing\n"
+                       "  query:   " (pr-str query) "\n"
+                       "  args:    " (pr-str args) "\n"
+                       "  engines: " (pr-str base) "\n"
+                       "  oracle:  " (pr-str oracle)))
+              agree?)
+          true)))))
+
 (defspec base-and-planner-agree-on-generated-queries
   {:num-tests num-cases :seed 1721160000042}
   (prop/for-all [spec gen-spec]
-                (let [[query args] (build-query spec)
-                      db (wrap-db @test-db (:temporal spec))
-                      base (run-engine true query db args)
-                      planner (run-engine false query db args)]
-                  (is (= base planner)
-                      (str "engines diverge on " (pr-str query)
-                           " args " (pr-str args) " temporal " (:temporal spec)
-                           "\n  base:    " (pr-str base)
-                           "\n  planner: " (pr-str planner)))
-                  (= base planner))))
+                (let [[query0 args opts0] (build-query spec)
+                      ;; The two axes must not overlap. Rebinding is a KNOWN
+                      ;; broken class whose wrong answer is itself hash-order
+                      ;; dependent (an overwrite's winner depends on var order),
+                      ;; so a renamed rebind case fails the metamorphic property
+                      ;; for a reason we have already catalogued — and would
+                      ;; mask every OTHER renaming bug in those shapes. Keep
+                      ;; renaming for the shapes whose answers are meant to be
+                      ;; stable; rebinding is still covered on its own.
+                      rename-style (if (:rebind? spec) :none (:var-rename spec))
+                      query (rename-vars query0 rename-style)
+                      opts (rename-vars opts0 rename-style)
+                      db (wrap-db (dataset-db (:dataset spec)) (:temporal spec))
+                      base (run-engine true query db args opts)
+                      planner (run-engine false query db args opts)
+                      oracle (when (not= "off" oracle-mode)
+                               (run-oracle query db args))
+                      ;; The rebind axis violates ONE law (an output binding
+                      ;; whose target is already bound must unify) and that law
+                      ;; is broken in two directions at once: the planner
+                      ;; ignores the obligation while the base engine
+                      ;; overwrites it, so the SAME class shows up here as a
+                      ;; planner-vs-base divergence and, where both overwrite,
+                      ;; as an oracle-vs-both one. Both are allowlisted
+                      ;; together and both disappear with the same fix — see
+                      ;; known-shared-wrong.
+                      ;; METAMORPHIC: alpha-renaming cannot change an answer.
+                      ;; Asserted for every renamed case rather than hoping the
+                      ;; rare shape/name combination is drawn — the fused path's
+                      ;; wide tuple is `(vec :output-vars)`, i.e. set-iteration
+                      ;; order, so renaming-sensitivity is a whole BUG CLASS and
+                      ;; not one query. One extra planner run on the renamed
+                      ;; fraction buys coverage no case count could.
+                      orig-planner (when (not= :none rename-style)
+                                     (run-engine false query0 db args opts0))
+                      ;; Keyed on the SPEC, not on the divergence: the class
+                      ;; shows up three ways — planner-vs-base, oracle-vs-both,
+                      ;; and (because an overwrite's outcome depends on var hash
+                      ;; order) alpha-renaming — and all three are the same bug.
+                      known-class (first (filter (fn [e] ((:match? e) spec query))
+                                                 known-shared-wrong))
+                      diverged? (or (not= base planner)
+                                    (and orig-planner (not= orig-planner planner)))
+                      ;; …and only when the failure is the KIND the entry declares.
+                      raised? (= ::raised planner)
+                      known-rebind? (boolean (and known-class diverged?
+                                                  (case (:kind known-class)
+                                                    :raise raised?
+                                                    true)))]
+                  (when known-rebind?
+                    (swap! oracle-known update (:id known-class) (fnil inc 0)))
+                  (when orig-planner
+                    (is (= orig-planner planner)
+                        (str "alpha-renaming changed the planner's answer — "
+                             "the query means the same thing with either set of "
+                             "variable names\n"
+                             "  original: " (pr-str query0) "\n"
+                             "  renamed:  " (pr-str query) "\n"
+                             "  original answer: " (pr-str orig-planner) "\n"
+                             "  renamed answer:  " (pr-str planner))))
+                  (if known-rebind?
+                    true
+                    (do
+                      (is (= base planner)
+                          (str "engines diverge on " (pr-str query)
+                               " args " (pr-str args) " opts " (pr-str opts)
+                               " temporal " (:temporal spec)
+                               " dataset " (:dataset spec)
+                               "\n  base:    " (pr-str base)
+                               "\n  planner: " (pr-str planner)))
+                      (and (= base planner)
+                           (or (nil? oracle)
+                               (check-oracle! query args opts spec base planner oracle))))))))
+
+(deftest oracle-coverage-is-not-silent
+  (testing "the oracle actually compares — a skip-everything oracle reports no
+            disagreements, which is indistinguishable from a clean sweep"
+    ;; SELF-CONTAINED on purpose. This used to assert on the counter the
+    ;; generative spec fills in, which made it depend on TEST ORDER: locally I
+    ;; always passed --no-randomize and it passed, while CI randomizes and ran
+    ;; this before the spec, so `checked` was 0 and the run went red. An
+    ;; order-dependent assertion is a coin flip, not a check.
+    ;;
+    ;; It now runs its own fixed cases, so it answers exactly one question:
+    ;; is the third engine wired up and able to compare? Corpus coverage is
+    ;; reported separately in target/oracle-stats.edn, which is data rather
+    ;; than an assertion and cannot fail spuriously.
+    (if (= "off" oracle-mode)
+      (is (= "off" oracle-mode) "oracle disabled by DATAHIKE_ORACLE=off")
+      (let [db @test-db
+            cases '[[:find ?e ?n :where [?e :name ?n]]
+                    [:find ?e :where [?e :score ?s] [(> ?s 15)]]
+                    [:find ?n ?v :where [?e :name ?n] [(get-else $ ?e :nick "none") ?v]]]
+            compared (reduce
+                      (fn [n query]
+                        (let [base (run-engine true query db [] nil)
+                              oracle (run-oracle query db [])]
+                          (if (#{::unsupported ::timeout ::raised} oracle)
+                            n
+                            (do (is (= base oracle)
+                                    (str "oracle disagrees with the base engine on a "
+                                         "shape it claims to support: " (pr-str query)))
+                                (inc n)))))
+                      0 cases)]
+        (is (pos? compared)
+            (str "the oracle supported none of " (count cases) " basic shapes — "
+                 "it is wired in but decorative"))))))
+
+(deftest known-shared-wrong-is-still-needed
+  (testing "every allowlisted both-engines-wrong class still reproduces"
+    ;; An allowlist that outlives its bug is worse than no allowlist: it keeps a
+    ;; whole class of divergence permanently unreported. So a class that has
+    ;; stopped diverging FAILS here, and the fix is to delete the entry.
+    ;;
+    ;; Checked with a DETERMINISTIC canary rather than by counting hits in the
+    ;; generated corpus. The counting version passed locally and failed on CI:
+    ;; a generated case that would have diverged can instead hit the per-case
+    ;; timeout on a slower machine, so "no hits" meant "too slow" as often as
+    ;; "fixed". A canary is a fixed query with a fixed answer — it cannot be
+    ;; timed out into a false verdict.
+    (let [cfg {:store {:backend :memory :id (random-uuid)}
+               :schema-flexibility :write}
+          _ (d/create-database cfg)
+          conn (d/connect cfg)
+          _ (d/transact conn [{:db/ident :name :db/valueType :db.type/string
+                               :db/cardinality :db.cardinality/one}
+                              {:db/ident :nick :db/valueType :db.type/string
+                               :db/cardinality :db.cardinality/one}])
+          _ (d/transact conn [{:db/id 1 :name "alice" :nick "al"}])
+          db (d/db conn)
+          ;; The canary must reproduce the class that is STILL listed: a
+          ;; function output written into a variable bound by a scalar :in.
+          ;; Const-folding substitutes the constant into the binding position,
+          ;; so the planner raises while the base engine answers.
+          canary '[:find ?e :in $ ?n :where
+                   [?e :name ?n] [(clojure.string/upper-case ?n) ?n]]
+          answer (try
+                   (binding [q/*disable-planner* false q/*query-result-cache?* false]
+                     (set (d/q canary db "alice")))
+                   (catch Exception _ ::raised))]
+      (if-let [entry (first known-shared-wrong)]
+        ;; Something is listed: the canary must still reproduce, or the entry is
+        ;; stale and is silencing a class that now works.
+        (is (= ::raised answer)
+            (str "the canary for known-wrong class " (:id entry) " now answers "
+                 (pr-str answer) " instead of raising — DELETE the entry from "
+                 "known-shared-wrong so the class is enforced again. Context: "
+                 (:why entry)))
+        ;; Nothing is listed, which is the goal state. Assert the law the empty
+        ;; list is claiming: the canary selects only entities whose nick equals
+        ;; their name, and alice's does not. This keeps the test meaningful with
+        ;; an empty allowlist — a `doseq` over nothing asserts nothing, and a
+        ;; test that cannot fail is the exact silence this file exists to remove.
+        (is (empty? answer)
+            (str "known-shared-wrong is empty, so the binding-seam law is "
+                 "claimed to hold everywhere — but the canary still answers "
+                 (pr-str answer)
+                 ". Either re-list the class or fix the regression."))))))
+
+;; ---------------------------------------------------------------------------
+;; Axis: VALUES THAT ARE NOT SCALARS.
+;;
+;; Every axis above varies the query's SHAPE over scalar data. That is how a
+;; whole class stayed invisible: a byte/float/double array is a VALUE in
+;; datahike (`datahike.array/a=` and the index comparator both say so), but the
+;; JVM and JavaScript give arrays IDENTITY semantics, so each site that hashed
+;; or compared one silently answered by reference. Eight distinct wrong-answer
+;; classes were found here BY REVIEWERS, one at a time, each in the fix for the
+;; previous one — which is exactly the loop a generator exists to close.
+;;
+;; The `:find` projects ENTITIES, never the array itself: a result containing
+;; an array would be compared with `=` by the harness (and by `normalize`), so
+;; the comparison would inherit the very defect under test.
+
+(defonce ^:private test-db-arrays
+  (delay
+    (let [cfg {:store {:backend :memory :id (random-uuid)}
+               :schema-flexibility :write}]
+      (d/create-database cfg)
+      (let [conn (d/connect cfg)
+            b (fn [& xs] (byte-array xs))
+            f (fn [& xs] (float-array xs))
+            dd (fn [& xs] (double-array xs))]
+        (d/transact conn [{:db/ident :ba  :db/valueType :db.type/bytes :db/cardinality :db.cardinality/one}
+                          {:db/ident :ba2 :db/valueType :db.type/bytes :db/cardinality :db.cardinality/one}
+                          ;; indexed, so a value-position probe can drive an AVET seek
+                          {:db/ident :bai :db/valueType :db.type/bytes :db/index true
+                           :db/cardinality :db.cardinality/one}
+                          {:db/ident :bam :db/valueType :db.type/bytes :db/cardinality :db.cardinality/many}
+                          {:db/ident :fa  :db/valueType :db.type/float-array :db/cardinality :db.cardinality/one}
+                          {:db/ident :fa2 :db/valueType :db.type/float-array :db/cardinality :db.cardinality/one}
+                          {:db/ident :da  :db/valueType :db.type/double-array :db/cardinality :db.cardinality/one}
+                          {:db/ident :da2 :db/valueType :db.type/double-array :db/cardinality :db.cardinality/one}
+                          {:db/ident :anchor :db/valueType :db.type/long :db/cardinality :db.cardinality/one}])
+        ;; Every array object is allocated separately, so nothing is equal by
+        ;; identity and only value semantics can make a join match. The awkward
+        ;; values are the point: bytes at and above 0x80 (which are NEGATIVE on
+        ;; the JVM and were once rendered through `(char …)`), NaN (which the
+        ;; JVM calls equal to itself and JavaScript's `<`/`>` call equal to
+        ;; everything), and signed zero (ordered on the JVM, tied in JS).
+        (d/transact conn [{:db/id 1 :anchor 1 :ba (b 1 2 3) :ba2 (b 1 2 3) :bai (b 1 2 3)
+                           :bam [(b 1 2 3) (b 4 5 6)]
+                           :fa (f 1.5 2.5) :fa2 (f 1.5 2.5) :da (dd 1.5) :da2 (dd 1.5)}
+                          {:db/id 2 :anchor 2 :ba (b 1 2 3) :ba2 (b 9 9 9) :bai (b 9 9 9)
+                           :bam [(b 9 9 9)]
+                           :fa (f 1.5 2.5) :fa2 (f 9.5) :da (dd 9.5) :da2 (dd 1.5)}
+                          {:db/id 3 :anchor 3 :ba (b -1 -128 0) :ba2 (b -1 -128 0) :bai (b -1 -128 0)
+                           :fa (f ##NaN) :fa2 (f ##NaN) :da (dd ##NaN 1.5) :da2 (dd ##NaN 1.5)}
+                          {:db/id 4 :anchor 4 :ba (b -1 -128 0) :ba2 (b 0 0 0) :bai (b 0)
+                           :fa (f -0.0) :fa2 (f 0.0) :da (dd -0.0) :da2 (dd 0.0)}
+                          ;; no :ba2 / :fa2 at all — the default side of get-else
+                          {:db/id 5 :anchor 5 :ba (b 7) :bai (b 7) :fa (f 7.5) :da (dd 7.5)}])
+        (d/db conn)))))
+
+(def ^:private array-attr-pairs
+  ;; [own paired indexed-own card-many-own]
+  {:bytes  {:a :ba  :b :ba2 :indexed :bai :many :bam}
+   :floats {:a :fa  :b :fa2}
+   :doubles {:a :da :b :da2}})
+
+(def ^:private gen-array-spec
+  (gen/hash-map
+   :kind      (gen/elements [:bytes :floats :doubles])
+   :shape     (gen/elements [:same-entity :cross-group :get-else :not-join
+                             :coll-in :in-const :probe-join :card-many-get-else
+                             :missing-guard :or-join])
+   :find      (gen/elements [:e :count])))
+
+(defn- array-value-for
+  "A concrete array value from the dataset, for the shapes that bind one as an
+   argument. Allocated fresh, so an engine can only match it by VALUE."
+  [kind]
+  (case kind
+    :bytes   (byte-array [1 2 3])
+    :floats  (float-array [1.5 2.5])
+    :doubles (double-array [1.5])))
+
+(defn- build-array-query [{:keys [kind shape find]}]
+  (let [{:keys [a b indexed many]} (get array-attr-pairs kind)
+        find-clause (if (= find :count) '[(count ?e)] '[?e])
+        q (fn [& where] (into (into [:find] find-clause) (cons :where where)))]
+    (case shape
+      :same-entity  [(q [(quote ?e) a (quote ?v)] [(quote ?e) b (quote ?v)]) []]
+      :cross-group  [(q [(quote ?e) a (quote ?v)] [(quote ?f) b (quote ?v)]) []]
+      :get-else     [(q [(quote ?e) a (quote ?v)]
+                        [(list 'get-else '$ '?e b "zz") '?v]) []]
+      :not-join     [(q [(quote ?e) a (quote ?v)]
+                        (list 'not-join '[?v] [(quote ?f) b (quote ?v)])) []]
+      :or-join      [(q [(quote ?e) :anchor (quote _)]
+                        (list 'or-join '[?e]
+                              [(quote ?e) a (array-value-for kind)]
+                              [(quote ?e) b (array-value-for kind)])) []]
+      :missing-guard [(q [(quote ?e) a (quote ?v)]
+                         [(list 'missing? '$ '?e b)]) []]
+      :coll-in      [(into (into [:find] find-clause)
+                           (list :in '$ '[?v ...] :where [(quote ?e) a (quote ?v)]))
+                     [[(array-value-for kind)]]]
+      :in-const     [(into (into [:find] find-clause)
+                           (list :in '$ '?v :where
+                                 [(quote ?e) :anchor (quote _)]
+                                 [(list 'get-else '$ '?e a "zz") '?v]))
+                     [(array-value-for kind)]]
+      :probe-join   (if indexed
+                      [(q [(quote ?p) :anchor 1] [(quote ?p) a (quote ?v)]
+                          [(quote ?e) indexed (quote ?v)]) []]
+                      [(q [(quote ?e) a (quote ?v)] [(quote ?f) b (quote ?v)]) []])
+      :card-many-get-else (if many
+                            [(q [(quote ?e) :anchor (quote _)]
+                                [(list 'get-else '$ '?e many "zz") '?v]) []]
+                            [(q [(quote ?e) a (quote ?v)] [(quote ?e) b (quote ?v)]) []]))))
+
+(defspec array-values-are-values
+  {:num-tests (max 200 (quot num-cases 6)) :seed 1721160000042}
+  (prop/for-all [spec gen-array-spec]
+                (let [[query args] (build-array-query spec)
+                      db @test-db-arrays
+                      base (run-engine true query db args {})
+                      planner (run-engine false query db args {})
+                      oracle (run-oracle query db args)]
+                  (and
+                   (is (= base planner)
+                       (str "engines diverge on an ARRAY value\n"
+                            "  spec:    " (pr-str spec) "\n"
+                            "  query:   " (pr-str query) "\n"
+                            "  base:    " (pr-str base) "\n"
+                            "  planner: " (pr-str planner)))
+                   ;; the oracle is the reference: two engines agreeing is not
+                   ;; evidence, and every class found here was a SHARED wrong
+                   ;; answer at least once
+                   (or (#{::unsupported ::timeout ::raised} oracle)
+                       (is (= base oracle)
+                           (str "both engines agree but the oracle disagrees on an ARRAY value\n"
+                                "  spec:    " (pr-str spec) "\n"
+                                "  query:   " (pr-str query) "\n"
+                                "  engines: " (pr-str base) "\n"
+                                "  oracle:  " (pr-str oracle))))))))

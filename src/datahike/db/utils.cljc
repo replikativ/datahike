@@ -13,13 +13,31 @@
   #?(:cljs (:require-macros [datahike.datom :refer [datom]]))
   #?(:clj (:import [datahike.datom Datom])))
 
+(defn attr-ident
+  "`attr` as an IDENT. Under `:attribute-refs?` a datom's `a` is a numeric ref,
+   while `rschema` and `schema` are keyed by ident — so anything looking an
+   attribute up in either has to resolve first."
+  [db attr]
+  (if (and (:attribute-refs? (dbi/-config db))
+           (number? attr))
+    (dbi/ident-for db attr :error-on-missing)
+    attr))
+
 (defn #?@(:clj [^Boolean is-attr?]
           :cljs [^boolean is-attr?]) [db attr property]
-  (let [a-ident (if (and (:attribute-refs? (dbi/-config db))
-                         (number? attr))
-                  (dbi/ident-for db attr :error-on-missing)
-                  attr)]
-    (contains? (dbi/-attrs-by db property) a-ident)))
+  (contains? (dbi/-attrs-by db property) (attr-ident db attr)))
+
+(defn attr-props
+  "Value of `rschema` `property` for `attr` — the MAP-valued counterpart of
+   `is-attr?`, which only answers whether an entry exists.
+
+   The pair matters: without this, a caller needing the value hand-rolls
+   `(get (dbi/-attrs-by db property) attr)` and silently loses the ident
+   resolution `is-attr?` does. That is exactly how composite `:db/tupleAttrs`
+   came to be dropped under `:attribute-refs?` — the guard resolved and said
+   yes, then the lookup did not and found nothing."
+  [db attr property]
+  (get (dbi/-attrs-by db property) (attr-ident db attr)))
 
 (defn #?@(:clj [^Boolean multival?]
           :cljs [^boolean multival?]) [db attr]

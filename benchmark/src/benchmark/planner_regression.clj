@@ -100,6 +100,7 @@
         tconn (temporal-conn txes)
         tnum  (d/as-of @tconn (:max-tx @tconn))   ;; numeric-tx as-of
         tdate (d/as-of @tconn (Date.))            ;; date as-of (exercises date->tx cache)
+        thist (d/history @tconn)                  ;; full history — every datom VERSION
         ids-1k  (vec (range (min 1000 nodes)))
         ids-100 (vec (range (min 100 nodes)))
         ids-500 (vec (range (min 500 txes)))
@@ -135,6 +136,17 @@
 
      {:id :asof-entity-group :desc "[?e :node/id ?id][?e :node/data ?d]  :in over as-of (numeric tx)"
       :ctx {:db tnum :ids ids-500}
+      :run (fn [{:keys [db ids]}]
+             (d/q '{:find [?id ?d] :in [$ [?id ...]] :where [[?e :node/id ?id] [?e :node/data ?d]]} db ids))}
+
+     ;; A multi-merge entity group over a HISTORY db. This shape was missing, and
+     ;; its absence hid a real regression: per-datom work in the fused merge loop
+     ;; is invisible on the current-db shapes above (few datoms per entity) but
+     ;; multiplies over history, where the scan sees every version. A boxed
+     ;; equality-code array cost 19.1ms against 8.4ms on exactly this shape while
+     ;; every gate here stayed green.
+     {:id :hist-entity-group :desc "[?e :node/id ?id][?e :node/data ?d] over history — multi-merge, all versions"
+      :ctx {:db thist :ids ids-500}
       :run (fn [{:keys [db ids]}]
              (d/q '{:find [?id ?d] :in [$ [?id ...]] :where [[?e :node/id ?id] [?e :node/data ?d]]} db ids))}
 

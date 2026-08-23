@@ -130,7 +130,22 @@
                         {:backend :datahike-server
                          :url     (str "http://localhost:" port)
                          :token   "securerandompassword"
-                         :format  :json}))))
+                         :format  :json})))
+  ;; The same suite over `application/cbor`. It is the only binding that needs
+  ;; no server-side help to carry Clojure types: `support-embedded-edn-in-json`
+  ;; and `json/xf-data-for-tx` are gated on the JSON content-type, so a query
+  ;; whose keywords survive here proves the codec carried them rather than the
+  ;; schema having re-derived them.
+  (testing "Test CBOR binding."
+    (let [port 23192]
+      (run-server-tests {:port     port
+                         :join?    false
+                         :dev-mode false
+                         :token    "securerandompassword"}
+                        {:backend :datahike-server
+                         :url     (str "http://localhost:" port)
+                         :token   "securerandompassword"
+                         :format  :cbor}))))
 
 (deftest test-authentication
   (testing "Password tokens must match."

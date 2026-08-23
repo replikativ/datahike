@@ -27,7 +27,7 @@
                    [java.io Writer]
                    [java.util Date])))
 
-(declare equiv-db empty-db)
+(declare equiv-db empty-db db-view-hash)
 #?(:cljs (declare pr-db pr-hist-db))
 
 ;; ----------------------------------------------------------------------------
@@ -151,24 +151,101 @@
   [time-point]
   (complement (as-of-pred time-point)))
 
+(defn- live-now?
+  "Is this history entry actually the LIVE datom, merged in from the current
+   tree rather than read out of a temporal one?
+
+   `distinct-datoms` unions the current datoms of card-many and `:db/noHistory`
+   attributes into the history stream, and after that merge nothing distinguishes
+   a superseded assertion from a live one — they are both `[e a v tx true]`. The
+   current tree answers it: if it holds this exact `[e a v]` at this exact `tx`,
+   this entry IS the live datom.
+
+   `=` on Datoms compares `[e a v]` only, so the tx has to be compared
+   explicitly."
+  [db ^Datom d]
+  (when-let [^Datom c (first (dbi/search db [(.-e d) (.-a d) (.-v d)]))]
+    (= (datom-tx c) (datom-tx d))))
+
 (defn assemble-datoms-xform [db]
   (mapcat
    (fn [[[_ a] datoms]]
      (if (dbu/multival? db a)
-       (->> datoms
-            (sort-by datom-tx)
-            (reduce (fn [current-datoms ^Datom datom]
-                      (if (datom-added datom)
-                        (assoc current-datoms (.-v datom) datom)
-                        (dissoc current-datoms (.-v datom))))
-                    {})
-            vals)
+       ;; Sorted so that within one transaction ASSERTIONS are folded before
+       ;; RETRACTIONS, which makes the retraction win on a tie. A temporal
+       ;; assertion and retraction sharing a tx can only mean the datom was
+       ;; created and removed inside that transaction, so absent is right.
+       ;;
+       ;; That alone would be wrong for the other order — retract-then-assert,
+       ;; where the re-assertion is live and must survive. It is not in the
+       ;; temporal tree at all; it arrives from the current tree via the merge,
+       ;; and `live-now?` is what tells the two apart. Only values the fold
+       ;; dropped are probed, so the lookup is paid on retracted values only.
+       ;; Sorted so that within one transaction ASSERTIONS fold before
+       ;; RETRACTIONS, which makes the retraction win on a tie. A temporal
+       ;; assertion and retraction sharing a tx can only mean the datom was
+       ;; created and removed inside that transaction, so absent is right.
+       ;;
+       ;; That alone would be wrong for the other order — retract-then-assert,
+       ;; where the re-assertion is live and must survive. It is not in the
+       ;; temporal tree at all; it arrives from the current tree via the merge,
+       ;; and only `live-now?` tells the two apart.
+       ;;
+       ;; The fold itself reports which values need that probe: a `dissoc` whose
+       ;; victim was asserted at the SAME tx is precisely the ambiguous case.
+       ;; Anything else the fold already resolves, so an ordinary retraction
+       ;; costs no lookup. Written with an explicit comparator and no grouping
+       ;; because both allocate per datom on a hot path — with `juxt` keys and a
+       ;; `group-by` this scan measured 30ms against a 19ms baseline.
+       (let [ordered (sort (fn [^Datom a ^Datom b]
+                             (let [c (compare (datom-tx a) (datom-tx b))]
+                               (if (zero? c)
+                                 (compare (if (datom-added a) 0 1)
+                                          (if (datom-added b) 0 1))
+                                 c)))
+                           datoms)
+             ;; a volatile rather than a tuple accumulator: the fold runs per
+             ;; datom and a `[cur amb]` pair allocated on every step, which cost
+             ;; more than the probe it was there to avoid
+             ambiguous (volatile! nil)
+             surviving (reduce (fn [cur ^Datom d]
+                                 (if (datom-added d)
+                                   (assoc cur (.-v d) d)
+                                   (let [^Datom prev (get cur (.-v d))]
+                                     (when (and prev (= (datom-tx prev) (datom-tx d)))
+                                       (vswap! ambiguous conj prev))
+                                     (dissoc cur (.-v d)))))
+                               {}
+                               ordered)
+             ambiguous @ambiguous
+             revived (when ambiguous
+                       (reduce (fn [m ^Datom d]
+                                 (if (live-now? db d) (assoc m (.-v d) d) m))
+                               {} ambiguous))]
+         (vals (if revived (merge surviving revived) surviving)))
+       ;; Cardinality-one, same rule but PER VALUE. The group is keyed by
+       ;; [e a], so a transaction that retracts one value and asserts another
+       ;; — `[[:db/retract e :aka "Tupen"] [:db/add e :aka "Devil"]]` — has both
+       ;; a retraction and an assertion at the latest tx, and only the retracted
+       ;; VALUE may be suppressed by it.
        (let [last-ea-tx (apply max (map datom-tx datoms))
-             current-ea-datom (first (filter #(and (datom-added %) (= last-ea-tx (datom-tx %)))
-                                             datoms))]
-         (if current-ea-datom
-           [current-ea-datom]
-           []))))))
+             at-last (filter #(= last-ea-tx (datom-tx %)) datoms)
+             retracted-at-last (set (map #(.-v ^Datom %) (remove datom-added at-last)))
+             added-at-last (filter datom-added at-last)
+             ;; an assertion whose own value was not retracted in the same tx
+             survivor (first (remove #(contains? retracted-at-last (.-v ^Datom %))
+                                     added-at-last))]
+         (if survivor
+           [survivor]
+           ;; No assertion survived the tx on its own, so every one of them was
+           ;; also retracted in it. Such a value is still live if the retraction
+           ;; came FIRST — retract-then-assert — and only the current indices can
+           ;; say. Deliberately inside this branch: as a `let` binding it ran on
+           ;; every cardinality-one group, one index probe per group, even though
+           ;; a survivor makes the answer irrelevant. That is the common case.
+           (if-let [live (first (filter #(live-now? db %) added-at-last))]
+             [live]
+             [])))))))
 
 (defn temporal-datom-filter [datoms pred db]
   (let [filtered-tx-ids (dbu/filter-txInstant datoms pred db)]
@@ -318,7 +395,16 @@
        (-persistent! [db] (db-persistent! db))]
 
       :clj
+      ;; `equals` must be given explicitly, not inherited. defrecord's
+      ;; generated one delegates to APersistentMap/mapEquals, which walks
+      ;; `(.seq this)` casting each element to Map.Entry — but `seq` here
+      ;; yields Datoms, so it raised a ClassCastException from inside JDK
+      ;; code instead of answering false. That breaks the Object.equals
+      ;; contract and takes down any java.util collection holding a DB
+      ;; (HashMap, HashSet, Objects.equals, List.contains). Delegating to
+      ;; equiv-db also keeps `.equals` and `=` in agreement.
       [Object (hashCode [db] hash)
+       (equals [db other] (equiv-db db other))
        clojure.lang.IHashEq (hasheq [db] hash)
        Seqable (seq [db] (di/-seq eavt))
        IPersistentCollection
@@ -401,7 +487,21 @@
        (-assoc [_ _ _] (throw (js/Error. "-assoc is not supported on FilteredDB")))]
 
       :clj
-      [IPersistentCollection
+      ;; Same reasoning as DB above, and here `hashCode`/`hasheq` are
+      ;; needed too: this view overrides `seq` to yield Datoms but
+      ;; declared no Object impls at all, so the INHERITED mapHash /
+      ;; mapHasheq / mapEquals all walked that seq casting to Map.Entry
+      ;; and threw. A view could not be hashed or put in a HashSet, and
+      ;; `(= view db)` threw while `(= db view)` answered true —
+      ;; asymmetric, which `equals` may never be.
+      [Object
+       (hashCode [db] (db-view-hash db))
+       (equals [db other] (equiv-db db other))
+
+       clojure.lang.IHashEq
+       (hasheq [db] (db-view-hash db))
+
+       IPersistentCollection
        (count [db] (count (dbi/datoms db :eavt [])))
        (equiv [db o] (equiv-db db o))
        (cons [db [k v]] (throw (UnsupportedOperationException. "cons is not supported on FilteredDB")))
@@ -476,7 +576,21 @@
        (-contains-key? [_ _] (throw (js/Error. "-contains-key? is not supported on HistoricalDB")))
        (-assoc [_ _ _] (throw (js/Error. "-assoc is not supported on HistoricalDB")))]
       :clj
-      [IPersistentCollection
+      ;; Same reasoning as DB above, and here `hashCode`/`hasheq` are
+      ;; needed too: this view overrides `seq` to yield Datoms but
+      ;; declared no Object impls at all, so the INHERITED mapHash /
+      ;; mapHasheq / mapEquals all walked that seq casting to Map.Entry
+      ;; and threw. A view could not be hashed or put in a HashSet, and
+      ;; `(= view db)` threw while `(= db view)` answered true —
+      ;; asymmetric, which `equals` may never be.
+      [Object
+       (hashCode [db] (db-view-hash db))
+       (equals [db other] (equiv-db db other))
+
+       clojure.lang.IHashEq
+       (hasheq [db] (db-view-hash db))
+
+       IPersistentCollection
        (count [db] (count (dbi/datoms db :eavt [])))
        (equiv [db o] (equiv-db db o))
        (cons [db [k v]] (throw (UnsupportedOperationException. "cons is not supported on HistoricalDB")))
@@ -541,7 +655,21 @@
        (-contains-key? [_ _] (throw (js/Error. "-contains-key? is not supported on AsOfDB")))
        (-assoc [_ _ _] (throw (js/Error. "-assoc is not supported on AsOfDB")))]
       :clj
-      [IPersistentCollection
+      ;; Same reasoning as DB above, and here `hashCode`/`hasheq` are
+      ;; needed too: this view overrides `seq` to yield Datoms but
+      ;; declared no Object impls at all, so the INHERITED mapHash /
+      ;; mapHasheq / mapEquals all walked that seq casting to Map.Entry
+      ;; and threw. A view could not be hashed or put in a HashSet, and
+      ;; `(= view db)` threw while `(= db view)` answered true —
+      ;; asymmetric, which `equals` may never be.
+      [Object
+       (hashCode [db] (db-view-hash db))
+       (equals [db other] (equiv-db db other))
+
+       clojure.lang.IHashEq
+       (hasheq [db] (db-view-hash db))
+
+       IPersistentCollection
        (count [db] (count (dbi/datoms db :eavt [])))
        (equiv [db o] (equiv-db db o))
        (cons [db [k v]] (throw (UnsupportedOperationException. "cons is not supported on AsOfDB")))
@@ -607,7 +735,21 @@
        (-contains-key? [_ _] (throw (js/Error. "-contains-key? is not supported on SinceDB")))
        (-assoc [_ _ _] (throw (js/Error. "-assoc is not supported on SinceDB")))]
       :clj
-      [IPersistentCollection
+      ;; Same reasoning as DB above, and here `hashCode`/`hasheq` are
+      ;; needed too: this view overrides `seq` to yield Datoms but
+      ;; declared no Object impls at all, so the INHERITED mapHash /
+      ;; mapHasheq / mapEquals all walked that seq casting to Map.Entry
+      ;; and threw. A view could not be hashed or put in a HashSet, and
+      ;; `(= view db)` threw while `(= db view)` answered true —
+      ;; asymmetric, which `equals` may never be.
+      [Object
+       (hashCode [db] (db-view-hash db))
+       (equals [db other] (equiv-db db other))
+
+       clojure.lang.IHashEq
+       (hasheq [db] (db-view-hash db))
+
+       IPersistentCollection
        (count [db] (count (dbi/datoms db :eavt [])))
        (equiv [db o] (equiv-db db o))
        (cons [db [k v]] (throw (UnsupportedOperationException. "cons is not supported on SinceDB")))
@@ -671,10 +813,34 @@
       :else false)))
 
 (defn- equiv-db [db other]
-  (and (or (instance? DB other) (instance? FilteredDB other))
-       (or (not (instance? DB other)) (= (hash db) (hash other)))
-       (= (dbi/-schema db) (dbi/-schema other))
-       (equiv-db-index (dbi/datoms db :eavt []) (dbi/datoms other :eavt []))))
+  ;; The identity case has to come first. Only DB and FilteredDB are
+  ;; comparable by content below, so without it a HistoricalDB / AsOfDB /
+  ;; SinceDB was not even equal to itself — and `equals` is required to
+  ;; be reflexive.
+  (or (identical? db other)
+      ;; BOTH sides must be content-comparable kinds, not just `other`. Testing
+      ;; only `other` let a view reach the content branch as the LEFT argument,
+      ;; so `(= (d/history db) db)` answered true while `(= db (d/history db))`
+      ;; answered false — `Object.equals` is required to be symmetric, and a
+      ;; java.util.HashSet holding both then contains two entries for what one
+      ;; side calls the same value. Same one-way asymmetry for AsOfDB and SinceDB.
+      (and (or (instance? DB db) (instance? FilteredDB db))
+           (or (instance? DB other) (instance? FilteredDB other))
+           (or (not (instance? DB other)) (= (hash db) (hash other)))
+           (= (dbi/-schema db) (dbi/-schema other))
+           (equiv-db-index (dbi/datoms db :eavt []) (dbi/datoms other :eavt [])))))
+
+(defn- db-view-hash
+  "Content hash for the DB views (FilteredDB / HistoricalDB / AsOfDB /
+   SinceDB), which carry no precomputed `:hash` field of their own.
+
+   Deliberately the SAME additive datom-sum DB maintains incrementally
+   (see `:hash` in `new-db`), so a view and a DB holding the same datoms
+   hash alike — `equiv-db` reports those equal, so their hashes must
+   agree. O(n) per call: there is no running sum to read off, the same
+   reason `count` on a view is O(n)."
+  [db]
+  (reduce #(+ %1 (hash %2)) 0 (dbi/datoms db :eavt [])))
 
 #?(:cljs
    (do

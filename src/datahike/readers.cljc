@@ -23,7 +23,7 @@
        (if-let [conn (get-connection store-id)]
          (let [store (:store @conn)]
            (when-let [raw-db (k/get store commit-id nil {:sync? true})]
-             (dw/stored->db raw-db store)))
+             (dw/stored->db-read-only raw-db store)))
          (log/raise (ex-info "Could not find active connection. Did you connect already?"
                              {:type :no-connection-for-db
                               :raw-db raw-db}))))

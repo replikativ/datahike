@@ -182,7 +182,12 @@
      :impl datahike.api.impl/db}
 
     release
-    {:args [:=> [:cat :datahike/SConnection] :nil]
+    ;; TWO arities: `(release conn)` and `(release conn release-all?)`. The
+    ;; second was undeclared, so instrumentation rejected a call the
+    ;; implementation has always accepted (`connector/release`).
+    {:args [:function
+            [:=> [:cat :datahike/SConnection] :nil]
+            [:=> [:cat :datahike/SConnection :any] :nil]]
      :ret :nil
      :categories [:connection :lifecycle]
      :stability :stable
@@ -198,7 +203,12 @@
     ;; =========================================================================
 
     transact
-    {:args [:=> [:cat :datahike/SConnection :datahike/STransactions] :datahike/STransactionReport]
+    ;; Either a transaction vector or an arg-map `{:tx-data … :tx-meta …}`; the
+    ;; arg-map is the form in README.md. Declaring only the vector made a
+    ;; CORRECT call fail under `malli.instrument/instrument!`. See `with` above
+    ;; for why this is one `[:or …]` parameter rather than two branches, and
+    ;; `codegen/java`'s `expand-or-args` for what it emits.
+    {:args [:=> [:cat :datahike/SConnection [:or :datahike/STransactions :datahike/SWithArgs]] :datahike/STransactionReport]
      :ret :datahike/STransactionReport
      :categories [:transaction :write]
      :stability :stable
@@ -218,7 +228,7 @@
      :impl datahike.api.impl/transact}
 
     transact!
-    {:args [:=> [:cat :datahike/SConnection :datahike/STransactions] :any]
+    {:args [:=> [:cat :datahike/SConnection [:or :datahike/STransactions :datahike/SWithArgs]] :any]
      :ret :any
      :categories [:transaction :write :async]
      :stability :stable
@@ -242,9 +252,19 @@
      :impl datahike.writer/load-entities}
 
     with
+    ;; The 2-arity accepts EITHER a transaction vector or an arg-map
+    ;; `{:tx-data … :tx-meta …}` — both documented, both in the examples below —
+    ;; so it is ONE `[:or …]` parameter. Declaring them as two branches instead
+    ;; is what malli rejects (`:malli.core/duplicate-arities`), and it is why
+    ;; this operation spent a while excluded from registration entirely.
+    ;;
+    ;; The Java binding keeps all three overloads it has always had:
+    ;; `codegen/java`'s `expand-or-args` turns an `[:or …]` argument into one
+    ;; overload per distinct Java type, so `STransactions`/`SWithArgs` still
+    ;; emit `with(Object, List)` — marshalling through
+    ;; `Util.normalizeCollections` — beside `with(Object, Object)`.
     {:args [:function
-            [:=> [:cat :datahike/SDB :datahike/SWithArgs] :datahike/STransactionReport]
-            [:=> [:cat :datahike/SDB :datahike/STransactions] :datahike/STransactionReport]
+            [:=> [:cat :datahike/SDB [:or :datahike/STransactions :datahike/SWithArgs]] :datahike/STransactionReport]
             [:=> [:cat :datahike/SDB :datahike/STransactions :datahike/STxMeta] :datahike/STransactionReport]]
      :ret :datahike/STransactionReport
      :categories [:transaction :immutable]
@@ -259,7 +279,7 @@
      :impl datahike.api.impl/with}
 
     db-with
-    {:args [:=> [:cat :datahike/SDB :datahike/STransactions] :datahike/SDB]
+    {:args [:=> [:cat :datahike/SDB [:or :datahike/STransactions :datahike/SWithArgs]] :datahike/SDB]
      :ret :datahike/SDB
      :categories [:transaction :immutable]
      :stability :stable
@@ -387,9 +407,29 @@
     ;; =========================================================================
 
     datoms
+    ;; Two branches with NON-OVERLAPPING arities. Both forms the impl accepts —
+    ;; (f db :eavt component…) and (f db {:index .. :components ..}) — used to be
+    ;; declared as two branches that BOTH admitted two arguments; malli's
+    ;; `:function` dispatches on arity, so it took the arg-map one and reported
+    ;; the canonical `(f db :eavt)` as `:malli.core/invalid-input`.
+    ;;
+    ;; So the 2-arity branch now accepts EITHER shape via `:or`, and the
+    ;; component branch starts at THREE (`:+`, one-or-more components). The
+    ;; index keyword is the same enum `SIndexLookupArgs` declares, so a bad
+    ;; index is still caught.
+    ;;
+    ;; The two branches are also load-bearing for CODEGEN, which is why this is
+    ;; not collapsed into one variadic `[:* :any]`: `codegen/java` maps each
+    ;; `[:cat]` element to one positional Java parameter and has no varargs
+    ;; notion, so a single branch emits a single overload and
+    ;; `Datahike.datoms(db, kwd(":eavt"))` stops compiling. Two branches, two
+    ;; overloads — the arity counts here are the generated Java signatures.
     {:args [:function
-            [:=> [:cat :datahike/SDB :datahike/SIndexLookupArgs] [:maybe :datahike/SDatoms]]
-            [:=> [:cat :datahike/SDB :keyword [:* :any]] [:maybe :datahike/SDatoms]]]
+            [:=> [:cat :datahike/SDB
+                  [:or [:enum :eavt :aevt :avet] :datahike/SIndexLookupArgs]]
+             [:maybe :datahike/SDatoms]]
+            [:=> [:cat :datahike/SDB [:enum :eavt :aevt :avet] [:+ :any]]
+             [:maybe :datahike/SDatoms]]]
      :ret [:maybe :datahike/SDatoms]
      :categories [:query :index :advanced]
      :stability :stable
@@ -405,9 +445,29 @@
      :impl datahike.api.impl/datoms}
 
     seek-datoms
+    ;; Two branches with NON-OVERLAPPING arities. Both forms the impl accepts —
+    ;; (f db :eavt component…) and (f db {:index .. :components ..}) — used to be
+    ;; declared as two branches that BOTH admitted two arguments; malli's
+    ;; `:function` dispatches on arity, so it took the arg-map one and reported
+    ;; the canonical `(f db :eavt)` as `:malli.core/invalid-input`.
+    ;;
+    ;; So the 2-arity branch now accepts EITHER shape via `:or`, and the
+    ;; component branch starts at THREE (`:+`, one-or-more components). The
+    ;; index keyword is the same enum `SIndexLookupArgs` declares, so a bad
+    ;; index is still caught.
+    ;;
+    ;; The two branches are also load-bearing for CODEGEN, which is why this is
+    ;; not collapsed into one variadic `[:* :any]`: `codegen/java` maps each
+    ;; `[:cat]` element to one positional Java parameter and has no varargs
+    ;; notion, so a single branch emits a single overload and
+    ;; `Datahike.datoms(db, kwd(":eavt"))` stops compiling. Two branches, two
+    ;; overloads — the arity counts here are the generated Java signatures.
     {:args [:function
-            [:=> [:cat :datahike/SDB :datahike/SIndexLookupArgs] [:maybe :datahike/SDatoms]]
-            [:=> [:cat :datahike/SDB :keyword [:* :any]] [:maybe :datahike/SDatoms]]]
+            [:=> [:cat :datahike/SDB
+                  [:or [:enum :eavt :aevt :avet] :datahike/SIndexLookupArgs]]
+             [:maybe :datahike/SDatoms]]
+            [:=> [:cat :datahike/SDB [:enum :eavt :aevt :avet] [:+ :any]]
+             [:maybe :datahike/SDatoms]]]
      :ret [:maybe :datahike/SDatoms]
      :categories [:query :index :advanced]
      :stability :stable
@@ -419,9 +479,29 @@
      :impl datahike.api.impl/seek-datoms}
 
     rseek-datoms
+    ;; Two branches with NON-OVERLAPPING arities. Both forms the impl accepts —
+    ;; (f db :eavt component…) and (f db {:index .. :components ..}) — used to be
+    ;; declared as two branches that BOTH admitted two arguments; malli's
+    ;; `:function` dispatches on arity, so it took the arg-map one and reported
+    ;; the canonical `(f db :eavt)` as `:malli.core/invalid-input`.
+    ;;
+    ;; So the 2-arity branch now accepts EITHER shape via `:or`, and the
+    ;; component branch starts at THREE (`:+`, one-or-more components). The
+    ;; index keyword is the same enum `SIndexLookupArgs` declares, so a bad
+    ;; index is still caught.
+    ;;
+    ;; The two branches are also load-bearing for CODEGEN, which is why this is
+    ;; not collapsed into one variadic `[:* :any]`: `codegen/java` maps each
+    ;; `[:cat]` element to one positional Java parameter and has no varargs
+    ;; notion, so a single branch emits a single overload and
+    ;; `Datahike.datoms(db, kwd(":eavt"))` stops compiling. Two branches, two
+    ;; overloads — the arity counts here are the generated Java signatures.
     {:args [:function
-            [:=> [:cat :datahike/SDB :datahike/SIndexLookupArgs] [:maybe :datahike/SDatoms]]
-            [:=> [:cat :datahike/SDB :keyword [:* :any]] [:maybe :datahike/SDatoms]]]
+            [:=> [:cat :datahike/SDB
+                  [:or [:enum :eavt :aevt :avet] :datahike/SIndexLookupArgs]]
+             [:maybe :datahike/SDatoms]]
+            [:=> [:cat :datahike/SDB [:enum :eavt :aevt :avet] [:+ :any]]
+             [:maybe :datahike/SDatoms]]]
      :ret [:maybe :datahike/SDatoms]
      :categories [:query :index :advanced]
      :stability :experimental
@@ -491,7 +571,7 @@
      :impl datahike.api.impl/history}
 
     since
-    {:args [:=> [:cat :datahike/SDB types/time-point?] :datahike/SDB]
+    {:args [:=> [:cat :datahike/SDB :datahike/time-point?] :datahike/SDB]
      :ret :datahike/SDB
      :categories [:temporal :query]
      :stability :stable
@@ -505,7 +585,7 @@
      :impl datahike.api.impl/since}
 
     as-of
-    {:args [:=> [:cat :datahike/SDB types/time-point?] :datahike/SDB]
+    {:args [:=> [:cat :datahike/SDB :datahike/time-point?] :datahike/SDB]
      :ret :datahike/SDB
      :categories [:temporal :query]
      :stability :stable
@@ -788,19 +868,107 @@
 
     gc-storage
     {:args [:function
-            [:=> [:cat :datahike/SConnection types/time-point?] :any]
+            [:=> [:cat :datahike/SConnection :datahike/time-point? [:map [:min-age-ms {:optional true} :int]]] :any]
+            [:=> [:cat :datahike/SConnection :datahike/time-point?] :any]
             [:=> [:cat :datahike/SConnection] :any]]
      :ret :any
      :categories [:maintenance :lifecycle]
      :stability :stable
      :supports-remote? true
      :referentially-transparent? false
-     :doc "Invokes garbage collection on connection's store. Removes old snapshots before given time point."
+     :doc "Invokes garbage collection on connection's store. Removes old snapshots before given time point. `:min-age-ms` spares anything written more recently than that, which is what makes collecting from outside the writer process possible — it must exceed the longest values-then-pointer window any writer can have."
      :examples [{:desc "GC all old snapshots"
                  :code "(gc-storage conn)"}
                 {:desc "GC snapshots before date"
-                 :code "(gc-storage conn (java.util.Date.))"}]
+                 :code "(gc-storage conn (java.util.Date.))"}
+                {:desc "Collect from a cron job or offline process: spare anything written in the last 24h"
+                 :code "(gc-storage conn (java.util.Date. 0) {:min-age-ms 86400000})"}]
      :impl datahike.writer/gc-storage!}
+
+    ;; =========================================================================
+    ;; Index Warming (EXPERIMENTAL)
+    ;; =========================================================================
+    ;;
+    ;; A cold reader's wall time is `misses x RTT` with NOTHING overlapping: a
+    ;; scan asks for a node, blocks on the GET, and only then learns the next
+    ;; address. These three walk the index breadth-first instead, fetching each
+    ;; level concurrently — a branch node holds every child address the moment
+    ;; it is materialized, so no prediction is involved. See `datahike.warm`.
+    ;;
+    ;; Three and not more, on purpose. This is experimental surface: adding an
+    ;; entry point later is cheap, removing one is breaking. In particular there
+    ;; is exactly ONE way to scope a warm to a key range — `warm-datoms`, which
+    ;; builds its bounds from datahike's own components->pattern — because a
+    ;; hand-built bound in the wrong permutation warms a valid-but-different
+    ;; subtree silently.
+    ;;
+    ;; `:supports-remote? false` deliberately: a warm moves nodes into the node
+    ;; cache of the process that holds the index. Over HTTP that would be the
+    ;; SERVER's cache, which is a different (and unrequested) operation from the
+    ;; one the caller means.
+    ;;
+    ;; NO trailing `!` on the public names, with the banged fns as `:impl` —
+    ;; the same split `gc-storage` -> `datahike.writer/gc-storage!` uses. In this
+    ;; specification a trailing `!` means the ASYNC variant of a sibling
+    ;; (`transact!`, `merge-db!`, `branch!`), not "has side effects"; every
+    ;; synchronous op is unbanged however destructive it is. A warm is not an
+    ;; async variant of anything, and it changes no database state at all: the
+    ;; db value is immutable and results are identical warm or cold — only
+    ;; latency and GET count move. `clj-name->java-method` also maps a trailing
+    ;; `!` to an `Async` suffix, so a banged name would generate `warmIndexAsync`
+    ;; for a synchronous JVM call.
+
+    warm-index
+    {:args [:function
+            [:=> [:cat :datahike/SDB :datahike/SWarmIndex] :map]
+            [:=> [:cat :datahike/SDB :datahike/SWarmIndex :map] :map]]
+     :ret :map
+     :categories [:maintenance :index :advanced]
+     :stability :experimental
+     :supports-remote? false
+     :referentially-transparent? false
+     :doc "EXPERIMENTAL. Budget-bounded breadth-first warm of ONE whole index into its node cache, fetching each level concurrently instead of discovering it one blocking round trip at a time. Options: :depth (:interior | :with-leaves | integer), :budget, :width, :sync?. Takes no key range on purpose: range scoping has exactly one entry point, warm-datoms, which builds its bounds from datahike's own components->pattern — a hand-built bound in the wrong per-index permutation warms a valid-but-different subtree with no error and no wrong answer, just a warm that misses."
+     :examples [{:desc "Warm the interior (branch levels only) of eavt"
+                 :code "(warm-index @conn :eavt {:depth :interior :budget 2000})"}
+                {:desc "Warm everything, leaves included, with a small budget"
+                 :code "(warm-index @conn :avet {:depth :with-leaves :budget 200})"}]
+     :impl datahike.warm/warm-index!}
+
+    warm-datoms
+    {:args [:function
+            [:=> [:cat :datahike/SDB :datahike/SWarmIndex [:vector :any]] :map]
+            [:=> [:cat :datahike/SDB :datahike/SWarmIndex [:vector :any] :map] :map]]
+     :ret :map
+     :categories [:maintenance :index :advanced]
+     :stability :experimental
+     :supports-remote? false
+     :referentially-transparent? false
+     :doc "EXPERIMENTAL. Warm exactly the subtree a components-scoped scan will read. Mirrors both component-taking scans: without :unbounded? it corresponds to `datoms` (upper bound = the components pattern, cost proportional to the range), with {:unbounded? true} to `seek-datoms` (upper bound = the end of the index, so it is readahead and :budget is the only bound). `components` is the same [e a v tx] prefix those take, in the index's own component order (:avet -> [a v e tx]), and may be shorter or empty. Bounds are built with datahike's own components->pattern, which permutes components per index and resolves idents — which is why this is the only entry point that scopes a warm to a range."
+     :examples [{:desc "Warm what (datoms db :eavt 300) will read"
+                 :code "(warm-datoms @conn :eavt [300])"}
+                {:desc "Warm an avet range, components in avet order"
+                 :code "(warm-datoms @conn :avet [:item/id 300] {:depth :with-leaves})"}
+                {:desc "Read ahead from a seek-datoms position"
+                 :code "(warm-datoms @conn :eavt [300] {:unbounded? true :budget 64})"}]
+     :impl datahike.warm/warm-datoms!}
+
+    warm-db
+    {:args [:function
+            [:=> [:cat :datahike/SDB] :map]
+            [:=> [:cat :datahike/SDB :map] :map]]
+     :ret :map
+     :categories [:maintenance :index :advanced]
+     :stability :experimental
+     :supports-remote? false
+     :referentially-transparent? false
+     :doc "EXPERIMENTAL. Warm every present index of a database, sharing ONE budget round-robin across them so eavt cannot eat it before avet gets any. The connect-time shape, and the one to reach for. Takes warm-index's options plus :indices, the index keys to consider — which covers warming a chosen few, or one. Budget is clamped to 0.8x :store-cache-size, which is entry-counted — warming past it fetches nodes only to evict them. :by-index in the returned report says where the budget went."
+     :examples [{:desc "Warm the interior of every index at connect"
+                 :code "(warm-db @conn)"}
+                {:desc "Spend a fixed budget across all indices, leaves included"
+                 :code "(warm-db @conn {:depth :with-leaves :budget 500})"}
+                {:desc "Narrow it to the indices a workload actually reads"
+                 :code "(warm-db @conn {:indices [:eavt :avet] :budget 500})"}]
+     :impl datahike.warm/warm-db!}
 
     ;; =========================================================================
     ;; Utility Operations

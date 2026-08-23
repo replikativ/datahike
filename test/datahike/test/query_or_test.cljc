@@ -1,7 +1,7 @@
 (ns datahike.test.query-or-test
   (:require
-   #?(:cljs [cljs.test    :as t :refer-macros [is are deftest]]
-      :clj  [clojure.test :as t :refer        [is are deftest]])
+   #?(:cljs [cljs.test    :as t :refer-macros [is are deftest testing]]
+      :clj  [clojure.test :as t :refer        [is are deftest testing]])
    [datahike.api :as d]
    #?(:cljs [datahike.cljs :refer [Throwable]])
    [datahike.db :as db]
@@ -156,6 +156,76 @@
                   [(= ?k 20)]]
                 db))
         "predicate on or-join output var filters correctly")))
+
+(deftest test-or-branch-with-no-free-vars
+  ;; A branch whose last free var is folded away — `(or-join [?E] [?E :tag
+  ;; :green])` with ?E supplied through :in becomes the fully-ground
+  ;; `[101 :tag :green]` — produces a relation with no columns. That
+  ;; relation still carries a truth value in its tuple count, but
+  ;; rel/limit-rel maps both outcomes to nil, and nil read as "no such
+  ;; branch": an UNSATISFIED branch made the whole disjunction true.
+  (let [db (d/db-with (db/empty-db {:tag {:db/cardinality :db.cardinality/many}})
+                      [{:db/id 100 :name "alice" :age 30 :tag [:red]}
+                       {:db/id 101 :name "bob" :age 10 :tag [:blue]}])]
+    (are [eid res] (= res
+                      (d/q '[:find ?n
+                             :in $ ?E
+                             :where
+                             [?E :name ?n]
+                             (or-join [?E] [?E :tag :green])]
+                           db eid))
+      100 #{}                                ;; alice has no :green — false
+      101 #{})                               ;; bob has no :green — false
+
+    (is (= #{["alice"]}
+           (d/q '[:find ?n
+                  :in $ ?E
+                  :where [?E :name ?n] (or-join [?E] [?E :tag :red])]
+                db 100))
+        "a satisfied column-less branch holds for every row")
+
+    (is (= #{}
+           (d/q '[:find ?n
+                  :in $ ?E
+                  :where [?E :name ?n] (or [?E :tag :green])]
+                db 100))
+        "plain or takes the same path")
+
+    (testing "a column-less branch that is a rule call"
+      (are [eid res] (= res
+                        (d/q '[:find ?n
+                               :in $ % ?E
+                               :where
+                               [?E :name ?n]
+                               (or-join [?E] (adult ?E))]
+                             db '[[(adult ?e) [?e :age ?a] [(> ?a 15)]]] eid))
+        100 #{["alice"]}
+        101 #{}))))
+
+(deftest test-or-join-branch-local-var
+  ;; An or-join's branch-local vars are LOCAL to it — only the declared join
+  ;; vars correlate it with the rest of the query. Counting a branch-local as
+  ;; a connectivity var made the Cartesian-split pass put it in a component's
+  ;; :vars and then hand it to that sub-query's :find, raising "Query for
+  ;; unknown vars" for a var no clause outside the or-join can bind.
+  (let [db (d/db-with (db/empty-db)
+                      [{:db/id 1 :name "Ivan" :age 10 :color "red"}
+                       {:db/id 2 :name "Oleg" :age 20 :color "blue"}])]
+    (is (= #{["Ivan"] ["Oleg"]}
+           (d/q '[:find ?n
+                  :where
+                  [?e :name ?n]
+                  (or-join [?z] [?z :age ?local] [?z :color ?local])]
+                db))
+        "branch-local ?local does not leak into the outer component")
+
+    (is (= #{["Ivan"] ["Oleg"]}
+           (d/q '[:find ?n
+                  :where
+                  [?e :name ?n]
+                  (or-join [?z] [?z :age 10] [?z :color "red"])]
+                db))
+        "or-join with no branch-local var is unaffected")))
 
 (deftest test-default-source
   (let [db1 (d/db-with (db/empty-db)
