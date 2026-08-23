@@ -168,6 +168,31 @@
                     When non-nil, only rows whose :eid is in the bitmap are included.
      Returns a seq of result maps, e.g. [{:dept \"eng\" :avg 7500.0 :count 100} ...]"))
 
+(defn query-eligible?
+  "Whether the secondary index identified by `idx-ident` may answer queries.
+
+   `nil` remains eligible for legacy databases and hand-assembled indexes that
+   predate lifecycle status. A declared lifecycle state is fail-closed: only
+   `:ready` may answer. Keeping this rule here gives aggregate, full-text,
+   vector, and future query paths one correctness gate."
+  [db idx-ident]
+  (contains? #{nil :ready}
+             (get-in db [:schema idx-ident :db.secondary/status])))
+
+(defn require-query-eligible!
+  "Raise a typed error when an explicitly requested secondary index is not
+   queryable. Optimizations with an exact primary-index fallback should use
+   `query-eligible?` and decline instead."
+  [db idx-ident]
+  (let [status (get-in db [:schema idx-ident :db.secondary/status])]
+    (when-not (query-eligible? db idx-ident)
+      (throw (ex-info (str "Secondary index " (pr-str idx-ident)
+                           " cannot answer queries while its status is "
+                           (pr-str status) ".")
+                      {:type :secondary-index-unavailable
+                       :index-ident idx-ident
+                       :status status})))))
+
 (defprotocol IVersionedSecondaryIndex
   "Optional protocol for secondary indices with durable CoW storage.
    When implemented, index state is persisted in commits, restored on connect,

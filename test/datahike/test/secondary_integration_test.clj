@@ -21,6 +21,18 @@
     true
     (catch Throwable _ false)))
 
+(defn lifecycle-search
+  "Test-only external engine used to exercise the central lifecycle gate."
+  {:datahike/external-engine
+   {:index-key 0
+    :binding-columns [:entity-id :score]
+    :query-spec-fn (fn [args] {:query (first args)})
+    :input-vars :all-bound
+    :cost-model (fn [_db _idx-ident _args _n-cols]
+                  {:estimated-card 1 :cost-per-result 0.01})}}
+  [_idx-ident query]
+  {:query query})
+
 ;; ---------------------------------------------------------------------------
 ;; Proximum (Vector Search) Tests
 
@@ -675,6 +687,96 @@
                    '[:find (count-distinct ?x) :where [?e :num/v ?x]]]]
           (let [[ok? c r] (agree? (mk [10 10 40]) q)]
             (is ok? (str q " — columnar " (pr-str c) " vs reference " (pr-str r)))))))))
+
+(deftest test-building-index-is-not-queried
+  (testing "an index that has not been backfilled must not answer"
+    ;; A schema-declared secondary index is created with status :building and
+    ;; backfilled by the WRITER. Build a db with `d/db-with` and there is no
+    ;; writer, so it stays :building forever and accumulates only the datoms of
+    ;; transactions made AFTER it was declared. Querying it is a silent wrong
+    ;; answer, not a stale one — and the aggregate path never checked the status.
+    (let [schema {:num/v {}
+                  :idx/analytics {:db.secondary/type :stratum
+                                  :db.secondary/attrs [:num/v]}}
+          q '[:find (min ?x) :where [?e :num/v ?x]]
+          agree? (fn [db]
+                   (binding [q/*query-result-cache?* false]
+                     [(binding [q/*disable-planner* false] (d/q q db))
+                      (binding [q/*disable-planner* true] (d/q q db))]))]
+
+      (testing "declared and populated through db-with — the broken route"
+        (let [db (d/db-with (db/empty-db schema)
+                            [{:db/id 1 :num/v 10} {:db/id 2 :num/v 30}])
+              [planner reference] (agree? db)]
+          (is (= :building (get-in db [:schema :idx/analytics :db.secondary/status]))
+              "no writer means the backfill never runs")
+          (is (= reference planner) "must not answer from a partial index")
+          (is (= [[10]] planner))
+
+          (testing "…and still not after a further transaction"
+            ;; the index now holds only the LATER datom, so an unguarded read
+            ;; answered 50
+            (let [db2 (d/db-with db [{:db/id 3 :num/v 50}])
+                  [p2 r2] (agree? db2)]
+              (is (= r2 p2))
+              (is (= [[10]] p2))))))
+
+      (testing "a hand-assembled index is complete by construction and is used"
+        (let [e (db/empty-db schema)
+              idx (sec/create-index :stratum {:attrs #{:num/v}} e)
+              db (-> (assoc e :secondary-indices {:idx/analytics idx})
+                     (d/db-with [{:db/id 1 :num/v 10} {:db/id 2 :num/v 30}]))
+              [planner reference] (agree? db)]
+          (is (nil? (get-in db [:schema :idx/analytics :db.secondary/status])))
+          (is (= reference planner))
+          (is (= [[10]] planner)))))))
+
+(deftest external-engine-respects-secondary-lifecycle
+  (testing "explicit full-text/vector-style clauses fail before touching an unavailable index"
+    (let [calls (atom [])
+          idx (reify sec/ISecondaryIndex
+                (-search [_ _ _]
+                  (swap! calls conj :search)
+                  (es/entity-bitset-from-longs [1]))
+                (-estimate [_ _] 1)
+                (-can-order? [_ _ _] true)
+                (-slice-ordered [_ _ _ _ _ _]
+                  (swap! calls conj :slice)
+                  [{:entity-id 1 :score 0.25}])
+                (-indexed-attrs [_] #{:doc/body})
+                (-transact [this _] this))
+          base (-> (db/empty-db {:doc/name {}
+                                 :idx/lifecycle {:db.secondary/status :ready}})
+                   (d/db-with [{:db/id 1 :doc/name "one"}])
+                   (assoc :secondary-indices {:idx/lifecycle idx}))
+          filter-q '[:find [?name ...]
+                     :where [(datahike.test.secondary-integration-test/lifecycle-search
+                              :idx/lifecycle "needle") [?e ...]]
+                     [?e :doc/name ?name]]
+          retrieval-q '[:find ?e ?score
+                        :where [(datahike.test.secondary-integration-test/lifecycle-search
+                                 :idx/lifecycle "needle") [[?e ?score]]]]]
+      (binding [q/*disable-planner* false
+                q/*query-result-cache?* false]
+        (doseq [status [:building :disabled :failed]]
+          (let [unavailable (assoc-in base [:schema :idx/lifecycle :db.secondary/status]
+                                      status)]
+            (is (thrown-with-msg? clojure.lang.ExceptionInfo
+                                  #"cannot answer queries"
+                                  (d/q filter-q unavailable)))
+            (is (thrown-with-msg? clojure.lang.ExceptionInfo
+                                  #"cannot answer queries"
+                                  (d/q retrieval-q unavailable)))))
+        (is (empty? @calls) "neither index protocol entry point was called")
+
+        (testing ":ready and legacy nil status remain queryable"
+          (is (= ["one"] (d/q filter-q base)))
+          (is (= #{[1 0.25]} (d/q retrieval-q base)))
+          (let [legacy (update-in base [:schema :idx/lifecycle]
+                                  dissoc :db.secondary/status)]
+            (is (= ["one"] (d/q filter-q legacy)))
+            (is (= #{[1 0.25]} (d/q retrieval-q legacy))))
+          (is (= [:search :slice :search :slice] @calls)))))))
 
 ;; ---------------------------------------------------------------------------
 ;; Retraction granularity: a retraction names ONE datom, not the entity
