@@ -327,9 +327,18 @@
                        ;; `existing` rather than the requested ownership: what
                        ;; matters is whether the writer in hand re-reads the head,
                        ;; and the warning above has already said the request is ignored.
-                       (w/check-fencing! (get-in config [:writer :require-fencing])
-                                         (or existing :shared)
-                                         (:store @(:wrapped-atom conn))))
+                       ;;
+                       ;; SCOPED to the :self backend, matching where the option is
+                       ;; legal at all: `normalize-writer-config` refuses
+                       ;; :require-fencing on a remote writer before any connect
+                       ;; path runs, and checking it here against the LOCAL store
+                       ;; would be judging a remote writer's guarantee by a store
+                       ;; it does not write to — a refusal or a pass, both about
+                       ;; the wrong thing.
+                       (when (= :self (get-in config [:writer :backend] :self))
+                         (w/check-fencing! (get-in config [:writer :require-fencing])
+                                           (or existing :shared)
+                                           (:store @(:wrapped-atom conn)))))
                      conn)
                    (let [raw-store (<?- (ks/connect-store store-config opts))
                          _         (when-not raw-store
