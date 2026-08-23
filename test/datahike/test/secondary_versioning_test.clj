@@ -6,14 +6,87 @@
    [datahike.versioning :as dv]
    [datahike.index.secondary :as sec]
    [datahike.index.entity-set :as es]
-   [datahike.index.secondary.scriptum]))
+   [datahike.index.secondary.scriptum]
+   [konserve.core :as k]))
+
+(defrecord HistoricalBranchRecorder [attrs values]
+  sec/ISecondaryIndex
+  (-search [_ _ _] nil)
+  (-estimate [_ _] 0)
+  (-can-order? [_ _ _] false)
+  (-slice-ordered [_ _ _ _ _ _] nil)
+  (-indexed-attrs [_] attrs)
+  (-transact [this {:keys [datom added?]}]
+    (let [value [(:e datom) (:v datom)]]
+      (assoc this :values ((if added? conj disj) values value))))
+
+  sec/IVersionedSecondaryIndex
+  (-sec-flush [_ _ _]
+    {:type :test/historical-branch-recorder
+     :values values})
+  (-sec-restore [this _ key-map]
+    (assoc this :values (:values key-map)))
+  (-sec-branch [this _ _ _] this)
+  (-sec-mark [_] #{}))
+
+(defonce _register-historical-branch-recorder
+  (sec/register-index-type!
+   :test/historical-branch-recorder
+   (fn [config _db]
+     (->HistoricalBranchRecorder (set (:attrs config)) #{}))))
+
+(defn- await-ready [conn idx-ident]
+  (let [deadline (+ (System/currentTimeMillis) 5000)]
+    (loop []
+      (let [status (get-in (d/db conn) [:schema idx-ident :db.secondary/status])]
+        (cond
+          (= :ready status) status
+          (< (System/currentTimeMillis) deadline) (do (Thread/sleep 10) (recur))
+          :else status)))))
 
 ;; ---------------------------------------------------------------------------
 ;; Scriptum + branching + merge (end-to-end)
 
+(deftest test-branch-from-historical-secondary-state
+  (testing "branching a commit forks that commit's index, not the connection head"
+    (let [cfg {:store {:backend :memory :id (random-uuid)}
+               :writer {:backend :self :writer-ownership :exclusive}
+               :keep-history? false
+               :schema-flexibility :write}
+          _ (d/create-database cfg)
+          conn (d/connect cfg)]
+      (try
+        (d/transact conn [{:db/ident :person/name
+                           :db/valueType :db.type/string
+                           :db/cardinality :db.cardinality/one}
+                          {:person/name "Alice"}
+                          {:person/name "Bob"}])
+        (d/transact conn [{:db/ident :idx/historical
+                           :db.secondary/type :test/historical-branch-recorder
+                           :db.secondary/attrs [:person/name]}])
+        (is (= :ready (await-ready conn :idx/historical)))
+        (let [store (:store @conn)
+              historical-cid (dv/commit-id @conn)
+              historical-key-map (get-in (k/get store historical-cid nil {:sync? true})
+                                         [:secondary-index-keys :idx/historical])]
+          (d/transact conn [{:person/name "Charlie"}])
+          (let [head-key-map (get-in (k/get store :db nil {:sync? true})
+                                     [:secondary-index-keys :idx/historical])]
+            (is (not= historical-key-map head-key-map)
+                "the test must distinguish the historical index from the live head")
+            (dv/branch! conn historical-cid :historical)
+            (is (= historical-key-map
+                   (get-in (k/get store :historical nil {:sync? true})
+                           [:secondary-index-keys :idx/historical]))
+                "historical branch uses the key-map stored on its source commit")))
+        (finally
+          (d/release conn)
+          (d/delete-database cfg))))))
+
 (deftest test-scriptum-branch-and-merge
   (testing "secondary index survives branch, diverge, and merge"
     (let [cfg {:store {:backend :memory :id (java.util.UUID/randomUUID)}
+               :writer {:backend :self :writer-ownership :exclusive}
                :keep-history? false
                :schema-flexibility :write}
           scriptum-path (str "/tmp/scriptum-ver-test-" (random-uuid))
@@ -91,6 +164,7 @@
 (deftest test-merge-through-writer
   (testing "merge! routes through writer and creates multi-parent commit"
     (let [cfg {:store {:backend :memory :id (java.util.UUID/randomUUID)}
+               :writer {:backend :self :writer-ownership :exclusive}
                :keep-history? false
                :schema-flexibility :write}
           _ (d/create-database cfg)
@@ -133,6 +207,7 @@
     (let [cfg {:store {:backend :file
                        :id (java.util.UUID/randomUUID)
                        :path (str "/tmp/datahike-ver-test-" (random-uuid))}
+               :writer {:backend :self :writer-ownership :exclusive}
                :keep-history? false
                :schema-flexibility :write}
           scriptum-path (str "/tmp/scriptum-persist-" (random-uuid))

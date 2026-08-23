@@ -392,27 +392,31 @@
                          conn      (conn-from-db (dsi/stored->db (assoc stored-db :config config) store))]
                      (swap! (:wrapped-atom conn) assoc :writer
                             (w/create-writer (:writer config) conn))
-                     ;; Recovery: backfill secondary indices that are :building
-                     ;; and were not restored from durable storage
+                     ;; Recovery: every :building index is reconstructed from
+                     ;; the primary index. Its stored key-map, if any was written
+                     ;; by an older release, is deliberately ignored by
+                     ;; stored->db because it may describe a partial backfill.
                      #?(:clj
                         (let [db @(:wrapped-atom conn)
                               schema (:schema db)
-                              writer (:writer db)
-                              sec-idx-keys (:secondary-index-keys stored-db)]
+                              writer (:writer db)]
                           (doseq [[ident entry] schema
                                   :when (and (map? entry)
                                              (:db.secondary/type entry)
-                                             (= :building (:db.secondary/status entry))
-                                             ;; Only backfill if no stored key-map exists
-                                             (not (get sec-idx-keys ident)))]
+                                             (= :building (:db.secondary/status entry)))]
                             (log/trace :datahike/secondary-index-backfill {:ident ident})
                             (go
                               (let [build-result (<! (w/dispatch! writer
                                                                   {:op 'build-secondary-index!
                                                                    :args [ident]}))]
                                 (when (map? build-result)
-                                  (w/dispatch! writer {:op 'install-secondary-index!
-                                                       :args [build-result]})))))))
+                                  (let [install-result
+                                        (<! (w/dispatch! writer
+                                                         {:op 'install-secondary-index!
+                                                          :args [build-result]}))]
+                                    (when-not (map? install-result)
+                                      (dsi/finish-secondary-index-build!
+                                       build-result)))))))))
                      (add-connection! conn-id conn)
                      conn))))))
 

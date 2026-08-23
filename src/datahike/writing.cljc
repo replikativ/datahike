@@ -91,7 +91,14 @@
              (when flush?
                (let [flushed (reduce-kv
                               (fn [acc idx-ident idx]
-                                (if (satisfies? sec/IVersionedSecondaryIndex idx)
+                                ;; A :building index is not a durable snapshot.
+                                ;; Publishing its key-map lets a crash preserve an
+                                ;; arbitrary prefix of the backfill, which cannot
+                                ;; safely be replayed for non-idempotent indices.
+                                (if (and (satisfies? sec/IVersionedSecondaryIndex idx)
+                                         (not= :building
+                                               (get-in db [:schema idx-ident
+                                                           :db.secondary/status])))
                                   (assoc acc idx-ident (sec/-sec-flush idx store (:branch config)))
                                   acc))
                               {} (:secondary-indices db))
@@ -107,7 +114,10 @@
                      ;; instance" is never read as "delete".
                      carried (into {}
                                    (filter (fn [[ident _]]
-                                             (get-in db [:schema ident :db.secondary/type])))
+                                             (and (get-in db [:schema ident :db.secondary/type])
+                                                  (not= :building
+                                                        (get-in db [:schema ident
+                                                                    :db.secondary/status])))))
                                    (:secondary-index-keys db))]
                  (not-empty (merge carried flushed))))
              :cljs nil)
@@ -132,12 +142,17 @@
                              (try (audit/-merkle-root x)
                                   (catch #?(:clj Throwable :cljs js/Error) _ nil))))
           sec-roots      (when (seq (:secondary-indices db))
-                           (reduce-kv
-                            (fn [acc idx-ident idx]
-                              (assoc acc idx-ident
-                                     (or (safe-root idx)
-                                         (:merkle-root (get secondary-index-keys idx-ident)))))
-                            {} (:secondary-indices db)))
+                           (not-empty
+                            (reduce-kv
+                             (fn [acc idx-ident idx]
+                               (if (= :building
+                                      (get-in db [:schema idx-ident :db.secondary/status]))
+                                 acc
+                                 (assoc acc idx-ident
+                                        (or (safe-root idx)
+                                            (:merkle-root
+                                             (get secondary-index-keys idx-ident))))))
+                             {} (:secondary-indices db))))
           merkle-roots
           (cond-> {:eavt-key (safe-root eavt')
                    :aevt-key (safe-root aevt')
@@ -235,11 +250,18 @@
         (if (and (map? entry) (:db.secondary/type entry))
           (let [idx-type (:db.secondary/type entry)
                 idx-attrs (set (:db.secondary/attrs entry))
-                key-map (get secondary-index-keys ident)
+                ;; A key-map written while the schema says :building is, at
+                ;; best, a partial snapshot from an older Datahike. Ignore it
+                ;; and rebuild from the primary index instead.
+                key-map (when-not (= :building (:db.secondary/status entry))
+                          (get secondary-index-keys ident))
                 idx-config (cond-> (merge (:db.secondary/config entry)
-                                          {:attrs idx-attrs})
+                                          {:attrs idx-attrs
+                                           ::sec/index-ident ident})
                              (seq ident-ref-map)
                              (assoc :ident-ref-map ident-ref-map)
+                             (= :building (:db.secondary/status entry))
+                             (assoc ::sec/build-attempt (random-uuid))
                              ;; When a key-map carries a branch, route the
                              ;; skeleton into that branch too — otherwise
                              ;; the factory defaults to "main" and a non-
@@ -306,6 +328,15 @@
                           (sc/cache-miss schema-meta-key schema-meta)
                           schema-meta))
         effective-schema (or (:schema schema-meta) schema)
+        ;; A partial key-map from an older release must not survive merely
+        ;; because stored->db retained it for the carry-forward path.
+        secondary-index-keys
+        (not-empty
+         (into {}
+               (remove (fn [[ident _]]
+                         (= :building
+                            (get-in effective-schema [ident :db.secondary/status]))))
+               secondary-index-keys))
         effective-ident-ref-map (or (:ident-ref-map schema-meta) ident-ref-map)
         sec-indices (restore-secondary-indices effective-schema effective-ident-ref-map
                                                secondary-index-keys store)
@@ -1094,72 +1125,146 @@
    (-database-exists? config)))
 
 #?(:clj
+   (defn- close-secondary-index! [idx]
+     (when (instance? java.io.Closeable idx)
+       (try (.close ^java.io.Closeable idx)
+            (catch Exception e
+              (log/warn :datahike/secondary-index-close-failed
+                        {:error (.getMessage e)}))))))
+
+#?(:clj
    (defn build-secondary-index!
      "Backfill a secondary index by scanning AEVT for all covered attributes.
-      Returns a channel (async op) so the writer continues processing other
-      transactions during backfill. When complete, dispatches a lightweight
-      install-secondary-index! op to atomically swap in the result."
+      Returns a channel so the writer can continue serving transactions. While
+      it runs, those transactions journal changes for this index; the serialized
+      install operation replays that delta before publishing the result."
      [old idx-ident]
      (log/trace :datahike/build-secondary-index {:idx-ident idx-ident})
-     ;; Return a channel — writer runs this in background (lines 89-93 of writer.cljc)
      (let [db old
+           writer-config (get-in db [:config :writer])
+           _ (when-not (and (= :self (get writer-config :backend :self))
+                            (= :exclusive
+                               (get writer-config :writer-ownership :shared)))
+               (log/raise
+                "Asynchronous secondary-index backfill requires local exclusive writer ownership."
+                {:type :secondary-index-backfill-unsupported-writer
+                 :idx-ident idx-ident
+                 :writer writer-config}))
            idx (get-in db [:secondary-indices idx-ident])
            _ (when-not idx
                (log/raise "Secondary index not found" {:idx-ident idx-ident}))
            attrs (sec/-indexed-attrs idx)
            building-since-tx (get-in db [:schema idx-ident :db.secondary/building-since-tx])
+           _ (when-not building-since-tx
+               (log/raise "A building secondary index has no snapshot boundary"
+                          {:type :secondary-index-missing-build-boundary
+                           :idx-ident idx-ident}))
            use-transient? (satisfies? sec/ITransientSecondaryIndex idx)
-           t-idx (if use-transient? (sec/-as-transient idx) idx)]
-       ;; Background go block — doesn't block the writer
+           t-idx (if use-transient? (sec/-as-transient idx) idx)
+           gc-store-id (:id (:store (:config db)))
+           ;; A versioned adapter may write private nodes while it builds. They
+           ;; remain unreachable until install's commit publishes its key-map,
+           ;; so protect the whole scan -> ready-commit window from GC.
+           gc-token (guard/writing! gc-store-id)
+           read-token (guard/reading! gc-store-id)]
        (go-try-
-        (let [populated-idx
-              (reduce
-               (fn [current-idx attr]
-                 (let [datoms (dbi/datoms db :aevt [attr])
-                       n (atom 0)]
-                   (log/debug :datahike/backfilling {:attr attr})
-                   (let [result (reduce
-                                 (fn [idx d]
-                                   (if (and building-since-tx
-                                            (> (.-tx ^datahike.datom.Datom d) building-since-tx))
-                                     idx
-                                     (do (swap! n inc)
-                                         ;; Reconstruct each datom's tx-meta from the
-                                         ;; historical EAVT seek on its tx-id. Without
-                                         ;; this, vt-aware adapters miss the writing-tx
-                                         ;; `:db.valid/from` and degrade to `txInstant`.
-                                         (let [tx-id (.-tx ^datahike.datom.Datom d)
-                                               tx-report {:datom d :added? true
-                                                          :tx-meta (dbtx/meta-for-tx-id db tx-id)}]
-                                           (if use-transient?
-                                             (do (sec/-transact! idx tx-report) idx)
-                                             (sec/-transact idx tx-report))))))
-                                 current-idx datoms)]
-                     (log/debug :datahike/backfilled {:attr attr :count @n})
-                     result)))
-               t-idx attrs)
-              final-idx (if use-transient?
-                          (sec/-persistent! populated-idx)
-                          populated-idx)]
-          (log/trace :datahike/secondary-index-built {:idx-ident idx-ident})
-          ;; Return the populated index — the writer dispatch callback
-          ;; receives this, but we need to install it via a separate writer op.
-          ;; Store it in an atom for install-secondary-index! to pick up.
-          {:idx-ident idx-ident :index final-idx})))))
+        (try
+          (let [populated-idx
+                (reduce
+                 (fn [current-idx attr]
+                   (let [datoms (dbi/datoms db :aevt [attr])
+                         n (atom 0)]
+                     (log/debug :datahike/backfilling {:attr attr})
+                     (let [result (reduce
+                                   (fn [idx d]
+                                     (if (> (.-tx ^datahike.datom.Datom d) building-since-tx)
+                                       idx
+                                       (do (swap! n inc)
+                                           (let [tx-id (.-tx ^datahike.datom.Datom d)
+                                                 tx-report {:datom d :added? true
+                                                            :tx-meta (dbtx/meta-for-tx-id db tx-id)}]
+                                             (if use-transient?
+                                               (do (sec/-transact! idx tx-report) idx)
+                                               (sec/-transact idx tx-report))))))
+                                   current-idx datoms)]
+                       (log/debug :datahike/backfilled {:attr attr :count @n})
+                       result)))
+                 t-idx attrs)
+                final-idx (if use-transient?
+                            (sec/-persistent! populated-idx)
+                            populated-idx)]
+            (log/trace :datahike/secondary-index-built {:idx-ident idx-ident})
+            {:idx-ident idx-ident
+             :index final-idx
+             :building-since-tx building-since-tx
+             ::gc-store-id gc-store-id
+             ::gc-token gc-token
+             ::read-token read-token})
+          (catch Throwable e
+            (close-secondary-index! idx)
+            (guard/done! gc-store-id gc-token)
+            (guard/read-done! gc-store-id read-token)
+            (throw e)))))))
+
+#?(:clj
+   (defn finish-secondary-index-build!
+     "Release the GC guard carried by a completed background build. Call only
+      after install's writer callback, which means its ready commit is durable."
+     [build-result]
+     (when-let [token (::gc-token build-result)]
+       (guard/done! (::gc-store-id build-result) token))
+     (when-let [token (::read-token build-result)]
+       (guard/read-done! (::gc-store-id build-result) token))))
 
 #?(:clj
    (defn install-secondary-index!
-     "Lightweight synchronous writer op that installs a backfilled index.
-      Called after build-secondary-index! completes in the background."
-     [old {:keys [idx-ident index]}]
-     (let [db-after (-> old
-                        (assoc-in [:secondary-indices idx-ident] index)
-                        (assoc-in [:schema idx-ident :db.secondary/status] :ready)
-                        (update-in [:schema idx-ident] dissoc :db.secondary/building-since-tx))]
-       (complete-db-update old {:db-before old
-                                :db-after db-after
-                                :tx-data []
-                                :tx-meta {}}))))
+     "Replay changes accumulated during an asynchronous backfill and publish
+      the resulting index. This operation is serialized by the writer, which
+      closes the handoff gap between the delta journal and normal live updates."
+     [old {:keys [idx-ident index building-since-tx] :as build-result}]
+     (try
+       (let [status (get-in old [:schema idx-ident :db.secondary/status])
+             current-boundary (get-in old [:schema idx-ident
+                                           :db.secondary/building-since-tx])]
+         (when-not (and (= :building status)
+                        (= building-since-tx current-boundary))
+           (log/raise "Discarding a stale secondary-index build"
+                      {:type :secondary-index-stale-build
+                       :idx-ident idx-ident
+                       :expected-building-since-tx current-boundary
+                       :actual-building-since-tx building-since-tx
+                       :status status}))
+         (let [deltas (get-in old [:secondary-index-build-deltas idx-ident] [])
+               use-transient? (satisfies? sec/ITransientSecondaryIndex index)
+               t-idx (if use-transient? (sec/-as-transient index) index)
+               replayed (reduce (fn [idx tx-report]
+                                  (if use-transient?
+                                    (do (sec/-transact! idx tx-report) idx)
+                                    (sec/-transact idx tx-report)))
+                                t-idx deltas)
+               final-idx (if use-transient? (sec/-persistent! replayed) replayed)
+               db-after (-> old
+                            (assoc-in [:secondary-indices idx-ident] final-idx)
+                            (assoc-in [:schema idx-ident :db.secondary/status] :ready)
+                            (update-in [:schema idx-ident] dissoc
+                                       :db.secondary/building-since-tx)
+                            (update :secondary-index-build-deltas dissoc idx-ident)
+                            (cond-> (empty? (dissoc (:secondary-index-build-deltas old)
+                                                    idx-ident))
+                              (dissoc :secondary-index-build-deltas)))]
+           (complete-db-update
+            old {:db-before old
+                 :db-after db-after
+                 :tx-data []
+                 :tx-meta {:db/txInstant (get-in old [:meta :datahike/updated-at])}
+                 :secondary-index-build-guard
+                 {::gc-store-id (::gc-store-id build-result)
+                  ::gc-token (::gc-token build-result)
+                  ::read-token (::read-token build-result)}})))
+       (catch Throwable e
+         (close-secondary-index! index)
+         (finish-secondary-index-build! build-result)
+         (throw e)))))
 
 (defn merge-writer!
   "Writer operation for merge. Applies tx-data and records merge parents
@@ -1173,10 +1278,44 @@
     (update tx-report :db-after
             assoc-in [:meta :datahike/merge-parents] all-parents)))
 
+#?(:clj
+   (defn- validate-secondary-backfill-writer!
+     "Reject a new asynchronous backfill before its schema report reaches the
+      commit queue. This belongs at the writer boundary so pure `db-with` can
+      still model a :building database without owning a writer."
+     [old {:keys [db-after]}]
+     (let [before (:schema old)
+           new-building
+           (into []
+                 (keep (fn [[ident entry]]
+                         (when (and (= :building (:db.secondary/status entry))
+                                    (not= :building
+                                          (get-in before
+                                                  [ident :db.secondary/status])))
+                           ident)))
+                 (:schema db-after))
+           writer-config (get-in old [:config :writer])
+           local-exclusive? (and (= :self (get writer-config :backend :self))
+                                 (= :exclusive
+                                    (get writer-config :writer-ownership :shared)))]
+       (when (and (seq new-building) (not local-exclusive?))
+         ;; Factories already ran in core/with. Close any native private
+         ;; generation before refusing its uncommitted schema report.
+         (doseq [idx-ident new-building]
+           (close-secondary-index! (get-in db-after [:secondary-indices idx-ident])))
+         (log/raise
+          "Asynchronous secondary-index backfill currently requires local exclusive writer ownership. Remote writers cannot transfer a live build generation, and shared writers cannot coordinate its in-memory delta journal across processes."
+          {:type :secondary-index-backfill-unsupported-writer
+           :idx-ident (first new-building)
+           :idx-idents (set new-building)
+           :writer writer-config})))))
+
 (defn transact! [old {:keys [tx-data tx-meta]}]
   (log/debug :datahike/transact {:tx-count (count tx-data)})
   (log/trace :datahike/transact-detail {:tx-data tx-data :tx-meta tx-meta})
-  (complete-db-update old (core/with old tx-data tx-meta)))
+  (let [tx-report (core/with old tx-data tx-meta)]
+    #?(:clj (validate-secondary-backfill-writer! old tx-report))
+    (complete-db-update old tx-report)))
 
 (defn load-entities
   [old entities]
