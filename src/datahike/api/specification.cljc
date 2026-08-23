@@ -707,7 +707,7 @@
      :stability :stable
      :supports-remote? false
      :referentially-transparent? false
-     :doc "Force a branch to point to the provided db value. WARNING: This overwrites the branch head unconditionally, like git reset --hard. Existing connections to this branch will see stale state and must be released and reconnected."
+     :doc "Force a branch to point to the provided db value. WARNING: This deliberately replaces the branch head, like git reset --hard. On revisioned stores the replacement is conditionally retried so it cannot clobber an update that lands between its read and write. Existing connections to this branch will see stale state and must be released and reconnected."
      :examples [{:desc "Force branch to current db"
                  :code "(force-branch! @conn :experiment #{:db})"}]
      :impl datahike.api.impl/force-branch!}

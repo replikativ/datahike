@@ -440,13 +440,13 @@
              (doseq [b (partition-all 500 (range 2000))]
                (d/transact conn (mapv (fn [i] {:id (long i) :score (long 0)}) b)))
              (let [head-written (promise) release-branches (promise)
-                   orig         k/update]
+                   orig         k/assoc]
                ;; gate between the new branch's head record and the `:branches` publish
-               (with-redefs [k/update (fn [store key & more]
-                                        (when (= key :branches)
-                                          (deliver head-written true)
-                                          @release-branches)
-                                        (apply orig store key more))]
+               (with-redefs [k/assoc (fn [store key value & more]
+                                       (when (= key :branches)
+                                         (deliver head-written true)
+                                         @release-branches)
+                                       (apply orig store key value more))]
                  (let [br (future (d/branch! conn :db :experiment))]
                    @head-written
                    (<?? S (gc/gc-storage! @conn (java.util.Date.)))  ;; prune history => real sweeping

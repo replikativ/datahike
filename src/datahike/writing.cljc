@@ -409,10 +409,11 @@
          ;; the db so a later commit can fence its head write against it. Distinct
          ;; from the commit-id: the cid identifies datahike's state, the revision
          ;; identifies the STORAGE write, and only the latter is what konserve can
-         ;; compare-and-set on. Kept in :meta so it travels with the db through the
-         ;; writer's transaction loop exactly as the cid does.
+         ;; compare-and-set on. Kept as an internal top-level field so it travels
+         ;; with the db through the writer loop, but never enters db->stored,
+         ;; public database metadata, or the content-derived commit id.
          stamp (fn [db] (cond-> db head-revision
-                                (assoc-in [:meta :datahike/head-revision] head-revision)))]
+                                (assoc ::head-revision head-revision)))]
      (if (and stored-cid (= stored-cid (get-in old [:meta :datahike/commit-id])))
        ;; Unmoved head: the db is unchanged, but the revision may not be — the blob
        ;; can have been rewritten with identical content. Take the fresh one.
@@ -425,8 +426,9 @@
    when it moved (see [[reload-head]]).
 
    This is the synchronization point of a NON-STREAMING self writer (`:writer
-   {:backend :self :streaming? false}`): datahike's default assumes this JVM is
-   the only writer and keeps the branch head in memory, so a second process
+   {:backend :self :streaming? false}`), which is the default. The opt-in
+   streaming mode assumes this JVM is the only writer and keeps the branch head
+   in memory, so a second process
    holding a writer for the same database would transact on top of its own
    stale snapshot and overwrite the other's commits. Re-reading before every
    transaction makes each one apply to whatever is actually stored.
@@ -826,7 +828,7 @@
                           (seq (:secondary-index-keys db-to-store))
                           (assoc :secondary-index-keys (:secondary-index-keys db-to-store))
                           @new-head-revision
-                          (assoc-in [:meta :datahike/head-revision] @new-head-revision)))
+                          (assoc ::head-revision @new-head-revision)))
                       (catch #?(:clj Error :cljs :default) e
                         #?(:clj  (throw (ex-info "Fatal error during commit."
                                                  {:type :fatal-commit-error}
@@ -969,7 +971,20 @@
          (<?- (write-pending-kvs! store pending-kvs false)))
 
        (<?- (k/assoc store cid db-to-store {:immutable? true} opts)) ; content-addressed commit
-       (<?- (k/assoc store :db db-to-store opts))             ; mutable: branch head
+       ;; Claim the initial mutable head. The existence check above is useful for
+       ;; its message but cannot serialize two creators in different processes;
+       ;; on a conditional store, exactly one absent-key CAS wins. Everything the
+       ;; loser wrote before this point is immutable and collectable.
+       (try
+         (<?- (k/assoc store :db db-to-store
+                       (cond-> opts
+                         (k/conditional-write-domain store)
+                         (assoc :expected-revision k/absent))))
+         (catch #?(:clj Throwable :cljs :default) e
+           (if (= :konserve/revision-mismatch (:type (ex-data e)))
+             (log/raise "Database already exists."
+                        {:type :db-already-exists :config store-config})
+             (throw e))))
        ;; :branches names :db, so it is a POINTER and must be written LAST — a
        ;; collector that reads it before the head exists marks nothing for :db.
        (<?- (k/assoc store :branches #{:db} opts))           ; mutable: branch set

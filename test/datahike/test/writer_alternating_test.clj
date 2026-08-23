@@ -1,17 +1,14 @@
 (ns datahike.test.writer-alternating-test
   "Two processes writing the same database ONE AFTER THE OTHER.
 
-   Datahike's `:self` writer assumes all writers for a database live in one JVM:
-   it keeps the branch head in memory ([:meta :datahike/commit-id]) and never
-   re-reads it, so a warm writer is blind to anything another process committed.
-   AWS Lambda breaks that premise — each execution environment is a separate JVM
-   that believes it is the only writer, and Lambda keeps several warm and routes
-   to them alternately. Each then commits from its own stale head and silently
-   clobbers the other's transactions.
+   Datahike's `:self` writer now defaults to re-reading and conditionally
+   publishing the branch head. The opt-in `:streaming? true` mode instead keeps
+   the head in memory, so it is safe only while one process exclusively owns the
+   writer. AWS Lambda breaks that premise — it keeps several execution
+   environments warm and routes to them alternately.
 
-   `:writer {:backend :self :streaming? false}` re-reads the branch head from
-   storage before every transaction, which makes alternating processes safe. It
-   does NOT make CONCURRENT processes safe — that needs head fencing (#878)."
+   These tests cover both alternating processes and the conditional head write
+   that makes overlapping processes safe."
   (:require [clojure.core.async :as async]
             [clojure.test :refer [deftest is testing]]
             [datahike.api :as d]
@@ -91,13 +88,13 @@
          :commits (commit-chain-length (:conn observer))}
         (finally (release-separate-process observer))))))
 
-(deftest default-writer-loses-alternating-updates
-  (testing "the bug: with the default (:streaming? true) each warm writer commits
+(deftest opt-in-streaming-writer-loses-alternating-updates
+  (testing "the bug: with opt-in :streaming? true each warm writer commits
             from its own stale head, so half the transactions vanish"
     (let [n 10
-          {:keys [datoms commits]} (alternate! "default" nil n)]
+          {:keys [datoms commits]} (alternate! "streaming" true n)]
       (is (< datoms n)
-          (str "expected the default writer to LOSE updates, but all " n
+          (str "expected the streaming writer to LOSE updates, but all " n
                " survived — if this starts passing, the head-cid threading in "
                "datahike.writer's commit loop changed and this test's premise "
                "needs revisiting"))
@@ -139,8 +136,8 @@
             (finally (release-separate-process p))))))))
 
 (deftest streaming-flag-is-plumbed-from-the-writer-config
-  (testing ":streaming? reaches the LocalWriter and defaults to true"
-    (doseq [[streaming? expected] [[nil true] [true true] [false false]]]
+  (testing ":streaming? reaches the LocalWriter and defaults to false"
+    (doseq [[streaming? expected] [[nil false] [true true] [false false]]]
       (let [c (cfg (str "plumb-" streaming?) streaming?)]
         (fresh-db! c)
         (let [{:keys [conn] :as p} (connect-as-separate-process c)]
@@ -151,14 +148,14 @@
 
 (deftest streaming-is-a-connect-time-choice
   (testing "an existing database created with the default writer can be connected
-            to with :streaming? false — the flag comes from the CONNECT config,
-            which is what a serverless deployment can actually set"
+            to with :streaming? true — the flag comes from the CONNECT config,
+            not from stored database metadata"
     (let [created   (cfg "connect-time" nil)
-          connected (assoc created :writer {:backend :self :streaming? false})]
+          connected (assoc created :writer {:backend :self :streaming? true})]
       (fresh-db! created)
       (let [{:keys [conn] :as p} (connect-as-separate-process connected)]
         (try
-          (is (false? (w/streaming? (:writer @(:wrapped-atom conn)))))
+          (is (true? (w/streaming? (:writer @(:wrapped-atom conn)))))
           (d/transact conn [{:db/id -1 :name "x"}])
           (is (= 1 (count (d/datoms @conn :eavt))))
           (finally (release-separate-process p)))))))
@@ -464,6 +461,24 @@
                 (str "and answered with the conflict, once each: " (pr-str rs))))
           (is (= ::ok (deref (future (d/transact conn [{:db/id -1 :name "after"}]) ::ok) 30000 ::timed-out))
               "the writer survived exhaustion")
+          (finally (release-separate-process p)))))))
+
+(deftest head-revision-is-runtime-only
+  (testing "the Konserve CAS token travels through the writer without entering
+            durable database metadata or the content-addressed commit"
+    (let [c (cfg "runtime-revision" false)]
+      (fresh-db! c)
+      (let [{:keys [conn] :as p} (connect-as-separate-process c)]
+        (try
+          (d/transact conn [{:db/id -1 :name "revision"}])
+          (let [runtime-db @(:wrapped-atom conn)
+                stored-db  (k/get (:store runtime-db) :db nil {:sync? true})]
+            (is (some? (::dw/head-revision runtime-db))
+                "the next commit retains the revision it must fence against")
+            (is (nil? (::dw/head-revision stored-db))
+                "the operational token is not persisted at top level")
+            (is (nil? (get-in stored-db [:meta :datahike/head-revision]))
+                "nor exposed or hashed as database metadata"))
           (finally (release-separate-process p)))))))
 
 (deftest retry-policy-is-configurable
@@ -969,8 +984,8 @@
           (finally (release-separate-process p)))))))
 
 (deftest self-writer-rejects-unknown-keys
-  (testing "a typo like :streaming (no ?) would silently select the unsafe
-            default, which is exactly the setting whose failure is silent"
+  (testing "a typo like :streaming (no ?) must not silently ignore the
+            caller's attempt to select a writer mode"
     (let [c (assoc (cfg "unknown-key" nil) :writer {:backend :self :streaming false})]
       (fresh-db! (cfg "unknown-key" nil))
       (is (thrown-with-msg? clojure.lang.ExceptionInfo
@@ -999,7 +1014,7 @@
       (let [{:keys [conn] :as p} (connect-as-separate-process
                                   (assoc c :writer {:backend :self :streaming? nil}))]
         (try
-          (is (true? (w/streaming? (:writer @(:wrapped-atom conn))))
+          (is (false? (w/streaming? (:writer @(:wrapped-atom conn))))
               "connect strips the nil and takes the default")
           (is (thrown-with-msg? clojure.lang.ExceptionInfo
                                 #"must be true or false"
@@ -1008,15 +1023,15 @@
           (finally (release-separate-process p)))))))
 
 (deftest streaming-flag-is-not-part-of-the-stored-config
-  (testing "a database CREATED with :streaming? false can be connected to
-            without it (the reverse is covered by streaming-is-a-connect-time-
-            choice) — the flag is a property of the connecting process"
-    (let [created   (cfg "created-with-flag" false)
+  (testing "a database CREATED with :streaming? true can be connected without
+            it and takes the safe default — the flag is a property of the
+            connecting process"
+    (let [created   (cfg "created-with-flag" true)
           connected (assoc created :writer {:backend :self})]
       (fresh-db! created)
       (let [{:keys [conn] :as p} (connect-as-separate-process connected)]
         (try
-          (is (true? (w/streaming? (:writer @(:wrapped-atom conn))))
+          (is (false? (w/streaming? (:writer @(:wrapped-atom conn))))
               "the connect config wins")
           (d/transact conn [{:db/id -1 :name "x"}])
           (is (= 1 (count (d/datoms @conn :eavt))))
@@ -1090,7 +1105,7 @@
 
 (deftest non-streaming-works-on-the-memory-backend
   (testing "`:streaming? false` re-reads the branch head on every batch, so it
-            exercises store paths the default writer never touches. The memory
+            exercises the store paths the safe default now relies on. The memory
             backend is what most tests and every getting-started example use, and
             a writer that only works on a filestore would be found by users
             rather than by CI."

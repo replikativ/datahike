@@ -62,6 +62,82 @@
     ;; Assume it's a raw store
     conn-or-db))
 
+(defn- revision-mismatch? [e]
+  (= :konserve/revision-mismatch (:type (ex-data e))))
+
+(defn- revisioned-read-opts [store opts]
+  (cond-> opts
+    (k/conditional-write-domain store) (assoc :with-revision? true)))
+
+(defn- unpack-revisioned [store result]
+  (if (k/conditional-write-domain store)
+    result
+    [result nil]))
+
+(defn- update-branches!
+  "Apply `f` to the shared branch registry without losing a concurrent branch
+   creation/deletion. Conditional stores retry from the new value after a CAS
+   miss; stores without revisions retain the historical best-effort update."
+  [store f opts]
+  (let [fenced? (some? (k/conditional-write-domain store))]
+    (async+sync (:sync? opts) *default-sync-translation*
+                (go-try-
+                 (if-not fenced?
+                   (second (<?- (k/update store :branches #(f (set %)) opts)))
+                   (loop [attempt 0]
+                     (let [raw (<?- (k/get store :branches nil
+                                           (revisioned-read-opts store opts)))
+                           [branches revision] (unpack-revisioned store raw)
+                           updated (f (set branches))
+                           result (try
+                                    (<?- (k/assoc store :branches updated
+                                                  (assoc opts :expected-revision revision)))
+                                    updated
+                                    (catch #?(:clj Throwable :cljs :default) e
+                                      (if (revision-mismatch? e)
+                                        ::retry
+                                        (throw e))))]
+                       (if (= ::retry result)
+                         (if (< attempt 63)
+                           (recur (inc attempt))
+                           (throw (ex-info "Branch registry kept changing; conditional update did not converge."
+                                           {:type :datahike/branch-registry-contention
+                                            :attempts (inc attempt)})))
+                         result))))))))
+
+(defn- assoc-current!
+  "Conditionally replace `key` at the revision observed immediately before the
+   write. `retry?` gives force-branch! its deliberate last-writer-wins semantics;
+   branch creation instead reports that another creator won."
+  [store key value opts retry?]
+  (let [fenced? (some? (k/conditional-write-domain store))]
+    (async+sync (:sync? opts) *default-sync-translation*
+                (go-try-
+                 (if-not fenced?
+                   (do (<?- (k/assoc store key value opts)) nil)
+                   (loop [attempt 0]
+                     (let [raw (<?- (k/get store key nil
+                                           (revisioned-read-opts store opts)))
+                           [_ revision] (unpack-revisioned store raw)
+                           result (try
+                                    (<?- (k/assoc store key value
+                                                  (assoc opts :expected-revision revision)))
+                                    :written
+                                    (catch #?(:clj Throwable :cljs :default) e
+                                      (if (revision-mismatch? e)
+                                        ::conflict
+                                        (throw e))))]
+                       (cond
+                         (= :written result) nil
+                         (and retry? (< attempt 63)) (recur (inc attempt))
+                         retry? (throw (ex-info "Branch head kept changing; forced update did not converge."
+                                                {:type :datahike/branch-head-contention
+                                                 :branch key
+                                                 :attempts (inc attempt)}))
+                         :else (throw (ex-info "Branch was created concurrently."
+                                               {:type :branch-already-exists
+                                                :new-branch key}))))))))))
+
 ;; ========================= public API =========================
 
 (defn branches
@@ -146,9 +222,14 @@
                                  :cljs nil)
                               updated-db (cond-> (assoc-in stored-db [:config :branch] new-branch)
                                            (seq branched-sec-keys) (assoc :secondary-index-keys branched-sec-keys))]
-                          (<?- (k/assoc store new-branch updated-db opts))
+                          ;; A deleted branch leaves its old head behind until GC,
+                          ;; so "must be absent" is too strong here. Fence against
+                          ;; whichever state (absent or stale head) we observed;
+                          ;; another creator of the same name can then win, but can
+                          ;; never be overwritten silently.
+                          (<?- (assoc-current! store new-branch updated-db opts false))
                       ;; :branches is the POINTER — written last (barrier invariant)
-                          (<?- (k/update store :branches #(conj (set %) new-branch) opts))))
+                          (<?- (update-branches! store #(conj % new-branch) opts))))
                       (finally (guard/done! gc-sid gc-token)))))))))
 
 (defn delete-branch!
@@ -162,21 +243,27 @@
    (let [opts (select-keys opts [:sync?])]
      (async+sync (:sync? opts) *default-sync-translation*
                  (go-try-
-                  (let [store (:store @conn)
-                        existing-branches (<?- (k/get store :branches nil opts))]
-                    (when-not (and existing-branches (existing-branches branch))
-                      (log/raise "Branch does not exist." {:type :branch-does-not-exist
-                                                           :branch branch}))
-                    (delete-connection! [(store-identity (get-in @conn [:config :store])) branch])
-                    (<?- (k/update store :branches #(disj (set %) branch) opts))))))))
+                  (let [store (:store @conn)]
+                    (<?- (update-branches!
+                          store
+                          (fn [branches]
+                            (when-not (contains? branches branch)
+                              (log/raise "Branch does not exist." {:type :branch-does-not-exist
+                                                                   :branch branch}))
+                            (disj branches branch))
+                          opts))
+                    (delete-connection!
+                     [(store-identity (get-in @conn [:config :store])) branch])))))))
 
 (defn force-branch!
   "Force the branch to point to the provided db value. Branch will be created if
   it does not exist. Parents must point to a set of branches or commits.
 
-  WARNING: This overwrites the branch head unconditionally, like git reset --hard.
-  Existing connections to this branch will see stale state and must be released
-  and reconnected. Use with care — you can render data inaccessible."
+  WARNING: This deliberately replaces the branch head, like git reset --hard.
+  On revisioned stores the replacement is conditionally retried so it cannot
+  clobber an update that lands between its read and write. Existing connections
+  to this branch will see stale state and must be released and reconnected. Use
+  with care — you can render data inaccessible."
   ([db branch parents] (force-branch! db branch parents {:sync? true}))
   ([db branch parents opts]
    (db-check db)
@@ -218,24 +305,31 @@
                       ;; writes — it is so a konserve-sync subscriber RELAYS the batch in
                       ;; the order it was committed, instead of possibly landing the head
                       ;; on a replica before the nodes it references. Mirrors commit!.
-                          (let [writes (cond-> (vec pending-kvs)
+                          (let [fenced? (some? (k/conditional-write-domain store))
+                                writes (cond-> (vec pending-kvs)
                                          schema-meta-kv-to-write (conj [(first schema-meta-kv-to-write)
                                                                         (second schema-meta-kv-to-write)])
                                          commit-graph?           (conj [cid db-to-store])
-                                         true                    (conj [branch db-to-store]))]
-                            (<?- (k/multi-assoc store writes opts)))
+                                         (not fenced?)           (conj [branch db-to-store]))]
+                            (when (seq writes)
+                              (<?- (k/multi-assoc store writes opts)))
+                            ;; Conditional heads cannot live in multi-assoc: its
+                            ;; per-key locks cannot make check-all/write-all one
+                            ;; atomic operation. Values land first, then the head.
+                            (when fenced?
+                              (<?- (assoc-current! store branch db-to-store opts true))))
                           (do
                             (<?- (write-pending-kvs! store pending-kvs sync?))
                             (when schema-meta-kv-to-write
                               (<?- (k/assoc store (first schema-meta-kv-to-write) (second schema-meta-kv-to-write) opts)))
                             (when commit-graph?
                               (<?- (k/assoc store cid db-to-store opts)))
-                            (<?- (k/assoc store branch db-to-store opts))))
+                            (<?- (assoc-current! store branch db-to-store opts true))))
 
                   ;; PUBLISH LAST. `:branches` is what GC's whitelist is built from
                   ;; (datahike.gc/gc-storage!), so naming a branch whose head does not
                   ;; exist yet makes the mark contribute NOTHING for it.
-                        (<?- (k/update store :branches #(conj (set %) branch) opts))
+                        (<?- (update-branches! store #(conj % branch) opts))
                         nil)
                       (finally (guard/done! gc-sid gc-token)))))))))
 

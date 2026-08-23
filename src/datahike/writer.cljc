@@ -118,11 +118,10 @@
 (defn create-thread
   "Creates new transaction thread.
 
-   `streaming?` (default true) is datahike's single-writer assumption: this JVM
-   owns the branch, so the head commit-id is kept in memory and never re-read.
-   With `streaming?` false every transaction instead re-reads the branch head
-   from storage before it is applied, so a database can be handed between
-   processes that write to it one after another. See [[create-writer]]."
+   `streaming?` true is datahike's opt-in single-writer mode: this JVM owns the
+   branch, so the head commit-id is kept in memory and never re-read. The safe
+   default, false, re-reads the branch head before a batch is applied, so a
+   database can be handed between processes. See [[create-writer]]."
   [connection write-fn-map transaction-queue-size commit-queue-size commit-wait-time
    streaming? {:keys [max-batch retries backoff]
                :or   {max-batch MAX_NONSTREAMING_BATCH
@@ -327,7 +326,7 @@
                               ;; head this batch was applied to, and a chained
                               ;; transaction shares it.
                               head-rev (when (and (not streaming?) needs-reload?)
-                                         (get-in old [:meta :datahike/head-revision]))
+                                         (get old ::w/head-revision))
 
                               op-fn (write-fn-map op)
                               res   (try
@@ -699,7 +698,7 @@
                                ;; db `commit!` handed back rather than from storage —
                                ;; the write returned it, which is the whole point of
                                ;; asking for it.
-                               (get-in @(:wrapped-atom connection) [:meta :datahike/head-revision])))))))))]))
+                               (get @(:wrapped-atom connection) ::w/head-revision)))))))))]))
 
 (defn- with-tx-pred
   "Wrap a report-producing write-fn so a store-level tx-pred (if registered)
@@ -736,9 +735,9 @@
    The `:self` backend (the default, `{:backend :self}`) transacts in this JVM
    and takes these options:
 
-   - `:streaming?` (default `true`) — keep the branch head in memory between
-     commits. `false` re-reads the branch head from storage before every
-     transaction and after every commit.
+   - `:streaming?` (default `false`) — re-read the branch head from storage
+     before every batch and after every commit. Set it to `true` to keep the
+     branch head in memory when one process exclusively owns the writer.
 
      COST: one branch-head GET per BATCH (~10-40 ms on S3, ~$0.0000004).
      Transactions that are already queued when one commits are chained onto it
@@ -753,12 +752,13 @@
      between the head read and the commit that lands on it — see the fencing
      note below, which is what actually closes that window.
 
-     REQUIRED whenever more than one process may hold a writer for this
-     database. The serverless case is the reason it exists: each AWS Lambda
+     This is the safe default because more than one process may accidentally
+     hold a writer for the database. The serverless case makes that common:
+     each AWS Lambda
      execution environment is a separate JVM that believes it is the only
      writer, and Lambda keeps several of them warm and routes to them
-     alternately. With the default, each environment commits from its own
-     stale head and silently overwrites the other's transactions.
+     alternately. In the opt-in streaming mode, each environment commits from
+     its own stale head and silently overwrites the other's transactions.
 
      Serialisation alone would not cover processes that OVERLAP: the loser's
      head write would simply land last. So the head write is also CONDITIONAL on
@@ -800,9 +800,9 @@
 
 (def self-writer-keys
   "Every key the `:self` writer understands. Closed, and checked at
-   create-writer: a typo like `:streaming` (no `?`) would otherwise select the
-   unsafe default silently, and the whole point of the option is to be safe in
-   a setting where the failure is silent data loss. A spec cannot do this —
+   create-writer: a typo like `:streaming` (no `?`) must not silently ignore a
+   caller's attempt to select a writer mode, especially when `true` opts into a
+   single-process assumption whose failure is silent data loss. A spec cannot do this —
    `s/keys` accepts unqualified keys it does not list."
   #{:backend :streaming? :transaction-queue-size :commit-queue-size
     :commit-wait-time :write-fn-map
@@ -843,7 +843,7 @@
   [{:keys [transaction-queue-size commit-queue-size write-fn-map commit-wait-time
            streaming? max-batch head-conflict-retries head-conflict-backoff-ms
            require-fencing]
-    :or   {streaming? true}
+    :or   {streaming? false}
     :as   writer-config}
    connection]
   (when-let [unknown (seq (remove self-writer-keys (keys writer-config)))]

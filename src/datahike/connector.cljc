@@ -312,10 +312,10 @@
                      (let [existing (some-> (:writer @(:wrapped-atom conn)) w/streaming?)]
                        (when (and (some? existing)
                                   (= :self (get-in config [:writer :backend] :self))
-                                  (not= (get-in config [:writer :streaming?] true) existing))
+                                  (not= (get-in config [:writer :streaming?] false) existing))
                          (log/warn :datahike/writer-streaming-ignored
                                    "Reusing the existing connection and its writer; the requested :streaming? is ignored. Release the connection everywhere first if you need a different writer."
-                                   {:requested (get-in config [:writer :streaming?] true)
+                                   {:requested (get-in config [:writer :streaming?] false)
                                     :existing  existing}))
                        ;; A DEMAND, not a preference, so it is checked against the
                        ;; writer this caller actually gets — which on this path is
@@ -330,7 +330,7 @@
                        ;; and the warning above has already said the requested
                        ;; flag is ignored.
                        (w/check-fencing! (get-in config [:writer :require-fencing])
-                                         (if (some? existing) existing true)
+                                         (if (some? existing) existing false)
                                          (:store @(:wrapped-atom conn))))
                      conn)
                    (let [raw-store (<?- (ks/connect-store store-config opts))
