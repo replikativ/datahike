@@ -584,7 +584,25 @@
                                                   (assoc :db-after commit-db))]
                                 (>! callback tx-report))))
                           (catch #?(:clj Throwable :cljs js/Error) e
-                            (if (= :konserve/revision-mismatch (:type (ex-data e)))
+                            (cond
+                              ;; NOT FATAL, and NOT RETRIED. The connection demands
+                              ;; fencing and this head has no revision to fence
+                              ;; against — a legacy branch head on an upgraded
+                              ;; database. Retrying cannot change that (the re-read
+                              ;; would find the same revisionless key), and killing
+                              ;; the writer turns a migration condition into an
+                              ;; outage: every caller after the first would get
+                              ;; :writer-shut-down instead of the error that says
+                              ;; what to do. Fail this group's callers with the
+                              ;; message and keep the writer alive.
+                              (= :datahike/fencing-unavailable (:type (ex-data e)))
+                              (do
+                                (log/warn :datahike/fencing-unavailable
+                                          {:branch (:branch (:config db))})
+                                (doseq [[_ callback] txs]
+                                  (put! callback e)))
+
+                              (= :konserve/revision-mismatch (:type (ex-data e)))
                               ;; NOT FATAL. Another writer moved the branch head
                               ;; between our head read and our head write, so this
                               ;; commit did not land — which is the fence doing its
@@ -645,6 +663,7 @@
                                                       :op      op
                                                       :attempt attempt
                                                       :error   e}))))))
+                              :else
                               (do
                             ;; Close the queues BEFORE delivering the failed
                             ;; callbacks. Delivering first unblocks the caller

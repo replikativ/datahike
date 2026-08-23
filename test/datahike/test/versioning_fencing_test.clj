@@ -165,3 +165,33 @@
           "the check-then-create path closes its race at the mutable head write")
       (finally
         (d/delete-database c)))))
+
+(deftest a-legacy-database-heals-instead-of-refusing
+  (testing "A database upgraded in place has no :revision in its konserve
+            metadata, and konserve refuses :expected-revision nil loudly. The
+            branch head heals through commit! (first write unconditional), but
+            :branches is written by NOTHING except the branch operations
+            themselves — so passing the nil through made every branch operation
+            on a legacy database fail forever, with no write that could heal it.
+            Transacting first does not help and this test proves that too."
+    (let [c {:store {:backend :memory
+                     :id #uuid "a17e2a71-0000-0000-0000-000000000201"}
+             :schema-flexibility :read
+             :keep-history? false}
+          _ (d/delete-database c)
+          _ (d/create-database c)
+          conn (d/connect c)
+          store (:store @(:wrapped-atom conn))]
+      (try
+        ;; make the store look exactly like an upgraded-in-place database
+        (doseq [key [:branches :db]]
+          (swap! (:state store) update key (fn [[m v]] [(dissoc m :revision) v])))
+        (is (some? @(d/transact! conn {:tx-data [{:legacy/n 1}]}))
+            "transacting a legacy head self-heals (first commit unfenced)")
+        (is (contains? (v/branch! conn :db :feature) :feature)
+            "and creating a branch on the legacy registry heals the same way")
+        (is (contains? (set (v/branches (:store @(:wrapped-atom conn)))) :feature))
+        (v/delete-branch! conn :feature)
+        (is (not (contains? (set (v/branches (:store @(:wrapped-atom conn)))) :feature))
+            "as does deleting one — the registry now carries a revision")
+        (finally (d/release conn))))))

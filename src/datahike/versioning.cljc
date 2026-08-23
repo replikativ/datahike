@@ -89,9 +89,20 @@
                                            (revisioned-read-opts store opts)))
                            [branches revision] (unpack-revisioned store raw)
                            updated (f (set branches))
+                           ;; A nil revision is a key written before konserve had
+                           ;; revisions — an upgraded-in-place database. konserve
+                           ;; REFUSES `:expected-revision nil` (loudly, by design),
+                           ;; and nothing else ever rewrites `:branches`, so passing
+                           ;; it through made every branch operation on a legacy
+                           ;; database fail forever, with no write that could heal
+                           ;; it. Write unconditionally ONCE instead: the write
+                           ;; mints a revision and the registry is fenceable from
+                           ;; then on — the same self-healing discipline commit!
+                           ;; applies to a legacy branch head.
                            result (try
                                     (<?- (k/assoc store :branches updated
-                                                  (assoc opts :expected-revision revision)))
+                                                  (cond-> opts
+                                                    revision (assoc :expected-revision revision))))
                                     updated
                                     (catch #?(:clj Throwable :cljs :default) e
                                       (if (revision-mismatch? e)
@@ -119,9 +130,16 @@
                      (let [raw (<?- (k/get store key nil
                                            (revisioned-read-opts store opts)))
                            [_ revision] (unpack-revisioned store raw)
+                           ;; nil revision = legacy key (see update-branches!):
+                           ;; fence when there is a token, write once
+                           ;; unconditionally when there is none. An ABSENT key is
+                           ;; not this case — it reads as konserve's `absent`
+                           ;; sentinel, which is a real token meaning
+                           ;; create-if-absent.
                            result (try
                                     (<?- (k/assoc store key value
-                                                  (assoc opts :expected-revision revision)))
+                                                  (cond-> opts
+                                                    revision (assoc :expected-revision revision))))
                                     :written
                                     (catch #?(:clj Throwable :cljs :default) e
                                       (if (revision-mismatch? e)

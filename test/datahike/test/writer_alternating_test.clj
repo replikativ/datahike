@@ -1163,3 +1163,37 @@
                  (mapv :v (d/datoms @conn :aevt :name)))
               "the separately fenced branch head still publishes the commit")
           (finally (d/release conn)))))))
+
+(deftest a-sole-writer-never-manufactures-a-head-conflict
+  (testing "One writer, one process, no competitor: every head conflict it
+            reports is manufactured. This asserts the writer's own revision
+            threading rather than the fence — the memory backend is multi-key
+            AND fenced, so commits take the multi-assoc path, and a commit that
+            fails to capture the revision its own head write created makes the
+            next chained group fence against a revision this writer already
+            moved. Measured before the fix: 24 conflicts in 300 transactions.
+
+            :head-conflict-retries 0 is what gives the test teeth: retries
+            self-heal the conflicts into successes, and a suite that only
+            checks outcomes then stays green while every chained group burns a
+            rejection and a backoff."
+    (let [c {:store {:backend :memory
+                     :id #uuid "a17e2a71-0000-0000-0000-000000000200"}
+             :schema-flexibility :read
+             :keep-history? false
+             :writer {:backend :self :head-conflict-retries 0}}
+          _ (d/delete-database c)
+          _ (d/create-database c)
+          conn (d/connect c)]
+      (try
+        (let [results  (mapv (fn [i] (d/transact! conn {:tx-data [{:sole-writer/n i}]}))
+                             (range 300))
+              outcomes (mapv (fn [p] (try @p ::ok
+                                          (catch Exception e (:type (ex-data e)))))
+                             results)
+              conflicts (count (filter #(= :datahike/head-conflict %) outcomes))]
+          (is (zero? conflicts)
+              (str conflicts " of 300 transactions reported a head conflict "
+                   "with no competing writer in existence"))
+          (is (every? #(= ::ok %) outcomes)))
+        (finally (d/release conn))))))

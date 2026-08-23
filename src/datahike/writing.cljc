@@ -636,9 +636,16 @@
            (when-not sync? (as-awaitable nil))))))))
 
 (defn ^:private fencing-required?
-  "Did the caller demand fencing for this connection?"
+  "Did the caller demand fencing for this connection?
+
+   Truthiness, NOT `some?`, so that it answers the same question
+   `check-fencing!` asks at connect: there `:require-fencing false` skips the
+   check (a `when`), so reading it as a demand HERE would admit a connection at
+   connect and then fail its every commit — the two gates disagreeing about what
+   `false` means. `false` is what nil becomes in a config that cannot spell nil
+   (JSON, env vars), and both gates now read it as \"not required\"."
   [db]
-  (some? (get-in db [:config :writer :require-fencing])))
+  (boolean (get-in db [:config :writer :require-fencing])))
 
 (defn commit!
   ([db parents]
@@ -653,7 +660,10 @@
      ;; that cannot fence — and wrong, silently, for a connection that DEMANDED
      ;; fencing. Refuse instead: one unfenced commit is exactly the lost update
      ;; :require-fencing was set to prevent.
-     (log/raise "This commit has no head revision to fence against, but the connection requires fencing."
+     (log/raise (str "This commit has no head revision to fence against, but the connection requires fencing. "
+                     "On an upgraded database this means the branch head predates revisions: one ordinary "
+                     "transact on a connection WITHOUT :require-fencing writes the head once unconditionally "
+                     "and it is fenceable from then on.")
                 {:type :datahike/fencing-unavailable
                  :branch (:branch (:config db))}))
    (let [new-head-revision (atom nil)]
@@ -775,8 +785,22 @@
                             (when (seq writes)
                               (<?- (k/multi-assoc store writes metas {:sync? sync?})))
                             (when head-revision
-                              (<?- (k/assoc store branch-key db-to-store
-                                            {:sync? sync? :expected-revision head-revision}))))
+                              ;; `:with-revision? true` and the capture below are
+                              ;; NOT optional bookkeeping. The commit loop threads
+                              ;; the revision this write CREATES into the next
+                              ;; commit group's fence; without them the returned db
+                              ;; kept the pre-commit stamp, and on every multi-key
+                              ;; store each chained group fenced against a revision
+                              ;; this very writer had already moved — measured as
+                              ;; 24 manufactured head conflicts in 300 transactions
+                              ;; from a SOLE writer, each one a retry with backoff,
+                              ;; and each one a caller-visible error under
+                              ;; :head-conflict-retries 0.
+                              (let [r (<?- (k/assoc store branch-key db-to-store
+                                                    {:sync? sync?
+                                                     :expected-revision head-revision
+                                                     :with-revision? true}))]
+                                (reset! new-head-revision (second r)))))
                     ;; Then write schema-meta, commit-log, branch
                           (let [[meta-key meta-val] schema-meta-kv-to-write
                                 schema-meta-written (when schema-meta-kv-to-write
