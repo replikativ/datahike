@@ -3,6 +3,7 @@
                                           *connections*]]
             [datahike.readers]
             [datahike.store :as ds]
+            [datahike.schema :as schema]
             [datahike.writing :as dsi]
             [datahike.config :as dc]
             [datahike.tools :as dt #?(:clj :refer :cljs :refer-macros) [meta-data]]
@@ -294,7 +295,10 @@
                      store-id (ds/store-identity store-config)
                      conn-id [store-id (:branch config)]]
                  (if-let [conn (get-connection conn-id)]
-                   (let [conn-config (:config @(:wrapped-atom conn))
+                   (let [conn-db @(:wrapped-atom conn)
+                         conn-config (:config conn-db)
+                         _ (schema/validate-custom-value-types!
+                            (:schema conn-db) (:attribute-refs? conn-config))
                ;; replace store config with its identity
                          cfg (normalize-config config)
                          conn-cfg (normalize-config conn-config)]
@@ -367,7 +371,20 @@
                          _ (version-check stored-db)
                          _ (when-not (:allow-unsafe-config config)
                              (ensure-stored-config-consistency config (:config stored-db)))
-                         conn      (conn-from-db (dsi/stored->db (assoc stored-db :config config) store))]
+                         runtime-db (dsi/stored->db (assoc stored-db :config config) store)
+                         ;; Modern stored roots keep schema behind :schema-meta-key,
+                         ;; so validate the reconstructed DB rather than the root map.
+                         ;; Registry callbacks and runtime types are not persisted;
+                         ;; require the owning extension on every reconnect.
+                         _ (try
+                             (schema/validate-custom-value-types!
+                              (:schema runtime-db) (:attribute-refs? config))
+                             (catch #?(:clj Throwable :cljs :default) e
+                               ;; Missing extension code is an expected refusal,
+                               ;; not a reason to leak the store opened above.
+                               (<?- (ks/release-store store-config store opts))
+                               (throw e)))
+                         conn (conn-from-db runtime-db)]
                      (swap! (:wrapped-atom conn) assoc :writer
                             (w/create-writer (:writer config) conn))
                      ;; Recovery: backfill secondary indices that are :building

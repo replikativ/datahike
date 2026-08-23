@@ -1039,6 +1039,7 @@
          {:keys [keep-history? index schema-flexibility attribute-refs?]} complete-config
          on-read? (= :read schema-flexibility)
          schema (to-old-schema schema)
+         _ (ds/validate-custom-value-types! schema attribute-refs?)
          _ (if on-read?
              (validate-schema schema)
              (validate-write-schema schema))
@@ -1093,9 +1094,10 @@
   ([datoms schema] (init-db datoms schema nil nil))
   ([datoms schema user-config] (init-db datoms schema user-config nil))
   ([datoms schema user-config store]
-   (validate-schema schema)
    (let [{:keys [index keep-history? attribute-refs?] :as complete-config}  (merge (dc/storeless-config) user-config)
          _ (dc/validate-config complete-config)
+         _ (ds/validate-custom-value-types! schema attribute-refs?)
+         _ (validate-schema schema)
          complete-schema (merge schema
                                 (if attribute-refs?
                                   c/ref-implicit-schema
@@ -1161,4 +1163,3 @@
                                         (reduce (fn [m ^Datom datom] (update-count-in m [(dbi/ident-for db (.-a datom) :error-on-missing)]))
                                                 {})
                                         sum-indexed-attr-counts)}))))
-

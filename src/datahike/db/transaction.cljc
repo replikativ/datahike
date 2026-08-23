@@ -47,6 +47,10 @@
                   (ref-ident-map v)
                   v)]
 
+    (when (= a-ident :db/valueType)
+      (ds/validate-custom-value-type! v-ident attribute-refs?
+                                      {:attribute a-ident :context at}))
+
     (when (= :write schema-flexibility)
       (let [schema-spec (if (or (ds/meta-attr? a-ident) (ds/schema-attr? a-ident))
                           ds/implicit-schema-spec

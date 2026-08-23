@@ -2,6 +2,7 @@
   (:require  [clojure.walk]
              [clojure.data]
              [datahike.array :as da]
+             [datahike.value-type :as vt]
              [datahike.constants :refer [tx0]]
              [datahike.tools :refer [combine-hashes]]
              #?(:cljs [goog.array :as garray]))
@@ -451,30 +452,35 @@
    Only values that CONTAIN an array change order; anything already Comparable
    takes the same path it always did, so existing indices do not move."
   [v1 v2]
-  #?(:clj (try
-            (cond
-              (and (da/value-array? v1) (da/value-array? v2))
-              (da/compare-arrays v1 v2)
+  #?(:clj (let [custom-1 (vt/descriptor-for-value v1)
+                custom-2 (vt/descriptor-for-value v2)]
+            (try
+              (cond
+                (and custom-1 (= (:id custom-1) (:id custom-2)))
+                ((:compare custom-1) v1 v2)
+
+                (and (da/value-array? v1) (da/value-array? v2))
+                (da/compare-arrays v1 v2)
 
             ;; Checked AFTER the array case and before `compare`, so a scalar —
             ;; every value in an ordinary database — reaches `compare` having
             ;; paid one extra predicate.
-              (and (sequential? v1) (sequential? v2))
-              (compare-sequential v1 v2)
+                (and (sequential? v1) (sequential? v2))
+                (compare-sequential v1 v2)
 
             ;; Carries its own order: the ordinary case, and the only one an
             ;; ordinary database ever reaches. `compare` can still throw here
             ;; when the two are Comparable but of DIFFERENT types (a long
             ;; against a string, under `:schema-flexibility :read`) — the catch
             ;; below settles that by type name.
-              (and (comparable? v1) (comparable? v2)) (compare v1 v2)
+                (and (comparable? v1) (comparable? v2)) (compare v1 v2)
 
               ;; No order of its own. Checked BEFORE the hash so that equality is
               ;; decided by `a=` and never by a hash — which is what keeps value
               ;; semantics intact.
-              (da/a= v1 v2) 0
-              (not (class-identical? v1 v2)) (class-order v1 v2)
-              :else (hash-order v1 v2))
+                (da/a= v1 v2) 0
+                (not (class-identical? v1 v2)) (class-order v1 v2)
+                :else (hash-order v1 v2))
             ;; Two Comparables of DIFFERENT types — a long against a string in
             ;; one attribute, which `:schema-flexibility :read` permits.
             ;; `(compare 1 "x")` throws, and only `cmp-nil` used to catch it, so
@@ -482,48 +488,53 @@
             ;; `cmp-datoms-avet-quick`. Settled here so every caller agrees.
             ;; A hash collision from `hash-order` is an ex-info, not a
             ;; ClassCastException, so it passes through untouched.
-            (catch ClassCastException e
-              (if (class-identical? v1 v2)
-                (throw e)
-                (class-order v1 v2))))
+              (catch ClassCastException e
+                (if (class-identical? v1 v2)
+                  (throw e)
+                  (class-order v1 v2)))))
      :cljs
-     (try
-       (cond
-         (and (uuid? v1) (uuid? v2))
+     (let [custom-1 (vt/descriptor-for-value v1)
+           custom-2 (vt/descriptor-for-value v2)]
+       (try
+         (cond
+           (and custom-1 (= (:id custom-1) (:id custom-2)))
+           ((:compare custom-1) v1 v2)
+
+           (and (uuid? v1) (uuid? v2))
        ;; Match Java's signed UUID comparison where MSB is treated as signed
        ;; In signed comparison: 0x8... is negative, so 0x8... < 0x0...
-         (let [s1 (.-uuid ^cljs.core/UUID v1)
-               s2 (.-uuid ^cljs.core/UUID v2)
-               c1 (.charCodeAt s1 0)
-               c2 (.charCodeAt s2 0)
+           (let [s1 (.-uuid ^cljs.core/UUID v1)
+                 s2 (.-uuid ^cljs.core/UUID v2)
+                 c1 (.charCodeAt s1 0)
+                 c2 (.charCodeAt s2 0)
              ;; charCode 56 = "8", chars 8-F are "negative" in signed
-               neg1 (>= c1 56)
-               neg2 (>= c2 56)]
-           (cond
-             (and neg1 (not neg2)) -1  ;; v1 "negative", v2 "positive" → v1 < v2
-             (and neg2 (not neg1)) 1   ;; v2 "negative", v1 "positive" → v1 > v2
-             :else (compare s1 s2)))   ;; same sign → string compare works
+                 neg1 (>= c1 56)
+                 neg2 (>= c2 56)]
+             (cond
+               (and neg1 (not neg2)) -1  ;; v1 "negative", v2 "positive" → v1 < v2
+               (and neg2 (not neg1)) 1   ;; v2 "negative", v1 "positive" → v1 > v2
+               :else (compare s1 s2)))   ;; same sign → string compare works
 
-         (and (da/value-array? v1) (da/value-array? v2))
-         (da/compare-arrays v1 v2)
+           (and (da/value-array? v1) (da/value-array? v2))
+           (da/compare-arrays v1 v2)
 
-         (and (sequential? v1) (sequential? v2))
-         (compare-sequential v1 v2)
+           (and (sequential? v1) (sequential? v2))
+           (compare-sequential v1 v2)
 
-         (and (comparable? v1) (comparable? v2)) (compare v1 v2)
+           (and (comparable? v1) (comparable? v2)) (compare v1 v2)
 
-         (da/a= v1 v2) 0
-         (not (class-identical? v1 v2)) (class-order v1 v2)
-         :else (hash-order v1 v2))
-       (catch :default e
-         ;; cljs has no ClassCastException, so this catch is broad and must
-         ;; filter explicitly. The class check alone is not enough: the refusal
-         ;; may have been raised on an INNER pair by `compare-sequential` while
-         ;; the classes of the OUTER pair differ, and then it would be answered
-         ;; away by name.
-         (if (or (collision-refusal? e) (class-identical? v1 v2))
-           (throw e)
-           (class-order v1 v2))))))
+           (da/a= v1 v2) 0
+           (not (class-identical? v1 v2)) (class-order v1 v2)
+           :else (hash-order v1 v2))
+         (catch :default e
+           ;; cljs has no ClassCastException, so this catch is broad and must
+           ;; filter explicitly. The class check alone is not enough: the refusal
+           ;; may have been raised on an INNER pair by `compare-sequential` while
+           ;; the classes of the OUTER pair differ, and then it would be answered
+           ;; away by name.
+           (if (or (collision-refusal? e) (class-identical? v1 v2))
+             (throw e)
+             (class-order v1 v2)))))))
 
 (defn- safe-compare
   "`compare-value`, with the last resort for two values of DIFFERENT types.

@@ -14,6 +14,7 @@
                 :cljs [[cljs.cache :as cache]
                        [cljs.cache.wrapped :as wrapped]])
             [datahike.datom :as dd :refer [index-type->cmp-quick]]
+            [datahike.value-type.fressian :as value-fress]
             [org.replikativ.persistent-sorted-set.fressian :as pss-fress]
             [datahike.constants :refer [tx0 txmax]]
             [datahike.index.audit :as audit :refer [IAuditable]]
@@ -770,7 +771,8 @@
                      {:resolve-storage (fn [_] @storage-cell)
                       :resolve-cmp     (fn [m] (index-type->cmp-quick (:index-type m) false))
                       :default-bf      bf})
-            read-handlers*  (merge node-rh
+            read-handlers*  (merge (value-fress/read-handlers)
+                                   node-rh
                                    {pss-fress/set-tag root-rh}
                                    datom-read-handler
                                    ;; BACKWARDS COMPAT: legacy datahike.index.* tags → the canonical
@@ -780,7 +782,10 @@
                                    {"datahike.index.PersistentSortedSet"        root-rh
                                     "datahike.index.PersistentSortedSet.Leaf"   (get node-rh pss-fress/leaf-tag)
                                     "datahike.index.PersistentSortedSet.Branch" (get node-rh pss-fress/branch-tag)})
-            write-handlers* (merge pss-fress/write-handlers pss-fress/root-write-handlers datom-write-handler)
+            write-handlers* (merge (value-fress/write-handlers)
+                                   pss-fress/write-handlers
+                                   pss-fress/root-write-handlers
+                                   datom-write-handler)
             store   (k/assoc-serializers store {:FressianSerializer (fressian-serializer read-handlers* write-handlers*)})
             storage (or (:storage store) (create-storage store config))]
         (reset! storage-cell storage)

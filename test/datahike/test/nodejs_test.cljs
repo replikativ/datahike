@@ -61,6 +61,10 @@
             ;; Attribute-value constraints — registry resolution (pure, here)
             ;; and an async enforcement test below.
             [datahike.test.attr-preds-test]
+            ;; Extension-defined scalar registry and comparator dispatch. The
+            ;; persistence half is JVM-only for now; the registry contract is
+            ;; shared CLJC and must actually execute here, not merely compile.
+            [datahike.test.value-type-test]
             ;; Dump digests. A dump written on the JVM is verified here, so the
             ;; SHA-256 and the xor64+sum64 semantic digest must come out
             ;; bit-identical — and 64-bit arithmetic is exactly what cljs does
@@ -765,7 +769,8 @@
                (done))))))
 
 (defn -main []
-  (t/run-tests 'datahike.test.migrate-digest-test
+  (t/run-tests 'datahike.test.value-type-test
+               'datahike.test.migrate-digest-test
                'datahike.test.migrate-store-test
                'datahike.test.migrate-fs-test
                'datahike.test.migrate-manifest-test

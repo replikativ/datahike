@@ -2,6 +2,7 @@
   (:require [clojure.spec.alpha :as s]
             [datahike.array :as arr]
             [datahike.datom]
+            [datahike.value-type :as vt]
             ;; cljs bigdec values are fress `Bigdec` (unscaled js/BigInt + scale) —
             ;; the same type konserve round-trips via the Fressian BIGDEC (0xC7)
             ;; handlers. Recognise it so :db.type/bigdec accepts a real decimal in
@@ -70,7 +71,8 @@
     :db.type/valueType
     :db.type/unique})
 
-(s/def :db.type/value builtin-value-types)
+(s/def :db.type/value #(or (contains? builtin-value-types %)
+                           (some? (vt/descriptor %))))
 
 ;; :db.type/store-ref — a UUID that NAMES AN OBJECT: a blob, an out-of-line payload.
 ;; The ONE thing it adds over :db.type/uuid is that the garbage collector MARKS it,
@@ -291,7 +293,12 @@
                  implicit-schema-spec
                  schema)
         value-type (get-in schema [a-ident :db/valueType])]
-    (s/valid? value-type v-ident)))
+    (if-let [descriptor (vt/descriptor value-type)]
+      (vt/valid-value? descriptor v-ident)
+      ;; Avoid asking spec to resolve an unregistered extension keyword. Besides
+      ;; its cryptic error, that would couple Datahike to unrelated global specs.
+      (and (contains? builtin-value-types value-type)
+           (s/valid? value-type v-ident)))))
 
 (defn instant? [db ^Datom datom schema]
   (let [a-ident (if (:attribute-refs? (:config db))
@@ -315,9 +322,47 @@
   ;; The "Bad entity value ..." error shows the user the enumeration of legal value
   ;; types. `:db.type/value` is now defined by reference to `builtin-value-types`, so
   ;; `s/describe` renders that var rather than the alternatives — build the enum here.
-  (if (= schema-type :db.type/value)
-    (into (sorted-set) builtin-value-types)
+  (cond
+    (= schema-type :db.type/value)
+    (into (sorted-set) (concat builtin-value-types (keys (vt/descriptors))))
+
+    (vt/descriptor schema-type)
+    (str "registered custom value type " (pr-str schema-type))
+
+    (and (keyword? schema-type) (not (contains? builtin-value-types schema-type)))
+    (str "registered custom value type " (pr-str schema-type)
+         " (currently unregistered)")
+
+    :else
     (s/describe schema-type)))
+
+(defn validate-custom-value-type!
+  "Validates a schema value-type ID against the process registry.
+
+  Custom types are deliberately unsupported by attribute-ref databases for now:
+  those databases encode schema values as refs to the fixed system vocabulary."
+  [value-type attribute-refs? context]
+  (when (and (qualified-keyword? value-type)
+             (not (contains? builtin-value-types value-type)))
+    (if-not (vt/descriptor value-type)
+      (throw (ex-info (str "Unregistered custom value type " (pr-str value-type)
+                           "; register its descriptor before creating or connecting the database")
+                      (merge {:error :schema/unregistered-value-type
+                              :value-type value-type}
+                             context)))
+      (when attribute-refs?
+        (throw (ex-info (str "Custom value type " (pr-str value-type)
+                             " is not supported when :attribute-refs? is true")
+                        (merge {:error :schema/custom-value-type-with-attribute-refs
+                                :value-type value-type}
+                               context)))))))
+
+(defn validate-custom-value-types!
+  "Validates all custom value types declared by SCHEMA."
+  [schema attribute-refs?]
+  (doseq [[attribute entry] schema]
+    (validate-custom-value-type! (:db/valueType entry) attribute-refs?
+                                 {:attribute attribute})))
 
 (defn key-bearing-misuse
   "Reasons this schema entity would let the collector delete live data, or nil.
