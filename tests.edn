@@ -1,14 +1,31 @@
 #kaocha/v1
+        ;; `not-migrate` / `only-migrate` split the `datahike.test.*` namespaces into
+        ;; two tiers. Export/import (`datahike.migrate.*`) and `experimental.diff`
+        ;; are ONE feature with ONE index requirement — the bulk index build refuses
+        ;; anything but persistent-set, and diff-buf is a persistent-set feature — so
+        ;; running their tests once per index backend was 2/3 waste. Measured before
+        ;; the split: 666 tests / 49.6s across the three suites, i.e. ~222 tests
+        ;; duplicated twice. They now run ONCE, in the `:migrate` tier below, which
+        ;; CI runs as its own parallel job.
+        ;;
+        ;; A regex rather than `^:migrate` metadata on twenty namespaces: same
+        ;; effect, and it keeps the tiering in the one file that describes tiers
+        ;; instead of scattering it across the tests it selects.
         #meta-merge [{:tests    [{:id          :clj-pss
-                                  :ns-patterns ["datahike.test."]
+                                  :ns-patterns ["^datahike\\.test\\.(?!migrate-|experimental-diff)"]
                                   :bindings {datahike.config/*default-index* :datahike.index/persistent-set}}
                                  {:id          :clj-hht
-                                  :ns-patterns ["datahike.test."]
+                                  :ns-patterns ["^datahike\\.test\\.(?!migrate-|experimental-diff)"]
                                   :bindings {datahike.config/*default-index* :datahike.index/hitchhiker-tree}
                                   :kaocha.plugin.hooks/pre-load [datahike.index.hitchhiker-tree]}
                                  {:id          :specs
                                   :skip-meta   [:no-spec]
-                                  :ns-patterns ["datahike.test."]}
+                                  :ns-patterns ["^datahike\\.test\\.(?!migrate-|experimental-diff)"]}
+                                 ;; The export/import tier. Persistent-set, because that
+                                 ;; is the only index the feature supports.
+                                 {:id          :migrate
+                                  :ns-patterns ["^datahike\\.test\\.(migrate-|experimental-diff)"]
+                                  :bindings {datahike.config/*default-index* :datahike.index/persistent-set}}
                                  ;; The `:cljs` kaocha-type profile remains disabled — the
                                  ;; canonical CLJS test workflow is `bb node-cljs-test`, which
                                  ;; uses the shadow-cljs `:node-test` build defined in

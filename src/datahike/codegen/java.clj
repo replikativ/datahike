@@ -126,6 +126,15 @@
     ;; Default to general type mapping
     :else (malli->java-type schema)))
 
+(defn needs-normalization?
+  "Whether a Java parameter type needs Java→Clojure collection normalization
+   before it can be handed to a Clojure function."
+  [param-type]
+  (or (= param-type "List")
+      (= param-type "List<?>")
+      (= param-type "Map<?,?>")
+      (= param-type "Map<String,Object>")))
+
 ;; =============================================================================
 ;; Name Conversion
 ;; =============================================================================
@@ -190,6 +199,112 @@
     (vec
      (map extract-params-from-schema (rest args-schema)))))
 
+;; -----------------------------------------------------------------------------
+;; `[:or …]` in argument position
+;; -----------------------------------------------------------------------------
+;;
+;; An `[:or A B]` argument is ONE Clojure parameter admitting two shapes. Java
+;; has no such type, and `malli->java-type` collapses it to `Object` — which is
+;; how `transact(Object, List)` came to be the only `transact` overload even
+;; though the arg-map form is documented and accepted.
+;;
+;; The alternative is one overload per distinct Java type. That is right for
+;; some operations and WRONG for others, so it is gated rather than applied:
+;; see `expand-or-args` below.
+
+(defn- sig
+  "The Java signature of a param-list — the types alone, which is what
+   overload resolution and duplicate-method detection actually key on."
+  [params]
+  (mapv :type params))
+
+(defn- number-params
+  "Name a vector of parameter maps `arg0`, `arg1`, …"
+  [params]
+  (vec (map-indexed (fn [idx p] (assoc p :name (str "arg" idx))) params)))
+
+(defn- expand-cat
+  "Every Java parameter list a `[:cat …]` denotes, expanding `[:or …]`
+   arguments into the cross product of their branches.
+
+   Deduplicated by signature: `entity`'s `[:or :datahike/SEId :any]` maps both
+   branches to `Object`, and emitting that twice is a duplicate method rather
+   than an overload.
+
+   Marks `:normalize?` on an argument whose `[:or …]` has ANY branch that is a
+   Java collection. `transact`'s `[:or STransactions SWithArgs]` is exactly
+   `List OR Object`: the `List` overload marshals through
+   `Util.normalizeCollections` because of its TYPE, and without this flag the
+   `Object` one would not — so the arg-map overload would compile and then hand
+   datahike a raw `java.util.HashMap`, which it refuses with `Bad argument to
+   transact`. Both branches denote the same Clojure parameter, so both marshal."
+  [cat-schema]
+  (->> (rest cat-schema)
+       (reduce (fn [acc param-schema]
+                 (let [or?   (and (vector? param-schema)
+                                  (= :or (first param-schema)))
+                       alts  (if or?
+                               (map param-type->java (rest param-schema))
+                               [(param-type->java param-schema)])
+                       norm? (boolean (and or? (some needs-normalization? alts)))]
+                   (vec (distinct (for [params acc, t alts]
+                                    (conj params {:type t :normalize? norm?}))))))
+               [[]])
+       (mapv number-params)))
+
+(defn- expanded-arities
+  "`expand-cat` lifted over a whole `:args` schema, single- or multi-arity.
+   Deduplicated across arities as well as within one."
+  [args-schema]
+  (when (vector? args-schema)
+    (let [cats (case (first args-schema)
+                 :=>       [(second args-schema)]
+                 :function (map second (rest args-schema))
+                 nil)]
+      (when (every? #(and (vector? %) (= :cat (first %))) cats)
+        (->> cats
+             (mapcat expand-cat)
+             (reduce (fn [acc params]
+                       (if (some #(= (sig %) (sig params)) acc)
+                         acc
+                         (conj acc params)))
+                     []))))))
+
+(defn expand-or-args
+  "Every Java parameter list for an operation's `:args`, in declaration order.
+
+   Expands `[:or …]` arguments into one overload per distinct Java type — but
+   ONLY when doing so is purely ADDITIVE, i.e. every signature the collapsed
+   rendering produced still appears among the expanded ones. Otherwise the
+   collapsed rendering is kept unchanged.
+
+   The gate is the whole point, and it is measured rather than asserted. Over
+   the current specification exactly three operations expand non-additively:
+
+     q            (Object) (Object,Object)
+               -> (Object) (List<?>,Object) (Map<?,?>,Object) (String,Object)
+     explain      (Object,Object) -> (List<?>,Object) (Map<?,?>,Object)
+     query-stats  (Object) (Object,Object)
+               -> (Object) (List<?>,Object) (Map<?,?>,Object)
+
+   Each LOSES its `Object` overload, so every existing Java caller holding a
+   variable declared `Object` would stop compiling. Meanwhile `transact`'s
+   `[:or :datahike/STransactions :datahike/SWithArgs]` maps to `List`/`Object`
+   and merely ADDS `transact(Object, Object)` beside `transact(Object, List)`,
+   breaking nobody.
+
+   Additivity is exactly the difference between the two groups, and it is
+   mechanical — so it is computed here rather than maintained as a list of
+   names that would go stale the first time a schema changed."
+  [args-schema]
+  (let [collapsed (if (= :multi-arity (extract-params-from-schema args-schema))
+                    (extract-multi-arity-params args-schema)
+                    [(extract-params-from-schema args-schema)])
+        expanded  (expanded-arities args-schema)
+        additive? (and (seq expanded)
+                       (every? (set (map sig expanded)) (map sig collapsed)))]
+    (if additive? expanded collapsed)))
+
 ;; =============================================================================
 ;; IFn Declaration Generation
 ;; =============================================================================
@@ -245,19 +360,11 @@
 ;; Method Body Generation
 ;; =============================================================================
 
-(defn needs-normalization?
-  "Check if a parameter type needs Java→Clojure collection normalization."
-  [param-type]
-  (or (= param-type "List")
-      (= param-type "List<?>")
-      (= param-type "Map<?,?>")
-      (= param-type "Map<String,Object>")))
-
 (defn convert-arg
   "Generate conversion code for an argument.
    Applies normalization to Java collection types automatically."
-  [{:keys [type name]}]
-  (if (needs-normalization? type)
+  [{:keys [type name normalize?]}]
+  (if (or normalize? (needs-normalization? type))
     (str "Util.normalizeCollections(" name ")")
     name))
 
@@ -304,35 +411,20 @@
         return-type (malli->java-type ret)
         javadoc (format-javadoc doc examples)]
 
-    ;; Check for multi-arity
-    (if (= :multi-arity (extract-params-from-schema args))
-      ;; Generate multiple overloads
-      (let [arities (extract-multi-arity-params args)]
-        (str/join "\n\n"
-                  (for [params arities]
-                    (let [param-str (str/join ", "
-                                              (map-indexed
-                                               (fn [idx {:keys [type name]}]
+    ;; One overload per arity. `expand-or-args` also turns an `[:or …]`
+    ;; argument into overloads where that is additive, so a single-arity schema
+    ;; may still yield more than one — see its docstring.
+    (str/join "\n\n"
+              (for [params (expand-or-args args)]
+                (let [param-str (str/join ", "
+                                          (map (fn [{:keys [type name]}]
                                                  (str type " " name))
                                                params))]
-                      (str (when javadoc (str javadoc "\n"))
-                           "    public static " return-type " " method-name
-                           "(" param-str ") {\n"
-                           (generate-method-body op-name params return-type)
-                           "    }")))))
-
-      ;; Single arity
-      (let [params (extract-params-from-schema args)
-            param-str (str/join ", "
-                                (map-indexed
-                                 (fn [idx {:keys [type name]}]
-                                   (str type " " name))
-                                 params))]
-        (str (when javadoc (str javadoc "\n"))
-             "    public static " return-type " " method-name
-             "(" param-str ") {\n"
-             (generate-method-body op-name params return-type)
-             "    }")))))
+                  (str (when javadoc (str javadoc "\n"))
+                       "    public static " return-type " " method-name
+                       "(" param-str ") {\n"
+                       (generate-method-body op-name params return-type)
+                       "    }"))))))
 
 ;; =============================================================================
 ;; Full Class Generation

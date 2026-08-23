@@ -114,7 +114,7 @@
      ;; collapsing the two entries and dropping the removal → a stale old datom survives reopen.
      (testing "many value-changing upserts survive store→reopen with no stale/duplicate datoms (diff-buf)"
        (let [cfg {:store {:backend :file
-                          :path (str (System/getProperty "java.io.tmpdir") "/dh-diffbuf-upsert")
+                          :path (str (System/getProperty "java.io.tmpdir") "/dh-diffbuf-upsert-" (java.util.UUID/randomUUID))
                           :id #uuid "d1ffb000-0000-0000-0000-00000000d1ff"}
                   :schema-flexibility :write :keep-history? false
                   :index-config {:diff-buf-size 256 :branching-factor 16}}
@@ -150,7 +150,7 @@
      ;; reconnect mid-stream.
      (testing "commits keep succeeding across reopen+mutate on a deep tree"
        (let [cfg {:store {:backend :file
-                          :path (str (System/getProperty "java.io.tmpdir") "/dh-detached-count")
+                          :path (str (System/getProperty "java.io.tmpdir") "/dh-detached-count-" (java.util.UUID/randomUUID))
                           :id #uuid "d1ffb000-0000-0000-0000-00000000dead"}
                   :schema-flexibility :write :keep-history? true
                   :index-config {:branching-factor 16}}

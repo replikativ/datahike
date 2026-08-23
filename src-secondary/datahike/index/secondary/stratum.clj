@@ -527,6 +527,38 @@
 
   (-indexed-attrs [_] attrs)
 
+  sec/ISecondaryScannable
+  (-sec-value [_ attr eid]
+    ;; Stratum keeps the real column values, so a backup can read them back —
+    ;; which matters only for `:db.secondary/only` attributes, whose value is
+    ;; NOT in the primary indexes (those hold a content hash) and would
+    ;; otherwise be absent from the dump entirely.
+    ;;
+    ;; A point query, not a column scan: the caller streams a dump and must stay
+    ;; bounded. `:where` takes `[[op col val] ...]` — see `-slice-ordered`.
+    ;; `:_valid_to = MAX` in vt-mode, or this reads a SUPERSEDED row. The query
+    ;; took `:limit 1` off an unordered scan, so after an update it returned
+    ;; whichever generation came first — measured: 50000 after the value had
+    ;; been changed to 60000. Backups read through here, so a stale answer is a
+    ;; wrong backup; the export's hash check now refuses it, which is how it
+    ;; surfaced.
+    (when dataset
+      (let [col-key (attr-col-key attr)]
+        (-> (st/q {:from dataset :select [:eid col-key]
+                   ;; BOTH axes. vt-mode configures valid AND system, and an
+                   ;; SCD2-on-both-axes update closes the superseded row's
+                   ;; `_system_to` while leaving `_valid_to` open — that is the
+                   ;; audit chain, so `FOR SYSTEM_TIME AS OF <before>` still
+                   ;; sees the pre-correction state. Filtering on the valid axis
+                   ;; alone therefore still matched it, and still answered 50000
+                   ;; after the value became 60000.
+                   :where (cond-> [[:= :eid (long eid)]]
+                            (vt-mode? config) (conj [:= vt-to-col vt-open-sentinel]
+                                                    [:= sys-to-col vt-open-sentinel]))
+                   :limit 1})
+            first
+            (get col-key)))))
+
   (-transact [this tx-report]
     (let [t (sec/-as-transient this)]
       (sec/-transact! t tx-report)
@@ -669,7 +701,9 @@
                                 ref->col-key   ;; map of numeric ref → keyword col-key (or nil)
                                 config
                                 ^java.util.HashMap pending-adds
-                                ^java.util.HashSet pending-retracts
+                                ;; eid -> #{col-key}: a retraction names an
+                                ;; ATTRIBUTE of an entity, not the entity.
+                                ^java.util.HashMap pending-retracts
                                 ^"[Ljava.lang.Object;" tx-meta-ref] ;; 1-slot mutable cell
   sec/ITransientSecondaryIndex
   (-as-transient [this] this)
@@ -692,9 +726,18 @@
         (if added?
           (let [entity-map (or (.get pending-adds eid) {})]
             (.put pending-adds eid (assoc entity-map col-key (.-v datom)))
-            ;; Remove from pending-retracts: re-add after retract in same TX
-            (.remove pending-retracts eid))
-          (.add pending-retracts eid)))))
+            ;; Re-assert after retract in the same tx cancels the retraction —
+            ;; for THIS COLUMN. It used to cancel the entity's whole retraction,
+            ;; which was the granularity bug: a card-one update is retract+add
+            ;; in one tx, so the cancel kept the old row alive and the new
+            ;; partial row was appended beside it.
+            (when-let [cols (.get pending-retracts eid)]
+              (let [cols' (disj cols col-key)]
+                (if (seq cols')
+                  (.put pending-retracts eid cols')
+                  (.remove pending-retracts eid)))))
+          ;; A retraction names one [entity, attribute] — never the entity.
+          (.put pending-retracts eid (conj (or (.get pending-retracts eid) #{}) col-key))))))
 
   (-persistent! [this]
     (persist-transient-stratum-index dataset attrs attr-refs config
@@ -711,188 +754,10 @@
                              attrs))]
     (TransientStratumIndex. dataset attrs attr-refs ref->col-key config
                             (java.util.HashMap.)
-                            (java.util.HashSet.)
+                            (java.util.HashMap.)
                             (object-array 1))))
 
-(declare vt-persist-transient-stratum-index)
-(declare persist-current-state-stratum-index)
-
-(defn- persist-transient-stratum-index
-  [dataset attrs attr-refs config ^java.util.HashMap pending-adds
-   ^java.util.HashSet pending-retracts tx-meta]
-  (if (vt-mode? config)
-    (vt-persist-transient-stratum-index dataset attrs attr-refs config
-                                        pending-adds pending-retracts tx-meta)
-    (persist-current-state-stratum-index dataset attrs attr-refs config
-                                         pending-adds pending-retracts)))
-
-(defn- persist-current-state-stratum-index
-  [dataset attrs attr-refs config ^java.util.HashMap pending-adds ^java.util.HashSet pending-retracts]
-  (let [current-ds dataset
-        has-retracts? (pos? (.size pending-retracts))
-        has-adds? (pos? (.size pending-adds))
-        current-cols (when current-ds (st/columns current-ds))
-        current-n (if current-ds (st/row-count current-ds) 0)
-        surviving-eids (when (and has-retracts? (pos? current-n))
-                         (let [eid-col-info (get current-cols :eid)
-                               eid-col (or (:data eid-col-info)
-                                           (sidx/idx-materialize-to-array (:index eid-col-info)))
-                               survivors (java.util.ArrayList.)]
-                           (dotimes [i current-n]
-                             (let [eid (aget ^longs eid-col i)]
-                               (when-not (.contains pending-retracts eid)
-                                 (.add survivors (int i)))))
-                           survivors))
-        new-entity-count (.size pending-adds)
-        keep-n (if has-retracts?
-                 (if surviving-eids (.size ^java.util.ArrayList surviving-eids) 0)
-                 current-n)
-        total-n (+ keep-n new-entity-count)]
-    (if (and (zero? total-n) (not has-adds?) (not has-retracts?))
-      ;; No changes — return as-is
-      (StratumIndex. current-ds attrs attr-refs config)
-      (if (zero? total-n)
-        (StratumIndex. nil attrs attr-refs config)
-        (let [col-keys (into [:eid] (map attr-col-key) attrs)
-              ;; Pre-compute column types: scan pending values once to determine types for new columns
-              col-types (when has-adds?
-                          (reduce (fn [types [_eid em]]
-                                    (reduce-kv (fn [t k v]
-                                                 (if (or (contains? t k) (nil? v))
-                                                   t
-                                                   (assoc t k (cond (or (string? v) (keyword? v)) :string
-                                                                    (double? v) :double
-                                                                    :else :long))))
-                                               types em))
-                                  {} pending-adds))
-              col-map
-              (into {}
-                    (map (fn [col-key]
-                           (let [current-col-info (when current-cols (get current-cols col-key))
-                                 current-col-data (when current-col-info
-                                                    (or (:data current-col-info)
-                                                        (when-let [idx (:index current-col-info)]
-                                                          (sidx/idx-materialize-to-array idx))))
-                                 has-dict? (:dict current-col-info)
-                                 ;; String col: raw String[], OR dict-encoded (data=long[] + dict=String[]),
-                                 ;; OR new column with string values in pending
-                                 is-string? (or (and current-col-data
-                                                     (instance? (Class/forName "[Ljava.lang.String;") current-col-data))
-                                                (some? has-dict?)
-                                                (= :string (get col-types col-key)))
-                                 is-double? (or (and current-col-data (not has-dict?)
-                                                     (instance? (Class/forName "[D") current-col-data))
-                                                (and (nil? current-col-data) (= :double (get col-types col-key))))
-                                 is-long? (or (= col-key :eid)
-                                              (and current-col-data (not has-dict?) (not is-double?)
-                                                   (instance? (Class/forName "[J") current-col-data))
-                                              (and (nil? current-col-data) (not is-string?) (not is-double?)))]
-                             [col-key
-                              (cond
-                                ;; String column — always produce String[] for make-dataset to re-encode
-                                is-string?
-                                (let [str-arr ^"[Ljava.lang.String;" (make-array String total-n)]
-                                  (when (and current-col-data (pos? keep-n))
-                                    (if has-dict?
-                                      ;; Dict-encoded: decode codes → strings
-                                      (let [^"[Ljava.lang.String;" dict has-dict?]
-                                        (if has-retracts?
-                                          (dotimes [j keep-n]
-                                            (let [code (aget ^longs current-col-data
-                                                             (int (.get ^java.util.ArrayList surviving-eids j)))]
-                                              (when-not (= code Long/MIN_VALUE)
-                                                (aset str-arr j (aget dict (int code))))))
-                                          (dotimes [i keep-n]
-                                            (let [code (aget ^longs current-col-data i)]
-                                              (when-not (= code Long/MIN_VALUE)
-                                                (aset str-arr i (aget dict (int code))))))))
-                                      ;; Raw String[]
-                                      (if has-retracts?
-                                        (dotimes [j keep-n]
-                                          (aset str-arr j (aget ^"[Ljava.lang.String;" current-col-data
-                                                                (int (.get ^java.util.ArrayList surviving-eids j)))))
-                                        (System/arraycopy current-col-data 0 str-arr 0 keep-n))))
-                                  (when has-adds?
-                                    (let [idx (volatile! keep-n)]
-                                      (doseq [[_eid entity-map] pending-adds]
-                                        (let [v (get entity-map col-key)]
-                                          (when v
-                                            (aset str-arr @idx (str v))))
-                                        (vswap! idx unchecked-inc))))
-                                  str-arr)
-
-                                ;; Long column
-                                is-long?
-                                (let [arr (long-array total-n)]
-                                  (when (and current-col-data (pos? keep-n))
-                                    (if has-retracts?
-                                      (dotimes [j keep-n]
-                                        (aset arr j (aget ^longs current-col-data
-                                                          (int (.get ^java.util.ArrayList surviving-eids j)))))
-                                      (System/arraycopy current-col-data 0 arr 0 keep-n)))
-                                  (when has-adds?
-                                    (let [idx (volatile! keep-n)]
-                                      (doseq [[_eid entity-map] pending-adds]
-                                        (let [v (if (= col-key :eid)
-                                                  _eid
-                                                  (get entity-map col-key))]
-                                          (when v
-                                            (aset arr @idx (long v))))
-                                        (vswap! idx unchecked-inc))))
-                                  arr)
-
-                                ;; Double column
-                                is-double?
-                                (let [arr (double-array total-n)]
-                                  (when (and current-col-data (pos? keep-n))
-                                    (if has-retracts?
-                                      (dotimes [j keep-n]
-                                        (aset arr j (aget ^doubles current-col-data
-                                                          (int (.get ^java.util.ArrayList surviving-eids j)))))
-                                      (System/arraycopy current-col-data 0 arr 0 keep-n)))
-                                  (when has-adds?
-                                    (let [idx (volatile! keep-n)]
-                                      (doseq [[_eid entity-map] pending-adds]
-                                        (let [v (get entity-map col-key)]
-                                          (when v
-                                            (aset arr @idx (double v))))
-                                        (vswap! idx unchecked-inc))))
-                                  arr)
-
-                                :else
-                                (long-array total-n))])))
-                    col-keys)]
-          ;; ensure-indexed converts array-backed columns to index-backed (PSS)
-          ;; columns, which is required before sync! can persist.
-          (StratumIndex. (sd/ensure-indexed (st/make-dataset col-map)) attrs attr-refs config))))))
-
-;; ---------------------------------------------------------------------------
-;; Valid-time (SCD2) persist path
-;;
-;; In vt-mode every batch:
-;;   - Existing rows are NEVER physically removed; they accumulate.
-;;   - For every entity touched (in pending-adds or pending-retracts), the
-;;     current OPEN row (`_valid_to = MAX_VALUE`) — if any — has its
-;;     `_valid_to` closed to the tx's `:db.valid/from`.
-;;   - For every entity in pending-adds, a new row is appended carrying
-;;     the merged-with-previous attribute values plus the new vt-window.
-;;
-;; The intermediate is a vector of row-maps (one per row): correct and
-;; readable. Hot-path optimisation can move to typed arrays later — for
-;; the first cut, correctness over speed.
-
-(defn- materialize-col-value ^Object [col-info ^long i]
-  (let [{:keys [data dict index]} col-info
-        arr (or data (when index (sidx/idx-materialize-to-array index)))]
-    (cond
-      (nil? arr) nil
-      dict (let [code (aget ^longs arr i)]
-             (when-not (= code Long/MIN_VALUE)
-               (aget ^"[Ljava.lang.String;" dict (int code))))
-      (instance? (Class/forName "[D") arr) (aget ^doubles arr i)
-      (instance? (Class/forName "[Ljava.lang.String;") arr)
-      (aget ^"[Ljava.lang.String;" arr i)
-      :else (aget ^longs arr i))))
+(declare persist-transient-stratum-index)
 
 (defn- row->col-map
   "Pivot a row-vector of maps to a column map of arrays. Type per column
@@ -929,124 +794,116 @@
                                   arr))])))
           col-keys)))
 
-(defn- materialize-existing-rows
-  "Walk every row in the current dataset and produce a vec of row-maps.
-   Rows whose `:eid` is in `close-eids` AND whose `_valid_to` is still
-   open (= `Long/MAX_VALUE`) get their `_valid_to` closed to `vt-close`
-   AND their `_system_to` closed to `sys-now`. Closing both axes in
-   the same step is what gives us the audit guarantee that a
-   `FOR SYSTEM_TIME AS OF <pre-correction>` query still sees the old
-   row as 'open at that instant'."
-  [current-cols current-n col-keys
-   ^java.util.HashSet close-eids vt-close sys-now]
-  (if (or (zero? (long current-n)) (nil? current-cols))
-    []
-    (let [eid-col (get current-cols :eid)
-          vto-col (get current-cols vt-to-col)
-          rows    (transient [])]
-      (dotimes [i current-n]
-        (let [row (transient {})]
-          (doseq [k col-keys]
-            (let [v (materialize-col-value (get current-cols k) i)]
-              (when (some? v) (assoc! row k v))))
-          (let [eid       (long (or (materialize-col-value eid-col i) 0))
-                vto       (long (or (materialize-col-value vto-col i)
-                                    vt-open-sentinel))
-                closing?  (and (.contains close-eids eid)
-                               (= vto vt-open-sentinel))]
-            (conj! rows
-                   (cond-> (persistent! row)
-                     closing? (assoc vt-to-col  vt-close
-                                     sys-to-col sys-now))))))
-      (persistent! rows))))
+(defn- stratum-tx-meta
+  "datahike's tx-meta translated to the keys stratum's `upsert!`/`retract!`
+   stamp axis columns from. Nil outside vt-mode, where there are no axes."
+  [config tx-meta]
+  (when (vt-mode? config)
+    {:valid-from (tx-meta->vf tx-meta)
+     :valid-to   (tx-meta->vt tx-meta)
+     :system-from (tx-meta->sf tx-meta)}))
 
-(defn- snapshot-prev-open-attrs
-  "For each eid in `pending-adds`, find its currently-open row in the
-   dataset and capture the attribute values. Used to merge partial
-   updates into the new row so unchanged attributes carry over."
-  [current-cols ^long current-n ^java.util.HashMap pending-adds attr-col-keys]
-  (let [m (java.util.HashMap.)]
-    (when (and (pos? current-n) current-cols)
-      (let [eid-col (get current-cols :eid)
-            vto-col (get current-cols vt-to-col)]
-        (dotimes [i current-n]
-          (let [eid (long (materialize-col-value eid-col i))
-                vto (long (or (materialize-col-value vto-col i) vt-open-sentinel))]
-            (when (and (= vto vt-open-sentinel)
-                       (.containsKey pending-adds eid))
-              (let [prev (into {}
-                               (keep (fn [k]
-                                       (when-let [v (materialize-col-value
-                                                     (get current-cols k) i)]
-                                         [k v])))
-                               attr-col-keys)]
-                (.put m eid prev)))))))
-    m))
+(defn- pending->specs
+  "One `eid -> {col-key value}` map for the whole batch, which is what
+   `upsert!` takes as `:rows`.
 
-(defn- build-new-rows
-  "For each `[eid attr-map]` in `pending-adds`, build the row to append:
-   merge `attr-map` over the prev-open snapshot (so partial updates
-   inherit unchanged attrs), then stamp the four temporal columns.
-   `sys-now` is the batch's system-time event; every new row gets
-   `_system_from = sys-now` so AS-OF queries at past system-times do
-   not see it."
-  [^java.util.HashMap pending-adds ^java.util.HashMap eid->prev-open
-   vt-from vt-to sys-now]
-  (mapv (fn [[eid em]]
-          (let [prev (.get eid->prev-open eid)]
-            (-> (merge (or prev {}) em)
-                (assoc :eid         eid
-                       vt-from-col  vt-from
-                       vt-to-col    vt-to
-                       sys-from-col sys-now
-                       sys-to-col   vt-open-sentinel))))
-        (seq pending-adds)))
+   A RETRACTED column becomes an explicit nil rather than an absent key: absent
+   means \"leave this column alone\" (that is what makes partial updates work),
+   and a retraction must say the opposite. `-transact!` has already removed a
+   column from the entity's retract set if the same transaction re-asserts it,
+   so the two cannot disagree here."
+  [^java.util.HashMap pending-adds ^java.util.HashMap pending-retracts]
+  (persistent!
+   (reduce (fn [acc [eid cols]]
+             (assoc! acc eid (merge (get acc eid) (zipmap cols (repeat nil)))))
+           (reduce (fn [acc [eid m]] (assoc! acc eid m))
+                   (transient {}) pending-adds)
+           pending-retracts)))
 
-(defn- vt-persist-transient-stratum-index
-  "SCD2 surgery for vt-mode: materialize every current row,
-   close-on-supersession (both axes), append the new rows, and
-   rebuild the dataset. The rebuild pattern is what lets us derive
-   column types from values on first insert; subsequent txes still
-   go through the same path for consistency.
+(defn- create-dataset-from-specs
+  "The first batch, where there is no dataset to upsert into. `upsert!` cannot
+   create columns from nothing — it needs a table to name rows in — so the
+   initial one is built here from the same specs.
 
-   System-time symmetry: every batch shares one `sys-now`; closing
-   rows close their `_system_to` to it and new rows stamp their
-   `_system_from` with it, preserving the
-   `FOR SYSTEM_TIME AS OF <pre-correction>` audit semantic."
-  [dataset attrs attr-refs config
-   ^java.util.HashMap pending-adds ^java.util.HashSet pending-retracts tx-meta]
-  (let [has-adds?      (pos? (.size pending-adds))
-        has-retracts?  (pos? (.size pending-retracts))
-        nothing-to-do? (and (not has-adds?) (not has-retracts?))]
-    (if nothing-to-do?
+   This is the ONLY row-building left in the adapter. Everything else about
+   updating rows now belongs to stratum: what used to be here was a
+   reimplementation of SCD2 (close the open row, carry unchanged columns
+   forward, rebuild the column map) that `upsert!` already performs, and the
+   four data-loss defects this change fixes all lived in that copy."
+  [specs attrs config tx-meta]
+  (let [vt?      (vt-mode? config)
+        attr-cols (mapv attr-col-key attrs)
+        col-keys (if vt?
+                   (into [:eid vt-from-col vt-to-col sys-from-col sys-to-col] attr-cols)
+                   (into [:eid] attr-cols))
+        stamp    (when vt?
+                   ;; `:db.valid/to` via `tx-meta->vt`, NOT the open sentinel.
+                   ;; A first transaction may declare a bounded validity window,
+                   ;; and hardcoding MAX here left it open — so the next write
+                   ;; OVERLAPPED it and triggered SCD2 surgery where the two
+                   ;; windows should simply have abutted. The system axis is
+                   ;; open by construction: a row just written is current.
+                   {vt-from-col (tx-meta->vf tx-meta)
+                    vt-to-col   (tx-meta->vt tx-meta)
+                    sys-from-col (tx-meta->sf tx-meta)
+                    sys-to-col  vt-open-sentinel})
+        rows     (mapv (fn [[eid cols]] (merge {:eid eid} stamp cols)) specs)
+        col-map  (row->col-map rows col-keys)]
+    (sd/ensure-indexed (if vt? (make-vt-dataset col-map config) (st/make-dataset col-map)))))
+
+(defn- prune-valueless-rows
+  "Remove entities left holding no value at all.
+
+   A retraction clears CELLS, which is what keeps an entity's other attributes
+   (the defect this replaces dropped the whole row). But an entity whose last
+   attribute is retracted should leave the index rather than linger as a row of
+   nils — so those keys are retracted, which physically removes the row on a
+   plain table and closes the open row in vt-mode."
+  [ds attrs config]
+  (if (nil? ds)
+    ds
+    (let [attr-cols (mapv attr-col-key attrs)
+          vt?       (vt-mode? config)
+          live      (st/q (cond-> {:from ds :select (into [:eid] attr-cols)}
+                            vt? (assoc :where [[:= vt-to-col vt-open-sentinel]])))
+          empties   (into [] (comp (filter (fn [r] (every? #(nil? (get r %)) attr-cols)))
+                                   (map :eid))
+                          live)]
+      (if (seq empties)
+        (-> ds transient (sd/retract! {:by :eid :keys empties}) persistent!)
+        ds))))
+
+(defn- persist-transient-stratum-index
+  "Apply one transaction's pending cells to the dataset.
+
+   ONE path for both modes. `upsert!` branches on the dataset's own axis
+   configuration — SCD2 close-and-reopen where there is a `:valid` axis,
+   overwrite in place where there is not — and with a `:valid` axis it inherits
+   unchanged columns from the previous open row, which is exactly what makes a
+   partial spec correct. The adapter used to carry two persist functions and a
+   private SCD2 implementation to say the same thing; it said it wrongly.
+
+   `{:by :eid}` rather than a `:where` per entity: `:where` is evaluated per
+   row, so N entities would mean N passes over the index. Keyed, the whole
+   batch is one pass (stratum 0.3.78, replikativ/stratum#36)."
+  [dataset attrs attr-refs config ^java.util.HashMap pending-adds
+   ^java.util.HashMap pending-retracts tx-meta]
+  (let [specs (pending->specs pending-adds pending-retracts)]
+    (if (empty? specs)
       (StratumIndex. dataset attrs attr-refs config)
-      (let [vt-from       (tx-meta->vf tx-meta)
-            vt-to         (tx-meta->vt tx-meta)
-            sys-now       (tx-meta->sf tx-meta)
-            attr-col-keys (mapv attr-col-key attrs)
-            col-keys      (into [:eid vt-from-col vt-to-col sys-from-col sys-to-col]
-                                attr-col-keys)
-            current-cols  (when dataset (st/columns dataset))
-            current-n     (if dataset (st/row-count dataset) 0)
-            close-eids    (let [s (java.util.HashSet.)]
-                            (when has-adds?     (.addAll s (.keySet pending-adds)))
-                            (when has-retracts? (.addAll s pending-retracts))
-                            s)
-            existing-rows (materialize-existing-rows
-                            current-cols current-n col-keys
-                            close-eids vt-from sys-now)
-            new-rows      (when has-adds?
-                            (let [prev-open (snapshot-prev-open-attrs
-                                              current-cols current-n
-                                              pending-adds attr-col-keys)]
-                              (build-new-rows pending-adds prev-open
-                                              vt-from vt-to sys-now)))
-            all-rows      (into existing-rows (or new-rows []))]
-        (if (empty? all-rows)
-          (StratumIndex. nil attrs attr-refs config)
-          (let [col-map (row->col-map all-rows col-keys)
-                ds      (sd/ensure-indexed (make-vt-dataset col-map config))]
-            (StratumIndex. ds attrs attr-refs config)))))))
+      (let [;; An EMPTY dataset is built too, not upserted into. `build-initial-dataset`
+            ;; makes one at index declaration whose columns are typed before any
+            ;; value has been seen, so appending a string into a column guessed
+            ;; long is a ClassCastException out of `idx-append!`. Zero rows is
+            ;; exactly the boundary at which types are still inferable from the
+            ;; data, which is what `row->col-map` does.
+            fresh? (or (nil? dataset) (zero? (long (st/row-count dataset))))
+            ds (if fresh?
+                 (create-dataset-from-specs specs attrs config tx-meta)
+                 (-> dataset transient
+                     (sd/upsert! {:by :eid :rows specs} (stratum-tx-meta config tx-meta))
+                     persistent!))]
+        (StratumIndex. (prune-valueless-rows ds attrs config) attrs attr-refs config)))))
 
 ;; ---------------------------------------------------------------------------
 ;; Registration

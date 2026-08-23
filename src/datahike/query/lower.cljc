@@ -406,7 +406,7 @@
                                  (number? (second x)))))
         resolve-attr-in-pattern (fn [pat]
                                   (if (and attr-refs? (keyword? (second pat)))
-                                    (assoc pat 1 (dbi/-ref-for db (second pat)))
+                                    (assoc pat 1 (dbi/ref-for db (second pat) :no-match))
                                     pat))
         resolve-recursive (fn resolve-recursive [form]
                             (cond
@@ -437,7 +437,14 @@
                                 (symbol (str (name x) "__auto__" seqid)))
                               x))
                           c)))
-                      clauses)]
+                      clauses)
+        ;; Drop a head obligation the caller COLLAPSED into `[(identity X) X]`
+        ;; — see analyze/collapsed-identity-obligation?. Paired with the
+        ;; pre-substitution clause because the collapse is what licenses the
+        ;; drop; a user-written tautology is a different question.
+        renamed (into [] (keep (fn [[c c']]
+                                 (when-not (analyze/collapsed-identity-obligation? c c') c')))
+                      (map vector clauses renamed))]
     ;; Put const-bindings first so synthetic vars are bound before body uses them
     (into const-bindings renamed)))
 
@@ -519,6 +526,26 @@
                           ;; as free (worst-case attribute-total estimate)
                           ;; until the body's own producer op binds them with
                           ;; a known card.
+                          ;;
+                          ;; …but the OUTER scope's bound vars are not the
+                          ;; branch's to assume either. A body is renamed so the
+                          ;; only names it can share with the caller are the head
+                          ;; vars, and on this path those are the RULE's own
+                          ;; declared ones (see `rename-branch-vars` below) — an
+                          ;; outer var spelled the same is a DIFFERENT variable.
+                          ;; Believing it bound put `[(str ?y) ?t]` ahead of the
+                          ;; pattern that binds ?y, which raised "Cannot resolve
+                          ;; any more clauses" at execute time once the branch
+                          ;; stopped inheriting the caller's relations (#911).
+                          ;; This is the plan-time half of that same capture.
+                          ;;
+                          ;; What the call site DOES supply is the pass-through
+                          ;; head vars (#897) — and those are known only after
+                          ;; planning, since they are the head vars the body
+                          ;; turns out not to produce. Hence two passes below:
+                          ;; plan once to learn them, then re-plan believing
+                          ;; exactly those (and nothing else) are bound. Only the
+                          ;; second plan is kept.
                                    branch-bound bound-vars
                                    ;; Rule branch bodies go through the
                                    ;; shared IR-pipeline helper — same
@@ -553,14 +580,108 @@
                                    with-pass-through
                                    (fn [p]
                                      (let [produced (plan/branch-produced-vars p)
-                                           missing (into #{} (remove produced) free-call-args)]
+                                           missing (into #{} (remove produced) free-call-args)
+                                           ;; A pass-through head var is bound from OUTSIDE the
+                                           ;; body, so the accumulator's column for it holds
+                                           ;; whatever the caller supplied — one value. If a
+                                           ;; self-call passes a DIFFERENT var at that position,
+                                           ;; the value it asks the accumulator for is not the
+                                           ;; value the accumulator was filled with, and the
+                                           ;; lookup matches nothing (#918). Record the call-arg
+                                           ;; vars at those positions so the fixpoint can treat
+                                           ;; them as DEMAND rather than as a fixed binding —
+                                           ;; they are precisely the input positions of a
+                                           ;; magic-set adornment.
+                                           ;; ALL input positions, because seeding a base
+                                           ;; branch needs the whole input tuple — not only the
+                                           ;; positions that change.
+                                           demand-of
+                                           (fn [call-args]
+                                             (into []
+                                                   (comp (map-indexed
+                                                          (fn [i a]
+                                                            (let [hv (nth free-call-args i nil)]
+                                                              (when (and hv (contains? missing hv))
+                                                                [i a hv]))))
+                                                         (remove nil?))
+                                                   call-args))
+                                           ;; Bottom-up demand only terminates if the
+                                           ;; CONSTRUCTED values are bounded. `(dec ?budget)`
+                                           ;; can fire for any budget, so without a comparison
+                                           ;; constraining that var the demand set is infinite
+                                           ;; — 8,7,6,… forever, long after the facts stop
+                                           ;; growing. Top-down evaluation escapes this because
+                                           ;; it is goal-directed: its proof tree is bounded by
+                                           ;; the data (each step needs a real edge), so the
+                                           ;; relational engine terminates where a magic-set
+                                           ;; fixpoint cannot. So take the demand path only with
+                                           ;; evidence of a bound, and otherwise leave the rule
+                                           ;; to the engine that can finish it.
+                                           bounded-var?
+                                           (fn [v]
+                                             (boolean
+                                              (some (fn [op]
+                                                      (and (= :predicate (:op op))
+                                                           (contains? '#{< > <= >= = == not= !=}
+                                                                      (:fn-sym op))
+                                                           (some #{v} (plan/args-free-vars (:args op)))))
+                                                    (:ops p))))
+                                           annotate-lookups
+                                           (fn [ops]
+                                             (mapv (fn [op]
+                                                     (if (= :rule-lookup (:op op))
+                                                       (let [d (demand-of (:call-args op))]
+                                                         (cond-> op
+                                                           (seq d)
+                                                           (assoc :demand-positions (mapv first d)
+                                                                  :demand-vars (mapv second d)
+                                                                  :demand-head-vars (mapv #(nth % 2) d)
+                                                                  ;; The unsoundness trigger: an input
+                                                                  ;; position whose argument is NOT the
+                                                                  ;; head var it fills. Passing the same
+                                                                  ;; var through is fine — the value the
+                                                                  ;; accumulator holds IS the value asked
+                                                                  ;; for.
+                                                                  :demand-transformed?
+                                                                  (boolean
+                                                                   (some (fn [[_ a hv]]
+                                                                           (and (not= a hv)
+                                                                                (bounded-var? hv)))
+                                                                         d))
+                                                                  ;; Transformed but with nothing
+                                                                  ;; bounding it: no bottom-up
+                                                                  ;; evaluation of this rule can
+                                                                  ;; terminate, and the fixpoint's
+                                                                  ;; answer would be a silent
+                                                                  ;; subset. Hand it to the
+                                                                  ;; goal-directed engine, whose
+                                                                  ;; proof tree the DATA bounds.
+                                                                  :demand-unbounded?
+                                                                  (boolean
+                                                                   (some (fn [[_ a hv]]
+                                                                           (and (not= a hv)
+                                                                                (not (bounded-var? hv))))
+                                                                         d)))))
+                                                       op))
+                                                   ops))]
                                        (cond-> p
-                                         (seq missing) (assoc :pass-through-vars missing))))
+                                         (seq missing) (assoc :pass-through-vars missing)
+                                         (seq missing) (update :ops annotate-lookups))))
                                    plan-branch (fn plan-branch
                                                  [branch-clauses guarded]
-                                                 (with-pass-through
-                                                   (plan-via-ir db branch-clauses branch-bound
-                                                                rules guarded)))
+                                                 ;; Pass 1 only to learn which head vars the body
+                                                 ;; produces itself; its plan is discarded unless
+                                                 ;; the bound set turns out to be right already.
+                                                 (let [p0 (plan-via-ir db branch-clauses branch-bound
+                                                                       rules guarded)
+                                                       produced (plan/branch-produced-vars p0)
+                                                       pass-through (into #{} (remove produced)
+                                                                          free-call-args)]
+                                                   (with-pass-through
+                                                     (if (= pass-through (set branch-bound))
+                                                       p0
+                                                       (plan-via-ir db branch-clauses pass-through
+                                                                    rules guarded)))))
                                    base-ps (mapv (fn [b]
                                                    (let [renamed (rename-branch-vars b free-call-args seqid db)]
                                                      (plan-branch (vec renamed) nil)))
@@ -879,8 +1000,44 @@
 
    Note the check fires on plan CREATION, and `datahike.query` caches plans, so
    a caller enabling it must also clear that cache or it will silently examine
-   nothing. `datahike.test.query-eqcheck/with-plan-checks` does both."
+   nothing. `datahike.test.query-eqcheck/with-plan-checks` does both.
+
+   Install through `add-plan-check!`, never by `alter-var-root` with
+   `constantly`: this is ONE slot, so a second `constantly` install silently
+   evicts the first and both checkers then report a clean sweep while one of
+   them examines nothing."
   nil)
+
+(def plan-check-stats
+  "How many plans the installed checks have actually seen, as {:plans n}.
+
+   A checker's failure mode is SILENCE: an install that was evicted, a warm
+   plan cache, or a suite that never builds a plan all look exactly like `no
+   violations`. CI asserts this counter is non-zero, which is what tells the
+   two apart. Only touched when a check is installed, so production pays
+   nothing for it."
+  (atom {:plans 0}))
+
+(defn add-plan-check!
+  "Install `f` (a function of one plan) alongside any check already installed,
+   and return the composed function now in the slot.
+
+   Composition is folded at install time rather than kept in a list, so the
+   hot path stays exactly what it was before any checker existed: one var
+   deref and one nil test."
+  [f]
+  (alter-var-root
+   #'*check-plan*
+   (fn [installed]
+     (if installed
+       (fn [plan] (installed plan) (f plan))
+       (fn [plan] (swap! plan-check-stats update :plans inc) (f plan))))))
+
+(defn clear-plan-checks!
+  "Remove every installed plan check and reset the coverage counter."
+  []
+  (alter-var-root #'*check-plan* (constantly nil))
+  (reset! plan-check-stats {:plans 0}))
 
 (defn- maybe-check!
   "Hand `plan` to the installed checker, if any. Returns `plan` either way."

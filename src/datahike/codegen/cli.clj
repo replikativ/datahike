@@ -14,7 +14,7 @@
             [datahike.api :as d]
             [datahike.json :as json]
             [jsonista.core :as j]
-            [clj-cbor.core :as cbor]
+            [boring.core :as boring]
             [malli.core :as m]
             [malli.error :as me])
   (:import [java.util Date]))
@@ -55,10 +55,12 @@
    - connect: Redundant with conn: prefix syntax
    - db-with: Returns db value that can't be used in subsequent commands
    - is-filtered: Requires filtered db input, which can't exist in CLI (filter excluded)
-   - transact!: Async variant, redundant with transact in single-shot CLI (also collides on command name)"
+   - transact!: Async variant, redundant with transact in single-shot CLI (also collides on command name)
+   - warm-*: EXPERIMENTAL prefetch into a node cache that dies with the single-shot process"
   #{'listen 'unlisten 'release 'db 'tempid 'entity-db
     'as-of 'since 'history 'filter
-    'connect 'db-with 'is-filtered 'transact!})
+    'connect 'db-with 'is-filtered 'transact!
+    'warm-index 'warm-datoms 'warm-db})
 
 (defn cli-spec
   "Get merged specification with CLI-specific config."
@@ -296,7 +298,10 @@
                                 (Date. ^Long (edn/read-string %1)))
    #"asof:(.+):(.+)"  #(d/as-of @(d/connect (edn/read-string (slurp %2)))
                                 (Date. ^Long (edn/read-string %1)))
-   #"cbor:(.+)"       #(cbor/decode (io/input-stream %))
+   #"cbor:(.+)"       #(with-open [in (io/input-stream %)]
+                         (let [bos (java.io.ByteArrayOutputStream.)]
+                           (io/copy in bos)
+                           (boring/decode (.toByteArray bos))))
    #"edn:(.+)"        (comp edn/read-string slurp)
    #"json:(.+)"       (comp #(j/read-value % json/mapper) slurp)})
 

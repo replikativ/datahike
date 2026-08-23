@@ -90,6 +90,17 @@
 (defn kabel []
   (kaocha "--focus" "kabel"))
 
+(defn datomic
+  "Datomic Pro <-> datahike migration. Needs the `:datomic` alias for the peer
+   jar, so it cannot go through `kaocha` above, which pins `-M:test`:
+   `datahike.migrate.datomic` requires `datomic.api` and fails to LOAD without
+   it. `datomic:mem://` needs no license key or transactor, so this runs anywhere
+   the jar resolves. Deliberately NOT part of `all` — the peer jar is not a
+   datahike dependency and most contributors will not have it."
+  []
+  (apply clj {:extra-env {"LOG_LEVEL" ":warn"}}
+         "-M:test:datomic" "-m" "kaocha.runner" ["--config-file" "tests-datomic.edn"]))
+
 (defn cljs-node-test []
   (p/shell "clj -M:cljs -m shadow.cljs.devtools.cli compile :node-test")
   (p/shell "node target/out/node-test.js"))
@@ -142,6 +153,7 @@
       "back-compat" (back-compat config)
       "specs" (specs)
       "kabel" (kabel)
+      "datomic" (datomic)
       "cljs-node" (cljs-node-test)
       "cljs-browser" (cljs-browser-test)
       (apply kaocha "--focus" args))

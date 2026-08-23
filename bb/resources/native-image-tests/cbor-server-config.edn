@@ -1,0 +1,7 @@
+;; The JVM server the native binary's remote writer talks to. Its token and
+;; port must match testconfig.cbor-writer.edn.
+{:port     32191
+ :join?    false
+ :dev-mode false
+ :level    :warn
+ :token    "nativetesttoken"}

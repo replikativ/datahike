@@ -367,8 +367,21 @@
              (assoc m attr-def [old-value new-value]))
 
            :db/unique
-           (when (or (not (:db/unique attr-schema))
-                     (not= :db.cardinality/one (:db/cardinality attr-schema)))
+           ;; Adding :db/unique to an existing cardinality-one attribute is
+           ;; supported: the end-of-transaction backfill migration populates
+           ;; AVET for pre-existing datoms and verifies uniqueness (see
+           ;; assess-schema-transition :unique-backfill and
+           ;; transaction/backfill-enabled-indices). Only unique on a
+           ;; cardinality-many attribute stays invalid.
+           (when (not= :db.cardinality/one (:db/cardinality attr-schema))
+             (assoc m attr-def [old-value new-value]))
+
+           :db/index
+           ;; Enabling is supported via the end-of-transaction AVET backfill.
+           ;; DISABLING stays invalid: retractions gate AVET removal on
+           ;; indexing?, so a disable would strand stale entries the index
+           ;; could never clean up.
+           (when-not (true? new-value)
              (assoc m attr-def [old-value new-value]))
 
            ;; Always allow these attributes to be updated.
@@ -430,9 +443,13 @@
             :data-checks #{...}}         ;; checks the caller runs against data:
      :attr-used?       — reject when the attribute has current or history
                          datoms (valueType change, tuple-def change, entry
-                         removal, :db/index enablement)
+                         removal)
      :single-valued?   — reject when some entity has >1 current value
-                         (cardinality many→one)"
+                         (cardinality many→one)
+     :index-backfill   — :db/index enabled on an existing attribute; the
+                         caller must populate AVET for pre-existing datoms
+     :unique-backfill  — :db/unique added; the caller must verify existing
+                         values are distinct, then populate AVET"
   [old-entry new-entry write-flexibility?]
   (let [old (or old-entry {})
         new (or new-entry {})
@@ -519,9 +536,11 @@
           (conj :attr-used?)
 
           ;; enabling :db/index retroactively — AVET was not populated for
-          ;; existing datoms, so the index path would return incomplete results
+          ;; existing datoms; request the end-of-transaction backfill
+          ;; migration (transaction/backfill-enabled-indices) instead of
+          ;; requiring an unused attribute.
           (and transition? (some? new-entry) (changed? :db/index) (:db/index new))
-          (conj :attr-used?)
+          (conj :index-backfill)
 
           ;; many→one with entities holding multiple values leaves state that
           ;; q/pull/entity disagree on (entity crashes). Data-checked (not
@@ -533,15 +552,15 @@
                (= (:db/cardinality new) :db.cardinality/one))
           (conj :single-valued?)
 
-          ;; unique added retroactively is UNENFORCEABLE against existing
-          ;; data: validate-datom checks uniqueness via AVET, and datoms
-          ;; inserted before the attribute was unique/indexed are not in
-          ;; AVET — duplicates of old values would be silently accepted.
-          ;; Like :db/index enablement, requires an unused attribute (until
-          ;; an index-backfill migration exists).
+          ;; unique added retroactively: validate-datom checks uniqueness via
+          ;; AVET, and datoms inserted before the attribute was unique/indexed
+          ;; are not in AVET. The end-of-transaction backfill migration closes
+          ;; that hole — it verifies existing values are distinct (raising on
+          ;; duplicates) and then populates AVET, after which uniqueness is
+          ;; enforceable exactly as for a declared-unique attribute.
           (and transition? (some? new-entry)
                (:db/unique new) (not (:db/unique old)))
-          (conj :attr-used?))]
+          (conj :unique-backfill))]
     {:invalid invalid
      :data-checks data-checks}))
 

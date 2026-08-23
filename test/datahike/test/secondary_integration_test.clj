@@ -9,6 +9,8 @@
    [datahike.query :as q]
    [datahike.index.secondary.scriptum]
    [datahike.index.secondary.stratum]
+   [datahike.migrate :as m]
+   [stratum.api :as st]
    [datahike.test.query-aggregates-test :refer [aggregate-contract]]))
 
 ;; Proximum requires Java 22+ (class file version 66.0).
@@ -18,6 +20,18 @@
     (require 'datahike.index.secondary.proximum)
     true
     (catch Throwable _ false)))
+
+(defn lifecycle-search
+  "Test-only external engine used to exercise the central lifecycle gate."
+  {:datahike/external-engine
+   {:index-key 0
+    :binding-columns [:entity-id :score]
+    :query-spec-fn (fn [args] {:query (first args)})
+    :input-vars :all-bound
+    :cost-model (fn [_db _idx-ident _args _n-cols]
+                  {:estimated-card 1 :cost-per-result 0.01})}}
+  [_idx-ident query]
+  {:query query})
 
 ;; ---------------------------------------------------------------------------
 ;; Proximum (Vector Search) Tests
@@ -716,3 +730,242 @@
           (is (nil? (get-in db [:schema :idx/analytics :db.secondary/status])))
           (is (= reference planner))
           (is (= [[10]] planner)))))))
+
+(deftest external-engine-respects-secondary-lifecycle
+  (testing "explicit full-text/vector-style clauses fail before touching an unavailable index"
+    (let [calls (atom [])
+          idx (reify sec/ISecondaryIndex
+                (-search [_ _ _]
+                  (swap! calls conj :search)
+                  (es/entity-bitset-from-longs [1]))
+                (-estimate [_ _] 1)
+                (-can-order? [_ _ _] true)
+                (-slice-ordered [_ _ _ _ _ _]
+                  (swap! calls conj :slice)
+                  [{:entity-id 1 :score 0.25}])
+                (-indexed-attrs [_] #{:doc/body})
+                (-transact [this _] this))
+          base (-> (db/empty-db {:doc/name {}
+                                 :idx/lifecycle {:db.secondary/status :ready}})
+                   (d/db-with [{:db/id 1 :doc/name "one"}])
+                   (assoc :secondary-indices {:idx/lifecycle idx}))
+          filter-q '[:find [?name ...]
+                     :where [(datahike.test.secondary-integration-test/lifecycle-search
+                              :idx/lifecycle "needle") [?e ...]]
+                     [?e :doc/name ?name]]
+          retrieval-q '[:find ?e ?score
+                        :where [(datahike.test.secondary-integration-test/lifecycle-search
+                                 :idx/lifecycle "needle") [[?e ?score]]]]]
+      (binding [q/*disable-planner* false
+                q/*query-result-cache?* false]
+        (doseq [status [:building :disabled :failed]]
+          (let [unavailable (assoc-in base [:schema :idx/lifecycle :db.secondary/status]
+                                      status)]
+            (is (thrown-with-msg? clojure.lang.ExceptionInfo
+                                  #"cannot answer queries"
+                                  (d/q filter-q unavailable)))
+            (is (thrown-with-msg? clojure.lang.ExceptionInfo
+                                  #"cannot answer queries"
+                                  (d/q retrieval-q unavailable)))))
+        (is (empty? @calls) "neither index protocol entry point was called")
+
+        (testing ":ready and legacy nil status remain queryable"
+          (is (= ["one"] (d/q filter-q base)))
+          (is (= #{[1 0.25]} (d/q retrieval-q base)))
+          (let [legacy (update-in base [:schema :idx/lifecycle]
+                                  dissoc :db.secondary/status)]
+            (is (= ["one"] (d/q filter-q legacy)))
+            (is (= #{[1 0.25]} (d/q retrieval-q legacy))))
+          (is (= [:search :slice :search :slice] @calls)))))))
+
+;; ---------------------------------------------------------------------------
+;; Retraction granularity: a retraction names ONE datom, not the entity
+
+(defn- ^:private retraction-cfg []
+  {:store {:backend :memory :id (java.util.UUID/randomUUID)}
+   :index :datahike.index/persistent-set
+   :keep-history? false :schema-flexibility :write})
+
+(deftest scriptum-retraction-keeps-the-entitys-other-attributes
+  (testing "the retract branch deleted by `_entity_id` alone, which removed
+            EVERY document the entity had — all of its other indexed attributes
+            with it.
+
+            Measured before the fix: one entity with :doc/body and :doc/title,
+            both `:db.secondary/only` and both covered by one scriptum index;
+            retracting :doc/body left `-sec-value` returning nil for :doc/title
+            while the primary still held its content hash. So the database
+            reported the attribute present and the only copy of its text was
+            gone — the primary never holds it. `export-db` then refused
+            (`:export/secondary-only-unresolvable`), which is how it surfaced;
+            before the export learned to check hashes it wrote the HASH as the
+            title's value and reported success.
+
+            The fix is a composite `_ea` term, because `sc/delete-docs` takes a
+            single Lucene Term and a conjunction is therefore not expressible."
+    (let [cfg  (retraction-cfg)
+          _    (do (d/delete-database cfg) (d/create-database cfg))
+          conn (d/connect cfg)]
+      (try
+        (d/transact conn [{:db/ident :doc/body :db/valueType :db.type/string
+                           :db/cardinality :db.cardinality/one :db.secondary/only true}
+                          {:db/ident :doc/title :db/valueType :db.type/string
+                           :db/cardinality :db.cardinality/one :db.secondary/only true}])
+        (d/transact conn [{:db/ident :idx/ft :db.secondary/type :scriptum
+                           :db.secondary/attrs [:doc/body :doc/title]
+                           :db.secondary/config {:path (str "/tmp/dh-retr-" (java.util.UUID/randomUUID))}}])
+        (Thread/sleep 800)
+        (let [eid (get-in (d/transact conn [{:db/id -1 :doc/body "the whole document"
+                                             :doc/title "My Title"}])
+                          [:tempids -1])
+              idx #(get (:secondary-indices @conn) :idx/ft)]
+          (Thread/sleep 500)
+          (is (= "the whole document" (sec/-sec-value (idx) :doc/body eid)))
+          (is (= "My Title" (sec/-sec-value (idx) :doc/title eid)))
+
+          ;; Retracted by the ORIGINAL value, not by the hash a query returns:
+          ;; the retract path re-hashes its argument to find the stored datom,
+          ;; so passing the hash back is a silent no-op with empty :tx-data.
+          (d/transact conn [[:db/retract eid :doc/body "the whole document"]])
+          (Thread/sleep 700)
+
+          (is (nil? (sec/-sec-value (idx) :doc/body eid))
+              "the retracted attribute's value is gone, which is the point")
+          (is (= "My Title" (sec/-sec-value (idx) :doc/title eid))
+              "and the attribute that was NOT retracted still has its value")
+
+          (testing "so the database can still be backed up — the export refuses
+                    any :db.secondary/only value it cannot recover, and this one
+                    is recoverable again"
+            (is (map? (m/export-db @conn (str "/tmp/dh-retr-dump-" (java.util.UUID/randomUUID)) {})))))
+        (finally (d/release conn))))))
+
+(deftest proximum-covers-exactly-one-attribute
+  (when-not proximum-available?
+    (is (not proximum-available?) "SKIP: proximum requires Java 22+"))
+  (when proximum-available?
+    (testing "proximum is keyed by an external id, and this adapter uses the
+              entity id — so an index covering two attributes stores both of an
+              entity's vectors under one key. Both halves were measured:
+              an entity holding both attributes made proximum itself throw
+              \"External id already exists\" from inside the async index update,
+              naming neither the attribute nor the cause; and two attributes on
+              DISJOINT entities refused nothing at all, after which `-sec-value`
+              — which ignores its `attr` argument, being able to fetch only by
+              id — answered an entity's :p/face with its :p/emb vector.
+
+              Refused at declaration instead, which is also what makes ignoring
+              `attr` honest: with one covered attribute there is nothing to
+              disambiguate."
+      (let [cfg  (retraction-cfg)
+            _    (do (d/delete-database cfg) (d/create-database cfg))
+            conn (d/connect cfg)]
+        (try
+          (d/transact conn [{:db/ident :p/emb :db/valueType :db.type/float-array
+                             :db/cardinality :db.cardinality/one}
+                            {:db/ident :p/face :db/valueType :db.type/float-array
+                             :db/cardinality :db.cardinality/one}])
+          (let [decl (fn [attrs]
+                       (try (d/transact conn [{:db/ident (keyword "idx" (str "v" (count attrs)))
+                                               :db.secondary/type :proximum
+                                               :db.secondary/attrs attrs
+                                               :db.secondary/config
+                                               {:dim 4 :distance :cosine
+                                                :store-config {:backend :memory
+                                                               :id (java.util.UUID/randomUUID)}}}])
+                            :accepted
+                            (catch Exception e (str (ex-message e)))))]
+            (is (re-find #"covers exactly one attribute" (str (decl [:p/emb :p/face])))
+                "two attributes are refused, and the message says why")
+            (is (= :accepted (decl [:p/emb]))
+                "while the supported shape — one index per vector attribute — is unaffected"))
+          (finally (d/release conn)))))))
+
+;; ---------------------------------------------------------------------------
+;; Stratum: a transaction sets CELLS, and reads see the current row
+
+(defn- ^:private stratum-conn [vt?]
+  (let [cfg (retraction-cfg)]
+    (d/delete-database cfg) (d/create-database cfg)
+    (let [conn (d/connect cfg)]
+      (d/transact conn [{:db/ident :p/dept :db/valueType :db.type/string
+                         :db/cardinality :db.cardinality/one}
+                        {:db/ident :p/salary :db/valueType :db.type/long
+                         :db/cardinality :db.cardinality/one}])
+      (d/transact conn [{:db/ident :idx/an :db.secondary/type :stratum
+                         :db.secondary/attrs [:p/dept :p/salary]
+                         :db.secondary/config (if vt? {:valid-time true} {})}])
+      (Thread/sleep 700)
+      conn)))
+
+(deftest stratum-update-touches-one-cell-and-leaves-one-row
+  (testing "the adapter used to hand-roll SCD2, and its transient could only
+            append a whole row or drop a whole row — `pending-adds` held only
+            the columns THIS transaction wrote and was treated as a complete
+            row. So a card-one update left a duplicate whose sibling columns
+            were nil, and `-sec-value` (`:limit 1`, unordered) returned the
+            stale one. Measured before: 2 rows, `:dept nil` on the new one,
+            salary 50000 after being set to 60000. `-columnar-aggregate` then
+            threw ArrayIndexOutOfBoundsException where it worked on a clean
+            dataset.
+
+            It now delegates to stratum's `upsert!`, which merges the cells
+            onto the existing row."
+    (let [conn (stratum-conn false)]
+      (try
+        (let [eid (get-in (d/transact conn [{:db/id -1 :p/dept "eng" :p/salary 50000}])
+                          [:tempids -1])
+              idx #(get (:secondary-indices @conn) :idx/an)]
+          (Thread/sleep 500)
+          (d/transact conn [{:db/id eid :p/salary 60000}])
+          (Thread/sleep 700)
+          (is (= 1 (st/row-count (.-dataset (idx)))) "one row, not a duplicate")
+          (is (= 60000 (sec/-sec-value (idx) :p/salary eid)) "the current value")
+          (is (= "eng" (sec/-sec-value (idx) :p/dept eid))
+              "and the column this transaction never mentioned survives")
+          (is (= [{:dept "eng" :_count 1 :avg 60000.0}]
+                 (sec/-columnar-aggregate (idx) {:group [:dept] :agg [[:avg :salary]]}))
+              "the index's own aggregate entry point stops throwing"))
+        (finally (d/release conn))))))
+
+(deftest stratum-retraction-clears-one-cell
+  (let [conn (stratum-conn false)]
+    (try
+      (let [eid (get-in (d/transact conn [{:db/id -1 :p/dept "eng" :p/salary 50000}])
+                        [:tempids -1])
+            idx #(get (:secondary-indices @conn) :idx/an)]
+        (Thread/sleep 500)
+        (d/transact conn [[:db/retract eid :p/salary 50000]])
+        (Thread/sleep 700)
+        (is (nil? (sec/-sec-value (idx) :p/salary eid)) "the retracted cell is cleared")
+        (is (= "eng" (sec/-sec-value (idx) :p/dept eid))
+            "and the entity's other attribute survives — `pending-retracts` names
+             [entity attribute], where it used to name the entity and drop its row"))
+      (finally (d/release conn)))))
+
+(deftest stratum-vt-mode-reads-the-current-row-and-stamps-a-real-window
+  (testing "two fixes that delegation does not give for free. `-sec-value` had
+            no current-row filter, so it read a SUPERSEDED row; and both axis
+            filters are needed, because an SCD2-on-both-axes update closes the
+            old row's `_system_to` while leaving `_valid_to` open — that is the
+            audit chain. Separately, `tx-meta-for-secondary` found no
+            `:db/txInstant` (the in-progress tx entity is not in EAVT yet), so
+            every row was stamped `_valid_from 0` AND `_valid_to 0` — a
+            zero-width window, valid at no instant."
+    (let [conn (stratum-conn true)]
+      (try
+        (let [eid (get-in (d/transact conn [{:db/id -1 :p/dept "eng" :p/salary 50000}])
+                          [:tempids -1])
+              idx #(get (:secondary-indices @conn) :idx/an)]
+          (Thread/sleep 500)
+          (d/transact conn [{:db/id eid :p/salary 60000}])
+          (Thread/sleep 700)
+          (is (= 60000 (sec/-sec-value (idx) :p/salary eid))
+              "the CURRENT generation, not a superseded one")
+          (let [rows (st/q {:from (.-dataset (idx))
+                            :select [:eid :_valid_from :_valid_to]})]
+            (is (every? #(pos? (:_valid_from %)) rows)
+                "every row carries a real instant, not 0")
+            (is (not-any? #(= (:_valid_from %) (:_valid_to %)) rows)
+                "and no row has a zero-width validity window")))
+        (finally (d/release conn))))))

@@ -547,3 +547,344 @@
            "planner terminates on a right-recursive rule")
        (is (= #{2 3} (run '[:find [?b ...] :in $ % :where (rr 1 ?b)]))
            "…and with a ground argument"))))
+
+(deftest test-recursive-rule-branch-body-with-several-clauses
+  ;; A recursive rule whose BRANCH BODY has more than one clause takes the
+  ;; fused scan+merge path, which emits its tuples as VECTORS (the scan
+  ;; datom's five fields, extended by `conj` per merge) rather than as arrays
+  ;; like a single-clause body does. The JVM projection dispatches on the
+  ;; tuple's shape; the ClojureScript one used `aget` unconditionally, and
+  ;; `aget` of a PersistentVector on JS is `undefined` rather than an error.
+  ;; So on cljs every head var projected to nil and the rule answered
+  ;; `[[nil nil]]` — a silent wrong answer on the DEFAULT engine there, since
+  ;; the planner is on by default in ClojureScript.
+  ;;
+  ;; The clause count is what matters, not the encoding: a reified edge
+  ;; (`[?e :edge/from ?x] [?e :edge/to ?y]`) and two independent clauses fail
+  ;; identically, while the one-clause direct edge was always fine — which is
+  ;; why this shape survived so long. Asserted on both platforms, against
+  ;; hand-written closures.
+  (let [db (d/db-with (db/empty-db {:sym {:db/cardinality :db.cardinality/one}
+                                    :direct {:db/valueType :db.type/ref
+                                             :db/cardinality :db.cardinality/many}
+                                    :edge/from {:db/valueType :db.type/ref
+                                                :db/cardinality :db.cardinality/one}
+                                    :edge/to {:db/valueType :db.type/ref
+                                              :db/cardinality :db.cardinality/one}})
+                      [{:db/id 1 :sym "a" :direct [2]}
+                       {:db/id 2 :sym "b" :direct [3]}
+                       {:db/id 3 :sym "c" :direct [4]}
+                       {:db/id 4 :sym "d"}
+                       {:db/id 11 :edge/from 1 :edge/to 2}
+                       {:db/id 12 :edge/from 2 :edge/to 3}
+                       {:db/id 13 :edge/from 3 :edge/to 4}])
+        closure #{[1 2] [1 3] [1 4] [2 3] [2 4] [3 4]}
+        run (fn [q rules]
+              (binding [dq/*disable-planner* false]
+                (set (d/q q db rules))))]
+    (testing "a two-clause (reified) branch body projects its head vars"
+      (is (= closure
+             (run '[:find ?a ?b :in $ % :where (r ?a ?b)]
+                  '[[(r ?x ?y) [?e :edge/from ?x] [?e :edge/to ?y]]
+                    [(r ?x ?y) [?e :edge/from ?x] [?e :edge/to ?m] (r ?m ?y)]]))))
+    (testing "…with a ground argument, which post-filters the projected tuples"
+      (is (= #{2 3 4}
+             (run '[:find [?b ...] :in $ % :where (r 1 ?b)]
+                  '[[(r ?x ?y) [?e :edge/from ?x] [?e :edge/to ?y]]
+                    [(r ?x ?y) [?e :edge/from ?x] [?e :edge/to ?m] (r ?m ?y)]]))))
+    (testing "two INDEPENDENT clauses fail the same way — it is the count, not reification"
+      (is (= closure
+             (run '[:find ?a ?b :in $ % :where (r ?a ?b)]
+                  '[[(r ?x ?y) [?x :direct ?y] [?x :sym _]]
+                    [(r ?x ?y) [?x :direct ?m] (r ?m ?y)]]))))
+    (testing "the one-clause body that always worked still does"
+      (is (= closure
+             (run '[:find ?a ?b :in $ % :where (r ?a ?b)]
+                  '[[(r ?x ?y) [?x :direct ?y]]
+                    [(r ?x ?y) [?x :direct ?m] (r ?m ?y)]]))))))
+
+(deftest test-recursive-rule-does-not-inherit-caller-relations
+  ;; A rule's fixpoint computes the rule's relation INDEPENDENTLY of its call
+  ;; site — the caller joins on the output vars afterwards. Letting a caller
+  ;; relation into a branch body therefore does not merely restrict the search,
+  ;; it restricts the ACCUMULATOR, and a right-recursive body reading that
+  ;; accumulator for its second hop finds it empty and stops after one (#911).
+  ;;
+  ;; It is triggered by a NAME collision, but not with the call args: on the
+  ;; recursive path every branch is renamed to the rule's OWN declared head vars
+  ;; (`lower.cljc`, "we use the rule head vars … NOT the call-args"), so those
+  ;; names are internal and ANY caller variable spelled like them is captured —
+  ;; the call site need not mention it. `[?x :sym "a"] (r ?p ?q)` against
+  ;; `[(r ?x ?y) …]` collides on the DECLARATION's ?x and was wrong; rename that
+  ;; anchor and the same query was correct. That is why every existing rule test
+  ;; missed it: they all happen to spell the caller differently, or pass a
+  ;; ground argument. Both spellings are asserted below, so a name-dependent
+  ;; regression cannot hide behind either one.
+  ;;
+  ;; One mechanism, three wrong answers — all asserted here, because a fix that
+  ;; addressed only the first would look complete:
+  ;;   * a right-recursive rule truncated to its first hop (a strict subset);
+  ;;   * a caller relation over TWO head-var names made the rule return nothing;
+  ;;   * at a second call site, the first call's result restricted the next
+  ;;     rule's accumulator, degenerating `(r ?x ?y) (s ?x ?b)` into `r ⋈ s`.
+  ;;
+  ;; The answers are hand-written transitive closures, not another engine's
+  ;; output: the wrong answer here is a strict SUBSET with no error raised, so
+  ;; an oracle that shares the fault would agree with it.
+  (let [db (d/db-with (db/empty-db {:sym {:db/cardinality :db.cardinality/one}
+                                    :direct {:db/valueType :db.type/ref
+                                             :db/cardinality :db.cardinality/many}
+                                    :edge/from {:db/valueType :db.type/ref
+                                                :db/cardinality :db.cardinality/one}
+                                    :edge/to {:db/valueType :db.type/ref
+                                              :db/cardinality :db.cardinality/one}})
+                      ;; a->b->c->d, plus the same edges reified as edge entities
+                      [{:db/id 1 :sym "a" :direct [2]}
+                       {:db/id 2 :sym "b" :direct [3]}
+                       {:db/id 3 :sym "c" :direct [4]}
+                       {:db/id 4 :sym "d"}
+                       {:db/id 11 :edge/from 1 :edge/to 2}
+                       {:db/id 12 :edge/from 2 :edge/to 3}
+                       {:db/id 13 :edge/from 3 :edge/to 4}])
+        ;; right-recursive: the recursive call is LAST, so the second hop is the
+        ;; one that reads the accumulator
+        direct-rules  '[[(r ?x ?y) [?x :direct ?y]]
+                        [(r ?x ?y) [?x :direct ?m] (r ?m ?y)]]
+        reified-rules '[[(r ?x ?y) [?e :edge/from ?x] [?e :edge/to ?y]]
+                        [(r ?x ?y) [?e :edge/from ?x] [?e :edge/to ?m] (r ?m ?y)]]
+        ;; Pin the engine, as the two right-recursive tests above do: the
+        ;; base-engine CI job sets DATAHIKE_QUERY_PLANNER=false, and the
+        ;; relational engine expands a right-recursive rule call before
+        ;; anything binds it, so it does not terminate on these shapes. This
+        ;; fix is in the planner, so the planner is what must answer here.
+        ;; Bounded on a future (clj) so a regression fails instead of hanging
+        ;; the job; cljs has the planner on by default and no futures.
+        syms (fn [q rules]
+               #?(:clj (let [f (future (binding [dq/*disable-planner* false]
+                                         (set (d/q q db rules))))
+                             r (deref f 15000 ::timeout)]
+                         (when (= r ::timeout) (future-cancel f))
+                         r)
+                  :cljs (binding [dq/*disable-planner* false]
+                          (set (d/q q db rules)))))]
+    ;; Both encodings are asserted on both platforms. The reified one was
+    ;; JVM-only for a while: on cljs the planner answered a reified-edge
+    ;; recursive rule with a single all-nil tuple, because a branch body with
+    ;; more than one clause emits VECTOR tuples and the cljs projection read
+    ;; them with `aget` (which is `undefined`, not an error, on a
+    ;; PersistentVector). Fixed — see `execute-recursive-rule`.
+    (doseq [[label rules] [["direct edge" direct-rules]
+                           ["reified edge" reified-rules]]]
+      (testing label
+        ;; the caller's ?x collides with the rule's head var ?x
+        (is (= #{"b" "c" "d"}
+               (syms '[:find [?s ...] :in $ %
+                       :where [?x :sym "a"] (r ?x ?y) [?y :sym ?s]]
+                     rules))
+            (str label " — full closure when the caller's var collides with a head var"))
+        ;; …the same query with the caller's vars renamed. Both spellings must
+        ;; agree; on the bug only this one was right.
+        (is (= #{"b" "c" "d"}
+               (syms '[:find [?s ...] :in $ %
+                       :where [?p :sym "a"] (r ?p ?q) [?q :sym ?s]]
+                     rules))
+            (str label " — …and the variable-renamed twin agrees"))
+        ;; the rule call comes FIRST, so nothing has bound ?x when it runs
+        (is (= #{"b" "c" "d"}
+               (syms '[:find [?s ...] :in $ %
+                       :where (r ?x ?y) [?y :sym ?s] [?x :sym "a"]]
+                     rules))
+            (str label " — full closure when the call precedes what binds it"))
+        ;; the rule's own relation, unrestricted: every reachable pair
+        (is (= #{["a" "b"] ["a" "c"] ["a" "d"]
+                 ["b" "c"] ["b" "d"] ["c" "d"]}
+               (syms '[:find ?sx ?sy :in $ %
+                       :where (r ?x ?y) [?x :sym ?sx] [?y :sym ?sy]]
+                     rules))
+            (str label " — the whole relation"))
+        ;; THE ACTUAL TRIGGER: the anchor is spelled like the rule's DECLARED
+        ;; head var ?x while the call args are ?p/?q, so the call site never
+        ;; mentions the colliding variable. The renamed twin above renames the
+        ;; anchor too and so does not cover this.
+        (is (= #{"b" "c" "d"}
+               (syms '[:find [?s ...] :in $ %
+                       :where [?x :sym "a"] (r ?p ?q) [?q :sym ?s]]
+                     rules))
+            (str label " — a caller var colliding with a DECLARED head var,"
+                 " though the call site never names it"))
+        ;; a caller relation over TWO head-var names: joined against the rule's
+        ;; whole relation, this returned nothing at all
+        (is (= #{"b" "c" "d"}
+               (syms '[:find [?s ...] :in $ %
+                       :where [?x :sym ?y] (r ?a ?b) [?b :sym ?s]]
+                     rules))
+            (str label " — a two-column caller relation over both head-var names"))))
+    (testing "a branch body is not planned believing outer variables are bound"
+      ;; The plan-time half of the same capture. A body's ops were ordered
+      ;; believing the OUTER scope's bindings held, and a head var spelled like
+      ;; an outer var looked bound from clause zero — so `[(str ?y) ?t]` was
+      ;; cost-ordered AHEAD of the pattern that binds ?y. While bodies still
+      ;; inherited caller relations that belief was accidentally satisfied;
+      ;; once they stopped, it raised "Cannot resolve any more clauses" at
+      ;; execute time. A branch is now planned believing only the head vars the
+      ;; call site actually supplies — the pass-through ones.
+      (let [fn-rules '[[(r ?x ?y) [?x :direct ?y] [(str ?y) ?t] [(some? ?t)]]
+                       [(r ?x ?y) [?x :direct ?m] (r ?m ?y) [(str ?y) ?t] [(some? ?t)]]]]
+        (is (= #{"a" "b" "c"}
+               (syms '[:find [?s ...] :in $ %
+                       :where [?y :sym "d"] (r ?p ?y) [?p :sym ?s]]
+                     fn-rules))
+            "a function op on a head var spelled like an outer var")
+        (is (= #{"a" "b" "c"}
+               (syms '[:find [?s ...] :in $ %
+                       :where [?w :sym "d"] (r ?p ?w) [?p :sym ?s]]
+                     fn-rules))
+            "…and the non-colliding spelling agrees")))
+    (testing "a caller-supplied parameter still reaches the body"
+      ;; The counterweight: pass-through head vars (#897) ARE bound from the
+      ;; call site, so narrowing what a branch believes must not narrow them
+      ;; away — `?eps` is bound by no body, and a predicate over it has to stay
+      ;; placeable.
+      (let [pt-rules '[[(reach ?anchor ?eps ?n)
+                        [?anchor :direct ?n] [(contains? ?eps ?n)]]
+                       [(reach ?anchor ?eps ?o)
+                        (reach ?anchor ?eps ?s) [?s :direct ?o] [(contains? ?eps ?o)]]]]
+        (is (= #{"b" "c"}
+               ;; pinned for the same reason as `syms` above — the recursive
+               ;; call leads this branch too
+               (binding [dq/*disable-planner* false]
+                 (set (d/q '[:find [?s ...] :in $ % ?eps
+                             :where (reach 1 ?eps ?n) [?n :sym ?s]]
+                           db pt-rules #{2 3}))))
+            "a pass-through head var is still supplied by the caller")))
+    (testing "a second call site does not inherit the first call's result"
+      ;; `(r …)`'s result relation is itself spelled with head-var names, so it
+      ;; was captured by the NEXT rule's branch bodies: `s` was restricted to
+      ;; pairs already in `r` rather than computing its own relation.
+      (let [two-rules '[[(r ?x ?y) [?x :direct ?y]]
+                        [(r ?x ?y) [?x :direct ?m] (r ?m ?y)]
+                        [(s ?x ?y) [?x :direct ?y]]
+                        [(s ?x ?y) [?x :direct ?m] (s ?m ?y)]]]
+        (is (= #{"b" "c" "d"}
+               (syms '[:find [?s ...] :in $ %
+                       :where [?x :sym "a"] (r ?x ?y) (s ?x ?b) [?b :sym ?s]]
+                     two-rules))
+            "the second rule computes its own relation")))))
+
+(deftest test-recursive-rule-fixpoint-is-cancelable
+  ;; The semi-naive fixpoint had no cancellation check, so `:cancel` — which
+  ;; every other scan in `query.execute` consults — could not stop a recursive
+  ;; rule. Nothing could: a rule whose recursion is unbounded wedged the caller
+  ;; with no way out.
+  ;;
+  ;; That matters because the engine accepts rules Datalog would reject. A head
+  ;; var no body binds (#897) makes a rule UNSAFE — its relation is infinite in
+  ;; that argument — and a body that CONSTRUCTS the value it recurses on
+  ;; (`[(dec ?budget) ?b2]`) can derive new values forever. Termination is then
+  ;; undecidable, so the guarantee cannot be "we always finish"; it has to be
+  ;; "you can always stop us".
+  ;;
+  ;; Asserted with a pre-set flag rather than a racing watchdog so it cannot
+  ;; flake in CI. (Interruption mid-fixpoint was verified separately: a closure
+  ;; taking 189 ms warm was cancelled at 8 ms and raised in 9 ms.)
+  (let [db (d/db-with (db/empty-db {:next {:db/valueType :db.type/ref
+                                           :db/cardinality :db.cardinality/many}})
+                      (mapv (fn [i] {:db/id (inc i) :next (+ i 2)}) (range 8)))
+        rules '[[(tc ?a ?b) [?a :next ?b]]
+                [(tc ?a ?b) [?a :next ?m] (tc ?m ?b)]]
+        q '[:find (count ?b) :in $ % :where (tc ?a ?b)]
+        pairs-q '[:find ?a ?b :in $ % :where (tc ?a ?b)]]
+    (testing "a pre-set cancel flag stops the fixpoint"
+      ;; Asserted on BOTH engines. The planner's semi-naive fixpoint and the
+      ;; relational engine's top-down rule solver each had no cancellation
+      ;; check, and both need one: the planner declines rules whose recursion it
+      ;; cannot bound TO the relational solver, so an uninterruptible solver
+      ;; would just move the wedge rather than remove it.
+      (doseq [disable-planner? [false true]]
+        (is (thrown-with-msg?
+             #?(:clj clojure.lang.ExceptionInfo :cljs js/Error) #"canceled"
+             (binding [dq/*disable-planner* disable-planner?]
+               (dq/q {:query q :args [db rules] :cancel (volatile! true)})))
+            (str "cancelable with *disable-planner* " disable-planner?))))
+    (testing "…and without one the rule still answers"
+      ;; chain of 9 nodes ⇒ the transitive closure is every ordered pair
+      ;; i<j, i.e. C(9,2) = 36. (`(count ?b)` alone would count DISTINCT
+      ;; ?b values — 8 — since a bare aggregate projects onto its own var.)
+      (is (= 36 (count (dq/q {:query pairs-q :args [db rules]}))))
+      (is (= [[8]] (dq/q {:query q :args [db rules]}))
+          "…and the bare aggregate counts the 8 distinct reachable nodes"))))
+
+(deftest test-recursive-rule-transformed-caller-arg
+  ;; #918. A head var no rule body binds takes its value from the call site
+  ;; (#897), so the fixpoint accumulator's column for it holds exactly the one
+  ;; value the caller passed. A self-call that passes a DIFFERENT value there —
+  ;; `(reachable ?head ?prev ?b2)` with `?b2` = `(dec ?budget)` — asks the
+  ;; accumulator for a value it was never filled with, so the recursion advanced
+  ;; AT MOST ONE level whatever the data, and answered with a silent subset.
+  ;;
+  ;; Such a var is now demand: the call site supplies the first value, each
+  ;; lookup contributes the next, base branches are re-seeded per demanded
+  ;; value. Expectations are hand-written closures — `reachable(h,l,b)` iff
+  ;; `dist(h,l) <= b` — because the wrong answer is a subset with no error, and
+  ;; because the *caller's* variables are deliberately named like the rule's own
+  ;; head vars here: that name collision const-folded the budget into the body
+  ;; and defeated the demand relation until `:consts` were scoped out too, so a
+  ;; test using different names would pass while the bug remained.
+  (let [db (d/db-with (db/empty-db {:next {:db/valueType :db.type/ref
+                                           :db/cardinality :db.cardinality/many}})
+                      ;; 1 -> 2 -> 3 -> 4, plus a branch 1 -> 5
+                      [{:db/id 1 :next [2 5]} {:db/id 2 :next [3]} {:db/id 3 :next [4]}])
+        rules '[[(reachable ?head ?link ?budget) [(identity ?head) ?link]]
+                [(reachable ?head ?link ?budget) [(> ?budget 0)] [(dec ?budget) ?b2]
+                 [?prev :next ?link] (reachable ?head ?prev ?b2)]]
+        reach (fn [budget]
+                (binding [dq/*disable-planner* false]
+                  (set (d/q '[:find [?link ...] :in $ % ?head ?budget
+                              :where (reachable ?head ?link ?budget)]
+                            db rules 1 budget))))]
+    (testing "the recursion reaches as far as the budget allows"
+      (is (= #{1} (reach 0)) "no hops")
+      (is (= #{1 2 5} (reach 1)) "one hop")
+      (is (= #{1 2 5 3} (reach 2)) "two hops")
+      (is (= #{1 2 5 3 4} (reach 3)) "three hops — the whole graph")
+      (is (= #{1 2 5 3 4} (reach 9)) "a budget past the diameter adds nothing"))))
+
+(deftest test-recursive-rule-demand-across-scc-and-non-linear-bodies
+  ;; The demand is harvested where a self-call reads the accumulator, so it has
+  ;; to be complete for bodies with MORE than one self-call and for rules whose
+  ;; recursion crosses an SCC boundary — otherwise the fix would trade one
+  ;; silent subset for a subtler one.
+  (let [db (d/db-with (db/empty-db {:next {:db/valueType :db.type/ref
+                                           :db/cardinality :db.cardinality/many}})
+                      [{:db/id 1 :next [2]} {:db/id 2 :next [3]}
+                       {:db/id 3 :next [4]} {:db/id 4 :next [5]}])
+        run (fn [q rules args]
+              (binding [dq/*disable-planner* false]
+                (set (apply d/q q db rules args))))]
+    (testing "mutual recursion: transformed in one rule, passed through in the other"
+      (is (= #{1 2 3 4 5}
+             (run '[:find [?l ...] :in $ % ?h ?bud :where (p ?h ?l ?bud)]
+                  '[[(p ?head ?link ?budget) [(identity ?head) ?link]]
+                    [(p ?head ?link ?budget) [(> ?budget 0)] [(dec ?budget) ?b2]
+                     (q ?head ?link ?b2)]
+                    [(q ?head ?link ?budget) [?prev :next ?link] (p ?head ?prev ?budget)]]
+                  [1 4]))))
+    (testing "non-linear: two self-calls in one body, composing half-budget paths"
+      ;; base = one edge, step = two paths of budget-1, so budget b covers
+      ;; 1..2^b hops. b=2 covers the 4-edge chain.
+      (is (= #{2 3 4 5}
+             (run '[:find [?l ...] :in $ % ?h ?bud :where (r ?h ?l ?bud)]
+                  '[[(r ?head ?link ?budget) [?head :next ?link]]
+                    [(r ?head ?link ?budget) [(> ?budget 0)] [(dec ?budget) ?b2]
+                     (r ?head ?mid ?b2) (r ?mid ?link ?b2)]]
+                  [1 2]))))
+    (testing "an unbounded transformed arg is answered, not silently truncated"
+      ;; Nothing constrains ?budget, so no bottom-up evaluation of this rule
+      ;; terminates — demand would grow forever after the facts stop. It is
+      ;; handed to the relational engine, whose top-down search the DATA bounds.
+      (is (= #{1 2 3 4 5}
+             (run '[:find [?l ...] :in $ % ?h ?bud :where (u ?h ?l ?bud)]
+                  '[[(u ?head ?link ?budget) [(identity ?head) ?link]]
+                    [(u ?head ?link ?budget) [(dec ?budget) ?b2]
+                     [?prev :next ?link] (u ?head ?prev ?b2)]]
+                  [1 9]))))))

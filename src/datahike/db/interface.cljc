@@ -125,3 +125,50 @@
         :error-on-missing (throw (ex-info "Attribute ref not found"
                                           {:ref a-ref}))
         :allow-missing nil)))
+
+(defn ref-for
+  "`a-ident` as this database stores it in a datom's attribute slot, with the
+   caller stating what an UNKNOWN ident means to them.
+
+   The mirror of `ident-for`, and it exists for the same reason: `-ref-for`
+   answers `nil` for an ident this database has not installed, and `nil` is not a
+   free value here. In a SEARCH PATTERN `nil` in the attribute slot means
+   UNCONSTRAINED — match every attribute. So an unresolvable ident handed
+   straight to a search does not match nothing, it matches EVERYTHING, and the
+   caller cannot tell the two apart because they are the same value.
+
+   That is not hypothetical. Under `:attribute-refs? true` it made
+   `[?e :typo/attr ?v]` return the whole database and inverted `not-join` into
+   excluding every result. Databases without `:attribute-refs?` were immune only
+   by accident: there `-ref-for` is the identity and never produces a `nil`, so
+   an unresolved keyword stays a keyword and matches nothing on its own.
+
+   The strategies say what the CALLER means, which is the whole point — the bug
+   was that nobody had to say:
+
+     `:error-on-missing`  the attribute must exist; raise if it does not. What
+                          the write paths want, and what 19 of the 23
+                          `ident-for` call sites already ask for.
+     `:no-match`          the attribute may not exist, and if it does not then
+                          nothing can match it. What a QUERY wants: a clause over
+                          an undeclared attribute yields no rows, which is what
+                          this database has always done without `:attribute-refs?`
+                          and is therefore what the two configs must agree on.
+     `:allow-missing`     `nil`, the raw protocol answer, for a caller that has
+                          its own handling. Named so that choosing it is visible.
+
+   `:no-match` returns the IDENT itself. Under `:attribute-refs?` a stored
+   attribute is an entity id, so a keyword is equal to none of them and orders
+   against none of them — verified to match nothing across all six pattern shapes
+   and both the current and temporal index families. Without `:attribute-refs?`
+   the ident IS the attribute, so returning it is not a special case at all: the
+   pattern is exactly what the caller wrote, and it matches nothing because no
+   datom carries that attribute. One rule, both configs, no branch."
+  [db a-ident missing-strategy]
+  (or (-ref-for db a-ident)
+      (case missing-strategy
+        :error-on-missing (throw (ex-info "Attribute not found"
+                                          {:error :db/unknown-attribute
+                                           :attribute a-ident}))
+        :no-match a-ident
+        :allow-missing nil)))

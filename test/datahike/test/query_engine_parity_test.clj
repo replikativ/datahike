@@ -130,6 +130,141 @@
       (is (= (base standalone db [100 101]) (planner standalone db [100 101]))
           "standalone optional scan keeps left-outer semantics"))))
 
+(deftest multi-group-wide-tuple-is-projected-onto-find
+  (testing "a consumer group that emits WIDE tuples still projects onto :find"
+    ;; A consumer emits its own wide var vector whenever it carries
+    ;; attached-preds or feeds a probe-map. The projection back onto :find was
+    ;; gated on has-post-ops?, which is FALSE for an attached-pred on the
+    ;; CONSUMER (extra-preds harvests attached-preds from PRODUCER groups only),
+    ;; so nothing projected and the raw wide tuple was returned — in the
+    ;; consumer's `(vec :output-vars)` set-iteration order.
+    ;;
+    ;; Silent, and it needs no optional/get-else machinery at all: two entity
+    ;; groups and one predicate on the consumer's value var is enough.
+    (let [conn (fresh-conn)
+          _    (d/transact conn [{:db/ident :name :db/valueType :db.type/string
+                                  :db/cardinality :db.cardinality/one}
+                                 {:db/ident :nick :db/valueType :db.type/string
+                                  :db/cardinality :db.cardinality/one}
+                                 {:db/ident :friend :db/valueType :db.type/ref
+                                  :db/cardinality :db.cardinality/many}])
+          _    (d/transact conn [{:db/id 100 :name "alice" :nick "al" :friend [101 102]}
+                                 {:db/id 101 :name "bob" :friend [100]}
+                                 {:db/id 102 :name "carol" :nick "cc" :friend [100]}])
+          db   (d/db conn)
+          ;; [E V] with a predicate on V: the shape whose columns came back swapped
+          swapped-cols '[:find ?e ?en :where
+                         [?s :name ?n] [?s :friend ?e] [?e :name ?en] [(some? ?en)]]
+          ;; :find order is load-bearing — the reverse order was accidentally
+          ;; "correct" before the fix, so both orders are pinned
+          reverse-order '[:find ?en ?e :where
+                          [?s :name ?n] [?s :friend ?e] [?e :name ?en] [(some? ?en)]]
+          ;; a get-else in the consumer group widens the tuple further: a 2-var
+          ;; :find returned 3-tuples
+          wrong-arity '[:find ?e ?v :where
+                        [?s :name ?n] [?s :friend ?e] [?e :name ?en]
+                        [(get-else $ ?e :nick "none") ?v] [(some? ?v)]]]
+      (is (= #{[100 "alice"] [101 "bob"] [102 "carol"]} (base swapped-cols db)))
+      (is (= (base swapped-cols db) (planner swapped-cols db))
+          "columns must follow :find order, not the consumer group's var order")
+      (is (= (base reverse-order db) (planner reverse-order db))
+          "the reversed :find order must hold too")
+      (is (= #{[100 "al"] [101 "none"] [102 "cc"]} (base wrong-arity db)))
+      (is (= (base wrong-arity db) (planner wrong-arity db))
+          "a 2-var :find must return 2-tuples (BUG: returned 3-tuples)")
+      (is (every? #(= 2 (count %)) (planner wrong-arity db))
+          "arity is part of the contract, not just the values"))))
+
+(deftest get-else-on-joined-entity-var-parity
+  (testing "get-else off an entity var bound by a SIBLING clause keeps
+            left-outer semantics (issue #920)"
+    ;; The optional scan lands in its own group — its entity var (?si) carries
+    ;; no other pattern to fuse into as an optional MERGE — and the fused path
+    ;; then joined that group to its producer by probing the consumer's scan
+    ;; field: an INNER join, which silently dropped exactly the rows the
+    ;; default is FOR. planner-ON returned a strict subset of planner-OFF, no
+    ;; exception. Standalone optional scans no longer take the fused path.
+    (let [conn (fresh-conn)
+          _    (d/transact conn [{:db/ident :stmt/name :db/valueType :db.type/string
+                                  :db/cardinality :db.cardinality/one :db/index true}
+                                 {:db/ident :stmt/src :db/valueType :db.type/ref
+                                  :db/cardinality :db.cardinality/one}
+                                 {:db/ident :src/at :db/valueType :db.type/string
+                                  :db/cardinality :db.cardinality/one}
+                                 {:db/ident :src/kind :db/valueType :db.type/keyword
+                                  :db/cardinality :db.cardinality/one}])
+          ;; src1 HAS both source attrs, src2 has neither, s3 has no :stmt/src
+          _    (d/transact conn [{:db/id "src1" :src/at "2026-01-01" :src/kind :k1}
+                                 {:db/id "src2"}
+                                 {:stmt/name "s1" :stmt/src "src1"}
+                                 {:stmt/name "s2" :stmt/src "src2"}
+                                 {:stmt/name "s3"}])
+          db   (d/db conn)
+          ;; ?si comes from a plain pattern
+          joined '[:find ?name ?at :where
+                   [?stmt :stmt/name ?name]
+                   [?stmt :stmt/src ?si]
+                   [(get-else $ ?si :src/at :absent) ?at]]
+          ;; the issue's shape: ?si comes from a PRIOR get-else, so the second
+          ;; one defaults both for a real eid lacking :src/at (s2) and for the
+          ;; -1 sentinel that is not an entity at all (s3)
+          chained '[:find ?name ?at :where
+                    [?stmt :stmt/name ?name]
+                    [(get-else $ ?stmt :stmt/src -1) ?si]
+                    [(get-else $ ?si :src/at :absent) ?at]]
+          ;; every pattern on ?si is optional, so NO scan may drive that group:
+          ;; whichever one did, an entity lacking its attribute was never
+          ;; visited and the row vanished with BOTH defaults
+          all-optional '[:find ?name ?at ?kind :where
+                         [?stmt :stmt/name ?name]
+                         [?stmt :stmt/src ?si]
+                         [(get-else $ ?si :src/at :absent) ?at]
+                         [(get-else $ ?si :src/kind :none) ?kind]]
+          ;; same, plus a negation on ?si — it must not be folded as an
+          ;; anti-merge into a group that is never assembled
+          with-not '[:find ?name ?at :where
+                     [?stmt :stmt/name ?name]
+                     [?stmt :stmt/src ?si]
+                     [(get-else $ ?si :src/at :absent) ?at]
+                     (not [?si :src/kind :k1])]
+          ;; the all-optional group over a NAMED source: the group key carries
+          ;; the source, so a key comparison that dropped it would either miss
+          ;; the split or split a group that has a drivable scan
+          named-all-optional '[:find ?name ?at ?kind :in $data :where
+                               [$data ?stmt :stmt/name ?name]
+                               [$data ?stmt :stmt/src ?si]
+                               [(get-else $data ?si :src/at :absent) ?at]
+                               [(get-else $data ?si :src/kind :none) ?kind]]
+          ;; the shape that MUST keep fusing: ?si carries an ordinary pattern,
+          ;; so the get-else is an optional MERGE, which the fused path defaults
+          ;; correctly. Pinned so a future broadening of the fusability guard
+          ;; can't silently de-fuse the common case.
+          fusable '[:find ?name ?at :where
+                    [?stmt :stmt/name ?name]
+                    [(get-else $ ?stmt :src/at :absent) ?at]]]
+      (is (= #{["s1" "2026-01-01"] ["s2" :absent]} (base joined db)))
+      (is (= (base joined db) (planner joined db))
+          "planner must not drop the row whose entity lacks the attribute")
+      (is (= #{["s1" "2026-01-01"] ["s2" :absent] ["s3" :absent]} (base chained db)))
+      (is (= (base chained db) (planner chained db))
+          "get-else off a get-else-bound entity var defaults for both the real
+           eid and the sentinel")
+      (is (= #{["s1" "2026-01-01" :k1] ["s2" :absent :none]} (base all-optional db)))
+      (is (= (base all-optional db) (planner all-optional db))
+          "an all-optional entity group keeps every default")
+      (is (= #{["s2" :absent]} (base with-not db)))
+      (is (= (base with-not db) (planner with-not db))
+          "the negation still applies once the all-optional group is split")
+      (is (= #{["s1" "2026-01-01" :k1] ["s2" :absent :none]}
+             (base named-all-optional db)))
+      (is (= (base named-all-optional db) (planner named-all-optional db))
+          "an all-optional group over a named source keeps every default")
+      (is (= #{["s1" :absent] ["s2" :absent] ["s3" :absent]} (base fusable db)))
+      (is (= (base fusable db) (planner fusable db)))
+      (is (re-find #"path: direct" (q/explain fusable db))
+          "a get-else that CAN fuse as an optional merge must still take the
+           fused path — the guard is about standalone optional scans only"))))
+
 (deftest card-many-merge-with-get-else-parity
   (testing "a card-many attribute in the same group as get-else keeps ALL its
             values, and projecting the card-many var away doesn't leave

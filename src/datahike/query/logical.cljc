@@ -229,7 +229,8 @@
                           raw-attr (nth args 2)
                           attr (if (and (keyword? raw-attr)
                                         (:attribute-refs? (dbi/-config db)))
-                                 (dbi/-ref-for db raw-attr)
+                                 ;; :no-match — an undeclared attribute matches nothing, as it always has without :attribute-refs?
+                                 (dbi/ref-for db raw-attr :no-match)
                                  raw-attr)
                           ;; (quote x) defaults unwrap to their constant here —
                           ;; matching -call-fn's arg resolution on the legacy
@@ -323,6 +324,24 @@
          blank-counter (atom 0)
          scan-groups (group-by #(entity-group-key % blank-counter) scans)
 
+         ;; Group keys whose every scan is OPTIONAL (each one a `get-else`).
+         ;; Such a group has nothing that may DRIVE its scan: assemble-entity-
+         ;; group's DP would have to pick an optional scan as the driver, and a
+         ;; driving scan walks its attribute's index — so an entity lacking that
+         ;; attribute is never visited and its row disappears entirely, taking
+         ;; every default in the group with it (#920, on the fused AND the
+         ;; relation path). Left standalone, each optional scan runs as
+         ;; bind-by-fn(get-else): left-outer with the default (#884).
+         ;; A group holding at least one non-optional scan is fine — that scan
+         ;; drives and the optional ones become optional MERGES, which
+         ;; execute-group-direct already defaults on a lookup miss.
+         undrivable-keys (into #{}
+                               (comp (filter (fn [[_k group-scans]]
+                                               (every? #(instance? datahike.query.ir.LOptionalScan %)
+                                                       group-scans)))
+                                     (map key))
+                               scan-groups)
+
          ;; var → indices of the clauses that mention it, so a fold candidate
          ;; can tell its own local vars from ones the query shares.
          var->clause-idxs
@@ -340,8 +359,14 @@
                      (foldable-not? not-entry scan-groups bound-vars var->clause-idxs))
               (let [sub-ci (analyze/classify-clause (first (:sub-clauses (:ci not-entry))))
                     anti-scan (make-scan sub-ci nil)]
-                (update acc [(:e sub-ci) nil] (fnil conj [])
-                        {:anti-scan anti-scan :not-entry not-entry}))
+                ;; An all-optional group is never assembled into an LEntityJoin
+                ;; (see undrivable-keys), so there would be no node to hold the
+                ;; anti-merge and the negation would be silently dropped. Leave
+                ;; it as a standalone LAntiJoin.
+                (if (contains? undrivable-keys [(:e sub-ci) nil])
+                  acc
+                  (update acc [(:e sub-ci) nil] (fnil conj [])
+                          {:anti-scan anti-scan :not-entry not-entry})))
               acc))
           {}
           nots)
@@ -358,30 +383,41 @@
          ;; source order. Standalone scans pass through their tag from
          ;; build above.
          entity-nodes
-         (mapv
-          (fn [[[e-var source] group-scans]]
-            (let [anti-entries (get foldable-nots [e-var source])
-                  anti-scans (mapv :anti-scan anti-entries)
-                  all-vars (into (into #{} (mapcat :vars) group-scans)
-                                 (mapcat :vars) anti-scans)
-                  min-idx (let [idxs (keep #(:source-idx (meta %)) group-scans)]
-                            (if (seq idxs)
-                              (apply min idxs)
-                              ;; Sentinel: scans without :source-idx (e.g.
-                              ;; from AND-flattening sub-plans) keep their
-                              ;; existing meta — the LEntityJoin then has
-                              ;; no source-idx and lower.cljc treats it as
-                              ;; "process last" via the JS-portable
-                              ;; max-source-idx fallback there.
-                              nil))]
-              (if (and (= 1 (count group-scans)) (empty? anti-scans))
-                ;; Single scan, no anti-merges → standalone LScan
-                (first group-scans)
-                ;; Multi-scan group → LEntityJoin (only tag if we have a
-                ;; concrete index; an absent tag is handled by lower.cljc's
-                ;; default-to-end fallback)
-                (cond-> (ir/->LEntityJoin e-var (vec group-scans) anti-scans all-vars source)
-                  min-idx (vary-meta assoc :source-idx min-idx)))))
+         (into
+          []
+          (mapcat
+           (fn [[[e-var source :as gkey] group-scans]]
+             (let [anti-entries (get foldable-nots gkey)
+                   anti-scans (mapv :anti-scan anti-entries)
+                   all-vars (into (into #{} (mapcat :vars) group-scans)
+                                  (mapcat :vars) anti-scans)
+                   min-idx (let [idxs (keep #(:source-idx (meta %)) group-scans)]
+                             (if (seq idxs)
+                               (apply min idxs)
+                               ;; Sentinel: scans without :source-idx (e.g.
+                               ;; from AND-flattening sub-plans) keep their
+                               ;; existing meta — the LEntityJoin then has
+                               ;; no source-idx and lower.cljc treats it as
+                               ;; "process last" via the JS-portable
+                               ;; max-source-idx fallback there.
+                               nil))]
+               (cond
+                 ;; Every scan optional — no scan may drive the group, so keep
+                 ;; them standalone (see undrivable-keys). foldable-nots skips
+                 ;; these keys, so anti-scans is empty here.
+                 (contains? undrivable-keys gkey)
+                 group-scans
+
+                 (and (= 1 (count group-scans)) (empty? anti-scans))
+                 ;; Single scan, no anti-merges → standalone LScan
+                 [(first group-scans)]
+
+                 :else
+                 ;; Multi-scan group → LEntityJoin (only tag if we have a
+                 ;; concrete index; an absent tag is handled by lower.cljc's
+                 ;; default-to-end fallback)
+                 [(cond-> (ir/->LEntityJoin e-var (vec group-scans) anti-scans all-vars source)
+                    min-idx (vary-meta assoc :source-idx min-idx))]))))
           scan-groups)
 
          ;; Remaining NOTs (not folded into entity groups). Each LAntiJoin

@@ -11,19 +11,19 @@
    4. Server executes transaction, syncs store
    5. Client receives sync, transaction completes
 
-   Uses Fressian serialization with Datahike handlers."
+   Uses CBOR serialization with Datahike handlers."
   (:require [clojure.test :refer [deftest testing is]]
             [clojure.java.io :as io]
             [datahike.api :as d]
             [datahike.kabel.connector]  ;; registers -connect* :kabel multimethod
+            [datahike.migrate :as dm]
             [datahike.kabel.writer :as kw]
             [datahike.connector :refer [release]]
             [hasch.core :as hasch]
             [datahike.kabel.handlers :as handlers]
-            [datahike.kabel.fressian-handlers :as fh]
+            [datahike.kabel.cbor-handlers :as ch]
             [kabel.peer :as peer]
             [kabel.http-kit :refer [create-http-kit-handler!]]
-            [kabel.middleware.fressian :refer [fressian]]
             ;; konserve-sync for store replication
             [konserve.core :as k]
             [datahike.versioning :refer [branch! branch-as-db]]
@@ -68,12 +68,12 @@
       (doseq [file (reverse (file-seq dir))]
         (.delete file)))))
 
-(defn datahike-fressian-middleware
-  "Fressian middleware with Datahike type handlers."
-  [peer-config]
-  (fressian (atom fh/read-handlers)
-            (atom fh/write-handlers)
-            peer-config))
+(def datahike-serialization-middleware
+  "CBOR middleware with Datahike type handlers -- frame 14.
+
+  A def rather than a local redefinition: the middleware is one call now, so
+  wrapping it in a test-local fn would only hide which format is under test."
+  ch/datahike-cbor-middleware)
 
 ;; =============================================================================
 ;; Schema
@@ -118,7 +118,7 @@
           server-peer (peer/server-peer S handler server-id
                                         (comp (sync/server-middleware)
                                               ds/remote-middleware)
-                                        datahike-fressian-middleware)
+                                        datahike-serialization-middleware)
           _ (<?? S (peer/start server-peer))
           _ (ds/invoke-on-peer server-peer)
 
@@ -136,7 +136,7 @@
           client-peer (peer/client-peer S client-id
                                         (comp (sync/client-middleware)
                                               ds/remote-middleware)
-                                        datahike-fressian-middleware)
+                                        datahike-serialization-middleware)
           _ (ds/invoke-on-peer client-peer)
           _ (<?? S (peer/connect S client-peer url))
 
@@ -268,7 +268,7 @@
           server-peer (peer/server-peer S handler server-id
                                         (comp (sync/server-middleware)
                                               ds/remote-middleware)
-                                        datahike-fressian-middleware)
+                                        datahike-serialization-middleware)
           _ (<?? S (peer/start server-peer))
           _ (ds/invoke-on-peer server-peer)
           _ (handlers/register-global-handlers! server-peer)
@@ -278,7 +278,7 @@
           client-peer (peer/client-peer S client-id
                                         (comp (sync/client-middleware)
                                               ds/remote-middleware)
-                                        datahike-fressian-middleware)
+                                        datahike-serialization-middleware)
           _ (ds/invoke-on-peer client-peer)
           _ (<?? S (peer/connect S client-peer url))
 
@@ -345,7 +345,7 @@
           server-peer (peer/server-peer S handler server-id
                                         (comp (sync/server-middleware)
                                               ds/remote-middleware)
-                                        datahike-fressian-middleware)
+                                        datahike-serialization-middleware)
           _ (<?? S (peer/start server-peer))
           _ (ds/invoke-on-peer server-peer)
           _ (handlers/register-global-handlers! server-peer)
@@ -355,7 +355,7 @@
           client-peer (peer/client-peer S client-id
                                         (comp (sync/client-middleware)
                                               ds/remote-middleware)
-                                        datahike-fressian-middleware)
+                                        datahike-serialization-middleware)
           _ (ds/invoke-on-peer client-peer)
           _ (<?? S (peer/connect S client-peer url))
 
@@ -428,7 +428,7 @@
           server-peer (peer/server-peer S handler server-id
                                         (comp (sync/server-middleware)
                                               ds/remote-middleware)
-                                        datahike-fressian-middleware)
+                                        datahike-serialization-middleware)
           _ (<?? S (peer/start server-peer))
           _ (ds/invoke-on-peer server-peer)
           _ (handlers/register-global-handlers! server-peer)
@@ -440,7 +440,7 @@
           client-peer-1 (peer/client-peer S client-id
                                           (comp (sync/client-middleware)
                                                 ds/remote-middleware)
-                                          datahike-fressian-middleware)
+                                          datahike-serialization-middleware)
           _ (ds/invoke-on-peer client-peer-1)
           _ (<?? S (peer/connect S client-peer-1 url))
 
@@ -516,7 +516,7 @@
       (let [client-peer-2 (peer/client-peer S #uuid "20000000-0000-0000-0000-000000000003"
                                             (comp (sync/client-middleware)
                                                   ds/remote-middleware)
-                                            datahike-fressian-middleware)
+                                            datahike-serialization-middleware)
             _ (ds/invoke-on-peer client-peer-2)
             _ (<?? S (peer/connect S client-peer-2 url))
 
@@ -575,7 +575,7 @@
           server-peer (peer/server-peer S handler server-id
                                         (comp (sync/server-middleware)
                                               ds/remote-middleware)
-                                        datahike-fressian-middleware)
+                                        datahike-serialization-middleware)
           _ (<?? S (peer/start server-peer))
           _ (ds/invoke-on-peer server-peer)
 
@@ -587,7 +587,7 @@
           client-peer (peer/client-peer S client-id
                                         (comp (sync/client-middleware)
                                               ds/remote-middleware)
-                                        datahike-fressian-middleware)
+                                        datahike-serialization-middleware)
           _ (ds/invoke-on-peer client-peer)
           _ (<?? S (peer/connect S client-peer url))]
 
@@ -668,7 +668,7 @@
           handler (create-http-kit-handler! S url server-id)
           server-peer (peer/server-peer S handler server-id
                                         (comp (sync/server-middleware) ds/remote-middleware)
-                                        datahike-fressian-middleware)
+                                        datahike-serialization-middleware)
           _ (<?? S (peer/start server-peer))
           _ (ds/invoke-on-peer server-peer)
           _ (handlers/register-global-handlers! server-peer)
@@ -676,7 +676,7 @@
 
           client-peer (peer/client-peer S client-id
                                         (comp (sync/client-middleware) ds/remote-middleware)
-                                        datahike-fressian-middleware)
+                                        datahike-serialization-middleware)
           _ (ds/invoke-on-peer client-peer)
           _ (<?? S (peer/connect S client-peer url))
           client-config (assoc base
@@ -722,3 +722,108 @@
       (d/delete-database server-config)
       (delete-dir-recursive server-path)
       (delete-dir-recursive client-path))))
+
+(deftest test-import-db-through-kabel-writer
+  (testing "`import-db` against a KabelWriter. An import is MANY writer calls,
+            and the source-id -> target-id mapping has to survive between them:
+            it goes out on the tx-report as `:migration` and back in on the next
+            call, because the writer owns the db and the caller cannot reach
+            into its loop. Over kabel that map makes a round trip through CBOR
+            and `reconstruct-tx-report` each time.
+
+            `:batch-size 3` so there are several calls — with one batch the
+            mapping would never have to survive anything, and the test would
+            pass whether or not it does."
+    (let [port (get-free-port)
+          url (str "ws://localhost:" port)
+          store-id #uuid "7e570000-0000-0000-0000-00000000000a"
+          store-topic (keyword (str store-id))
+          server-path (create-temp-dir "import-kabel-server")
+          client-path (create-temp-dir "import-kabel-client")
+          dump-dir (create-temp-dir "import-kabel-dump")
+
+          ;; A source database exported to a dump, with REFS so the id mapping
+          ;; is load-bearing: a ref in a late batch names an entity created in
+          ;; an early one, which is the case the mapping exists for.
+          src-path (create-temp-dir "import-kabel-src")
+          src-config {:store {:backend :file :path src-path
+                              :id #uuid "7e570000-0000-0000-0000-00000000000b"}
+                      :schema-flexibility :write :keep-history? false}
+          _ (d/create-database src-config)
+          src-conn (d/connect src-config)
+          _ (d/transact src-conn [{:db/ident :person/name :db/valueType :db.type/string
+                                   :db/cardinality :db.cardinality/one
+                                   :db/unique :db.unique/identity}
+                                  {:db/ident :person/friend :db/valueType :db.type/ref
+                                   :db/cardinality :db.cardinality/one}])
+          _ (d/transact src-conn [{:person/name "a"} {:person/name "b"}
+                                  {:person/name "c"} {:person/name "d"}])
+          _ (d/transact src-conn [{:person/name "a"
+                                   :person/friend [:person/name "d"]}])
+          _ (dm/export-db @src-conn dump-dir)
+          src-datoms (count (d/datoms @src-conn :eavt))
+          _ (release src-conn)
+
+          server-config {:store {:backend :file :path server-path :id store-id}
+                         :schema-flexibility :write :keep-history? false}
+          _ (d/create-database server-config)
+          server-conn (d/connect server-config)
+
+          handler (create-http-kit-handler! S url server-id)
+          server-peer (peer/server-peer S handler server-id
+                                        (comp (sync/server-middleware)
+                                              ds/remote-middleware)
+                                        datahike-serialization-middleware)
+          _ (<?? S (peer/start server-peer))
+          _ (ds/invoke-on-peer server-peer)
+          _ (handlers/register-global-handlers! server-peer)
+          _ (handlers/register-store-for-remote-access! store-id server-conn server-peer)
+
+          client-peer (peer/client-peer S client-id
+                                        (comp (sync/client-middleware)
+                                              ds/remote-middleware)
+                                        datahike-serialization-middleware)
+          _ (ds/invoke-on-peer client-peer)
+          _ (<?? S (peer/connect S client-peer url))
+          client-config {:store {:backend :file :path client-path :id store-id}
+                         :index :datahike.index/persistent-set
+                         :schema-flexibility :write :keep-history? false
+                         :writer {:backend :kabel
+                                  :peer-id server-id
+                                  :local-peer client-peer}}
+          client-conn (<!! (d/connect client-config {:sync? false}))]
+
+      (when (instance? Throwable client-conn) (throw client-conn))
+      (is (instance? datahike.kabel.writer.KabelWriter
+                     (:writer @(:wrapped-atom client-conn))))
+
+      (let [rep (dm/import-db client-conn dump-dir {:batch-size 3})]
+        (is (map? rep) "import-db must return its report map")
+        (is (pos? (:tx-count rep)))
+
+        (testing "every source datom arrived"
+          (Thread/sleep 500)
+          (is (= src-datoms (count (d/datoms (d/db server-conn) :eavt)))
+              "the server must hold as many datoms as the source did"))
+
+        (testing "and the REF resolved to the right entity — a ref carries a
+                  source eid, so this is wrong unless the mapping survived the
+                  round trip between batches"
+          (is (= "d" (d/q '[:find ?n .
+                            :where [?a :person/name "a"]
+                            [?a :person/friend ?f]
+                            [?f :person/name ?n]]
+                          (d/db server-conn)))
+              "a's friend must be d")))
+
+      (release client-conn)
+      (sync/unsubscribe-store! client-peer store-topic)
+      (handlers/unregister-store-for-remote-access! store-id server-peer)
+      (<?? S (peer/stop server-peer))
+      (release server-conn)
+      (d/delete-database server-config)
+      (d/delete-database src-config)
+      (delete-dir-recursive server-path)
+      (delete-dir-recursive client-path)
+      (delete-dir-recursive src-path)
+      (delete-dir-recursive dump-dir))))

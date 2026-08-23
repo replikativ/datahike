@@ -6,7 +6,11 @@
 ;; Functions to skip in JS export (ClojureScript incompatible or aliases)
 ;; - transact: synchronous version that throws error in ClojureScript
 ;;             use transact! instead (which becomes 'transact' in JS)
-(def js-skip-list #{'transact})
+;; - warm-*:   EXPERIMENTAL index warming. The walk's ClojureScript arm is an
+;;             explicit TODO (see datahike.index.persistent-set.warm), so these
+;;             would export as functions that always report :unsupported :cljs.
+;;             Remove them from this set when that arm lands.
+(def js-skip-list #{'transact 'warm-index 'warm-datoms 'warm-db})
 
 (defn clj-name->js-name
   "Convert Clojure kebab-case to JavaScript camelCase.

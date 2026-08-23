@@ -146,14 +146,20 @@
            _ (dq/propagate-query-cache db (:db-after report) modified-attrs)]
        report))))
 
-(defn load-entities-with [db entities tx-meta]
-  (dbt/transact-entities-directly
-   (db/map->TxReport {:db-before db
-                      :db-after  db
-                      :tx-data   []
-                      :tempids   {}
-                      :tx-meta   tx-meta})
-   entities))
+(defn load-entities-with
+  ([db entities tx-meta] (load-entities-with db entities tx-meta nil))
+  ([db entities tx-meta migration]
+   (dbt/transact-entities-directly
+    (db/map->TxReport {:db-before db
+                       :db-after  db
+                       :tx-data   []
+                       :tempids   {}
+                       :tx-meta   tx-meta
+                       ;; The import id mapping, threaded by the CALLER. It is
+                       ;; deliberately not on the db value — see
+                       ;; `transact-entities-directly` for what that cost.
+                       :migration migration})
+    entities)))
 
 (defn db-with
   "Applies transaction to an immutable db value, returning new immutable db value. Same as `(:db-after (with db tx-data))`."

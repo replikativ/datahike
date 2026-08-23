@@ -212,15 +212,48 @@ identical content de-duplicates. There is no separate value store and no extra G
 the value lives in the secondary, which already manages its own storage, GC
 (`d/gc-storage`) and branch-on-fork.
 
-**Semantics — search-only, not recoverable.** A `:db.secondary/only` value is
-**findable but not reproducible**: a full-text/vector index stores a *lossy
-projection* (tokens, embeddings), so there is no path to read the exact original
-back from the primary. Declare it only where the canonical value lives elsewhere
-(its source URL, a bounded summary attribute you store normally, your own blob).
 Writing such a value with no covering secondary raises — the value would be lost.
 
-> Verbatim recovery (`secondary-value` via a *reproducing* index such as Scriptum
-> with stored fields) is a planned follow-up; today the flag is search-only.
+### Backup, and which value a datom names
+
+The secondary index is the only place the value exists, so `export-db` reads it
+back from there through `ISecondaryScannable`. An index that does not implement
+that protocol cannot be backed up losslessly and the export **refuses** rather
+than writing a dump whose values are hashes.
+
+`-sec-value` is keyed on `[attr eid]`, and that key does not always identify a
+value. Two shapes it cannot express:
+
+* **`:db.cardinality/many`** — one entity, several values, one key.
+* **`{:history? true}` over an overwritten value** — the index holds current
+  state, so a superseded value is no longer in it.
+
+Both used to fail silently and produce a backup that restores to *different
+data*. They no longer can: export knows the content hash each datom names — the
+hash **is** the primary's value — and checks what the index hands back against
+it. A value it cannot confirm is refused
+(`:export/secondary-only-unresolvable`), never guessed.
+
+An index can serve both shapes by implementing **`ISecondaryHashAddressable`**
+(`-sec-value-by-hash [this attr eid hash]`). That is a claim about storage, not
+about lookup: it says values are kept one per *datom* rather than one per
+*entity*, and can be found by content hash. Of the indices shipped alongside
+datahike, none declares it yet — Stratum is columnar with one cell per
+`[eid column]` and Proximum is keyed by external id, so for those a second value
+overwrites the first at write time and no read protocol could recover it.
+
+Consequently a `:db.secondary/only` attribute may be `:db.cardinality/many`
+**only** where a covering index declares `ISecondaryHashAddressable`; otherwise
+the first such write is refused
+(`:transact/secondary-only-multival-unstorable`) instead of silently keeping one
+value.
+
+**Semantics — findable, and recoverable only as far as the index allows.** A
+full-text or vector index stores a *lossy projection* (tokens, embeddings) for
+searching, but it may also retain the original — Scriptum stores the field, which
+is what makes the round trip above work. Where it does not, declare the flag only
+if the canonical value lives elsewhere (its source URL, a bounded summary
+attribute stored normally, your own blob).
 
 ## Index Lifecycle
 
@@ -405,6 +438,51 @@ Secondary indices are declared via schema transactions:
 | `:attrs` | Set of attribute keywords to index | required |
 
 Stratum requires no external storage — it maintains an in-memory columnar dataset that is updated transactionally alongside the primary index.
+
+## Index-like reads from the store itself: konserve-lmdb
+
+The three types above are secondary *indices*: separate structures Datahike
+maintains beside the primary EAVT/AEVT/AVET trees.
+[konserve-lmdb](https://github.com/replikativ/konserve-lmdb) offers a different
+trade — index-like reads out of the **stored blobs**, with no second structure to
+build, maintain or garbage-collect.
+
+**This is not a konserve-wide capability, and not a Datahike index type.**
+konserve defines no secondary-index protocol; this is specific to the LMDB
+backend, and there is no `:db.secondary/type :lmdb`. It is a storage-level
+facility you use directly, not through `:db.secondary/*` schema.
+
+What it provides (format v2):
+
+- **Ordered range access** — `scan` and `scan-keys` walk a key range in order,
+  `scan-keys` without touching value pages at all.
+- **Projection** — `project` pulls one field out of every value in a range
+  *without materialising the value*, and `project-reduce` folds several fields
+  over that range in a single pass. The store's range picks the rows;
+  [boring](https://github.com/replikativ/boring)'s navigator picks the columns
+  inside the CBOR blob, which is where the JSONB-like part comes in.
+
+The speed comes from LMDB's zero-copy memory-mapped layout combined with never
+rebuilding the document. Measured against PostgreSQL JSONB on
+`count(doc->'tail'->>'city')`, comparing Postgres' own `EXPLAIN ANALYZE` time:
+6.7x at 400 bytes of padding, **49.5x at 3000**. Worth being precise about why,
+because it is not a claim that the navigation is cleverer — JSONB's is arguably
+better. It is that `PG_GETARG_JSONB_P` fully detoasts before its O(1) navigation
+runs, so its cost tracks document size whatever field you asked for, while a
+projection's cost tracks only how much CBOR sits in front of the field. An
+optional index frame (`:index N`) replaces that walk with a jump.
+
+Versioned stores are a separate, **experimental** facility within the library:
+each write appends a version under an HLC coordinate, giving `latest`, `as-of`
+and `history` at the store level, with `gc!` to collect versions no live pin can
+reach.
+
+Requires **Java 22+** (Project Panama FFI) and `liblmdb`.
+
+> **Beta**, and moving. The API may change between releases, and the versioned
+> layer is experimental even by that standard. If you try it for aggregate or
+> range workloads that would otherwise want a Stratum index, reports of where it
+> wins and where it does not are exactly what is useful right now.
 
 ## Implementing Custom Secondary Indices
 

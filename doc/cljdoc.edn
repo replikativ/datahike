@@ -10,6 +10,7 @@
                     ["Distributed Architecture" {:file "doc/distributed.md"}]
                     ["Garbage Collection" {:file "doc/gc.md"}]
                     ["Reducing Write Amplification" {:file "doc/write-amplification.md"}]
+                    ["Index Warming (Experimental)" {:file "doc/index-warming.md"}]
                     ["Norms (Database Migrations)" {:file "doc/norms.md"}]]
                    ["Platform Support" {}
                     ["ClojureScript Support" {:file "doc/cljs-support.md"}]
