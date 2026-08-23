@@ -135,7 +135,25 @@
   [writer]
   (let [writer (or writer self-writer-backend)]
     (if-not (= :self (:backend writer))
-      writer
+      ;; A remote writer transacts in ANOTHER process, so every option below is
+      ;; about a writer this config does not control: ownership, batching, retry
+      ;; policy and — the one with teeth — :require-fencing. None of them can be
+      ;; honoured from here, and each names a safety property, so accepting them
+      ;; silently is a config that LOOKS protected and is not: exactly the
+      ;; silent-inert-option failure the self writer's closed key set exists to
+      ;; prevent, reappearing one backend over. Remote writers keep their own
+      ;; open key set (:kabel has :local-peer and friends), so only the
+      ;; self-only keys are refused, not everything unknown.
+      (if-let [inert (seq (filter (partial contains? writer)
+                                  [:writer-ownership :streaming? :require-fencing
+                                   :max-batch :head-conflict-retries
+                                   :head-conflict-backoff-ms]))]
+        (log/raise (str "These options configure the :self writer and are inert on a remote writer backend. "
+                        "Configure the writer where it runs — the process that owns it — and remove them here.")
+                   {:type    :self-writer-options-on-remote-writer
+                    :backend (:backend writer)
+                    :inert   (vec inert)})
+        writer)
       (let [legacy? (contains? writer :streaming?)
             legacy (:streaming? writer)
             explicit? (contains? writer :writer-ownership)
