@@ -344,3 +344,27 @@ GC preserves:
 - All data on retained snapshots (GC doesn't delete data, only snapshots)
 
 **Remember:** Actual erasure (GDPR / HIPAA / CCPA) requires [purging](./time_variance.md#data-purging) followed by a cutoff `d/gc-storage` sweep. Purge alone leaves the pre-purge commit reachable; GC alone doesn't delete data on a live snapshot.
+
+## Durable roots
+
+*Experimental.* Everything above rests on the collector seeing what is in flight, which it can only do inside its own process. Some work is too long for that to be enough, wherever it runs: a secondary-index backfill scanning a snapshot for an hour, a bulk import building trees for hours before it publishes them. For those, `datahike.gc-roots` lets a process persist a **root** in the store — a record the mark walks in addition to the branch heads, so a collector in *any* process keeps what it names.
+
+A root protects only what a record names. That is the whole idea, and the whole limit:
+
+- `:pin` — a copy of a commit record with its parents removed. Keeps that commit's trees, schema, secondary-index key-maps and the blobs its datoms name, and nothing older. For a long reader of an old snapshot.
+- `:checkpoint` — a synthetic record in commit shape whose fields name *partial* state: the trees of a build in progress. For a long builder; republish it as the build advances.
+- `:ref` — a commit record with its parents kept, so its ancestry is retained under the same `remove-before` gating as a branch. For durable references to old commits; permanent unless given a TTL.
+
+```clojure
+(require '[datahike.gc-roots :as roots])
+
+(def id (<?? S (roots/pin! (d/db conn) {:note "report job" :ttl-ms (* 2 60 60 1000)})))
+;; … hours of work against that snapshot …
+(<?? S (roots/release! (d/db conn) id))
+```
+
+Roots carry a **lease**. A holder that dies must not pin forever, so an entry expires; the holder renews it (`renew!`, or `start-renewal!` for a background loop) at a fraction of its TTL, and the collector reaps an entry once it is past expiry by its own TTL again. A holder that finds its entry gone at renewal — reaped, or deleted by an older Datahike whose sweep does not know the registry — gets `:gc/root-lost` and must abandon what the root was protecting; `assert-live!` is the same check for the moment before publishing. Timestamps are wall-clock and only decide expiry; the sweep cutoff is unaffected.
+
+What roots do not do: cover the milliseconds between "values written" and "record published" — no record exists yet, so that stays with the guard and the floor above. And a root pins a record older than the head, which makes online GC's freed-address hints unsound for the same reason multiple branches do; online GC pauses while any root exists.
+
+With no roots declared, nothing changes: the registry key is never written and the mark is exactly what it was.
