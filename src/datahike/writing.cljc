@@ -343,7 +343,14 @@
                secondary-index-keys))
         effective-ident-ref-map (or (:ident-ref-map schema-meta) ident-ref-map)
         sec-indices (restore-secondary-indices effective-schema effective-ident-ref-map
-                                               secondary-index-keys store)
+                                               secondary-index-keys
+                                               ;; Not every backend's store carries
+                                               ;; :datahike/store-id; the shared-store
+                                               ;; refusals must not skip on nil.
+                                               (cond-> store
+                                                 (nil? (:datahike/store-id store))
+                                                 (assoc :datahike/store-id
+                                                        (get-in config [:store :id]))))
         empty       (db/empty-db nil config store)
         ;; Bind each index to THIS connection's storage (as a copy). Stored
         ;; values are storage-detached (db->stored) and deserializing

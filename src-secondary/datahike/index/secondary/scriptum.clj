@@ -297,10 +297,11 @@
                              "classpath exports no scriptum.konserve/mark; refusing to report "
                              "it unreachable, which would let the sweep delete it.")
                         {:key-map key-map})))
+      ;; No swallowing here: a metadata mark that fails must fail the
+      ;; COLLECTION — an empty set in its place reports the metadata index
+      ;; unreachable and the sweep deletes it.
       (into (set (sk-mark store (when-let [a (:snapshot-address key-map)] [a])))
-            (when md-mark
-              (try (md-mark store)
-                   (catch Throwable _ #{})))))
+            (when md-mark (md-mark store))))
     ;; Path-backed: konserve owns nothing of it; the empty set is the honest
     ;; answer, and `:backing :filesystem` in the key-map says it on purpose.
     #{}))

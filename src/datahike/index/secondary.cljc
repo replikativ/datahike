@@ -421,7 +421,11 @@
    storage it does.
 
    Declare which case you are in with `:backing` on the key-map (see
-   `konserve-backed?`); the default method refuses to guess. Declare
+   `konserve-backed?`); the default method refuses to guess FOR A KEY-MAP THAT
+   DECLARES ITSELF. A key-map with no `:backing` at all — one written before
+   this contract existed — still marks empty, exactly as before: datahike
+   cannot know where a third-party index keeps its bytes, so an undeclared
+   konserve-backed type keeps the old risk until its adapter declares. Declare
    `:backing :external` (its own store elsewhere) or a similar value for
    storage konserve does not own, `:backing :konserve` when it does — and in
    the latter case this multimethod MUST be implemented before the first

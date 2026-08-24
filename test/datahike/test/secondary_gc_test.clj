@@ -20,6 +20,7 @@
    [datahike.index.secondary :as sec]
    [datahike.index.secondary.scriptum]
    [datahike.index.secondary.proximum]
+   [scriptum.core :as sc]
    [konserve.store :as ks]
    [clojure.core.async :refer [<!!]]))
 
@@ -116,11 +117,22 @@
   (testing "konserve-backed: delegates to scriptum.konserve/mark — the real
             root set, not #{} (which the sweep reads as 'delete the index')
             and not a refusal (scriptum ships the mark now)"
+    ;; A REAL store-backed index, not an empty store: the vacuous version of
+    ;; this test passed with the old #{} implementation.
     (let [store (ks/create-store {:backend :memory :id (java.util.UUID/randomUUID)} {:sync? true})
-          marked (sec/mark-from-key-map
-                  {:type :scriptum :backing :konserve :branch "main"} store)]
-      (is (set? marked)
-          "an empty store marks cleanly — the roots it names simply do not exist yet"))))
+          cache (str "/tmp/datahike-secondary-gc-cache-" (random-uuid))
+          writer (sc/open-store-index store cache "main")]
+      (try
+        (sc/commit! writer "seed" {})
+        (let [marked (sec/mark-from-key-map
+                      {:type :scriptum :backing :konserve :branch "main"} store)]
+          (is (seq marked)
+              "a store holding an index marks its roots — #{} here is the data-loss bug")
+          (is (contains? marked [:scriptum :branches])
+              "the branch registry is the root that, swept, takes the whole index"))
+        (finally
+          (when (instance? java.io.Closeable writer)
+            (.close ^java.io.Closeable writer)))))))
 
 (deftest proximum-must-not-share-datahikes-store
   (let [shared-id (java.util.UUID/randomUUID)]

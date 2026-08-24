@@ -371,7 +371,7 @@ Two storage-layer caveats:
 
 Where an index's bytes live decides what the collector must know about it, and the rule is: **only Datahike's own collector may run on Datahike's store, and everything in that store must be reachable from its mark.**
 
-- **Stratum** writes its datasets, index commits and tree nodes into *Datahike's own store*. Its `mark-from-key-map` walks them, so `d/gc-storage` keeps live structure and reclaims what no commit references — no extra step.
+- **Stratum** writes its datasets, index commits and tree nodes into *Datahike's own store*. Its `mark-from-key-map` walks them, so `d/gc-storage` never sweeps live structure. Note the mark currently retains stratum's **whole generation history** (it walks every dataset commit's parents, with no `remove-before` gating), so old stratum generations are not yet reclaimed — and a purged value survives in them until that gating exists. Treat stratum storage as append-only for now.
 - **Proximum** must use its **own** store, named by `:store-config`. Pointing it at Datahike's store is refused at index declaration (`:secondary/proximum-shared-store`), and a pre-existing shared configuration makes the collection fail rather than sweep the vector index: proximum's keys are unknown to Datahike's mark, and it writes top-level keys (`:branches`) that collide with Datahike's own. Run proximum's GC against proximum's store; never run either component's collector against the other's store.
 - Every key-map declares where its bytes live via `:backing`; a type that declares `:backing :konserve` without teaching `mark-from-key-map` its keys fails the collection loudly instead of being swept silently.
 
@@ -394,7 +394,7 @@ Datahike supports distributed deployments with remote writers (`:http` or `:kabe
 
 ### Stratum and Proximum (konserve-backed)
 
-Stratum and Proximum store their data in konserve, the same key-value store that Datahike uses for primary indices. This means they are **automatically available to all readers** in a distributed setup — readers sync from konserve and can restore the index state.
+Stratum stores its data in *Datahike's own* konserve store, so it is **automatically available to all readers** in a distributed setup — readers sync from konserve and restore the index state. Proximum stores its data in konserve too, but in **its own store**, named by `:store-config` — pointing that at Datahike's store is refused (`:secondary/proximum-shared-store`) — so distributing it means giving readers access to that store as well.
 
 ### Scriptum (filesystem-backed)
 

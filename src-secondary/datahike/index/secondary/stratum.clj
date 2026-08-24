@@ -606,10 +606,11 @@
       (let [synced-ds (sd/sync! dataset store (name branch))
             commit-id (get-in synced-ds [:commit-info :id])]
         {:type :stratum
+         :backing :konserve
          :branch (name branch)
          :dataset-commit-id commit-id
          :merkle-root commit-id})
-      {:type :stratum :branch (name branch) :dataset-commit-id nil}))
+      {:type :stratum :backing :konserve :branch (name branch) :dataset-commit-id nil}))
 
   (-sec-restore [_ store key-map]
     ;; Restore dataset from konserve
