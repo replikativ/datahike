@@ -69,6 +69,9 @@
 
 (defn- base-cfg [id extra]
   (merge {:store {:backend :file :path (tmp-path id) :id id}
+          ;; Single-process collection is what is under test; under shared
+          ;; ownership the sweep would carry a fifteen-minute floor.
+          :writer {:backend :self :writer-ownership :exclusive}
           :schema-flexibility :write
           :keep-history? false
           ;; LOAD-BEARING: with the commit graph on and the default remove-before,

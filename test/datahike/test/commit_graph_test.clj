@@ -18,6 +18,7 @@
            :id id}
    :schema-flexibility :write
    :keep-history? false
+   :writer {:backend :self :writer-ownership :exclusive}
    :commit-graph? false})
 
 (def schema-tx

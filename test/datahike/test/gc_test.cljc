@@ -27,6 +27,11 @@
 (def cfg {:store              {:backend :file
                                :path "/tmp/gc-test"
                                :id #uuid "9c000000-0000-0000-0000-000000000001"}
+          ;; These tests assert what a SINGLE-PROCESS collector reclaims, and say
+          ;; so: under the default (shared) ownership the sweep carries a
+          ;; fifteen-minute floor, because another process's commit in flight is
+          ;; invisible here. The floor's own tests are below.
+          :writer {:backend :self :writer-ownership :exclusive}
           :keep-history?      true
           :schema-flexibility :write
           :index              :datahike.index/persistent-set})
@@ -170,14 +175,15 @@
    before `remove-before` is erasable, so the superseded roots are unreachable.
    `(Date. 0)` as remove-before would keep ALL history and leave nothing to
    collect, which makes any \"the floor spared it\" assertion pass vacuously."
-  [path]
-  (let [cfg (assoc-in cfg [:store :path] path)]
-    (d/delete-database cfg)
-    (d/create-database cfg)
-    (let [conn (d/connect cfg)]
-      (d/transact conn schema)
-      (d/transact conn txs)
-      conn)))
+  ([path] (churned-conn path {}))
+  ([path extra]
+   (let [cfg (merge (assoc-in cfg [:store :path] path) extra)]
+     (d/delete-database cfg)
+     (d/create-database cfg)
+     (let [conn (d/connect cfg)]
+       (d/transact conn schema)
+       (d/transact conn txs)
+       conn))))
 
 (deftest min-age-spares-recent-garbage
   (testing "an object young enough is spared even though the mark called it
@@ -198,15 +204,42 @@
               "with no floor the same store does have collectable garbage"))
         (finally (d/release conn))))))
 
-(deftest min-age-is-off-by-default
-  (testing "the floor is opt-in: where the writer lives the safe point is exact,
-            so a wall-clock floor there would only retain garbage the collector
-            was right about. Passing nothing must collect exactly as before."
+(deftest min-age-is-off-by-default-under-an-exclusive-writer
+  (testing "where the writer lives and is alone the safe point is exact, so a
+            wall-clock floor there would only retain garbage the collector was
+            right about. Passing nothing must collect exactly as before."
     (is (zero? datahike.gc/DEFAULT_SWEEP_MIN_AGE_MS))
+    (is (zero? (datahike.gc/default-min-age-ms
+                {:writer {:backend :self :writer-ownership :exclusive}})))
     (let [conn (churned-conn "/tmp/dh-gc-min-age-default")]
       (try
         (is (seq (<?? S (d/gc-storage conn (Date.))))
             "the default collects the garbage it always did")
+        (finally (d/release conn))))))
+
+(deftest min-age-defaults-to-a-floor-under-a-shared-writer
+  (testing "shared ownership is the connection's own statement that another
+            writer may exist, and that writer's commit in flight is invisible to
+            this collector — so the sweep carries a floor unless told otherwise"
+    (is (= datahike.gc/DEFAULT_SHARED_SWEEP_MIN_AGE_MS
+           (datahike.gc/default-min-age-ms {:writer {:backend :self :writer-ownership :shared}})))
+    (is (= datahike.gc/DEFAULT_SHARED_SWEEP_MIN_AGE_MS
+           (datahike.gc/default-min-age-ms {}))
+        "no writer config at all is the shared default")
+    (is (= datahike.gc/DEFAULT_SHARED_SWEEP_MIN_AGE_MS
+           (datahike.gc/default-min-age-ms {:writer {:backend :datahike-server}}))
+        "a remote writer means the writes happen elsewhere entirely")
+    (let [conn (churned-conn "/tmp/dh-gc-min-age-shared"
+                             {:writer {:backend :self :writer-ownership :shared}})]
+      (try
+        (let [before (count-store @conn)]
+          (is (empty? (<?? S (d/gc-storage conn (Date.))))
+              "nothing written in the last fifteen minutes is deleted by default")
+          (is (= before (count-store @conn))))
+        ;; The control: an explicit zero restores the unfloored sweep, which
+        ;; also proves the store had garbage and the assertion above meant it.
+        (is (seq (<?? S (d/gc-storage conn (Date.) {:min-age-ms 0})))
+            "an explicit {:min-age-ms 0} sweeps without the floor")
         (finally (d/release conn))))))
 
 (deftest min-age-is-a-floor-not-a-replacement
