@@ -20,7 +20,7 @@
         ;; :cljs + :test (shadow-cljs.edn:1), and `bb test cljs-node` sees only
         ;; :cljs — so this is the one placement all three see. The old :bulk
         ;; alias reached none of the cljs ones.
-        org.replikativ/persistent-sorted-set        {:mvn/version "0.5.141"}
+        org.replikativ/persistent-sorted-set        {:mvn/version "0.5.142"}
         ;; MAIN deps, not a test alias. `datahike.cbor` is src/, so boring is a
         ;; real runtime dependency: the dump codec and the kabel wire format
         ;; both go through it. It used to be declared only under :test, which
@@ -116,9 +116,9 @@
                                ring-cors/ring-cors           {:mvn/version "0.1.13"}
 
                                ;; secondary index integrations (for testing)
-                               org.replikativ/proximum       {:mvn/version "0.1.35"}
-                               org.replikativ/scriptum       {:mvn/version "0.1.29"}
-                               org.replikativ/stratum        {:mvn/version "0.3.81"}
+                               org.replikativ/proximum       {:mvn/version "0.1.36"}
+                               org.replikativ/scriptum       {:mvn/version "0.1.30"}
+                               org.replikativ/stratum        {:mvn/version "0.3.82"}
 
                                ;; kabel integration for distributed datahike.
                                ;; src-kabel's connector requires datahike.cbor,

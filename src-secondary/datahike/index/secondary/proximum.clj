@@ -10,6 +10,7 @@
                        :db.secondary/config {:dim 384 :distance :cosine
                                              :store-config {...}}}}"
   (:require
+   [proximum.warm :as prox-warm]
    [datahike.index.audit :as audit]
    [datahike.index.secondary :as sec]
    [datahike.index.entity-set :as es]
@@ -62,6 +63,14 @@
                 results)))
 
       (-indexed-attrs [_] attrs)
+
+      sec/ISecondaryWarmable
+      (-sec-warm! [_ opts]
+        ;; Proximum's restore is eager for edges and vectors (parallel since
+        ;; proximum 0.1.36 — :fetch-width on load is that phase's knob); what
+        ;; stays lazy are the external-id and metadata trees, and this warms
+        ;; those. Units are tree NODES.
+        (prox-warm/warm! prox-idx opts))
 
       sec/IVersionedSecondaryIndex
       (-sec-flush [_ _store branch]

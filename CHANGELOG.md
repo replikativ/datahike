@@ -6,6 +6,28 @@ When something is added, it's typically marked *Experimental*. When the API cont
 
 ## 0.8
 
+- **Index warming is unified across the stack, and real on ClojureScript.**
+  The breadth-first walk moved to persistent-sorted-set (>= 0.5.142), where
+  every consumer shares it; `datahike.index.persistent-set.warm` is now the
+  adapter (option dialect, clamp warning, and the adaptation of PSS's async
+  shapes to datahike's channel convention — including the ClojureScript arm,
+  which previously reported `:unsupported :cljs` and now runs).
+- **`warm-db` warms secondary indices too, opt-in.** A new optional protocol
+  `datahike.index.secondary/ISecondaryWarmable` (separate from
+  `IVersionedSecondaryIndex`, so existing implementers are untouched) is
+  implemented by the stratum, proximum and scriptum adapters, each delegating
+  to its library's own warm. `warm-db`'s `:secondary` option — `:none`
+  (default) | `:defaults` | `{index-ident opts}` — runs them and attaches
+  `:secondary {index-ident envelope}` to the report. Budgets are per index
+  family in that family's own units (stratum: tree nodes; scriptum: Lucene
+  segment files; proximum: tree nodes over what its eager restore already
+  loaded); the shared part is the report envelope, at least
+  `{:fetched :ms :budget-exhausted?}`. Off by default because a secondary's
+  full warm can dwarf the primary one — turn it on where you have measured it.
+- persistent-sorted-set `0.5.141` → `0.5.142`; stratum `0.3.81` → `0.3.82`,
+  proximum `0.1.35` → `0.1.36`, scriptum `0.1.29` → `0.1.30` in the test
+  alias (the releases carrying each library's warm).
+
 ### Breaking changes
 
 - **The local writer now defaults to `:writer-ownership :shared`** — correctness no longer depends on knowing that a second process, container or Lambda execution environment has started writing the same branch. The default re-reads the branch head once per batch and conditionally publishes it wherever the store supports fencing; set `:writer-ownership :exclusive` only when one process owns the writer and the saved head GET matters. For sequential callers this adds one branch-head read per transaction, and `@conn` reads through to storage rather than trusting the in-memory head. Existing databases need no migration: ownership is a connect-time choice, not stored metadata. The experimental self-writer `:streaming?` option remains a deprecated alias (`false` → `:shared`, `true` → `:exclusive`); streaming itself continues to describe whether a writer delivers completed writes into its connection.

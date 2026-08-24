@@ -224,6 +224,37 @@
      Used by GC to mark reachable storage. Indices using external storage
      (e.g., scriptum/Lucene filesystem) return #{}."))
 
+(defprotocol ISecondaryWarmable
+  "EXPERIMENTAL. Optional protocol for secondary indices whose storage can be
+   prefetched ahead of demand. A SEPARATE protocol rather than a method on
+   `IVersionedSecondaryIndex`, deliberately: adding a method to a protocol
+   breaks every existing implementer at call time, and warmth is orthogonal to
+   versioning anyway — an index that does not implement this is simply skipped
+   by `datahike.api/warm-db`'s `:secondary` pass (a transient index rebuilt
+   from AEVT is already in memory and has nothing to warm).
+
+   BUDGETS ARE IN THE INDEX'S OWN UNITS and deliberately do not translate:
+   stratum counts tree nodes, scriptum counts Lucene segment files, proximum
+   counts tree nodes over what its eager restore already loaded. One number
+   spanning those would mean nothing. What IS shared is the report envelope —
+   at least {:fetched :ms :budget-exhausted?} — so one caller can log one
+   decay metric across every index family."
+
+  (-sec-warm! [this opts]
+    "Prefetch this index's storage. `opts` is index-family-specific but every
+     family accepts `:budget` (a hard ceiling in its own units). Returns the
+     warm-report envelope; synchronous."))
+
+(defn sec-warm!
+  "EXPERIMENTAL. `-sec-warm!` if `idx` implements it, a zero envelope marked
+   `:unsupported?` otherwise — so `warm-db`'s `:secondary` pass reports every
+   index it was asked about rather than silently skipping the ones that cannot
+   answer."
+  [idx opts]
+  (if (satisfies? ISecondaryWarmable idx)
+    (-sec-warm! idx opts)
+    {:fetched 0 :ms 0.0 :budget-exhausted? false :unsupported? true}))
+
 (defprotocol IValidTimeAware
   "Optional protocol for secondary indices that natively understand the
    tx-meta valid-time axis (`:db.valid/from` / `:db.valid/to`).
