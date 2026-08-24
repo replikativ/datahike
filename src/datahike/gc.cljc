@@ -4,6 +4,7 @@
             [datahike.constants :as c]
             [datahike.datom :as dd]
             [datahike.gc-guard :as guard]
+            [datahike.gc-roots :as roots]
             [datahike.index.interface :refer [-mark -seed-root! -slice with-storage]]
             [datahike.index.secondary :as sec]
             [datahike.schema :as schema]
@@ -319,6 +320,14 @@
                  _ (sc/clear-write-cache (:store config)) ; Clear the schema write cache for this store
                  branches (<? S (k/get store :branches))
                  _ (log/trace :datahike/gc-retain-branches {:branches branches})
+                 ;; Durable roots (see `datahike.gc-roots`): reap what has expired
+                 ;; FIRST so a dead holder's record is not marked in this cycle,
+                 ;; then walk each surviving root's record exactly like a branch
+                 ;; head — same seed shape, same walk.
+                 live-roots (<? S (roots/reap-expired! store {:sync? false}))
+                 root-keys (mapv roots/record-key (keys live-roots))
+                 _ (when (seq live-roots)
+                     (log/trace :datahike/gc-retain-roots {:root-count (count live-roots)}))
                  ;; shared across branches: the schema is content-addressed, so
                  ;; every commit that did not change it names the SAME object
                  schema-cache (atom {})
@@ -327,7 +336,7 @@
                  ;; so it takes the channel branch. Passing opts is not optional —
                  ;; omitting it called a 6-arg function with 5 and broke the
                  ;; collector, which is how `background-gc-test` started hanging.
-                 walked (->> branches
+                 walked (->> (concat branches root-keys)
                              (map #(reachable-in-branch store % remove-before config
                                                         schema-cache {:sync? false}))
                              async/merge
@@ -340,7 +349,8 @@
                  ;; the same set to sweep wherever it actually put the bytes.
                  reachable (-> (apply set/union (map :reachable walked))
                                (set/union (apply set/union (map :store-refs walked)))
-                               (conj :branches))]
+                               (conj :branches)
+                               (conj roots/registry-key))]
              (log/trace :datahike/gc-reachable {:reachable-count (count reachable)
                                                 :cutoff cutoff})
              (<? S (sweep! store reachable cutoff))))))
@@ -396,8 +406,12 @@
     (go-try-
      (let [{:keys [config store]} db
            branches (<?- (k/get store :branches nil opts))
+           ;; A blob named only by a rooted commit is live too: the sweep spares
+           ;; it, so the set the application sweeps its own storage against must
+           ;; include it. Read-only here — reaping is the collector's job.
+           root-keys (map roots/record-key (keys (<?- (roots/roots store opts))))
            schema-cache (atom {})]
-       (loop [bs (seq branches) acc #{}]
+       (loop [bs (seq (concat branches root-keys)) acc #{}]
          (if (nil? bs)
            acc
            (recur (next bs)

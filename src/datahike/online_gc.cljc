@@ -22,6 +22,7 @@
   (:require [konserve.core :as k]
             [konserve.utils :as ku :refer [multi-key-capable?]]
             [datahike.gc-guard :as guard]
+            [datahike.gc-roots :as roots]
             #?@(:clj  [[clojure.core.cache.wrapped :as wrapped]]
                 :cljs [[cljs.cache.wrapped :as wrapped]])
             [replikativ.logging :as log]
@@ -183,6 +184,10 @@
       ;; Synchronous mode
       (let [branches (k/get store :branches nil {:sync? true})
             multi-branch? (> (count branches) 1)
+            ;; A durable root pins a record older than the head; freed-address
+            ;; hints are then unsound for the same reason they are across
+            ;; branches (see below). Pause while any root exists.
+            rooted? (seq (roots/roots store {:sync? true}))
             diff-buf (:datahike/diff-buf-size store 0)
             store-id (or (:datahike/store-id store)
                          (get-in store [:storage :config :store :id]))]
@@ -191,6 +196,11 @@
           (do
             (log/debug :datahike/ogc-skip-read-lease
                        {:store-id store-id})
+            0)
+
+          rooted?
+          (do
+            (log/debug :datahike/ogc-skip-gc-roots {:store-id store-id})
             0)
 
           ;; Online GC consumes persistent-sorted-set's markFreed stream, which pss documents
@@ -233,6 +243,7 @@
       (go-try-
        (let [branches (<?- (k/get store :branches nil {:sync? false}))
              multi-branch? (> (count branches) 1)
+             rooted? (seq (<?- (roots/roots store {:sync? false})))
              diff-buf (:datahike/diff-buf-size store 0)
              store-id (or (:datahike/store-id store)
                           (get-in store [:storage :config :store :id]))]
@@ -241,6 +252,11 @@
            (do
              (log/debug :datahike/ogc-skip-read-lease
                         {:store-id store-id})
+             0)
+
+           rooted?
+           (do
+             (log/debug :datahike/ogc-skip-gc-roots {:store-id store-id})
              0)
 
            ;; See the synchronous arm above for why diff-buf is refused here.
