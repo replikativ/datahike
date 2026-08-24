@@ -108,6 +108,19 @@
 
       (-indexed-attrs [_] attrs)
 
+      sec/ISecondaryWarmable
+      (-sec-warm! [_ opts]
+        ;; Units are Lucene segment FILES (scriptum's own — budgets do not
+        ;; translate across index families). Meaningful only for a
+        ;; store-backed (konserve) scriptum, where a cold machine fetches its
+        ;; segments ahead of Lucene's serial demand; this adapter still opens
+        ;; scriptum by PATH, where the files are local by construction and
+        ;; scriptum's warm! answers nil — normalized to a zero report here, so
+        ;; the delegation is already right when the adapter moves to the
+        ;; konserve backing.
+        (or (sc/warm! writer opts)
+            {:fetched 0 :ms 0.0 :budget-exhausted? false}))
+
       sec/IVersionedSecondaryIndex
       (-sec-flush [_ _store branch]
         ;; Scriptum manages its own storage (Lucene files), not konserve.

@@ -4245,8 +4245,9 @@
                  ;; Find best IColumnarAggregate index — prefer full coverage, accept partial
                  sec-agg-protocol sec/IColumnarAggregate
                  indexed-attrs-fn sec/-indexed-attrs
-                 agg-indices (keep (fn [[_idx-ident idx]]
-                                     (when (satisfies? sec-agg-protocol idx)
+                 agg-indices (keep (fn [[idx-ident idx]]
+                                     (when (and (satisfies? sec-agg-protocol idx)
+                                                (sec/query-eligible? db idx-ident))
                                        (let [indexed (indexed-attrs-fn idx)
                                              covered (clojure.set/intersection all-attrs indexed)]
                                          {:idx idx :indexed indexed :covered covered

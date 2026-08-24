@@ -707,7 +707,7 @@
      :stability :stable
      :supports-remote? false
      :referentially-transparent? false
-     :doc "Force a branch to point to the provided db value. WARNING: This overwrites the branch head unconditionally, like git reset --hard. Existing connections to this branch will see stale state and must be released and reconnected."
+     :doc "Force a branch to point to the provided db value. WARNING: This deliberately replaces the branch head, like git reset --hard. On revisioned stores the replacement is conditionally retried so it cannot clobber an update that lands between its read and write. Existing connections to this branch will see stale state and must be released and reconnected."
      :examples [{:desc "Force branch to current db"
                  :code "(force-branch! @conn :experiment #{:db})"}]
      :impl datahike.api.impl/force-branch!}
@@ -876,7 +876,7 @@
      :stability :stable
      :supports-remote? true
      :referentially-transparent? false
-     :doc "Invokes garbage collection on connection's store. Removes old snapshots before given time point. `:min-age-ms` spares anything written more recently than that, which is what makes collecting from outside the writer process possible — it must exceed the longest values-then-pointer window any writer can have."
+     :doc "Invokes garbage collection on connection's store. Removes old snapshots before given time point. `:min-age-ms` spares anything written more recently than that, which is what makes collecting from outside the writer process possible — it must exceed the longest values-then-pointer window any writer can have. When omitted it defaults to 0 under an exclusive local writer (`:writer {:backend :self :writer-ownership :exclusive}`) and to 15 minutes under a shared or remote writer, where another process's commit in flight is invisible to this collector. The default is a bound on one awaited request, not a guarantee: size an explicit value above your longest in-flight window plus the largest clock difference between your processes (the stamps it compares against are each writer's own). Pass `{:min-age-ms 0}` explicitly to sweep without a floor."
      :examples [{:desc "GC all old snapshots"
                  :code "(gc-storage conn)"}
                 {:desc "GC snapshots before date"

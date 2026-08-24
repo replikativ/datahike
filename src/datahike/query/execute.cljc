@@ -5573,6 +5573,12 @@
                           [binding-form])
            engine-meta (:engine-meta op)
            build-query-spec (fn [query-args] (external-query-spec engine-meta query-args))]
+       ;; External-engine marker functions return query specifications, not an
+       ;; equivalent primary-index relation. Falling through to ordinary
+       ;; function execution for a partial/disabled declared index is therefore
+       ;; not a correctness-preserving fallback.
+       (when idx-ident
+         (sec/require-query-eligible! db idx-ident))
        (case mode
          ;; Filter: produce EntityBitSet, create single-column relation of entity IDs.
          ;; Also stores the bitmap in :entity-filters for downstream entity-group optimization.

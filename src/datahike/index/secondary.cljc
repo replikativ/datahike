@@ -168,6 +168,31 @@
                     When non-nil, only rows whose :eid is in the bitmap are included.
      Returns a seq of result maps, e.g. [{:dept \"eng\" :avg 7500.0 :count 100} ...]"))
 
+(defn query-eligible?
+  "Whether the secondary index identified by `idx-ident` may answer queries.
+
+   `nil` remains eligible for legacy databases and hand-assembled indexes that
+   predate lifecycle status. A declared lifecycle state is fail-closed: only
+   `:ready` may answer. Keeping this rule here gives aggregate, full-text,
+   vector, and future query paths one correctness gate."
+  [db idx-ident]
+  (contains? #{nil :ready}
+             (get-in db [:schema idx-ident :db.secondary/status])))
+
+(defn require-query-eligible!
+  "Raise a typed error when an explicitly requested secondary index is not
+   queryable. Optimizations with an exact primary-index fallback should use
+   `query-eligible?` and decline instead."
+  [db idx-ident]
+  (let [status (get-in db [:schema idx-ident :db.secondary/status])]
+    (when-not (query-eligible? db idx-ident)
+      (throw (ex-info (str "Secondary index " (pr-str idx-ident)
+                           " cannot answer queries while its status is "
+                           (pr-str status) ".")
+                      {:type :secondary-index-unavailable
+                       :index-ident idx-ident
+                       :status status})))))
+
 (defprotocol IVersionedSecondaryIndex
   "Optional protocol for secondary indices with durable CoW storage.
    When implemented, index state is persisted in commits, restored on connect,
@@ -198,6 +223,37 @@
     "Return the set of konserve keys referenced by this index instance.
      Used by GC to mark reachable storage. Indices using external storage
      (e.g., scriptum/Lucene filesystem) return #{}."))
+
+(defprotocol ISecondaryWarmable
+  "EXPERIMENTAL. Optional protocol for secondary indices whose storage can be
+   prefetched ahead of demand. A SEPARATE protocol rather than a method on
+   `IVersionedSecondaryIndex`, deliberately: adding a method to a protocol
+   breaks every existing implementer at call time, and warmth is orthogonal to
+   versioning anyway — an index that does not implement this is simply skipped
+   by `datahike.api/warm-db`'s `:secondary` pass (a transient index rebuilt
+   from AEVT is already in memory and has nothing to warm).
+
+   BUDGETS ARE IN THE INDEX'S OWN UNITS and deliberately do not translate:
+   stratum counts tree nodes, scriptum counts Lucene segment files, proximum
+   counts tree nodes over what its eager restore already loaded. One number
+   spanning those would mean nothing. What IS shared is the report envelope —
+   at least {:fetched :ms :budget-exhausted?} — so one caller can log one
+   decay metric across every index family."
+
+  (-sec-warm! [this opts]
+    "Prefetch this index's storage. `opts` is index-family-specific but every
+     family accepts `:budget` (a hard ceiling in its own units). Returns the
+     warm-report envelope; synchronous."))
+
+(defn sec-warm!
+  "EXPERIMENTAL. `-sec-warm!` if `idx` implements it, a zero envelope marked
+   `:unsupported?` otherwise — so `warm-db`'s `:secondary` pass reports every
+   index it was asked about rather than silently skipping the ones that cannot
+   answer."
+  [idx opts]
+  (if (satisfies? ISecondaryWarmable idx)
+    (-sec-warm! idx opts)
+    {:fetched 0 :ms 0.0 :budget-exhausted? false :unsupported? true}))
 
 (defprotocol IValidTimeAware
   "Optional protocol for secondary indices that natively understand the
@@ -424,7 +480,13 @@
   "Create a secondary index instance from a registered type.
    config is the index-specific configuration map.
    db is the current database (for initial population if needed).
-   Auto-requires the integration namespace if the type is namespace-qualified."
+   Auto-requires the integration namespace if the type is namespace-qualified.
+
+   A factory invoked for an asynchronous backfill also receives the ephemeral
+   keys `::index-ident` and `::build-attempt`. An adapter with external mutable
+   storage must use `::build-attempt` to create a private, empty generation;
+   reopening a path left by an earlier crashed attempt can duplicate replayed
+   datoms. These keys are runtime context and are not stored in schema."
   [type-keyword config db]
   #?(:clj
      (when-not (get @index-types type-keyword)

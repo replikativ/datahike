@@ -50,8 +50,10 @@ Scriptum provides Lucene-powered full-text search. Define a secondary index via 
                    :db.secondary/type :scriptum
                    :db.secondary/attrs [:person/name :person/bio]
                    :db.secondary/config {:path "/tmp/my-fulltext-index"}}])
-;; Wait for backfill to complete (async writer operation)
-(Thread/sleep 1000)
+;; Backfill is asynchronous. Poll the schema status until it is :ready;
+;; explicit secondary-index queries reject :building indices.
+(get-in (d/db conn) [:schema :idx/fulltext :db.secondary/status])
+;; => :building, then :ready
 ```
 
 ### Searching
@@ -275,7 +277,7 @@ Secondary indices are managed through schema transactions:
                    :db.secondary/status :disabled}])
 ```
 
-- **`:building`** — Index was just created, backfill in progress. New transactions feed into the index, but it may return incomplete results until backfill completes. Check status before relying on query results.
+- **`:building`** — Index was just created and its snapshot is being scanned in the background. New transactions continue normally and their index changes are journaled for the serialized handoff. Explicit secondary-index queries are rejected; planner optimizations fall back to the primary index.
 - **`:ready`** — Index is fully populated and maintained on every transaction. Safe for queries.
 - **`:disabled`** — Index is no longer maintained. Monotonic — cannot go back to `:ready`. Queries may return stale results.
 
@@ -306,7 +308,54 @@ Each index type uses its native CoW mechanism:
 - **Stratum**: PSS structural sharing via `dataset/fork` (O(1))
 - **Proximum**: Reflink mmap + konserve CoW via `versioning/branch!`
 
-Index state is persisted in commits via the `IVersionedSecondaryIndex` protocol. On reconnect, indices are restored from their durable storage — no AEVT backfill needed for versioned indices.
+Ready index state is persisted in commits via the `IVersionedSecondaryIndex`
+protocol. A building generation is deliberately not flushed, branched, or
+published as an audit/GC root: it may contain an arbitrary prefix. If a process
+stops during backfill, reconnect creates an empty generation and restarts the
+scan from AEVT. A branch made while an index is building likewise starts without
+a secondary key-map and rebuilds independently.
+
+Factories invoked for a backfill receive the ephemeral configuration keys
+`:datahike.index.secondary/index-ident` and
+`:datahike.index.secondary/build-attempt`. An adapter backed by external mutable
+storage must namespace its private files/keys by `build-attempt`; the factory
+must not reopen a partial generation abandoned by an earlier process. The
+attempt identifier is runtime context, not schema, and a successful flush key-map
+becomes the durable identity of the ready generation.
+
+### Backfill scalability
+
+The current beta path keeps the writer available during the snapshot scan. It
+records concurrent changes in an in-memory, per-index delta journal, then
+replays that journal in a short serialized install operation. This closes the
+lost-write race for mutable and immutable adapters, but the journal is not
+bounded. Registering an index while sustained write volume greatly exceeds
+backfill throughput can therefore consume substantial memory.
+
+For that reason this path currently requires the local self writer with
+`:writer-ownership :exclusive`. Shared writers cannot coordinate an in-memory
+journal across processes, and remote writers cannot transfer a native live
+generation between build and install. If pre-existing data requires a backfill,
+Datahike rejects those writer configurations before committing the index schema.
+Empty indices can still become ready immediately because no asynchronous handoff
+is needed.
+
+The intended scalable follow-up is a resumable generation protocol:
+
+1. Capture and durably pin a base commit.
+2. Scan the snapshot in bounded, checkpointed batches.
+3. Catch up through successive `datahike.experimental.diff/tx-range` windows.
+4. Validate the build generation and install it inside one writer operation.
+
+`tx-range` currently requires `:keep-history? true`, persistent-set indices,
+and materializes each requested window, so it cannot yet replace the general
+path. The snapshot the scan reads is already pinned with a [durable GC
+root](./gc.md#durable-roots) (`:pin`, renewed in the background and released by
+the ready commit), so `d/gc-storage` — from this process or any other — collects
+around it rather than refusing; a build whose lease is lost is discarded at
+install instead of being published over swept nodes. What is not yet durable is
+a versioned adapter's build generation, which `datahike.gc-guard` still covers
+in-process only; a `:checkpoint` root for it is the next step.
 
 ## Purge propagation
 

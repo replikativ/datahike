@@ -71,6 +71,23 @@
                       {:index-config (di/default-index-config c/*default-index*)}))
              (update config :store dissoc :id :scope))))))
 
+(deftest writer-ownership-defaults
+  (testing "the local writer is explicitly normalized to safe shared ownership"
+    (is (= {:backend :self :writer-ownership :shared}
+           (:writer (c/load-config {:store {:backend :memory}})))))
+
+  (testing "the self-only default does not leak through deep merge into remote writers"
+    (doseq [writer [{:backend :datahike-server :url "http://localhost:3000"}
+                    {:backend :kabel :peer-id :remote :local-peer :local}]]
+      (is (= writer (:writer (c/load-config {:store {:backend :memory}
+                                             :writer writer}))))))
+
+  (testing "the experimental streaming option is translated before the default applies"
+    (is (= {:backend :self :writer-ownership :shared}
+           (:writer (c/load-config {:writer {:backend :self :streaming? false}}))))
+    (is (= {:backend :self :writer-ownership :exclusive}
+           (:writer (c/load-config {:writer {:backend :self :streaming? true}}))))))
+
 (deftest core-config-test
   (testing "Schema on write in core empty database"
     (is (thrown-with-msg? Throwable
@@ -156,3 +173,49 @@
       (is (thrown-with-msg? Throwable
                             #"Configuration does not match existing connections."
                             (d/connect file-index))))))
+
+(deftest self-only-writer-options-are-refused-on-remote-writers
+  (testing "every self-writer option is refused, not ignored, on a remote backend.
+            A remote writer transacts in another process, so none of these can be
+            honoured from here — and :require-fencing in particular names a
+            safety property, so a config that carries it and connects anyway
+            LOOKS protected while nothing checks anything."
+    (doseq [k [:writer-ownership :streaming? :require-fencing
+               :max-batch :head-conflict-retries :head-conflict-backoff-ms]]
+      (let [e (try (c/normalize-writer-config {:backend :datahike-server k :anything})
+                   ::not-thrown
+                   (catch #?(:clj Exception :cljs js/Error) ex (ex-data ex)))]
+        (is (= :self-writer-options-on-remote-writer (:type e))
+            (str k " must be refused on a remote writer"))
+        (is (= [k] (:inert e))))))
+
+  (testing "a remote writer's own keys pass untouched — the key set stays open
+            (:kabel has :local-peer and friends), only the self-only keys are
+            closed"
+    (is (= {:backend :kabel :local-peer :a-peer}
+           (c/normalize-writer-config {:backend :kabel :local-peer :a-peer}))))
+
+  (testing "the same options on the :self backend keep their meaning"
+    (is (= :exclusive (:writer-ownership
+                       (c/normalize-writer-config
+                        {:backend :self :writer-ownership :exclusive}))))
+    (is (= :global (:require-fencing
+                    (c/normalize-writer-config
+                     {:backend :self :require-fencing :global}))))))
+
+#?(:clj
+   (deftest self-only-writer-options-are-refused-at-connect
+     (testing "the guard fires through the public API, not only when the helper
+               is called directly: connect normalizes every writer map before it
+               touches a store or a writer. (create-database with a remote
+               writer dispatches to the REMOTE endpoint first, so the config is
+               that server's to validate — connect is the local entry point.)"
+       (let [base {:store {:backend :memory :id #uuid "cf917000-0000-4000-8000-000000000001"}
+                   :schema-flexibility :read
+                   :keep-history? false}]
+         (d/delete-database base)
+         (d/create-database base)
+         (is (thrown-with-msg?
+              clojure.lang.ExceptionInfo #"inert on a remote writer"
+              (d/connect (assoc base :writer {:backend :datahike-server
+                                              :require-fencing :global}))))))))

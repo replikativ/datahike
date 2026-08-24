@@ -6,10 +6,13 @@
 ;; Functions to skip in JS export (ClojureScript incompatible or aliases)
 ;; - transact: synchronous version that throws error in ClojureScript
 ;;             use transact! instead (which becomes 'transact' in JS)
-;; - warm-*:   EXPERIMENTAL index warming. The walk's ClojureScript arm is an
-;;             explicit TODO (see datahike.index.persistent-set.warm), so these
-;;             would export as functions that always report :unsupported :cljs.
-;;             Remove them from this set when that arm lands.
+;; - warm-*:   EXPERIMENTAL index warming. The walk's ClojureScript arm is REAL
+;;             now (persistent-sorted-set >= 0.5.142 owns it; datahike adapts
+;;             its partial-cps shape onto a channel — see
+;;             datahike.index.persistent-set.warm). What keeps these skipped is
+;;             only the JS binding round: the generated wrappers need the
+;;             channel->Promise adaptation and regenerated artifacts, which is
+;;             its own change. Remove them from this set in that round.
 (def js-skip-list #{'transact 'warm-index 'warm-datoms 'warm-db})
 
 (defn clj-name->js-name

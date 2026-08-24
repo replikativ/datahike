@@ -22,8 +22,10 @@
    A small branching factor gets a multi-level tree out of a few hundred datoms;
    the walk is branching-factor-independent, only the interior/total ratio is not.
 
-   JVM-only (`.clj`, not `.cljc`): the walk's ClojureScript arm is a marked TODO
-   and `-warm!` short-circuits there with `:unsupported :cljs`."
+   JVM-only (`.clj`, not `.cljc`): the walk itself now lives in
+   persistent-sorted-set with a real ClojureScript arm (exercised in that
+   library's own node suite); datahike's cljs-side coverage rides the
+   generated-API round that will export warm-* to JS."
   (:require [clojure.test :refer [deftest is testing use-fixtures]]
             [clojure.java.io :as io]
             [clojure.string :as str]

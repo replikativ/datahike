@@ -4,6 +4,7 @@
             [datahike.constants :as c]
             [datahike.datom :as dd]
             [datahike.gc-guard :as guard]
+            [datahike.gc-roots :as roots]
             [datahike.index.interface :refer [-mark -seed-root! -slice with-storage]]
             [datahike.index.secondary :as sec]
             [datahike.schema :as schema]
@@ -190,8 +191,9 @@
           {:reachable reachable :store-refs refs}))))))
 
 (def ^:const DEFAULT_SWEEP_MIN_AGE_MS
-  "No floor by default: OFF, so in-process collection behaves exactly as it always
-   has.
+  "The floor under an EXCLUSIVE local writer: OFF, so single-process collection
+   behaves exactly as it always has. See [[DEFAULT_SHARED_SWEEP_MIN_AGE_MS]] for
+   every other writer configuration, and [[default-min-age-ms]] for the choice.
 
    Not a hedge — where the writer lives, `safe-point` is EXACT, so a wall-clock
    floor on top of it can only retain garbage the collector was right about. The
@@ -205,9 +207,46 @@
    for everyone; a default small enough to be harmless would not protect anyone
    while looking as though it did.
 
-   So it is opt-in, and collecting from outside the writer process without it is
-   warned about by name. See [[gc-storage!]]."
+   So under an exclusive writer it is opt-in, and collecting from outside the
+   writer process without it is warned about by name. See [[gc-storage!]]."
   0)
+
+(def ^:const DEFAULT_SHARED_SWEEP_MIN_AGE_MS
+  "The floor whenever this process is NOT the sole writer — a shared local writer
+   (`:writer-ownership :shared`, the default), or a remote writer backend where
+   the writes happen elsewhere entirely: 15 minutes.
+
+   Under those configurations the safe point is blind by construction: a commit
+   in flight in another process has written its objects and not yet flipped the
+   head, and nothing in this heap records that. With no floor the very next
+   sweep deletes them and the other process's head then lands on nothing — under
+   the DEFAULT configuration, silently. A floor is the only cross-process
+   protection there is, so it is on by default where it is needed.
+
+   Fifteen minutes is the longest single request on the platforms where shared
+   writers are used (AWS Lambda), which bounds the values-then-pointer window of
+   a writer that awaits its transacts. It is a DEFAULT, not a guarantee: a
+   writer that dispatches and returns without awaiting, a suspended process
+   (#960), or a clock difference between processes — the `:last-write` stamps
+   the sweep compares against come from each writer's own clock — can exceed it,
+   and then the exposure this floor exists to close is open again. Pass a larger
+   `:min-age-ms` that covers your longest window PLUS your largest skew. The
+   price of the default is that garbage younger than fifteen minutes survives
+   until the next cycle; `{:min-age-ms 0}` restores the unfloored sweep for a
+   caller that knows this process is alone."
+  (* 15 60 1000))
+
+(defn default-min-age-ms
+  "The sweep floor `gc-storage!` applies when the caller passes none, derived
+   from the collecting connection's writer configuration: zero for an exclusive
+   local writer, [[DEFAULT_SHARED_SWEEP_MIN_AGE_MS]] otherwise. Ownership is the
+   connection's own statement about whether other writers may exist, which is
+   exactly the fact the floor substitutes for."
+  [config]
+  (let [writer (:writer config)
+        local-exclusive? (and (= :self (get writer :backend :self))
+                              (= :exclusive (get writer :writer-ownership :shared)))]
+    (if local-exclusive? DEFAULT_SWEEP_MIN_AGE_MS DEFAULT_SHARED_SWEEP_MIN_AGE_MS)))
 
 (defn gc-storage!
   "Invokes garbage collection on the database by whitelisting currently known branches.
@@ -234,10 +273,10 @@
   makes GC collect MORE. The safe point is a SWEEP-side bound (how recently written
   an object may be and still be judged) and makes it collect LESS.
 
-  PREFER TO RUN IT WHERE THE WRITERS ARE. This follows from datahike's writer model,
-  not from anything specific to GC: ALL WRITERS FOR A DATABASE RUN IN ONE JVM — they
-  coordinate in memory, not through the store — and writer-side maintenance runs with
-  them. `d/gc-storage` is a writer op, so it is already in the right place.
+  PREFER TO RUN IT WHERE THE WRITERS ARE. The safe point is in-process state: it is
+  exact for every writer in this JVM and blind to every other. With a single
+  exclusive writer (`:writer-ownership :exclusive`) that is the whole picture, and
+  `d/gc-storage` is a writer op, so it is already in the right place.
 
   COLLECTING FROM ANOTHER PROCESS — a cron sidecar, an offline job against the bucket
   — is possible, but ONLY because of `:min-age-ms`, and only if you choose that number
@@ -258,16 +297,19 @@
   `:last-write` stamps, which come from its monotonic write clock, and a wall-clock
   `Date` from the caller is not comparable to those in a way anything would detect.
 
-  (Cross-process writers are outside the model for a more basic reason as well — there
-  is no head fencing yet, so they can lose each other's commits regardless of GC. See
-  issue #878.) Readers are unconstrained."
+  SHARED WRITERS (`:writer-ownership :shared`, the default since #959) are exactly the
+  other-process case: head fencing (#963) keeps two processes from losing each other's
+  commits, but a fence guards the pointer, not the values — the objects of a commit in
+  flight elsewhere are on disk and reachable from nothing, and this collector cannot
+  see them. A collection under shared ownership therefore needs the floor as well.
+  Readers are unconstrained."
   ([db] (gc-storage! db (#?(:clj Date. :cljs js/Date.) 0) nil))
   ([db remove-before] (gc-storage! db remove-before nil))
   ([db remove-before {:keys [min-age-ms]}]
    (go-try S
            (let [{:keys [config store]} db
                  store-id (:id (:store config))
-                 min-age-ms (or min-age-ms DEFAULT_SWEEP_MIN_AGE_MS)
+                 min-age-ms (or min-age-ms (default-min-age-ms config))
                  ;; Cutoff from konserve's monotonic write clock — the SAME
                  ;; source that stamps :last-write. Strictly increasing, so a
                  ;; cutoff acquired after a write is strictly greater than the
@@ -312,6 +354,14 @@
                  _ (sc/clear-write-cache (:store config)) ; Clear the schema write cache for this store
                  branches (<? S (k/get store :branches))
                  _ (log/trace :datahike/gc-retain-branches {:branches branches})
+                 ;; Durable roots (see `datahike.gc-roots`): reap what has expired
+                 ;; FIRST so a dead holder's record is not marked in this cycle,
+                 ;; then walk each surviving root's record exactly like a branch
+                 ;; head — same seed shape, same walk.
+                 live-roots (<? S (roots/reap-expired! store {:sync? false}))
+                 root-keys (mapv roots/record-key (keys live-roots))
+                 _ (when (seq live-roots)
+                     (log/trace :datahike/gc-retain-roots {:root-count (count live-roots)}))
                  ;; shared across branches: the schema is content-addressed, so
                  ;; every commit that did not change it names the SAME object
                  schema-cache (atom {})
@@ -320,11 +370,35 @@
                  ;; so it takes the channel branch. Passing opts is not optional —
                  ;; omitting it called a 6-arg function with 5 and broke the
                  ;; collector, which is how `background-gc-test` started hanging.
-                 walked (->> branches
+                 walked (->> (concat branches root-keys)
                              (map #(reachable-in-branch store % remove-before config
                                                         schema-cache {:sync? false}))
                              async/merge
                              (<<? S))
+                 ;; A root declared AFTER the registry was read above — by this
+                 ;; process or another — names objects the mark has not seen,
+                 ;; and if it pins an already-unreachable commit the guard cannot
+                 ;; help: those objects are old. So re-read the registry now that
+                 ;; the mark is done and walk anything new, until it is stable.
+                 ;; What remains exposed is a root declared during the sweep
+                 ;; itself; a root of the CURRENT head is never exposed, since
+                 ;; the head's objects are reachable through the branch anyway.
+                 walked (loop [walked walked
+                               seen (set (keys live-roots))
+                               attempt 0]
+                          (let [late (<? S (roots/live-roots store {:sync? false}))
+                                new-keys (mapv roots/record-key (remove seen (keys late)))]
+                            (if (or (empty? new-keys) (= attempt 8))
+                              walked
+                              (do (log/debug :datahike/gc-late-roots {:count (count new-keys)})
+                                  (recur (into walked
+                                               (->> new-keys
+                                                    (map #(reachable-in-branch store % remove-before config
+                                                                               schema-cache {:sync? false}))
+                                                    async/merge
+                                                    (<<? S)))
+                                         (into seen (keys late))
+                                         (inc attempt))))))
                  ;; Store-refs are unioned into the whitelist here. For an object that
                  ;; lives in THIS store that means the sweep spares it (and reclaims it
                  ;; once no datom names it). For an object that lives elsewhere it is a
@@ -333,7 +407,8 @@
                  ;; the same set to sweep wherever it actually put the bytes.
                  reachable (-> (apply set/union (map :reachable walked))
                                (set/union (apply set/union (map :store-refs walked)))
-                               (conj :branches))]
+                               (conj :branches)
+                               (conj roots/registry-key))]
              (log/trace :datahike/gc-reachable {:reachable-count (count reachable)
                                                 :cutoff cutoff})
              (<? S (sweep! store reachable cutoff))))))
@@ -389,8 +464,12 @@
     (go-try-
      (let [{:keys [config store]} db
            branches (<?- (k/get store :branches nil opts))
+           ;; A blob named only by a rooted commit is live too: the sweep spares
+           ;; it, so the set the application sweeps its own storage against must
+           ;; include it. Read-only here — reaping is the collector's job.
+           root-keys (map roots/record-key (keys (<?- (roots/roots store opts))))
            schema-cache (atom {})]
-       (loop [bs (seq branches) acc #{}]
+       (loop [bs (seq (concat branches root-keys)) acc #{}]
          (if (nil? bs)
            acc
            (recur (next bs)

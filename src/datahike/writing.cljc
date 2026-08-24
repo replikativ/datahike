@@ -3,6 +3,7 @@
   (:require [datahike.connections :refer [delete-connection! *connections*]]
             [datahike.db :as db]
             [datahike.gc-guard :as guard]
+            [datahike.gc-roots :as roots]
             [datahike.db.transaction :as dbtx]
             [datahike.db.utils :as dbu]
             [datahike.db.interface :as dbi]
@@ -91,7 +92,14 @@
              (when flush?
                (let [flushed (reduce-kv
                               (fn [acc idx-ident idx]
-                                (if (satisfies? sec/IVersionedSecondaryIndex idx)
+                                ;; A :building index is not a durable snapshot.
+                                ;; Publishing its key-map lets a crash preserve an
+                                ;; arbitrary prefix of the backfill, which cannot
+                                ;; safely be replayed for non-idempotent indices.
+                                (if (and (satisfies? sec/IVersionedSecondaryIndex idx)
+                                         (not= :building
+                                               (get-in db [:schema idx-ident
+                                                           :db.secondary/status])))
                                   (assoc acc idx-ident (sec/-sec-flush idx store (:branch config)))
                                   acc))
                               {} (:secondary-indices db))
@@ -107,7 +115,10 @@
                      ;; instance" is never read as "delete".
                      carried (into {}
                                    (filter (fn [[ident _]]
-                                             (get-in db [:schema ident :db.secondary/type])))
+                                             (and (get-in db [:schema ident :db.secondary/type])
+                                                  (not= :building
+                                                        (get-in db [:schema ident
+                                                                    :db.secondary/status])))))
                                    (:secondary-index-keys db))]
                  (not-empty (merge carried flushed))))
              :cljs nil)
@@ -132,12 +143,17 @@
                              (try (audit/-merkle-root x)
                                   (catch #?(:clj Throwable :cljs js/Error) _ nil))))
           sec-roots      (when (seq (:secondary-indices db))
-                           (reduce-kv
-                            (fn [acc idx-ident idx]
-                              (assoc acc idx-ident
-                                     (or (safe-root idx)
-                                         (:merkle-root (get secondary-index-keys idx-ident)))))
-                            {} (:secondary-indices db)))
+                           (not-empty
+                            (reduce-kv
+                             (fn [acc idx-ident idx]
+                               (if (= :building
+                                      (get-in db [:schema idx-ident :db.secondary/status]))
+                                 acc
+                                 (assoc acc idx-ident
+                                        (or (safe-root idx)
+                                            (:merkle-root
+                                             (get secondary-index-keys idx-ident))))))
+                             {} (:secondary-indices db))))
           merkle-roots
           (cond-> {:eavt-key (safe-root eavt')
                    :aevt-key (safe-root aevt')
@@ -235,11 +251,18 @@
         (if (and (map? entry) (:db.secondary/type entry))
           (let [idx-type (:db.secondary/type entry)
                 idx-attrs (set (:db.secondary/attrs entry))
-                key-map (get secondary-index-keys ident)
+                ;; A key-map written while the schema says :building is, at
+                ;; best, a partial snapshot from an older Datahike. Ignore it
+                ;; and rebuild from the primary index instead.
+                key-map (when-not (= :building (:db.secondary/status entry))
+                          (get secondary-index-keys ident))
                 idx-config (cond-> (merge (:db.secondary/config entry)
-                                          {:attrs idx-attrs})
+                                          {:attrs idx-attrs
+                                           ::sec/index-ident ident})
                              (seq ident-ref-map)
                              (assoc :ident-ref-map ident-ref-map)
+                             (= :building (:db.secondary/status entry))
+                             (assoc ::sec/build-attempt (random-uuid))
                              ;; When a key-map carries a branch, route the
                              ;; skeleton into that branch too — otherwise
                              ;; the factory defaults to "main" and a non-
@@ -306,6 +329,15 @@
                           (sc/cache-miss schema-meta-key schema-meta)
                           schema-meta))
         effective-schema (or (:schema schema-meta) schema)
+        ;; A partial key-map from an older release must not survive merely
+        ;; because stored->db retained it for the carry-forward path.
+        secondary-index-keys
+        (not-empty
+         (into {}
+               (remove (fn [[ident _]]
+                         (= :building
+                            (get-in effective-schema [ident :db.secondary/status]))))
+               secondary-index-keys))
         effective-ident-ref-map (or (:ident-ref-map schema-meta) ident-ref-map)
         sec-indices (restore-secondary-indices effective-schema effective-ident-ref-map
                                                secondary-index-keys store)
@@ -389,7 +421,7 @@
    A record with NO cid is never treated as unmoved, even against an `old` that
    also has none: neither side knowing its identity is not evidence that the two
    match, and reading it as a match would make the writer blind to every other
-   process's commits — precisely the failure `:streaming? false` exists to
+   process's commits — precisely the failure shared writer ownership exists to
    prevent. Unreachable for databases this version creates (`create-database`
    stamps a cid); the guard is for foreign or legacy records.
 
@@ -402,20 +434,33 @@
    The runtime config and the `:writer` are carried over from `old`: neither
    lives in storage (`:writer` is the connection's own transactor), and dropping
    it would leave the connection without a transactor."
-  [old stored store]
-  (let [stored-cid (get-in stored [:meta :datahike/commit-id])]
-    (if (and stored-cid (= stored-cid (get-in old [:meta :datahike/commit-id])))
-      old
-      (assoc (stored->db (assoc stored :config (:config old)) store)
-             :writer (:writer old)))))
+  ([old stored store] (reload-head old stored store nil))
+  ([old stored store head-revision]
+   (let [stored-cid (get-in stored [:meta :datahike/commit-id])
+         ;; The konserve revision the head blob was AT when we read it, carried on
+         ;; the db so a later commit can fence its head write against it. Distinct
+         ;; from the commit-id: the cid identifies datahike's state, the revision
+         ;; identifies the STORAGE write, and only the latter is what konserve can
+         ;; compare-and-set on. Kept as an internal top-level field so it travels
+         ;; with the db through the writer loop, but never enters db->stored,
+         ;; public database metadata, or the content-derived commit id.
+         stamp (fn [db] (cond-> db head-revision
+                                (assoc ::head-revision head-revision)))]
+     (if (and stored-cid (= stored-cid (get-in old [:meta :datahike/commit-id])))
+       ;; Unmoved head: the db is unchanged, but the revision may not be — the blob
+       ;; can have been rewritten with identical content. Take the fresh one.
+       (stamp old)
+       (stamp (assoc (stored->db (assoc stored :config (:config old)) store)
+                     :writer (:writer old)))))))
 
 (defn reload-branch-head
   "Re-read `old`'s branch head from storage and rebuild an in-memory db from it
    when it moved (see [[reload-head]]).
 
-   This is the synchronization point of a NON-STREAMING self writer (`:writer
-   {:backend :self :streaming? false}`): datahike's default assumes this JVM is
-   the only writer and keeps the branch head in memory, so a second process
+   This is the synchronization point of a SHARED self writer (`:writer
+   {:backend :self :writer-ownership :shared}`), which is the default. Opt-in
+   exclusive ownership assumes this JVM is the only writer and keeps the branch head
+   in memory, so a second process
    holding a writer for the same database would transact on top of its own
    stale snapshot and overwrite the other's commits. Re-reading before every
    transaction makes each one apply to whatever is actually stored.
@@ -427,17 +472,26 @@
    Stratum and proximum are konserve-backed copy-on-write values, so that is
    exactly right for them: another process's commit is picked up. Scriptum is
    the exception — it keeps its own Lucene directory with a per-branch write
-   lock and is NOT multi-process safe. That is transitional (its konserve
-   backing is a late addition), not a property of secondary indices."
+   lock and is NOT multi-process safe. That is transitional (its blobs are
+   konserve-backed, but its manifest is still written unconditionally, so two
+   writers on one branch orphan the loser's segments), not a property of
+   secondary indices."
   [old]
-  (let [store  (:store old)
-        branch (:branch (:config old))
-        stored (k/get store branch nil {:sync? true})]
+  (let [store    (:store old)
+        branch   (:branch (:config old))
+        fenced?  (some? (k/conditional-write-domain store))
+        ;; ONE read for both when the store can fence. Reading the revision
+        ;; separately would cost a second round-trip AND be racy: another writer
+        ;; could move the head between the two reads, leaving us fencing against a
+        ;; revision that never belonged to the head we just applied to.
+        [stored revision] (if fenced?
+                            (k/get store branch nil {:sync? true :with-revision? true})
+                            [(k/get store branch nil {:sync? true}) nil])]
     (when-not stored
       (log/raise "Branch head vanished from the store; the database may have been deleted."
                  {:type   :branch-head-does-not-exist-in-store
                   :branch branch}))
-    (reload-head old stored store)))
+    (reload-head old stored store revision)))
 
 (defn branch-heads-as-commits
   "Resolve keyword parents (branch names) to their head commit-ids.
@@ -613,14 +667,40 @@
            ;; has to hand back something awaitable.
            (when-not sync? (as-awaitable nil))))))))
 
+(defn ^:private fencing-required?
+  "Did the caller demand fencing for this connection?
+
+   Truthiness, NOT `some?`, so that it answers the same question
+   `check-fencing!` asks at connect: there `:require-fencing false` skips the
+   check (a `when`), so reading it as a demand HERE would admit a connection at
+   connect and then fail its every commit — the two gates disagreeing about what
+   `false` means. `false` is what nil becomes in a config that cannot spell nil
+   (JSON, env vars), and both gates now read it as \"not required\"."
+  [db]
+  (boolean (get-in db [:config :writer :require-fencing])))
+
 (defn commit!
   ([db parents]
    (commit! db parents true))
   ([db parents sync?]
    (commit! db parents sync? nil))
-  ([db parents sync? known-head-cid]
-   (async+sync sync? *default-sync-translation*
-               (go-try-
+  ([db parents sync? known-head-cid] (commit! db parents sync? known-head-cid nil))
+  ([db parents sync? known-head-cid head-revision]
+   ;; Set by whichever write path runs; read after, to stamp the db we return.
+   (when (and (nil? head-revision) (fencing-required? db))
+     ;; A nil revision means "write unconditionally", which is right for a store
+     ;; that cannot fence — and wrong, silently, for a connection that DEMANDED
+     ;; fencing. Refuse instead: one unfenced commit is exactly the lost update
+     ;; :require-fencing was set to prevent.
+     (log/raise (str "This commit has no head revision to fence against, but the connection requires fencing. "
+                     "On an upgraded database this means the branch head predates revisions: one ordinary "
+                     "transact on a connection WITHOUT :require-fencing writes the head once unconditionally "
+                     "and it is fenceable from then on.")
+                {:type :datahike/fencing-unavailable
+                 :branch (:branch (:config db))}))
+   (let [new-head-revision (atom nil)]
+     (async+sync sync? *default-sync-translation*
+                 (go-try-
                 ;; Contain fatal ERRORS (AssertionError, OOM, ...): go-try- catches
                 ;; Exception only, so an Error would escape the go state machine,
                 ;; kill the dispatch thread, and leave the returned channel silent —
@@ -637,10 +717,10 @@
                 ;; BEFORE db->stored because a secondary index's -sec-flush (stratum)
                 ;; writes konserve keys from inside it. Closed in the finally: an
                 ;; aborted commit leaves orphans, which are genuinely collectable.
-                (let [gc-store-id (:id (:store (:config db)))
-                      gc-token    (guard/writing! gc-store-id)]
-                  (try
-                    (let [{:keys [store config]} db
+                  (let [gc-store-id (:id (:store (:config db)))
+                        gc-token    (guard/writing! gc-store-id)]
+                    (try
+                      (let [{:keys [store config]} db
                         ;; Head-cid cache: for an ORDINARY commit (no explicit
                         ;; parents) the writer's own head cid is already in
                         ;; memory — stamped by the previous commit!, or by
@@ -660,39 +740,39 @@
                         ;; transaction loop chains applied dbs whose meta
                         ;; predates recent commits (the old storage read was,
                         ;; in effect, the cross-loop synchronization point).
-                          known-heads   (if (and (nil? parents) known-head-cid)
-                                          {(get config :branch) known-head-cid}
-                                          {})
-                          parents       (or parents #{(get config :branch)})
-                          parents       (branch-heads-as-commits store parents known-heads)
+                            known-heads   (if (and (nil? parents) known-head-cid)
+                                            {(get config :branch) known-head-cid}
+                                            {})
+                            parents       (or parents #{(get config :branch)})
+                            parents       (branch-heads-as-commits store parents known-heads)
                       ;; Stamp parents BEFORE flushing so they're in the
                       ;; stored form the cid will be derived from.
-                          db            (assoc-in db [:meta :datahike/parents] parents)
+                            db            (assoc-in db [:meta :datahike/parents] parents)
                       ;; Flush first → cid sees post-flush storage
                       ;; addresses (true merkle leaves under crypto-hash?).
-                          [schema-meta-kv-to-write db-to-store-pre]
-                          (db->stored db true)
-                          cid           (create-commit-id db db-to-store-pre)
-                          db            (assoc-in db [:meta :datahike/commit-id] cid)
-                          db-to-store   (assoc-in db-to-store-pre
-                                                  [:meta :datahike/commit-id] cid)
+                            [schema-meta-kv-to-write db-to-store-pre]
+                            (db->stored db true)
+                            cid           (create-commit-id db db-to-store-pre)
+                            db            (assoc-in db [:meta :datahike/commit-id] cid)
+                            db-to-store   (assoc-in db-to-store-pre
+                                                    [:meta :datahike/commit-id] cid)
                       ;; Root fusion: roots are inlined in db-to-store, so drop
                       ;; them from the separate-object writes.
-                          fused-addrs   (fused-root-addresses config db-to-store)
-                          pending-kvs   (cond->> (get-and-clear-pending-kvs! store)
-                                          (seq fused-addrs)
-                                          (remove (fn [[k _]] (contains? fused-addrs k))))
+                            fused-addrs   (fused-root-addresses config db-to-store)
+                            pending-kvs   (cond->> (get-and-clear-pending-kvs! store)
+                                            (seq fused-addrs)
+                                            (remove (fn [[k _]] (contains? fused-addrs k))))
                         ;; Commit graph (opt-out): the immutable cid record is
                         ;; the provenance chain (audit, ancestry, ?commit=
                         ;; refs). With :commit-graph? false only the branch
                         ;; head is written — the cid is still computed and
                         ;; stamped in :meta, so identity, sync dedup and the
                         ;; writer's head-cid threading are unaffected.
-                          commit-graph? (get config :commit-graph? true)]
+                            commit-graph? (get config :commit-graph? true)]
 
-                      (if (multi-key-capable? store)
-                        (let [[meta-key meta-val] schema-meta-kv-to-write
-                              branch-key (:branch config)
+                        (if (multi-key-capable? store)
+                          (let [[meta-key meta-val] schema-meta-kv-to-write
+                                branch-key (:branch config)
                             ;; ORDERED batch. konserve applies a [k v] seq in sequence order,
                             ;; so state the SAME causal discipline the non-atomic path below
                             ;; spells out ("make sure all pointed to values are written before
@@ -710,60 +790,108 @@
                             ;; It also means a sync subscriber relaying this batch applies it
                             ;; in the order we committed it, instead of guessing an order back
                             ;; from the shape of the keys.
-                              writes (cond-> (vec pending-kvs)
-                                       schema-meta-kv-to-write (conj [meta-key meta-val])
-                                       commit-graph?           (conj [cid db-to-store])
-                                       true                    (conj [branch-key db-to-store]))
+                            ;; FENCED: the head leaves the batch. `multi-assoc`
+                            ;; refuses `:expected-revision`, and rightly so —
+                            ;; verifying every key and then writing every key is
+                            ;; not one atomic step when locks are per blob. The
+                            ;; ordering that matters is unaffected: values as a
+                            ;; batch, THEN the mutable pointer, which is the same
+                            ;; barrier the unfenced path spells out below.
+                                writes (cond-> (vec pending-kvs)
+                                         schema-meta-kv-to-write (conj [meta-key meta-val])
+                                         commit-graph?           (conj [cid db-to-store])
+                                         (not head-revision)     (conj [branch-key db-to-store]))
                             ;; nodes + schema-meta (uuid) + commit (cid) are content-addressed →
                             ;; immutable; the branch-head pointer stays mutable (unmarked).
-                              metas  (into {}
-                                           (comp (map first)
-                                                 (remove #(= % branch-key))
-                                                 (map (fn [k] [k {:immutable? true}])))
-                                           writes)]
-                          (<?- (k/multi-assoc store writes metas {:sync? sync?})))
+                                metas  (into {}
+                                             (comp (map first)
+                                                   (remove #(= % branch-key))
+                                                   (map (fn [k] [k {:immutable? true}])))
+                                             writes)]
+                            ;; With root fusion and no commit graph, a small fenced
+                            ;; commit can have nothing to write before the head: the
+                            ;; roots are embedded in `db-to-store`, there is no cid
+                            ;; record, and the head deliberately left this batch.
+                            ;; Some transactional backends (DynamoDB in particular)
+                            ;; reject an empty transaction, so do not issue one.
+                            (when (seq writes)
+                              (<?- (k/multi-assoc store writes metas {:sync? sync?})))
+                            (when head-revision
+                              ;; `:with-revision? true` and the capture below are
+                              ;; NOT optional bookkeeping. The commit loop threads
+                              ;; the revision this write CREATES into the next
+                              ;; commit group's fence; without them the returned db
+                              ;; kept the pre-commit stamp, and on every multi-key
+                              ;; store each chained group fenced against a revision
+                              ;; this very writer had already moved — measured as
+                              ;; 24 manufactured head conflicts in 300 transactions
+                              ;; from a SOLE writer, each one a retry with backoff,
+                              ;; and each one a caller-visible error under
+                              ;; :head-conflict-retries 0.
+                              (let [r (<?- (k/assoc store branch-key db-to-store
+                                                    {:sync? sync?
+                                                     :expected-revision head-revision
+                                                     :with-revision? true}))]
+                                (reset! new-head-revision (second r)))))
                     ;; Then write schema-meta, commit-log, branch
-                        (let [[meta-key meta-val] schema-meta-kv-to-write
-                              schema-meta-written (when schema-meta-kv-to-write
+                          (let [[meta-key meta-val] schema-meta-kv-to-write
+                                schema-meta-written (when schema-meta-kv-to-write
                                                 ;; schema-meta-key = (uuid schema-meta) → content-addressed → immutable
-                                                    (k/assoc store meta-key meta-val {:immutable? true} {:sync? sync?}))
+                                                      (k/assoc store meta-key meta-val {:immutable? true} {:sync? sync?}))
 
                           ;; Make sure all pointed to values are written before the commit log and branch
-                              _ (when schema-meta-kv-to-write (<?- schema-meta-written))
-                              _ (<?- (write-pending-kvs! store pending-kvs sync?))
+                                _ (when schema-meta-kv-to-write (<?- schema-meta-written))
+                                _ (<?- (write-pending-kvs! store pending-kvs sync?))
 
                           ;; the commit is content-addressed by cid → immutable; the branch head is mutable
-                              commit-log-written (when commit-graph?
-                                                   (k/assoc store cid db-to-store {:immutable? true} {:sync? sync?}))
+                                commit-log-written (when commit-graph?
+                                                     (k/assoc store cid db-to-store {:immutable? true} {:sync? sync?}))
                             ;; AWAIT the commit record before ISSUING the head write.
                             ;; Under :sync? false both k/assoc calls return ops that are
                             ;; ALREADY RUNNING, so binding them side by side lets the
                             ;; mutable head land before the immutable record it names —
                             ;; a crash in between truncates branch-history. (Under
                             ;; :sync? true k/assoc blocks, so the order already holds.)
-                              _                  (when (and commit-log-written (not sync?))
-                                                   (<?- commit-log-written))
-                              branch-written     (k/assoc store (:branch config) db-to-store {:sync? sync?})]
-                          (when-not sync?
-                            (<?- branch-written))))
+                                _                  (when (and commit-log-written (not sync?))
+                                                     (<?- commit-log-written))
+                            ;; THE FENCE. `head-revision` is the konserve revision
+                            ;; the head was at when this transaction was applied to
+                            ;; it; the write is rejected if anything has written
+                            ;; there since. nil means unfenced — a store that cannot
+                            ;; compare, or a caller that did not read a revision —
+                            ;; and behaves exactly as before.
+                                branch-written     (k/assoc store (:branch config) db-to-store
+                                                            (cond-> {:sync? sync?}
+                                                              head-revision
+                                                              (assoc :expected-revision head-revision
+                                                                     :with-revision? true)))]
+                            (reset! new-head-revision
+                                    (let [r (if sync? branch-written (<?- branch-written))]
+                                      (when head-revision (second r))))))
 
                   ;; Online GC: delete freed addresses after writes are committed
-                      (when (get-in config [:online-gc :enabled?])
-                        (<?- (online-gc/online-gc! store (assoc (:online-gc config) :sync? false))))
+                        (when (get-in config [:online-gc :enabled?])
+                          (<?- (online-gc/online-gc! store (assoc (:online-gc config) :sync? false))))
 
                       ;; Keep what we just wrote on the db we hand back, so the
                       ;; NEXT db->stored can carry a pointer forward for an
                       ;; index whose live instance went missing meanwhile.
-                      (cond-> db
-                        (seq (:secondary-index-keys db-to-store))
-                        (assoc :secondary-index-keys (:secondary-index-keys db-to-store))))
-                    (catch #?(:clj Error :cljs :default) e
-                      #?(:clj  (throw (ex-info "Fatal error during commit."
-                                               {:type :fatal-commit-error}
-                                               e))
-                         :cljs (throw e)))
-                    (finally
-                      (guard/done! gc-store-id gc-token))))))))
+                      ;; The head revision this commit created rides along for the
+                      ;; same reason: the next commit of the same batch fences
+                      ;; against it, and asking storage for it would be a read we
+                      ;; just earned the right not to make.
+                        (cond-> db
+                          (seq (:secondary-index-keys db-to-store))
+                          (assoc :secondary-index-keys (:secondary-index-keys db-to-store))
+                          @new-head-revision
+                          (assoc ::head-revision @new-head-revision)))
+                      (catch #?(:clj Error :cljs :default) e
+                        #?(:clj  (throw (ex-info "Fatal error during commit."
+                                                 {:type :fatal-commit-error}
+                                                 e))
+                           :cljs (throw e)))
+                      (finally
+                        (guard/done! gc-store-id gc-token)))))))))
 
 (defn complete-db-update [old tx-report]
   (let [{:keys [writer]} old
@@ -899,7 +1027,20 @@
          (<?- (write-pending-kvs! store pending-kvs false)))
 
        (<?- (k/assoc store cid db-to-store {:immutable? true} opts)) ; content-addressed commit
-       (<?- (k/assoc store :db db-to-store opts))             ; mutable: branch head
+       ;; Claim the initial mutable head. The existence check above is useful for
+       ;; its message but cannot serialize two creators in different processes;
+       ;; on a conditional store, exactly one absent-key CAS wins. Everything the
+       ;; loser wrote before this point is immutable and collectable.
+       (try
+         (<?- (k/assoc store :db db-to-store
+                       (cond-> opts
+                         (k/conditional-write-domain store)
+                         (assoc :expected-revision k/absent))))
+         (catch #?(:clj Throwable :cljs :default) e
+           (if (= :konserve/revision-mismatch (:type (ex-data e)))
+             (log/raise "Database already exists."
+                        {:type :db-already-exists :config store-config})
+             (throw e))))
        ;; :branches names :db, so it is a POINTER and must be written LAST — a
        ;; collector that reads it before the head exists marks nothing for :db.
        (<?- (k/assoc store :branches #{:db} opts))           ; mutable: branch set
@@ -985,72 +1126,236 @@
    (-database-exists? config)))
 
 #?(:clj
+   (defn- close-secondary-index! [idx]
+     (when (instance? java.io.Closeable idx)
+       (try (.close ^java.io.Closeable idx)
+            (catch Exception e
+              (log/warn :datahike/secondary-index-close-failed
+                        {:error (.getMessage e)}))))))
+
+#?(:clj
    (defn build-secondary-index!
      "Backfill a secondary index by scanning AEVT for all covered attributes.
-      Returns a channel (async op) so the writer continues processing other
-      transactions during backfill. When complete, dispatches a lightweight
-      install-secondary-index! op to atomically swap in the result."
+      Returns a channel so the writer can continue serving transactions. While
+      it runs, those transactions journal changes for this index; the serialized
+      install operation replays that delta before publishing the result."
      [old idx-ident]
      (log/trace :datahike/build-secondary-index {:idx-ident idx-ident})
-     ;; Return a channel — writer runs this in background (lines 89-93 of writer.cljc)
      (let [db old
+           writer-config (get-in db [:config :writer])
+           _ (when-not (and (= :self (get writer-config :backend :self))
+                            (= :exclusive
+                               (get writer-config :writer-ownership :shared)))
+               (log/raise
+                "Asynchronous secondary-index backfill requires local exclusive writer ownership."
+                {:type :secondary-index-backfill-unsupported-writer
+                 :idx-ident idx-ident
+                 :writer writer-config}))
            idx (get-in db [:secondary-indices idx-ident])
            _ (when-not idx
                (log/raise "Secondary index not found" {:idx-ident idx-ident}))
            attrs (sec/-indexed-attrs idx)
            building-since-tx (get-in db [:schema idx-ident :db.secondary/building-since-tx])
+           _ (when-not building-since-tx
+               (log/raise "A building secondary index has no snapshot boundary"
+                          {:type :secondary-index-missing-build-boundary
+                           :idx-ident idx-ident}))
            use-transient? (satisfies? sec/ITransientSecondaryIndex idx)
-           t-idx (if use-transient? (sec/-as-transient idx) idx)]
-       ;; Background go block — doesn't block the writer
+           t-idx (if use-transient? (sec/-as-transient idx) idx)
+           ;; The scan reads the DURABLE head, not `old`. The db a writer op
+           ;; receives can run ahead of the commit loop — unflushed roots, a
+           ;; lagging :meta — and nothing unflushed can be pinned. Any committed
+           ;; snapshot at or after the boundary is a correct scan source: the
+           ;; scan skips datoms newer than the boundary and the journal carries
+           ;; them, and a datom retracted after the boundary is replayed as a
+           ;; retraction of nothing. The schema commit was awaited before this
+           ;; op was dispatched, so the head is at least that far.
+           store (:store db)
+           branch (get-in db [:config :branch] :db)
+           head-record (k/get store branch nil {:sync? true})
+           _ (when-not (and head-record (>= (:max-tx head-record) building-since-tx))
+               (log/raise "The branch head is behind the backfill boundary; the schema commit has not landed."
+                          {:type :secondary-index-head-behind-boundary
+                           :idx-ident idx-ident
+                           :head-max-tx (:max-tx head-record)
+                           :building-since-tx building-since-tx}))
+           ;; No secondary indices on the scan snapshot: it is read for its
+           ;; primary AEVT only, and restoring adapters (a Lucene lock, say)
+           ;; is work and hazard for nothing.
+           snapshot (stored->db-read-only (dissoc head-record :secondary-index-keys) store)
+           gc-store-id (:id (:store (:config db)))
+           ;; A versioned adapter may write private nodes while it builds. They
+           ;; remain unreachable until install's commit publishes its key-map,
+           ;; so protect the whole scan -> ready-commit window from GC in this
+           ;; process. (A durable checkpoint for them is the follow-up.)
+           gc-token (guard/writing! gc-store-id)
+           ;; The snapshot being scanned is pinned with a DURABLE root, so a
+           ;; collector in any process keeps it until the ready commit lands.
+           ;; The lease is renewed in the background; if it is ever lost the
+           ;; build is discarded at install rather than published over swept
+           ;; nodes.
+           lost (atom nil)]
        (go-try-
-        (let [populated-idx
-              (reduce
-               (fn [current-idx attr]
-                 (let [datoms (dbi/datoms db :aevt [attr])
-                       n (atom 0)]
-                   (log/debug :datahike/backfilling {:attr attr})
-                   (let [result (reduce
-                                 (fn [idx d]
-                                   (if (and building-since-tx
-                                            (> (.-tx ^datahike.datom.Datom d) building-since-tx))
-                                     idx
-                                     (do (swap! n inc)
-                                         ;; Reconstruct each datom's tx-meta from the
-                                         ;; historical EAVT seek on its tx-id. Without
-                                         ;; this, vt-aware adapters miss the writing-tx
-                                         ;; `:db.valid/from` and degrade to `txInstant`.
-                                         (let [tx-id (.-tx ^datahike.datom.Datom d)
-                                               tx-report {:datom d :added? true
-                                                          :tx-meta (dbtx/meta-for-tx-id db tx-id)}]
-                                           (if use-transient?
-                                             (do (sec/-transact! idx tx-report) idx)
-                                             (sec/-transact idx tx-report))))))
-                                 current-idx datoms)]
-                     (log/debug :datahike/backfilled {:attr attr :count @n})
-                     result)))
-               t-idx attrs)
-              final-idx (if use-transient?
-                          (sec/-persistent! populated-idx)
-                          populated-idx)]
-          (log/trace :datahike/secondary-index-built {:idx-ident idx-ident})
-          ;; Return the populated index — the writer dispatch callback
-          ;; receives this, but we need to install it via a separate writer op.
-          ;; Store it in an atom for install-secondary-index! to pick up.
-          {:idx-ident idx-ident :index final-idx})))))
+        (let [root-id (try (<?- (roots/root! db {:kind :pin
+                                                 :record head-record
+                                                 :note (str "secondary-index backfill " idx-ident)
+                                                 :owner {:idx-ident idx-ident}}))
+                           (catch Throwable e
+                             (close-secondary-index! idx)
+                             (guard/done! gc-store-id gc-token)
+                             (throw e)))
+              stop-renewal! (roots/start-renewal! db root-id {:on-lost #(reset! lost %)})
+              release-root! (fn []
+                              (stop-renewal!)
+                              (try (roots/release! db root-id {:sync? true})
+                                   (catch Throwable e
+                                     (log/warn :datahike/secondary-index-root-release-failed
+                                               {:idx-ident idx-ident :error (.getMessage ^Throwable e)}))))]
+          (try
+            (let [populated-idx
+                  (reduce
+                   (fn [current-idx attr]
+                     (let [datoms (dbi/datoms snapshot :aevt [attr])
+                           n (atom 0)]
+                       (log/debug :datahike/backfilling {:attr attr})
+                       (let [result (reduce
+                                     (fn [idx d]
+                                       (if (> (.-tx ^datahike.datom.Datom d) building-since-tx)
+                                         idx
+                                         (do (swap! n inc)
+                                             (let [tx-id (.-tx ^datahike.datom.Datom d)
+                                                   tx-report {:datom d :added? true
+                                                              :tx-meta (dbtx/meta-for-tx-id snapshot tx-id)}]
+                                               (if use-transient?
+                                                 (do (sec/-transact! idx tx-report) idx)
+                                                 (sec/-transact idx tx-report))))))
+                                     current-idx datoms)]
+                         (log/debug :datahike/backfilled {:attr attr :count @n})
+                         result)))
+                   t-idx attrs)
+                  final-idx (if use-transient?
+                              (sec/-persistent! populated-idx)
+                              populated-idx)]
+              (log/trace :datahike/secondary-index-built {:idx-ident idx-ident})
+              {:idx-ident idx-ident
+               :index final-idx
+               :building-since-tx building-since-tx
+               ::gc-store-id gc-store-id
+               ::gc-token gc-token
+               ::root-id root-id
+               ::root-db db
+               ::root-lost lost
+               ::release-root! release-root!})
+            (catch Throwable e
+              (close-secondary-index! idx)
+              (guard/done! gc-store-id gc-token)
+              (release-root!)
+              (throw e))))))))
+
+#?(:clj
+   (defn finish-secondary-index-build!
+     "Release the GC guard and the durable root carried by a completed
+      background build. Call only after install's writer callback, which means
+      its ready commit is durable. Idempotent."
+     [build-result]
+     (when-let [token (::gc-token build-result)]
+       (guard/done! (::gc-store-id build-result) token))
+     (when-let [release! (::release-root! build-result)]
+       (release!))))
+
+#?(:clj
+   (defn- assert-build-root-live!
+     "The publish-time check: the root that pinned this build's snapshot is
+      still there and was renewed recently. A build whose lease was lost —
+      reaped, or eaten by an older collector — may have scanned nodes that
+      have since been swept, and must not be published."
+     [{:keys [idx-ident] ::keys [root-id root-db root-lost]}]
+     (when-let [e (some-> root-lost deref)]
+       (throw (ex-info "Discarding a secondary-index build whose GC root was lost during the scan."
+                       {:type :gc/root-lost :idx-ident idx-ident :root-id root-id}
+                       e)))
+     (when root-id
+       (roots/assert-live! root-db root-id (quot roots/DEFAULT_TTL_MS 2) {:sync? true}))))
+
+#?(:clj
+   (defn- drop-build-deltas [db idx-ident]
+     (let [remaining (dissoc (:secondary-index-build-deltas db) idx-ident)]
+       (if (empty? remaining)
+         (dissoc db :secondary-index-build-deltas)
+         (assoc db :secondary-index-build-deltas remaining)))))
 
 #?(:clj
    (defn install-secondary-index!
-     "Lightweight synchronous writer op that installs a backfilled index.
-      Called after build-secondary-index! completes in the background."
-     [old {:keys [idx-ident index]}]
-     (let [db-after (-> old
-                        (assoc-in [:secondary-indices idx-ident] index)
-                        (assoc-in [:schema idx-ident :db.secondary/status] :ready)
-                        (update-in [:schema idx-ident] dissoc :db.secondary/building-since-tx))]
-       (complete-db-update old {:db-before old
-                                :db-after db-after
-                                :tx-data []
-                                :tx-meta {}}))))
+     "Replay changes accumulated during an asynchronous backfill and publish
+      the resulting index. This operation is serialized by the writer, which
+      closes the handoff gap between the delta journal and normal live updates."
+     [old {:keys [idx-ident index building-since-tx] :as build-result}]
+     (try
+       (let [status (get-in old [:schema idx-ident :db.secondary/status])
+             current-boundary (get-in old [:schema idx-ident
+                                           :db.secondary/building-since-tx])]
+         (when-not (and (= :building status)
+                        (= building-since-tx current-boundary))
+           (log/raise "Discarding a stale secondary-index build"
+                      {:type :secondary-index-stale-build
+                       :idx-ident idx-ident
+                       :expected-building-since-tx current-boundary
+                       :actual-building-since-tx building-since-tx
+                       :status status}))
+         (assert-build-root-live! build-result)
+         (let [deltas (get-in old [:secondary-index-build-deltas idx-ident] [])
+               use-transient? (satisfies? sec/ITransientSecondaryIndex index)
+               t-idx (if use-transient? (sec/-as-transient index) index)
+               replayed (reduce (fn [idx tx-report]
+                                  (if use-transient?
+                                    (do (sec/-transact! idx tx-report) idx)
+                                    (sec/-transact idx tx-report)))
+                                t-idx deltas)
+               final-idx (if use-transient? (sec/-persistent! replayed) replayed)
+               db-after (-> old
+                            (assoc-in [:secondary-indices idx-ident] final-idx)
+                            (assoc-in [:schema idx-ident :db.secondary/status] :ready)
+                            (update-in [:schema idx-ident] dissoc
+                                       :db.secondary/building-since-tx)
+                            (drop-build-deltas idx-ident))]
+           (complete-db-update
+            old {:db-before old
+                 :db-after db-after
+                 :tx-data []
+                 :tx-meta {:db/txInstant (get-in old [:meta :datahike/updated-at])}
+                 :secondary-index-build-guard
+                 (select-keys build-result [::gc-store-id ::gc-token ::release-root!])})))
+       (catch Throwable e
+         (close-secondary-index! index)
+         (finish-secondary-index-build! build-result)
+         (throw e)))))
+
+#?(:clj
+   (defn reset-secondary-index-build-boundary!
+     "Re-anchor a recovered :building index's snapshot boundary at the current
+      head. The stored boundary was set by the schema transaction; every
+      transaction after it was journaled only in the process that then
+      stopped, so on reconnect those datoms exist solely in the primary index.
+      Moving the boundary to this head makes the scan cover everything
+      committed so far while the journal covers everything committed after
+      this serialized operation. Any entries journaled before it belong to
+      transactions the scan will see, so they are dropped."
+     [old idx-ident]
+     (let [status (get-in old [:schema idx-ident :db.secondary/status])]
+       (when-not (= :building status)
+         (log/raise "Only a building secondary index has a snapshot boundary to reset"
+                    {:type :secondary-index-not-building
+                     :idx-ident idx-ident
+                     :status status}))
+       (complete-db-update
+        old {:db-before old
+             :db-after (-> old
+                           (assoc-in [:schema idx-ident
+                                      :db.secondary/building-since-tx]
+                                     (:max-tx old))
+                           (drop-build-deltas idx-ident))
+             :tx-data []
+             :tx-meta {:db/txInstant (get-in old [:meta :datahike/updated-at])}}))))
 
 (defn merge-writer!
   "Writer operation for merge. Applies tx-data and records merge parents
@@ -1064,10 +1369,44 @@
     (update tx-report :db-after
             assoc-in [:meta :datahike/merge-parents] all-parents)))
 
+#?(:clj
+   (defn- validate-secondary-backfill-writer!
+     "Reject a new asynchronous backfill before its schema report reaches the
+      commit queue. This belongs at the writer boundary so pure `db-with` can
+      still model a :building database without owning a writer."
+     [old {:keys [db-after]}]
+     (let [before (:schema old)
+           new-building
+           (into []
+                 (keep (fn [[ident entry]]
+                         (when (and (= :building (:db.secondary/status entry))
+                                    (not= :building
+                                          (get-in before
+                                                  [ident :db.secondary/status])))
+                           ident)))
+                 (:schema db-after))
+           writer-config (get-in old [:config :writer])
+           local-exclusive? (and (= :self (get writer-config :backend :self))
+                                 (= :exclusive
+                                    (get writer-config :writer-ownership :shared)))]
+       (when (and (seq new-building) (not local-exclusive?))
+         ;; Factories already ran in core/with. Close any native private
+         ;; generation before refusing its uncommitted schema report.
+         (doseq [idx-ident new-building]
+           (close-secondary-index! (get-in db-after [:secondary-indices idx-ident])))
+         (log/raise
+          "Asynchronous secondary-index backfill currently requires local exclusive writer ownership. Remote writers cannot transfer a live build generation, and shared writers cannot coordinate its in-memory delta journal across processes."
+          {:type :secondary-index-backfill-unsupported-writer
+           :idx-ident (first new-building)
+           :idx-idents (set new-building)
+           :writer writer-config})))))
+
 (defn transact! [old {:keys [tx-data tx-meta]}]
   (log/debug :datahike/transact {:tx-count (count tx-data)})
   (log/trace :datahike/transact-detail {:tx-data tx-data :tx-meta tx-meta})
-  (complete-db-update old (core/with old tx-data tx-meta)))
+  (let [tx-report (core/with old tx-data tx-meta)]
+    #?(:clj (validate-secondary-backfill-writer! old tx-report))
+    (complete-db-update old tx-report)))
 
 (defn load-entities
   [old entities]

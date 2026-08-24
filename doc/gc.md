@@ -42,15 +42,17 @@ Running without a date removes **only deleted branches**—all snapshots on acti
 
 ## Where to run GC
 
-**Run GC in the process that writes.** `d/gc-storage` is a writer operation and already runs there, so in the normal case you get this for free — but it is worth stating, because "collect from a cron job during the quiet hours" is a tempting shape and it is the wrong one.
+**Run GC where the writers are.** A commit writes every value the new head references and only *then* flips the head — so for the duration of that sequence those objects exist in the store and nothing yet names them. A collector in the same process knows a commit is in flight and leaves them alone (`datahike.gc-guard`). A collector in another process cannot know: its view of "what is in flight" is empty because *its* heap is idle, not because the store is quiet.
 
-This follows from Datahike's writer model rather than from anything about GC:
+With a single **exclusive** writer (`:writer {:backend :self :writer-ownership :exclusive}`) that is the whole story: `d/gc-storage` is a writer operation, so it already runs in the right place.
 
-> **All writers for a database run in one JVM.** A connection owns its branch head and serializes commits through it. Different branches of the same database may each have their own writer, but they belong in the same process — a database's writers coordinate in memory, not through the store. **Readers are unconstrained**: any number of them, in any number of processes, anywhere.
+With **shared** writers (`:writer-ownership :shared`, the default) several processes may commit to the same branch. Head fencing keeps them from losing each other's commits, but a fence protects the *pointer*, not the *values*: a commit in flight in another process is invisible to the collector, and its objects are on disk reachable from nothing. The same is true of a cron sidecar collecting a store it never writes. In both cases the only protection is the sweep floor:
 
-The collector belongs on the writers' side of that line because it has to know what they are *currently* writing. A commit writes every value the new head references and only *then* flips the head — so for the duration of that sequence, those objects exist in the store and nothing yet names them. A collector in the same process knows a commit is in flight and leaves them alone. A collector in another process cannot know, and Datahike cannot tell you it doesn't: a second process looks like a writer too.
+```clojure
+(d/gc-storage conn (java.util.Date. 0) {:min-age-ms (* 15 60 1000)})
+```
 
-(Cross-process writers are outside the model for a more basic reason as well — there is no head fencing yet, so two writers on a branch can lose each other's commits regardless of GC. See [#878](https://github.com/replikativ/datahike/issues/878).)
+`:min-age-ms` spares anything written more recently than that, whatever the mark says. Size it above the longest window between "first value written" and "head flipped" any of your writers can have — a writer that awaits its transacts has that window closed when the call returns, so one request's duration is the bound — **plus the largest clock difference between your processes**: the `:last-write` stamps the sweep compares against come from each writer's own clock, so a writer twenty minutes behind the collector looks twenty minutes older than it is. A suspended process (a frozen Lambda resuming mid-commit) can exceed any bound you pick. The price of a generous value is only delayed reclamation; the price of a small one is a dangling head.
 
 ## Grace Periods for Distributed Readers
 
@@ -342,3 +344,27 @@ GC preserves:
 - All data on retained snapshots (GC doesn't delete data, only snapshots)
 
 **Remember:** Actual erasure (GDPR / HIPAA / CCPA) requires [purging](./time_variance.md#data-purging) followed by a cutoff `d/gc-storage` sweep. Purge alone leaves the pre-purge commit reachable; GC alone doesn't delete data on a live snapshot.
+
+## Durable roots
+
+*Experimental.* Everything above rests on the collector seeing what is in flight, which it can only do inside its own process. Some work is too long for that to be enough, wherever it runs: a secondary-index backfill scanning a snapshot for an hour, a bulk import building trees for hours before it publishes them. For those, `datahike.gc-roots` lets a process persist a **root** in the store — a record the mark walks in addition to the branch heads, so a collector in *any* process keeps what it names.
+
+A root protects only what a record names. That is the whole idea, and the whole limit:
+
+- `:pin` — a copy of a commit record with its parents removed. Keeps that commit's trees, schema, secondary-index key-maps and the blobs its datoms name, and nothing older. For a long reader of an old snapshot.
+- `:checkpoint` — a synthetic record in commit shape whose fields name *partial* state: the trees of a build in progress. For a long builder; republish it as the build advances.
+- `:ref` — a commit record with its parents kept, so its ancestry is retained under the same `remove-before` gating as a branch. For durable references to old commits; permanent unless given a TTL.
+
+```clojure
+(require '[datahike.gc-roots :as roots])
+
+(def id (<?? S (roots/pin! (d/db conn) {:note "report job" :ttl-ms (* 2 60 60 1000)})))
+;; … hours of work against that snapshot …
+(<?? S (roots/release! (d/db conn) id))
+```
+
+Roots carry a **lease**. A holder that dies must not pin forever, so an entry expires; the holder renews it (`renew!`, or `start-renewal!` for a background loop) at a fraction of its TTL, and the collector reaps an entry once it is past expiry by its own TTL again. A holder that finds its entry gone at renewal — reaped, or deleted by an older Datahike whose sweep does not know the registry — gets `:gc/root-lost` and must abandon what the root was protecting; `assert-live!` is the same check for the moment before publishing. Timestamps are wall-clock and only decide expiry; the sweep cutoff is unaffected.
+
+What roots do not do: cover the milliseconds between "values written" and "record published" — no record exists yet, so that stays with the guard and the floor above. And a root pins a record older than the head, which makes online GC's freed-address hints unsound for the same reason multiple branches do; online GC pauses while any root exists.
+
+With no roots declared, nothing changes: the registry key is never written and the mark is exactly what it was.

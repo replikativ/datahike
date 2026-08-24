@@ -71,7 +71,7 @@
     (when (= @wrapped-atom :released)
       (throw (ex-info "Connection has been released."
                       {:type :connection-has-been-released})))
-    (if (not (w/streaming? (get @wrapped-atom :writer)))
+    (if (w/refresh-on-deref? (get @wrapped-atom :writer))
       (do
         (log/trace :datahike/db-deref {:branch (:branch (:config @wrapped-atom))})
         ;; Exactly the writer's per-transaction re-read, and deliberately the
@@ -147,13 +147,12 @@
         stored-config (if (empty? (:index-config stored-config))
                         (dissoc stored-config :index-config)
                         stored-config)
-        ;; :streaming? is a RUNTIME choice of the connecting process (one JVM
-        ;; owns the branch, or several take turns), not a property of the
-        ;; stored database — a database created with the default must be
-        ;; connectable with :streaming? false. It sits INSIDE :writer, so the
-        ;; flat dissoc of runtime keys above does not reach it.
-        config        (cond-> config        (:writer config)        (update :writer dissoc :streaming?))
-        stored-config (cond-> stored-config (:writer stored-config) (update :writer dissoc :streaming?))
+        ;; Writer ownership is a RUNTIME choice of the connecting process, not a
+        ;; property of the stored database. It sits INSIDE :writer, so the flat
+        ;; dissoc of runtime keys above does not reach it. Ignore the deprecated
+        ;; :streaming? alias too, for databases created while #959 was experimental.
+        config        (cond-> config        (:writer config)        (update :writer dissoc :writer-ownership :streaming?))
+        stored-config (cond-> stored-config (:writer stored-config) (update :writer dissoc :writer-ownership :streaming?))
         ;; if we connect to remote allow writer to be different
         [config stored-config] (if-not (= dc/self-writer config)
                                  [(dissoc config :writer)
@@ -305,18 +304,41 @@
                                    :existing-connections-config conn-cfg
                                    :diff (diff cfg conn-cfg)}))
                      ;; normalize-config dissocs :writer, so a second connect
-                     ;; asking for a DIFFERENT :streaming? silently gets the
-                     ;; cached connection's writer. Say so rather than let the
-                     ;; caller believe the multi-process-safe setting took
-                     ;; effect (release the connection to change it).
-                     (let [existing (some-> (:writer @(:wrapped-atom conn)) w/streaming?)]
+                     ;; asking for DIFFERENT ownership gets the cached connection's
+                     ;; writer. Say so rather than let the caller believe shared
+                     ;; ownership took effect (release the connection to change it).
+                     (let [existing (some-> (:writer @(:wrapped-atom conn)) w/writer-ownership)
+                           requested (get-in config [:writer :writer-ownership] :shared)]
                        (when (and (some? existing)
                                   (= :self (get-in config [:writer :backend] :self))
-                                  (not= (get-in config [:writer :streaming?] true) existing))
-                         (log/warn :datahike/writer-streaming-ignored
-                                   "Reusing the existing connection and its writer; the requested :streaming? is ignored. Release the connection everywhere first if you need a different writer."
-                                   {:requested (get-in config [:writer :streaming?] true)
-                                    :existing  existing})))
+                                  (not= requested existing))
+                         (log/warn :datahike/writer-ownership-ignored
+                                   "Reusing the existing connection and its writer; the requested :writer-ownership is ignored. Release the connection everywhere first if you need different ownership."
+                                   {:requested requested
+                                    :existing  existing}))
+                       ;; A DEMAND, not a preference, so it is checked against the
+                       ;; writer this caller actually gets — which on this path is
+                       ;; the cached one, whatever it was built with. Checking it
+                       ;; only where a writer is created skipped it precisely
+                       ;; here: `:require-fencing` exists for deployments with
+                       ;; more than one writer, and the second `connect` in a
+                       ;; process is the one that comes out of the cache.
+                       ;;
+                       ;; `existing` rather than the requested ownership: what
+                       ;; matters is whether the writer in hand re-reads the head,
+                       ;; and the warning above has already said the request is ignored.
+                       ;;
+                       ;; SCOPED to the :self backend, matching where the option is
+                       ;; legal at all: `normalize-writer-config` refuses
+                       ;; :require-fencing on a remote writer before any connect
+                       ;; path runs, and checking it here against the LOCAL store
+                       ;; would be judging a remote writer's guarantee by a store
+                       ;; it does not write to — a refusal or a pass, both about
+                       ;; the wrong thing.
+                       (when (= :self (get-in config [:writer :backend] :self))
+                         (w/check-fencing! (get-in config [:writer :require-fencing])
+                                           (or existing :shared)
+                                           (:store @(:wrapped-atom conn)))))
                      conn)
                    (let [raw-store (<?- (ks/connect-store store-config opts))
                          _         (when-not raw-store
@@ -370,27 +392,46 @@
                          conn      (conn-from-db (dsi/stored->db (assoc stored-db :config config) store))]
                      (swap! (:wrapped-atom conn) assoc :writer
                             (w/create-writer (:writer config) conn))
-                     ;; Recovery: backfill secondary indices that are :building
-                     ;; and were not restored from durable storage
+                     ;; Recovery: every :building index is reconstructed from
+                     ;; the primary index. Its stored key-map, if any was written
+                     ;; by an older release, is deliberately ignored by
+                     ;; stored->db because it may describe a partial backfill.
                      #?(:clj
                         (let [db @(:wrapped-atom conn)
                               schema (:schema db)
-                              writer (:writer db)
-                              sec-idx-keys (:secondary-index-keys stored-db)]
+                              writer (:writer db)]
                           (doseq [[ident entry] schema
                                   :when (and (map? entry)
                                              (:db.secondary/type entry)
-                                             (= :building (:db.secondary/status entry))
-                                             ;; Only backfill if no stored key-map exists
-                                             (not (get sec-idx-keys ident)))]
+                                             (= :building (:db.secondary/status entry)))]
                             (log/trace :datahike/secondary-index-backfill {:ident ident})
                             (go
-                              (let [build-result (<! (w/dispatch! writer
-                                                                  {:op 'build-secondary-index!
-                                                                   :args [ident]}))]
-                                (when (map? build-result)
-                                  (w/dispatch! writer {:op 'install-secondary-index!
-                                                       :args [build-result]})))))))
+                              ;; The delta journal that covered transactions
+                              ;; after the stored boundary died with the
+                              ;; previous process. Re-anchor the boundary at
+                              ;; this head first so the scan picks those
+                              ;; datoms up from the primary index; only
+                              ;; transactions after this point are journaled.
+                              (let [reset-result (<! (w/dispatch! writer
+                                                                  {:op 'reset-secondary-index-build-boundary!
+                                                                   :args [ident]}))
+                                    build-result (if (map? reset-result)
+                                                   (<! (w/dispatch! writer
+                                                                    {:op 'build-secondary-index!
+                                                                     :args [ident]}))
+                                                   reset-result)]
+                                (if-not (map? build-result)
+                                  (log/warn :datahike/secondary-index-recovery-failed
+                                            {:ident ident :error build-result})
+                                  (let [install-result
+                                        (<! (w/dispatch! writer
+                                                         {:op 'install-secondary-index!
+                                                          :args [build-result]}))]
+                                    (when-not (map? install-result)
+                                      (log/warn :datahike/secondary-index-recovery-failed
+                                                {:ident ident :error install-result})
+                                      (dsi/finish-secondary-index-build!
+                                       build-result)))))))))
                      (add-connection! conn-id conn)
                      conn))))))
 

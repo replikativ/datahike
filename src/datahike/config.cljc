@@ -57,11 +57,13 @@
 ;; record garbage disappears. Presence-based and store-fixed like
 ;; ::fuse-index-roots?; connect adopts the stored value.
 (s/def ::commit-graph? boolean?)
+(def writer-ownerships #{:shared :exclusive})
+(s/def ::writer-ownership writer-ownerships)
 ;; Which transactor handles writes: {:backend :self} (default, in this JVM),
-;; :datahike-server, :kabel. The :self backend also takes :streaming? — set it
-;; false when more than one PROCESS may hold a writer for this database (the
-;; serverless case), so every transaction re-reads the branch head instead of
-;; trusting the one it holds in memory. See datahike.writer/create-writer.
+;; :datahike-server, :kabel. A self writer defaults to :writer-ownership :shared,
+;; so every batch re-reads and conditionally publishes the branch head. Select
+;; :exclusive only when one PROCESS owns the writer. See
+;; datahike.writer/create-writer.
 (s/def ::writer map?)
 (s/def ::branch keyword?)
 (s/def ::entity (s/or :map associative? :vec vector?))
@@ -110,7 +112,71 @@
 (s/def :deprecated/config (s/keys :req-un [:datahike/store]
                                   :opt-un [:deprecated/temporal-index :deprecated/schema-on-read]))
 
-(def self-writer {:backend :self})
+(def self-writer
+  "The fully normalized default writer config. Kept explicit so every config
+   producer, including deprecated and storeless configs, makes the safe ownership
+   choice visible rather than relying on a downstream implicit default."
+  {:backend :self :writer-ownership :shared})
+
+(def ^:private self-writer-backend
+  "The seed used before merging a caller's writer config. It deliberately omits
+   :writer-ownership: deep-merging the fully defaulted self writer into a Kabel or
+   HTTP writer would leak a self-only option into that remote writer."
+  {:backend :self})
+
+(defn normalize-writer-config
+  "Default a self writer to shared ownership and translate the experimental
+   :streaming? self-writer option from #959.
+
+   Streaming describes whether a writer delivers updates into its connection;
+   ownership describes whether another writer may move the same branch head.
+   They are separate axes. The old flag is accepted only as a compatibility
+   alias and removed from the normalized config."
+  [writer]
+  (let [writer (or writer self-writer-backend)]
+    (if-not (= :self (:backend writer))
+      ;; A remote writer transacts in ANOTHER process, so every option below is
+      ;; about a writer this config does not control: ownership, batching, retry
+      ;; policy and — the one with teeth — :require-fencing. None of them can be
+      ;; honoured from here, and each names a safety property, so accepting them
+      ;; silently is a config that LOOKS protected and is not: exactly the
+      ;; silent-inert-option failure the self writer's closed key set exists to
+      ;; prevent, reappearing one backend over. Remote writers keep their own
+      ;; open key set (:kabel has :local-peer and friends), so only the
+      ;; self-only keys are refused, not everything unknown.
+      (if-let [inert (seq (filter (partial contains? writer)
+                                  [:writer-ownership :streaming? :require-fencing
+                                   :max-batch :head-conflict-retries
+                                   :head-conflict-backoff-ms]))]
+        (log/raise (str "These options configure the :self writer and are inert on a remote writer backend. "
+                        "Configure the writer where it runs — the process that owns it — and remove them here.")
+                   {:type    :self-writer-options-on-remote-writer
+                    :backend (:backend writer)
+                    :inert   (vec inert)})
+        writer)
+      (let [legacy? (contains? writer :streaming?)
+            legacy (:streaming? writer)
+            explicit? (contains? writer :writer-ownership)
+            ownership (:writer-ownership writer)
+            legacy-ownership (when legacy? (if legacy :exclusive :shared))]
+        (when (and legacy? (not (boolean? legacy)))
+          (log/raise ":streaming? in the :self writer config must be true or false."
+                     {:type :invalid-streaming-flag :streaming? legacy}))
+        (when (and explicit? (not (contains? writer-ownerships ownership)))
+          (log/raise ":writer-ownership in the :self writer config must be :shared or :exclusive."
+                     {:type :invalid-writer-ownership :writer-ownership ownership}))
+        (when (and legacy? explicit? (not= legacy-ownership ownership))
+          (log/raise ":streaming? and :writer-ownership select conflicting self-writer modes."
+                     {:type :conflicting-writer-mode
+                      :streaming? legacy
+                      :writer-ownership ownership}))
+        (when legacy?
+          (log/warn :datahike/deprecated-self-writer-streaming
+                    ":streaming? as a :self writer option is deprecated; use :writer-ownership :shared or :exclusive."
+                    {:streaming? legacy :writer-ownership legacy-ownership}))
+        (-> writer
+            (dissoc :streaming?)
+            (assoc :writer-ownership (or ownership legacy-ownership :shared)))))))
 
 (defn from-deprecated
   [{:keys [backend username password path host port id] :as _backend-cfg}
@@ -303,13 +369,16 @@
                  :index index
                  :branch *default-db-branch*
                  :crypto-hash? *default-crypto-hash?*
-                 :writer self-writer
+                 ;; Backend-only until after deep-merge: otherwise a remote
+                 ;; writer inherits the self writer's ownership option.
+                 :writer self-writer-backend
                  :search-cache-size (int-from-env :datahike-search-cache-size *default-search-cache-size*)
                  :store-cache-size (int-from-env :datahike-store-cache-size *default-store-cache-size*)
                  :index-config (if-let [index-config (map-from-env :datahike-index-config nil)]
                                  index-config
                                  (di/default-index-config index))}
          merged-config ((comp remove-nils dt/deep-merge) config config-as-arg)
+         merged-config (update merged-config :writer normalize-writer-config)
          {:keys [schema-flexibility initial-tx store attribute-refs?]} merged-config]
      ;; konserve now handles store config validation at runtime
      (when-not (s/valid? :datahike/config merged-config)
