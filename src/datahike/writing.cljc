@@ -1195,9 +1195,11 @@
            snapshot (stored->db-read-only (dissoc head-record :secondary-index-keys) store)
            gc-store-id (:id (:store (:config db)))
            ;; A versioned adapter may write private nodes while it builds. They
-           ;; remain unreachable until install's commit publishes its key-map,
-           ;; so protect the whole scan -> ready-commit window from GC in this
-           ;; process. (A durable checkpoint for them is the follow-up.)
+           ;; remain unreachable until install's commit publishes its key-map.
+           ;; In this process the write guard covers them; across processes the
+           ;; pin root below is grown into a checkpoint: every key the adapter
+           ;; writes during the build is captured and folded into the root's
+           ;; :datahike.gc/keys, so a collector anywhere spares them too.
            gc-token (guard/writing! gc-store-id)
            ;; The snapshot being scanned is pinned with a DURABLE root, so a
            ;; collector in any process keeps it until the ready commit lands.
@@ -1215,8 +1217,39 @@
                              (guard/done! gc-store-id gc-token)
                              (throw e)))
               stop-renewal! (roots/start-renewal! db root-id {:on-lost #(reset! lost %)})
+              ;; The checkpoint half: capture every store key written while the
+              ;; build runs (the adapter's private generation — stratum dataset
+              ;; commits, tree nodes) and fold them into the pin's record on a
+              ;; short cadence. A failed fold only narrows protection back to
+              ;; the guard and the floor, so it warns rather than aborts.
+              captured-keys (atom #{})
+              hook-id (let [id (keyword "datahike.writing"
+                                        (str "backfill-capture-" root-id))]
+                        (k/add-write-hook! store id
+                                           (fn [{:keys [key]}]
+                                             (when (or (uuid? key) (vector? key))
+                                               (swap! captured-keys conj key))))
+                        id)
+              stop-capture-ch (async/chan)
+              _fold-loop (async/go-loop [folded 0]
+                           (let [[_ port] (async/alts! [stop-capture-ch (async/timeout 2000)])]
+                             (when-not (= port stop-capture-ch)
+                               (let [ks @captured-keys
+                                     n (count ks)]
+                                 (when (> n folded)
+                                   (try (roots/set-record! db root-id
+                                                           (assoc head-record :datahike.gc/keys ks)
+                                                           {:sync? true})
+                                        (catch Throwable e
+                                          (log/warn :datahike/secondary-index-checkpoint-failed
+                                                    {:idx-ident idx-ident
+                                                     :error (.getMessage ^Throwable e)}))))
+                                 (recur (max folded (count ks)))))))
               release-root! (fn []
                               (stop-renewal!)
+                              (async/close! stop-capture-ch)
+                              (try (k/remove-write-hook! store hook-id)
+                                   (catch Throwable _ nil))
                               (try (roots/release! db root-id {:sync? true})
                                    (catch Throwable e
                                      (log/warn :datahike/secondary-index-root-release-failed
