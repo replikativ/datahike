@@ -309,10 +309,6 @@
    (go-try S
            (let [{:keys [config store]} db
                  store-id (:id (:store config))
-                 _ (when (guard/read-in-flight? store-id)
-                     (log/raise "Garbage collection is deferred while a secondary index scans an older database snapshot."
-                                {:type :gc/read-lease-active
-                                 :store-id store-id}))
                  min-age-ms (or min-age-ms (default-min-age-ms config))
                  ;; Cutoff from konserve's monotonic write clock — the SAME
                  ;; source that stamps :last-write. Strictly increasing, so a

@@ -194,12 +194,6 @@
             store-id (or (:datahike/store-id store)
                          (get-in store [:storage :config :store :id]))]
         (cond
-          (guard/read-in-flight? store-id)
-          (do
-            (log/debug :datahike/ogc-skip-read-lease
-                       {:store-id store-id})
-            0)
-
           rooted?
           (do
             (log/debug :datahike/ogc-skip-gc-roots {:store-id store-id})
@@ -250,12 +244,6 @@
              store-id (or (:datahike/store-id store)
                           (get-in store [:storage :config :store :id]))]
          (cond
-           (guard/read-in-flight? store-id)
-           (do
-             (log/debug :datahike/ogc-skip-read-lease
-                        {:store-id store-id})
-             0)
-
            rooted?
            (do
              (log/debug :datahike/ogc-skip-gc-roots {:store-id store-id})

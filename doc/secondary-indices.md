@@ -349,13 +349,13 @@ The intended scalable follow-up is a resumable generation protocol:
 
 `tx-range` currently requires `:keep-history? true`, persistent-set indices,
 and materializes each requested window, so it cannot yet replace the general
-path. Its base commit also needs a persistent GC root. `datahike.gc-guard`
-protects newly written nodes before their pointer is published; it does **not**
-by itself pin old snapshot nodes for a long-running reader. The current builder
-therefore holds a process-local read lease which makes offline and online GC
-defer until installation. The experimental `feat/gc-roots` work is the relevant
-starting point for a durable/resumable lease and must also be integrated with
-online GC.
+path. The snapshot the scan reads is already pinned with a [durable GC
+root](./gc.md#durable-roots) (`:pin`, renewed in the background and released by
+the ready commit), so `d/gc-storage` — from this process or any other — collects
+around it rather than refusing; a build whose lease is lost is discarded at
+install instead of being published over swept nodes. What is not yet durable is
+a versioned adapter's build generation, which `datahike.gc-guard` still covers
+in-process only; a `:checkpoint` root for it is the next step.
 
 ## Purge propagation
 
