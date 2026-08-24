@@ -18,6 +18,7 @@
             [datahike.schema-cache :as sc]
             [datahike.online-gc :as online-gc]
             [konserve.core :as k]
+            [konserve.utils :as ku]
             [konserve.store :as ks]
             [replikativ.logging :as log]
             [hasch.core :refer [uuid squuid]]
@@ -1223,28 +1224,53 @@
               ;; short cadence. A failed fold only narrows protection back to
               ;; the guard and the floor, so it warns rather than aborts.
               captured-keys (atom #{})
+              capture! (fn [{:keys [key kvs]}]
+                         ;; multi-assoc reports its batch under :kvs, not :key.
+                         (let [ks (cond-> (if kvs (ku/kv-keys kvs) [key]))]
+                           (doseq [k ks]
+                             (when (or (uuid? k) (vector? k))
+                               (swap! captured-keys conj k)))))
               hook-id (let [id (keyword "datahike.writing"
                                         (str "backfill-capture-" root-id))]
-                        (k/add-write-hook! store id
-                                           (fn [{:keys [key]}]
-                                             (when (or (uuid? key) (vector? key))
-                                               (swap! captured-keys conj key))))
+                        (k/add-write-hook! store id capture!)
                         id)
+              ;; The fold's base is the record as root! SHAPED it — a pin strips
+              ;; :datahike/parents, and folding the raw head-record back would
+              ;; quietly turn the pin into a ref that retains ancestry.
+              checkpoint-base (update head-record :meta dissoc :datahike/parents)
               stop-capture-ch (async/chan)
-              _fold-loop (async/go-loop [folded 0]
+              _fold-loop (async/go-loop [folded 0 warned? false]
                            (let [[_ port] (async/alts! [stop-capture-ch (async/timeout 2000)])]
                              (when-not (= port stop-capture-ch)
                                (let [ks @captured-keys
                                      n (count ks)]
-                                 (when (> n folded)
-                                   (try (roots/set-record! db root-id
-                                                           (assoc head-record :datahike.gc/keys ks)
-                                                           {:sync? true})
-                                        (catch Throwable e
-                                          (log/warn :datahike/secondary-index-checkpoint-failed
-                                                    {:idx-ident idx-ident
-                                                     :error (.getMessage ^Throwable e)}))))
-                                 (recur (max folded (count ks)))))))
+                                 (cond
+                                   ;; The hook is store-wide, so ordinary commits
+                                   ;; during a long backfill accumulate here too.
+                                   ;; Past this bound the record write itself
+                                   ;; becomes the problem; degrade to the guard
+                                   ;; and the floor, loudly, instead of growing
+                                   ;; without limit.
+                                   (> n 50000)
+                                   (do (when-not warned?
+                                         (log/warn :datahike/secondary-index-checkpoint-capped
+                                                   {:idx-ident idx-ident :captured n}))
+                                       (recur folded true))
+                                   (> n folded)
+                                   ;; Advance `folded` only on a SUCCESSFUL write:
+                                   ;; a transient failure must be retried on the
+                                   ;; next tick, or its keys are never protected.
+                                   (recur (try (roots/set-record! db root-id
+                                                                  (assoc checkpoint-base :datahike.gc/keys ks)
+                                                                  {:sync? true})
+                                               n
+                                               (catch Throwable e
+                                                 (log/warn :datahike/secondary-index-checkpoint-failed
+                                                           {:idx-ident idx-ident
+                                                            :error (.getMessage ^Throwable e)})
+                                                 folded))
+                                          warned?)
+                                   :else (recur folded warned?))))))
               release-root! (fn []
                               (stop-renewal!)
                               (async/close! stop-capture-ch)

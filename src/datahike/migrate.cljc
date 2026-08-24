@@ -42,6 +42,7 @@
             [datahike.gc-guard :as guard]
             [replikativ.logging :as log]
             [datahike.index.interface :as di]
+            [konserve.utils :as ku]
             [datahike.gc-roots :as roots]
             [datahike.writing :as dwriting]
             [datahike.migrate.cbor :as mcbor]
@@ -2550,9 +2551,12 @@
                               (let [store (:store @conn)
                                     id (keyword "datahike.migrate" (str "build-capture-" (random-uuid)))]
                                 (k/add-write-hook! store id
-                                                   (fn [{:keys [key]}]
-                                                     (when (uuid? key)
-                                                       (swap! captured-keys conj key))))
+                                                   ;; multi-assoc reports its
+                                                   ;; batch under :kvs, not :key.
+                                                   (fn [{:keys [key kvs]}]
+                                                     (doseq [k (if kvs (ku/kv-keys kvs) [key])]
+                                                       (when (uuid? k)
+                                                         (swap! captured-keys conj k)))))
                                 id))
                        :cljs nil)
             stop-capture! #?(:clj (when build-root

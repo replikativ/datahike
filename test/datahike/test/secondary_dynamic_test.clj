@@ -7,6 +7,7 @@
    [datahike.gc-guard :as guard]
    [datahike.gc-roots :as roots]
    [konserve.core :as k]
+   [konserve.utils :refer [multi-key-capable?]]
    [datahike.index.secondary :as sec]
    [datahike.writing :as writing]
    [superv.async :refer [<?? S]]))
@@ -80,14 +81,25 @@
     ;; nothing references until install's commit publishes the key-map.
     ;; Write FIRST, then block — the test observes the written key while the
     ;; build is paused.
-    (let [key (random-uuid)
-          {:keys [store written]} @state]
-      (k/assoc store key {:private-node (:v datom)} {:sync? true})
-      (swap! written conj key)
-      (when-let [{:keys [entered release blocked?]} @slow-build-control]
-        (when (compare-and-set! blocked? false true)
-          (deliver entered true)
-          @release))
+    (let [{:keys [store written writes]} @state
+          n (swap! writes inc)]
+      ;; Alternate the write shape where the backend allows: multi-assoc
+      ;; reports :kvs to write hooks, plain assoc reports :key — the capture
+      ;; must see both. (A file store is not multi-key-capable; there the
+      ;; :kvs branch is exercised by the multi-key backends in CI.)
+      (let [key (random-uuid)]
+        (if (and (even? n) (multi-key-capable? store))
+          (k/multi-assoc store {key {:private-node (:v datom)}
+                                (random-uuid) {:private-node (:v datom)}} {:sync? true})
+          (k/assoc store key {:private-node (:v datom)} {:sync? true}))
+        (swap! written conj key))
+      ;; Block on the SECOND datom, so the checkpoint must cover more than the
+      ;; first write to pass.
+      (when (= n 2)
+        (when-let [{:keys [entered release blocked?]} @slow-build-control]
+          (when (compare-and-set! blocked? false true)
+            (deliver entered true)
+            @release)))
       this)))
 
 (defonce store-writing-state (atom nil))
@@ -424,8 +436,9 @@
           (d/transact conn [{:db/ident :person/name
                              :db/valueType :db.type/string
                              :db/cardinality :db.cardinality/one}
-                            {:person/name "Alice"}])
-          (reset! store-writing-state {:store (:store @conn) :written (atom #{})})
+                            {:person/name "Alice"}
+                            {:person/name "Bob"}])
+          (reset! store-writing-state {:store (:store @conn) :written (atom #{}) :writes (atom 0)})
           (reset! slow-build-control
                   {:entered entered :release release :blocked? (atom false)})
           (d/transact conn [{:db/ident :idx/private
