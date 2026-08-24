@@ -40,6 +40,9 @@
             [datahike.schema :as ds]
             [datahike.tools :as dt]
             [datahike.gc-guard :as guard]
+            [replikativ.logging :as log]
+            [datahike.index.interface :as di]
+            [datahike.gc-roots :as roots]
             [datahike.writing :as dwriting]
             [datahike.migrate.cbor :as mcbor]
             [datahike.migrate.ids :as ids]
@@ -554,6 +557,46 @@
                      {:error :migrate/xform-not-an-option :fn "export-transformed"})))
    (export-db* db target (assoc opts :xform xform) "export-transformed")))
 
+(defn- quiet-release-root!
+  "Release a root and stop its renewal without letting cleanup mask the real
+   result — the store may already be closed, in which case the lease expires on
+   its own and the next collector reaps it. Synchronous by design: it runs in
+   positions (a go block's finally) where parking is not allowed."
+  [db root-id stop-renewal!]
+  (when stop-renewal! (stop-renewal!))
+  (when root-id
+    (try (roots/release! db root-id {:sync? true})
+         (catch #?(:clj Throwable :cljs :default) e
+           (log/warn :datahike/gc-root-release-failed
+                     {:id root-id :error #?(:clj (.getMessage ^Throwable e) :cljs (str e))})))))
+
+(defn- quiet-root!
+  "Best-effort durable root for a long operation, with background renewal and
+   loss tracking. Returns [root-id stop-renewal! lost-atom]; [nil nil nil] when
+   the store cannot take one — protection then falls back to what it was (the
+   guard, the floor), with a warning, rather than failing an operation that had
+   no durable protection before this existed. Synchronous: called from
+   positions that cannot park."
+  [db kind record note]
+  (try
+    (let [id (roots/root! db {:kind kind :record record :note note} {:sync? true})
+          lost (atom nil)]
+      [id (roots/start-renewal! db id {:on-lost #(reset! lost %)}) lost])
+    (catch #?(:clj Throwable :cljs :default) e
+      (log/warn :datahike/gc-root-declare-failed
+                {:note note :error #?(:clj (.getMessage ^Throwable e) :cljs (str e))})
+      [nil nil nil])))
+
+(defn- assert-root-kept!
+  "The publish gate: a lease lost mid-operation means what the root protected
+   may already be swept, and the operation must fail rather than hand back a
+   result that names deleted objects."
+  [lost note]
+  (when-let [e (some-> lost deref)]
+    (throw (ex-info (str "The GC root protecting this " note " was lost while it ran; "
+                         "its data may have been swept. Re-run it.")
+                    {:type :gc/root-lost :note note} e))))
+
 (defn- export-db*
   "The shared implementation of `export-db` and `export-transformed`. `who` is
    the public name to blame in errors."
@@ -583,18 +626,34 @@
              ;;     an unflushed in-memory db. Plenty of legitimate exports are of
              ;;     such a db (`db-with`, a `:memory` store mid-test), and those
              ;;     cannot hold in-store blobs anyway.
-             blob-plan (when (mblobs/schema-has-store-refs? db)
-                         (<?- (mblobs/plan db (:store db) opts)))
-             opts (cond-> opts
-                    (seq (:carried blob-plan)) (assoc mman/blob-plan-key blob-plan)
-                    (seq (:external blob-plan)) (assoc mman/blob-plan-key blob-plan))]
+             ;; Pin the exported snapshot for the export's duration: an export
+             ;; can read for hours, and `remove-before` retention or another
+             ;; process's collector must not sweep under it. Best-effort — a
+             ;; `db-with` value or an unflushed :memory db has no commit record
+             ;; to pin and exports exactly as before.
+             [export-root stop-export-renewal! _export-lost]
+             (if-let [record (and (:store db)
+                                  (try (roots/commit-record db {:sync? true})
+                                       (catch #?(:clj Throwable :cljs :default) _ nil)))]
+               (quiet-root! db :pin record (str who " snapshot"))
+               [nil nil nil])]
          ;; Blob carriage. Planned BEFORE anything is written so the manifest can
          ;; declare it, and the bytes are written before the manifest — which is
          ;; the commit marker — so a dump that has a manifest has its blobs. Same
          ;; ordering the konserve-sync walker needs when it ships blobs ahead of
          ;; the branch head: nothing may name an object that is not there yet.
-         (when-let [plan (get opts mman/blob-plan-key)]
-           (<?- (with-blob-writer target opts #(mblobs/copy-out! (:store db) plan % opts))))
+         (try
+           ;; Everything from the blob PLAN on sits inside the releasing try:
+           ;; the plan walks index addresses and can throw, and a throw before
+           ;; the release would leave the renewal pinning this snapshot for
+           ;; the process lifetime.
+           (let [blob-plan (when (mblobs/schema-has-store-refs? db)
+                             (<?- (mblobs/plan db (:store db) opts)))
+                 opts (cond-> opts
+                        (seq (:carried blob-plan)) (assoc mman/blob-plan-key blob-plan)
+                        (seq (:external blob-plan)) (assoc mman/blob-plan-key blob-plan))]
+             (when-let [plan (get opts mman/blob-plan-key)]
+               (<?- (with-blob-writer target opts #(mblobs/copy-out! (:store db) plan % opts))))
          ;; The records to write. `:sort? true` spills sorted runs to local temp
          ;; files and k-way merges them; `:sort? false` needs no scratch at all
          ;; but cannot order a same-transaction card-one replacement, because it
@@ -605,8 +664,8 @@
          ;; shape it was ALSO blamed for was never the obstacle, since every read
          ;; in the merge is a synchronous local file read and no channel op ever
          ;; occurs inside it.
-         (let [tmp-dir (when (:sort? opts) (fs/temp-dir! "dh-export"))]
-           (try
+             (let [tmp-dir (when (:sort? opts) (fs/temp-dir! "dh-export"))]
+               (try
              ;; NOT a `write-to!` closure any more. It held the konserve write,
              ;; and a closure is exactly what the `go` state machine cannot enter
              ;; — the same rule that reshaped the importer. Inlined so the awaits
@@ -617,24 +676,26 @@
              ;; a seq consumed in the non-parking arm is retained just the same.
              ;; Fixing only the store arm would have left write-chunked! holding
              ;; the whole dump, with nothing in the suite to notice.
-             (do
-               (if (mstore/store-target? target)
-                 (let [m (<?- (mstore/open target opts))]
-                   (try
-                     (<?- (mstore/write-chunks! m (sorted-record-seq db opts tmp-dir)
-                                                (:chunk-size opts)
-                                                (fn [digest chunks]
-                                                  (build-manifest db (with-source-count db opts) digest chunks))
-                                                progress opts
-                                                (get opts :compression mz/default-codec)))
-                     (finally (<?- (mstore/close m opts)))))
-                 (write-chunked! db opts target (sorted-record-seq db opts tmp-dir)
-                                 (:chunk-size opts) progress)))
-             (finally
-               (when tmp-dir
-                 (doseq [n (or (fs/list-names tmp-dir) [])]
-                   (fs/delete! (fs/join tmp-dir n)))
-                 (fs/delete! tmp-dir)))))))))))
+                 (do
+                   (if (mstore/store-target? target)
+                     (let [m (<?- (mstore/open target opts))]
+                       (try
+                         (<?- (mstore/write-chunks! m (sorted-record-seq db opts tmp-dir)
+                                                    (:chunk-size opts)
+                                                    (fn [digest chunks]
+                                                      (build-manifest db (with-source-count db opts) digest chunks))
+                                                    progress opts
+                                                    (get opts :compression mz/default-codec)))
+                         (finally (<?- (mstore/close m opts)))))
+                     (write-chunked! db opts target (sorted-record-seq db opts tmp-dir)
+                                     (:chunk-size opts) progress)))
+                 (finally
+                   (when tmp-dir
+                     (doseq [n (or (fs/list-names tmp-dir) [])]
+                       (fs/delete! (fs/join tmp-dir n)))
+                     (fs/delete! tmp-dir))))))
+           (finally
+             (quiet-release-root! db export-root stop-export-renewal!)))))))))
 
 (defn export-to-sink
   "Stream a database's records into a caller-supplied SINK. **Experimental.**
@@ -2451,6 +2512,64 @@
      (go-try-
       (let [tmp   (fs/temp-dir! "dh-index-build")
             token (guard/writing! store-id)
+            ;; A build writes trees for hours that nothing names until the
+            ;; publishing commit. The checkpoint root starts empty and gains
+            ;; each family's key as it completes (`:on-family-built` below), so
+            ;; a collector in any process spares finished work; the family in
+            ;; flight is covered by the guard (this process) and the sweep
+            ;; floor (others).
+            checkpoint-record (atom {:meta {:datahike/commit-id (random-uuid)}
+                                     :config (:config @conn)})
+            [build-root stop-build-renewal! build-lost]
+            (quiet-root! @conn :checkpoint @checkpoint-record "index build")
+            ;; The family IN FLIGHT flushes nodes for possibly longer than any
+            ;; sweep floor. Capture every key the build writes (a konserve
+            ;; write hook) and fold them into the checkpoint's
+            ;; :datahike.gc/keys on a short cadence; a completed family's tree
+            ;; then covers them and the set is dropped (:on-family-built).
+            captured-keys (atom #{})
+            checkpoint-degraded (atom nil)
+            ;; ONE writer path for the checkpoint record, serialized by a lock:
+            ;; the 2-second folder and the family-completion callback otherwise
+            ;; interleave — a fold prepared before a completion could land after
+            ;; it and resurrect a stale record, and their separate resets could
+            ;; drop the next family's first keys. A failed write is remembered
+            ;; (:degraded) and surfaced at publish.
+            checkpoint-lock #?(:clj (Object.) :cljs nil)
+            write-checkpoint! #?(:clj (fn []
+                                        (locking checkpoint-lock
+                                          (let [rec (assoc @checkpoint-record
+                                                           :datahike.gc/keys @captured-keys)]
+                                            (try (roots/set-record! @conn build-root rec {:sync? true})
+                                                 (catch Throwable e
+                                                   (reset! checkpoint-degraded (.getMessage ^Throwable e))
+                                                   (log/warn :datahike/gc-root-checkpoint-failed
+                                                             {:error (.getMessage ^Throwable e)}))))))
+                                 :cljs (fn [] nil))
+            hook-id #?(:clj (when build-root
+                              (let [store (:store @conn)
+                                    id (keyword "datahike.migrate" (str "build-capture-" (random-uuid)))]
+                                (k/add-write-hook! store id
+                                                   (fn [{:keys [key]}]
+                                                     (when (uuid? key)
+                                                       (swap! captured-keys conj key))))
+                                id))
+                       :cljs nil)
+            stop-capture! #?(:clj (when build-root
+                                    (let [stop (async/chan)
+                                          folded (atom 0)]
+                                      (async/go-loop []
+                                        (let [[_ port] (async/alts! [stop (async/timeout 2000)])]
+                                          (when-not (= port stop)
+                                            (let [n (count @captured-keys)]
+                                              (when (> n @folded)
+                                                (reset! folded n)
+                                                (write-checkpoint!)))
+                                            (recur))))
+                                      (fn []
+                                        (async/close! stop)
+                                        (when hook-id (k/remove-write-hook! (:store @conn) hook-id)))))
+                             :cljs nil)
             res
             (try
               (let [;; ---- pass 1, ONLY under :allocate ----
@@ -2580,7 +2699,32 @@
                     index-config (assoc (:index-config config)
                                         :indexed (:db/index rschema)
                                         :sync? build-sync?
-                                        :flush-fn (dwriting/bulk-flush-fn store build-sync?))
+                                        :flush-fn (dwriting/bulk-flush-fn store build-sync?)
+                                        ;; Grow the checkpoint root as families
+                                        ;; complete. Non-parking, synchronous —
+                                        ;; the seam's contract in init.cljc.
+                                        :on-family-built
+                                        #?(:clj (when build-root
+                                                  (fn [family current temporal]
+                                                    ;; Record-field spelling: :eavt -> :eavt-key /
+                                                    ;; :temporal-eavt-key, matching db->stored.
+                                                    ;; Families are sequential, so every key
+                                                    ;; captured so far belongs to the family
+                                                    ;; just completed: its detached tree now
+                                                    ;; covers them and the set is dropped —
+                                                    ;; under the same lock as the folder, so
+                                                    ;; no stale fold can land after this.
+                                                    (let [k (keyword (str (name family) "-key"))
+                                                          tk (keyword (str "temporal-" (name family) "-key"))
+                                                          idx-name (:index (:config @conn))]
+                                                      (locking checkpoint-lock
+                                                        (reset! captured-keys #{})
+                                                        (swap! checkpoint-record
+                                                               (fn [r]
+                                                                 (cond-> (assoc r k (di/with-storage idx-name current nil))
+                                                                   temporal (assoc tk (di/with-storage idx-name temporal nil))))))
+                                                      (write-checkpoint!))))
+                                           :cljs nil))
                     ;; ---- three sorts, six trees ----
                     ;; Announced, because this is the long phase and it emits
                     ;; nothing while it runs: three external sorts and six tree
@@ -2625,6 +2769,17 @@
                     ;; the same reason: `throwable-promise` is derefable AND
                     ;; parkable on the JVM, while ClojureScript has only the
                     ;; promise-chan. A bare `deref` here would not compile there.
+                    _        #?(:clj (do (assert-root-kept! build-lost "index build")
+                                          ;; The atom only hears renewals; read the
+                                          ;; registry itself at the gate.
+                                         (when build-root
+                                           (roots/assert-live! @conn build-root nil {:sync? true}))
+                                         (when-let [why @checkpoint-degraded]
+                                           (warn! (str "[datahike.migrate] a checkpoint update failed during this "
+                                                       "build (" why "); a collector in another process may have "
+                                                       "swept unpublished nodes older than its sweep floor. "
+                                                       "If verification fails below, re-run the import."))))
+                                :cljs nil)
                     p        (dwriter/publish-built-db! conn fields)
                     report   #?(:clj (if (:sync? opts) @p (<?- p))
                                 :cljs (<?- p))
@@ -2679,11 +2834,15 @@
                          :recommended-heap (:recommended-heap mem)
                          :errors      []}
                   refs (assoc :dangling-refs refs)))
-              (catch #?(:clj Exception :cljs :default) e e))]
+              ;; Throwable: an Error must still release the root, the renewal,
+              ;; the guard and the scratch — same posture as import's cleanup.
+              (catch #?(:clj Throwable :cljs :default) e e))]
         ;; The guard closes and the scratch goes away on BOTH paths, here rather
         ;; than in a `finally` — see the docstring. The guard must outlive the
         ;; publish, and it does: `publish-built-db!`'s promise resolves only after
         ;; the writer has committed and `reset!` the connection.
+        #?(:clj (when stop-capture! (stop-capture!)) :cljs nil)
+        (quiet-release-root! @conn build-root stop-build-renewal!)
         (guard/done! store-id token)
         (doseq [n (or (fs/list-names tmp) [])] (fs/delete! (fs/join tmp n)))
         (fs/delete! tmp)
@@ -3087,8 +3246,14 @@
        ;; The close is therefore explicit on both the success and the failure
        ;; path, INSIDE the go block, since core.async cannot park in a `finally`.
          (let [m (<?- (mstore/open source opts))
-               manifest (<?- (mstore/read-manifest m opts))
-               mem (estimate-from-manifest manifest (manifest-total-bytes manifest nil) batch-size)
+               ;; A manifest that cannot be read or sized must still close the
+               ;; source — a pooled backend handle leaks otherwise.
+               [manifest mem] (try
+                                (let [manifest (<?- (mstore/read-manifest m opts))]
+                                  [manifest (estimate-from-manifest manifest (manifest-total-bytes manifest nil) batch-size)])
+                                (catch #?(:clj Throwable :cljs :default) e
+                                  (<?- (mstore/close m opts))
+                                  (throw e)))
                ;; GC guard across restore-blobs! AND the datom import. A carried
                ;; blob is written under its content id before any datom names
                ;; it, and the datom that finally does may be in the LAST batch —
@@ -3099,6 +3264,17 @@
                ;; for the same reason the store close is (no `finally` here).
                gc-sid (:id (:store (:config @conn)))
                gc-token (guard/writing! gc-sid)
+               ;; The blobs restore-blobs! writes are reachable from nothing
+               ;; until a datom names them, possibly in the LAST batch. The
+               ;; in-process guard above covers this process; the root covers
+               ;; every other collector.
+               [blob-root stop-blob-renewal! blob-lost]
+               (if-let [carried (seq (get-in manifest [:store-refs :carried]))]
+                 (quiet-root! @conn :checkpoint
+                              {:meta {:datahike/commit-id (random-uuid)}
+                               :datahike.gc/keys (set carried)}
+                              "import-db carried blobs")
+                 [nil nil nil])
                res (try
                      ;; The SAME guard the filesystem arm gets from `open-dump`.
                      ;; Inside the `try` so a refused dump still closes the store.
@@ -3124,6 +3300,14 @@
                      ;; and close the store, or the token pins every later
                      ;; sweep to this import's start for the process lifetime.
                      (catch #?(:clj Throwable :cljs :default) e e))]
+           ;; The gate runs BEFORE the release: it reads the registry itself
+           ;; (the lost atom only hears renewals), and a root we released would
+           ;; trivially be gone. Then release inside the guard, like every
+           ;; other write this import makes.
+           (when-not (instance? #?(:clj Throwable :cljs js/Error) res)
+             (assert-root-kept! blob-lost "import")
+             (when blob-root (roots/assert-live! @conn blob-root nil {:sync? true})))
+           (quiet-release-root! @conn blob-root stop-blob-renewal!)
            (guard/done! gc-sid gc-token)
            (<?- (mstore/close m opts))
            (if (instance? #?(:clj Throwable :cljs js/Error) res) (throw res) res))
@@ -3151,6 +3335,13 @@
                ;; Same GC guard as the store arm, for the same blob window.
                (let [gc-sid (:id (:store (:config @conn)))
                      gc-token (guard/writing! gc-sid)
+                     [blob-root stop-blob-renewal! blob-lost]
+                     (if-let [carried (seq (get-in manifest [:store-refs :carried]))]
+                       (quiet-root! @conn :checkpoint
+                                    {:meta {:datahike/commit-id (random-uuid)}
+                                     :datahike.gc/keys (set carried)}
+                                    "import-db carried blobs")
+                       [nil nil nil])
                      res (try
                            (<?- (restore-blobs! conn manifest source opts))
                            (<?- (import-via conn manifest mem
@@ -3161,6 +3352,10 @@
                                                       {:op :read-chunk :chunk f}))}
                                             opts))
                            (catch #?(:clj Throwable :cljs :default) e e))]
+                 (when-not (instance? #?(:clj Throwable :cljs js/Error) res)
+                   (assert-root-kept! blob-lost "import")
+                   (when blob-root (roots/assert-live! @conn blob-root nil {:sync? true})))
+                 (quiet-release-root! @conn blob-root stop-blob-renewal!)
                  (guard/done! gc-sid gc-token)
                  (if (instance? #?(:clj Throwable :cljs js/Error) res) (throw res) res)))))))))))
 

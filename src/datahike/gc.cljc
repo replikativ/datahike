@@ -108,8 +108,11 @@
                              datahike/created-at
                              datahike/updated-at]} :meta}
                     record
-                    in-range? (> (get-time (or updated-at created-at))
-                                 (get-time after-date))]
+                    ;; A synthetic checkpoint record may carry no dates; it has
+                    ;; no parents to walk either, so "not in range" is exact.
+                    in-range? (if-let [d (or updated-at created-at)]
+                                (> (get-time d) (get-time after-date))
+                                false)]
                 (let [sec-reachable (when (seq secondary-index-keys)
                                       (reduce-kv
                                        (fn [acc _idx-ident key-map]
@@ -134,8 +137,8 @@
                       bind (fn [idx root]
                              (cond-> (with-storage (:index config) idx (:storage store))
                                root (-seed-root! root)))
-                      aevt'  (bind aevt-key aevt-root)
-                      taevt' (when (:keep-history? config)
+                      aevt'  (when aevt-key (bind aevt-key aevt-root))
+                      taevt' (when (and (:keep-history? config) temporal-aevt-key)
                                (bind temporal-aevt-key temporal-aevt-root))
                             ;; The schema names which attributes can hold store-refs.
                             ;; It is content-addressed and rarely changes, so memoize
@@ -163,19 +166,36 @@
                             ;; can do nothing with them, but `reachable-store-refs`
                             ;; hands the set to the application, which knows how to
                             ;; delete from wherever it put them.
-                      record-refs (if schema
-                                    (store-refs config schema
-                                                (:ident-ref-map schema-meta) aevt' taevt')
-                                    #{})
+                      ;; Literal extra keys a ROOT record may carry
+                      ;; (`:datahike.gc/keys`): blob ids an import restored
+                      ;; before any datom names them, a user upload awaiting its
+                      ;; transaction. Unioned into BOTH sets — the sweep spares
+                      ;; them, and `reachable-store-refs` reports them to the
+                      ;; application's own blob sweep. Ordinary commit records
+                      ;; never carry the field.
+                      extra-keys (set (:datahike.gc/keys record))
+                      record-refs (set/union
+                                   (if (and schema aevt')
+                                     (store-refs config schema
+                                                 (:ident-ref-map schema-meta) aevt' taevt')
+                                     #{})
+                                   extra-keys)
                       new-reachable (cond-> (set/union reachable #{to-check}
-                                                       (when schema-meta-key #{schema-meta-key})
-                                                       (-mark (bind eavt-key eavt-root))
-                                                       (-mark aevt')
-                                                       (-mark (bind avet-key avet-root)))
-                                      (:keep-history? config)
-                                      (set/union (-mark (bind temporal-eavt-key temporal-eavt-root))
-                                                 (-mark taevt')
-                                                 (-mark (bind temporal-avet-key temporal-avet-root)))
+                                                       extra-keys
+                                                       (when schema-meta-key #{schema-meta-key}))
+                                      ;; A checkpoint record may name only the
+                                      ;; trees built so far; absent families are
+                                      ;; simply not walked. A COMMIT record always
+                                      ;; has all of them.
+                                      eavt-key (set/union (-mark (bind eavt-key eavt-root)))
+                                      aevt-key (set/union (-mark aevt'))
+                                      avet-key (set/union (-mark (bind avet-key avet-root)))
+                                      (and (:keep-history? config) temporal-eavt-key)
+                                      (set/union (-mark (bind temporal-eavt-key temporal-eavt-root)))
+                                      (and (:keep-history? config) temporal-aevt-key)
+                                      (set/union (-mark taevt'))
+                                      (and (:keep-history? config) temporal-avet-key)
+                                      (set/union (-mark (bind temporal-avet-key temporal-avet-root)))
                                       sec-reachable
                                       (set/union sec-reachable))]
                   (recur (concat r (when in-range? parents))
@@ -360,6 +380,15 @@
                  ;; head — same seed shape, same walk.
                  live-roots (<? S (roots/reap-expired! store {:sync? false}))
                  root-keys (mapv roots/record-key (keys live-roots))
+                 ;; Snapshot each root's RECORD as well as its id: a checkpoint
+                 ;; is rewritten in place as its build advances, and content the
+                 ;; mark never saw must be re-walked exactly like a new root.
+                 record-snapshot (loop [ks (seq root-keys) acc {}]
+                                   (if (nil? ks)
+                                     acc
+                                     (recur (next ks)
+                                            (assoc acc (first ks)
+                                                   (<? S (k/get store (first ks)))))))
                  _ (when (seq live-roots)
                      (log/trace :datahike/gc-retain-roots {:root-count (count live-roots)}))
                  ;; shared across branches: the schema is content-addressed, so
@@ -384,20 +413,48 @@
                  ;; itself; a root of the CURRENT head is never exposed, since
                  ;; the head's objects are reachable through the branch anyway.
                  walked (loop [walked walked
-                               seen (set (keys live-roots))
+                               snapshot record-snapshot
                                attempt 0]
                           (let [late (<? S (roots/live-roots store {:sync? false}))
-                                new-keys (mapv roots/record-key (remove seen (keys late)))]
-                            (if (or (empty? new-keys) (= attempt 8))
-                              walked
-                              (do (log/debug :datahike/gc-late-roots {:count (count new-keys)})
+                                late-keys (mapv roots/record-key (keys late))
+                                current (loop [ks (seq late-keys) acc {}]
+                                          (if (nil? ks)
+                                            acc
+                                            (recur (next ks)
+                                                   (assoc acc (first ks)
+                                                          (<? S (k/get store (first ks)))))))
+                                ;; New id OR rewritten record — either way the
+                                ;; mark has not seen this content.
+                                stale-keys (into []
+                                                 (keep (fn [[k rec]]
+                                                         (when (not= rec (get snapshot k)) k)))
+                                                 current)]
+                            (cond
+                              (empty? stale-keys) walked
+                              ;; A writer rewriting its checkpoint faster than we
+                              ;; can walk it must not starve the sweep forever —
+                              ;; but neither may its LAST content go unwalked.
+                              ;; Walk what is known stale once more, then stop:
+                              ;; anything newer still is younger than any sane
+                              ;; floor.
+                              (= attempt 8)
+                              (do (log/warn :datahike/gc-roots-unstable
+                                            {:count (count stale-keys)})
+                                  (into walked
+                                        (->> stale-keys
+                                             (map #(reachable-in-branch store % remove-before config
+                                                                        schema-cache {:sync? false}))
+                                             async/merge
+                                             (<<? S))))
+                              :else
+                              (do (log/debug :datahike/gc-late-roots {:count (count stale-keys)})
                                   (recur (into walked
-                                               (->> new-keys
+                                               (->> stale-keys
                                                     (map #(reachable-in-branch store % remove-before config
                                                                                schema-cache {:sync? false}))
                                                     async/merge
                                                     (<<? S)))
-                                         (into seen (keys late))
+                                         current
                                          (inc attempt))))))
                  ;; Store-refs are unioned into the whitelist here. For an object that
                  ;; lives in THIS store that means the sweep spares it (and reclaims it
