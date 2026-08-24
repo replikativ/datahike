@@ -3,6 +3,7 @@
   (:require [datahike.connections :refer [delete-connection! *connections*]]
             [datahike.db :as db]
             [datahike.gc-guard :as guard]
+            [datahike.gc-roots :as roots]
             [datahike.db.transaction :as dbtx]
             [datahike.db.utils :as dbu]
             [datahike.db.interface :as dbi]
@@ -1133,6 +1134,20 @@
                         {:error (.getMessage e)}))))))
 
 #?(:clj
+   (defn- snapshot-record
+     "The commit-shaped record for the state `db` actually holds: its index
+      keys are the addresses of ITS roots. Not `roots/commit-record`, which
+      resolves through `[:meta :datahike/commit-id]` — the db a writer op
+      receives carries the indexes of the latest commit but a `:meta` that can
+      lag behind it, so the id would name the wrong snapshot. A dirty index
+      (no address) cannot be pinned; a build only ever sees committed state."
+     [db]
+     (let [record (second (db->stored db false))]
+       (when (some nil? (keep record [:eavt-key :aevt-key :avet-key]))
+         (log/raise "Cannot pin an unflushed snapshot." {:type :gc/root-unflushed-snapshot}))
+       record)))
+
+#?(:clj
    (defn build-secondary-index!
      "Backfill a secondary index by scanning AEVT for all covered attributes.
       Returns a channel so the writer can continue serving transactions. While
@@ -1164,57 +1179,96 @@
            gc-store-id (:id (:store (:config db)))
            ;; A versioned adapter may write private nodes while it builds. They
            ;; remain unreachable until install's commit publishes its key-map,
-           ;; so protect the whole scan -> ready-commit window from GC.
+           ;; so protect the whole scan -> ready-commit window from GC in this
+           ;; process. (A durable checkpoint for them is the follow-up.)
            gc-token (guard/writing! gc-store-id)
-           read-token (guard/reading! gc-store-id)]
+           ;; The snapshot being scanned is pinned with a DURABLE root, so a
+           ;; collector in any process keeps it until the ready commit lands.
+           ;; The lease is renewed in the background; if it is ever lost the
+           ;; build is discarded at install rather than published over swept
+           ;; nodes.
+           lost (atom nil)]
        (go-try-
-        (try
-          (let [populated-idx
-                (reduce
-                 (fn [current-idx attr]
-                   (let [datoms (dbi/datoms db :aevt [attr])
-                         n (atom 0)]
-                     (log/debug :datahike/backfilling {:attr attr})
-                     (let [result (reduce
-                                   (fn [idx d]
-                                     (if (> (.-tx ^datahike.datom.Datom d) building-since-tx)
-                                       idx
-                                       (do (swap! n inc)
-                                           (let [tx-id (.-tx ^datahike.datom.Datom d)
-                                                 tx-report {:datom d :added? true
-                                                            :tx-meta (dbtx/meta-for-tx-id db tx-id)}]
-                                             (if use-transient?
-                                               (do (sec/-transact! idx tx-report) idx)
-                                               (sec/-transact idx tx-report))))))
-                                   current-idx datoms)]
-                       (log/debug :datahike/backfilled {:attr attr :count @n})
-                       result)))
-                 t-idx attrs)
-                final-idx (if use-transient?
-                            (sec/-persistent! populated-idx)
-                            populated-idx)]
-            (log/trace :datahike/secondary-index-built {:idx-ident idx-ident})
-            {:idx-ident idx-ident
-             :index final-idx
-             :building-since-tx building-since-tx
-             ::gc-store-id gc-store-id
-             ::gc-token gc-token
-             ::read-token read-token})
-          (catch Throwable e
-            (close-secondary-index! idx)
-            (guard/done! gc-store-id gc-token)
-            (guard/read-done! gc-store-id read-token)
-            (throw e)))))))
+        (let [root-id (try (<?- (roots/root! db {:kind :pin
+                                                 :record (snapshot-record db)
+                                                 :note (str "secondary-index backfill " idx-ident)
+                                                 :owner {:idx-ident idx-ident}}))
+                           (catch Throwable e
+                             (close-secondary-index! idx)
+                             (guard/done! gc-store-id gc-token)
+                             (throw e)))
+              stop-renewal! (roots/start-renewal! db root-id {:on-lost #(reset! lost %)})
+              release-root! (fn []
+                              (stop-renewal!)
+                              (try (roots/release! db root-id {:sync? true})
+                                   (catch Throwable e
+                                     (log/warn :datahike/secondary-index-root-release-failed
+                                               {:idx-ident idx-ident :error (.getMessage ^Throwable e)}))))]
+          (try
+            (let [populated-idx
+                  (reduce
+                   (fn [current-idx attr]
+                     (let [datoms (dbi/datoms db :aevt [attr])
+                           n (atom 0)]
+                       (log/debug :datahike/backfilling {:attr attr})
+                       (let [result (reduce
+                                     (fn [idx d]
+                                       (if (> (.-tx ^datahike.datom.Datom d) building-since-tx)
+                                         idx
+                                         (do (swap! n inc)
+                                             (let [tx-id (.-tx ^datahike.datom.Datom d)
+                                                   tx-report {:datom d :added? true
+                                                              :tx-meta (dbtx/meta-for-tx-id db tx-id)}]
+                                               (if use-transient?
+                                                 (do (sec/-transact! idx tx-report) idx)
+                                                 (sec/-transact idx tx-report))))))
+                                     current-idx datoms)]
+                         (log/debug :datahike/backfilled {:attr attr :count @n})
+                         result)))
+                   t-idx attrs)
+                  final-idx (if use-transient?
+                              (sec/-persistent! populated-idx)
+                              populated-idx)]
+              (log/trace :datahike/secondary-index-built {:idx-ident idx-ident})
+              {:idx-ident idx-ident
+               :index final-idx
+               :building-since-tx building-since-tx
+               ::gc-store-id gc-store-id
+               ::gc-token gc-token
+               ::root-id root-id
+               ::root-db db
+               ::root-lost lost
+               ::release-root! release-root!})
+            (catch Throwable e
+              (close-secondary-index! idx)
+              (guard/done! gc-store-id gc-token)
+              (release-root!)
+              (throw e))))))))
 
 #?(:clj
    (defn finish-secondary-index-build!
-     "Release the GC guard carried by a completed background build. Call only
-      after install's writer callback, which means its ready commit is durable."
+     "Release the GC guard and the durable root carried by a completed
+      background build. Call only after install's writer callback, which means
+      its ready commit is durable. Idempotent."
      [build-result]
      (when-let [token (::gc-token build-result)]
        (guard/done! (::gc-store-id build-result) token))
-     (when-let [token (::read-token build-result)]
-       (guard/read-done! (::gc-store-id build-result) token))))
+     (when-let [release! (::release-root! build-result)]
+       (release!))))
+
+#?(:clj
+   (defn- assert-build-root-live!
+     "The publish-time check: the root that pinned this build's snapshot is
+      still there and was renewed recently. A build whose lease was lost —
+      reaped, or eaten by an older collector — may have scanned nodes that
+      have since been swept, and must not be published."
+     [{:keys [idx-ident] ::keys [root-id root-db root-lost]}]
+     (when-let [e (some-> root-lost deref)]
+       (throw (ex-info "Discarding a secondary-index build whose GC root was lost during the scan."
+                       {:type :gc/root-lost :idx-ident idx-ident :root-id root-id}
+                       e)))
+     (when root-id
+       (roots/assert-live! root-db root-id (quot roots/DEFAULT_TTL_MS 2) {:sync? true}))))
 
 #?(:clj
    (defn- drop-build-deltas [db idx-ident]
@@ -1241,6 +1295,7 @@
                        :expected-building-since-tx current-boundary
                        :actual-building-since-tx building-since-tx
                        :status status}))
+         (assert-build-root-live! build-result)
          (let [deltas (get-in old [:secondary-index-build-deltas idx-ident] [])
                use-transient? (satisfies? sec/ITransientSecondaryIndex index)
                t-idx (if use-transient? (sec/-as-transient index) index)
@@ -1262,9 +1317,7 @@
                  :tx-data []
                  :tx-meta {:db/txInstant (get-in old [:meta :datahike/updated-at])}
                  :secondary-index-build-guard
-                 {::gc-store-id (::gc-store-id build-result)
-                  ::gc-token (::gc-token build-result)
-                  ::read-token (::read-token build-result)}})))
+                 (select-keys build-result [::gc-store-id ::gc-token ::release-root!])})))
        (catch Throwable e
          (close-secondary-index! index)
          (finish-secondary-index-build! build-result)

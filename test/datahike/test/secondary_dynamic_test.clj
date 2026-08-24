@@ -4,6 +4,8 @@
    [clojure.test :refer [deftest testing is use-fixtures]]
    [datahike.api :as d]
    [datahike.gc-guard :as guard]
+   [datahike.gc-roots :as roots]
+   [konserve.core :as k]
    [datahike.index.secondary :as sec]
    [datahike.writing :as writing]
    [superv.async :refer [<?? S]]))
@@ -214,7 +216,12 @@
 
 (deftest asynchronous-backfill-replays-concurrent-deltas
   (testing "the writer remains available and immutable index updates are not lost"
-    (let [cfg {:store {:backend :memory :id (random-uuid)}
+    ;; A file store, not :memory: the collector is exercised DURING the scan
+    ;; below, and a :memory store's index roots are never flushed, so its mark
+    ;; cannot run at all ("Index needs to be properly flushed before marking").
+    (let [cfg {:store {:backend :file
+                       :id (random-uuid)
+                       :path (str "/tmp/datahike-sec-deltas-" (random-uuid))}
                :writer {:backend :self :writer-ownership :exclusive}
                :keep-history? false
                :schema-flexibility :write}
@@ -239,14 +246,25 @@
                 "the background scan reached its deterministic barrier")
             (is (= :building
                    (get-in (d/db conn) [:schema :idx/slow :db.secondary/status])))
-            (is (guard/read-in-flight? (get-in cfg [:store :id]))
-                "the primary snapshot is leased against GC during the scan")
-            (let [error (try
-                          (<?? S (d/gc-storage conn (java.util.Date.)))
-                          nil
-                          (catch clojure.lang.ExceptionInfo e e))]
-              (is (= :gc/read-lease-active (:type (ex-data error)))
-                  "offline GC refuses to sweep the leased snapshot"))
+            (let [store (:store @conn)
+                  head (k/get store :db nil {:sync? true})
+                  pins (vals (<?? S (roots/roots store)))
+                  pinned (when (= 1 (count pins))
+                           (k/get store (:record-key (first pins)) nil {:sync? true}))]
+              (is (= 1 (count pins))
+                  "the scanned snapshot is pinned with a durable root during the scan")
+              (is (= :pin (:kind (first pins))))
+              ;; Compared by index roots, not commit-id: the db a writer op
+              ;; receives can carry a lagging :meta, and what the pin must
+              ;; protect is the trees the scan reads.
+              (is (= (select-keys head [:eavt-key :aevt-key :avet-key])
+                     (select-keys pinned [:eavt-key :aevt-key :avet-key]))
+                  "and the root names the very trees the scan is reading")
+              ;; Offline GC no longer refuses; it collects around the pin. The
+              ;; scan then completes against the pinned snapshot below, which
+              ;; is the proof the pin held.
+              (is (set? (<?? S (d/gc-storage conn (java.util.Date.))))
+                  "offline GC runs during the scan instead of raising"))
 
             ;; Both transactions complete while the backfill is paused. The
             ;; card-one replacement contributes a retract and an assertion.
@@ -266,8 +284,8 @@
                   "the install removes its in-memory delta journal")
               (is (not (guard/in-flight? (get-in cfg [:store :id])))
                   "the ready commit releases the build's GC guard")
-              (is (not (guard/read-in-flight? (get-in cfg [:store :id])))
-                  "the ready commit releases the primary snapshot lease")))
+              (is (empty? (<?? S (roots/roots (:store @conn))))
+                  "the ready commit releases the snapshot's durable root")))
           (finally
             (reset! slow-build-control nil)
             (deliver release true)
@@ -318,7 +336,8 @@
           entered (promise)
           release-build (promise)]
       (d/create-database cfg)
-      (let [conn (d/connect cfg)]
+      (let [conn (d/connect cfg)
+            store (:store @conn)]
         (try
           (d/transact conn [{:db/ident :person/name
                              :db/valueType :db.type/string
@@ -341,7 +360,8 @@
                 (Thread/sleep 10)
                 (recur))))
           (is (not (guard/in-flight? store-id)))
-          (is (not (guard/read-in-flight? store-id)))
+          (is (empty? (<?? S (roots/roots store)))
+              "nor a durable root")
           (finally
             (reset! slow-build-control nil)
             (deliver release-build true)

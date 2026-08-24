@@ -62,11 +62,6 @@
 ;; one must see a sequence in flight on another.
 (defonce ^:private in-flight (atom {}))
 
-;; Long-running readers of an OLD root need a different guarantee from the
-;; values-then-pointer writers above. A sweep safe-point cannot protect nodes
-;; written before the reader began, so GC must defer while such a lease exists.
-(defonce ^:private read-leases (atom {}))
-
 ;; Tokens are counter values, not fresh objects: a token is a MAP KEY, and a bare
 ;; `(js/Object.)` implements neither IHash nor IEquiv in cljs, so it cannot be one.
 (defonce ^:private token-seq (atom 0))
@@ -107,30 +102,6 @@
    compares timestamps cannot tell a held guard from a missing one. This can."
   [store-id]
   (boolean (seq (get @in-flight store-id))))
-
-(defn reading!
-  "Pin old reachable nodes in-process by making GC defer for `store-id`.
-   Returns a token for [[read-done!]]. This is a process-local lease matching
-   Datahike's single-writer/maintenance model, not a cross-process lock."
-  [store-id]
-  (let [token (swap! token-seq inc)]
-    (swap! read-leases assoc-in [store-id token] true)
-    token))
-
-(defn read-done!
-  "Release a token returned by [[reading!]]."
-  [store-id token]
-  (swap! read-leases (fn [m]
-                       (let [m' (update m store-id dissoc token)]
-                         (if (empty? (get m' store-id))
-                           (dissoc m' store-id)
-                           m'))))
-  nil)
-
-(defn read-in-flight?
-  "Whether an old-root reader currently requires GC to defer."
-  [store-id]
-  (boolean (seq (get @read-leases store-id))))
 
 (defn ever-guarded?
   "Has THIS PROCESS ever opened an unreferenced-write sequence on `store-id`?
