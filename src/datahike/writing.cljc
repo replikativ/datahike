@@ -19,6 +19,7 @@
             [datahike.online-gc :as online-gc]
             [konserve.core :as k]
             [konserve.utils :as ku]
+            [konserve.protocols :as kp]
             [konserve.store :as ks]
             [replikativ.logging :as log]
             [hasch.core :refer [uuid squuid]]
@@ -1224,58 +1225,84 @@
               ;; short cadence. A failed fold only narrows protection back to
               ;; the guard and the floor, so it warns rather than aborts.
               captured-keys (atom #{})
+              ;; Anything the checkpoint could not do — no hook support on this
+              ;; store, the capture cap reached — is remembered and surfaced at
+              ;; install, so a degraded build is never silently "protected".
+              checkpoint-degraded (atom nil)
+              ;; Every key an adapter writes counts — a third-party adapter may
+              ;; root its state under a bare keyword or a string. Only datahike's
+              ;; own mutable cells are excluded; over-capturing a key that is
+              ;; reachable anyway is harmless.
+              own-cell? (fn [k]
+                          (or (= k branch)
+                              (= k :branches)
+                              (= k roots/registry-key)
+                              (and (vector? k) (= :datahike/gc-root (first k)))))
               capture! (fn [{:keys [key kvs]}]
                          ;; multi-assoc reports its batch under :kvs, not :key.
-                         (let [ks (cond-> (if kvs (ku/kv-keys kvs) [key]))]
-                           (doseq [k ks]
-                             (when (or (uuid? k) (vector? k))
-                               (swap! captured-keys conj k)))))
+                         (doseq [k (if kvs (ku/kv-keys kvs) [key])]
+                           (when-not (own-cell? k)
+                             (swap! captured-keys conj k))))
               hook-id (let [id (keyword "datahike.writing"
-                                        (str "backfill-capture-" root-id))]
-                        (k/add-write-hook! store id capture!)
-                        id)
+                                        (str "backfill-capture-" root-id))
+                            ;; add-write-hook! silently does nothing on a store
+                            ;; without hook support (a tiered store, say).
+                            supported? (try (some? (kp/-get-write-hooks store))
+                                            (catch Throwable _ false))]
+                        (if supported?
+                          (do (k/add-write-hook! store id capture!) id)
+                          (do (reset! checkpoint-degraded :no-write-hooks)
+                              (log/warn :datahike/secondary-index-checkpoint-unsupported
+                                        {:idx-ident idx-ident
+                                         :note "this store reports no write hooks; the build's private writes are covered by the guard and the sweep floor only"})
+                              nil)))
               ;; The fold's base is the record as root! SHAPED it — a pin strips
               ;; :datahike/parents, and folding the raw head-record back would
               ;; quietly turn the pin into a ref that retains ancestry.
               checkpoint-base (update head-record :meta dissoc :datahike/parents)
+              folded (atom 0)
+              ;; ONE fold path, shared by the periodic loop and by install's final
+              ;; fold. Returns true when the record on the store names every key
+              ;; captured so far. `folded` advances only on a successful write,
+              ;; so a transient failure is retried rather than dropped.
+              fold! (fn []
+                      (let [ks @captured-keys
+                            n (count ks)]
+                        (if (<= n @folded)
+                          true
+                          (try (roots/set-record! db root-id
+                                                  (assoc checkpoint-base :datahike.gc/keys ks)
+                                                  {:sync? true})
+                               (swap! folded max n)
+                               true
+                               (catch Throwable e
+                                 (log/warn :datahike/secondary-index-checkpoint-failed
+                                           {:idx-ident idx-ident
+                                            :error (.getMessage ^Throwable e)})
+                                 false)))))
               stop-capture-ch (async/chan)
-              _fold-loop (async/go-loop [folded 0 warned? false]
+              _fold-loop (async/go-loop []
                            (let [[_ port] (async/alts! [stop-capture-ch (async/timeout 2000)])]
                              (when-not (= port stop-capture-ch)
-                               (let [ks @captured-keys
-                                     n (count ks)]
-                                 (cond
-                                   ;; The hook is store-wide, so ordinary commits
-                                   ;; during a long backfill accumulate here too.
-                                   ;; Past this bound the record write itself
-                                   ;; becomes the problem; degrade to the guard
-                                   ;; and the floor, loudly, instead of growing
-                                   ;; without limit.
-                                   (> n 50000)
-                                   (do (when-not warned?
-                                         (log/warn :datahike/secondary-index-checkpoint-capped
-                                                   {:idx-ident idx-ident :captured n}))
-                                       (recur folded true))
-                                   (> n folded)
-                                   ;; Advance `folded` only on a SUCCESSFUL write:
-                                   ;; a transient failure must be retried on the
-                                   ;; next tick, or its keys are never protected.
-                                   (recur (try (roots/set-record! db root-id
-                                                                  (assoc checkpoint-base :datahike.gc/keys ks)
-                                                                  {:sync? true})
-                                               n
-                                               (catch Throwable e
-                                                 (log/warn :datahike/secondary-index-checkpoint-failed
-                                                           {:idx-ident idx-ident
-                                                            :error (.getMessage ^Throwable e)})
-                                                 folded))
-                                          warned?)
-                                   :else (recur folded warned?))))))
+                               ;; The hook is store-wide, so ordinary commits
+                               ;; during a long backfill accumulate here too. Past
+                               ;; this bound the record write itself becomes the
+                               ;; problem: stop capturing (the hook goes, so the
+                               ;; heap stops growing too), remember it, and let
+                               ;; the guard and the floor carry the rest.
+                               (when (and hook-id (> (count @captured-keys) 50000))
+                                 (reset! checkpoint-degraded :capped)
+                                 (log/warn :datahike/secondary-index-checkpoint-capped
+                                           {:idx-ident idx-ident :captured (count @captured-keys)})
+                                 (try (k/remove-write-hook! store hook-id) (catch Throwable _ nil)))
+                               (fold!)
+                               (recur))))
               release-root! (fn []
                               (stop-renewal!)
                               (async/close! stop-capture-ch)
-                              (try (k/remove-write-hook! store hook-id)
-                                   (catch Throwable _ nil))
+                              (when hook-id
+                                (try (k/remove-write-hook! store hook-id)
+                                     (catch Throwable _ nil)))
                               (try (roots/release! db root-id {:sync? true})
                                    (catch Throwable e
                                      (log/warn :datahike/secondary-index-root-release-failed
@@ -1314,6 +1341,8 @@
                ::root-id root-id
                ::root-db db
                ::root-lost lost
+               ::fold-now! fold!
+               ::checkpoint-degraded checkpoint-degraded
                ::release-root! release-root!})
             (catch Throwable e
               (close-secondary-index! idx)
@@ -1338,13 +1367,24 @@
       still there and was renewed recently. A build whose lease was lost —
       reaped, or eaten by an older collector — may have scanned nodes that
       have since been swept, and must not be published."
-     [{:keys [idx-ident] ::keys [root-id root-db root-lost]}]
+     [{:keys [idx-ident] ::keys [root-id root-db root-lost fold-now! checkpoint-degraded]}]
      (when-let [e (some-> root-lost deref)]
        (throw (ex-info "Discarding a secondary-index build whose GC root was lost during the scan."
                        {:type :gc/root-lost :idx-ident idx-ident :root-id root-id}
                        e)))
      (when root-id
-       (roots/assert-live! root-db root-id (quot roots/DEFAULT_TTL_MS 2) {:sync? true}))))
+       (roots/assert-live! root-db root-id (quot roots/DEFAULT_TTL_MS 2) {:sync? true}))
+     ;; The last keys written may be younger than the fold cadence: fold once
+     ;; more, synchronously, before anything is published. A fold that cannot
+     ;; land means the registry is unhealthy; publishing on top of it would
+     ;; name state a collector may sweep meanwhile.
+     (when (and fold-now! (not (fold-now!)))
+       (throw (ex-info "The secondary-index build's checkpoint could not be written before install."
+                       {:type :gc/checkpoint-incomplete :idx-ident idx-ident :root-id root-id})))
+     (when-let [why (some-> checkpoint-degraded deref)]
+       (log/warn :datahike/secondary-index-checkpoint-degraded
+                 {:idx-ident idx-ident :why why
+                  :note "part of this build's private writes were covered by the guard and the sweep floor only"}))))
 
 #?(:clj
    (defn- drop-build-deltas [db idx-ident]

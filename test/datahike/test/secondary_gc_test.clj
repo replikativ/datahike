@@ -19,10 +19,15 @@
    [datahike.index.entity-set :as es]
    [datahike.index.secondary :as sec]
    [datahike.index.secondary.scriptum]
-   [datahike.index.secondary.proximum]
    [scriptum.core :as sc]
    [konserve.store :as ks]
    [clojure.core.async :refer [<!!]]))
+
+(def ^:private proximum-available?
+  ;; Proximum ships Java 22 class files; load it lazily so this namespace still
+  ;; loads on older JVMs and the proximum test skips itself instead.
+  (try (require 'datahike.index.secondary.proximum) true
+       (catch Throwable _ false)))
 
 (defn- wait-for-index
   "Block until `idx-ident` is instantiated and reports :ready, or give up.
@@ -135,29 +140,32 @@
             (.close ^java.io.Closeable writer)))))))
 
 (deftest proximum-must-not-share-datahikes-store
-  (let [shared-id (java.util.UUID/randomUUID)]
-    (testing "declaration: the factory refuses a :store-config naming datahike's store"
-      (is (thrown-with-msg?
-           clojure.lang.ExceptionInfo #"must use its own store"
-           (sec/create-index :proximum
-                             {:attrs #{:doc/embedding}
-                              :dim 4
-                              :store-config {:backend :file :path "/tmp/x" :id shared-id}
-                              :datahike.index.secondary/primary-store-id shared-id}
-                             nil))))
-    (testing "collection: a PRE-EXISTING shared key-map refuses to mark as #{}
+  (when-not proximum-available?
+    (is (not proximum-available?) "SKIP: proximum requires Java 22+"))
+  (when proximum-available?
+    (let [shared-id (java.util.UUID/randomUUID)]
+      (testing "declaration: the factory refuses a :store-config naming datahike's store"
+        (is (thrown-with-msg?
+             clojure.lang.ExceptionInfo #"must use its own store"
+             (sec/create-index :proximum
+                               {:attrs #{:doc/embedding}
+                                :dim 4
+                                :store-config {:backend :file :path "/tmp/x" :id shared-id}
+                                :datahike.index.secondary/primary-store-id shared-id}
+                               nil))))
+      (testing "collection: a PRE-EXISTING shared key-map refuses to mark as #{}
               — reporting empty would hand the vector index to the sweep"
-      (is (thrown-with-msg?
-           clojure.lang.ExceptionInfo #"names the very store being collected"
-           (sec/mark-from-key-map
-            {:type :proximum :backing :external :commit-id (java.util.UUID/randomUUID)
-             :store-config {:backend :file :path "/tmp/x" :id shared-id}}
-            {:datahike/store-id shared-id}))))
-    (testing "a distinct store passes both"
-      (is (= #{} (sec/mark-from-key-map
-                  {:type :proximum :backing :external
-                   :store-config {:backend :file :path "/tmp/x" :id (java.util.UUID/randomUUID)}}
-                  {:datahike/store-id shared-id}))))))
+        (is (thrown-with-msg?
+             clojure.lang.ExceptionInfo #"names the very store being collected"
+             (sec/mark-from-key-map
+              {:type :proximum :backing :external :commit-id (java.util.UUID/randomUUID)
+               :store-config {:backend :file :path "/tmp/x" :id shared-id}}
+              {:datahike/store-id shared-id}))))
+      (testing "a distinct store passes both"
+        (is (= #{} (sec/mark-from-key-map
+                    {:type :proximum :backing :external
+                     :store-config {:backend :file :path "/tmp/x" :id (java.util.UUID/randomUUID)}}
+                    {:datahike/store-id shared-id})))))))
 
 (deftest gc-leaves-a-stratum-index-in-the-shared-store-alone
   (testing "stratum writes its datasets and PSS nodes into datahike's OWN store;
