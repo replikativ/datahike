@@ -28,6 +28,12 @@
 ;; TieredStore Support
 ;; =============================================================================
 
+(defn- branch-walk-fn
+  "Create a konserve-sync walk function scoped to one Datahike branch."
+  [branch]
+  (fn [store opts]
+    (dh-walker/datahike-walk-fn store (assoc opts :branches branch))))
+
 (defn- make-branch-walk-fn
   "Create a walk function for perform-walk-sync that walks a specific branch.
 
@@ -36,11 +42,7 @@
    node addresses from its indices."
   [branch]
   (fn [backend-store _root-values opts]
-    ;; datahike-walk-fn now walks EVERY branch in the store (reads `:branches`),
-    ;; so `branch`'s head + reachable blocks are always included. Walking all
-    ;; branches is a (small) superset for a single-branch client; a future
-    ;; optimization could restrict the walk to just `branch`.
-    (dh-walker/datahike-walk-fn backend-store opts)))
+    ((branch-walk-fn branch) backend-store opts)))
 
 (defn- populate-tiered-from-cache!
   "For tiered stores, populate memory frontend from backend (IndexedDB) cache.
@@ -207,7 +209,12 @@
          _ (log/trace "Calling subscribe-store!")
          sub-result (<?- (kp/subscribe-store!
                           local-peer store-topic sync-store
-                          {:on-key-update
+                          {;; Inventory only this branch's reachable local keys.
+                           ;; A durable browser cache may contain many abandoned
+                           ;; fork nodes; enumerating all of IndexedDB here blocks
+                           ;; the handshake before the server sees the request.
+                           :walk-fn (branch-walk-fn branch)
+                           :on-key-update
                            (fn [key value _op]
                              (when (= key branch)
                                ;; Replace server config with client config in synced stored-db
