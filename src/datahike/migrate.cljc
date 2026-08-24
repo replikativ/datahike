@@ -3089,6 +3089,16 @@
          (let [m (<?- (mstore/open source opts))
                manifest (<?- (mstore/read-manifest m opts))
                mem (estimate-from-manifest manifest (manifest-total-bytes manifest nil) batch-size)
+               ;; GC guard across restore-blobs! AND the datom import. A carried
+               ;; blob is written under its content id before any datom names
+               ;; it, and the datom that finally does may be in the LAST batch —
+               ;; so for the whole import the blob is an object reachable from
+               ;; nothing, which is exactly what a sweep deletes. `run-index-build`
+               ;; guards its own trees; the commits guard themselves; nothing
+               ;; guarded the blobs. Released explicitly below on both paths,
+               ;; for the same reason the store close is (no `finally` here).
+               gc-sid (:id (:store (:config @conn)))
+               gc-token (guard/writing! gc-sid)
                res (try
                      ;; The SAME guard the filesystem arm gets from `open-dump`.
                      ;; Inside the `try` so a refused dump still closes the store.
@@ -3110,6 +3120,7 @@
                                                 {:op :read-chunk :chunk c}))}
                                       opts))
                      (catch #?(:clj Exception :cljs :default) e e))]
+           (guard/done! gc-sid gc-token)
            (<?- (mstore/close m opts))
            (if (instance? #?(:clj Throwable :cljs js/Error) res) (throw res) res))
          (let [dump (open-dump source opts)]
@@ -3133,14 +3144,21 @@
              ;; `:verified? true` for a database whose store-refs point at blobs
              ;; that were never written. The store arm above always awaited this;
              ;; only the filesystem arm did not.
-               (<?- (restore-blobs! conn manifest source opts))
-               (<?- (import-via conn manifest mem
-                                {:chunks (:files dump)
-                                 :read (fn [f o]
-                                         (dt/call-reporting-foreign-throws
-                                          #(fs-read-chunk manifest f o)
-                                          {:op :read-chunk :chunk f}))}
-                                opts)))))))))))
+               ;; Same GC guard as the store arm, for the same blob window.
+               (let [gc-sid (:id (:store (:config @conn)))
+                     gc-token (guard/writing! gc-sid)
+                     res (try
+                           (<?- (restore-blobs! conn manifest source opts))
+                           (<?- (import-via conn manifest mem
+                                            {:chunks (:files dump)
+                                             :read (fn [f o]
+                                                     (dt/call-reporting-foreign-throws
+                                                      #(fs-read-chunk manifest f o)
+                                                      {:op :read-chunk :chunk f}))}
+                                            opts))
+                           (catch #?(:clj Exception :cljs :default) e e))]
+                 (guard/done! gc-sid gc-token)
+                 (if (instance? #?(:clj Throwable :cljs js/Error) res) (throw res) res)))))))))))
 
 ;; ---------------------------------------------------------------------------
 ;; verify
