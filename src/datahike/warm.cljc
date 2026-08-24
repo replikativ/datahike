@@ -57,7 +57,9 @@
    `datahike.db/contextual-datoms` makes — so a warm and its scan agree by
    construction. `warm-index!` deliberately takes no `:from`/`:to`: shipping the
    trap next to the fix is worse than shipping only the fix."
-  (:require [datahike.index :as di]
+  (:require [clojure.core.async]
+            [datahike.index :as di]
+            [datahike.index.secondary :as sec]
             [datahike.db.utils :as dbu]
             [datahike.constants :as const]
             [datahike.datom :refer [datom]])
@@ -180,6 +182,29 @@
                                                               const/emax const/txmax)))))
      (di/warm-result (di/zero-warm-report opts) opts))))
 
+(defn- warm-secondaries!
+  "The `:secondary` pass: each versioned secondary index warmed with ITS OWN
+   budget in ITS OWN units — one number spanning tree nodes, Lucene segment
+   files and HNSW blobs would mean nothing, so nothing here pretends
+   otherwise. What is shared is the report envelope (at least
+   `{:fetched :ms :budget-exhausted?}`), one per index, so a caller logs one
+   decay metric across every family.
+
+   `secondary` is `:defaults` (every secondary, each family's defaults) or a
+   map `{index-ident opts}` (exactly those, each with its opts). Synchronous —
+   secondary indices are JVM-only today and their warms are their own."
+  [db secondary]
+  (let [indices (:secondary-indices db)
+        chosen  (cond
+                  (= :defaults secondary) (into {} (map (fn [[k _]] [k {}])) indices)
+                  (map? secondary)        secondary
+                  :else                   {})]
+    (into {}
+          (keep (fn [[k idx-opts]]
+                  (when-let [idx (get indices k)]
+                    [k (sec/sec-warm! idx idx-opts)])))
+          chosen)))
+
 (defn warm-db!
   "EXPERIMENTAL. Warm every present index of `db`, sharing ONE budget
    round-robin across them. The common case, and the connect-time shape.
@@ -190,22 +215,50 @@
    interleaved at the level of individual fetches, so a budget too small for all
    the indices is SPLIT rather than eaten by whichever is enumerated first.
 
-   Takes `warm-index!`'s options plus `:indices` — the index keys to consider,
-   defaulting to `index-keys`. A single-element `:indices` covers the one-index
-   case too.
+   Takes `warm-index!`'s options plus:
 
-   `:by-index` in the report says where the budget actually went."
+     :indices    the primary index keys to consider, defaulting to
+                 `index-keys`. A single-element `:indices` covers the
+                 one-index case too.
+     :secondary  `:none` (default) | `:defaults` | `{index-ident opts}` —
+                 warm the db's SECONDARY indices too, each with its own
+                 budget in its own units (stratum: tree nodes; scriptum:
+                 segment files; proximum: tree nodes). Off by default
+                 because a secondary's full warm can dwarf the primary one
+                 (scriptum's materializes every segment) — turn it on where
+                 you have measured it. The report gains `:secondary
+                 {index-ident envelope}`; an index that cannot warm answers
+                 a zero envelope marked `:unsupported?` rather than being
+                 silently skipped.
+
+   `:by-index` in the report says where the primary budget actually went."
   ([db] (warm-db! db {}))
-  ([db {:keys [indices] :as opts}]
+  ([db {:keys [indices secondary] :as opts}]
    (let [ks     (filter #(present db %) (or indices index-keys))
-         opts   (base-opts db opts)]
+         wopts  (base-opts db (dissoc opts :secondary))
+         sec-reports (when (and secondary (not= :none secondary))
+                       #?(:clj (warm-secondaries! db secondary)
+                          ;; Secondary indices are JVM-only today; asking for
+                          ;; them elsewhere reports rather than pretends.
+                          :cljs {}))]
      (if (seq ks)
        ;; The walk is one call, not one per index — a shared budget cannot be
        ;; split before the walk knows how much frontier each tree has. The first
        ;; index dispatches the protocol (all of a db's indices are the same
        ;; type); the rest ride along as `:siblings`.
-       (di/-warm! (present db (first ks))
-                  (assoc opts
-                         :index-key (first ks)
-                         :siblings (mapv (fn [k] [k (present db k)]) (rest ks))))
-       (di/warm-result (di/zero-warm-report opts) opts)))))
+       (let [r (di/-warm! (present db (first ks))
+                          (assoc wopts
+                                 :index-key (first ks)
+                                 :siblings (mapv (fn [k] [k (present db k)]) (rest ks))))]
+         (cond
+           (empty? sec-reports) r
+           ;; r is the report under :sync? true, a channel otherwise; attach
+           ;; the secondary reports in whichever shape came back.
+           (map? r) (assoc r :secondary sec-reports)
+           :else #?(:clj (clojure.core.async/go
+                           (let [v (clojure.core.async/<! r)]
+                             (if (map? v) (assoc v :secondary sec-reports) v)))
+                    :cljs r)))
+       (di/warm-result (cond-> (di/zero-warm-report wopts)
+                         (seq sec-reports) (assoc :secondary sec-reports))
+                       wopts)))))

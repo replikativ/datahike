@@ -25,6 +25,7 @@
    [datahike.db.interface :as dbi]
    [stratum.api :as st]
    [stratum.dataset :as sd]
+   [stratum.warm :as stratum-warm]
    [stratum.index :as sidx]
    [stratum.storage :as ss])
   (:import
@@ -584,6 +585,15 @@
       (if (and (= new-attr-refs attr-refs) (= new-config config))
         this
         (StratumIndex. dataset attrs new-attr-refs new-config))))
+
+  sec/ISecondaryWarmable
+  (-sec-warm! [_ opts]
+    ;; One shared budget across every column tree, in NODES — stratum's unit.
+    ;; See stratum.warm for depth semantics: leaves there are FAT (a leaf
+    ;; carries its chunks), so :with-leaves is materializing the column data.
+    (if dataset
+      (stratum-warm/warm! dataset opts)
+      {:fetched 0 :ms 0.0 :budget-exhausted? false}))
 
   sec/IVersionedSecondaryIndex
   (-sec-flush [_ store branch]
