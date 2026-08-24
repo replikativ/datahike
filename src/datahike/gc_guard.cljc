@@ -33,12 +33,14 @@
    are unreachable, i.e. garbage, and a later cycle collects them. Correct by
    construction.
 
-   SCOPE: this is in-process state, which matches datahike's writer model — ALL
-   WRITERS FOR A DATABASE RUN IN ONE JVM, coordinating in memory rather than through
-   the store, and writer-side maintenance runs with them. A writer in another process
-   is outside that model (and outside it for a more basic reason than GC: without head
-   fencing, two writers on a branch can lose each other's commits — issue #878).
-   Readers are unconstrained."
+   SCOPE: this is in-process state. It is exact for every writer in THIS process
+   and knows nothing about any other. Head fencing (#963) lets writers in several
+   processes share a branch without losing each other's commits, but a fence
+   protects the POINTER, not the values: a commit in another process is invisible
+   here, its objects are on disk reachable from nothing, and this guard cannot
+   spare them. Across processes the only protection is `gc-storage!`'s
+   `:min-age-ms` floor — see its docstring for how that is sized. Readers are
+   unconstrained."
   (:require [konserve.utils :as ku])
   #?(:clj (:import [java.util Date]))
   ;; Self-require the macro namespace so `with-unreferenced-writes` is available to

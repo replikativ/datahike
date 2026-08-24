@@ -234,10 +234,10 @@
   makes GC collect MORE. The safe point is a SWEEP-side bound (how recently written
   an object may be and still be judged) and makes it collect LESS.
 
-  PREFER TO RUN IT WHERE THE WRITERS ARE. This follows from datahike's writer model,
-  not from anything specific to GC: ALL WRITERS FOR A DATABASE RUN IN ONE JVM — they
-  coordinate in memory, not through the store — and writer-side maintenance runs with
-  them. `d/gc-storage` is a writer op, so it is already in the right place.
+  PREFER TO RUN IT WHERE THE WRITERS ARE. The safe point is in-process state: it is
+  exact for every writer in this JVM and blind to every other. With a single
+  exclusive writer (`:writer-ownership :exclusive`) that is the whole picture, and
+  `d/gc-storage` is a writer op, so it is already in the right place.
 
   COLLECTING FROM ANOTHER PROCESS — a cron sidecar, an offline job against the bucket
   — is possible, but ONLY because of `:min-age-ms`, and only if you choose that number
@@ -258,9 +258,12 @@
   `:last-write` stamps, which come from its monotonic write clock, and a wall-clock
   `Date` from the caller is not comparable to those in a way anything would detect.
 
-  (Cross-process writers are outside the model for a more basic reason as well — there
-  is no head fencing yet, so they can lose each other's commits regardless of GC. See
-  issue #878.) Readers are unconstrained."
+  SHARED WRITERS (`:writer-ownership :shared`, the default since #959) are exactly the
+  other-process case: head fencing (#963) keeps two processes from losing each other's
+  commits, but a fence guards the pointer, not the values — the objects of a commit in
+  flight elsewhere are on disk and reachable from nothing, and this collector cannot
+  see them. A collection under shared ownership therefore needs the floor as well.
+  Readers are unconstrained."
   ([db] (gc-storage! db (#?(:clj Date. :cljs js/Date.) 0) nil))
   ([db remove-before] (gc-storage! db remove-before nil))
   ([db remove-before {:keys [min-age-ms]}]
