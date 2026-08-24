@@ -130,6 +130,11 @@
         (sc/commit! writer "datahike-flush"
                     {"datahike.branch" (name branch)})
         {:type :scriptum
+         ;; The declaration `mark-from-key-map` keys off: today the bytes are a
+         ;; Lucene directory konserve does not own. The konserve-backed variant
+         ;; (scriptum.core/open-store-index) must set `:backing :konserve` here
+         ;; when it is adopted — the mark below already handles it.
+         :backing :filesystem
          :path (:path config)
          :branch (or (:branch config) "main")})
 
@@ -275,12 +280,29 @@
 ;; the sweep deletes the whole index. So key off what the key-map DECLARES
 ;; rather than assuming — and refuse rather than guess, because the failure is
 ;; silent and total.
-(defmethod sec/mark-from-key-map :scriptum [key-map _store]
+(defmethod sec/mark-from-key-map :scriptum [key-map store]
   (if (sec/konserve-backed? key-map)
-    (throw (ex-info (str "Konserve-backed scriptum index cannot be marked yet:"
-                         " marking must return the branch manifest plus every"
-                         " blob it references, or GC will delete the index.")
-                    {:key-map key-map}))
+    ;; The real mark, exported by scriptum for exactly this call site:
+    ;; the branch registry, format stamp, every manifest, every snapshot and
+    ;; every blob they reference — plus the metadata index's keyspace when one
+    ;; shares the store (bare keywords and bare UUIDs scriptum's own mark
+    ;; cannot infer). `extra-snapshots` is the lag-tolerant hint slot the
+    ;; key-map exists to fill: an address the key-map still names is kept even
+    ;; if the manifest has moved on.
+    (let [sk-mark (requiring-resolve 'scriptum.konserve/mark)
+          md-mark (try (requiring-resolve 'scriptum.metadata/mark)
+                       (catch Throwable _ nil))]
+      (when-not sk-mark
+        (throw (ex-info (str "This scriptum index is konserve-backed but the scriptum on the "
+                             "classpath exports no scriptum.konserve/mark; refusing to report "
+                             "it unreachable, which would let the sweep delete it.")
+                        {:key-map key-map})))
+      (into (set (sk-mark store (when-let [a (:snapshot-address key-map)] [a])))
+            (when md-mark
+              (try (md-mark store)
+                   (catch Throwable _ #{})))))
+    ;; Path-backed: konserve owns nothing of it; the empty set is the honest
+    ;; answer, and `:backing :filesystem` in the key-map says it on purpose.
     #{}))
 
 ;; Branch: open source, fork via scriptum's native segment-sharing fork

@@ -258,7 +258,10 @@
                           (get secondary-index-keys ident))
                 idx-config (cond-> (merge (:db.secondary/config entry)
                                           {:attrs idx-attrs
-                                           ::sec/index-ident ident})
+                                           ::sec/index-ident ident
+                                           ::sec/primary-store-id
+                                           (or (:datahike/store-id store)
+                                               (get-in store [:storage :config :store :id]))})
                              (seq ident-ref-map)
                              (assoc :ident-ref-map ident-ref-map)
                              (= :building (:db.secondary/status entry))

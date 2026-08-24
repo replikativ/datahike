@@ -421,7 +421,15 @@
    storage it does.
 
    Declare which case you are in with `:backing` on the key-map (see
-   `konserve-backed?`); the default method refuses to guess."
+   `konserve-backed?`); the default method refuses to guess. Declare
+   `:backing :external` (its own store elsewhere) or a similar value for
+   storage konserve does not own, `:backing :konserve` when it does — and in
+   the latter case this multimethod MUST be implemented before the first
+   collection runs, or every `d/gc-storage` on the database fails loudly.
+   An adapter with its OWN store must additionally refuse a configuration
+   that points that store at datahike's (compare `::primary-store-id` in its
+   factory config): two components sweeping one keyspace delete each other's
+   data, mark or no mark."
   (fn [key-map store] (:type key-map)))
 
 (defn konserve-backed?
