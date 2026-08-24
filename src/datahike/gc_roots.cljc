@@ -146,10 +146,21 @@
 (defn expired?
   "Past `:expires-at` by the entry's own TTL again. A permanent root
    (`:expires-at nil`) never is."
-  [entry now-ms*]
-  (boolean
-   (when-let [exp (:expires-at entry)]
-     (< (+ (date-ms exp) (or (:ttl-ms entry) DEFAULT_TTL_MS)) now-ms*))))
+  ([entry] (expired? entry (now-ms)))
+  ([entry now-ms*]
+   (boolean
+    (when-let [exp (:expires-at entry)]
+      (< (+ (date-ms exp) (or (:ttl-ms entry) DEFAULT_TTL_MS)) now-ms*)))))
+
+(defn live-roots
+  "The registry without its expired entries — what a reader that does not
+   reap (online GC) should treat as roots. Read-only."
+  ([store] (live-roots store {:sync? false}))
+  ([store opts]
+   (async+sync (:sync? opts) *default-sync-translation*
+               (go-try-
+                (let [now (now-ms)]
+                  (into {} (remove (fn [[_ e]] (expired? e now))) (<?- (roots store opts))))))))
 
 (defn reap-expired!
   "Drop expired entries from the registry and return what remains. Run by the
@@ -163,8 +174,17 @@
                       dead (into #{} (keep (fn [[id entry]] (when (expired? entry now-ms*) id))) current)]
                   (if (empty? dead)
                     current
-                    (do (log/info :datahike/gc-roots-reaped {:ids dead})
-                        (<?- (update-registry! store #(apply dissoc % dead) opts)))))))))
+                    ;; Decide expiry INSIDE the update, against the registry as
+                    ;; it is at write time: a holder that renewed between the
+                    ;; read above and this write must keep its root. The set
+                    ;; above only tells us a write is worth attempting.
+                    (let [remaining (<?- (update-registry!
+                                          store
+                                          (fn [reg] (into {} (remove (fn [[_ e]] (expired? e now-ms*))) reg))
+                                          opts))]
+                      (log/info :datahike/gc-roots-reaped
+                                {:ids (into #{} (remove #(contains? remaining %)) (keys current))})
+                      remaining)))))))
 
 ;; ---------------------------------------------------------------------------
 ;; Records
@@ -303,19 +323,30 @@
                 id))))
 
 (defn start-renewal!
-  "Renew root `id` every `interval-ms` (default a third of [[DEFAULT_TTL_MS]])
-   until the returned stop function is called. On `:gc/root-lost` the loop
-   stops and calls `on-lost` (if given) with the exception — the consumer must
-   then abandon its work. Prefer renewing from the consumer's own loop where it
-   has one; this exists for consumers that do not."
-  [db id {:keys [interval-ms on-lost] :or {interval-ms (quot DEFAULT_TTL_MS 3)}}]
-  (let [stop (chan)]
-    (go-loop []
-      (let [[_ port] (alts! [stop (timeout interval-ms)])]
-        (when-not (= port stop)
-          (let [res (<! (renew! db id {:sync? false}))]
-            (if (instance? #?(:clj Throwable :cljs js/Error) res)
-              (do (log/warn :datahike/gc-root-renewal-failed {:id id :error res})
-                  (when on-lost (on-lost res)))
-              (recur))))))
+  "Renew root `id` every `interval-ms` — by default a third of the ROOT's own
+   TTL, read from its entry — until the returned stop function is called. On
+   `:gc/root-lost` (including an entry missing at start) the loop stops and
+   calls `on-lost` (if given) with the exception — the consumer must then
+   abandon its work. Prefer renewing from the consumer's own loop where it has
+   one; this exists for consumers that do not."
+  [db id {:keys [interval-ms on-lost]}]
+  (let [stop (chan)
+        fail! (fn [e]
+                (log/warn :datahike/gc-root-renewal-failed {:id id :error e})
+                (when on-lost (on-lost e)))]
+    (go-loop [interval interval-ms]
+      (if (nil? interval)
+        ;; First pass: derive the cadence from the entry itself.
+        (let [reg (<! (roots (:store db) {:sync? false}))]
+          (if (instance? #?(:clj Throwable :cljs js/Error) reg)
+            (fail! reg)
+            (if-let [entry (get reg id)]
+              (recur (quot (or (:ttl-ms entry) DEFAULT_TTL_MS) 3))
+              (fail! (ex-info (str "GC root " id " is gone.") {:type :gc/root-lost :id id})))))
+        (let [[_ port] (alts! [stop (timeout interval)])]
+          (when-not (= port stop)
+            (let [res (<! (renew! db id {:sync? false}))]
+              (if (instance? #?(:clj Throwable :cljs js/Error) res)
+                (fail! res)
+                (recur interval)))))))
     (fn stop-renewal! [] (close! stop) nil)))

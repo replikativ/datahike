@@ -341,6 +341,30 @@
                                                         schema-cache {:sync? false}))
                              async/merge
                              (<<? S))
+                 ;; A root declared AFTER the registry was read above — by this
+                 ;; process or another — names objects the mark has not seen,
+                 ;; and if it pins an already-unreachable commit the guard cannot
+                 ;; help: those objects are old. So re-read the registry now that
+                 ;; the mark is done and walk anything new, until it is stable.
+                 ;; What remains exposed is a root declared during the sweep
+                 ;; itself; a root of the CURRENT head is never exposed, since
+                 ;; the head's objects are reachable through the branch anyway.
+                 walked (loop [walked walked
+                               seen (set (keys live-roots))
+                               attempt 0]
+                          (let [late (<? S (roots/live-roots store {:sync? false}))
+                                new-keys (mapv roots/record-key (remove seen (keys late)))]
+                            (if (or (empty? new-keys) (= attempt 8))
+                              walked
+                              (do (log/debug :datahike/gc-late-roots {:count (count new-keys)})
+                                  (recur (into walked
+                                               (->> new-keys
+                                                    (map #(reachable-in-branch store % remove-before config
+                                                                               schema-cache {:sync? false}))
+                                                    async/merge
+                                                    (<<? S)))
+                                         (into seen (keys late))
+                                         (inc attempt))))))
                  ;; Store-refs are unioned into the whitelist here. For an object that
                  ;; lives in THIS store that means the sweep spares it (and reclaims it
                  ;; once no datom names it). For an object that lives elsewhere it is a

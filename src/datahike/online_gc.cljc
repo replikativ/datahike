@@ -186,8 +186,10 @@
             multi-branch? (> (count branches) 1)
             ;; A durable root pins a record older than the head; freed-address
             ;; hints are then unsound for the same reason they are across
-            ;; branches (see below). Pause while any root exists.
-            rooted? (seq (roots/roots store {:sync? true}))
+            ;; branches (see below). Pause while any LIVE root exists — an
+            ;; expired one is what the offline collector reaps, and a process
+            ;; that only ever runs this collector must not stay paused for it.
+            rooted? (seq (roots/live-roots store {:sync? true}))
             diff-buf (:datahike/diff-buf-size store 0)
             store-id (or (:datahike/store-id store)
                          (get-in store [:storage :config :store :id]))]
@@ -243,7 +245,7 @@
       (go-try-
        (let [branches (<?- (k/get store :branches nil {:sync? false}))
              multi-branch? (> (count branches) 1)
-             rooted? (seq (<?- (roots/roots store {:sync? false})))
+             rooted? (seq (<?- (roots/live-roots store {:sync? false})))
              diff-buf (:datahike/diff-buf-size store 0)
              store-id (or (:datahike/store-id store)
                           (get-in store [:storage :config :store :id]))]
