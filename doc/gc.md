@@ -52,7 +52,7 @@ With **shared** writers (`:writer-ownership :shared`, the default) several proce
 (d/gc-storage conn (java.util.Date. 0) {:min-age-ms (* 15 60 1000)})
 ```
 
-`:min-age-ms` spares anything written more recently than that, whatever the mark says. Size it above the longest window between "first value written" and "head flipped" any of your writers can have — a writer that awaits its transacts has that window closed when the call returns, so one request's duration is the bound. The price of a generous value is only delayed reclamation; the price of a small one is a dangling head.
+`:min-age-ms` spares anything written more recently than that, whatever the mark says. Size it above the longest window between "first value written" and "head flipped" any of your writers can have — a writer that awaits its transacts has that window closed when the call returns, so one request's duration is the bound — **plus the largest clock difference between your processes**: the `:last-write` stamps the sweep compares against come from each writer's own clock, so a writer twenty minutes behind the collector looks twenty minutes older than it is. A suspended process (a frozen Lambda resuming mid-commit) can exceed any bound you pick. The price of a generous value is only delayed reclamation; the price of a small one is a dangling head.
 
 ## Grace Periods for Distributed Readers
 
