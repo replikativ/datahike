@@ -32,7 +32,10 @@
             :store {:id #uuid "550e8400-e29b-41d4-a716-446655440763", :backend :memory :scope "test.datahike.io"}
             :store-cache-size 1000
             :attribute-refs? false
-            :writer {:backend :self}
+            ;; `normalize-writer-config` (datahike#977) stamps the ownership a
+            ;; self writer runs with — :shared, the fenced default — into every
+            ;; config it returns, so the pod reports it too.
+            :writer {:backend :self :writer-ownership :shared}
             :crypto-hash? false
             :schema-flexibility :read
             :branch :db}
