@@ -108,8 +108,11 @@
                              datahike/created-at
                              datahike/updated-at]} :meta}
                     record
-                    in-range? (> (get-time (or updated-at created-at))
-                                 (get-time after-date))]
+                    ;; A synthetic checkpoint record may carry no dates; it has
+                    ;; no parents to walk either, so "not in range" is exact.
+                    in-range? (if-let [d (or updated-at created-at)]
+                                (> (get-time d) (get-time after-date))
+                                false)]
                 (let [sec-reachable (when (seq secondary-index-keys)
                                       (reduce-kv
                                        (fn [acc _idx-ident key-map]
@@ -134,8 +137,8 @@
                       bind (fn [idx root]
                              (cond-> (with-storage (:index config) idx (:storage store))
                                root (-seed-root! root)))
-                      aevt'  (bind aevt-key aevt-root)
-                      taevt' (when (:keep-history? config)
+                      aevt'  (when aevt-key (bind aevt-key aevt-root))
+                      taevt' (when (and (:keep-history? config) temporal-aevt-key)
                                (bind temporal-aevt-key temporal-aevt-root))
                             ;; The schema names which attributes can hold store-refs.
                             ;; It is content-addressed and rarely changes, so memoize
@@ -163,19 +166,36 @@
                             ;; can do nothing with them, but `reachable-store-refs`
                             ;; hands the set to the application, which knows how to
                             ;; delete from wherever it put them.
-                      record-refs (if schema
-                                    (store-refs config schema
-                                                (:ident-ref-map schema-meta) aevt' taevt')
-                                    #{})
+                      ;; Literal extra keys a ROOT record may carry
+                      ;; (`:datahike.gc/keys`): blob ids an import restored
+                      ;; before any datom names them, a user upload awaiting its
+                      ;; transaction. Unioned into BOTH sets — the sweep spares
+                      ;; them, and `reachable-store-refs` reports them to the
+                      ;; application's own blob sweep. Ordinary commit records
+                      ;; never carry the field.
+                      extra-keys (set (:datahike.gc/keys record))
+                      record-refs (set/union
+                                   (if (and schema aevt')
+                                     (store-refs config schema
+                                                 (:ident-ref-map schema-meta) aevt' taevt')
+                                     #{})
+                                   extra-keys)
                       new-reachable (cond-> (set/union reachable #{to-check}
-                                                       (when schema-meta-key #{schema-meta-key})
-                                                       (-mark (bind eavt-key eavt-root))
-                                                       (-mark aevt')
-                                                       (-mark (bind avet-key avet-root)))
-                                      (:keep-history? config)
-                                      (set/union (-mark (bind temporal-eavt-key temporal-eavt-root))
-                                                 (-mark taevt')
-                                                 (-mark (bind temporal-avet-key temporal-avet-root)))
+                                                       extra-keys
+                                                       (when schema-meta-key #{schema-meta-key}))
+                                      ;; A checkpoint record may name only the
+                                      ;; trees built so far; absent families are
+                                      ;; simply not walked. A COMMIT record always
+                                      ;; has all of them.
+                                      eavt-key (set/union (-mark (bind eavt-key eavt-root)))
+                                      aevt-key (set/union (-mark aevt'))
+                                      avet-key (set/union (-mark (bind avet-key avet-root)))
+                                      (and (:keep-history? config) temporal-eavt-key)
+                                      (set/union (-mark (bind temporal-eavt-key temporal-eavt-root)))
+                                      (and (:keep-history? config) temporal-aevt-key)
+                                      (set/union (-mark taevt'))
+                                      (and (:keep-history? config) temporal-avet-key)
+                                      (set/union (-mark (bind temporal-avet-key temporal-avet-root)))
                                       sec-reachable
                                       (set/union sec-reachable))]
                   (recur (concat r (when in-range? parents))

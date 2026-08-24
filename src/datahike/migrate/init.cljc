@@ -502,7 +502,13 @@
                                  family run-size tmp-dir)
                  {:keys [current temporal]}
                  (<?- (build-family! store index-name family f index-config rschema
-                                     (boolean keep-history?) sync?))]
+                                     (boolean keep-history?) sync?))
+                 ;; Checkpoint seam: a completed family is hours of work whose
+                 ;; nodes nothing names until the publishing commit. The caller
+                 ;; may record it in a durable GC root here. Synchronous and
+                 ;; non-parking by contract — it runs inside this go loop.
+                 _ (when-let [cb (:on-family-built index-config)]
+                     (cb family current temporal))]
              (recur (next families)
                     (cond-> (assoc acc family current)
                       keep-history? (assoc (temporal-key family) temporal)))))))))))

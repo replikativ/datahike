@@ -40,6 +40,9 @@
             [datahike.schema :as ds]
             [datahike.tools :as dt]
             [datahike.gc-guard :as guard]
+            [replikativ.logging :as log]
+            [datahike.index.interface :as di]
+            [datahike.gc-roots :as roots]
             [datahike.writing :as dwriting]
             [datahike.migrate.cbor :as mcbor]
             [datahike.migrate.ids :as ids]
@@ -554,6 +557,33 @@
                      {:error :migrate/xform-not-an-option :fn "export-transformed"})))
    (export-db* db target (assoc opts :xform xform) "export-transformed")))
 
+(defn- quiet-release-root!
+  "Release a root and stop its renewal without letting cleanup mask the real
+   result — the store may already be closed, in which case the lease expires on
+   its own and the next collector reaps it. Synchronous by design: it runs in
+   positions (a go block's finally) where parking is not allowed."
+  [db root-id stop-renewal!]
+  (when stop-renewal! (stop-renewal!))
+  (when root-id
+    (try (roots/release! db root-id {:sync? true})
+         (catch #?(:clj Throwable :cljs :default) e
+           (log/warn :datahike/gc-root-release-failed
+                     {:id root-id :error #?(:clj (.getMessage ^Throwable e) :cljs (str e))})))))
+
+(defn- quiet-checkpoint-root!
+  "Best-effort `:checkpoint` root for a long operation, with background renewal.
+   Returns [root-id stop-renewal!], or [nil nil] when the store cannot take one —
+   protection then falls back to what it was, rather than failing the operation.
+   Synchronous: called from positions that cannot park."
+  [db record note]
+  (try
+    (let [id (roots/root! db {:kind :checkpoint :record record :note note} {:sync? true})]
+      [id (roots/start-renewal! db id {})])
+    (catch #?(:clj Throwable :cljs :default) e
+      (log/warn :datahike/gc-root-declare-failed
+                {:note note :error #?(:clj (.getMessage ^Throwable e) :cljs (str e))})
+      [nil nil])))
+
 (defn- export-db*
   "The shared implementation of `export-db` and `export-transformed`. `who` is
    the public name to blame in errors."
@@ -583,6 +613,23 @@
              ;;     an unflushed in-memory db. Plenty of legitimate exports are of
              ;;     such a db (`db-with`, a `:memory` store mid-test), and those
              ;;     cannot hold in-store blobs anyway.
+             ;; Pin the exported snapshot for the export's duration: an export
+             ;; can read for hours, and `remove-before` retention or another
+             ;; process's collector must not sweep under it. Best-effort — a
+             ;; `db-with` value or an unflushed :memory db has no commit record
+             ;; to pin and exports exactly as before.
+             [export-root stop-export-renewal!]
+             (if (:store db)
+               (try [(roots/root! db {:kind :pin
+                                      :record (or (roots/commit-record db {:sync? true})
+                                                  (throw (ex-info "no commit record" {})))
+                                      :note (str who " snapshot")} {:sync? true})
+                     nil]
+                    (catch #?(:clj Throwable :cljs :default) _ [nil nil]))
+               [nil nil])
+             stop-export-renewal! (or stop-export-renewal!
+                                      (when export-root
+                                        (roots/start-renewal! db export-root {})))
              blob-plan (when (mblobs/schema-has-store-refs? db)
                          (<?- (mblobs/plan db (:store db) opts)))
              opts (cond-> opts
@@ -631,6 +678,7 @@
                  (write-chunked! db opts target (sorted-record-seq db opts tmp-dir)
                                  (:chunk-size opts) progress)))
              (finally
+               (quiet-release-root! db export-root stop-export-renewal!)
                (when tmp-dir
                  (doseq [n (or (fs/list-names tmp-dir) [])]
                    (fs/delete! (fs/join tmp-dir n)))
@@ -2451,6 +2499,16 @@
      (go-try-
       (let [tmp   (fs/temp-dir! "dh-index-build")
             token (guard/writing! store-id)
+            ;; A build writes trees for hours that nothing names until the
+            ;; publishing commit. The checkpoint root starts empty and gains
+            ;; each family's key as it completes (`:on-family-built` below), so
+            ;; a collector in any process spares finished work; the family in
+            ;; flight is covered by the guard (this process) and the sweep
+            ;; floor (others).
+            checkpoint-record (atom {:meta {:datahike/commit-id (random-uuid)}
+                                     :config (:config @conn)})
+            [build-root stop-build-renewal!]
+            (quiet-checkpoint-root! @conn @checkpoint-record "index build")
             res
             (try
               (let [;; ---- pass 1, ONLY under :allocate ----
@@ -2580,7 +2638,31 @@
                     index-config (assoc (:index-config config)
                                         :indexed (:db/index rschema)
                                         :sync? build-sync?
-                                        :flush-fn (dwriting/bulk-flush-fn store build-sync?))
+                                        :flush-fn (dwriting/bulk-flush-fn store build-sync?)
+                                        ;; Grow the checkpoint root as families
+                                        ;; complete. Non-parking, synchronous —
+                                        ;; the seam's contract in init.cljc.
+                                        :on-family-built
+                                        #?(:clj (when build-root
+                                                  (fn [family current temporal]
+                                                    ;; Record-field spelling: :eavt -> :eavt-key /
+                                                    ;; :temporal-eavt-key, matching db->stored.
+                                                    (let [k (keyword (str (name family) "-key"))
+                                                          tk (keyword (str "temporal-" (name family) "-key"))
+                                                          ;; Store them DETACHED — the same
+                                                          ;; `with-storage nil` a commit's
+                                                          ;; db->stored applies — so the record
+                                                          ;; holds exactly what the mark walks.
+                                                          idx-name (:index (:config @conn))
+                                                          rec (swap! checkpoint-record
+                                                                     (fn [r]
+                                                                       (cond-> (assoc r k (di/with-storage idx-name current nil))
+                                                                         temporal (assoc tk (di/with-storage idx-name temporal nil)))))]
+                                                      (try (roots/set-record! @conn build-root rec {:sync? true})
+                                                           (catch Throwable e
+                                                             (log/warn :datahike/gc-root-checkpoint-failed
+                                                                       {:family family :error (.getMessage ^Throwable e)}))))))
+                                           :cljs nil))
                     ;; ---- three sorts, six trees ----
                     ;; Announced, because this is the long phase and it emits
                     ;; nothing while it runs: three external sorts and six tree
@@ -2684,6 +2766,7 @@
         ;; than in a `finally` — see the docstring. The guard must outlive the
         ;; publish, and it does: `publish-built-db!`'s promise resolves only after
         ;; the writer has committed and `reset!` the connection.
+        (quiet-release-root! @conn build-root stop-build-renewal!)
         (guard/done! store-id token)
         (doseq [n (or (fs/list-names tmp) [])] (fs/delete! (fs/join tmp n)))
         (fs/delete! tmp)
@@ -3099,6 +3182,17 @@
                ;; for the same reason the store close is (no `finally` here).
                gc-sid (:id (:store (:config @conn)))
                gc-token (guard/writing! gc-sid)
+               ;; The blobs restore-blobs! writes are reachable from nothing
+               ;; until a datom names them, possibly in the LAST batch. The
+               ;; in-process guard above covers this process; the root covers
+               ;; every other collector.
+               [blob-root stop-blob-renewal!]
+               (if-let [carried (seq (get-in manifest [:store-refs :carried]))]
+                 (quiet-checkpoint-root! @conn
+                                         {:meta {:datahike/commit-id (random-uuid)}
+                                          :datahike.gc/keys (set carried)}
+                                         "import-db carried blobs")
+                 [nil nil])
                res (try
                      ;; The SAME guard the filesystem arm gets from `open-dump`.
                      ;; Inside the `try` so a refused dump still closes the store.
@@ -3124,6 +3218,9 @@
                      ;; and close the store, or the token pins every later
                      ;; sweep to this import's start for the process lifetime.
                      (catch #?(:clj Throwable :cljs :default) e e))]
+           ;; Release BEFORE the guard closes: the registry write is then part
+           ;; of the guarded sequence, like every other write this import makes.
+           (quiet-release-root! @conn blob-root stop-blob-renewal!)
            (guard/done! gc-sid gc-token)
            (<?- (mstore/close m opts))
            (if (instance? #?(:clj Throwable :cljs js/Error) res) (throw res) res))
@@ -3151,6 +3248,13 @@
                ;; Same GC guard as the store arm, for the same blob window.
                (let [gc-sid (:id (:store (:config @conn)))
                      gc-token (guard/writing! gc-sid)
+                     [blob-root stop-blob-renewal!]
+                     (if-let [carried (seq (get-in manifest [:store-refs :carried]))]
+                       (quiet-checkpoint-root! @conn
+                                               {:meta {:datahike/commit-id (random-uuid)}
+                                                :datahike.gc/keys (set carried)}
+                                               "import-db carried blobs")
+                       [nil nil])
                      res (try
                            (<?- (restore-blobs! conn manifest source opts))
                            (<?- (import-via conn manifest mem
@@ -3161,6 +3265,7 @@
                                                       {:op :read-chunk :chunk f}))}
                                             opts))
                            (catch #?(:clj Throwable :cljs :default) e e))]
+                 (quiet-release-root! @conn blob-root stop-blob-renewal!)
                  (guard/done! gc-sid gc-token)
                  (if (instance? #?(:clj Throwable :cljs js/Error) res) (throw res) res)))))))))))
 

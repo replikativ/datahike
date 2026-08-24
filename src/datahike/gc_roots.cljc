@@ -21,7 +21,12 @@
      :checkpoint — a synthetic record whose fields name PARTIAL state: the
                    trees of a build in progress, or a base commit plus a
                    building index generation under `:secondary-index-keys`.
-                   The long-builder case. Republish it as the build advances.
+                   The long-builder case. Republish it as the build advances
+                   ([[set-record!]]). A record may name only some families —
+                   the walk skips absent ones — and may carry literal store
+                   keys under `:datahike.gc/keys` (restored blobs, a user
+                   upload awaiting its transaction); those are spared by the
+                   sweep and reported by `reachable-store-refs`.
      :ref        — a commit record with its parents kept, so its ancestry is
                    retained under the same `remove-before` gating as a branch.
                    For durable user references; permanent unless given a TTL.
@@ -209,9 +214,16 @@
                           (when (= cid (get-in head [:meta :datahike/commit-id]))
                             head)))))))))
 
-(defn- shape-record [record kind]
-  (cond-> record
-    (not= :ref kind) (update :meta dissoc :datahike/parents)))
+(defn- shape-record [record kind now]
+  (let [stamp (->date now)]
+    (-> record
+        (update :meta (fn [m]
+                        (cond-> (or m {})
+                          ;; The mark's range test reads these; a synthetic
+                          ;; record must not force every reader to guard nil.
+                          (nil? (:datahike/created-at m)) (assoc :datahike/created-at stamp)
+                          (nil? (:datahike/updated-at m)) (assoc :datahike/updated-at stamp))))
+        (cond-> (not= :ref kind) (update :meta dissoc :datahike/parents)))))
 
 ;; ---------------------------------------------------------------------------
 ;; Lifecycle
@@ -243,8 +255,8 @@
                           (throw (ex-info "No record to root: the db has no resolvable commit and none was given."
                                           {:type :datahike/gc-root-no-record
                                            :commit-id (get-in db [:meta :datahike/commit-id])})))
-                      record (shape-record record kind)
                       now (now-ms)
+                      record (shape-record record kind now)
                       entry (cond-> {:id id
                                      :kind kind
                                      :record-key (record-key id)
@@ -311,6 +323,15 @@
                                     {:type :gc/root-stale :id id
                                      :renewed-at (:renewed-at entry)})))
                   entry)))))
+
+(defn set-record!
+  "Replace root `id`'s record — how a `:checkpoint` grows as a build completes
+   trees or restores blobs. The record key has ONE writer (the holder), so this
+   is a plain write, not a CAS; the collector reads it fresh each cycle. The
+   registry entry is untouched."
+  ([db id record] (set-record! db id record {:sync? false}))
+  ([db id record opts]
+   (k/assoc (:store db) (record-key id) record opts)))
 
 (defn release!
   "Drop root `id`. Its record becomes ordinary garbage. Idempotent."
