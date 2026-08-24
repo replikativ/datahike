@@ -1134,20 +1134,6 @@
                         {:error (.getMessage e)}))))))
 
 #?(:clj
-   (defn- snapshot-record
-     "The commit-shaped record for the state `db` actually holds: its index
-      keys are the addresses of ITS roots. Not `roots/commit-record`, which
-      resolves through `[:meta :datahike/commit-id]` — the db a writer op
-      receives carries the indexes of the latest commit but a `:meta` that can
-      lag behind it, so the id would name the wrong snapshot. A dirty index
-      (no address) cannot be pinned; a build only ever sees committed state."
-     [db]
-     (let [record (second (db->stored db false))]
-       (when (some nil? (keep record [:eavt-key :aevt-key :avet-key]))
-         (log/raise "Cannot pin an unflushed snapshot." {:type :gc/root-unflushed-snapshot}))
-       record)))
-
-#?(:clj
    (defn build-secondary-index!
      "Backfill a secondary index by scanning AEVT for all covered attributes.
       Returns a channel so the writer can continue serving transactions. While
@@ -1176,6 +1162,27 @@
                            :idx-ident idx-ident}))
            use-transient? (satisfies? sec/ITransientSecondaryIndex idx)
            t-idx (if use-transient? (sec/-as-transient idx) idx)
+           ;; The scan reads the DURABLE head, not `old`. The db a writer op
+           ;; receives can run ahead of the commit loop — unflushed roots, a
+           ;; lagging :meta — and nothing unflushed can be pinned. Any committed
+           ;; snapshot at or after the boundary is a correct scan source: the
+           ;; scan skips datoms newer than the boundary and the journal carries
+           ;; them, and a datom retracted after the boundary is replayed as a
+           ;; retraction of nothing. The schema commit was awaited before this
+           ;; op was dispatched, so the head is at least that far.
+           store (:store db)
+           branch (get-in db [:config :branch] :db)
+           head-record (k/get store branch nil {:sync? true})
+           _ (when-not (and head-record (>= (:max-tx head-record) building-since-tx))
+               (log/raise "The branch head is behind the backfill boundary; the schema commit has not landed."
+                          {:type :secondary-index-head-behind-boundary
+                           :idx-ident idx-ident
+                           :head-max-tx (:max-tx head-record)
+                           :building-since-tx building-since-tx}))
+           ;; No secondary indices on the scan snapshot: it is read for its
+           ;; primary AEVT only, and restoring adapters (a Lucene lock, say)
+           ;; is work and hazard for nothing.
+           snapshot (stored->db-read-only (dissoc head-record :secondary-index-keys) store)
            gc-store-id (:id (:store (:config db)))
            ;; A versioned adapter may write private nodes while it builds. They
            ;; remain unreachable until install's commit publishes its key-map,
@@ -1190,7 +1197,7 @@
            lost (atom nil)]
        (go-try-
         (let [root-id (try (<?- (roots/root! db {:kind :pin
-                                                 :record (snapshot-record db)
+                                                 :record head-record
                                                  :note (str "secondary-index backfill " idx-ident)
                                                  :owner {:idx-ident idx-ident}}))
                            (catch Throwable e
@@ -1208,7 +1215,7 @@
             (let [populated-idx
                   (reduce
                    (fn [current-idx attr]
-                     (let [datoms (dbi/datoms db :aevt [attr])
+                     (let [datoms (dbi/datoms snapshot :aevt [attr])
                            n (atom 0)]
                        (log/debug :datahike/backfilling {:attr attr})
                        (let [result (reduce
@@ -1218,7 +1225,7 @@
                                          (do (swap! n inc)
                                              (let [tx-id (.-tx ^datahike.datom.Datom d)
                                                    tx-report {:datom d :added? true
-                                                              :tx-meta (dbtx/meta-for-tx-id db tx-id)}]
+                                                              :tx-meta (dbtx/meta-for-tx-id snapshot tx-id)}]
                                                (if use-transient?
                                                  (do (sec/-transact! idx tx-report) idx)
                                                  (sec/-transact idx tx-report))))))

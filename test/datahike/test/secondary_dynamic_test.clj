@@ -273,6 +273,12 @@
             (is (= 3 (count (get-in (d/db conn)
                                     [:secondary-index-build-deltas :idx/slow])))
                 "concurrent changes are journaled instead of racing the build")
+            ;; NOW the head has moved past the scanned snapshot, so with
+            ;; `(Date.)` as remove-before that snapshot's own nodes are garbage
+            ;; to everything but the pin. A collector that ignored the registry
+            ;; would sweep them here and the scan below could not finish.
+            (is (set? (<?? S (d/gc-storage conn (java.util.Date.))))
+                "a full-range collection with the head advanced still succeeds")
 
             (deliver release true)
             (is (= :ready (await-status conn :idx/slow :ready)))
