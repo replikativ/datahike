@@ -375,6 +375,53 @@
           (d/release conn)
           (d/delete-database cfg))))))
 
+(deftest recovery-after-crash-scans-the-journaled-transactions
+  (testing "a datom journaled by the crashed process is indexed on reconnect"
+    (let [path (str "/tmp/datahike-sec-crash-" (random-uuid))
+          cfg {:store {:backend :file
+                       :id (java.util.UUID/randomUUID)
+                       :path path}
+               :writer {:backend :self :writer-ownership :exclusive}
+               :keep-history? false
+               :schema-flexibility :write}
+          entered (promise)
+          release (promise)
+          control {:entered entered :release release :blocked? (atom false)}]
+      (d/create-database cfg)
+      (try
+        (let [conn (d/connect cfg)]
+          (d/transact conn [{:db/ident :person/name
+                             :db/valueType :db.type/string
+                             :db/cardinality :db.cardinality/one}])
+          (d/transact conn [{:person/name "Alice"} {:person/name "Bob"}])
+          (reset! slow-build-control control)
+          (d/transact conn [{:db/ident :idx/slow
+                             :db.secondary/type :test/slow-immutable
+                             :db.secondary/attrs [:person/name]}])
+          (is (= true (deref entered 5000 ::timeout)))
+          ;; Committed while the scan is paused: journaled in memory only.
+          (d/transact conn [{:person/name "Carol"}])
+          (is (= 1 (count (get-in (d/db conn)
+                                  [:secondary-index-build-deltas :idx/slow]))))
+          ;; The process stops before install; the journal dies with it.
+          (d/release conn)
+          (deliver release true)
+          (reset! slow-build-control nil))
+        (let [conn2 (d/connect cfg)]
+          (try
+            (is (= :ready (await-status conn2 :idx/slow :ready)))
+            (is (= #{"Alice" "Bob" "Carol"}
+                   (set (map second
+                             (:values @(get-in (d/db conn2)
+                                               [:secondary-indices :idx/slow])))))
+                "the rebuilt index covers the transaction the lost journal held")
+            (finally
+              (d/release conn2))))
+        (finally
+          (reset! slow-build-control nil)
+          (deliver release true)
+          (d/delete-database cfg))))))
+
 (deftest test-secondary-index-recovery-on-reconnect
   (testing "secondary index in :building state is recovered after reconnect"
     (let [path (str "/tmp/datahike-sec-recovery-" (random-uuid))

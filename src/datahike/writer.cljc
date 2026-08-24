@@ -761,7 +761,11 @@
                            ;; The scan is asynchronous; install/delta replay is
                            ;; a short serialized report-producing operation.
                            #?@(:clj ['build-secondary-index! w/build-secondary-index!
-                                     'install-secondary-index! w/install-secondary-index!])
+                                     'install-secondary-index! w/install-secondary-index!
+                                     ;; Recovery re-anchors the snapshot boundary
+                                     ;; before rebuilding (see connector).
+                                     'reset-secondary-index-build-boundary!
+                                     w/reset-secondary-index-build-boundary!])
                            ;; merge with multi-parent commit tracking
                            'merge! (with-tx-pred w/merge-writer!)
                            ;; bulk import: indexes built outside, substituted here.
@@ -1017,6 +1021,9 @@
                  (let [build-result (<! (dispatch! writer
                                                    {:op 'build-secondary-index!
                                                     :args [idx-ident]}))]
+                   (when-not (map? build-result)
+                     (log/warn :datahike/secondary-index-build-failed
+                               {:idx-ident idx-ident :error build-result}))
                    (when (map? build-result)
                      ;; Awaiting here does not block the writer. The install is
                      ;; merely queued behind transactions that may have arrived

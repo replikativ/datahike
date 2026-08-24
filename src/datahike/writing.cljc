@@ -1217,6 +1217,13 @@
        (guard/read-done! (::gc-store-id build-result) token))))
 
 #?(:clj
+   (defn- drop-build-deltas [db idx-ident]
+     (let [remaining (dissoc (:secondary-index-build-deltas db) idx-ident)]
+       (if (empty? remaining)
+         (dissoc db :secondary-index-build-deltas)
+         (assoc db :secondary-index-build-deltas remaining)))))
+
+#?(:clj
    (defn install-secondary-index!
      "Replay changes accumulated during an asynchronous backfill and publish
       the resulting index. This operation is serialized by the writer, which
@@ -1248,10 +1255,7 @@
                             (assoc-in [:schema idx-ident :db.secondary/status] :ready)
                             (update-in [:schema idx-ident] dissoc
                                        :db.secondary/building-since-tx)
-                            (update :secondary-index-build-deltas dissoc idx-ident)
-                            (cond-> (empty? (dissoc (:secondary-index-build-deltas old)
-                                                    idx-ident))
-                              (dissoc :secondary-index-build-deltas)))]
+                            (drop-build-deltas idx-ident))]
            (complete-db-update
             old {:db-before old
                  :db-after db-after
@@ -1265,6 +1269,33 @@
          (close-secondary-index! index)
          (finish-secondary-index-build! build-result)
          (throw e)))))
+
+#?(:clj
+   (defn reset-secondary-index-build-boundary!
+     "Re-anchor a recovered :building index's snapshot boundary at the current
+      head. The stored boundary was set by the schema transaction; every
+      transaction after it was journaled only in the process that then
+      stopped, so on reconnect those datoms exist solely in the primary index.
+      Moving the boundary to this head makes the scan cover everything
+      committed so far while the journal covers everything committed after
+      this serialized operation. Any entries journaled before it belong to
+      transactions the scan will see, so they are dropped."
+     [old idx-ident]
+     (let [status (get-in old [:schema idx-ident :db.secondary/status])]
+       (when-not (= :building status)
+         (log/raise "Only a building secondary index has a snapshot boundary to reset"
+                    {:type :secondary-index-not-building
+                     :idx-ident idx-ident
+                     :status status}))
+       (complete-db-update
+        old {:db-before old
+             :db-after (-> old
+                           (assoc-in [:schema idx-ident
+                                      :db.secondary/building-since-tx]
+                                     (:max-tx old))
+                           (drop-build-deltas idx-ident))
+             :tx-data []
+             :tx-meta {:db/txInstant (get-in old [:meta :datahike/updated-at])}}))))
 
 (defn merge-writer!
   "Writer operation for merge. Applies tx-data and records merge parents
