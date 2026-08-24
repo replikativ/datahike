@@ -54,6 +54,31 @@ With **shared** writers (`:writer-ownership :shared`, the default) several proce
 
 `:min-age-ms` spares anything written more recently than that, whatever the mark says. Size it above the longest window between "first value written" and "head flipped" any of your writers can have — a writer that awaits its transacts has that window closed when the call returns, so one request's duration is the bound — **plus the largest clock difference between your processes**: the `:last-write` stamps the sweep compares against come from each writer's own clock, so a writer twenty minutes behind the collector looks twenty minutes older than it is. A suspended process (a frozen Lambda resuming mid-commit) can exceed any bound you pick. The price of a generous value is only delayed reclamation; the price of a small one is a dangling head.
 
+## The GC safety contract
+
+What is protected **automatically**, in every process, under the default configuration:
+
+- **Commits in flight** — in the collector's own process by the exact safe point (`datahike.gc-guard`); in every other process by the sweep floor (`:min-age-ms`, 15 minutes by default under shared or remote writers).
+- **A secondary-index backfill** — the snapshot it scans is pinned with a [durable root](#durable-roots) until the ready commit lands.
+- **A bulk import (`:build-indexes? true`)** — a durable checkpoint follows the build: flushed nodes of the family in flight, then each completed family's tree (JVM; a ClojureScript build is covered by the in-process guard and the floor).
+- **`import-db`'s restored blobs** — rooted from the moment they are written until the import's last commit.
+- **`export-db`'s snapshot** — pinned for the export's duration.
+
+What needs **one line from you**, because Datahike cannot see it:
+
+- **Writing a blob before the datom that names it** — wrap the two steps in `datahike.gc-guard/with-unreferenced-writes` (see [store-refs](./store-refs.md)).
+- **Holding a snapshot for hours** — a reporting job over `(d/db conn)`, an analytics pass over `(d/as-of db t)`: pin it.
+
+```clojure
+(require '[datahike.gc-roots :as roots])
+(let [db (d/db conn)
+      id (<?? S (roots/pin! db {:note "nightly report"}))]
+  (try (run-report db)
+       (finally (<?? S (roots/release! db id)))))
+```
+
+A pin carries a lease (an hour, renewable), so a crashed job never retains storage for longer than that plus its grace. The automatic roots above are **best-effort**: if the store cannot take one (a transient backend failure), the operation warns and proceeds with the protection it had before roots existed — the guard and the floor — rather than failing; an operation whose lease is *lost* mid-run fails with `:gc/root-lost` rather than publish what may be gone. One caveat for mixed fleets: a collector running an **older Datahike** does not know about roots — upgrade the processes that run GC first.
+
 ## Grace Periods for Distributed Readers
 
 Datahike's [Distributed Index Space](./distributed.md) allows readers to access storage directly without coordination. This is powerful for scalability but means **long-running processes might read from old snapshots for hours**.
