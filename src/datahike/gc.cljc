@@ -429,8 +429,24 @@
                                                  (keep (fn [[k rec]]
                                                          (when (not= rec (get snapshot k)) k)))
                                                  current)]
-                            (if (or (empty? stale-keys) (= attempt 8))
-                              walked
+                            (cond
+                              (empty? stale-keys) walked
+                              ;; A writer rewriting its checkpoint faster than we
+                              ;; can walk it must not starve the sweep forever —
+                              ;; but neither may its LAST content go unwalked.
+                              ;; Walk what is known stale once more, then stop:
+                              ;; anything newer still is younger than any sane
+                              ;; floor.
+                              (= attempt 8)
+                              (do (log/warn :datahike/gc-roots-unstable
+                                            {:count (count stale-keys)})
+                                  (into walked
+                                        (->> stale-keys
+                                             (map #(reachable-in-branch store % remove-before config
+                                                                        schema-cache {:sync? false}))
+                                             async/merge
+                                             (<<? S))))
+                              :else
                               (do (log/debug :datahike/gc-late-roots {:count (count stale-keys)})
                                   (recur (into walked
                                                (->> stale-keys

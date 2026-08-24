@@ -331,7 +331,11 @@
    registry entry is untouched."
   ([db id record] (set-record! db id record {:sync? false}))
   ([db id record opts]
-   (k/assoc (:store db) (record-key id) record opts)))
+   ;; A fresh :datahike.gc/rev on every write: the collector detects a changed
+   ;; record by VALUE, and two index trees holding the same datoms compare
+   ;; equal even when their node addresses differ — without the stamp, a
+   ;; rewritten checkpoint could look unchanged and its new nodes go unwalked.
+   (k/assoc (:store db) (record-key id) (assoc record :datahike.gc/rev (new-id)) opts)))
 
 (defn release!
   "Drop root `id`. Its record becomes ordinary garbage. Idempotent."
