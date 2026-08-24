@@ -15,7 +15,8 @@
   (merge {:store {:backend :file
                   :path (str (System/getProperty "java.io.tmpdir") "/dh-fusion-test-" label "-" (java.util.UUID/randomUUID))
                   :id (java.util.UUID/randomUUID)}
-          :schema-flexibility :read :keep-history? true}
+          :schema-flexibility :read :keep-history? true
+          :writer {:backend :self :writer-ownership :exclusive}}
          extra))
 
 (defn- count-keys [store] (count (k/keys store {:sync? true})))

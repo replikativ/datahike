@@ -876,7 +876,7 @@
      :stability :stable
      :supports-remote? true
      :referentially-transparent? false
-     :doc "Invokes garbage collection on connection's store. Removes old snapshots before given time point. `:min-age-ms` spares anything written more recently than that, which is what makes collecting from outside the writer process possible — it must exceed the longest values-then-pointer window any writer can have."
+     :doc "Invokes garbage collection on connection's store. Removes old snapshots before given time point. `:min-age-ms` spares anything written more recently than that, which is what makes collecting from outside the writer process possible — it must exceed the longest values-then-pointer window any writer can have. When omitted it defaults to 0 under an exclusive local writer (`:writer {:backend :self :writer-ownership :exclusive}`) and to 15 minutes under a shared or remote writer, where another process's commit in flight is invisible to this collector; pass `{:min-age-ms 0}` explicitly to sweep without a floor."
      :examples [{:desc "GC all old snapshots"
                  :code "(gc-storage conn)"}
                 {:desc "GC snapshots before date"

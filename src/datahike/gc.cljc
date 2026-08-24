@@ -190,8 +190,9 @@
           {:reachable reachable :store-refs refs}))))))
 
 (def ^:const DEFAULT_SWEEP_MIN_AGE_MS
-  "No floor by default: OFF, so in-process collection behaves exactly as it always
-   has.
+  "The floor under an EXCLUSIVE local writer: OFF, so single-process collection
+   behaves exactly as it always has. See [[DEFAULT_SHARED_SWEEP_MIN_AGE_MS]] for
+   every other writer configuration, and [[default-min-age-ms]] for the choice.
 
    Not a hedge — where the writer lives, `safe-point` is EXACT, so a wall-clock
    floor on top of it can only retain garbage the collector was right about. The
@@ -205,9 +206,42 @@
    for everyone; a default small enough to be harmless would not protect anyone
    while looking as though it did.
 
-   So it is opt-in, and collecting from outside the writer process without it is
-   warned about by name. See [[gc-storage!]]."
+   So under an exclusive writer it is opt-in, and collecting from outside the
+   writer process without it is warned about by name. See [[gc-storage!]]."
   0)
+
+(def ^:const DEFAULT_SHARED_SWEEP_MIN_AGE_MS
+  "The floor whenever this process is NOT the sole writer — a shared local writer
+   (`:writer-ownership :shared`, the default), or a remote writer backend where
+   the writes happen elsewhere entirely: 15 minutes.
+
+   Under those configurations the safe point is blind by construction: a commit
+   in flight in another process has written its objects and not yet flipped the
+   head, and nothing in this heap records that. With no floor the very next
+   sweep deletes them and the other process's head then lands on nothing — under
+   the DEFAULT configuration, silently. A floor is the only cross-process
+   protection there is, so it is on by default where it is needed.
+
+   Fifteen minutes is the longest single request on the platforms where shared
+   writers are used (AWS Lambda), which bounds the values-then-pointer window of
+   a writer that awaits its transacts. A writer that dispatches and returns
+   without awaiting, or a suspended process (#960), can exceed it — pass a larger
+   `:min-age-ms` then. The price of the default is that garbage younger than
+   fifteen minutes survives until the next cycle; `{:min-age-ms 0}` restores the
+   unfloored sweep for a caller that knows this process is alone."
+  (* 15 60 1000))
+
+(defn default-min-age-ms
+  "The sweep floor `gc-storage!` applies when the caller passes none, derived
+   from the collecting connection's writer configuration: zero for an exclusive
+   local writer, [[DEFAULT_SHARED_SWEEP_MIN_AGE_MS]] otherwise. Ownership is the
+   connection's own statement about whether other writers may exist, which is
+   exactly the fact the floor substitutes for."
+  [config]
+  (let [writer (:writer config)
+        local-exclusive? (and (= :self (get writer :backend :self))
+                              (= :exclusive (get writer :writer-ownership :shared)))]
+    (if local-exclusive? DEFAULT_SWEEP_MIN_AGE_MS DEFAULT_SHARED_SWEEP_MIN_AGE_MS)))
 
 (defn gc-storage!
   "Invokes garbage collection on the database by whitelisting currently known branches.
@@ -274,7 +308,7 @@
                      (log/raise "Garbage collection is deferred while a secondary index scans an older database snapshot."
                                 {:type :gc/read-lease-active
                                  :store-id store-id}))
-                 min-age-ms (or min-age-ms DEFAULT_SWEEP_MIN_AGE_MS)
+                 min-age-ms (or min-age-ms (default-min-age-ms config))
                  ;; Cutoff from konserve's monotonic write clock — the SAME
                  ;; source that stamps :last-write. Strictly increasing, so a
                  ;; cutoff acquired after a write is strictly greater than the

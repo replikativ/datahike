@@ -51,6 +51,7 @@
 (deftest-async background-gc-invokable-cross-platform
   (let [id   #?(:clj (java.util.UUID/randomUUID) :cljs (random-uuid))
         cfg  {:store {:backend :file :path (tmp-path id) :id id}
+              :writer {:backend :self :writer-ownership :exclusive}
               :schema-flexibility :write :keep-history? false}
         ;; create + connect (sync on JVM, async on cljs)
         _    #?(:clj  (do (when (d/database-exists? cfg) (d/delete-database cfg))
@@ -106,6 +107,7 @@
   ;; relies on (a blob written before the transaction that names it).
   (let [id   #?(:clj (java.util.UUID/randomUUID) :cljs (random-uuid))
         cfg  {:store {:backend :file :path (tmp-path id) :id id}
+              :writer {:backend :self :writer-ownership :exclusive}
               :schema-flexibility :write :keep-history? false
               ;; :commit-graph? false is LOAD-BEARING — with the graph on, every
               ;; commit record stays reachable and the sweep collects nothing, so
@@ -157,6 +159,7 @@
   ;; missing one on a fast store.
   (let [id   #?(:clj (java.util.UUID/randomUUID) :cljs (random-uuid))
         cfg  {:store {:backend :file :path (tmp-path id) :id id}
+              :writer {:backend :self :writer-ownership :exclusive}
               :schema-flexibility :write :keep-history? false}
         _    #?(:clj  (do (when (d/database-exists? cfg) (d/delete-database cfg))
                           (d/create-database cfg))
@@ -225,6 +228,7 @@
      (deftest background-gc-under-pipelined-writes
        (testing "concurrent collection cycles + pipelined writer: exact data, contained store"
          (let [cfg {:store (stress-store "pipe")
+                    :writer {:backend :self :writer-ownership :exclusive}
                     :schema-flexibility :write :keep-history? false}]
            (d/delete-database cfg)
            (d/create-database cfg)
@@ -268,6 +272,7 @@
      (deftest background-gc-with-live-branches
        (testing "collection with two diverging branches under writes keeps both exact"
          (let [cfg {:store (stress-store "branch")
+                    :writer {:backend :self :writer-ownership :exclusive}
                     :schema-flexibility :write :keep-history? true}]
            (d/delete-database cfg)
            (d/create-database cfg)
@@ -321,6 +326,7 @@
      (deftest sweep-spares-in-flight-commit
        (testing "a collection cycle racing a mid-flush commit leaves the store intact"
          (let [cfg   {:store (stress-store "inflight")
+                      :writer {:backend :self :writer-ownership :exclusive}
                       :schema-flexibility :write :keep-history? false
                       :commit-graph? false}
                kset  (fn [store] (set (map :key (k/keys store {:sync? true}))))]
@@ -376,6 +382,7 @@
      (deftest sweep-spares-in-flight-schema
        (testing "a schema added by a mid-flush commit survives a racing collection"
          (let [cfg {:store (stress-store "schema")
+                    :writer {:backend :self :writer-ownership :exclusive}
                     :schema-flexibility :write :keep-history? false
                     :commit-graph? false}]
            (d/delete-database cfg)
@@ -432,6 +439,7 @@
      (deftest sweep-spares-in-flight-branch
        (testing "a branch being created survives a racing collection"
          (let [cfg {:store (stress-store "branch")
+                    :writer {:backend :self :writer-ownership :exclusive}
                     :schema-flexibility :write :keep-history? false}]
            (d/delete-database cfg)
            (d/create-database cfg)
