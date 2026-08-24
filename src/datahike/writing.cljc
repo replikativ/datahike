@@ -1261,25 +1261,29 @@
               ;; quietly turn the pin into a ref that retains ancestry.
               checkpoint-base (update head-record :meta dissoc :datahike/parents)
               folded (atom 0)
+              fold-lock (Object.)
               ;; ONE fold path, shared by the periodic loop and by install's final
-              ;; fold. Returns true when the record on the store names every key
+              ;; fold, and SERIALIZED: two folds interleaving could land a smaller
+              ;; snapshot over a larger one while `folded` claims the larger.
+              ;; Returns true when the record on the store names every key
               ;; captured so far. `folded` advances only on a successful write,
               ;; so a transient failure is retried rather than dropped.
               fold! (fn []
-                      (let [ks @captured-keys
-                            n (count ks)]
-                        (if (<= n @folded)
-                          true
-                          (try (roots/set-record! db root-id
-                                                  (assoc checkpoint-base :datahike.gc/keys ks)
-                                                  {:sync? true})
-                               (swap! folded max n)
-                               true
-                               (catch Throwable e
-                                 (log/warn :datahike/secondary-index-checkpoint-failed
-                                           {:idx-ident idx-ident
-                                            :error (.getMessage ^Throwable e)})
-                                 false)))))
+                      (locking fold-lock
+                        (let [ks @captured-keys
+                              n (count ks)]
+                          (if (<= n @folded)
+                            true
+                            (try (roots/set-record! db root-id
+                                                    (assoc checkpoint-base :datahike.gc/keys ks)
+                                                    {:sync? true})
+                                 (reset! folded n)
+                                 true
+                                 (catch Throwable e
+                                   (log/warn :datahike/secondary-index-checkpoint-failed
+                                             {:idx-ident idx-ident
+                                              :error (.getMessage ^Throwable e)})
+                                   false))))))
               stop-capture-ch (async/chan)
               _fold-loop (async/go-loop []
                            (let [[_ port] (async/alts! [stop-capture-ch (async/timeout 2000)])]
@@ -1290,7 +1294,9 @@
                                ;; problem: stop capturing (the hook goes, so the
                                ;; heap stops growing too), remember it, and let
                                ;; the guard and the floor carry the rest.
-                               (when (and hook-id (> (count @captured-keys) 50000))
+                               (when (and hook-id
+                                          (nil? @checkpoint-degraded)
+                                          (> (count @captured-keys) 50000))
                                  (reset! checkpoint-degraded :capped)
                                  (log/warn :datahike/secondary-index-checkpoint-capped
                                            {:idx-ident idx-ident :captured (count @captured-keys)})
@@ -1367,20 +1373,13 @@
       still there and was renewed recently. A build whose lease was lost —
       reaped, or eaten by an older collector — may have scanned nodes that
       have since been swept, and must not be published."
-     [{:keys [idx-ident] ::keys [root-id root-db root-lost fold-now! checkpoint-degraded]}]
+     [{:keys [idx-ident] ::keys [root-id root-db root-lost checkpoint-degraded]}]
      (when-let [e (some-> root-lost deref)]
        (throw (ex-info "Discarding a secondary-index build whose GC root was lost during the scan."
                        {:type :gc/root-lost :idx-ident idx-ident :root-id root-id}
                        e)))
      (when root-id
        (roots/assert-live! root-db root-id (quot roots/DEFAULT_TTL_MS 2) {:sync? true}))
-     ;; The last keys written may be younger than the fold cadence: fold once
-     ;; more, synchronously, before anything is published. A fold that cannot
-     ;; land means the registry is unhealthy; publishing on top of it would
-     ;; name state a collector may sweep meanwhile.
-     (when (and fold-now! (not (fold-now!)))
-       (throw (ex-info "The secondary-index build's checkpoint could not be written before install."
-                       {:type :gc/checkpoint-incomplete :idx-ident idx-ident :root-id root-id})))
      (when-let [why (some-> checkpoint-degraded deref)]
        (log/warn :datahike/secondary-index-checkpoint-degraded
                  {:idx-ident idx-ident :why why
@@ -1392,6 +1391,17 @@
        (if (empty? remaining)
          (dissoc db :secondary-index-build-deltas)
          (assoc db :secondary-index-build-deltas remaining)))))
+
+#?(:clj
+   (defn- fold-build-checkpoint!
+     "The final fold, AFTER delta replay: the replay itself may write private
+      nodes, and the last keys written can be younger than the fold cadence.
+      A fold that cannot land means the registry is unhealthy; publishing on
+      top of it would name state a collector may sweep meanwhile."
+     [{:keys [idx-ident] ::keys [root-id fold-now!]}]
+     (when (and fold-now! (not (fold-now!)))
+       (throw (ex-info "The secondary-index build's checkpoint could not be written before install."
+                       {:type :gc/checkpoint-incomplete :idx-ident idx-ident :root-id root-id})))))
 
 #?(:clj
    (defn install-secondary-index!
@@ -1421,6 +1431,7 @@
                                     (sec/-transact idx tx-report)))
                                 t-idx deltas)
                final-idx (if use-transient? (sec/-persistent! replayed) replayed)
+               _ (fold-build-checkpoint! build-result)
                db-after (-> old
                             (assoc-in [:secondary-indices idx-ident] final-idx)
                             (assoc-in [:schema idx-ident :db.secondary/status] :ready)
