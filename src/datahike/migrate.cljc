@@ -3119,7 +3119,11 @@
                                                 #(mstore/read-chunk m manifest c o)
                                                 {:op :read-chunk :chunk c}))}
                                       opts))
-                     (catch #?(:clj Exception :cljs :default) e e))]
+                     ;; Throwable, not Exception: an Error (an AssertionError
+                     ;; from a :progress-fn, say) must still release the guard
+                     ;; and close the store, or the token pins every later
+                     ;; sweep to this import's start for the process lifetime.
+                     (catch #?(:clj Throwable :cljs :default) e e))]
            (guard/done! gc-sid gc-token)
            (<?- (mstore/close m opts))
            (if (instance? #?(:clj Throwable :cljs js/Error) res) (throw res) res))
@@ -3156,7 +3160,7 @@
                                                       #(fs-read-chunk manifest f o)
                                                       {:op :read-chunk :chunk f}))}
                                             opts))
-                           (catch #?(:clj Exception :cljs :default) e e))]
+                           (catch #?(:clj Throwable :cljs :default) e e))]
                  (guard/done! gc-sid gc-token)
                  (if (instance? #?(:clj Throwable :cljs js/Error) res) (throw res) res)))))))))))
 
