@@ -406,15 +406,30 @@
                                              (= :building (:db.secondary/status entry)))]
                             (log/trace :datahike/secondary-index-backfill {:ident ident})
                             (go
-                              (let [build-result (<! (w/dispatch! writer
-                                                                  {:op 'build-secondary-index!
-                                                                   :args [ident]}))]
-                                (when (map? build-result)
+                              ;; The delta journal that covered transactions
+                              ;; after the stored boundary died with the
+                              ;; previous process. Re-anchor the boundary at
+                              ;; this head first so the scan picks those
+                              ;; datoms up from the primary index; only
+                              ;; transactions after this point are journaled.
+                              (let [reset-result (<! (w/dispatch! writer
+                                                                  {:op 'reset-secondary-index-build-boundary!
+                                                                   :args [ident]}))
+                                    build-result (if (map? reset-result)
+                                                   (<! (w/dispatch! writer
+                                                                    {:op 'build-secondary-index!
+                                                                     :args [ident]}))
+                                                   reset-result)]
+                                (if-not (map? build-result)
+                                  (log/warn :datahike/secondary-index-recovery-failed
+                                            {:ident ident :error build-result})
                                   (let [install-result
                                         (<! (w/dispatch! writer
                                                          {:op 'install-secondary-index!
                                                           :args [build-result]}))]
                                     (when-not (map? install-result)
+                                      (log/warn :datahike/secondary-index-recovery-failed
+                                                {:ident ident :error install-result})
                                       (dsi/finish-secondary-index-build!
                                        build-result)))))))))
                      (add-connection! conn-id conn)
