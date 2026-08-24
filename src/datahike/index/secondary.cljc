@@ -420,7 +420,13 @@
   "Create a secondary index instance from a registered type.
    config is the index-specific configuration map.
    db is the current database (for initial population if needed).
-   Auto-requires the integration namespace if the type is namespace-qualified."
+   Auto-requires the integration namespace if the type is namespace-qualified.
+
+   A factory invoked for an asynchronous backfill also receives the ephemeral
+   keys `::index-ident` and `::build-attempt`. An adapter with external mutable
+   storage must use `::build-attempt` to create a private, empty generation;
+   reopening a path left by an earlier crashed attempt can duplicate replayed
+   datoms. These keys are runtime context and are not stored in schema."
   [type-keyword config db]
   #?(:clj
      (when-not (get @index-types type-keyword)

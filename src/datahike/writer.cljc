@@ -693,7 +693,18 @@
                                 (log/error :datahike/writer-shutdown {:error e})
                             ;; Re-throw Errors (AssertionError, OutOfMemoryError, etc.) to crash the writer
                                 #?(:clj (when (instance? Error e)
-                                          (throw e)))))))
+                                          (throw e))))))
+                          (finally
+                            ;; A background secondary build holds a GC guard
+                            ;; until the commit that publishes its ready key-map
+                            ;; has either landed or definitively failed.
+                            #?(:clj
+                               (doseq [[tx-report _] txs
+                                       :let [build-guard
+                                             (:secondary-index-build-guard
+                                              tx-report)]
+                                       :when build-guard]
+                                 (w/finish-secondary-index-build! build-guard)))))
                         ;; Signalled AFTER the head flip (or after the failure
                         ;; path closed everything), so the transaction loop's
                         ;; next head read sees this commit.
@@ -747,7 +758,8 @@
                            ;; async operations that run in background — NOT report
                            ;; producers, must not be wrapped (they return channels)
                            'gc-storage!   gc/gc-storage!
-                           ;; secondary index backfill (async, runs in background)
+                           ;; The scan is asynchronous; install/delta replay is
+                           ;; a short serialized report-producing operation.
                            #?@(:clj ['build-secondary-index! w/build-secondary-index!
                                      'install-secondary-index! w/install-secondary-index!])
                            ;; merge with multi-parent commit tracking
@@ -973,12 +985,8 @@
    i.e. they are :building in db-after but were not already :building in
    db-before. Returns a seq of idx-idents that need a one-time backfill.
 
-   Comparing against db-before is essential: any transaction applied while
-   an index is still building would otherwise re-dispatch a full backfill,
-   and a second backfill that runs after the first one's
-   install-secondary-index! has dissoc'd :db.secondary/building-since-tx
-   loses the snapshot guard and re-delivers post-creation datoms that were
-   already applied live — double-counting them in the index."
+   Comparing against db-before is essential: only the schema transaction that
+   creates or re-enables the index owns the initial backfill."
   [tx-report]
   (let [before (get-in tx-report [:db-before :schema])
         after  (get-in tx-report [:db-after :schema])]
@@ -994,24 +1002,34 @@
 (defn transact!
   [connection arg-map]
   (let [p (throwable-promise)
-        writer (:writer @(:wrapped-atom connection))]
+        db @(:wrapped-atom connection)
+        writer (:writer db)
+        local-writer? (= :self (get-in db [:config :writer :backend] :self))]
     (go
       (let [tx-report (<! (dispatch! writer
                                      {:op 'transact!
                                       :args [arg-map]}))]
         (when (map? tx-report) ;; not error
-          ;; Dispatch backfill for any newly created secondary indices
           #?(:clj
              (doseq [idx-ident (detect-new-building-indices tx-report)]
                (log/trace :datahike/dispatch-backfill {:idx-ident idx-ident})
-               ;; build-secondary-index! is async (returns channel).
-               ;; When it completes, dispatch install to swap in the result.
                (go
-                 (let [build-result (<! (dispatch! writer {:op 'build-secondary-index!
-                                                           :args [idx-ident]}))]
+                 (let [build-result (<! (dispatch! writer
+                                                   {:op 'build-secondary-index!
+                                                    :args [idx-ident]}))]
                    (when (map? build-result)
-                     (dispatch! writer {:op 'install-secondary-index!
-                                        :args [build-result]}))))))
+                     ;; Awaiting here does not block the writer. The install is
+                     ;; merely queued behind transactions that may have arrived
+                     ;; during the scan; it replays their journaled deltas.
+                     (let [install-result
+                           (<! (dispatch! writer
+                                          {:op 'install-secondary-index!
+                                           :args [build-result]}))]
+                       ;; If release shut the local queue between scan and
+                       ;; install, no commit report exists to release the guard.
+                       ;; The build ran in this JVM, so clean it up here.
+                       (when (and local-writer? (not (map? install-result)))
+                         (w/finish-secondary-index-build! build-result))))))))
           (doseq [[_ callback] (some-> (:listeners (meta connection)) (deref))]
             (callback tx-report)))
         (#?(:clj deliver :cljs put!) p tx-report)))

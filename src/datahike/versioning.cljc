@@ -218,27 +218,58 @@
                                            :commit-graph? (get (:config @conn) :commit-graph? true)})))
                   ;; Branch secondary indices via their native CoW support.
                   ;; Prefer live indices from the connection (they hold the write lock).
-                        (let [sec-keys (:secondary-index-keys stored-db)
+                        (let [schema-meta (when-let [schema-meta-key
+                                                     (:schema-meta-key stored-db)]
+                                            (<?- (k/get store schema-meta-key nil opts)))
+                              source-schema (or (:schema schema-meta)
+                                                (:schema stored-db))
+                              building? (fn [ident]
+                                          (= :building
+                                             (get-in source-schema
+                                                     [ident :db.secondary/status])))
+                              sec-keys (into {}
+                                             (remove (fn [[ident _]] (building? ident)))
+                                             (:secondary-index-keys stored-db))
                               live-indices (:secondary-indices @conn)
+                              use-live? (and (keyword? from)
+                                             (= from (get-in @conn [:config :branch]))
+                                             (= (get-in stored-db
+                                                        [:meta :datahike/commit-id])
+                                                (get-in @conn
+                                                        [:meta :datahike/commit-id])))
                               from-branch (or (when (keyword? from) from) :db)
                               branched-sec-keys
                               #?(:clj
                                  (when (or (seq sec-keys) (seq live-indices))
-                                   (reduce-kv
-                                    (fn [acc idx-ident idx]
-                                      (if (satisfies? sec/IVersionedSecondaryIndex idx)
-                                        (let [branched (sec/-sec-branch idx store from-branch new-branch)
-                                              key-map (sec/-sec-flush branched store new-branch)]
-                                          (when (instance? java.io.Closeable branched)
-                                            (.close ^java.io.Closeable branched))
-                                          (assoc acc idx-ident key-map))
-                                        (if-let [key-map (get sec-keys idx-ident)]
-                                          (assoc acc idx-ident
-                                                 (sec/branch-from-key-map key-map store from-branch new-branch))
-                                          acc)))
-                                    {} (or live-indices {})))
+                                   (if use-live?
+                                     (reduce-kv
+                                      (fn [acc idx-ident idx]
+                                        (if (building? idx-ident)
+                                          acc
+                                          (if (satisfies? sec/IVersionedSecondaryIndex idx)
+                                            (let [branched (sec/-sec-branch idx store from-branch new-branch)
+                                                  key-map (sec/-sec-flush branched store new-branch)]
+                                              (when (instance? java.io.Closeable branched)
+                                                (.close ^java.io.Closeable branched))
+                                              (assoc acc idx-ident key-map))
+                                            (if-let [key-map (get sec-keys idx-ident)]
+                                              (assoc acc idx-ident
+                                                     (sec/branch-from-key-map key-map store from-branch new-branch))
+                                              acc))))
+                                      {} (or live-indices {}))
+                                     ;; A historical source must be forked from
+                                     ;; the key-maps stored on THAT commit, never
+                                     ;; from the connection's newer live index.
+                                     (reduce-kv
+                                      (fn [acc idx-ident key-map]
+                                        (assoc acc idx-ident
+                                               (sec/branch-from-key-map
+                                                key-map store from-branch new-branch)))
+                                      {} sec-keys)))
                                  :cljs nil)
-                              updated-db (cond-> (assoc-in stored-db [:config :branch] new-branch)
+                              updated-db (cond-> (-> stored-db
+                                                     (assoc-in [:config :branch] new-branch)
+                                                     (dissoc :secondary-index-keys))
                                            (seq branched-sec-keys) (assoc :secondary-index-keys branched-sec-keys))]
                           ;; A deleted branch leaves its old head behind until GC,
                           ;; so "must be absent" is too strong here. Fence against

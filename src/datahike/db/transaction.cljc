@@ -254,12 +254,15 @@
      [db idx-ident idx-schema]
      (let [idx-type (:db.secondary/type idx-schema)
            idx-attrs (set (:db.secondary/attrs idx-schema))
-           idx-config (cond-> (merge (:db.secondary/config idx-schema)
-                                     {:attrs idx-attrs})
-                        (seq (:ident-ref-map db))
-                        (assoc :ident-ref-map (:ident-ref-map db)))
-           idx (sec/create-index idx-type idx-config nil)
            needs-backfill? (attrs-have-datoms? db idx-attrs)
+           idx-config (cond-> (merge (:db.secondary/config idx-schema)
+                                     {:attrs idx-attrs
+                                      ::sec/index-ident idx-ident})
+                        (seq (:ident-ref-map db))
+                        (assoc :ident-ref-map (:ident-ref-map db))
+                        needs-backfill?
+                        (assoc ::sec/build-attempt (random-uuid)))
+           idx (sec/create-index idx-type idx-config nil)
            base (-> db
                     (assoc-in [:secondary-indices idx-ident] idx)
                     (assoc-in [:schema idx-ident :db.secondary/status]
@@ -405,9 +408,19 @@
                          true (assoc :tx-meta (tx-meta-for-secondary db datom)))]
          (reduce (fn [db' idx-ident]
                    (let [status (get-in db' [:schema idx-ident :db.secondary/status])]
-                    ;; Skip disabled indices — they are no longer maintained
-                     (if (= :disabled status)
-                       db'
+                     (cond
+                       ;; Disabled indices are no longer maintained.
+                       (= :disabled status) db'
+
+                       ;; The background worker exclusively owns the building
+                       ;; instance. Journal concurrent changes for the short
+                       ;; serialized install step instead of racing it or
+                       ;; replacing an immutable result with a stale snapshot.
+                       (= :building status)
+                       (update-in db' [:secondary-index-build-deltas idx-ident]
+                                  (fnil conj []) tx-report)
+
+                       :else
                        (if-let [idx (get-in db' [:secondary-indices idx-ident])]
                          (cond
                            (not (idx-pred idx)) db'
