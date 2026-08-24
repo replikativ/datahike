@@ -95,6 +95,8 @@
         (let [synced (async/<!! (pproto/sync! prox-idx))
               cid    (phi/commit-id synced)]
           {:type :proximum
+           ;; Its own store, never datahike's — the factory refuses otherwise.
+           :backing :external
            :branch (name branch)
            :commit-id cid
            :merkle-root cid
@@ -200,14 +202,43 @@
                             "attribute where it has one. Declare one index per vector attribute.")
                        {:error :secondary/proximum-multi-attr
                         :attrs (vec attrs)}))))
+   ;; The vector store must be proximum's OWN. Pointing :store-config at
+   ;; datahike's store corrupts it twice over: proximum writes bare
+   ;; `:branches` and `:index/config` keys — the first is datahike's branch
+   ;; registry — and datahike's collector, whose mark knows nothing of
+   ;; proximum's keys, sweeps the whole vector index (for a
+   ;; `:db.secondary/only` attribute, the only copy). Refused at declaration,
+   ;; where the config is written, rather than discovered by a failing read.
+   (when-let [primary-id (::sec/primary-store-id config)]
+     (when (= primary-id (get-in config [:store-config :id]))
+       (throw (ex-info (str "A :proximum index must use its own store: its :store-config names "
+                            "datahike's store (same :id). Proximum writes top-level keys that "
+                            "collide with datahike's (:branches), and datahike's GC would sweep "
+                            "the vector index as unreachable. Give it a separate store.")
+                       {:error :secondary/proximum-shared-store
+                        :store-id primary-id}))))
    (let [prox-config (merge {:type :hnsw}
                             (select-keys config [:dim :distance :store-config :mmap-dir
                                                  :capacity :m :ef-construction :ef-search]))
          prox-idx (prox/create-index prox-config)]
      (make-proximum-index prox-idx config))))
 
-;; GC: proximum uses its own store, not datahike's konserve
-(defmethod sec/mark-from-key-map :proximum [_ _] #{})
+;; GC: proximum uses its own store, not datahike's konserve — and the mark is
+;; where a PRE-EXISTING shared configuration (written before the factory
+;; refused it) surfaces: reporting #{} for state that lives in the store being
+;; swept would delete it, so refuse here too rather than guess.
+(defmethod sec/mark-from-key-map :proximum [key-map store]
+  (when (and store
+             (get-in key-map [:store-config :id])
+             (= (get-in key-map [:store-config :id])
+                (or (:datahike/store-id store)
+                    (get-in store [:storage :config :store :id]))))
+    (throw (ex-info (str "This :proximum index's :store-config names the very store being "
+                         "collected; its keys are not in the mark and the sweep would delete "
+                         "the vector index. Move it to its own store before collecting.")
+                    {:error :secondary/proximum-shared-store
+                     :key-map (dissoc key-map :store-config)})))
+  #{})
 
 ;; Branch: load from stored commit, branch via proximum native
 (defmethod sec/branch-from-key-map :proximum [key-map _store _from-branch new-branch]

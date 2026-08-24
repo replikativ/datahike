@@ -411,10 +411,51 @@
 (defmulti mark-from-key-map
   "Given a stored key-map from -sec-flush, return the set of konserve keys
    that are reachable (for GC mark phase). Dispatches on (:type key-map).
-   Avoids instantiating the full index — works directly from the stored metadata."
+   Avoids instantiating the full index — works directly from the stored metadata.
+
+   AN INDEX THAT KEEPS ITS DATA IN KONSERVE MUST IMPLEMENT THIS. Whatever this
+   returns is the ONLY thing standing between the index and the sweep: keys it
+   omits are unreachable, and `datahike.gc` deletes them. Returning the empty
+   set is correct only for an index whose storage konserve does not own — a
+   Lucene directory on the filesystem, say — and catastrophic for one whose
+   storage it does.
+
+   Declare which case you are in with `:backing` on the key-map (see
+   `konserve-backed?`); the default method refuses to guess FOR A KEY-MAP THAT
+   DECLARES ITSELF. A key-map with no `:backing` at all — one written before
+   this contract existed — still marks empty, exactly as before: datahike
+   cannot know where a third-party index keeps its bytes, so an undeclared
+   konserve-backed type keeps the old risk until its adapter declares. Declare
+   `:backing :external` (its own store elsewhere) or a similar value for
+   storage konserve does not own, `:backing :konserve` when it does — and in
+   the latter case this multimethod MUST be implemented before the first
+   collection runs, or every `d/gc-storage` on the database fails loudly.
+   An adapter with its OWN store must additionally refuse a configuration
+   that points that store at datahike's (compare `::primary-store-id` in its
+   factory config): two components sweeping one keyspace delete each other's
+   data, mark or no mark."
   (fn [key-map store] (:type key-map)))
 
-(defmethod mark-from-key-map :default [_ _] #{})
+(defn konserve-backed?
+  "Does this index keep its data in the konserve store?
+
+   `:backing` is the key-map's own declaration — `:konserve` when konserve
+   holds the bytes, anything else (or absent) when the index owns its storage
+   elsewhere. It exists so `mark-from-key-map` can tell 'nothing of mine lives
+   in konserve' apart from 'nobody taught me to mark', which are the same empty
+   set but opposite meanings: the first is safe, the second deletes an index."
+  [key-map]
+  (= :konserve (:backing key-map)))
+
+(defmethod mark-from-key-map :default [key-map _]
+  (if (konserve-backed? key-map)
+    ;; Failing loudly here costs a broken GC run; guessing #{} costs the index.
+    (throw (ex-info (str "Secondary index of type " (pr-str (:type key-map))
+                         " declares :backing :konserve but implements no"
+                         " mark-from-key-map. Refusing to mark it as unreachable,"
+                         " which would let the sweep delete it.")
+                    {:type (:type key-map) :key-map key-map}))
+    #{}))
 
 ;; ---------------------------------------------------------------------------
 ;; Static branch-from-key-map (for branch! without loading full index)

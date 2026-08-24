@@ -2,10 +2,12 @@
   "Tests for dynamic secondary index creation via schema transactions."
   (:require
    [clojure.test :refer [deftest testing is use-fixtures]]
+   [clojure.set :as set]
    [datahike.api :as d]
    [datahike.gc-guard :as guard]
    [datahike.gc-roots :as roots]
    [konserve.core :as k]
+   [konserve.utils :refer [multi-key-capable?]]
    [datahike.index.secondary :as sec]
    [datahike.writing :as writing]
    [superv.async :refer [<?? S]]))
@@ -66,6 +68,49 @@
    (fn [config _db]
      (let [{:keys [flushes restores]} @versioned-recorder-control]
        (->VersionedRecorder (set (:attrs config)) flushes restores)))))
+
+(defrecord StoreWritingIndex [attrs state]
+  sec/ISecondaryIndex
+  (-search [_ _ _] nil)
+  (-estimate [_ _] 0)
+  (-can-order? [_ _ _] false)
+  (-slice-ordered [_ _ _ _ _ _] nil)
+  (-indexed-attrs [_] attrs)
+  (-transact [this {:keys [datom]}]
+    ;; What a versioned adapter does mid-build: write a private node that
+    ;; nothing references until install's commit publishes the key-map.
+    ;; Write FIRST, then block — the test observes the written key while the
+    ;; build is paused.
+    (let [{:keys [store written writes]} @state
+          n (swap! writes inc)]
+      ;; Alternate the write shape where the backend allows: multi-assoc
+      ;; reports :kvs to write hooks, plain assoc reports :key — the capture
+      ;; must see both. (A file store is not multi-key-capable; there the
+      ;; :kvs branch is exercised by the multi-key backends in CI.)
+      (let [key (random-uuid)]
+        (if (and (even? n) (multi-key-capable? store))
+          (k/multi-assoc store {key {:private-node (:v datom)}
+                                (random-uuid) {:private-node (:v datom)}} {:sync? true})
+          (k/assoc store key {:private-node (:v datom)} {:sync? true}))
+        (swap! written conj key))
+      ;; Block on the SECOND datom, so the checkpoint must cover more than the
+      ;; first write to pass.
+      (when (= n 2)
+        (when-let [{:keys [entered release blocked?]} @slow-build-control]
+          (when (compare-and-set! blocked? false true)
+            (deliver entered true)
+            @release)))
+      this)))
+
+(defonce store-writing-state (atom nil))
+
+(defonce _register-store-writing
+  (sec/register-index-type!
+   :test/store-writing
+   ;; The factory's `db` argument is nil on the instantiate path, so the store
+   ;; travels through the test's own state atom, set before the schema tx.
+   (fn [config _db]
+     (->StoreWritingIndex (set (:attrs config)) store-writing-state))))
 
 (defn- await-status [conn idx-ident status]
   (let [deadline (+ (System/currentTimeMillis) 5000)]
@@ -371,6 +416,76 @@
           (finally
             (reset! slow-build-control nil)
             (deliver release-build true)
+            (d/release conn)
+            (d/delete-database cfg)))))))
+
+(deftest backfill-checkpoints-the-adapters-private-writes
+  (testing "keys a versioned adapter writes mid-build are folded into the
+            build's durable root, so a collector in ANY process spares them"
+    (let [cfg {:store {:backend :file
+                       :id (random-uuid)
+                       :path (str "/tmp/datahike-sec-ckpt-" (random-uuid))}
+               :writer {:backend :self :writer-ownership :exclusive}
+               :keep-history? false
+               :schema-flexibility :write}
+          entered (promise)
+          release (promise)]
+      (d/create-database cfg)
+      (let [conn (d/connect cfg)]
+        (try
+          (d/transact conn [{:db/ident :person/name
+                             :db/valueType :db.type/string
+                             :db/cardinality :db.cardinality/one}
+                            {:person/name "Alice"}
+                            {:person/name "Bob"}])
+          (reset! store-writing-state {:store (:store @conn) :written (atom #{}) :writes (atom 0)})
+          (reset! slow-build-control
+                  {:entered entered :release release :blocked? (atom false)})
+          (d/transact conn [{:db/ident :idx/private
+                             :db.secondary/type :test/store-writing
+                             :db.secondary/attrs [:person/name]}])
+          ;; The adapter wrote its first private node, then blocked.
+          (is (= true (deref entered 5000 ::timeout)))
+          (let [store (:store @conn)
+                written @(:written @store-writing-state)
+                _ (is (seq written) "precondition: a private node is in the store")
+                deadline (+ (System/currentTimeMillis) 8000)
+                record-key-of (fn []
+                                (when-let [entry (first (vals (<?? S (roots/roots store))))]
+                                  (k/get store (:record-key entry) nil {:sync? true})))]
+            ;; The fold runs on a 2s cadence; poll until the root's record
+            ;; names the private node.
+            (loop []
+              (when (and (not (set/subset? written
+                                           (set (:datahike.gc/keys (record-key-of)))))
+                         (< (System/currentTimeMillis) deadline))
+                (Thread/sleep 100)
+                (recur)))
+            (is (set/subset? written (set (:datahike.gc/keys (record-key-of))))
+                "the build's root records the adapter's private keys")
+            ;; The proof: a full unfloored collection with the in-process guard
+            ;; neutered — only the checkpoint stands between the sweep and the
+            ;; private node.
+            (with-redefs [guard/safe-point (fn [_] (java.util.Date.))]
+              (<?? S (d/gc-storage conn (java.util.Date.) {:min-age-ms 0})))
+            (doseq [key written]
+              (is (some? (k/get store key nil {:sync? true}))
+                  "the private node survived the sweep")))
+          (deliver release true)
+          (is (= :ready (await-status conn :idx/private :ready)))
+          ;; :ready flips when the commit lands; the release runs in the
+          ;; writer's finally a beat later. Poll, don't race it.
+          (let [deadline (+ (System/currentTimeMillis) 5000)]
+            (loop []
+              (when (and (seq (<?? S (roots/roots (:store @conn))))
+                         (< (System/currentTimeMillis) deadline))
+                (Thread/sleep 25)
+                (recur))))
+          (is (empty? (<?? S (roots/roots (:store @conn))))
+              "the ready commit releases the checkpointed root")
+          (finally
+            (reset! slow-build-control nil)
+            (deliver release true)
             (d/release conn)
             (d/delete-database cfg)))))))
 

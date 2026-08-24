@@ -90,7 +90,15 @@
   (async+sync
    (:sync? opts) *default-sync-translation*
    (go-try-
-    (let [head-cid (<?- (k/get-in store [branch :meta :datahike/commit-id] nil opts))]
+    (let [;; Adapters marking from key-maps may need to know WHICH store they
+          ;; are marking (proximum refuses to mark one that is secretly its
+          ;; own). Not every index backend's store carries :datahike/store-id,
+          ;; so stamp it from the config here rather than let a nil skip a
+          ;; refusal.
+          store (cond-> store
+                  (nil? (:datahike/store-id store))
+                  (assoc :datahike/store-id (get-in config [:store :id])))
+          head-cid (<?- (k/get-in store [branch :meta :datahike/commit-id] nil opts))]
       (loop [[to-check & r] [branch]
              visited        #{}
              reachable      #{branch head-cid}

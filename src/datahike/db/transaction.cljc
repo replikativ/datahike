@@ -257,7 +257,8 @@
            needs-backfill? (attrs-have-datoms? db idx-attrs)
            idx-config (cond-> (merge (:db.secondary/config idx-schema)
                                      {:attrs idx-attrs
-                                      ::sec/index-ident idx-ident})
+                                      ::sec/index-ident idx-ident
+                                      ::sec/primary-store-id (get-in db [:config :store :id])})
                         (seq (:ident-ref-map db))
                         (assoc :ident-ref-map (:ident-ref-map db))
                         needs-backfill?
