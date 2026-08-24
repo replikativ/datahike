@@ -224,11 +224,15 @@
 
    Fifteen minutes is the longest single request on the platforms where shared
    writers are used (AWS Lambda), which bounds the values-then-pointer window of
-   a writer that awaits its transacts. A writer that dispatches and returns
-   without awaiting, or a suspended process (#960), can exceed it — pass a larger
-   `:min-age-ms` then. The price of the default is that garbage younger than
-   fifteen minutes survives until the next cycle; `{:min-age-ms 0}` restores the
-   unfloored sweep for a caller that knows this process is alone."
+   a writer that awaits its transacts. It is a DEFAULT, not a guarantee: a
+   writer that dispatches and returns without awaiting, a suspended process
+   (#960), or a clock difference between processes — the `:last-write` stamps
+   the sweep compares against come from each writer's own clock — can exceed it,
+   and then the exposure this floor exists to close is open again. Pass a larger
+   `:min-age-ms` that covers your longest window PLUS your largest skew. The
+   price of the default is that garbage younger than fifteen minutes survives
+   until the next cycle; `{:min-age-ms 0}` restores the unfloored sweep for a
+   caller that knows this process is alone."
   (* 15 60 1000))
 
 (defn default-min-age-ms
