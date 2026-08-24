@@ -380,6 +380,15 @@
                  ;; head — same seed shape, same walk.
                  live-roots (<? S (roots/reap-expired! store {:sync? false}))
                  root-keys (mapv roots/record-key (keys live-roots))
+                 ;; Snapshot each root's RECORD as well as its id: a checkpoint
+                 ;; is rewritten in place as its build advances, and content the
+                 ;; mark never saw must be re-walked exactly like a new root.
+                 record-snapshot (loop [ks (seq root-keys) acc {}]
+                                   (if (nil? ks)
+                                     acc
+                                     (recur (next ks)
+                                            (assoc acc (first ks)
+                                                   (<? S (k/get store (first ks)))))))
                  _ (when (seq live-roots)
                      (log/trace :datahike/gc-retain-roots {:root-count (count live-roots)}))
                  ;; shared across branches: the schema is content-addressed, so
@@ -404,20 +413,32 @@
                  ;; itself; a root of the CURRENT head is never exposed, since
                  ;; the head's objects are reachable through the branch anyway.
                  walked (loop [walked walked
-                               seen (set (keys live-roots))
+                               snapshot record-snapshot
                                attempt 0]
                           (let [late (<? S (roots/live-roots store {:sync? false}))
-                                new-keys (mapv roots/record-key (remove seen (keys late)))]
-                            (if (or (empty? new-keys) (= attempt 8))
+                                late-keys (mapv roots/record-key (keys late))
+                                current (loop [ks (seq late-keys) acc {}]
+                                          (if (nil? ks)
+                                            acc
+                                            (recur (next ks)
+                                                   (assoc acc (first ks)
+                                                          (<? S (k/get store (first ks)))))))
+                                ;; New id OR rewritten record — either way the
+                                ;; mark has not seen this content.
+                                stale-keys (into []
+                                                 (keep (fn [[k rec]]
+                                                         (when (not= rec (get snapshot k)) k)))
+                                                 current)]
+                            (if (or (empty? stale-keys) (= attempt 8))
                               walked
-                              (do (log/debug :datahike/gc-late-roots {:count (count new-keys)})
+                              (do (log/debug :datahike/gc-late-roots {:count (count stale-keys)})
                                   (recur (into walked
-                                               (->> new-keys
+                                               (->> stale-keys
                                                     (map #(reachable-in-branch store % remove-before config
                                                                                schema-cache {:sync? false}))
                                                     async/merge
                                                     (<<? S)))
-                                         (into seen (keys late))
+                                         current
                                          (inc attempt))))))
                  ;; Store-refs are unioned into the whitelist here. For an object that
                  ;; lives in THIS store that means the sweep spares it (and reclaims it

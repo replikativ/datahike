@@ -8,7 +8,7 @@
             [datahike.api :as d]
             [datahike.blob :as blob]
             [datahike.gc :as gc]
-            [datahike.gc-guard :refer [with-unreferenced-writes]]
+            [datahike.gc-guard :as guard :refer [with-unreferenced-writes]]
             [datahike.gc-roots :as roots]
             [datahike.migrate :as m]
             [konserve.core :as k]
@@ -142,18 +142,33 @@
               probe (fn [{:keys [phase]}]
                       (swap! seen assoc phase (roots-now store)))]
           ;; The record grows between progress phases, so sample the writes
-          ;; themselves rather than hoping a phase lands mid-build.
-          (with-redefs [roots/set-record! (fn [db id record & [opts]]
-                                            (swap! checkpoints conj record)
-                                            (orig-set db id record (or opts {:sync? true})))]
-            (m/import-db dst dir {:build-indexes? true :progress-fn probe}))
+          ;; themselves rather than hoping a phase lands mid-build. And make the
+          ;; root EARN the retention: neuter the in-process safe point so this
+          ;; process's collector behaves like one in another process, then run a
+          ;; full unfloored collection after the first family lands. Only the
+          ;; checkpoint stands between the sweep and the unpublished trees; if
+          ;; it fails to protect them, publish lands on swept nodes and the
+          ;; queries below cannot answer.
+          (let [gced? (atom false)]
+            (with-redefs [roots/set-record! (fn [db id record & [opts]]
+                                              (swap! checkpoints conj record)
+                                              (let [r (orig-set db id record (or opts {:sync? true}))]
+                                                (when (and (:eavt-key record)
+                                                           (compare-and-set! gced? false true))
+                                                  (with-redefs [guard/safe-point
+                                                                (fn [_] (java.util.Date.))]
+                                                    (<?? S (d/gc-storage dst (Date.) {:min-age-ms 0}))))
+                                                r))]
+              (m/import-db dst dir {:build-indexes? true :progress-fn probe}))
+            (is @gced? "precondition: a full collection ran mid-build, after the first family"))
           (is (seq @seen) "precondition: the build reported progress")
           (is (some #(seq (vals %)) (vals @seen))
               "a checkpoint root existed during the build")
           (is (some :eavt-key @checkpoints)
               "the checkpoint record gained a completed family's tree")
           (is (empty? (roots-now store)) "released once the build published")
-          (is (= 500 (count (d/q '[:find ?e :where [?e :n _]] (d/db dst))))))
+          (is (= 500 (count (d/q '[:find ?e :where [?e :n _]] (d/db dst))))
+              "the published db answers — the checkpoint held through the sweep"))
         (finally
           (d/release src) (d/release dst)
           (d/delete-database src-cfg) (d/delete-database dst-cfg)

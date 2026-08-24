@@ -60,7 +60,7 @@ What is protected **automatically**, in every process, under the default configu
 
 - **Commits in flight** — in the collector's own process by the exact safe point (`datahike.gc-guard`); in every other process by the sweep floor (`:min-age-ms`, 15 minutes by default under shared or remote writers).
 - **A secondary-index backfill** — the snapshot it scans is pinned with a [durable root](#durable-roots) until the ready commit lands.
-- **A bulk import (`:build-indexes? true`)** — each completed index family is recorded in a durable checkpoint as the build progresses.
+- **A bulk import (`:build-indexes? true`)** — a durable checkpoint follows the build: flushed nodes of the family in flight, then each completed family's tree (JVM; a ClojureScript build is covered by the in-process guard and the floor).
 - **`import-db`'s restored blobs** — rooted from the moment they are written until the import's last commit.
 - **`export-db`'s snapshot** — pinned for the export's duration.
 
@@ -77,7 +77,7 @@ What needs **one line from you**, because Datahike cannot see it:
        (finally (<?? S (roots/release! db id)))))
 ```
 
-A pin carries a lease (an hour, renewable), so a crashed job never retains storage for longer than that plus its grace. One caveat for mixed fleets: a collector running an **older Datahike** does not know about roots — upgrade the processes that run GC first.
+A pin carries a lease (an hour, renewable), so a crashed job never retains storage for longer than that plus its grace. The automatic roots above are **best-effort**: if the store cannot take one (a transient backend failure), the operation warns and proceeds with the protection it had before roots existed — the guard and the floor — rather than failing; an operation whose lease is *lost* mid-run fails with `:gc/root-lost` rather than publish what may be gone. One caveat for mixed fleets: a collector running an **older Datahike** does not know about roots — upgrade the processes that run GC first.
 
 ## Grace Periods for Distributed Readers
 
