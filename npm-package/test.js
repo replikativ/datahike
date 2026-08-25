@@ -298,8 +298,71 @@ async function testTemporalDatabases() {
   await d.deleteDatabase(config);
 }
 
+async function testVersioningAndGc() {
+  console.log('\n=== Test 7: Versioning and Garbage Collection ===');
+
+  const config = {
+    // GC operates on persisted index nodes, so use the Node file backend.
+    store: { backend: ':file', path: tmpDir(), id: d.randomUuid() },
+    writer: { backend: ':self', 'writer-ownership': ':exclusive' },
+    'keep-history?': false
+  };
+
+  await d.createDatabase(config);
+  const conn = await d.connect(config);
+  await d.transact(conn, [
+    { 'db/ident': ':name', 'db/valueType': ':db.type/string', 'db/cardinality': ':db.cardinality/one' },
+    { name: 'before-branch' }
+  ]);
+
+  const originalDb = await d.db(conn);
+  const originalCommit = await d.commitId(originalDb);
+  if (typeof originalCommit !== 'string') {
+    throw new Error('commitId should return a UUID string');
+  }
+
+  // Exercise the public GC boundary after an ordinary durable commit.
+  const swept = await d.gcStorage(conn, new Date(), { 'min-age-ms': 0 });
+  if (!Array.isArray(swept)) {
+    throw new Error('gcStorage should return an array of reclaimed store keys');
+  }
+
+  await d.branch(conn, ':db', ':feature');
+  const names = await d.branches(conn);
+  if (!names.includes(':db') || !names.includes(':feature')) {
+    throw new Error(`Expected :db and :feature branches, got ${names}`);
+  }
+
+  const featureDb = await d.branchAsDb(conn, ':feature');
+  const originalByCommit = await d.commitAsDb(conn, d.uuid(originalCommit));
+  if (!featureDb || !originalByCommit) {
+    throw new Error('branchAsDb and commitAsDb should resolve snapshots');
+  }
+
+  await d.transact(conn, [{ name: 'main-after-branch' }]);
+  const mergeReport = await d.mergeDb(
+    conn,
+    [':feature'],
+    [{ name: 'merged-from-feature' }]
+  );
+  const parents = await d.parentCommitIds(mergeReport['db-after']);
+  if (!Array.isArray(parents) || parents.length !== 2) {
+    throw new Error(`Expected a two-parent merge commit, got ${parents}`);
+  }
+
+  // JavaScript arrays are converted to the parent set required by the core API.
+  console.log('  Forcing and deleting snapshot branches...');
+  await d.forceBranch(featureDb, ':snapshot', [':feature']);
+  await d.deleteBranch(conn, ':feature');
+  await d.deleteBranch(conn, ':snapshot');
+
+  d.release(conn);
+  await d.deleteDatabase(config);
+  console.log('  ✓ Branch, commit, merge, force-branch, and GC APIs work from JavaScript');
+}
+
 async function testFilePersistence() {
-  console.log('\n=== Test 7: File Backend Persistence ===');
+  console.log('\n=== Test 8: File Backend Persistence ===');
 
   const dir = tmpDir();
   const config = {
@@ -346,7 +409,7 @@ async function testFilePersistence() {
 }
 
 async function testSchemaRetrieval() {
-  console.log('\n=== Test 8: Schema Retrieval ===');
+  console.log('\n=== Test 9: Schema Retrieval ===');
 
   const config = {
     store: { backend: ':memory', id: d.randomUuid() }
@@ -375,7 +438,7 @@ async function testSchemaRetrieval() {
 }
 
 async function testMultipleTransactions() {
-  console.log('\n=== Test 9: Multiple Sequential Transactions ===');
+  console.log('\n=== Test 10: Multiple Sequential Transactions ===');
 
   const config = {
     store: { backend: ':memory', id: d.randomUuid() }
@@ -408,7 +471,7 @@ async function testMultipleTransactions() {
 }
 
 async function testQueryAPI() {
-  console.log('\n=== Test 10: Query API (Datalog queries as EDN strings) ===');
+  console.log('\n=== Test 11: Query API (Datalog queries as EDN strings) ===');
 
   const config = {
     store: { backend: ':memory', id: d.randomUuid() }
@@ -483,7 +546,7 @@ async function testQueryAPI() {
 }
 
 async function testOptimisticOverlay() {
-  console.log('\n=== Test 11: Optimistic Overlay ===');
+  console.log('\n=== Test 12: Optimistic Overlay ===');
 
   const config = { store: { backend: ':memory', id: d.randomUuid() } };
   await d.createDatabase(config);
@@ -576,6 +639,7 @@ async function runAllTests() {
     testPullAPI,
     testEntityAPI,
     testTemporalDatabases,
+    testVersioningAndGc,
     testFilePersistence,
     testSchemaRetrieval,
     testMultipleTransactions,

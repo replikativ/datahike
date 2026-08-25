@@ -56,6 +56,11 @@
   UUID values must be created explicitly with d.uuid() or d.randomUuid()."
   [x]
   (cond
+    ;; Dates are API values (temporal queries and GC cutoffs), not option maps.
+    ;; Preserve them before the generic JavaScript-object conversion below.
+    (instance? js/Date x)
+    x
+
     ;; Check for JS object first (but not arrays, functions, or null)
     (and (object? x)
          (not (array? x))
@@ -142,6 +147,22 @@
 
     ;; Everything else passes through
     :else x))
+
+(defn js->clj-api-args
+  "Convert JavaScript arguments and restore collection semantics that plain
+  JavaScript cannot express.
+
+  Arrays normally map to vectors because that is the useful representation for
+  transactions, query forms, pull selectors, and tuple values. Versioning
+  parents are the deliberate exception: the Clojure API models them as a set of
+  branch names and/or commit ids. Coerce only those schema positions instead of
+  guessing globally and turning unrelated arrays into sets."
+  [operation args]
+  (let [converted (mapv js->clj-recursive args)]
+    (case operation
+      "force-branch!" (update converted 2 set)
+      "merge-db!" (update converted 1 set)
+      converted)))
 
 ;; =============================================================================
 ;; Async/Promise Conversion

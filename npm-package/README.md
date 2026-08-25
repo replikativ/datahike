@@ -258,6 +258,42 @@ const historicalDb = await d.asOf(currentDb, date);
 const historyDb = await d.history(currentDb);
 ```
 
+### Versioning and garbage collection
+
+The JavaScript API exposes Datahike's commit graph and branch operations as
+Promises. Branch and merge parent collections are ordinary JavaScript arrays:
+
+```javascript
+await d.branch(conn, ':db', ':feature');
+const branchNames = await d.branches(conn); // [':db', ':feature']
+
+const featureDb = await d.branchAsDb(conn, ':feature');
+const commit = await d.commitId(featureDb); // UUID output is a string
+const sameDb = await d.commitAsDb(conn, d.uuid(commit));
+
+const report = await d.mergeDb(conn, [':feature'], [
+  { name: 'merged value' }
+]);
+const parents = await d.parentCommitIds(report['db-after']);
+
+await d.deleteBranch(conn, ':feature');
+```
+
+`gcStorage` reclaims unreachable objects from persistent stores and accepts a
+JavaScript `Date` or transaction time point. It returns an array of reclaimed
+store keys. It is not useful for a `:memory` store, whose index trees are kept
+inline rather than persisted as reclaimable objects.
+
+```javascript
+const reclaimed = await d.gcStorage(conn, new Date(), {
+  'min-age-ms': 60_000
+});
+```
+
+With shared or remote writers, size `min-age-ms` above the longest possible
+values-before-head publication window plus clock skew. The default is 15
+minutes for shared writers and zero for an exclusive local writer.
+
 ## API Reference
 
 See [TypeScript definitions](index.d.ts) for complete API documentation.

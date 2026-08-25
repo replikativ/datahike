@@ -22,7 +22,8 @@
                      result-sym (gensym "result")]]
              `(defn ~(with-meta js-fn-name {:export true :doc doc})
                 [& ~args-sym]
-                (let [~clj-args-sym (map datahike.js.api/js->clj-recursive ~args-sym)
+                (let [~clj-args-sym (datahike.js.api/js->clj-api-args
+                                     ~(name clj-fn-name) ~args-sym)
                       ;; JavaScript already exposes every operation as a Promise.
                       ;; Use that boundary to acquire a globally fresh snapshot
                       ;; from async browser stores while leaving the CLJ/CLJS `db`

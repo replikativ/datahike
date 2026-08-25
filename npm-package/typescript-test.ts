@@ -80,6 +80,28 @@ async function typescriptTest() {
   // Temporal query - asOf returns Database
   const pastDb: d.Database = await d.asOf(db, Date.now());
 
+  // Versioning and GC use ordinary JavaScript arrays/objects at the boundary.
+  const branchNames: d.BranchName[] = await d.branches(conn);
+  await d.branch(conn, ':db', ':feature');
+  const commitOutput: d.UuidValue | null = await d.commitId(db);
+  if (commitOutput) {
+    const committedDb: d.Database | null = await d.commitAsDb(conn, d.uuid(commitOutput));
+    console.log(committedDb);
+  }
+  const branchDb: d.Database | null = await d.branchAsDb(conn, ':feature');
+  const parentIds: d.UuidValue[] | null = await d.parentCommitIds(db);
+  if (branchDb) {
+    await d.forceBranch(branchDb, ':snapshot', [':feature']);
+  }
+  const mergeReport: d.TransactionReport = await d.mergeDb(
+    conn,
+    [':feature'],
+    [{ ':name': 'merged' }]
+  );
+  const reclaimed: unknown[] = await d.gcStorage(conn, new Date(0), {
+    'min-age-ms': 60_000
+  });
+
   // Optimistic overlays are explicit resources. Reads and subscriptions are
   // synchronous; each submitted operation exposes a tagged-result Promise.
   const overlay: d.OptimisticOverlay = d.openOptimistic(conn, {
@@ -99,7 +121,8 @@ async function typescriptTest() {
   d.closeOptimistic(overlay);
 
   console.log(queryResults, pullResult, schema, historyDb, pastDb, s3Config,
-              uuidOutput, invalidConfig, temporaryId);
+              uuidOutput, invalidConfig, temporaryId, branchNames, branchDb,
+              parentIds, mergeReport, reclaimed);
 }
 
 void typescriptTest;

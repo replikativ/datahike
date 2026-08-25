@@ -47,6 +47,16 @@
 (def ^:private parameter-names
   {'connect ["config" "opts"]
    'db ["conn"]
+   'branches ["conn"]
+   'branch! ["conn" "from" "newBranch"]
+   'delete-branch! ["conn" "branch"]
+   'force-branch! ["db" "branch" "parents"]
+   'merge-db! ["conn" "parents" "tx" "txMeta"]
+   'commit-id ["db"]
+   'parent-commit-ids ["db"]
+   'commit-as-db ["source" "commit"]
+   'branch-as-db ["source" "branch"]
+   'gc-storage ["conn" "removeBefore" "options"]
    'release ["conn" "releaseAll"]
    'transact! ["conn" "tx"]
    'with ["db" "tx" "txMeta"]
@@ -89,6 +99,14 @@
     ;; weakens the JavaScript contract.
     (and (= fn-name 'tempid) (= idx 0)) "Keyword"
 
+    (and (= fn-name 'branch!) (= idx 1)) "VersionRef"
+    (and (= fn-name 'force-branch!) (= idx 2)) "VersionRef[]"
+    (and (= fn-name 'merge-db!) (= idx 1)) "VersionRef[]"
+    (and (= fn-name 'merge-db!) (= idx 3)) "unknown"
+    (and (#{'commit-as-db 'branch-as-db} fn-name) (= idx 0))
+    "Connection | Database"
+    (and (= fn-name 'gc-storage) (= idx 2)) "GcOptions"
+
     :else (malli->ts-type schema)))
 
 (defn- render-parameters [fn-name arity]
@@ -121,6 +139,10 @@
     pull-many "T[]"
     transact! "TransactionReport"
     merge-db! "TransactionReport"
+    branch! "unknown"
+    delete-branch! "unknown"
+    parent-commit-ids "UuidValue[] | null"
+    gc-storage "unknown[]"
     (malli->ts-type (or (nth arity 2 nil) fallback))))
 
 (defn generate-function-signatures
@@ -174,6 +196,16 @@ export interface DatahikeUuid {
 }
 /** UUID values returned by the JavaScript boundary are ordinary strings. */
 export type UuidValue = string;
+
+/** A named branch (for example `':db'` or `':feature'`). */
+export type BranchName = Keyword;
+/** A branch name or an input UUID created with uuid(). */
+export type VersionRef = BranchName | DatahikeUuid;
+
+export interface GcOptions {
+  /** Keep objects written within this many milliseconds, even if unreachable. */
+  'min-age-ms'?: number;
+}
 
 export interface StoreConfig {
   backend: Keyword;
