@@ -1,4 +1,5 @@
 {:deps {:aliases [:cljs :test]}
+ :jvm-opts ["-Xss4m"]
  :src-paths ["src" "test"]
  :dev-http {8022 "target/browser-integration-test"}
  :builds {:repl

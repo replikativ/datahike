@@ -17,7 +17,11 @@
 ;; Additional exports defined in datahike.js.api that are not in the
 ;; api-specification (manually exported with ^:export metadata).
 (def ^:private extra-js-exports
-  ["isPromise" "uuid" "randomUuid"])
+  ["isPromise" "uuid" "randomUuid"
+   "openOptimistic" "optimisticDb" "optimisticPending"
+   "optimisticTransact" "optimisticPredict" "optimisticAck"
+   "optimisticReject" "optimisticAbandon" "optimisticListen"
+   "optimisticListenStatus" "closeOptimistic"])
 
 (defn generate-esm-wrapper
   "Generate ESM wrapper source that re-exports the IIFE bundle's API.

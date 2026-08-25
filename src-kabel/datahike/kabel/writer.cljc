@@ -14,13 +14,12 @@
    ```"
   (:require [datahike.writer :as writer :refer [PWriter]]
             [datahike.writing :as dw]
-            [datahike.query :as dq]
             [datahike.cbor :as dcbor]
             [datahike.tools :refer [throwable-promise]]
             [is.simm.distributed-scope :as ds]
             [superv.async :refer [<?-]]
-            #?(:clj [clojure.core.async :refer [go put! promise-chan close!]]
-               :cljs [clojure.core.async :refer [go put! promise-chan close!]])
+            #?(:clj [clojure.core.async :refer [go put! promise-chan]]
+               :cljs [clojure.core.async :refer [go put! promise-chan]])
             #?(:clj [replikativ.logging :as log]
                :cljs [replikativ.logging :as log :include-macros true])))
 
@@ -70,15 +69,16 @@
            [peer-id        ; UUID of the remote peer that owns the database
             store-id       ; UUID identifying the store/database (from store :id)
             store-config   ; Store config for index-registry cleanup on shutdown
-            pending-txs    ; atom: {expected-max-tx -> {:tx-report ... :ch promise-chan}}
+            pending-txs    ; atom: {request-id -> {:expected-max-tx ... :tx-report ... :ch promise-chan}}
             current-max-tx ; atom: current synced max-tx from konserve-sync
             listeners      ; atom: set of listen! callbacks to fire on tx completion
             conn-atom]     ; atom: reference to the connection (set after connect)
 
   PWriter
 
-  (-dispatch! [_ {:keys [op args] :as arg-map}]
+  (-dispatch! [_ arg-map]
     (let [result-ch (promise-chan)
+          request-id (random-uuid)
           ;; Global dispatch handler - store-id is passed in the request
           remote-fn 'datahike.kabel/dispatch]
       (go
@@ -87,6 +87,7 @@
           (let [remote-result (<?- (ds/invoke-remote peer-id
                                                      remote-fn
                                                      {:store-id store-id
+                                                      :request-id request-id
                                                       :arg-map arg-map}))]
             (if (instance? #?(:clj Throwable :cljs js/Error) remote-result)
               ;; Remote error - return immediately
@@ -97,14 +98,22 @@
               (let [expected-max-tx (get-in remote-result [:db-after :max-tx])
                     wait-ch (promise-chan)]
 
+                (when-not (number? expected-max-tx)
+                  (throw (ex-info "Remote writer returned no commit watermark"
+                                  {:type :kabel/invalid-writer-report
+                                   :request-id request-id
+                                   :report remote-result})))
+
                 ;; Register waiter with full tx-report
-                (swap! pending-txs assoc expected-max-tx
-                       {:tx-report remote-result :ch wait-ch})
+                (swap! pending-txs assoc request-id
+                       {:expected-max-tx expected-max-tx
+                        :tx-report remote-result
+                        :ch wait-ch})
 
                 ;; Helper to finalize and return tx-report
                 (let [finalize-and-return!
                       (fn []
-                        (swap! pending-txs dissoc expected-max-tx)
+                        (swap! pending-txs dissoc request-id)
                         ;; Reconstruct tx-report with live DBs from connection's store
                         (let [conn @conn-atom
                               store (:store @(:wrapped-atom conn))
@@ -139,7 +148,7 @@
   (-shutdown [_]
     ;; Cancel all pending waiters with shutdown error
     (let [shutdown-error (ex-info "Writer shutdown" {:type :writer-shutdown})]
-      (doseq [[max-tx {:keys [ch]}] @pending-txs]
+      (doseq [[_ {:keys [ch]}] @pending-txs]
         (put! ch shutdown-error))
       (reset! pending-txs {})
       ;; Drop the store from the index-reconstruction registry
@@ -181,7 +190,7 @@
     (reset! current-max-tx new-max-tx)
 
     ;; Resolve any pending transactions that are now synced
-    (doseq [[expected-max-tx {:keys [ch]}] @pending-txs]
+    (doseq [[_ {:keys [expected-max-tx ch]}] @pending-txs]
       (when (>= new-max-tx expected-max-tx)
         (put! ch :synced)))))
 
@@ -208,18 +217,11 @@
           conn-store (:store current-state)
           ;; Convert stored format to live DB (roots already EAGER from the canonical read handler)
           live-db (dw/stored->db stored-db conn-store)
-          ;; Propagate query cache from old DB to new DB
-          ;; Get modified attrs from pending tx-report if available
-          max-tx (:max-tx live-db)
-          pending-entry (when writer
-                          (get @(:pending-txs writer) max-tx))
-          tx-data (get-in pending-entry [:tx-report :tx-data])
-          _ (when tx-data
-              ;; Known tx: selective invalidation
-              (let [rim (:ref-ident-map live-db)
-                    modified-attrs (into #{} (comp (map :a) (filter some?)
-                                                   (map (fn [a] (if (and rim (number? a)) (get rim a a) a)))) tx-data)]
-                (dq/propagate-query-cache current-state live-db modified-attrs)))
+          ;; Do not propagate the old query-cache bucket. A synchronized
+          ;; snapshot may combine our pending reports with foreign writes, so
+          ;; their tx-data is not a complete old->new change set. Selective
+          ;; propagation with an incomplete set can retain stale results; the
+          ;; new DB key safely starts cold instead.
           ;; Merge new db with connection state (preserve writer, store, etc.)
           new-state (assoc live-db
                            :store conn-store

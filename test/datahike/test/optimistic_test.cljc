@@ -1,534 +1,345 @@
 (ns datahike.test.optimistic-test
-  "Cross-platform tests for `datahike.optimistic`.
+  (:require #?(:clj [clojure.test :refer [deftest is testing]]
+               :cljs [cljs.test :refer [deftest is testing] :include-macros true])
+            [clojure.core.async :as a :refer [<!]]
+            [datahike.api :as d]
+            [datahike.optimistic :as opt]
+            [datahike.test.async #?(:clj :refer :cljs :refer-macros) [deftest-async]]))
 
-   Covers:
-     - API surface (register!, listen!, transact!, on-conflict!)
-     - Consistency invariants: durable transact closes the visibility
-       gap; concurrent transacts stay mutually visible
-     - Case J (conflict): a conflicting entry hides from view, surfaces
-       via :on-conflict, and drops cleanly on dispatch failure
-     - TTL: expiry yields a tagged TimeoutException on :result and
-       rolls the view back via the tx-report stream
-     - tx-report convergence: incremental application of tx-data through
-       :overlay-add / :conn-advance / :overlay-realized / :overlay-drop
-       / :overlay-conflict / :overlay-resolve / :ttl arrives at @conn"
-  #?(:clj  (:require [clojure.test :refer [deftest is testing]]
-                     [datahike.api :as d]
-                     [datahike.datom :as dd]
-                     [datahike.optimistic :as opt]
-                     [datahike.test.async :refer [deftest-async]]
-                     [clojure.core.async :as a :refer [<! go]])
-     :cljs (:require [cljs.test :refer [deftest is testing] :include-macros true]
-                     [datahike.api :as d]
-                     [datahike.datom :as dd]
-                     [datahike.optimistic :as opt]
-                     [datahike.test.async :refer-macros [deftest-async]]
-                     [clojure.core.async :as a :refer [<!] :refer-macros [go]])))
-
-(defn- mk-cfg []
+(defn- cfg []
   {:store {:backend :memory :id (random-uuid)}
    :schema-flexibility :write
-   :keep-history? false})
+   :keep-history? true})
+
+(def schema
+  [{:db/ident :entity/uuid :db/valueType :db.type/uuid
+    :db/cardinality :db.cardinality/one :db/unique :db.unique/identity}
+   {:db/ident :content :db/valueType :db.type/string
+    :db/cardinality :db.cardinality/one}])
 
 (defn- setup []
-  (go
-    (let [cfg (mk-cfg)
-          ;; CLJ: create/connect are synchronous — call them directly
-          ;; from inside the outer `go`. CLJS: async — `<!` the result.
-          ;; (Wrapping the CLJ calls in nested `go` blocks just to
-          ;; `<!` them would shunt blocking work onto core.async's
-          ;; dispatch threads for no reason.)
-          _    #?(:clj  (d/create-database cfg)
-                  :cljs (<! (d/create-database cfg)))
-          conn #?(:clj  (d/connect cfg)
-                  :cljs (<! (d/connect cfg {:sync? false})))
-          _    (<! (d/transact! conn
-                                [{:db/ident :name :db/valueType :db.type/string
-                                  :db/cardinality :db.cardinality/one
-                                  :db/unique :db.unique/identity}]))
-          _    (<! (d/transact! conn [{:name "alice"}]))]
-      conn)))
+  (a/go
+    (let [c (cfg)
+          _ #?(:clj (d/create-database c) :cljs (<! (d/create-database c)))
+          conn #?(:clj (d/connect c) :cljs (<! (d/connect c {:sync? false})))
+          id (random-uuid)
+          _ (<! (d/transact! conn schema))
+          _ (<! (d/transact! conn [{:entity/uuid id :content "a"}]))]
+      {:cfg c :conn conn :id id})))
 
-(defn- names [db]
-  (->> (d/datoms db :avet :name) (mapv :v) sort vec))
+(defn- teardown [{:keys [cfg conn]} overlay]
+  (opt/close! overlay)
+  (d/release conn)
+  #?(:clj (d/delete-database cfg) :cljs (d/delete-database cfg)))
 
-(deftest-async register-listen-transact
-  (let [conn (<! (setup))
+(defn- value [db id]
+  (:content (d/entity db [:entity/uuid id])))
+
+(defn- eav-set [db]
+  (into #{} (map (juxt :e :a :v)) (d/datoms db :eavt)))
+
+(defn- apply-changes [view {:keys [added removed]}]
+  (-> view
+      (into (map (juxt :e :a :v)) added)
+      (#(reduce disj % (map (juxt :e :a :v) removed)))))
+
+(deftest-async writer-backed-happy-path
+  (let [{:keys [conn id] :as env} (<! (setup))
+        overlay (opt/open conn)
         events (atom [])]
-    (opt/register! conn)
-    (opt/listen! conn ::probe (fn [r]
-                                (swap! events conj (names (:db-after r)))))
-    (testing "happy path: optimistic transact delivers tx-report on result chan"
-      (let [{:keys [ov-id result]} (opt/transact! conn [{:name "bob"}])
-            reply (<! result)]
-        (is (some? ov-id) "ov-id is set")
-        (is (not (instance? #?(:clj Throwable :cljs js/Error) reply))
-            "reply is not an exception")
-        (is (some? (:db-after reply)) "reply is a tx-report")
-        (is (= 0 (count (opt/pending conn))) "pending drained after success")
-        (is (= ["alice" "bob"] (names @conn)) "base advanced")
-        (is (every? #(contains? (set %) "bob") @events)
-            "every listener event's :db-after includes the optimistic name")
-        (is (>= (count @events) 1) "at least one listener event fired")))
-    (opt/unlisten! conn ::probe)
-    (opt/unregister! conn)))
+    (opt/listen! overlay ::events #(swap! events conj %))
+    (let [{:keys [result]} (opt/transact! overlay
+                                          [[:db/add [:entity/uuid id] :content "b"]])]
+      (is (= "b" (value (opt/db overlay) id)))
+      (is (= :committed (:status (<! result))))
+      (is (= "b" (value @conn id)))
+      (is (empty? (opt/pending overlay)))
+      (is (seq @events))
+      (is (every? (fn [[a b]] (= (:db-after a) (:db-before b)))
+                  (partition 2 1 @events))))
+    (teardown env overlay)))
 
-(deftest-async eager-validation-throws
-  (let [conn (<! (setup))]
-    (opt/register! conn)
-    (testing "schema-violating tx-data throws synchronously and never enters overlay"
-      (let [caught (try
-                     (opt/transact! conn [{:name 42}])
-                     ::no-throw
-                     (catch #?(:clj Throwable :cljs :default) e
-                       e))]
-        (is (not= ::no-throw caught) "transact! threw")
-        (is (= 0 (count (opt/pending conn))) "overlay not polluted")))
-    (opt/unregister! conn)))
+(deftest-async validation-is-a-tagged-result
+  (let [{:keys [conn] :as env} (<! (setup))
+        overlay (opt/open conn)
+        result (:result (opt/transact! overlay [{:content 42}]))
+        reply (<! result)]
+    (is (= :rejected (:status reply)))
+    (is (some? (:error reply)))
+    (is (empty? (opt/pending overlay)))
+    (let [bad-predicate (<! (:result (opt/predict! overlay [{:content "valid"}] nil)))]
+      (is (= :rejected (:status bad-predicate)))
+      (is (= :optimistic/invalid-reconciliation-predicate
+             (:type (ex-data (:error bad-predicate))))))
+    (teardown env overlay)))
 
-(deftest-async external-advance-keeps-overlay
-  (let [conn (<! (setup))
+(deftest-async prediction-reconciles-on-foreign-base-advance
+  (let [{:keys [conn id] :as env} (<! (setup))
+        overlay (opt/open conn)
+        {:keys [result]} (opt/predict!
+                          overlay
+                          [[:db/add [:entity/uuid id] :content "b"]]
+                          #(= "b" (value % id)))]
+    (is (= "b" (value (opt/db overlay) id)))
+    (<! (d/transact! conn [[:db/add [:entity/uuid id] :content "b"]]))
+    (is (= :reconciled (:status (<! result))))
+    (is (empty? (opt/pending overlay)))
+    (is (= "b" (value (opt/db overlay) id)))
+    (teardown env overlay)))
+
+(deftest-async transaction-arg-map-survives-replay
+  (let [{:keys [conn id] :as env} (<! (setup))
+        overlay (opt/open conn)
+        statuses (atom [])
+        {:keys [ov-id]} (opt/predict!
+                         overlay
+                         {:tx-data [[:db/add [:entity/uuid id] :content "b"]]
+                          :tx-meta {:db/txInstant #inst "2026-01-01T00:00:00.000-00:00"}}
+                         (constantly false))]
+    (opt/listen-status! overlay ::arg-map #(swap! statuses conj %))
+    (is (= "b" (value (opt/db overlay) id)))
+    (<! (d/transact! conn [{:entity/uuid (random-uuid) :content "foreign"}]))
+    (is (= "b" (value (opt/db overlay) id)))
+    (is (false? (:conflicting? (first (opt/pending overlay)))))
+    (is (not-any? #(= :conflicting (:status %)) @statuses))
+    (opt/abandon! overlay ov-id :test)
+    (teardown env overlay)))
+
+(deftest-async reject-removes-a-prediction-immediately
+  (let [{:keys [conn id] :as env} (<! (setup))
+        overlay (opt/open conn)
+        {:keys [ov-id result]} (opt/predict! overlay
+                                             [[:db/add [:entity/uuid id] :content "b"]]
+                                             (constantly false))
+        error (ex-info "denied" {:type :denied})]
+    (is (= "b" (value (opt/db overlay) id)))
+    (opt/reject! overlay ov-id error)
+    (let [reply (<! result)]
+      (is (= :rejected (:status reply)))
+      (is (= error (:error reply))))
+    (is (= "a" (value (opt/db overlay) id)))
+    (teardown env overlay)))
+
+(deftest-async ack-disables-the-pre-ack-timeout
+  (let [{:keys [conn id] :as env} (<! (setup))
+        overlay (opt/open conn {:prediction-timeout-ms 10
+                                :reconciliation-timeout-ms 10})
+        statuses (atom [])
+        {:keys [ov-id result]} (opt/predict! overlay
+                                             [[:db/add [:entity/uuid id] :content "b"]]
+                                             (constantly false))]
+    (opt/listen-status! overlay ::status #(swap! statuses conj %))
+    (opt/ack! overlay ov-id {:accepted true})
+    (opt/ack! overlay ov-id {:duplicate true})
+    (is (= :accepted (:status (<! result))))
+    (is (= 1 (count (filter #(= :acknowledged (:status %)) @statuses))))
+    (opt/reject! overlay ov-id nil)
+    (is (= 1 (count (opt/pending overlay))))
+    (is (not-any? #(= :rejected (:status %)) @statuses))
+    (is (opt/error? {:status :rejected :error nil}))
+    (<! (a/timeout 1100))
+    (is (= 1 (count (opt/pending overlay))))
+    (is (= "b" (value (opt/db overlay) id)))
+    (is (= 1 (count (filter #(= :reconciliation-stalled (:status %)) @statuses))))
+    (teardown env overlay)))
+
+(deftest-async unacknowledged-prediction-expires-with-tagged-result
+  (let [{:keys [conn id] :as env} (<! (setup))
+        overlay (opt/open conn {:prediction-timeout-ms 10})
+        {:keys [result]} (opt/predict! overlay
+                                       [[:db/add [:entity/uuid id] :content "b"]]
+                                       (constantly false))
+        reply (<! result)]
+    (is (= :expired (:status reply)))
+    (is (= :unknown (:outcome reply)))
+    (is (= "a" (value (opt/db overlay) id)))
+    (is (empty? (opt/pending overlay)))
+    (teardown env overlay)))
+
+(deftest-async base-mutation-never-emits-a-false-delta
+  (let [{:keys [conn id] :as env} (<! (setup))
+        overlay (opt/open conn)
         events (atom [])]
-    (opt/register! conn)
-    (opt/listen! conn ::probe (fn [r] (swap! events conj (names (:db-after r)))))
-    (testing "manually-stacked overlay entries survive an external @conn advance"
-      ;; Manual entry has no :expected-max-tx, so the watcher's
-      ;; max-tx drop never removes it; it persists until unregister!.
-      (let [{:keys [overlay]} (#'opt/conn-state conn)
-            ov-id (random-uuid)]
-        (swap! overlay conj
-               {:ov-id   ov-id
-                :tx-data [{:name "carol"}]})
-        (<! (d/transact! conn [{:name "dave"}]))
-        (is (= 1 (count (opt/pending conn)))
-            "manual entry survives external advance")
-        (is (= ["alice" "dave"] (names @conn)) "base has dave only")
-        (is (= ["alice" "carol" "dave"] (names (opt/effective-db conn)))
-            "effective-db includes carol via overlay")))
-    (opt/unregister! conn)))
+    (opt/listen! overlay ::events #(swap! events conj %))
+    (let [{:keys [ov-id]} (opt/predict! overlay
+                                        [[:db/add [:entity/uuid id] :content "b"]]
+                                        (constantly false))]
+      (<! (d/transact! conn [[:db/add [:entity/uuid id] :content "c"]]))
+      (let [base-event (some #(when (= :base-advanced (get-in % [:cause :type])) %) @events)]
+        (is (some? base-event))
+        (is (nil? (:changes base-event)) "base replacement is an honest invalidation")
+        (is (= "b" (value (:db-after base-event) id))))
+      (opt/abandon! overlay ov-id :test)
+      (let [event (last @events)]
+        (is (= "c" (value (:db-after event) id)))
+        (is (= (eav-set (:db-after event))
+               (apply-changes (eav-set (:db-before event)) (:changes event)))))
+      (is (= "c" (value (opt/db overlay) id))))
+    (teardown env overlay)))
 
-;; A gate-as-dispatch lets us hold a transact!'s reply until we choose.
-;; Test-only hook (via the namespaced ::opt/dispatch-fn opt) — not part
-;; of the public API. Returns a `core.async` channel yielding a single
-;; value. `promise-chan` works on both platforms.
-(defn- make-gate []
-  (a/promise-chan))
-
-(defn- open-gate! [gate]
-  (a/put! gate {:reply {:ok true} :max-tx 0}))
-
-(deftest-async concurrent-transacts-keep-each-other-visible
-  ;; An in-flight optimistic entry must stay visible while another
-  ;; concurrent transact! runs. (The original :transacting? bug:
-  ;; effective-db skipped flagged entries, opening a visibility gap
-  ;; between dispatch and @conn advance — freshly-created entities
-  ;; flickered in the DOM diff.)
-  (let [conn   (<! (setup))
+(deftest-async revisions-and-reentrant-submission-are-serialized
+  (let [{:keys [conn id] :as env} (<! (setup))
+        overlay (opt/open conn)
         events (atom [])
-        gate1  (make-gate)
-        gate2  (make-gate)]
-    (opt/register! conn)
-    (opt/listen! conn ::probe (fn [r] (swap! events conj (names (:db-after r)))))
-    (testing "an in-flight entry survives a concurrent transact!'s listener fire"
-      (let [t1 (opt/transact! conn [{:name "bob"}]
-                              {::opt/dispatch-fn (fn [] gate1)})]
-        (is (contains? (set (names (opt/effective-db conn))) "bob")
-            "bob visible immediately after T1's optimistic transact!")
-        (let [t2 (opt/transact! conn [{:name "carol"}]
-                                {::opt/dispatch-fn (fn [] gate2)})]
-          (is (contains? (set (names (opt/effective-db conn))) "bob")
-              "bob STILL visible after a concurrent transact!")
-          (is (contains? (set (names (opt/effective-db conn))) "carol")
-              "carol visible via its own overlay entry")
-          (is (every? #(contains? (set %) "bob") @events)
-              "NO listener event ever dropped the in-flight bob entry")
-          (is (some #(contains? (set %) "carol") @events)
-              "the concurrent transact! did fire a listener event")
-          (open-gate! gate1)
-          (open-gate! gate2)
-          (<! (:result t1))
-          (<! (:result t2))
-          (is (= 0 (count (opt/pending conn))) "overlay drained after both resolve"))))
-    (opt/unlisten! conn ::probe)
-    (opt/unregister! conn)))
+        submitted? (atom false)]
+    (opt/listen! overlay ::events
+                 (fn [event]
+                   (swap! events conj event)
+                   (when (compare-and-set! submitted? false true)
+                     (opt/predict! overlay
+                                   [[:db/add [:entity/uuid id] :content "c"]]
+                                   (constantly false)))))
+    (opt/predict! overlay [[:db/add [:entity/uuid id] :content "b"]]
+                  (constantly false))
+    (is (= [1 2] (mapv :revision @events)))
+    (is (= (:db-after (first @events)) (:db-before (second @events))))
+    (is (= "c" (value (opt/db overlay) id)))
+    (teardown env overlay)))
 
-(deftest-async default-dispatch-no-gap
-  ;; Invariant: with the default writer dispatch, the optimistic value
-  ;; is continuously visible in effective-db from `transact!` return
-  ;; until the dispatch resolves — and onward via @conn. No flicker
-  ;; even under a heavy concurrent reader.
-  (let [conn (<! (setup))
-        stop? (atom false)
-        samples (atom [])
-        hammer
-        #?(:clj (future (while (not @stop?)
-                          (swap! samples conj (set (names (opt/effective-db conn))))))
-           :cljs nil)] ;; CLJS: skip the hammer; the invariant holds by construction
-    (opt/register! conn {:ttl-ms nil})
-    (testing "no sample after submit loses the optimistic name"
-      (let [{:keys [result]} (opt/transact! conn [{:name "bob"}])]
-        (<! result)
-        #?(:clj (do (reset! stop? true) @hammer))
-        (is (= ["alice" "bob"] (names (opt/effective-db conn))))
-        #?(:clj
-           (let [after-submit @samples]
-             ;; Every snapshot taken while bob was either in overlay or in
-             ;; @conn must include bob. We allow snapshots taken before
-             ;; the overlay was populated (the very first samples).
-             (is (every? (fn [s] (or (contains? s "bob") (= s #{"alice"}) (empty? s)))
-                         after-submit)
-                 "snapshots are either pre-submit (alice-only) or post-submit (include bob)")))))
-    (opt/unregister! conn)))
+(deftest-async listener-can-unlisten-itself
+  (let [{:keys [conn id] :as env} (<! (setup))
+        overlay (opt/open conn)
+        calls (atom 0)]
+    (opt/listen! overlay ::once
+                 (fn [_]
+                   (swap! calls inc)
+                   (opt/unlisten! overlay ::once)))
+    (opt/predict! overlay [[:db/add [:entity/uuid id] :content "b"]]
+                  (constantly false))
+    (opt/predict! overlay [[:db/add [:entity/uuid id] :content "c"]]
+                  (constantly false))
+    (is (= 1 @calls))
+    (teardown env overlay)))
 
-;; A dispatch hook that resolves only when an external `release-ch`
-;; closes or yields a value. Used to hold an optimistic entry in
-;; flight while the test asserts intermediate state.
-;;
-;; Returns a `core.async` channel. `resolver` may return either a
-;; plain value or a `core.async` channel (whose value will be taken).
-;; Channel-return is necessary when the resolver wants to do its own
-;; `<!` takes (e.g. waiting on `(d/transact! ...)`) — `<!` is a macro
-;; rewritten by the *lexically enclosing* `go`; a thunk body containing
-;; `<!` compiled outside a `go` expands to assert-nil.
-(defn- gated-dispatch [release-ch resolver]
-  (fn []
-    (let [out (a/chan 1)]
-      (go
-        (a/<! release-ch)
-        (let [r (resolver)]
-          (a/put! out (if (satisfies? #?(:clj clojure.core.async.impl.protocols/ReadPort
-                                         :cljs cljs.core.async.impl.protocols/ReadPort)
-                                      r)
-                        (a/<! r)
-                        r))))
-      out)))
+(deftest-async reentrant-submission-obeys-queue-limit
+  (let [{:keys [conn id] :as env} (<! (setup))
+        overlay (opt/open conn {:max-queue 1})
+        handles (atom nil)
+        once? (atom false)]
+    (opt/listen! overlay ::fill-queue
+                 (fn [_]
+                   (when (compare-and-set! once? false true)
+                     ;; Lifecycle commands share the serialized queue but do
+                     ;; not consume the user-submission capacity.
+                     (opt/unlisten! overlay ::fill-queue)
+                     (reset! handles
+                             [(opt/predict! overlay
+                                            [[:db/add [:entity/uuid id] :content "c"]]
+                                            (constantly false))
+                              (opt/predict! overlay
+                                            [[:db/add [:entity/uuid id] :content "d"]]
+                                            (constantly false))]))))
+    (opt/predict! overlay [[:db/add [:entity/uuid id] :content "b"]]
+                  (constantly false))
+    (let [[accepted overloaded] @handles
+          reply (<! (:result overloaded))]
+      (is (= :rejected (:status reply)))
+      (is (= :optimistic/overloaded (:type (ex-data (:error reply)))))
+      (is (= (:ov-id accepted) (:ov-id (second (opt/pending overlay))))))
+    (is (= 2 (count (opt/pending overlay))))
+    (teardown env overlay)))
 
-(deftest-async conflict-surfaces-via-on-conflict
-  ;; Case J: an in-flight overlay entry becomes un-applicable because a
-  ;; concurrent direct write seized a unique value. The entry hides
-  ;; from the view, the :on-conflict callback fires, and once the gate
-  ;; opens the server rejects → :result yields the throwable.
-  (let [cfg (mk-cfg)
-        _ #?(:clj (d/create-database cfg) :cljs (<! (d/create-database cfg)))
-        conn #?(:clj (d/connect cfg) :cljs (<! (d/connect cfg {:sync? false})))
-        _ (<! (d/transact! conn [{:db/ident :slot :db/valueType :db.type/string
-                                  :db/cardinality :db.cardinality/one
-                                  :db/unique :db.unique/value}
-                                 {:db/ident :who :db/valueType :db.type/string
-                                  :db/cardinality :db.cardinality/one}]))
-        conflicts (atom [])
-        release (a/chan)]
-    (opt/register! conn {:ttl-ms 5000
-                         :on-conflict (fn [cs] (swap! conflicts conj (mapv :ov-id cs)))})
-    (let [opt-res (opt/transact! conn [{:slot "S" :who "alice"}]
-                                 {::opt/dispatch-fn
-                                  (gated-dispatch
-                                   release
-                                   (fn []
-                                     (let [out (a/chan 1)]
-                                       (go (let [r (<! (d/transact! conn [{:slot "S" :who "alice"}]))]
-                                             (a/put! out
-                                                     (if (instance? #?(:clj Throwable :cljs js/Error) r)
-                                                       r
-                                                       {:reply r :max-tx (:max-tx (:db-after r))}))))
-                                       out)))})]
-      ;; `opt/transact!` is synchronous through the overlay swap! and
-      ;; the :overlay-add fire — alice is in `effective-db` as soon
-      ;; as the call returns. No need to wait.
-      (is (contains?
-           (set (->> (d/q '[:find ?w :where [?e :who ?w]] (opt/effective-db conn))
-                     (map first)))
-           "alice")
-          "alice optimistically visible before the conflict")
-      (<! (d/transact! conn [{:slot "S" :who "mallory"}]))
-      (<! (a/timeout 100))
-      (let [eff-who (set (->> (d/q '[:find ?w :where [?e :who ?w]] (opt/effective-db conn))
-                              (map first)))]
-        (is (contains? eff-who "mallory") "mallory visible")
-        (is (not (contains? eff-who "alice")) "alice excluded from view (conflict)")
-        (is (some (fn [e] (true? (:conflicting? e))) (opt/pending conn))
-            "pending entry marked :conflicting?")
-        (is (seq @conflicts) "on-conflict fired"))
-      (a/close! release)
-      (let [reply (<! (:result opt-res))]
-        (is (instance? #?(:clj Throwable :cljs js/Error) reply)
-            ":result yields the server's rejection")
-        (is (= :transact/unique (:error (ex-data reply)))
-            ":result carries the unique-constraint error (not an AssertionError from misused <!)")))
-    (<! (a/timeout 50))
-    (is (= 0 (count (opt/pending conn))) "overlay drained")
-    (is (= [] (last @conflicts)) "on-conflict cleared once entry removed")
-    (opt/unregister! conn)))
+(deftest-async bulk-expiry-is-one-consistent-transition
+  (let [{:keys [conn] :as env} (<! (setup))
+        overlay (opt/open conn {:prediction-timeout-ms 10})
+        events (atom [])
+        one (opt/predict! overlay [{:entity/uuid (random-uuid) :content "one"}]
+                          (constantly false))
+        two (opt/predict! overlay [{:entity/uuid (random-uuid) :content "two"}]
+                          (constantly false))]
+    (opt/listen! overlay ::bulk #(swap! events conj %))
+    (is (= :expired (:status (<! (:result one)))))
+    (is (= :expired (:status (<! (:result two)))))
+    (let [expiry-events (filter #(= :expired (get-in % [:cause :reason])) @events)
+          event (first expiry-events)]
+      (is (= 1 (count expiry-events)))
+      (is (= 2 (count (get-in event [:cause :ov-ids]))))
+      (is (= (eav-set (:db-after event))
+             (apply-changes (eav-set (:db-before event)) (:changes event)))))
+    (teardown env overlay)))
 
-;; ============================================================================
-;; tx-report listeners
-;; ============================================================================
+(deftest-async conflict-and-resolution-are-replayed-and-reported
+  (let [{:keys [conn] :as env} (<! (setup))
+        overlay (opt/open conn)
+        statuses (atom [])
+        left (random-uuid)
+        right (random-uuid)]
+    (<! (d/transact! conn
+                     [{:db/ident :unique/code
+                       :db/valueType :db.type/string
+                       :db/cardinality :db.cardinality/one
+                       :db/unique :db.unique/identity}
+                      {:entity/uuid left :content "left"}
+                      {:entity/uuid right :content "right"}]))
+    (opt/listen-status! overlay ::conflicts #(swap! statuses conj %))
+    (opt/predict! overlay [[:db/add [:entity/uuid left] :unique/code "same"]]
+                  (constantly false))
+    (<! (d/transact! conn [[:db/add [:entity/uuid right] :unique/code "same"]]))
+    (is (= right (:entity/uuid (d/entity (opt/db overlay) [:unique/code "same"]))))
+    (is (some #(= :conflicting (:status %)) @statuses))
+    (<! (d/transact! conn [[:db/retract [:entity/uuid right] :unique/code "same"]]))
+    (is (= left (:entity/uuid (d/entity (opt/db overlay) [:unique/code "same"]))))
+    (is (some #(= :applicable (:status %)) @statuses))
+    (teardown env overlay)))
 
-(defn- key-eav [d]
-  [(:e d) (:a d) (:v d)])
+(deftest-async close-rolls-back-and-settles-pending
+  (let [{:keys [conn id] :as env} (<! (setup))
+        overlay (opt/open conn)
+        {:keys [result]} (opt/predict! overlay
+                                       [[:db/add [:entity/uuid id] :content "b"]]
+                                       (constantly false))]
+    (opt/close! overlay)
+    (is (= :abandoned (:status (<! result))))
+    (is (= "a" (value (opt/db overlay) id)))
+    (d/release conn)
+    #?(:clj (d/delete-database (:cfg env)) :cljs (d/delete-database (:cfg env)))))
 
-(defn- apply-tx-events
-  "Walk events in order; build the consumer's view as a set of [e a v]
-  tuples. Each event's :tx-data adds or removes from the set based on
-  the datom's added? flag (via the IDatom protocol). Returns the
-  resulting set."
-  [events start-set]
-  (reduce (fn [view event]
-            (reduce (fn [v d]
-                      (if (dd/datom-added d)
-                        (conj v (key-eav d))
-                        (disj v (key-eav d))))
-                    view
-                    (:tx-data event)))
-          start-set
-          events))
-
-(defn- user-datoms
-  "Project @conn datoms to a set of [e a v] for the given attribute set."
-  [db attrs]
-  (->> (d/datoms db :eavt)
-       (filter (fn [d] (attrs (:a d))))
-       (mapv key-eav)
-       set))
-
-(deftest-async tx-report-happy-path-converges-to-conn
-  ;; The consumer's incremental tx-data application should arrive at
-  ;; exactly @conn's state for the attributes touched by the optimistic
-  ;; tx — proving the EID-shift handling works (predicted vs realized
-  ;; tx-data composition).
-  (let [conn (<! (setup))
-        tx-events (atom [])]
-    (opt/register! conn {:ttl-ms nil})
-    (opt/listen! conn ::probe (fn [r] (swap! tx-events conj r)))
-    (testing "events fire and consumer view matches @conn"
-      (let [before (user-datoms @conn #{:name})
-            {:keys [result]} (opt/transact! conn [{:name "bob"}])]
-        (<! result)
-        (let [origins (mapv :origin @tx-events)]
-          (is (= :overlay-add (first origins))
-              "first event is :overlay-add")
-          (is (some #{:conn-advance} origins)
-              "a :conn-advance fires from the writer-listener")
-          (is (every? #{:overlay-add :conn-advance :overlay-realized}
-                      origins)
-              "only expected origins for happy path"))
-        (let [consumer (apply-tx-events @tx-events before)
-              after (user-datoms @conn #{:name})]
-          (is (= consumer after)
-              "consumer's incremental view matches @conn"))))
-    (opt/unlisten! conn ::probe)
-    (opt/unregister! conn)))
+(deftest-async close-settles-a-reentrant-submit-queued-after-close
+  (let [{:keys [conn id] :as env} (<! (setup))
+        overlay (opt/open conn)
+        first-handle (atom nil)
+        late-handle (atom nil)
+        once? (atom false)]
+    (opt/listen! overlay ::close-from-listener
+                 (fn [_]
+                   (when (compare-and-set! once? false true)
+                     (opt/close! overlay)
+                     (reset! late-handle
+                             (opt/predict! overlay
+                                           [[:db/add [:entity/uuid id] :content "c"]]
+                                           (constantly false))))))
+    (reset! first-handle
+            (opt/predict! overlay
+                          [[:db/add [:entity/uuid id] :content "b"]]
+                          (constantly false)))
+    (is (= :abandoned (:status (<! (:result @first-handle)))))
+    (let [reply (<! (:result @late-handle))]
+      (is (= :rejected (:status reply)))
+      (is (opt/error? reply))
+      (is (= :optimistic/closed (:type (ex-data (:error reply))))))
+    (is (= "a" (value (opt/db overlay) id)))
+    (d/release conn)
+    #?(:clj (d/delete-database (:cfg env)) :cljs (d/delete-database (:cfg env)))))
 
 #?(:clj
-   (deftest-async tx-report-failure-emits-overlay-drop-with-retract
-     ;; A failed dispatch must emit an :overlay-drop tx-report whose
-     ;; :tx-data retracts the predicted additions, returning the
-     ;; consumer's view to the pre-submit baseline.
-     (let [cfg (mk-cfg)
-           _ (d/create-database cfg)
-           conn (d/connect cfg)
-           _ (<! (d/transact! conn [{:db/ident :slot :db/valueType :db.type/string
-                                     :db/cardinality :db.cardinality/one
-                                     :db/unique :db.unique/value}
-                                    {:db/ident :who :db/valueType :db.type/string
-                                     :db/cardinality :db.cardinality/one}]))
-           release (a/chan)
-           tx-events (atom [])]
-       (opt/register! conn {:ttl-ms 5000})
-       (opt/listen! conn ::probe (fn [r] (swap! tx-events conj r)))
-       (let [before-snap (user-datoms @conn #{:slot :who})
-             opt-res (opt/transact! conn [{:slot "S" :who "alice"}]
-                                    {::opt/dispatch-fn
-                                     (gated-dispatch
-                                      release
-                                      (fn []
-                                        (let [out (a/chan 1)]
-                                          (go (let [r (<! (d/transact! conn [{:slot "S" :who "alice"}]))]
-                                                (a/put! out
-                                                        (if (instance? Throwable r)
-                                                          r
-                                                          {:reply r :max-tx (:max-tx (:db-after r))}))))
-                                          out)))})]
-         ;; Sneak in a conflicting durable write first.
-         (<! (d/transact! conn [{:slot "S" :who "mallory"}]))
-         (a/close! release)
-         (let [reply (<! (:result opt-res))]
-           (is (instance? Throwable reply) "dispatch returned the rejection")
-           (is (= :transact/unique (:error (ex-data reply)))
-               ":result carries the server's unique-constraint error"))
-         (<! (a/timeout 50))
-         (let [origins (mapv :origin @tx-events)]
-           (is (some #{:overlay-add} origins) ":overlay-add was emitted")
-           (is (some #{:overlay-drop :overlay-conflict} origins)
-               "either :overlay-drop (server-rejected) or :overlay-conflict (already conflicting before drop)"))
-         (let [consumer (apply-tx-events @tx-events before-snap)
-               after (user-datoms @conn #{:slot :who})]
-           (is (= consumer after)
-               "consumer view converges to @conn after failure path")))
-       (opt/unlisten! conn ::probe)
-       (opt/unregister! conn))))
-
-#?(:clj
-   (deftest-async tx-report-rollback-of-retract-restores-baseline
-     ;; Regression: tx-data with retract-only operations must roll back
-     ;; correctly on failure. The :overlay-add ships a retract; the
-     ;; rollback must re-assert the retracted datom so the consumer
-     ;; view converges to @conn.
-     (let [conn (<! (setup))
-           tx-events (atom [])
-           never (a/chan)]
-       (opt/register! conn {:ttl-ms 800})
-       (opt/listen! conn ::probe (fn [r] (swap! tx-events conj r)))
-       (let [before (user-datoms @conn #{:name})
-             ;; The setup helper already transacted alice. Optimistically
-             ;; retract her name, then let the TTL fire (we never resolve
-             ;; the dispatch).
-             {:keys [result]}
-             (opt/transact! conn [[:db/retract [:name "alice"] :name "alice"]]
-                            {::opt/dispatch-fn (gated-dispatch
-                                                never
-                                                (fn [] {:reply :unused :max-tx 0}))})
-             reply (<! result)]
-         (is (instance? Throwable reply))
-         (is (= :optimistic/timeout (:type (ex-data reply))))
-         (<! (a/timeout 50))
-         (let [consumer (apply-tx-events @tx-events before)
-               after (user-datoms @conn #{:name})]
-           (is (= consumer after)
-               "consumer view restores alice after retract was rolled back")))
-       (a/close! never)
-       (opt/unlisten! conn ::probe)
-       (opt/unregister! conn))))
-
-#?(:clj
-   (deftest-async tx-report-ttl-emits-ttl-event-with-retract
-     ;; A TTL-expired entry must emit a :ttl tx-report retracting its
-     ;; predicted additions, so the consumer's view rolls back to the
-     ;; pre-submit baseline.
-     (let [conn (<! (setup))
-           never-release (a/chan)
-           tx-events (atom [])]
-       (opt/register! conn {:ttl-ms 1000})
-       (opt/listen! conn ::probe (fn [r] (swap! tx-events conj r)))
-       (let [before (user-datoms @conn #{:name})
-             {:keys [result]}
-             (opt/transact! conn [{:name "ghost"}]
-                            {::opt/dispatch-fn (gated-dispatch
-                                                never-release
-                                                (fn [] {:reply :unused :max-tx 0}))})
-             reply (<! result)]
-         (is (instance? Throwable reply))
-         (is (= :optimistic/timeout (:type (ex-data reply))))
-         (<! (a/timeout 50))
-         (is (some #{:ttl} (mapv :origin @tx-events))
-             ":ttl tx-report was emitted")
-         (let [consumer (apply-tx-events @tx-events before)
-               after (user-datoms @conn #{:name})]
-           (is (= consumer after)
-               "consumer view returns to baseline after TTL")))
-       (a/close! never-release)
-       (opt/unlisten! conn ::probe)
-       (opt/unregister! conn))))
-
-#?(:clj
-   (deftest-async tx-report-watcher-drop-emits-overlay-realized
-     ;; Regression for the case where a dispatch resolves with
-     ;; `:max-tx` ahead of `@conn` — the entry can't sync-drop at
-     ;; dispatch time, so the watcher drops it later when @conn
-     ;; catches up. That watcher-drop path must also emit
-     ;; `:overlay-realized` (using the writer-tx-cache) so a tx-report
-     ;; consumer's incremental view still converges to @conn.
-     (let [conn (<! (setup))
-           release (a/chan)
-           tx-events (atom [])
-           predicted-max-tx (inc (:max-tx @conn))]
-       (opt/register! conn {:ttl-ms 60000})
-       (opt/listen! conn ::probe (fn [r] (swap! tx-events conj r)))
-       (let [before (user-datoms @conn #{:name})
-             ;; Dispatch declares max-tx = (current+1) up front: the
-             ;; entry stays in overlay because @conn hasn't reached it.
-             ;; Open the gate immediately so the dispatch resolves
-             ;; without doing any actual durable write.
-             {:keys [result]}
-             (opt/transact! conn [{:name "ghost-write"}]
-                            {::opt/dispatch-fn (gated-dispatch
-                                                release
-                                                (fn []
-                                                  {:reply :stub
-                                                   :max-tx predicted-max-tx}))})]
-         (a/close! release)
-         (<! result)
-         (<! (a/timeout 30))
-         (is (some #(= "ghost-write" %) (mapv :v (d/datoms (opt/effective-db conn) :avet :name)))
-             "before the watcher catches up, the optimistic value is still in view")
-         (is (= 1 (count (opt/pending conn)))
-             "entry still pending because @conn hasn't reached its expected-max-tx")
-         ;; Now do an unrelated durable write to advance @conn past
-         ;; the entry's expected-max-tx — triggers the watcher's drop
-         ;; and our `emit-overlay-realized!`.
-         (<! (d/transact! conn [{:name "real-bob"}]))
-         (<! (a/timeout 50))
-         (is (= 0 (count (opt/pending conn))) "watcher dropped the caught-up entry")
-         (is (some #{:overlay-realized} (mapv :origin @tx-events))
-             ":overlay-realized was emitted by the watcher-drop path")
-         (let [consumer (apply-tx-events @tx-events before)
-               after (user-datoms @conn #{:name})]
-           (is (= consumer after)
-               "consumer view converges to @conn after watcher-drop")))
-       (opt/unlisten! conn ::probe)
-       (opt/unregister! conn))))
-
-#?(:clj
-   (deftest-async tx-report-batched-transacts-converge-to-conn
-     ;; Regression for writer batching: the writer's commit-loop drains
-     ;; `commit-queue` greedily, so several `opt/transact!`s submitted
-     ;; back-to-back can land in one durable commit. The writer then
-     ;; delivers N callbacks with N tx-reports that all share the same
-     ;; `:max-tx` (it replaces `:db-after` with the batch's commit-db
-     ;; on each — see writer.cljc commit-loop). Cache-keying by
-     ;; `:max-tx` would collide; we key by `:ov-id` via each call's
-     ;; per-call promise resolution. This test pins that each batched
-     ;; entry's `:overlay-realized` follow-up still sees the right
-     ;; writer tx-data and the consumer view converges to @conn.
-     (let [conn (<! (setup))
-           tx-events (atom [])]
-       (opt/register! conn {:ttl-ms nil})
-       (opt/listen! conn ::probe (fn [r] (swap! tx-events conj r)))
-       (let [before (user-datoms @conn #{:name})
-             ;; Fire several optimistic transacts with no awaits
-             ;; between them so they batch in the writer's commit-loop.
-             results (mapv (fn [i]
-                             (opt/transact! conn [{:name (str "batched-" i)}]))
-                           (range 8))]
-         (doseq [r results] (<! (:result r)))
-         (<! (a/timeout 50))
-         (is (= 0 (count (opt/pending conn)))
-             "overlay drained — every batched entry's correlation succeeded")
-         (let [consumer (apply-tx-events @tx-events before)
-               after (user-datoms @conn #{:name})]
-           (is (= consumer after)
-               (str "consumer's incremental view matches @conn under batching "
-                    "(no cross-entry cache collisions)"))))
-       (opt/unlisten! conn ::probe)
-       (opt/unregister! conn))))
-
-(deftest-async ttl-expires-then-fires-result
-  ;; An entry whose dispatch never resolves expires after :ttl-ms and
-  ;; the :result chan yields a TimeoutException tagged
-  ;; :optimistic/timeout.
-  (let [conn (<! (setup))
-        never-release (a/chan)]
-    (opt/register! conn {:ttl-ms 1500})
-    (let [{:keys [result]}
-          (opt/transact! conn [{:name "ghost"}]
-                         {::opt/dispatch-fn (gated-dispatch
-                                             never-release
-                                             (fn [] {:reply :unused :max-tx 0}))})
-          reply (<! result)]
-      (is (instance? #?(:clj Throwable :cljs js/Error) reply))
-      (is (= :optimistic/timeout (:type (ex-data reply))) "tagged as timeout"))
-    (is (= 0 (count (opt/pending conn))) "overlay drained after TTL")
-    (is (= ["alice"] (names (opt/effective-db conn)))
-        "effective-db drops the timed-out entry")
-    (a/close! never-release)
-    (opt/unregister! conn)))
+   (deftest concurrent-submissions-have-one-ordered-timeline
+     (let [{:keys [conn] :as env} (a/<!! (setup))
+           overlay (opt/open conn)
+           events (atom [])
+           gate (java.util.concurrent.CountDownLatch. 1)
+           workers (doall
+                    (for [n (range 16)]
+                      (future
+                        (.await gate)
+                        (opt/predict! overlay
+                                      [{:entity/uuid (random-uuid)
+                                        :content (str n)}]
+                                      (constantly false)))))]
+       (opt/listen! overlay ::concurrent #(swap! events conj %))
+       (.countDown gate)
+       (doseq [worker workers] @worker)
+       (is (= (vec (range 1 17)) (mapv :revision @events)))
+       (is (every? (fn [[a b]] (= (:db-after a) (:db-before b)))
+                   (partition 2 1 @events)))
+       (is (= 16 (count (opt/pending overlay))))
+       (teardown env overlay))))

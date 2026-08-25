@@ -62,6 +62,24 @@ async function typescriptTest() {
   // Version is string (not Promise)
   const version: string = d.version();
 
+  // Optimistic overlays are explicit resources. Reads and subscriptions are
+  // synchronous; each submitted operation exposes a tagged-result Promise.
+  const overlay: d.OptimisticOverlay = d.openOptimistic(conn, {
+    'prediction-timeout-ms': 30_000
+  });
+  const unsubscribe = d.optimisticListen(overlay, event => {
+    const snapshot: d.Database = event['db-after'];
+    console.log('Overlay revision:', event.revision, snapshot);
+  });
+  const optimistic: d.OptimisticHandle = d.optimisticTransact(
+    overlay,
+    [{ ':name': 'Optimistic Alice' }]
+  );
+  const optimisticResult: d.OptimisticResult = await optimistic.result;
+  console.log('Optimistic status:', optimisticResult.status);
+  unsubscribe();
+  d.closeOptimistic(overlay);
+
   console.log('TypeScript types work perfectly!');
   console.log('All parameters and return types are properly typed');
 }

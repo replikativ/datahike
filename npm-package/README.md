@@ -167,6 +167,30 @@ await d.transact(conn, [
 ]);
 ```
 
+### Optimistic UI
+
+Use an explicit overlay when a UI must show writes before the durable replica
+catches up:
+
+```javascript
+const overlay = d.openOptimistic(conn);
+const unsubscribe = d.optimisticListen(overlay, event => {
+  render(event['db-after']);
+});
+
+const { result } = d.optimisticTransact(overlay, [
+  [':db/add', entityId, ':age', 36]
+]);
+const outcome = await result; // { status: ':committed', ... } or ':rejected'
+
+unsubscribe();
+d.closeOptimistic(overlay);
+```
+
+Operation promises always resolve to tagged outcomes; a rejected transaction is
+not a rejected JavaScript Promise. Externally owned RPCs can use
+`optimisticPredict`, followed by `optimisticAck` or `optimisticReject`.
+
 ### Temporal Queries
 
 Access database history:

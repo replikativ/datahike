@@ -240,6 +240,104 @@ export interface Metrics {
   [key: string]: any;
 }
 
+export interface OptimisticOverlay {
+  readonly __optimisticOverlayBrand: never;
+}
+
+export interface OptimisticOptions {
+  'max-pending'?: number;
+  'max-queue'?: number;
+  'prediction-timeout-ms'?: number | null;
+  'reconciliation-timeout-ms'?: number | null;
+}
+
+export interface OptimisticSubmitOptions {
+  branch?: string;
+}
+
+export interface OptimisticPredictionOptions extends OptimisticSubmitOptions {
+  'timeout-ms'?: number | null;
+}
+
+export type OptimisticTransactionInput =
+  | Transaction[]
+  | { 'tx-data': Transaction[]; 'tx-meta'?: any };
+
+export type OptimisticResultStatus =
+  | ':committed'
+  | ':accepted'
+  | ':reconciled'
+  | ':rejected'
+  | ':expired'
+  | ':abandoned'
+  | ':unknown'
+  | ':detached';
+
+export interface OptimisticResult {
+  status: OptimisticResultStatus;
+  error?: any;
+  receipt?: any;
+  'tx-report'?: TransactionReport;
+  outcome?: ':unknown' | ':committed';
+  reason?: any;
+  'accepted?'?: boolean;
+}
+
+export interface OptimisticHandle {
+  ovId: string;
+  result: Promise<OptimisticResult>;
+}
+
+export interface OptimisticPendingEntry {
+  'ov-id': string;
+  kind: ':writer' | ':prediction';
+  'submitted-at': number;
+  'expires-at'?: number | null;
+  'expected-max-tx'?: number | null;
+  branch?: string;
+  'acknowledged?': boolean;
+  'conflicting?': boolean;
+  'last-conflict-error'?: any;
+  'reconcile-deadline-at'?: number | null;
+  'reconciliation-stalled?'?: boolean;
+  [key: string]: any;
+}
+
+export interface OptimisticChanges {
+  added: Datom[];
+  removed: Datom[];
+}
+
+export interface OptimisticTransition {
+  revision: number;
+  'db-before': Database;
+  'db-after': Database;
+  'base-max-tx': number | null;
+  cause: { type: string; [key: string]: any };
+  changes: OptimisticChanges | null;
+}
+
+export interface OptimisticStatusEvent {
+  revision: number;
+  'ov-id': string;
+  kind: ':writer' | ':prediction';
+  status:
+    | ':visible'
+    | ':acknowledged'
+    | ':committed'
+    | ':reconciled'
+    | ':rejected'
+    | ':expired'
+    | ':abandoned'
+    | ':conflicting'
+    | ':applicable'
+    | ':reconciliation-error'
+    | ':reconciliation-stalled'
+    | ':unknown'
+    | ':detached';
+  [key: string]: any;
+}
+
 "
         ;; Generate function signatures
         functions (str/join "\n\n"
@@ -248,8 +346,24 @@ export interface Metrics {
                                   :let [[fn-name spec-data] entry
                                         {:keys [name signature doc]} (generate-function-signature entry)
                                         jsdoc (generate-jsdoc doc (:examples spec-data))]]
-                              (str jsdoc "\n" signature)))]
-    (str header types "\n// API Functions\n\n" functions "\n")))
+                              (str jsdoc "\n" signature)))
+        optimistic-functions "
+
+// Explicit optimistic overlay API. Unlike specification-generated functions,
+// snapshot reads and lifecycle commands are synchronous.
+export function openOptimistic(conn: Connection, opts?: OptimisticOptions): OptimisticOverlay;
+export function optimisticDb(overlay: OptimisticOverlay): Database;
+export function optimisticPending(overlay: OptimisticOverlay): OptimisticPendingEntry[];
+export function optimisticTransact(overlay: OptimisticOverlay, txData: OptimisticTransactionInput, opts?: OptimisticSubmitOptions): OptimisticHandle;
+export function optimisticPredict(overlay: OptimisticOverlay, txData: OptimisticTransactionInput, reconciled: (db: Database) => boolean, opts?: OptimisticPredictionOptions): OptimisticHandle;
+export function optimisticAck(overlay: OptimisticOverlay, ovId: string, receipt?: any): null;
+export function optimisticReject(overlay: OptimisticOverlay, ovId: string, error: any): null;
+export function optimisticAbandon(overlay: OptimisticOverlay, ovId: string, reason?: any): null;
+export function optimisticListen(overlay: OptimisticOverlay, listener: (event: OptimisticTransition) => void): () => void;
+export function optimisticListenStatus(overlay: OptimisticOverlay, listener: (event: OptimisticStatusEvent) => void): () => void;
+export function closeOptimistic(overlay: OptimisticOverlay): null;
+"]
+    (str header types "\n// API Functions\n\n" functions optimistic-functions "\n")))
 
 (defn write-type-definitions!
   "Write TypeScript definitions to a file."

@@ -482,6 +482,83 @@ async function testQueryAPI() {
   await d.deleteDatabase(config);
 }
 
+async function testOptimisticOverlay() {
+  console.log('\n=== Test 11: Optimistic Overlay ===');
+
+  const config = { store: { backend: ':memory', id: d.randomUuid() } };
+  await d.createDatabase(config);
+  const conn = await d.connect(config);
+  await d.transact(conn, [
+    { 'db/ident': ':item/id', 'db/valueType': ':db.type/string', 'db/cardinality': ':db.cardinality/one', 'db/unique': ':db.unique/identity' },
+    { 'db/ident': ':name', 'db/valueType': ':db.type/string', 'db/cardinality': ':db.cardinality/one' }
+  ]);
+
+  const overlay = d.openOptimistic(conn);
+  const events = [];
+  const unsubscribe = d.optimisticListen(overlay, event => events.push(event));
+
+  const handle = d.optimisticTransact(overlay, [{ 'item/id': 'writer', name: 'Immediate' }]);
+  const visible = await d.q('[:find ?e . :where [?e :name "Immediate"]]', d.optimisticDb(overlay));
+  if (visible == null) throw new Error('Optimistic value was not immediately visible');
+
+  const committed = await handle.result;
+  if (committed.status !== ':committed') {
+    throw new Error(`Expected :committed, got ${committed.status}`);
+  }
+  if (events.length === 0 || !events.every(event => event['db-after'])) {
+    throw new Error('Expected ordered snapshot transition events');
+  }
+  if (d.optimisticPending(overlay).length !== 0) {
+    throw new Error('Committed overlay entry should reconcile with the base');
+  }
+
+  const invalid = d.optimisticTransact(overlay, [{ name: 42 }]);
+  const rejected = await invalid.result;
+  if (rejected.status !== ':rejected') {
+    throw new Error(`Expected tagged :rejected result, got ${rejected.status}`);
+  }
+
+  const prediction = d.optimisticPredict(
+    overlay,
+    [{ 'item/id': 'prediction', name: 'Predicted' }],
+    () => false,
+    { 'timeout-ms': null }
+  );
+  const predicted = await d.q('[:find ?e . :where [?e :name "Predicted"]]', d.optimisticDb(overlay));
+  if (predicted == null) throw new Error('Predicted value was not immediately visible');
+
+  d.optimisticAck(overlay, prediction.ovId, { requestId: 'accepted' });
+  const accepted = await prediction.result;
+  if (accepted.status !== ':accepted' || accepted.receipt.requestId !== 'accepted') {
+    throw new Error(`Expected accepted prediction, got ${JSON.stringify(accepted)}`);
+  }
+  d.optimisticReject(overlay, prediction.ovId, new Error('late failure'));
+  if (d.optimisticPending(overlay).length !== 1) {
+    throw new Error('A late rejection retracted an accepted prediction');
+  }
+  d.optimisticAbandon(overlay, prediction.ovId, ':test-complete');
+  if (d.optimisticPending(overlay).length !== 0) {
+    throw new Error('Abandoned prediction remained pending');
+  }
+
+  const failedPrediction = d.optimisticPredict(
+    overlay,
+    [{ 'item/id': 'rejected-prediction', name: 'Rejected Prediction' }],
+    () => false
+  );
+  d.optimisticReject(overlay, failedPrediction.ovId, new Error('RPC rejected'));
+  const failedResult = await failedPrediction.result;
+  if (failedResult.status !== ':rejected') {
+    throw new Error(`Expected rejected prediction, got ${failedResult.status}`);
+  }
+
+  unsubscribe();
+  d.closeOptimistic(overlay);
+  d.release(conn);
+  await d.deleteDatabase(config);
+  console.log('  ✓ Explicit overlay snapshots, predictions, and tagged results work');
+}
+
 // Main test runner
 async function runAllTests() {
   console.log('╔════════════════════════════════════════════════════════╗');
@@ -502,7 +579,8 @@ async function runAllTests() {
     testFilePersistence,
     testSchemaRetrieval,
     testMultipleTransactions,
-    testQueryAPI
+    testQueryAPI,
+    testOptimisticOverlay
   ];
   
   for (const test of tests) {
