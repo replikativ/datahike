@@ -15,7 +15,8 @@
   (:require
    #?(:cljs [cljs.test    :as t :refer-macros [is deftest testing]]
       :clj  [clojure.test :as t :refer        [is deftest testing]])
-   [datahike.api :as d]))
+   [datahike.api :as d]
+   [datahike.db.utils :as dbu]))
 
 #?(:cljs (def Throwable js/Error))
 
@@ -30,6 +31,14 @@
 (def hetero-schema
   [{:db/ident :t/ht :db/valueType :db.type/tuple
     :db/tupleTypes [:db.type/keyword :db.type/keyword]
+    :db/cardinality :db.cardinality/one}])
+
+(def triple-composite-schema
+  [{:db/ident :triple/a :db/valueType :db.type/keyword :db/cardinality :db.cardinality/one}
+   {:db/ident :triple/b :db/valueType :db.type/keyword :db/cardinality :db.cardinality/one}
+   {:db/ident :triple/c :db/valueType :db.type/keyword :db/cardinality :db.cardinality/one}
+   {:db/ident :triple/abc :db/valueType :db.type/tuple
+    :db/tupleAttrs [:triple/a :triple/b :triple/c]
     :db/cardinality :db.cardinality/one}])
 
 (defn- conn-with [schema attribute-refs?]
@@ -66,6 +75,24 @@
   ;; by ident: `:components` accepts either representation, so one call works
   ;; in both modes
   (:v (first (d/datoms db {:index :eavt :components [e :t/ab]}))))
+
+(deftest implicit-tuple-schema-works-in-both-attribute-modes
+  (doseq [refs? [false true]]
+    (testing (str ":attribute-refs? " refs?)
+      (let [conn (conn-with triple-composite-schema refs?)
+            db (d/db conn)
+            tuple-attrs-ref (:db/id (d/entity db :db/tupleAttrs))
+            tuple-eid (:db/id (d/entity db :triple/abc))]
+        (is (dbu/tuple? db :db/tupleAttrs))
+        (when refs?
+          (is (dbu/tuple? db tuple-attrs-ref)))
+        (is (= [[:triple/a :triple/b :triple/c]]
+               (mapv :v (d/datoms db {:index :eavt
+                                      :components [tuple-eid :db/tupleAttrs
+                                                   [:triple/a :triple/b :triple/c]]}))))
+        (is (d/transact conn [[:db/retractEntity tuple-eid]]))
+        (is (nil? (d/q '[:find ?e . :where [?e :db/ident :triple/abc]]
+                       (d/db conn))))))))
 
 ;; ---------------------------------------------------------------------------
 

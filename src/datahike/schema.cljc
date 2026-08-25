@@ -227,8 +227,10 @@
                                    :db/tupleType {:db/valueType :db.type/value
                                                   :db/cardinality :db.cardinality/one}
                                    :db/tupleTypes {:db/valueType :db.type/tuple
+                                                   :db/tupleType :db.type/keyword
                                                    :db/cardinality :db.cardinality/one}
                                    :db/tupleAttrs {:db/valueType :db.type/tuple
+                                                   :db/tupleType :db.type/keyword
                                                    :db/cardinality :db.cardinality/one}})
 (s/def :db/helpers #{:db.install/attribute :db})
 (s/def :db.part/types #{:db.part/tx :db.part/sys :db.part/user})

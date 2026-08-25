@@ -39,6 +39,26 @@
   [db attr property]
   (get (dbi/-attrs-by db property) (attr-ident db attr)))
 
+(defn attr-schema
+  "The effective schema entry for `attr`, including Datahike's implicit
+   built-in attributes.
+
+   `dbi/-schema` deliberately contains installed user schema rather than the
+   entire metaschema.  Callers concerned with an attribute's VALUE TYPE must
+   nevertheless see built-ins such as `:db/tupleAttrs`, `:db/tupleTypes`, and
+   `:db.secondary/attrs`.  Datomic models the first two as tuple-valued schema
+   attributes; treating their vectors as lookup refs based on vector length is
+   both ambiguous and wrong."
+  [db attr]
+  (let [ident (attr-ident db attr)
+        installed (get (dbi/-schema db) ident)
+        implicit (get ds/implicit-schema-spec ident)]
+    ;; In :attribute-refs? databases the system entry can also appear in
+    ;; `-schema`, but its valueType is stored as a numeric ref.  The canonical
+    ;; implicit entry is ident-based and cannot be user-overridden, so prefer it.
+    (when (or (map? installed) implicit)
+      (merge (when (map? installed) installed) implicit))))
+
 (defn #?@(:clj [^Boolean multival?]
           :cljs [^boolean multival?]) [db attr]
   (is-attr? db attr :db.cardinality/many))
@@ -80,7 +100,7 @@
   "Returns true if 'attr' is a tuple attribute.
    I.e., if 'attr' value is of type ':db.type/tuple'"
   [db attr]
-  (is-attr? db attr :db.type/tuple))
+  (= :db.type/tuple (:db/valueType (attr-schema db attr))))
 
 (defn #?@(:clj [^Boolean reverse-ref?]
           :cljs [^boolean reverse-ref?])
