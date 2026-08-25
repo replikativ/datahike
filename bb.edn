@@ -219,6 +219,9 @@
                              (when-not (zero? (:exit result))
                                (System/exit 1))))}
 
+         npm-verify {:doc "Verify built npm runtime, declarations, and tarball manifest"
+                     :task (npm/verify-npm-package! "npm-package")}
+
          node-cljs-test {:doc "Compile and run ClojureScript tests on Node.js"
                          :depends [prep]
                          :task (do

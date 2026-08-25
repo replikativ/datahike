@@ -16,17 +16,6 @@ export interface TestResult {
   duration?: number;
 }
 
-function generateUUID(): string {
-  if (typeof crypto !== 'undefined' && crypto.randomUUID) {
-    return crypto.randomUUID();
-  }
-  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
-    const r = Math.random() * 16 | 0;
-    const v = c === 'x' ? r : (r & 0x3 | 0x8);
-    return v.toString(16);
-  });
-}
-
 export async function runIsomorphicTests(
   log: (msg: string) => void = console.log
 ): Promise<{ passed: number; failed: number; results: TestResult[] }> {
@@ -52,7 +41,7 @@ export async function runIsomorphicTests(
 
   await runTest('Basic database operations', async () => {
     const config = {
-      store: { backend: ':memory', id: generateUUID() }
+      store: { backend: ':memory', id: d.randomUuid() }
     };
     
     await d.createDatabase(config);

@@ -225,29 +225,33 @@
    :SEId "number | [string, any] | string"
    :SDatom "Datom"
    :SDatoms "Datom[]"
+   :STxMeta "any"
    :STransactions "Transaction[]"
    :STransactionReport "TransactionReport"
-   :SSchema "Record<string, any>"
+   :SSchema "Schema"
    :SMetrics "Metrics"
    :SPullOptions "PullOptions"
    :SQueryArgs "QueryArgs"
    :SIndexLookupArgs "IndexLookupArgs"
    :SIndexRangeArgs "IndexRangeArgs"
    :SWithArgs "WithArgs"
-   :SWarmIndex "\"eavt\" | \"aevt\" | \"avet\" | \"temporal-eavt\" | \"temporal-aevt\" | \"temporal-avet\""
+   :SWarmIndex "\":eavt\" | \":aevt\" | \":avet\" | \":temporal-eavt\" | \":temporal-aevt\" | \":temporal-avet\""
+   :time-point? "number | Date"
    ;; Primitives
    :boolean "boolean"
    :int "number"
    :long "number"
    :double "number"
+   :uuid "UuidValue"
    :string "string"
-   :keyword "string"
+   :keyword "Keyword"
    :any "any"
    :nil "null"
    ;; Collections
    :vector "Array<any>"
    :map "Record<string, any>"
-   :set "Set<any>"
+   ;; Clojure sets are converted to JavaScript arrays at the binding boundary.
+   :set "Array<any>"
    :sequential "Array<any>"})
 
 ;; =============================================================================

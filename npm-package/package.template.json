@@ -10,18 +10,18 @@
   "license" : "EPL-1.0",
   "homepage" : "https://github.com/replikativ/datahike",
   "name" : "datahike",
-  "scripts" : {
-    "test" : "node test.js",
-    "test:browser" : "karma start karma.conf.js --single-run"
-  },
   "bugs" : {
     "url" : "https://github.com/replikativ/datahike/issues"
   },
   "keywords" : [ "database", "datalog", "datomic", "clojurescript", "immutable", "functional" ],
   "types" : "index.d.ts",
   "author" : "Christian Weilbach",
-  "files" : [ "*.js", "*.js.map", "browser/datahike.js", "browser/index.mjs", "browser/index.js", "index.d.ts", "README.md", "LICENSE" ],
+  "files" : [ "*.js", "!test*.js", "*.js.map", "browser/datahike.js", "browser/index.mjs", "browser/index.js", "s3/datahike.js", "s3/index.mjs", "s3/index.js", "index.d.ts", "README.md", "LICENSE", "THIRD_PARTY_LICENSES.md" ],
   "version" : "{{VERSION}}",
+  "publishConfig" : {
+    "access" : "public",
+    "registry" : "https://registry.npmjs.org/"
+  },
   "main" : "datahike.js.api.js",
   "exports" : {
     ".": {
@@ -33,6 +33,15 @@
       },
       "node": "./datahike.js.api.js",
       "default": "./datahike.js.api.js"
+    },
+    "./s3": {
+      "types": "./index.d.ts",
+      "browser": {
+        "import": "./s3/index.mjs",
+        "require": "./s3/index.js",
+        "default": "./s3/index.mjs"
+      },
+      "default": "./s3/index.mjs"
     }
   },
   "browser" : "./browser/datahike.js"

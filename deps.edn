@@ -65,7 +65,11 @@
            :1.10 {:override-deps {org.clojure/clojure {:mvn/version "1.10.0"}}}
 
            :cljs {:extra-deps {org.clojure/clojurescript {:mvn/version "1.12.145"}
-                               thheller/shadow-cljs      {:mvn/version "3.4.12"}}
+                               thheller/shadow-cljs      {:mvn/version "3.4.12"}
+                               ;; Optional npm/browser S3 build. Keeping this in
+                               ;; the CLJS build alias leaves the default jar and
+                               ;; default browser bundle free of S3 code.
+                               org.replikativ/konserve-s3 {:mvn/version "0.1.37"}}
                                
                   :extra-paths ["test"]}
 

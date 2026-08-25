@@ -47,6 +47,19 @@
            :compiler-options {:optimizations :advanced
                               :infer-externs :auto
                               :output-feature-set :es-next}}
+
+          ;; Full browser build with the optional S3-compatible konserve
+          ;; backend registered. Published separately as `datahike/s3`, so the
+          ;; default browser bundle pays no credential-signing/storage cost.
+          :browser-s3-release
+          {:target :browser
+           :output-to "npm-package/s3/datahike.js"
+           :output-dir "npm-package/s3"
+           :modules {:datahike {:entries [datahike.js.api
+                                          konserve-s3.core]}}
+           :compiler-options {:optimizations :advanced
+                              :infer-externs :auto
+                              :output-feature-set :es-next}}
           
           :npm-release
           {:target :npm-module

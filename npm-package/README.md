@@ -8,6 +8,7 @@ Durable Datalog database for JavaScript and Node.js, powered by ClojureScript.
 - **Schema Support**: Optional schema with validation
 - **Time Travel**: Access database history and temporal queries
 - **Pluggable Backends**: Memory, file, or custom storage
+- **Optional S3 Browser Backend**: Direct access to S3-compatible buckets
 - **Promise-based API**: Native JavaScript async/await support
 - **TypeScript Support**: Complete type definitions included
 
@@ -21,14 +22,13 @@ npm install datahike
 
 ```javascript
 const d = require('datahike');
-const crypto = require('crypto');
 
 async function example() {
   // Create database configuration (requires UUID for :id)
   const config = {
     store: {
       backend: ':memory',
-      id: crypto.randomUUID()
+      id: d.randomUuid()
     }
   };
 
@@ -78,20 +78,51 @@ example();
 
 ## Documentation
 
+### S3-compatible storage in browsers
+
+Import the opt-in build when a browser should persist Datahike directly to
+Amazon S3, Cloudflare R2, MinIO, or another S3-compatible service:
+
+```javascript
+import * as d from 'datahike/s3';
+
+const config = {
+  store: {
+    backend: ':s3',
+    endpoint: 'https://s3.us-west-1.amazonaws.com',
+    bucket: 'my-datahike-bucket',
+    region: 'us-west-1',
+    'access-key': temporaryCredentials.accessKeyId,
+    secret: temporaryCredentials.secretAccessKey,
+    'session-token': temporaryCredentials.sessionToken,
+    id: d.randomUuid(),
+    config: { 'optimistic-locking-retries': 10 }
+  }
+};
+
+await d.createDatabase(config);
+const conn = await d.connect(config);
+```
+
+The bucket must allow the browser origin through CORS and expose the `ETag`
+response header. Use narrowly scoped, short-lived session credentials; never
+ship long-lived bucket credentials in browser code. The regular `datahike`
+entry does not include the S3 backend. Keep the store ID stable when reopening
+a database. ETag locking must be enabled, as above, when more than one writer
+can update the bucket.
+
 ### Configuration
 
 **⚠️ Note:** Keyword syntax may change in future versions to simplify the API.
 
 ```javascript
-const crypto = require('crypto');
-
 const config = {
   store: {
     backend: ':memory',       // or ':file'
-    id: crypto.randomUUID()   // Required: UUID identifier
+    id: d.randomUuid()        // Required: Datahike UUID identifier
   },
   // Optional configuration:
-  'keep-history': true,           // default: true
+  'keep-history?': true,          // default: true
   'schema-flexibility': ':write'  // or ':read'
 };
 

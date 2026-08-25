@@ -82,16 +82,15 @@ schema = [
 
 ```javascript
 // Configuration
-const crypto = require('crypto');
 const config = {
     store: {
         backend: ':memory',                // Keyword
-        id: crypto.randomUUID()         // String (memory backend requires UUID)
+        id: d.randomUuid()              // Datahike UUID object
     },
     'schema-flexibility': ':read',      // Keyword
     'keep-history?': true               // Boolean
 };
-// → {:store {:backend :memory :id "<uuid-string>"}
+// → {:store {:backend :memory :id #uuid "..."}
 //    :schema-flexibility :read
 //    :keep-history? true}
 
@@ -334,22 +333,20 @@ The `:` prefix makes the distinction unambiguous and works consistently across a
 
 **Old Syntax (v0.6 and earlier):**
 ```javascript
-const crypto = require('crypto');
 const config = {
     store: {
         backend: 'memory',      // String → keyword (implicit)
-        id: crypto.randomUUID() // Memory backend requires UUID
+        id: d.randomUuid()      // Memory backend requires a Datahike UUID
     }
 };
 ```
 
 **New Syntax (v0.7+):**
 ```javascript
-const crypto = require('crypto');
 const config = {
     store: {
         backend: ':memory',     // Explicit : required
-        id: crypto.randomUUID() // Memory backend requires UUID
+        id: d.randomUuid()      // Memory backend requires a Datahike UUID
     }
 };
 ```
