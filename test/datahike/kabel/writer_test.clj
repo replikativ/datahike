@@ -2,11 +2,12 @@
   "Unit tests for KabelWriter."
   (:require [clojure.test :refer [deftest testing is]]
             [datahike.kabel.writer :as kw]
+            [datahike.kabel.handlers :as handlers]
             [datahike.api :as d]
             [datahike.query :as dq]
             [datahike.writing :as dw]
             [datahike.writer :as writer]
-            [clojure.core.async :refer [<!! timeout alts!! promise-chan]]))
+            [clojure.core.async :refer [<!! go timeout alts!! promise-chan]]))
 
 (def test-peer-id #uuid "10000000-0000-0000-0000-000000000001")
 (def test-store-id #uuid "20000000-0000-0000-0000-000000000002")
@@ -17,6 +18,7 @@
       (is (instance? datahike.kabel.writer.KabelWriter w))
       (is (= test-peer-id (:peer-id w)))
       (is (= test-store-id (:store-id w)))
+      (is (= :db (:branch w)))
       (is (= {} @(:pending-txs w)))
       (is (= 0 @(:current-max-tx w)))
       (is (= #{} @(:listeners w))))))
@@ -29,7 +31,62 @@
           w (writer/create-writer config nil)]
       (is (instance? datahike.kabel.writer.KabelWriter w))
       (is (= test-peer-id (:peer-id w)))
-      (is (= test-store-id (:store-id w))))))
+      (is (= test-store-id (:store-id w)))
+      (is (= :db (:branch w))))))
+
+(deftest branch-aware-store-registry
+  (let [original @handlers/store-registry
+        main-conn {:wrapped-atom (atom {:config {:branch :db}})}
+        fork-conn {:wrapped-atom (atom {:config {:branch :fork}})}]
+    (try
+      (reset! handlers/store-registry {})
+      (handlers/register-connection-for-store! test-store-id main-conn :main-peer)
+      (handlers/register-connection-for-store! test-store-id fork-conn :fork-peer)
+      (is (identical? main-conn
+                      (handlers/get-connection-for-store test-store-id :db)))
+      (is (identical? fork-conn
+                      (handlers/get-connection-for-store test-store-id :fork)))
+      (is (= :fork-peer (handlers/get-peer-for-store test-store-id :fork)))
+      (handlers/unregister-connection-for-store! test-store-id :fork)
+      (is (nil? (handlers/get-connection-for-store test-store-id :fork)))
+      (is (identical? main-conn
+                      (handlers/get-connection-for-store test-store-id :db)))
+      (finally
+        (reset! handlers/store-registry original)))))
+
+(deftest global-dispatch-routes-to-exact-branch
+  (let [original @handlers/store-registry
+        calls (atom [])
+        make-conn (fn [branch]
+                    {:wrapped-atom
+                     (atom {:config {:branch branch}
+                            :writer
+                            (reify writer/PWriter
+                              (-dispatch! [_ arg-map]
+                                (swap! calls conj [branch arg-map])
+                                (go {:branch branch}))
+                              (-shutdown [_] (go true))
+                              (-streaming? [_] true))})})]
+    (try
+      (reset! handlers/store-registry {})
+      (handlers/register-connection-for-store!
+       test-store-id (make-conn :db) nil)
+      (handlers/register-connection-for-store!
+       test-store-id (make-conn :fork) nil)
+      (is (= {:branch :fork}
+             (<!! (handlers/global-dispatch-handler
+                   {:store-id test-store-id
+                    :branch :fork
+                    :arg-map {:op 'test-op}}))))
+      (is (= [[:fork {:op 'test-op}]] @calls))
+      (let [error (<!! (handlers/global-dispatch-handler
+                        {:store-id test-store-id
+                         :branch :missing
+                         :arg-map {:op 'test-op}}))]
+        (is (= :missing (:branch (ex-data error))))
+        (is (= #{:db :fork} (:registered-branches (ex-data error)))))
+      (finally
+        (reset! handlers/store-registry original)))))
 
 (deftest test-on-sync-update
   (testing "on-sync-update! resolves pending transactions"

@@ -91,10 +91,14 @@
 (defn- same-snapshot?
   "True when two DB values represent the same Datahike content. Shared writers
   can return a newly stamped DB record when an unchanged fenced head is read,
-  so object identity alone is not a durable snapshot identity."
+  so object identity alone is not a durable snapshot identity. Datahike hashes
+  are additive and therefore not collision-proof; transaction and entity
+  watermarks are part of the snapshot identity as well."
   [a b]
   (or (identical? a b)
-      (and (some? (:hash a)) (= (:hash a) (:hash b)))))
+      (and (some? (:hash a))
+           (= [(:hash a) (:max-tx a) (:max-eid a)]
+              [(:hash b) (:max-tx b) (:max-eid b)]))))
 
 (defn- membership-changes [before after candidates]
   (reduce

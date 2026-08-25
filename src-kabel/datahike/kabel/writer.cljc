@@ -68,6 +68,7 @@
 (defrecord KabelWriter
            [peer-id        ; UUID of the remote peer that owns the database
             store-id       ; UUID identifying the store/database (from store :id)
+            branch         ; branch whose head this writer advances
             store-config   ; Store config for index-registry cleanup on shutdown
             pending-txs    ; atom: {request-id -> {:expected-max-tx ... :tx-report ... :ch promise-chan}}
             current-max-tx ; atom: current synced max-tx from konserve-sync
@@ -87,6 +88,7 @@
           (let [remote-result (<?- (ds/invoke-remote peer-id
                                                      remote-fn
                                                      {:store-id store-id
+                                                      :branch branch
                                                       :request-id request-id
                                                       :arg-map arg-map}))]
             (if (instance? #?(:clj Throwable :cljs js/Error) remote-result)
@@ -259,27 +261,34 @@
    Parameters:
    - peer-id: UUID of the remote peer that owns the database
    - store-id: UUID identifying the store/database (extracted from store :id)
+   - branch: branch whose head the remote writer must advance (default :db)
    - store-config: Store config for index-registry cleanup on shutdown
 
    Returns a KabelWriter instance."
-  [peer-id store-id store-config]
-  (->KabelWriter peer-id
-                 store-id
-                 store-config
-                 (atom {})   ; pending-txs
-                 (atom 0)    ; current-max-tx
-                 (atom #{})  ; listeners
-                 (atom nil))) ; conn-atom - set via set-connection! after d/connect
+  ([peer-id store-id store-config]
+   (kabel-writer peer-id store-id :db store-config))
+  ([peer-id store-id branch store-config]
+   (->KabelWriter peer-id
+                  store-id
+                  branch
+                  store-config
+                  (atom {})   ; pending-txs
+                  (atom 0)    ; current-max-tx
+                  (atom #{})  ; listeners
+                  (atom nil)))) ; conn-atom - set via set-connection! after d/connect
 
 ;; =============================================================================
 ;; Multimethod Extensions
 ;; =============================================================================
 
 (defmethod writer/create-writer :kabel
-  [{:keys [peer-id store-config]} _connection]
+  [{:keys [peer-id store-config branch]} connection]
   ;; Extract store-id from store config :id
-  (let [store-id (:id store-config)]
-    (kabel-writer peer-id store-id store-config)))
+  (let [store-id (:id store-config)
+        branch (or branch
+                   (some-> connection :wrapped-atom deref :config :branch)
+                   :db)]
+    (kabel-writer peer-id store-id branch store-config)))
 
 (defmethod writer/create-database :kabel
   [config & _args]

@@ -129,12 +129,12 @@
           ;; Validate required kabel config
          _ (when-not local-peer
              (log/raise "KabelWriter requires :local-peer in writer config"
-                       {:type :kabel-missing-local-peer
-                        :config (:writer config)}))
+                        {:type :kabel-missing-local-peer
+                         :config (:writer config)}))
          _ (when-not store-id
              (log/raise "KabelWriter requires :id in store config"
-                       {:type :kabel-missing-store-id
-                        :store-config store-config}))
+                        {:type :kabel-missing-store-id
+                         :store-config store-config}))
 
           ;; 1. Create or connect to store with Datahike handlers
           ;; For initial connection, store may not exist yet (create-store)
@@ -258,12 +258,12 @@
           ;; subscribe! dropped the callback and this signal could never arrive.
          _ (when-not sub-result
              (log/raise "KabelWriter store subscription failed — no handshake will arrive"
-                       {:type :kabel-subscribe-failed :store-id store-id :branch branch}))
+                        {:type :kabel-subscribe-failed :store-id store-id :branch branch}))
          _ (log/trace "Waiting for handshake to fully drain...")
          _ (<?- handshake-complete-ch)
          stored-db (or @stored-db-atom
                        (log/raise "Handshake drained but no :db head is present"
-                                 {:type :kabel-no-head :store-id store-id :branch branch}))
+                                  {:type :kabel-no-head :store-id store-id :branch branch}))
          _ (log/trace "Handshake drained — indices complete" {:max-tx (:max-tx stored-db)})
 
           ;; 4. Reconstruct deferred indexes and create connection
@@ -300,7 +300,9 @@
           ;; 5. Create writer and wire up ongoing sync
           ;; Pass store-config for cleanup on shutdown
          _ (log/trace "Creating KabelWriter" {:peer-id peer-id :store-id store-id})
-         writer-config (assoc (:writer config) :store-config store-config)
+         writer-config (assoc (:writer config)
+                              :store-config store-config
+                              :branch branch)
          writer (w/create-writer writer-config conn)
          _ (log/trace "Writer created")
          _ (swap! (:wrapped-atom conn) assoc :writer writer :store store)
@@ -330,6 +332,6 @@
   (log/info "Kabel -connect* multimethod dispatched" {:sync? (:sync? opts)})
   (when (:sync? opts)
     (log/raise "Kabel connections must be async. Use {:sync? false} or omit :sync? option."
-              {:type :kabel-requires-async
-               :config config}))
+               {:type :kabel-requires-async
+                :config config}))
   (connect-kabel config (assoc opts :sync? false)))

@@ -87,6 +87,24 @@
     (is (= "b" (value (opt/db overlay) id)))
     (teardown env overlay)))
 
+(deftest-async equal-hash-with-new-watermark-still-reconciles
+  (let [{:keys [conn id] :as env} (<! (setup))
+        base-max-tx (:max-tx @conn)
+        base-hash (:hash @conn)
+        overlay (opt/open conn)
+        {:keys [result]} (opt/predict!
+                          overlay
+                          [[:db/add [:entity/uuid id] :content "b"]]
+                          #(> (:max-tx %) base-max-tx))]
+    ;; Shared writers may publish a freshly stamped snapshot whose effective
+    ;; datoms (and therefore additive hash) are unchanged. The watermark still
+    ;; makes it a distinct snapshot and must drive reconciliation.
+    (swap! conn update :max-tx inc)
+    (is (= base-hash (:hash @conn)))
+    (is (= :reconciled (:status (<! result))))
+    (is (empty? (opt/pending overlay)))
+    (teardown env overlay)))
+
 (deftest-async transaction-arg-map-survives-replay
   (let [{:keys [conn id] :as env} (<! (setup))
         overlay (opt/open conn)
