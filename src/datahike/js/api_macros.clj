@@ -16,11 +16,20 @@
        ~@(for [clj-fn-name exports
                :let [{:keys [doc impl]} (get api-specification clj-fn-name)]
                :let [js-fn-name (symbol (clj-name->js-name clj-fn-name))
-                     impl-fn (symbol (namespace impl) (name impl))]]
-           `(defn ~(with-meta js-fn-name {:export true :doc doc})
-              [& args#]
-              (let [clj-args# (map datahike.js.api/js->clj-recursive args#)
-                    result# (apply ~impl-fn clj-args#)]
-                (-> result#
-                    datahike.js.api/maybe-chan->promise
-                    (.then datahike.js.api/clj->js-recursive))))))))
+                     impl-fn (symbol (namespace impl) (name impl))
+                     args-sym (gensym "args")
+                     clj-args-sym (gensym "clj-args")
+                     result-sym (gensym "result")]]
+             `(defn ~(with-meta js-fn-name {:export true :doc doc})
+                [& ~args-sym]
+                (let [~clj-args-sym (map datahike.js.api/js->clj-recursive ~args-sym)
+                      ;; JavaScript already exposes every operation as a Promise.
+                      ;; Use that boundary to acquire a globally fresh snapshot
+                      ;; from async browser stores while leaving the CLJ/CLJS `db`
+                      ;; and synchronous query APIs unchanged.
+                      ~result-sym ~(if (= clj-fn-name 'db)
+                                     `(apply datahike.connector/db-async ~clj-args-sym)
+                                     `(apply ~impl-fn ~clj-args-sym))]
+                  (-> ~result-sym
+                      datahike.js.api/maybe-chan->promise
+                      (.then datahike.js.api/clj->js-recursive))))))))

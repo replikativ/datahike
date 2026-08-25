@@ -316,7 +316,7 @@
    `canon` so live and restored nodes hash identically. Representation-dependent
    by design: the same logical content hashes differently under different
    :diff-buf-size settings (which are create-time-fixed per store)."
-  [node]
+  [^Branch node]
   (let [addrs #?(:clj (vec (.addresses ^Branch node))
                  :cljs (vec (.-addresses node)))
         slots #?(:clj (.slotsForStorage ^Branch node)

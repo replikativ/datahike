@@ -142,9 +142,10 @@
                (is (>= @n 2) "precondition: the injection ran and reached chunk 2")
                (is (= :async/foreign-throw (:error r))
                    (str "the import must fail, naming it — got " (pr-str (:value r))))
-               (is (= "a foreign object, not a js/Error"
-                      (some-> (ex-data (:value r)) :thrown .-msg))
-                   "with the thrown value preserved rather than discarded")
+               (let [thrown (some-> (ex-data (:value r)) :thrown)]
+                 (is (= "a foreign object, not a js/Error"
+                        (aget thrown "msg"))
+                     "with the thrown value preserved rather than discarded"))
                (<! (d/delete-database cfg))
                (done))))))
 

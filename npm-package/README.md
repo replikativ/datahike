@@ -86,17 +86,27 @@ Amazon S3, Cloudflare R2, MinIO, or another S3-compatible service:
 ```javascript
 import * as d from 'datahike/s3';
 
+const storeId = d.randomUuid();
 const config = {
   store: {
-    backend: ':s3',
-    endpoint: 'https://s3.us-west-1.amazonaws.com',
-    bucket: 'my-datahike-bucket',
-    region: 'us-west-1',
-    'access-key': temporaryCredentials.accessKeyId,
-    secret: temporaryCredentials.secretAccessKey,
-    'session-token': temporaryCredentials.sessionToken,
-    id: d.randomUuid(),
-    config: { 'optimistic-locking-retries': 10 }
+    backend: ':tiered',
+    id: storeId,
+    'frontend-config': { backend: ':memory', id: storeId },
+    'backend-config': {
+      backend: ':s3',
+      endpoint: 'https://s3.us-west-1.amazonaws.com',
+      bucket: 'my-datahike-bucket',
+      region: 'us-west-1',
+      'access-key': temporaryCredentials.accessKeyId,
+      secret: temporaryCredentials.secretAccessKey,
+      'session-token': temporaryCredentials.sessionToken,
+      id: storeId
+    }
+  },
+  writer: {
+    backend: ':self',
+    'writer-ownership': ':shared',
+    'require-fencing': ':global'
   }
 };
 
@@ -104,12 +114,25 @@ await d.createDatabase(config);
 const conn = await d.connect(config);
 ```
 
-The bucket must allow the browser origin through CORS and expose the `ETag`
-response header. Use narrowly scoped, short-lived session credentials; never
-ship long-lived bucket credentials in browser code. The regular `datahike`
-entry does not include the S3 backend. Keep the store ID stable when reopening
-a database. ETag locking must be enabled, as above, when more than one writer
-can update the bucket.
+The memory frontend is required: Datahike's query engine is synchronous, while
+browser S3 is asynchronous. Connection and shared-writer refreshes materialize
+the durable snapshot locally before returning it, after which `q`, `pull`, and
+the other read APIs remain synchronous over that immutable DB value. A bare
+`:s3` store is deliberately unsupported for browser Datahike.
+
+The bucket must provide strongly consistent object GET and LIST semantics,
+allow the browser origin through CORS, and expose the `ETag` response header.
+Use narrowly scoped, short-lived session credentials; never ship long-lived
+bucket credentials in browser code. `:require-fencing :global` makes a missing
+or unusable conditional-write guarantee a connection error instead of silently
+risking lost updates. Keep the store ID stable when reopening a database. The
+regular `datahike` entry does not include S3 code.
+
+This direct-S3 mode is currently intended for small and medium databases. When
+another writer moves the head, the beta refresh path lists the durable store and
+copies only objects missing from the local tier; its remote request cost can
+therefore grow with the number of stored objects. Prefer a server-owned S3 store
+plus Kabel replication for large databases or sustained write contention.
 
 ### Configuration
 
@@ -228,10 +251,11 @@ Access database history:
 
 ```javascript
 // Database at specific time
-const historicalDb = d.asOf(d.db(conn), date);
+const currentDb = await d.db(conn);
+const historicalDb = await d.asOf(currentDb, date);
 
 // Full history
-const historyDb = d.history(d.db(conn));
+const historyDb = await d.history(currentDb);
 ```
 
 ## API Reference

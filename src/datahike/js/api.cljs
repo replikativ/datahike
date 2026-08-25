@@ -1,8 +1,9 @@
 (ns datahike.js.api
   "JavaScript API for Datahike with Promise conversion and data transformation"
-  (:refer-clojure :exclude [filter])
+  (:refer-clojure :exclude [filter uuid])
   (:require [datahike.api.specification :refer [api-specification]]
             [datahike.api.impl]
+            [datahike.connector]
             [datahike.optimistic :as optimistic]
             [datahike.store] ;; Register :mem backend
             [datahike.db.interface]
@@ -101,12 +102,13 @@
     ;; Passing datoms through unchanged causes field renaming under advanced
     ;; compilation (e.g. :v becomes "ca"), breaking JS callers who access .e/.a/.v.
     (= (type x) datahike.datom.Datom)
-    (let [obj (js-obj)]
-      (gobj/set obj "e" (.-e x))
-      (gobj/set obj "a" (clj->js-recursive (.-a x)))
-      (gobj/set obj "v" (clj->js-recursive (.-v x)))
-      (gobj/set obj "tx" (.-tx x))
-      (gobj/set obj "added" (.-added x))
+    (let [^datahike.datom.Datom datom x
+          obj (js-obj)]
+      (gobj/set obj "e" (.-e datom))
+      (gobj/set obj "a" (clj->js-recursive (.-a datom)))
+      (gobj/set obj "v" (clj->js-recursive (.-v datom)))
+      (gobj/set obj "tx" (.-tx datom))
+      (gobj/set obj "added" (.-added datom))
       obj)
 
     ;; Connections (check for typical connection keys)

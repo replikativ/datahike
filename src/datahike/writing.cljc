@@ -476,22 +476,36 @@
    konserve-backed, but its manifest is still written unconditionally, so two
    writers on one branch orphan the loser's segments), not a property of
    secondary indices."
-  [old]
-  (let [store    (:store old)
-        branch   (:branch (:config old))
-        fenced?  (some? (k/conditional-write-domain store))
-        ;; ONE read for both when the store can fence. Reading the revision
-        ;; separately would cost a second round-trip AND be racy: another writer
-        ;; could move the head between the two reads, leaving us fencing against a
-        ;; revision that never belonged to the head we just applied to.
-        [stored revision] (if fenced?
-                            (k/get store branch nil {:sync? true :with-revision? true})
-                            [(k/get store branch nil {:sync? true}) nil])]
-    (when-not stored
-      (log/raise "Branch head vanished from the store; the database may have been deleted."
-                 {:type   :branch-head-does-not-exist-in-store
-                  :branch branch}))
-    (reload-head old stored store revision)))
+  ([old] (reload-branch-head old true))
+  ([old sync?]
+   (async+sync sync? *default-sync-translation*
+               (go-try-
+                (let [store    (:store old)
+                      branch   (:branch (:config old))
+                      fenced?  (some? (k/conditional-write-domain store))
+                      ;; ONE read for both when the store can fence. Reading the
+                      ;; revision separately would be racy. On a tiered store the
+                      ;; revision-bearing read deliberately goes to the backend,
+                      ;; because that is where the conditional write is decided.
+                      raw      (if fenced?
+                                 (<?- (k/get store branch nil {:sync? sync?
+                                                               :with-revision? true}))
+                                 [(<?- (k/get store branch nil {:sync? sync?})) nil])
+                      [stored revision] raw]
+                  (when-not stored
+                    (log/raise "Branch head vanished from the store; the database may have been deleted."
+                               {:type   :branch-head-does-not-exist-in-store
+                                :branch branch}))
+                  ;; The engine below this boundary is synchronous. When a
+                  ;; foreign writer moved a tiered backend, fetch its newly
+                  ;; introduced immutable nodes before materializing the head.
+                  ;; An unchanged cid needs no refresh even if the storage
+                  ;; revision changed: it references exactly the nodes already
+                  ;; backing `old`.
+                  (when (not= (get-in stored [:meta :datahike/commit-id])
+                              (get-in old [:meta :datahike/commit-id]))
+                    (<?- (ds/refresh-tiered-frontend store {:sync? sync?})))
+                  (reload-head old stored store revision))))))
 
 (defn branch-heads-as-commits
   "Resolve keyword parents (branch names) to their head commit-ids.

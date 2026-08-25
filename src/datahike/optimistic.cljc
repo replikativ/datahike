@@ -40,7 +40,7 @@
                       {:type :optimistic/invalid-option :option key :value value}))))
   opts)
 
-(defn- key-eav [datom]
+(defn- key-eav [^datahike.datom.Datom datom]
   [(.-e datom) (.-a datom) (.-v datom)])
 
 (defn- with-entry

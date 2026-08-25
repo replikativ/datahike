@@ -156,7 +156,7 @@
 ;; the Uint8Array that is datahike's bytes representation (schema.cljc).
 (defn- b64url-encode [b]
   #?(:clj  (.encodeToString (.withoutPadding (java.util.Base64/getUrlEncoder)) ^bytes b)
-     :cljs (gb64/encodeByteArray b (.-WEBSAFE_NO_PADDING gb64/Alphabet))))
+     :cljs (gb64/encodeByteArray b gb64/Alphabet.WEBSAFE_NO_PADDING)))
 
 (defn- b64url-decode [s]
   #?(:clj  (.decode (java.util.Base64/getUrlDecoder) ^String s)

@@ -27,7 +27,7 @@ SOFTWARE.
 
 Source: <https://github.com/mhart/aws4fetch>
 
-## konserve-s3 0.1.37
+## konserve-s3 0.1.38
 
 `konserve-s3` is distributed under the Eclipse Public License 1.0, the same
 license included in this package's top-level `LICENSE` file.

@@ -78,3 +78,31 @@
                (<?- (ready-store (assoc backend-config :opts opts) (:backend-store store)))
                (<?- (kt/sync-on-connect store kt/populate-missing-strategy opts))
                true)))
+
+(defn refresh-tiered-frontend
+  "Materialize every backend key that is still missing from a tiered frontend.
+
+   Datahike's query and transaction engines deliberately remain synchronous.
+   An asynchronous durable backend (S3 in a browser) is therefore usable only
+   behind a complete synchronous frontend. `ready-store` establishes that
+   invariant at connect; this function restores it after another shared writer
+   has moved the branch head and introduced immutable index nodes this process
+   has never seen.
+
+   The branch head must be read from the authoritative backend *before* this is
+   called. S3's strongly consistent GET/LIST contract then guarantees that the
+   following listing contains every object referenced by the observed head.
+   Writes publish immutable objects before the mutable head, so after this call
+   `stored->db` and the synchronous index engine cannot fall through to S3.
+
+   This intentionally runs only when the observed Datahike commit id changed,
+   not before every local transaction. Existing frontend keys are not fetched
+   again."
+  [store opts]
+  (if (and (:frontend-store store) (:backend-store store))
+    (kt/perform-sync (:frontend-store store)
+                     (:backend-store store)
+                     kt/populate-missing-strategy
+                     opts)
+    (async+sync (:sync? opts) *default-sync-translation*
+                (go-try- true))))

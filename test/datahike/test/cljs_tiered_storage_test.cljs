@@ -14,8 +14,8 @@
             [cljs.nodejs :as nodejs]
             [cljs.core.async :refer [go <!] :include-macros true]))
 
-(def os (nodejs/require "os"))
-(def path (nodejs/require "path"))
+(def ^js os (nodejs/require "os"))
+(def ^js path (nodejs/require "path"))
 (defn- tmp-dir [] (.join path (.tmpdir os) (str "dh-cljs-tiered-" (rand-int 1000000))))
 
 (deftest tiered-frontend-deletion-recovery-test

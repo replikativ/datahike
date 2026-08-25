@@ -182,7 +182,7 @@ export interface StoreConfig {
   [key: string]: any;
 }
 
-/** Configuration for the opt-in `datahike/s3` browser entry. */
+/** S3 backend configuration for the opt-in `datahike/s3` browser entry. */
 export interface S3StoreConfig extends StoreConfig {
   backend: ':s3';
   id: DatahikeUuid;
@@ -197,6 +197,20 @@ export interface S3StoreConfig extends StoreConfig {
     'optimistic-locking-retries'?: number;
     [key: string]: any;
   };
+}
+
+/**
+ * Browser-safe Datahike storage: a complete synchronous memory frontend over
+ * an asynchronous, authoritative S3 backend. Bare S3StoreConfig is not a
+ * usable Datahike query store in browsers.
+ */
+export interface TieredS3StoreConfig extends StoreConfig {
+  backend: ':tiered';
+  id: DatahikeUuid;
+  'frontend-config': { backend: ':memory'; id: DatahikeUuid };
+  'backend-config': S3StoreConfig;
+  'write-policy'?: ':write-through';
+  'read-policy'?: ':frontend-first';
 }
 
 export interface WriterConfig {

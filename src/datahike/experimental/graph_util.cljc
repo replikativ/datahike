@@ -11,7 +11,8 @@
    - small math helpers (`infinity`, `abs`).
 
    All intermediate arithmetic stays < 2^53 so the PRNG is exact under JS
-   doubles.")
+   doubles."
+  (:refer-clojure :exclude [abs]))
 
 ;; ---------------------------------------------------------------------------
 ;; Priority queue (min-first), total order.

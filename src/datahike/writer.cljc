@@ -289,7 +289,7 @@
                               ;; MAX_SHARED_WRITER_BATCH for why that is sound.
                               old (if (or (not shared?) (not needs-reload?))
                                     old
-                                    (try (w/reload-branch-head old)
+                                    (try (<?- (w/reload-branch-head old false))
                                          (catch #?(:clj Throwable :cljs js/Error) e
                                            (log/error :datahike/head-reload-failed
                                                       {:invocation invocation :error e})

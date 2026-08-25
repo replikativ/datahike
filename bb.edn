@@ -226,9 +226,38 @@
                          :depends [prep]
                          :task (do
                                  (println "Compiling CLJS node tests...")
+                                 ;; `node-test` already compiles with advanced optimizations.
+                                 ;; `shadow-cljs release` DCEs cljs.test registrations for this
+                                 ;; node-script target, causing a false-green zero-test run.
                                  (shell "npx shadow-cljs compile node-test")
                                  (println "Running CLJS node tests...")
                                  (shell "node target/out/node-test.js"))}
+
+         cljs-s3-concurrency-test
+         {:doc "Run two independent CLJS Datahike writers against an available S3/MinIO bucket"
+          :task (do
+                  (shell "npx shadow-cljs release node-s3-concurrency")
+                  (shell "node target/out/s3-concurrency.js init")
+                  (let [a (process/process {:out :string :err :string}
+                                           "node target/out/s3-concurrency.js worker a 20")
+                        b (process/process {:out :string :err :string}
+                                           "node target/out/s3-concurrency.js worker b 20")
+                        ar (deref a)
+                        br (deref b)]
+                    (when-not (and (zero? (:exit ar)) (zero? (:exit br)))
+                      (throw (ex-info "Concurrent S3 worker failed" {:a ar :b br})))
+                    (println (:out ar))
+                    (println (:out br))
+                    (let [conflicts (->> [(:out ar) (:out br)]
+                                         (map (fn [output]
+                                                (re-find (re-pattern "S3_WORKER_OK \\w+ (\\d+)") output)))
+                                         (map (fn [match]
+                                                (some-> match second parse-long)))
+                                         (reduce + 0))]
+                      (when-not (pos? conflicts)
+                        (throw (ex-info "Workers did not overlap; fencing was not exercised"
+                                        {:conflicts conflicts}))))
+                    (shell "node target/out/s3-concurrency.js verify 40")))}
 
          browser-test {:doc "Run browser integration tests with Karma (headless Chrome)"
                        :depends [prep]
@@ -254,7 +283,7 @@
 
                                    ;; Compile browser tests
                                    (println "Compiling browser tests...")
-                                   (shell "npx shadow-cljs compile browser-ci")
+                                   (shell "npx shadow-cljs release browser-ci")
 
                                    ;; Run Karma
                                    (println "Running tests with Karma...")

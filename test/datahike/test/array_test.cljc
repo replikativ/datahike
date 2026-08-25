@@ -1,8 +1,9 @@
 (ns datahike.test.array-test
+  (:refer-clojure :exclude [byte-array float-array double-array])
   (:require
    #?(:cljs [cljs.test :as t :refer-macros [is deftest testing]]
       :clj  [clojure.test :as t :refer [is deftest testing]])
-   #?(:clj [clojure.core :refer [byte-array]])
+   #?(:clj [clojure.core :refer [byte-array float-array double-array]])
    [datahike.array :refer [compare-arrays a= wrap-comparable
                            float-array? double-array? value-array?]]))
 

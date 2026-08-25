@@ -39,7 +39,7 @@
 
 (defn- tmp-path [id]
   #?(:clj  (str (System/getProperty "java.io.tmpdir") "/dh-bgc-portable-" id)
-     :cljs (let [os (nodejs/require "os") p (nodejs/require "path")]
+     :cljs (let [^js os (nodejs/require "os") ^js p (nodejs/require "path")]
              (.join p (.tmpdir os) (str "dh-bgc-portable-" id)))))
 
 ;; ---------------------------------------------------------------------------
