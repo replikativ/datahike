@@ -1325,34 +1325,44 @@
         ;; type-invalid heterogeneous tuple was accepted. Resolving first is also
         ;; why `attr-schema` must be a MAP; anything else means the lookup missed.
         a-ident (dbu/attr-ident db a)
-        attr-schema (let [s (-> db dbi/-schema (get a-ident))]
-                      (when (map? s) s))]
-    (cond (:db/tupleType attr-schema)
-          (cond (> (count v) 8)
-                (log/raise "Cannot store more than 8 values for homogeneous tuple: " op-vec
-                           {:error :transact/syntax, :tx-data op-vec})
+        attr-schema (dbu/attr-schema db a)]
+    (when-not (vector? v)
+      (log/raise "Tuple values must be vectors: " op-vec
+                 {:error :transact/syntax, :tx-data op-vec}))
+    ;; Validate assertions, but leave retractions available to clean up values
+    ;; written by an older or more permissive version. Datomic likewise accepts
+    ;; no-op retractions of malformed vector-shaped tuple metadata.
+    (when (= :db/add op)
+      (when (and (contains? #{:db/tupleAttrs :db/tupleTypes} a-ident)
+                 (< (count v) 2))
+        (log/raise "Tuple schema definitions require at least 2 values: " op-vec
+                   {:error :transact/syntax, :tx-data op-vec}))
+      (cond (:db/tupleType attr-schema)
+            (cond (> (count v) 8)
+                  (log/raise "Cannot store more than 8 values for homogeneous tuple: " op-vec
+                             {:error :transact/syntax, :tx-data op-vec})
 
-                (not (apply = (map type v)))
-                (log/raise "Cannot store homogeneous tuple with values of different type: " op-vec
-                           {:error :transact/syntax, :tx-data op-vec})
+                  (not (apply = (map type v)))
+                  (log/raise "Cannot store homogeneous tuple with values of different type: " op-vec
+                             {:error :transact/syntax, :tx-data op-vec})
 
-                ;; `attr-schema` already IS this lookup; the re-fetch used the raw
-                ;; `a` AS A FUNCTION, which throws outright on a numeric ref.
-                (not (s/valid? (:db/tupleType attr-schema) (first v)))
-                (log/raise "Cannot store homogeneous tuple. Values are of wrong type: " op-vec
-                           {:error :transact/syntax, :tx-data op-vec}))
-          (:db/tupleTypes attr-schema)
-          (cond (not (= (count v) (count (:db/tupleTypes attr-schema))))
-                (log/raise (str "Cannot store heterogeneous tuple: expecting " (count (:db/tupleTypes attr-schema)) " values, got " (count v))
-                           {:error :transact/syntax, :tx-data op-vec})
+                  ;; `attr-schema` already IS this lookup; the re-fetch used the raw
+                  ;; `a` AS A FUNCTION, which throws outright on a numeric ref.
+                  (not (s/valid? (:db/tupleType attr-schema) (first v)))
+                  (log/raise "Cannot store homogeneous tuple. Values are of wrong type: " op-vec
+                             {:error :transact/syntax, :tx-data op-vec}))
+            (:db/tupleTypes attr-schema)
+            (cond (not (= (count v) (count (:db/tupleTypes attr-schema))))
+                  (log/raise (str "Cannot store heterogeneous tuple: expecting " (count (:db/tupleTypes attr-schema)) " values, got " (count v))
+                             {:error :transact/syntax, :tx-data op-vec})
 
-                (not (apply = (map s/valid? (:db/tupleTypes attr-schema) v)))
-                (log/raise (str "Cannot store heterogeneous tuple: there is a mismatch between values " v " and their types " (:db/tupleTypes attr-schema))
-                           {:error :transact/syntax, :tx-data op-vec}))
-          (and (:db/tupleAttrs attr-schema)
+                  (not (apply = (map s/valid? (:db/tupleTypes attr-schema) v)))
+                  (log/raise (str "Cannot store heterogeneous tuple: there is a mismatch between values " v " and their types " (:db/tupleTypes attr-schema))
+                             {:error :transact/syntax, :tx-data op-vec}))))
+    (when (and (:db/tupleAttrs attr-schema)
                (not (::internal (meta op-vec))))
-          (log/raise "Can’t modify tuple attrs directly: " op-vec
-                     {:error :transact/syntax, :tx-data op-vec}))
+      (log/raise "Can’t modify tuple attrs directly: " op-vec
+                 {:error :transact/syntax, :tx-data op-vec}))
     ;; String-slot length cap (Datomic parity, default 256). Assert-only
     ;; (`:db/add` — never blocks retracting a pre-cap value) and `:write`-only,
     ;; mirroring the scalar string default. Structural checks above run first.

@@ -4,6 +4,7 @@
       :clj  [clojure.test :as t :refer        [is are deftest testing]])
    [datahike.api :as d]
    [datahike.db :as db]
+   [datahike.db.utils :as dbu]
    [datahike.test.utils :refer [get-time]])
   #?(:clj
      (:import [clojure.lang ExceptionInfo])))
@@ -28,6 +29,99 @@
     (d/delete-database config)
     (d/create-database config)
     (d/connect config)))
+
+(deftest implicit-tuple-schema-attributes
+  (let [conn (connect)]
+    (try
+      (let [db (d/db conn)]
+        (testing "Datomic tuple metaschema attributes are tuple-valued"
+          (is (dbu/tuple? db :db/tupleAttrs))
+          (is (dbu/tuple? db :db/tupleTypes)))
+        (testing "Datahike secondary index attributes are tuple-valued too"
+          (is (dbu/tuple? db :db.secondary/attrs)))
+        (testing "a one-attribute secondary declaration remains valid"
+          (let [{:keys [db-after tempids]}
+                (d/transact conn [[:db/add -1 :db.secondary/attrs [:person/name]]])
+                eid (get tempids -1)]
+            (is (= [[:person/name]]
+                   (mapv :v (d/datoms db-after {:index :eavt
+                                                :components [eid :db.secondary/attrs]})))))))
+      (finally
+        (d/release conn)))))
+
+(deftest retract-tuple-schema-entities
+  (let [conn (connect)
+        attrs [:schema/a :schema/b :schema/c]
+        components (mapv (fn [ident]
+                           {:db/ident ident
+                            :db/valueType :db.type/keyword
+                            :db/cardinality :db.cardinality/one})
+                         attrs)]
+    (try
+      (d/transact conn
+                  (into components
+                        [{:db/ident :schema/composite
+                          :db/valueType :db.type/tuple
+                          :db/tupleAttrs attrs
+                          :db/cardinality :db.cardinality/one}
+                         {:db/ident :schema/heterogeneous
+                          :db/valueType :db.type/tuple
+                          :db/tupleTypes [:db.type/keyword :db.type/long :db.type/string]
+                          :db/cardinality :db.cardinality/one}]))
+      (doseq [[ident schema-attr value]
+              [[:schema/composite :db/tupleAttrs attrs]
+               [:schema/heterogeneous :db/tupleTypes
+                [:db.type/keyword :db.type/long :db.type/string]]]]
+        (let [db (d/db conn)
+              eid (:db/id (d/entity db ident))]
+          (testing (str "exact index search for " schema-attr)
+            (is (= [value]
+                   (mapv :v (d/datoms db {:index :eavt
+                                          :components [eid schema-attr value]})))))
+          (testing (str "retractEntity for " ident)
+            (is (d/transact conn [[:db/retractEntity eid]]))
+            (is (nil? (d/q '[:find ?e . :in $ ?ident
+                             :where [?e :db/ident ?ident]]
+                           (d/db conn) ident))))))
+      (finally
+        (d/release conn)))))
+
+(deftest tuple-schema-metadata-follows-datomic-shape
+  (let [conn (connect)
+        component {:db/ident :shape/a
+                   :db/valueType :db.type/keyword
+                   :db/cardinality :db.cardinality/one}
+        schema (fn [ident attr value]
+                 {:db/ident ident :db/valueType :db.type/tuple
+                  attr value :db/cardinality :db.cardinality/one})]
+    (try
+      (d/transact conn [component])
+      (testing "malformed vector metadata can still be retracted for cleanup"
+        (let [eid (:db/id (d/entity (d/db conn) :shape/a))]
+          (doseq [value [[]
+                         [:shape/a]
+                         [:shape/a "not-an-ident"]
+                         [:shape/a :shape/b :shape/c :shape/d :shape/e
+                          :shape/f :shape/g :shape/h :shape/i]]]
+            (is (d/transact conn [[:db/retract eid :db/tupleAttrs value]])))))
+      (testing "scalar tuple metadata raises a transaction syntax error"
+        (let [error (try
+                      (d/transact conn [(schema :shape/scalar :db/tupleAttrs :shape/a)])
+                      nil
+                      (catch #?(:clj ExceptionInfo :cljs js/Error) e e))]
+          (is (= :transact/syntax (:error (ex-data error))))
+          (is (re-find #"Tuple values must be vectors" (ex-message error)))))
+      (doseq [bad [(schema :shape/attrs-short :db/tupleAttrs [:shape/a])
+                   (schema :shape/attrs-long :db/tupleAttrs
+                           [:shape/a :shape/b :shape/c :shape/d :shape/e
+                            :shape/f :shape/g :shape/h :shape/i])
+                   (schema :shape/attrs-wrong :db/tupleAttrs [:shape/a "not-an-ident"])
+                   (schema :shape/types-short :db/tupleTypes [:db.type/keyword])
+                   (schema :shape/types-wrong :db/tupleTypes
+                           [:db.type/keyword "not-a-type"])]]
+        (is (thrown? ExceptionInfo (d/transact conn [bad]))))
+      (finally
+        (d/release conn)))))
 
 (deftest test-transaction
   (testing "homogeneous tuple"
