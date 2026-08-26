@@ -424,7 +424,7 @@
 #?(:cljs
    (defn- eq-ok?
      "Does `x` (a field of merge datom `d`) satisfy equality obligation `code`?"
-     [code x d scan-d merge-datoms]
+     [code x ^Datom d ^Datom scan-d merge-datoms]
      (let [c (int code)]
        (or (== c -1)
            (val-eq? x
@@ -434,7 +434,7 @@
                       (== c 2) (.-v scan-d)
                       (== c 3) (datom/datom-tx scan-d)
                       (== c -2) (.-v d)
-                      :else (let [mj (aget merge-datoms (bit-shift-right (- c 4) 1))]
+                      :else (let [^Datom mj (aget merge-datoms (bit-shift-right (- c 4) 1))]
                               (if (even? c) (.-v mj) (datom/datom-tx mj)))))))))
 
 #?(:clj
@@ -451,7 +451,7 @@
 #?(:cljs
    (defn- merge-datom-match?
      "Predicate: does merge datom d match entity+attr+value+shared-var constraints?"
-     [d eid ra vg? vgv eq-v eq-tx scan-d merge-datoms]
+     [^Datom d eid ra vg? vgv eq-v eq-tx ^Datom scan-d merge-datoms]
      (and (== (.-e d) eid) (= (.-a d) ra)
           (or (not vg?) (val-eq? (.-v d) vgv))
           (eq-ok? eq-v (.-v d) d scan-d merge-datoms)
@@ -479,7 +479,7 @@
 #?(:cljs
    (defn- temporal-merge-datom-present?
      "See the :clj macro of the same name."
-     [d eid ra _scan-d temporal-tx-filter added-filter]
+     [^Datom d eid ra ^Datom _scan-d temporal-tx-filter added-filter]
      (and (== (.-e d) eid) (= (.-a d) ra)
           (or (nil? temporal-tx-filter) (temporal-tx-filter d))
           (or (nil? added-filter) (= (datom/datom-added d) added-filter)))))
@@ -500,7 +500,7 @@
 #?(:cljs
    (defn- temporal-merge-datom-match?
      "Like merge-datom-match? but also checks temporal-tx-filter and added-filter."
-     [d eid ra vg? vgv eq-v eq-tx scan-d temporal-tx-filter added-filter merge-datoms]
+     [^Datom d eid ra vg? vgv eq-v eq-tx ^Datom scan-d temporal-tx-filter added-filter merge-datoms]
      (and (== (.-e d) eid) (= (.-a d) ra)
           (or (not vg?) (val-eq? (.-v d) vgv))
           (or (nil? temporal-tx-filter) (temporal-tx-filter d))
@@ -4381,11 +4381,14 @@
                                                         has-tx-var? (conj 0)))))))))))]
                 (run! (fn [^Datom scan-d]
                         (check-cancel! cancel)
-                        (when (or (nil? entity-filter)
-                                  #?(:clj (es/entity-bitset-contains? entity-filter (.-e scan-d))
-                                     :cljs true))
-                          (process-merges scan-d (.-e scan-d) (int 0)
-                                          [(.-e scan-d) (.-a scan-d) (.-v scan-d) (.-tx scan-d) (datom/datom-added scan-d)])))
+                        #?(:clj
+                           (when (or (nil? entity-filter)
+                                     (es/entity-bitset-contains? entity-filter (.-e scan-d)))
+                             (process-merges scan-d (.-e scan-d) (int 0)
+                                             [(.-e scan-d) (.-a scan-d) (.-v scan-d) (.-tx scan-d) (datom/datom-added scan-d)]))
+                           :cljs
+                           (process-merges scan-d (.-e scan-d) (int 0)
+                                           [(.-e scan-d) (.-a scan-d) (.-v scan-d) (.-tx scan-d) (datom/datom-added scan-d)])))
                       filtered-datoms))]
         (let [out-rel (rel/->Relation out-attrs #?(:clj (vec (.toArray ^java.util.ArrayList acc))
                                                    :cljs (vec acc)))

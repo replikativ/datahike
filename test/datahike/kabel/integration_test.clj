@@ -713,11 +713,39 @@
               "client materializes the incrementally-synced fork")
           (release post)))
 
+      (testing "REMOTE WRITE: a fork client dispatches to the fork writer, not trunk"
+        ;; A konserve-sync subscription is store-topic scoped, so hand it from
+        ;; the trunk connection to the fork connection before reconnecting.
+        (release client-conn)
+        (sync/unsubscribe-store! client-peer store-topic)
+        (handlers/register-store-for-remote-access! store-id pre-conn server-peer)
+        (let [fork-client (<!! (d/connect (assoc client-config :branch :pre-fork)
+                                          {:sync? false}))]
+          (is (not (instance? Throwable fork-client)) "fork client connected")
+          (is (= :pre-fork (:branch (:writer @(:wrapped-atom fork-client)))))
+          (let [report (d/transact fork-client
+                                   [{:person/name "RemoteFork" :person/age 11}])]
+            (is (= 11 (d/q '[:find ?a .
+                             :where [?e :person/name "RemoteFork"]
+                             [?e :person/age ?a]]
+                           (:db-after report))))
+            (is (= 11 (d/q '[:find ?a .
+                             :where [?e :person/name "RemoteFork"]
+                             [?e :person/age ?a]]
+                           @pre-conn)))
+            (is (nil? (d/q '[:find ?a .
+                             :where [?e :person/name "RemoteFork"]
+                             [?e :person/age ?a]]
+                           @server-conn))
+                "trunk remains unchanged"))
+          (release fork-client)
+          (sync/unsubscribe-store! client-peer store-topic)))
+
       ;; cleanup
-      (release client-conn)
-      (sync/unsubscribe-store! client-peer store-topic)
       (handlers/unregister-store-for-remote-access! store-id server-peer)
       (<?? S (peer/stop server-peer))
+      (release (d/connect (assoc server-config :branch :post-fork)))
+      (release pre-conn)
       (release server-conn)
       (d/delete-database server-config)
       (delete-dir-recursive server-path)

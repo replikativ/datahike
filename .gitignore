@@ -22,8 +22,11 @@ npm-package/*.js.map
 npm-package/*.d.ts
 npm-package/package.json
 npm-package/browser/
+npm-package/s3/
+npm-package/LICENSE
 npm-package/karma.conf.js
 !npm-package/test.js
+!npm-package/test-log-level-env.js
 !npm-package/test-browser.js
 !npm-package/typescript-test.ts
 !npm-package/test-isomorphic.ts

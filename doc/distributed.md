@@ -150,6 +150,14 @@ and konserve-sync replicates updates back to the client's store.
 fixed UUID when multiple clients need to share the same database, or generate a
 unique UUID with `(random-uuid)` for ephemeral/test databases.
 
+**Branches**: Kabel routes writes by the exact `[store-id branch]` pair and
+refuses a write when that branch is not registered on the server. Register a
+live server connection for every branch that clients may write with
+`register-store-for-remote-access!`. A single client peer currently has one
+active konserve-sync subscription per store ID, so release/unsubscribe its
+current connection before switching that peer to another branch. Use separate
+client peers when two branches must stay connected simultaneously.
+
 ```clojure
 (ns my-app.client
   (:require [cljs.core.async :refer [<! timeout alts!] :refer-macros [go]]

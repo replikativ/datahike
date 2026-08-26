@@ -176,9 +176,8 @@
         a      (if (:attribute-refs? (dbi/-config db))
                  (dbi/-ref-for db :db/txInstant)
                  :db/txInstant)]
-    (some-> #?(:clj ^Datom (first (dbi/-datoms db :eavt [max-tx a] ctx))
-               :cljs (first (dbi/-datoms db :eavt [max-tx a] ctx)))
-            .-v)))
+    (when-let [^Datom tx-datom (first (dbi/-datoms db :eavt [max-tx a] ctx))]
+      (.-v tx-datom))))
 
 (defn ^:dynamic next-tx-instant
   "Strictly-monotonic `:db/txInstant` allocator. Returns

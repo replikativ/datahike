@@ -35,6 +35,7 @@
    is resolved lazily and guarded, so a browser build that merely pulls the
    namespace in through `migrate` compiles and links. Every function then fails
    with a named error rather than a `ReferenceError` from Closure's output."
+  (:refer-clojure :exclude [exists?])
   #?(:clj (:require [clojure.java.io :as io])
      :cljs (:require [datahike.migrate.digest]))
   #?(:clj (:import [java.io File]
@@ -50,7 +51,7 @@
       requiring at load time would break the bundle at link rather than at the
       call that actually needs a filesystem."
      [m]
-     (if (exists? js/require)
+     (if (cljs.core/exists? js/require)
        (js/require m)
        (throw (ex-info (str "datahike.migrate.fs needs Node's `" m "` module. "
                             "A filesystem dump has no browser counterpart — export "

@@ -3,12 +3,12 @@
 
    This namespace provides GLOBAL handlers that are registered with distributed-scope
    to handle remote transaction requests. The handlers look up the local
-   connection by store-id (passed in the request) and forward operations to its writer.
+   connection by store-id and branch and forward operations to its writer.
 
    Design:
    - Three global handlers: dispatch, create-database, delete-database
-   - Scope-id is passed in the request payload, not in the handler name
-   - The store-registry maps store-id -> {:conn connection :peer peer-atom}
+   - Store-id and branch are passed in the request payload, not in the handler name
+   - The store-registry maps [store-id branch] -> {:conn connection :peer peer-atom}
 
    Usage (server-side):
    ```clojure
@@ -42,62 +42,93 @@
 ;; Connection Registry
 ;; =============================================================================
 
-;; Registry mapping store-id -> {:conn connection :peer peer-atom}
+;; Registry mapping [store-id branch] -> {:conn connection :peer peer-atom}.
+;; A store can have several independently advancing branch heads; using only
+;; store-id here can route a fork write to the trunk writer and leave its client
+;; waiting forever for a watermark that never appears on the subscribed branch.
 ;; Populated when stores are registered for remote access
 (defonce store-registry (atom {}))
 
+(defn- registry-key [store-id branch]
+  [store-id (or branch :db)])
+
+(defn- connection-branch [conn]
+  (or (some-> conn :wrapped-atom deref :config :branch) :db))
+
 (defn register-connection-for-store!
-  "Register a connection for a store-id.
+  "Register a connection for a store-id and branch.
 
    Parameters:
    - store-id: UUID identifying the store
    - conn: The datahike connection
    - peer: The kabel peer atom (for tx-report publishing)"
-  [store-id conn peer]
-  (swap! store-registry assoc store-id {:conn conn :peer peer}))
+  ([store-id conn peer]
+   (register-connection-for-store! store-id (connection-branch conn) conn peer))
+  ([store-id branch conn peer]
+   (swap! store-registry assoc (registry-key store-id branch)
+          {:conn conn :peer peer})))
 
 (defn unregister-connection-for-store!
-  "Unregister a connection for a store-id."
-  [store-id]
-  (swap! store-registry dissoc store-id))
+  "Unregister one branch, or every registered branch for a store-id."
+  ([store-id]
+   (swap! store-registry
+          (fn [registry]
+            (into {} (remove (fn [[[registered-store-id _] _]]
+                               (= store-id registered-store-id)))
+                  registry))))
+  ([store-id branch]
+   (swap! store-registry dissoc (registry-key store-id branch))))
 
 (defn get-connection-for-store
-  "Get the connection for a store-id, or nil if not registered."
-  [store-id]
-  (get-in @store-registry [store-id :conn]))
+  "Get the connection for a store-id and branch, or nil if not registered."
+  ([store-id] (get-connection-for-store store-id :db))
+  ([store-id branch]
+   (get-in @store-registry [(registry-key store-id branch) :conn])))
 
 (defn get-peer-for-store
-  "Get the peer for a store-id, or nil if not registered."
-  [store-id]
-  (get-in @store-registry [store-id :peer]))
+  "Get the peer for a store-id and branch, or nil if not registered."
+  ([store-id] (get-peer-for-store store-id :db))
+  ([store-id branch]
+   (get-in @store-registry [(registry-key store-id branch) :peer])))
+
+(defn- store-registrations [store-id]
+  (keep (fn [[[registered-store-id _] registration]]
+          (when (= store-id registered-store-id) registration))
+        @store-registry))
 
 ;; =============================================================================
 ;; Global Dispatch Handler
 ;; =============================================================================
 
 (defn global-dispatch-handler
-  "Global dispatch handler that routes transactions by store-id.
+  "Global dispatch handler that routes transactions by store-id and branch.
 
    The handler:
-   1. Extracts store-id from the request
-   2. Looks up the connection by store-id
+   1. Extracts store-id and branch from the request
+   2. Looks up the exact branch connection
    3. Forwards the operation to the connection's writer
    4. Publishes tx-report to subscribers
    5. Returns the tx-report
 
    Request format:
-   {:store-id UUID :arg-map {:op 'transact! :args [...]}}"
-  [{:keys [store-id arg-map request-id]}]
+   Old clients that omit :branch address :db for wire compatibility.
+
+   Request format:
+   {:store-id UUID :branch :db :arg-map {:op 'transact! :args [...]}}"
+  [{:keys [store-id branch arg-map request-id]
+    :or {branch :db}}]
   (go-try S
-          (log/trace "Global dispatch handler" {:store-id store-id :op (:op arg-map)})
-          (if-let [conn (get-connection-for-store store-id)]
+          (log/trace "Global dispatch handler" {:store-id store-id
+                                                :branch branch
+                                                :op (:op arg-map)})
+          (if-let [conn (get-connection-for-store store-id branch)]
             (let [;; Get writer from connection
                   writer (:writer @(:wrapped-atom conn))
             ;; Dispatch to local writer
                   tx-report (<? S (writer/dispatch! writer arg-map))]
 
         ;; Publish tx-report to subscribers (if peer registered)
-              (when-let [peer (get-peer-for-store store-id)]
+              (when-let [peer (get-peer-for-store store-id branch)]
                 (tx-broadcast/publish-tx-report! peer store-id tx-report request-id))
 
         ;; Return the op's result unchanged. Stripping the live DBs out of a
@@ -107,9 +138,15 @@
         ;; projecting every op's result, and `gc-storage!` returns a set.
               tx-report)
 
-            (throw (ex-info "Store not found for store-id"
+            (throw (ex-info "Store branch is not registered for remote writes"
                             {:store-id store-id
-                             :registered-stores (keys @store-registry)})))))
+                             :branch branch
+                             :registered-branches
+                             (->> (keys @store-registry)
+                                  (keep (fn [[registered-store-id registered-branch]]
+                                          (when (= store-id registered-store-id)
+                                            registered-branch)))
+                                  set)})))))
 
 ;; =============================================================================
 ;; Global Create/Delete Database Handlers
@@ -211,12 +248,14 @@
     (go-try S
             (let [store-id (-> config :store :id)  ;; Extract UUID from store config
                   _ (log/info "Global delete-database request" {:store-id store-id})
-                  {:keys [conn peer]} (get @store-registry store-id)
+                  registrations (vec (store-registrations store-id))
+                  peer (:peer (first registrations))
+                  conns (distinct (keep :conn registrations))
             ;; Build server-side config using store-config-fn
                   store-config (store-config-fn store-id config)
                   server-config {:store store-config}]
 
-              (when conn
+              (when (seq registrations)
           ;; Unregister from sync (use UUID directly)
                 (when peer
                   (sync/unregister-store! peer store-id)
@@ -225,8 +264,9 @@
           ;; Remove from registry (use UUID directly)
                 (unregister-connection-for-store! store-id)
 
-          ;; Release connection
-                (d/release conn)
+          ;; Release every branch connection registered for this store.
+                (doseq [conn conns]
+                  (d/release conn))
                 (log/trace "Connection released" {:store-id store-id}))
 
         ;; Delete database using server-side config
@@ -330,7 +370,10 @@
   ([store-id conn peer]
    (register-store-for-remote-access! store-id conn peer nil))
   ([store-id conn peer {:keys [branches]}]
-   (log/info "Registering store for remote access" {:store-id store-id :branches branches})
+   (let [branch (connection-branch conn)]
+     (log/info "Registering store for remote access" {:store-id store-id
+                                                      :branch branch
+                                                      :branches branches}))
 
   ;; Register connection lookup
    (register-connection-for-store! store-id conn peer)

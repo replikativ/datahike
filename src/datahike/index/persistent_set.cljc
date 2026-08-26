@@ -164,6 +164,40 @@
                                                (ex-info "diff failed" {:error e})))))
                  ch)))))
 
+(defn walk-index-delta
+  "Restore the new-side persistent nodes that are not structurally shared by
+   `old` and `new`.
+
+   The callback is intentionally internal and observational: Datahike uses the
+   walk for its storage read-through side effect, not to retain datoms or node
+   addresses. On ClojureScript, operation options reach CachedStorage and then
+   konserve; `:await-read-through? true` therefore means completion implies the
+   whole visited frontier is synchronously available in every frontend tier.
+
+   Returns nil on the JVM and in synchronous ClojureScript, or a channel when
+   ClojureScript is called with `:sync? false`."
+  [old new {:keys [sync?] :or {sync? #?(:clj true :cljs false)} :as opts}]
+  #?(:clj
+     (psset/walk-delta old new (fn [_] nil))
+     :cljs
+     (let [res (psset/walk-delta old new (.-storage ^BTSet new)
+                                 (fn [_] nil) (assoc opts :sync? sync?))]
+       (if sync?
+         res
+         (let [ch (async/promise-chan)]
+           (res (fn [v]
+                  ;; core.async reserves nil to mean a closed channel. The PSS
+                  ;; walk deliberately yields nil on success, so close instead
+                  ;; of attempting an illegal nil put.
+                  (if (nil? v)
+                    (async/close! ch)
+                    (async/put! ch v)))
+                (fn [e] (async/put! ch (if (instance? js/Error e)
+                                         e
+                                         (ex-info "index delta walk failed"
+                                                  {:error e})))))
+           ch)))))
+
 (defn remove-datom [pset ^Datom datom index-type]
   (psset/disj pset datom (index-type->cmp-quick index-type false)))
 
@@ -316,7 +350,7 @@
    `canon` so live and restored nodes hash identically. Representation-dependent
    by design: the same logical content hashes differently under different
    :diff-buf-size settings (which are create-time-fixed per store)."
-  [node]
+  [^Branch node]
   (let [addrs #?(:clj (vec (.addresses ^Branch node))
                  :cljs (vec (.-addresses node)))
         slots #?(:clj (.slotsForStorage ^Branch node)
@@ -568,12 +602,12 @@
              ;; trampoline — and fall back to the channel-adapted async read
              ;; only when the store throws, where real IO dominates the hop.
              (let [sync-result (try
-                                 {:node (k/get store address nil {:sync? true})}
+                                 {:node (k/get store address nil (assoc opts :sync? true))}
                                  (catch :default _ nil))]
                (if sync-result
                  (async (admit! (:node sync-result)))
                  (fn [resolve reject]
-                   ((chan->async-expr (k/get store address nil {:sync? false}))
+                   ((chan->async-expr (k/get store address nil (assoc opts :sync? false)))
                     (fn [node]
                       (try (resolve (admit! node))
                            (catch :default e (reject e))))
@@ -583,7 +617,7 @@
              ;; boundary of the synchronous API — surface it as an actionable
              ;; error instead of konserve's internal assertion.
              (try
-               (admit! (k/get store address nil {:sync? true}))
+               (admit! (k/get store address nil (assoc opts :sync? true)))
                (catch :default e
                  (if (= :node-not-found (:type (ex-data e)))
                    (throw e)

@@ -3,10 +3,12 @@
   "version": "1.0.0",
   "description": "Browser testing for Datahike",
   "devDependencies": {
+    "aws4fetch": "^1.0.20",
     "karma": "^6.4.2",
     "karma-chrome-launcher": "^3.2.0",
     "karma-cljs-test": "^0.1.0",
-    "shadow-cljs": "^2.28.20"
+    "shadow-cljs": "^2.28.20",
+    "typescript": "^5.9.3"
   },
   "scripts": {
     "test:browser": "karma start --single-run"

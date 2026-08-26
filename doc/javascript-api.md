@@ -1,6 +1,6 @@
 # Datahike JavaScript API
 
-**Status: Beta** - API is functional and tested, but may receive breaking changes. Published as `datahike@next` on npm.
+**Status: Beta** - API is functional and tested, but may receive breaking changes.
 
 ## Overview
 
@@ -47,7 +47,7 @@ Output is generated in `npm-package/datahike.js.api.js` with advanced compilatio
 ## Installation
 
 ```bash
-npm install datahike@next
+npm install datahike
 ```
 
 ## Usage
@@ -56,15 +56,15 @@ npm install datahike@next
 
 ```javascript
 const d = require('datahike');
-const crypto = require('crypto');
 
 async function example() {
   // Configuration - must use UUID for :id
   const config = {
     store: {
       backend: ':memory',
-      id: crypto.randomUUID()
-    }
+      id: d.randomUuid()
+    },
+    'value-caps': ':default'
   };
 
   // Create database
@@ -114,6 +114,18 @@ async function example() {
   await d.deleteDatabase(config);
 }
 ```
+
+### Logging
+
+The npm package logs warnings and errors by default. Use `setLogLevel` when an
+application needs more diagnostic detail or wants to disable library logging:
+
+```javascript
+d.setLogLevel('trace'); // 'off', 'trace', 'debug', 'info', 'warn', or 'error'
+```
+
+Node.js applications can set the initial level before import with
+`DATAHIKE_LOG_LEVEL`, for example `DATAHIKE_LOG_LEVEL=off node app.js`.
 
 ## Data Conversion
 
@@ -184,13 +196,11 @@ const data = [{
 ### Backend Configuration
 
 ```javascript
-const crypto = require('crypto');
-
 // In-memory backend (requires UUID)
 const memConfig = {
   store: {
     backend: ':memory',
-    id: crypto.randomUUID()
+    id: d.randomUuid()
   }
 };
 
@@ -250,18 +260,10 @@ Full TypeScript definitions are automatically generated and included:
 ```typescript
 import * as d from 'datahike';
 
-interface Config {
-  store: {
-    backend: string;
-    id?: string;
-    path?: string;
-  };
-  'keep-history'?: boolean;
-  'schema-flexibility'?: string;
-}
-
-const config: Config = {
-  store: { backend: ':memory', id: 'example' }
+const config: d.DatabaseConfig = {
+  store: { backend: ':memory', id: d.randomUuid() },
+  'keep-history?': true,
+  'schema-flexibility': ':write'
 };
 
 async function example() {

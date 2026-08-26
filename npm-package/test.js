@@ -4,6 +4,83 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 
+function testPackageSubpathExports() {
+  console.log('\n=== Package Subpath Exports ===');
+
+  const packageJson = require.resolve('datahike/package.json');
+  const browserBundle = require.resolve('datahike/browser/datahike.js');
+  const s3Bundle = require.resolve('datahike/s3/datahike.js');
+
+  if (path.basename(packageJson) !== 'package.json') {
+    throw new Error(`Unexpected package metadata path: ${packageJson}`);
+  }
+  if (!browserBundle.endsWith(path.join('browser', 'datahike.js'))) {
+    throw new Error(`Unexpected browser bundle path: ${browserBundle}`);
+  }
+  if (!s3Bundle.endsWith(path.join('s3', 'datahike.js'))) {
+    throw new Error(`Unexpected S3 bundle path: ${s3Bundle}`);
+  }
+
+  console.log('  ✓ Package metadata and raw browser bundles are resolvable');
+}
+
+async function testLoggingControls() {
+  console.log('\n=== Logging Controls ===');
+
+  const originalDebug = console.debug;
+  const debugMessages = [];
+  console.debug = (...args) => debugMessages.push(args);
+
+  const exerciseDatabase = async () => {
+    const config = {
+      store: { backend: ':memory', id: d.randomUuid() },
+      'value-caps': ':default'
+    };
+    await d.createDatabase(config);
+    const conn = await d.connect(config);
+    d.release(conn);
+    await d.deleteDatabase(config);
+  };
+
+  try {
+    d.setLogLevel('warn');
+    await exerciseDatabase();
+    if (debugMessages.length !== 0) {
+      throw new Error(`Default logging emitted ${debugMessages.length} debug/trace messages`);
+    }
+
+    if (d.setLogLevel('trace') !== 'trace') {
+      throw new Error('setLogLevel should return the normalized level');
+    }
+    await exerciseDatabase();
+    if (debugMessages.length === 0) {
+      throw new Error('Trace logging did not emit any debug/trace messages');
+    }
+
+    const traceMessageCount = debugMessages.length;
+    d.setLogLevel('off');
+    await exerciseDatabase();
+    if (debugMessages.length !== traceMessageCount) {
+      throw new Error('The off log level still emitted debug/trace messages');
+    }
+
+    let rejectedInvalidLevel = false;
+    try {
+      d.setLogLevel('verbose');
+    } catch (_) {
+      rejectedInvalidLevel = true;
+    }
+    if (!rejectedInvalidLevel) {
+      throw new Error('setLogLevel accepted an unsupported level');
+    }
+  } finally {
+    d.setLogLevel('warn');
+    console.debug = originalDebug;
+  }
+
+  console.log('  ✓ Default, trace, off, and invalid log levels behave as documented');
+}
+
 // Helper to find entity ID by name
 async function findEntityByName(db, name) {
   const datoms = await d.datoms(db, ':eavt');
@@ -298,8 +375,71 @@ async function testTemporalDatabases() {
   await d.deleteDatabase(config);
 }
 
+async function testVersioningAndGc() {
+  console.log('\n=== Test 7: Versioning and Garbage Collection ===');
+
+  const config = {
+    // GC operates on persisted index nodes, so use the Node file backend.
+    store: { backend: ':file', path: tmpDir(), id: d.randomUuid() },
+    writer: { backend: ':self', 'writer-ownership': ':exclusive' },
+    'keep-history?': false
+  };
+
+  await d.createDatabase(config);
+  const conn = await d.connect(config);
+  await d.transact(conn, [
+    { 'db/ident': ':name', 'db/valueType': ':db.type/string', 'db/cardinality': ':db.cardinality/one' },
+    { name: 'before-branch' }
+  ]);
+
+  const originalDb = await d.db(conn);
+  const originalCommit = await d.commitId(originalDb);
+  if (typeof originalCommit !== 'string') {
+    throw new Error('commitId should return a UUID string');
+  }
+
+  // Exercise the public GC boundary after an ordinary durable commit.
+  const swept = await d.gcStorage(conn, new Date(), { 'min-age-ms': 0 });
+  if (!Array.isArray(swept)) {
+    throw new Error('gcStorage should return an array of reclaimed store keys');
+  }
+
+  await d.branch(conn, ':db', ':feature');
+  const names = await d.branches(conn);
+  if (!names.includes(':db') || !names.includes(':feature')) {
+    throw new Error(`Expected :db and :feature branches, got ${names}`);
+  }
+
+  const featureDb = await d.branchAsDb(conn, ':feature');
+  const originalByCommit = await d.commitAsDb(conn, d.uuid(originalCommit));
+  if (!featureDb || !originalByCommit) {
+    throw new Error('branchAsDb and commitAsDb should resolve snapshots');
+  }
+
+  await d.transact(conn, [{ name: 'main-after-branch' }]);
+  const mergeReport = await d.mergeDb(
+    conn,
+    [':feature'],
+    [{ name: 'merged-from-feature' }]
+  );
+  const parents = await d.parentCommitIds(mergeReport['db-after']);
+  if (!Array.isArray(parents) || parents.length !== 2) {
+    throw new Error(`Expected a two-parent merge commit, got ${parents}`);
+  }
+
+  // JavaScript arrays are converted to the parent set required by the core API.
+  console.log('  Forcing and deleting snapshot branches...');
+  await d.forceBranch(featureDb, ':snapshot', [':feature']);
+  await d.deleteBranch(conn, ':feature');
+  await d.deleteBranch(conn, ':snapshot');
+
+  d.release(conn);
+  await d.deleteDatabase(config);
+  console.log('  ✓ Branch, commit, merge, force-branch, and GC APIs work from JavaScript');
+}
+
 async function testFilePersistence() {
-  console.log('\n=== Test 7: File Backend Persistence ===');
+  console.log('\n=== Test 8: File Backend Persistence ===');
 
   const dir = tmpDir();
   const config = {
@@ -346,7 +486,7 @@ async function testFilePersistence() {
 }
 
 async function testSchemaRetrieval() {
-  console.log('\n=== Test 8: Schema Retrieval ===');
+  console.log('\n=== Test 9: Schema Retrieval ===');
 
   const config = {
     store: { backend: ':memory', id: d.randomUuid() }
@@ -375,7 +515,7 @@ async function testSchemaRetrieval() {
 }
 
 async function testMultipleTransactions() {
-  console.log('\n=== Test 9: Multiple Sequential Transactions ===');
+  console.log('\n=== Test 10: Multiple Sequential Transactions ===');
 
   const config = {
     store: { backend: ':memory', id: d.randomUuid() }
@@ -408,7 +548,7 @@ async function testMultipleTransactions() {
 }
 
 async function testQueryAPI() {
-  console.log('\n=== Test 10: Query API (Datalog queries as EDN strings) ===');
+  console.log('\n=== Test 11: Query API (Datalog queries as EDN strings) ===');
 
   const config = {
     store: { backend: ':memory', id: d.randomUuid() }
@@ -482,6 +622,83 @@ async function testQueryAPI() {
   await d.deleteDatabase(config);
 }
 
+async function testOptimisticOverlay() {
+  console.log('\n=== Test 12: Optimistic Overlay ===');
+
+  const config = { store: { backend: ':memory', id: d.randomUuid() } };
+  await d.createDatabase(config);
+  const conn = await d.connect(config);
+  await d.transact(conn, [
+    { 'db/ident': ':item/id', 'db/valueType': ':db.type/string', 'db/cardinality': ':db.cardinality/one', 'db/unique': ':db.unique/identity' },
+    { 'db/ident': ':name', 'db/valueType': ':db.type/string', 'db/cardinality': ':db.cardinality/one' }
+  ]);
+
+  const overlay = d.openOptimistic(conn);
+  const events = [];
+  const unsubscribe = d.optimisticListen(overlay, event => events.push(event));
+
+  const handle = d.optimisticTransact(overlay, [{ 'item/id': 'writer', name: 'Immediate' }]);
+  const visible = await d.q('[:find ?e . :where [?e :name "Immediate"]]', d.optimisticDb(overlay));
+  if (visible == null) throw new Error('Optimistic value was not immediately visible');
+
+  const committed = await handle.result;
+  if (committed.status !== ':committed') {
+    throw new Error(`Expected :committed, got ${committed.status}`);
+  }
+  if (events.length === 0 || !events.every(event => event['db-after'])) {
+    throw new Error('Expected ordered snapshot transition events');
+  }
+  if (d.optimisticPending(overlay).length !== 0) {
+    throw new Error('Committed overlay entry should reconcile with the base');
+  }
+
+  const invalid = d.optimisticTransact(overlay, [{ name: 42 }]);
+  const rejected = await invalid.result;
+  if (rejected.status !== ':rejected') {
+    throw new Error(`Expected tagged :rejected result, got ${rejected.status}`);
+  }
+
+  const prediction = d.optimisticPredict(
+    overlay,
+    [{ 'item/id': 'prediction', name: 'Predicted' }],
+    () => false,
+    { 'timeout-ms': null }
+  );
+  const predicted = await d.q('[:find ?e . :where [?e :name "Predicted"]]', d.optimisticDb(overlay));
+  if (predicted == null) throw new Error('Predicted value was not immediately visible');
+
+  d.optimisticAck(overlay, prediction.ovId, { requestId: 'accepted' });
+  const accepted = await prediction.result;
+  if (accepted.status !== ':accepted' || accepted.receipt.requestId !== 'accepted') {
+    throw new Error(`Expected accepted prediction, got ${JSON.stringify(accepted)}`);
+  }
+  d.optimisticReject(overlay, prediction.ovId, new Error('late failure'));
+  if (d.optimisticPending(overlay).length !== 1) {
+    throw new Error('A late rejection retracted an accepted prediction');
+  }
+  d.optimisticAbandon(overlay, prediction.ovId, ':test-complete');
+  if (d.optimisticPending(overlay).length !== 0) {
+    throw new Error('Abandoned prediction remained pending');
+  }
+
+  const failedPrediction = d.optimisticPredict(
+    overlay,
+    [{ 'item/id': 'rejected-prediction', name: 'Rejected Prediction' }],
+    () => false
+  );
+  d.optimisticReject(overlay, failedPrediction.ovId, new Error('RPC rejected'));
+  const failedResult = await failedPrediction.result;
+  if (failedResult.status !== ':rejected') {
+    throw new Error(`Expected rejected prediction, got ${failedResult.status}`);
+  }
+
+  unsubscribe();
+  d.closeOptimistic(overlay);
+  d.release(conn);
+  await d.deleteDatabase(config);
+  console.log('  ✓ Explicit overlay snapshots, predictions, and tagged results work');
+}
+
 // Main test runner
 async function runAllTests() {
   console.log('╔════════════════════════════════════════════════════════╗');
@@ -493,16 +710,20 @@ async function runAllTests() {
   let failed = 0;
   
   const tests = [
+    testPackageSubpathExports,
+    testLoggingControls,
     testBasicOperations,
     testSchemaAndTransactions,
     testDatomsAPI,
     testPullAPI,
     testEntityAPI,
     testTemporalDatabases,
+    testVersioningAndGc,
     testFilePersistence,
     testSchemaRetrieval,
     testMultipleTransactions,
-    testQueryAPI
+    testQueryAPI,
+    testOptimisticOverlay
   ];
   
   for (const test of tests) {

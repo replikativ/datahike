@@ -13,14 +13,18 @@
   (let [js-files (fs/glob npm-package-path "*.js")
         js-map-files (fs/glob npm-package-path "*.js.map")
         all-files (concat js-files js-map-files)
-        files-to-keep #{"test.js" "test-final.js" "test-config-keys.js" "test-key-duplication.js"}
+        files-to-keep #{"test.js" "test-log-level-env.js" "test-final.js"
+                        "test-config-keys.js" "test-key-duplication.js"}
         files-to-delete (remove #(contains? files-to-keep (str (fs/file-name %))) all-files)]
     (doseq [file files-to-delete]
       (fs/delete file))
     (println (str "Removed " (count files-to-delete) " compiled files from " npm-package-path))
     (when (fs/exists? (str npm-package-path "/browser"))
       (fs/delete-tree (str npm-package-path "/browser"))
-      (println "Removed browser build directory"))))
+      (println "Removed browser build directory"))
+    (when (fs/exists? (str npm-package-path "/s3"))
+      (fs/delete-tree (str npm-package-path "/s3"))
+      (println "Removed S3 browser build directory"))))
 
 (defn update-package-json-version!
   "Generate npm package.json from template with version from config.edn"
@@ -72,9 +76,9 @@
   "Write browser entry points: ESM (index.mjs) via codegen, CJS (index.js) as fallback.
    The ESM wrapper is generated from api-specification to stay in sync with
    the API automatically. The CJS wrapper is kept for backwards compatibility."
-  [npm-package-path]
-  (generate-esm-wrapper! (str npm-package-path "/browser/index.mjs"))
-  (let [cjs-path (str npm-package-path "/browser/index.js")
+  [browser-path]
+  (generate-esm-wrapper! (str browser-path "/index.mjs"))
+  (let [cjs-path (str browser-path "/index.js")
         cjs-content (str "// CJS wrapper for legacy bundlers.\n"
                          "// Modern bundlers should resolve to index.mjs via the exports field.\n"
                          "require('./datahike.js');\n"
@@ -83,25 +87,80 @@
     (spit cjs-path cjs-content)
     (println (str "Wrote " cjs-path))))
 
+(defn- run-package-command!
+  [npm-package-path description & command]
+  (let [result (apply p/shell {:dir npm-package-path
+                               :out :inherit
+                               :err :inherit}
+                      command)]
+    (when-not (zero? (:exit result))
+      (throw (ex-info (str description " failed") result)))))
+
+(defn- validate-package-manifest!
+  [npm-package-path]
+  (let [result (p/shell {:dir npm-package-path :out :string :err :string}
+                        "npm" "pack" "--dry-run" "--json"
+                        "--cache" "../target/npm-cache")]
+    (when-not (zero? (:exit result))
+      (throw (ex-info "npm pack dry-run failed" result)))
+    (let [report (first (json/parse-string (:out result) true))
+          files (into #{} (map :path) (:files report))
+          required #{"LICENSE" "THIRD_PARTY_LICENSES.md"
+                     "README.md" "package.json" "index.d.ts"
+                     "datahike.js.api.js" "browser/datahike.js"
+                     "browser/index.js" "browser/index.mjs"
+                     "s3/datahike.js" "s3/index.js" "s3/index.mjs"}
+          missing (remove files required)
+          forbidden (filter #(or (and (str/ends-with? % ".ts")
+                                      (not (str/ends-with? % ".d.ts")))
+                                 (re-matches #"test.*\\.js" %)
+                                 (= % "PUBLISHING.md")
+                                 (= % "package.template.json"))
+                            files)]
+      (when (seq missing)
+        (throw (ex-info "npm package is missing required files"
+                        {:missing (vec missing)})))
+      (when (seq forbidden)
+        (throw (ex-info "npm package contains development-only files"
+                        {:forbidden (vec forbidden)})))
+      (println (format "Validated npm tarball: %d files, %.1f KiB packed"
+                       (count files) (/ (:size report) 1024.0))))))
+
+(defn verify-npm-package!
+  "Exercise both public entry points, compile the declaration contract, and
+  audit the exact tarball before it can be published."
+  [npm-package-path]
+  (run-package-command! npm-package-path "Default npm logging test"
+                        "node" "test-log-level-env.js" "default")
+  (run-package-command! npm-package-path "Environment npm logging test"
+                        "node" "test-log-level-env.js" "trace")
+  (run-package-command! npm-package-path "CommonJS API test" "node" "test.js")
+  (run-package-command! npm-package-path "ESM wrapper syntax check"
+                        "node" "--check" "browser/index.mjs")
+  (run-package-command! npm-package-path "TypeScript declaration test"
+                        "npx" "tsc" "--noEmit" "--project" "tsconfig.json")
+  (validate-package-manifest! npm-package-path))
+
 (defn build-npm-package!
-  "Build npm package: clean, update version, generate types, compile ClojureScript for Node and Browser"
+  "Build and fully verify the npm package."
   [config npm-package-path]
   (println "Building npm package...")
   (println "")
 
-  (println "Step 1/6: Cleaning old compiled files")
+  (println "Step 1/8: Cleaning old compiled files")
   (clean-npm-package! npm-package-path)
+  (fs/copy "LICENSE" (str npm-package-path "/LICENSE") {:replace-existing true})
   (println "")
 
-  (println "Step 2/6: Updating package.json version")
+  (println "Step 2/8: Updating package.json version")
   (update-package-json-version! config npm-package-path)
   (println "")
 
-  (println "Step 3/6: Generating TypeScript definitions")
+  (println "Step 3/8: Generating TypeScript definitions")
   (generate-typescript-definitions! (str npm-package-path "/index.d.ts"))
   (println "")
 
-  (println "Step 4/6: Releasing Node.js build with shadow-cljs")
+  (println "Step 4/8: Releasing Node.js build with shadow-cljs")
   (let [result (p/shell {:out :inherit
                          :err :inherit}
                         "npx shadow-cljs release npm-release")]
@@ -109,30 +168,35 @@
       (throw (ex-info "Shadow-cljs Node.js release failed" result)))
     (println ""))
 
-  (println "Step 5/6: Releasing Browser build with shadow-cljs")
+  (println "Step 5/8: Releasing Browser build with shadow-cljs")
   (let [result (p/shell {:out :inherit
                          :err :inherit}
                         "npx shadow-cljs release browser-release")]
     (when-not (zero? (:exit result))
       (throw (ex-info "Shadow-cljs browser release failed" result)))
-    (write-browser-index! npm-package-path)
+    (write-browser-index! (str npm-package-path "/browser"))
     (println ""))
 
-  (println "Step 6/6: Running npm package tests")
-  (let [test-result (p/shell {:dir npm-package-path
-                              :out :inherit
-                              :err :inherit}
-                             "node test.js")]
-    (when-not (zero? (:exit test-result))
-      (throw (ex-info "npm package tests failed" test-result)))
-    (println "")
-    (println "✓ npm package build complete!")
-    (println (str "  Version: " (version/string config)))
-    (println (str "  Node.js:  " npm-package-path "/datahike.js.api.js  (CJS, includes file backend)"))
-    (println (str "  Browser:  " npm-package-path "/browser/datahike.js  (<script> tag / CDN)"))
-    (println (str "  Bundlers: " npm-package-path "/browser/index.mjs    (vite/rollup/esbuild, ESM)"))
-    (println (str "           " npm-package-path "/browser/index.js     (webpack/legacy, CJS)"))
-    (println "")
-    (println "Next steps:")
-    (println (str "  1. Verify: cd " npm-package-path " && npm pack --dry-run"))
-    (println "  2. Publish: npm publish")))
+  (println "Step 6/8: Releasing optional S3 browser build")
+  (let [result (p/shell {:out :inherit
+                         :err :inherit}
+                        "npx shadow-cljs release browser-s3-release")]
+    (when-not (zero? (:exit result))
+      (throw (ex-info "Shadow-cljs S3 browser release failed" result)))
+    (write-browser-index! (str npm-package-path "/s3"))
+    (println ""))
+
+  (println "Step 7/8: Verifying runtime, types, and tarball")
+  (verify-npm-package! npm-package-path)
+
+  (println "Step 8/8: Build summary")
+  (println "")
+  (println "✓ npm package build complete!")
+  (println (str "  Version: " (version/string config)))
+  (println (str "  Node.js:  " npm-package-path "/datahike.js.api.js  (CJS, includes file backend)"))
+  (println (str "  Browser:  " npm-package-path "/browser/datahike.js  (<script> tag / CDN)"))
+  (println (str "  Bundlers: " npm-package-path "/browser/index.mjs    (vite/rollup/esbuild, ESM)"))
+  (println (str "           " npm-package-path "/browser/index.js     (webpack/legacy, CJS)"))
+  (println (str "  S3:      " npm-package-path "/s3/index.mjs        (optional browser build)"))
+  (println "")
+  (println "The main-branch release workflow publishes this verified artifact."))

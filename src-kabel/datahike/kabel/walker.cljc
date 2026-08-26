@@ -57,7 +57,7 @@
   [node]
   #?(:clj (when (instance? Branch node)
             (@branch->addresses node))
-     :cljs (.-addresses node)))
+     :cljs (.-addresses ^js node)))
 
 (defn- walk-node-async
   "Recursively walk a BTSet node and collect child addresses.

@@ -6,9 +6,10 @@
   - Provide proper Promise<T> types for async operations
   - Include JSDoc comments with full documentation
   - Support IDE autocompletion and type checking"
-  (:require [datahike.api.specification :refer [api-specification malli-schema->argslist]]
+  (:require [datahike.api.specification :refer [api-specification]]
             [datahike.api.types :as types]
-            [datahike.codegen.naming :refer [js-skip-list clj-name->js-name]]
+            [datahike.codegen.naming :refer [assert-unique-js-names!
+                                             js-skip-list clj-name->js-name]]
             [clojure.string :as str]))
 
 ;; =============================================================================
@@ -16,142 +17,144 @@
 ;; =============================================================================
 
 (defn malli->ts-type
-  "Convert a malli schema to a TypeScript type string."
+  "Convert a Malli schema to the JavaScript representation's TypeScript type."
   [schema]
   (cond
-    ;; Keyword schemas (primitives)
     (keyword? schema)
-    (case schema
-      :boolean "boolean"
-      :string "string"
-      :int "number"
-      :long "number"
-      :double "number"
-      :number "number"
-      :keyword "string"
-      :symbol "string"
-      :any "any"
-      :nil "null"
-      :map "object"
-      :vector "Array<any>"
-      :sequential "Array<any>"
-      :set "Set<any>"
-      "any")
+    (or (get types/malli->typescript-type (keyword (name schema)))
+        (case schema :number "number" :symbol "string" "any"))
 
-    ;; Symbols (type references)
     (symbol? schema)
-    (let [schema-name (name schema)]
-      (cond
-        ;; types/SConfig → DatabaseConfig
-        (str/starts-with? schema-name "types/")
-        (get types/malli->typescript-type
-             (keyword (subs schema-name 6))
-             "any")
+    (get types/malli->typescript-type (keyword (name schema)) "any")
 
-        ;; Direct type names
-        :else
-        (get types/malli->typescript-type
-             (keyword schema-name)
-             "any")))
-
-    ;; Vector schemas
     (vector? schema)
     (let [[op & args] schema]
       (case op
-        ;; [:or Type1 Type2] → Type1 | Type2
-        ;;
-        ;; Distinct, because branches that differ in malli need not differ in
-        ;; TypeScript: `entity`'s `[:or :datahike/SEId :any]` maps both to `any`
-        ;; and emitted the degenerate `any | any`. Same reason `codegen/java`
-        ;; deduplicates expanded overloads by signature.
-        :or
-        (str/join " | " (distinct (map malli->ts-type args)))
-
-        ;; [:maybe Type] → Type | null
-        :maybe
-        (str (malli->ts-type (first args)) " | null")
-
-        ;; [:sequential Type] → Array<Type>
-        :sequential
+        :or (str/join " | " (distinct (map malli->ts-type args)))
+        :maybe (str (malli->ts-type (first args)) " | null")
+        (:sequential :vector :set :* :+)
         (str "Array<" (malli->ts-type (first args)) ">")
-
-        ;; [:vector Type] → Array<Type>
-        :vector
-        (str "Array<" (malli->ts-type (first args)) ">")
-
-        ;; [:map ...] → object
-        :map
-        "object"
-
-        ;; [:function ...] or [:=> ...] - extract return type
-        (:function :=>)
-        "any"
-
-        ;; [:cat ...] - tuple, represent as array for now
-        :cat
-        "Array<any>"
-
-        ;; [:alt ...] - union
-        :alt
-        "any"
-
-        ;; [:* Type] - rest params
-        :*
-        (str "..." (malli->ts-type (first args)) "[]")
-
-        ;; [:enum ...] - union of literals
-        :enum
-        (str/join " | " (map #(str "'" % "'") args))
-
-        ;; [:fn ...] - function type
-        :fn
-        "Function"
-
-        ;; Default
+        :map-of (str "Record<string, " (malli->ts-type (second args)) ">")
+        :map "Record<string, any>"
+        (:function :=> :fn) "Function"
+        :cat (str "[" (str/join ", " (map malli->ts-type args)) "]")
+        :alt (str/join " | " (distinct (map malli->ts-type args)))
+        :enum (str/join " | " (map #(pr-str (if (keyword? %) (str %) %)) args))
         "any"))
 
-    ;; Default
     :else "any"))
 
-(defn extract-params-from-malli
-  "Extract parameter information from malli function schema.
-   Returns vector of maps with :name, :type, and :optional keys."
-  [args-schema]
+(def ^:private parameter-names
+  {'connect ["config" "opts"]
+   'db ["conn"]
+   'branches ["conn"]
+   'branch! ["conn" "from" "newBranch"]
+   'delete-branch! ["conn" "branch"]
+   'force-branch! ["db" "branch" "parents"]
+   'merge-db! ["conn" "parents" "tx" "txMeta"]
+   'commit-id ["db"]
+   'parent-commit-ids ["db"]
+   'commit-as-db ["source" "commit"]
+   'branch-as-db ["source" "branch"]
+   'gc-storage ["conn" "removeBefore" "options"]
+   'release ["conn" "releaseAll"]
+   'transact! ["conn" "tx"]
+   'with ["db" "tx" "txMeta"]
+   'db-with ["db" "tx"]
+   'q ["query" "inputs"]
+   'query-stats ["query" "inputs"]
+   'pull ["db" "patternOrOptions" "eid"]
+   'pull-many ["db" "patternOrOptions" "eids"]
+   'entity ["db" "eid"]
+   'datoms ["db" "indexOrOptions" "components"]
+   'seek-datoms ["db" "indexOrOptions" "components"]
+   'rseek-datoms ["db" "indexOrOptions" "components"]
+   'index-range ["db" "options"]
+   'listen ["conn" "key" "listener"]
+   'unlisten ["conn" "key"]})
+
+(defn- function-arities [schema]
+  (if (and (vector? schema) (= :function (first schema)))
+    (rest schema)
+    [schema]))
+
+(defn- parameter-name [fn-name arity-size idx]
+  (or (when (and (= fn-name 'listen) (= arity-size 2) (= idx 1))
+        "listener")
+      (get-in parameter-names [fn-name idx])
+      (str "arg" idx)))
+
+(defn- parameter-type [fn-name arity-size idx schema]
   (cond
-    ;; [:=> [:cat Type1 Type2] Return]
-    (and (vector? args-schema) (= :=> (first args-schema)))
-    (let [[_ input-schema _] args-schema]
-      (when (and (vector? input-schema) (= :cat (first input-schema)))
-        (vec
-         (map-indexed
-          (fn [idx type-schema]
-            {:name (str "arg" idx)
-             :type (malli->ts-type type-schema)
-             :optional false})
-          (rest input-schema)))))
+    (and (= fn-name 'listen)
+         (= idx (dec arity-size)))
+    "(report: TransactionReport) => void"
 
-    ;; [:function [:=> ...] [:=> ...]] - multi-arity, use first
-    (and (vector? args-schema) (= :function (first args-schema)))
-    (let [first-arity (second args-schema)]
-      (extract-params-from-malli first-arity))
+    ;; UUIDs crossing into the CLJS API must be constructed with uuid() or
+    ;; randomUuid(). UUIDs crossing out are converted to plain strings.
+    (= schema :uuid) "DatahikeUuid"
 
-    ;; Default
-    :else []))
+    ;; The first tempid argument is the Datomic-compatible partition keyword.
+    ;; Datahike ignores the partition, but accepting arbitrary values only
+    ;; weakens the JavaScript contract.
+    (and (= fn-name 'tempid) (= idx 0)) "Keyword"
 
-(defn generate-function-signature
-  "Generate TypeScript function signature from specification entry."
+    (and (= fn-name 'branch!) (= idx 1)) "VersionRef"
+    (and (= fn-name 'force-branch!) (= idx 2)) "VersionRef[]"
+    (and (= fn-name 'merge-db!) (= idx 1)) "VersionRef[]"
+    (and (= fn-name 'merge-db!) (= idx 3)) "unknown"
+    (and (#{'commit-as-db 'branch-as-db} fn-name) (= idx 0))
+    "Connection | Database"
+    (and (= fn-name 'gc-storage) (= idx 2)) "GcOptions"
+
+    :else (malli->ts-type schema)))
+
+(defn- render-parameters [fn-name arity]
+  (let [[_ input-schema _] arity
+        schemas (if (and (vector? input-schema) (= :cat (first input-schema)))
+                  (rest input-schema)
+                  [])
+        arity-size (count schemas)]
+    (str/join
+     ", "
+     (map-indexed
+      (fn [idx schema]
+        (let [parameter (parameter-name fn-name arity-size idx)]
+          (if (and (vector? schema) (#{:* :+} (first schema)))
+            (str "..." parameter ": " (parameter-type fn-name arity-size idx schema))
+            (str parameter ": " (parameter-type fn-name arity-size idx schema)))))
+      schemas))))
+
+(defn- generic-declaration [fn-name]
+  (case fn-name
+    q "<T = unknown>"
+    pull "<T extends Record<string, any> = Record<string, any>>"
+    pull-many "<T extends Record<string, any> = Record<string, any>>"
+    ""))
+
+(defn- return-type [fn-name arity fallback]
+  (case fn-name
+    q "T"
+    pull "T | null"
+    pull-many "T[]"
+    transact! "TransactionReport"
+    merge-db! "TransactionReport"
+    branch! "unknown"
+    delete-branch! "unknown"
+    parent-commit-ids "UuidValue[] | null"
+    gc-storage "unknown[]"
+    (malli->ts-type (or (nth arity 2 nil) fallback))))
+
+(defn generate-function-signatures
+  "Generate every TypeScript overload from a specification entry."
   [[fn-name {:keys [args ret doc]}]]
-  (let [ts-name (clj-name->js-name fn-name)
-        params (extract-params-from-malli args)
-        params-str (str/join ", "
-                             (map (fn [{:keys [name type optional]}]
-                                    (str name (if optional "?" "") ": " type))
-                                  params))
-        return-type (malli->ts-type ret)
-        ;; Wrap in Promise for async operations
-        final-return (str "Promise<" return-type ">")]
+  (let [ts-name (clj-name->js-name fn-name)]
     {:name ts-name
-     :signature (str "export function " ts-name "(" params-str "): " final-return ";")
+     :signatures
+     (for [arity (function-arities args)]
+       (str "export function " ts-name (generic-declaration fn-name)
+            "(" (render-parameters fn-name arity) "): Promise<"
+            (return-type fn-name arity ret) ">;"))
      :doc doc}))
 
 (defn generate-jsdoc
@@ -183,32 +186,127 @@
         types "
 // Core Datahike Types
 
-export interface DatabaseConfig {
-  store: {
-    backend: string;
-    id?: string;
-    path?: string;
+export type Keyword = `:${string}`;
+export type Attribute = Keyword;
+
+declare const datahikeUuidBrand: unique symbol;
+/** Opaque UUID input returned by uuid() and randomUuid(). */
+export interface DatahikeUuid {
+  readonly [datahikeUuidBrand]: true;
+}
+/** UUID values returned by the JavaScript boundary are ordinary strings. */
+export type UuidValue = string;
+
+/** A named branch (for example `':db'` or `':feature'`). */
+export type BranchName = Keyword;
+/** A branch name or an input UUID created with uuid(). */
+export type VersionRef = BranchName | DatahikeUuid;
+
+export interface GcOptions {
+  /** Keep objects written within this many milliseconds, even if unreachable. */
+  'min-age-ms'?: number;
+}
+
+export interface StoreConfig {
+  backend: Keyword;
+  id?: DatahikeUuid;
+  path?: string;
+  [key: string]: any;
+}
+
+/** S3 backend configuration for the opt-in `datahike/s3` browser entry. */
+export interface S3StoreConfig extends StoreConfig {
+  backend: ':s3';
+  id: DatahikeUuid;
+  endpoint: string;
+  bucket: string;
+  'access-key': string;
+  secret: string;
+  region?: string;
+  'session-token'?: string;
+  'path-style?'?: boolean;
+  config?: {
+    'optimistic-locking-retries'?: number;
     [key: string]: any;
   };
-  'keep-history'?: boolean;
-  'schema-flexibility'?: 'read' | 'write';
+}
+
+/**
+ * Browser-safe Datahike storage: a complete synchronous memory frontend over
+ * an asynchronous, authoritative S3 backend. Bare S3StoreConfig is not a
+ * usable Datahike query store in browsers.
+ */
+export interface TieredS3StoreConfig extends StoreConfig {
+  backend: ':tiered';
+  id: DatahikeUuid;
+  'frontend-config': { backend: ':memory'; id: DatahikeUuid };
+  'backend-config': S3StoreConfig;
+  'write-policy'?: ':write-through';
+  'read-policy'?: ':frontend-first';
+}
+
+export interface WriterConfig {
+  backend: Keyword;
+  [key: string]: any;
+}
+
+export interface DatabaseConfig {
+  store: StoreConfig;
+  writer?: WriterConfig;
+  branch?: Keyword;
+  'keep-history?'?: boolean;
+  'schema-flexibility'?: ':read' | ':write';
   'initial-tx'?: Transaction[];
   name?: string;
   [key: string]: any;
 }
 
+declare const connectionBrand: unique symbol;
 export interface Connection {
-  [key: string]: any;
+  readonly [connectionBrand]: true;
 }
 
+declare const databaseBrand: unique symbol;
 export interface Database {
-  [key: string]: any;
+  readonly [databaseBrand]: true;
 }
 
+export type EntityId = number | string | [Attribute, any];
+export type EntityMap = Record<string, any>;
 export type Transaction =
-  | [':db/add', number | string, string, any]
-  | [':db/retract', number | string, string, any]
-  | { [key: string]: any };
+  | [':db/add', EntityId, Attribute, any]
+  | [':db/retract', EntityId, Attribute, any]
+  | [Keyword, ...any[]]
+  | EntityMap;
+
+export interface WithArgs {
+  'tx-data': Transaction[];
+  'tx-meta'?: any;
+}
+
+export interface QueryArgs {
+  query: string | any[] | Record<string, any>;
+  args?: any[];
+  limit?: number;
+  offset?: number;
+}
+
+export interface PullOptions {
+  selector: any[];
+  eid: EntityId | EntityId[];
+}
+
+export type Index = ':eavt' | ':aevt' | ':avet';
+export interface IndexLookupArgs {
+  index: Index;
+  components?: any[] | null;
+}
+
+export interface IndexRangeArgs {
+  attrid: Attribute;
+  start: any;
+  end: any;
+}
 
 export interface TransactionReport {
   'db-before': Database;
@@ -220,7 +318,7 @@ export interface TransactionReport {
 
 export interface Datom {
   e: number;
-  a: string;
+  a: Attribute;
   v: any;
   tx: number;
   added: boolean;
@@ -228,28 +326,163 @@ export interface Datom {
 
 export interface Schema {
   [key: string]: {
-    'db/valueType': string;
-    'db/cardinality': string;
-    'db/unique'?: string;
+    'db/valueType': Keyword;
+    'db/cardinality': Keyword;
+    'db/unique'?: Keyword;
     'db/index'?: boolean;
     [key: string]: any;
   };
 }
 
 export interface Metrics {
+  count: number;
+  'avet-count': number;
+  'per-attr-counts': Record<string, number>;
+  'per-entity-counts': Record<string, number>;
+  'temporal-count'?: number;
+  'temporal-avet-count'?: number;
+}
+
+export interface OptimisticOverlay {
+  readonly __optimisticOverlayBrand: never;
+}
+
+export interface OptimisticOptions {
+  'max-pending'?: number;
+  'max-queue'?: number;
+  'prediction-timeout-ms'?: number | null;
+  'reconciliation-timeout-ms'?: number | null;
+}
+
+export interface OptimisticSubmitOptions {
+  branch?: Keyword;
+}
+
+export interface OptimisticPredictionOptions extends OptimisticSubmitOptions {
+  'timeout-ms'?: number | null;
+}
+
+export type OptimisticTransactionInput =
+  | Transaction[]
+  | { 'tx-data': Transaction[]; 'tx-meta'?: any };
+
+export type OptimisticResultStatus =
+  | ':committed'
+  | ':accepted'
+  | ':reconciled'
+  | ':rejected'
+  | ':expired'
+  | ':abandoned'
+  | ':unknown'
+  | ':detached';
+
+export interface OptimisticResult {
+  status: OptimisticResultStatus;
+  error?: any;
+  receipt?: any;
+  'tx-report'?: TransactionReport;
+  outcome?: ':unknown' | ':committed';
+  reason?: any;
+  'accepted?'?: boolean;
+}
+
+export interface OptimisticHandle {
+  ovId: string;
+  result: Promise<OptimisticResult>;
+}
+
+export interface OptimisticPendingEntry {
+  'ov-id': string;
+  kind: ':writer' | ':prediction';
+  'submitted-at': number;
+  'expires-at'?: number | null;
+  'expected-max-tx'?: number | null;
+  branch?: string;
+  'acknowledged?': boolean;
+  'conflicting?': boolean;
+  'last-conflict-error'?: any;
+  'reconcile-deadline-at'?: number | null;
+  'reconciliation-stalled?'?: boolean;
+  [key: string]: any;
+}
+
+export interface OptimisticChanges {
+  added: Datom[];
+  removed: Datom[];
+}
+
+export interface OptimisticTransition {
+  revision: number;
+  'db-before': Database;
+  'db-after': Database;
+  'base-max-tx': number | null;
+  cause: { type: string; [key: string]: any };
+  changes: OptimisticChanges | null;
+}
+
+export interface OptimisticStatusEvent {
+  revision: number;
+  'ov-id': string;
+  kind: ':writer' | ':prediction';
+  status:
+    | ':visible'
+    | ':acknowledged'
+    | ':committed'
+    | ':reconciled'
+    | ':rejected'
+    | ':expired'
+    | ':abandoned'
+    | ':conflicting'
+    | ':applicable'
+    | ':reconciliation-error'
+    | ':reconciliation-stalled'
+    | ':unknown'
+    | ':detached';
   [key: string]: any;
 }
 
 "
         ;; Generate function signatures
+        clj-exports (for [[fn-name _] (sort-by first api-specification)
+                          :when (not (contains? js-skip-list fn-name))]
+                      fn-name)
+        _ (assert-unique-js-names! clj-exports)
         functions (str/join "\n\n"
-                            (for [entry (sort-by first api-specification)
-                                  :when (not (contains? js-skip-list (first entry)))
-                                  :let [[fn-name spec-data] entry
-                                        {:keys [name signature doc]} (generate-function-signature entry)
+                            (for [fn-name clj-exports
+                                  :let [spec-data (get api-specification fn-name)
+                                        entry [fn-name spec-data]
+                                        {:keys [signatures doc]} (generate-function-signatures entry)
                                         jsdoc (generate-jsdoc doc (:examples spec-data))]]
-                              (str jsdoc "\n" signature)))]
-    (str header types "\n// API Functions\n\n" functions "\n")))
+                              (str jsdoc "\n" (str/join "\n" signatures))))
+        optimistic-functions "
+
+// Explicit optimistic overlay API. Unlike specification-generated functions,
+// snapshot reads and lifecycle commands are synchronous.
+export function openOptimistic(conn: Connection, opts?: OptimisticOptions): OptimisticOverlay;
+export function optimisticDb(overlay: OptimisticOverlay): Database;
+export function optimisticPending(overlay: OptimisticOverlay): OptimisticPendingEntry[];
+export function optimisticTransact(overlay: OptimisticOverlay, txData: OptimisticTransactionInput, opts?: OptimisticSubmitOptions): OptimisticHandle;
+export function optimisticPredict(overlay: OptimisticOverlay, txData: OptimisticTransactionInput, reconciled: (db: Database) => boolean, opts?: OptimisticPredictionOptions): OptimisticHandle;
+export function optimisticAck(overlay: OptimisticOverlay, ovId: string, receipt?: any): null;
+export function optimisticReject(overlay: OptimisticOverlay, ovId: string, error: any): null;
+export function optimisticAbandon(overlay: OptimisticOverlay, ovId: string, reason?: any): null;
+export function optimisticListen(overlay: OptimisticOverlay, listener: (event: OptimisticTransition) => void): () => void;
+export function optimisticListenStatus(overlay: OptimisticOverlay, listener: (event: OptimisticStatusEvent) => void): () => void;
+export function closeOptimistic(overlay: OptimisticOverlay): null;
+
+// JavaScript-specific value helpers.
+export function isPromise(value: any): value is Promise<unknown>;
+export function uuid(value: string): DatahikeUuid;
+export function randomUuid(): DatahikeUuid;
+
+export type LogLevel = 'off' | 'trace' | 'debug' | 'info' | 'warn' | 'error';
+/**
+ * Configure logging for the Datahike JavaScript package.
+ * The initial level is `warn`, or `DATAHIKE_LOG_LEVEL` in Node.js.
+ */
+export function setLogLevel(level: LogLevel): LogLevel;
+"]
+    (str header types "\n// API Functions\n\n" functions optimistic-functions "\n")))
 
 (defn write-type-definitions!
   "Write TypeScript definitions to a file."

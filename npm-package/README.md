@@ -8,6 +8,7 @@ Durable Datalog database for JavaScript and Node.js, powered by ClojureScript.
 - **Schema Support**: Optional schema with validation
 - **Time Travel**: Access database history and temporal queries
 - **Pluggable Backends**: Memory, file, or custom storage
+- **Optional S3 Browser Backend**: Direct access to S3-compatible buckets
 - **Promise-based API**: Native JavaScript async/await support
 - **TypeScript Support**: Complete type definitions included
 
@@ -21,15 +22,15 @@ npm install datahike
 
 ```javascript
 const d = require('datahike');
-const crypto = require('crypto');
 
 async function example() {
   // Create database configuration (requires UUID for :id)
   const config = {
     store: {
       backend: ':memory',
-      id: crypto.randomUUID()
-    }
+      id: d.randomUuid()
+    },
+    'value-caps': ':default'
   };
 
   // Create and connect to database
@@ -76,22 +77,86 @@ async function example() {
 example();
 ```
 
+Datahike logs warnings and errors by default. Applications can change the
+runtime level, or disable library logging entirely:
+
+```javascript
+d.setLogLevel('debug'); // 'off', 'trace', 'debug', 'info', 'warn', or 'error'
+```
+
+In Node.js, set `DATAHIKE_LOG_LEVEL` before importing the package to choose the
+initial level (for example, `DATAHIKE_LOG_LEVEL=off node app.js`).
+
 ## Documentation
+
+### S3-compatible storage in browsers
+
+Import the opt-in build when a browser should persist Datahike directly to
+Amazon S3, Cloudflare R2, MinIO, or another S3-compatible service:
+
+```javascript
+import * as d from 'datahike/s3';
+
+const storeId = d.randomUuid();
+const config = {
+  store: {
+    backend: ':tiered',
+    id: storeId,
+    'frontend-config': { backend: ':memory', id: storeId },
+    'backend-config': {
+      backend: ':s3',
+      endpoint: 'https://s3.us-west-1.amazonaws.com',
+      bucket: 'my-datahike-bucket',
+      region: 'us-west-1',
+      'access-key': temporaryCredentials.accessKeyId,
+      secret: temporaryCredentials.secretAccessKey,
+      'session-token': temporaryCredentials.sessionToken,
+      id: storeId
+    }
+  },
+  writer: {
+    backend: ':self',
+    'writer-ownership': ':shared',
+    'require-fencing': ':global'
+  }
+};
+
+await d.createDatabase(config);
+const conn = await d.connect(config);
+```
+
+The memory frontend is required: Datahike's query engine is synchronous, while
+browser S3 is asynchronous. Connection and shared-writer refreshes materialize
+the durable snapshot locally before returning it, after which `q`, `pull`, and
+the other read APIs remain synchronous over that immutable DB value. A bare
+`:s3` store is deliberately unsupported for browser Datahike.
+
+The bucket must provide strongly consistent object GET and LIST semantics,
+allow the browser origin through CORS, and expose the `ETag` response header.
+Use narrowly scoped, short-lived session credentials; never ship long-lived
+bucket credentials in browser code. `:require-fencing :global` makes a missing
+or unusable conditional-write guarantee a connection error instead of silently
+risking lost updates. Keep the store ID stable when reopening a database. The
+regular `datahike` entry does not include S3 code.
+
+This direct-S3 mode is currently intended for small and medium databases. When
+another writer moves the head, the beta refresh path lists the durable store and
+copies only objects missing from the local tier; its remote request cost can
+therefore grow with the number of stored objects. Prefer a server-owned S3 store
+plus Kabel replication for large databases or sustained write contention.
 
 ### Configuration
 
 **⚠️ Note:** Keyword syntax may change in future versions to simplify the API.
 
 ```javascript
-const crypto = require('crypto');
-
 const config = {
   store: {
     backend: ':memory',       // or ':file'
-    id: crypto.randomUUID()   // Required: UUID identifier
+    id: d.randomUuid()        // Required: Datahike UUID identifier
   },
   // Optional configuration:
-  'keep-history': true,           // default: true
+  'keep-history?': true,          // default: true
   'schema-flexibility': ':write'  // or ':read'
 };
 
@@ -167,17 +232,78 @@ await d.transact(conn, [
 ]);
 ```
 
+### Optimistic UI
+
+Use an explicit overlay when a UI must show writes before the durable replica
+catches up:
+
+```javascript
+const overlay = d.openOptimistic(conn);
+const unsubscribe = d.optimisticListen(overlay, event => {
+  render(event['db-after']);
+});
+
+const { result } = d.optimisticTransact(overlay, [
+  [':db/add', entityId, ':age', 36]
+]);
+const outcome = await result; // { status: ':committed', ... } or ':rejected'
+
+unsubscribe();
+d.closeOptimistic(overlay);
+```
+
+Operation promises always resolve to tagged outcomes; a rejected transaction is
+not a rejected JavaScript Promise. Externally owned RPCs can use
+`optimisticPredict`, followed by `optimisticAck` or `optimisticReject`.
+
 ### Temporal Queries
 
 Access database history:
 
 ```javascript
 // Database at specific time
-const historicalDb = d.asOf(d.db(conn), date);
+const currentDb = await d.db(conn);
+const historicalDb = await d.asOf(currentDb, date);
 
 // Full history
-const historyDb = d.history(d.db(conn));
+const historyDb = await d.history(currentDb);
 ```
+
+### Versioning and garbage collection
+
+The JavaScript API exposes Datahike's commit graph and branch operations as
+Promises. Branch and merge parent collections are ordinary JavaScript arrays:
+
+```javascript
+await d.branch(conn, ':db', ':feature');
+const branchNames = await d.branches(conn); // [':db', ':feature']
+
+const featureDb = await d.branchAsDb(conn, ':feature');
+const commit = await d.commitId(featureDb); // UUID output is a string
+const sameDb = await d.commitAsDb(conn, d.uuid(commit));
+
+const report = await d.mergeDb(conn, [':feature'], [
+  { name: 'merged value' }
+]);
+const parents = await d.parentCommitIds(report['db-after']);
+
+await d.deleteBranch(conn, ':feature');
+```
+
+`gcStorage` reclaims unreachable objects from persistent stores and accepts a
+JavaScript `Date` or transaction time point. It returns an array of reclaimed
+store keys. It is not useful for a `:memory` store, whose index trees are kept
+inline rather than persisted as reclaimable objects.
+
+```javascript
+const reclaimed = await d.gcStorage(conn, new Date(), {
+  'min-age-ms': 60_000
+});
+```
+
+With shared or remote writers, size `min-age-ms` above the longest possible
+values-before-head publication window plus clock skew. The default is 15
+minutes for shared writers and zero for an exclusive local writer.
 
 ## API Reference
 

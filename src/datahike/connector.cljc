@@ -91,6 +91,28 @@
         (dsi/reload-branch-head @wrapped-atom))
       @wrapped-atom)))
 
+(defn db-async
+  "Return a channel yielding the connection's current immutable database.
+
+   Unlike deref, this may cross an asynchronous storage boundary. It is the
+   acquisition API for a shared browser writer backed by a tiered memory/S3
+   store: the branch head is read from S3 and the changed persistent-set index
+   frontier is read through every frontend tier without listing the bucket. The
+   resulting DB remains synchronously queryable. Out-of-line
+   `:db.type/store-ref` blobs retain their explicit asynchronous fetch contract;
+   they are not needed by the query engine and are not implicitly prefetched.
+   Remote/streaming and exclusive writers return their local value."
+  [^Connection conn]
+  (go-try-
+   (let [wrapped-atom (.-wrapped-atom conn)
+         current @wrapped-atom]
+     (when (= current :released)
+       (throw (ex-info "Connection has been released."
+                       {:type :connection-has-been-released})))
+     (if (w/refresh-on-deref? (:writer current))
+       (<?- (dsi/reload-branch-head current false))
+       current))))
+
 (defn conn-from-db
   "Creates a mutable reference to a given immutable database. See [[create-conn]]."
   [db]
