@@ -158,12 +158,11 @@ npm install datahike@next
 Example usage:
 ```javascript
 const d = require('datahike');
-const crypto = require('crypto');
 
 const config = {
   store: {
     backend: ':memory',
-    id: crypto.randomUUID()
+    id: d.randomUuid()
   },
   'schema-flexibility': ':read'
 };

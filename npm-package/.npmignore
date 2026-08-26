@@ -1,0 +1,5 @@
+*.ts
+test*.js
+PUBLISHING.md
+package.template.json
+tsconfig.json

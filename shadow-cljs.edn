@@ -1,4 +1,5 @@
 {:deps {:aliases [:cljs :test]}
+ :jvm-opts ["-Xss4m"]
  :src-paths ["src" "test"]
  :dev-http {8022 "target/browser-integration-test"}
  :builds {:repl
@@ -16,7 +17,25 @@
            :compiler-options {:optimizations :advanced
                               :infer-externs :auto
                               :elide-asserts false
-                              :externs ["externs/node_fs.js"]}}
+                              :externs ["externs/node_fs.js"]
+                              :warnings-as-errors true
+                              ;; core.async state machines contain compiler-generated
+                              ;; terminal paths that Closure reports as useless code.
+                              ;; Closure still removes them; all source/analyzer warnings
+                              ;; remain errors.
+                              :closure-warnings {:useless-code :off}}}
+
+          :node-s3-concurrency
+          {:target :node-script
+           :output-to "target/out/s3-concurrency.js"
+           :main datahike.test.s3-concurrency-runner/-main
+           :compiler-options {:optimizations :advanced
+                              :infer-externs :auto
+                              :elide-asserts false
+                              :output-feature-set :es2020
+                              :externs ["externs/node_fs.js"]
+                              :warnings-as-errors true
+                              :closure-warnings {:useless-code :off}}}
 
           :browser-integration-test
           {:target :browser-test
@@ -25,8 +44,9 @@
            :compiler-options {:optimizations :advanced
                               :infer-externs :auto
                               :elide-asserts false
-                              :warnings-as-errors false
-                              :warnings {:fn-deprecated false}}}
+                              :warnings-as-errors true
+                              :warnings {:fn-deprecated false}
+                              :closure-warnings {:useless-code :off}}}
           
           :browser-ci
           {:target :karma
@@ -35,9 +55,10 @@
            :compiler-options {:optimizations :advanced
                               :infer-externs :auto
                               :elide-asserts false
-                              :warnings-as-errors false
-                              :warnings {:fn-deprecated false}}}
-          
+                              :warnings-as-errors true
+                              :warnings {:fn-deprecated false}
+                              :closure-warnings {:useless-code :off}}}
+
           :browser-release
           {:target :browser
            :output-to "npm-package/browser/datahike.js"
@@ -45,8 +66,25 @@
            :modules {:datahike {:entries [datahike.js.api]}}
            :compiler-options {:optimizations :advanced
                               :infer-externs :auto
-                              :output-feature-set :es-next}}
-          
+                              :output-feature-set :es-next
+                              :warnings-as-errors true
+                              :closure-warnings {:useless-code :off}}}
+
+          ;; Opt-in browser build registering konserve-s3. Direct S3 is used as
+          ;; the authoritative BACKEND of a tiered memory frontend; the engine
+          ;; itself remains synchronous and never queries S3 on a hot snapshot.
+          :browser-s3-release
+          {:target :browser
+           :output-to "npm-package/s3/datahike.js"
+           :output-dir "npm-package/s3"
+           :modules {:datahike {:entries [datahike.js.api
+                                          konserve-s3.core]}}
+           :compiler-options {:optimizations :advanced
+                              :infer-externs :auto
+                              :output-feature-set :es-next
+                              :warnings-as-errors true
+                              :closure-warnings {:useless-code :off}}}
+
           :npm-release
           {:target :npm-module
            :output-dir "npm-package"
@@ -55,4 +93,6 @@
            :compiler-options {:optimizations :advanced
                               :infer-externs :auto
                               :output-feature-set :es2020
-                              :externs ["externs/node_fs.js"]}}}}
+                              :externs ["externs/node_fs.js"]
+                              :warnings-as-errors true
+                              :closure-warnings {:useless-code :off}}}}}

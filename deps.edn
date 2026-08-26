@@ -1,7 +1,7 @@
 {:deps {org.clojure/clojure                         {:mvn/version "1.12.5"}
         org.replikativ/hasch                        {:mvn/version "0.4.102"
                                                      :exclusions [org.clojure/clojurescript]}
-        org.replikativ/konserve                     {:mvn/version "0.9.378"}
+        org.replikativ/konserve                     {:mvn/version "0.9.385"}
 
         org.replikativ/superv.async                 {:mvn/version "0.3.50"
                                                      :exclusions [org.clojure/clojurescript]}
@@ -20,7 +20,7 @@
         ;; :cljs + :test (shadow-cljs.edn:1), and `bb test cljs-node` sees only
         ;; :cljs — so this is the one placement all three see. The old :bulk
         ;; alias reached none of the cljs ones.
-        org.replikativ/persistent-sorted-set        {:mvn/version "0.5.142"}
+        org.replikativ/persistent-sorted-set        {:mvn/version "0.5.143"}
         ;; MAIN deps, not a test alias. `datahike.cbor` is src/, so boring is a
         ;; real runtime dependency: the dump codec and the kabel wire format
         ;; both go through it. It used to be declared only under :test, which
@@ -65,7 +65,11 @@
            :1.10 {:override-deps {org.clojure/clojure {:mvn/version "1.10.0"}}}
 
            :cljs {:extra-deps {org.clojure/clojurescript {:mvn/version "1.12.145"}
-                               thheller/shadow-cljs      {:mvn/version "3.4.12"}}
+                               thheller/shadow-cljs      {:mvn/version "3.4.12"}
+                               ;; Optional `datahike/s3` browser entry. The
+                               ;; regular browser bundle does not require this
+                               ;; namespace, so Closure keeps S3 signing code out.
+                               org.replikativ/konserve-s3 {:mvn/version "0.1.38"}}
                                
                   :extra-paths ["test"]}
 
@@ -132,7 +136,7 @@
                                org.replikativ/konserve-sync  {:mvn/version "0.1.40"}
 
                                ;; S3-compatible store integration test (migrate-s3-test, needs docker; runs Garage)
-                               org.replikativ/konserve-s3    {:mvn/version "0.1.37"}
+                               org.replikativ/konserve-s3    {:mvn/version "0.1.38"}
                                http-kit/http-kit             {:mvn/version "2.8.1"}}}
 
            ;; Datomic Pro peer API, for `datahike.migrate.datomic` and its

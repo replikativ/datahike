@@ -129,7 +129,7 @@ jobs:
           at: /home/circleci
       - run:
           name: Planner regression (compiled-vs-base ratio gate)
-          command: clojure -M:bench -m benchmark.planner-regression --assert
+          command: bb planner-bench --assert
           no_output_timeout: 10m
   hitchhiker-tree-test:
     executor: tools/clojurecli
@@ -258,7 +258,7 @@ jobs:
           command: sleep 20
       - run:
           name: Compile ClojureScript for browser tests
-          command: npx shadow-cljs compile :browser-ci
+          command: npx shadow-cljs release browser-ci
           no_output_timeout: 5m
       - run:
           name: Run Karma browser tests
@@ -288,8 +288,14 @@ jobs:
           command: bb npm-build
           no_output_timeout: 5m
       - run:
-          name: Run npm JS tests
-          command: bb npm-test
+          name: Pack verified npm release artifact
+          command: |
+            mkdir -p /home/circleci/npm-release
+            npm pack ./npm-package --pack-destination /home/circleci/npm-release
+      - persist_to_workspace:
+          root: /home/circleci
+          paths:
+            - npm-release
       - save_cache:
           key: deps-{{ checksum "deps.edn" }}
           paths:
@@ -361,6 +367,29 @@ jobs:
       - run:
           name: Deploy to clojars
           command: bb clojars
+  npm-publish:
+    docker:
+      - image: cimg/node:22.14
+    working_directory: /home/circleci/replikativ
+    steps:
+      - attach_workspace:
+          at: /home/circleci
+      - run:
+          name: Install OIDC-capable npm CLI
+          command: sudo npm install --global npm@^11.5.1
+      - run:
+          name: Publish verified package to npm
+          command: |
+            TARBALL=$(find /home/circleci/npm-release -name 'datahike-*.tgz' -print -quit)
+            test -n "$TARBALL"
+            VERSION=${TARBALL##*datahike-}
+            VERSION=${VERSION%.tgz}
+            if npm view "datahike@$VERSION" version >/dev/null 2>&1; then
+              echo "datahike@$VERSION is already published; nothing to do."
+              exit 0
+            fi
+            export NPM_ID_TOKEN=$(circleci run oidc get --claims '{"aud":"npm:registry.npmjs.org"}')
+            npm publish "$TARBALL" --access public
   release-jar:
     executor: tools/clojurecli
     steps:
@@ -456,8 +485,11 @@ workflows:
           requires:
             - format
             - persistent-set-test
+            - persistent-set-test-base-engine
+            - planner-regression
             - hitchhiker-tree-test
             - backward-compatibility-test
+            - datomic-test
             - migrate-test
             - integration-test
             - kabel-test
@@ -474,15 +506,12 @@ workflows:
             branches:
               only: main
           requires:
-            - format
-            - persistent-set-test
-            - hitchhiker-tree-test
-            - backward-compatibility-test
-            - migrate-test
-            - integration-test
-            - kabel-test
-            - browser-test
-            - node-cljs-test
-            - npm-test
-            - java-examples-test
-            - native-image
+            - npm-publish
+      - npm-publish:
+          context:
+            - npm-publish
+          filters:
+            branches:
+              only: main
+          requires:
+            - deploy

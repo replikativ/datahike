@@ -99,9 +99,9 @@
 (defmethod t/report [::t/default :end-run-tests] [m]
   (.exit js/process (if (t/successful? m) 0 1)))
 
-(def fs (nodejs/require "fs"))
-(def path (nodejs/require "path"))
-(def os (nodejs/require "os"))
+(def ^js fs (nodejs/require "fs"))
+(def ^js path (nodejs/require "path"))
+(def ^js os (nodejs/require "os"))
 
 (defn tmp-dir []
   (let [dir (path.join (os.tmpdir) (str "datahike-node-test-" (rand-int 100000)))]

@@ -1026,17 +1026,18 @@
    hot path stays exactly what it was before any checker existed: one var
    deref and one nil test."
   [f]
-  (alter-var-root
-   #'*check-plan*
-   (fn [installed]
-     (if installed
-       (fn [plan] (installed plan) (f plan))
-       (fn [plan] (swap! plan-check-stats update :plans inc) (f plan))))))
+  (let [install (fn [installed]
+                  (if installed
+                    (fn [plan] (installed plan) (f plan))
+                    (fn [plan] (swap! plan-check-stats update :plans inc) (f plan))))]
+    #?(:clj (alter-var-root #'*check-plan* install)
+       :cljs (set! *check-plan* (install *check-plan*)))))
 
 (defn clear-plan-checks!
   "Remove every installed plan check and reset the coverage counter."
   []
-  (alter-var-root #'*check-plan* (constantly nil))
+  #?(:clj (alter-var-root #'*check-plan* (constantly nil))
+     :cljs (set! *check-plan* nil))
   (reset! plan-check-stats {:plans 0}))
 
 (defn- maybe-check!

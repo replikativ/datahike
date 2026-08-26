@@ -363,7 +363,7 @@
     pull-many
     {:args [:function
             [:=> [:cat :datahike/SDB :datahike/SPullOptions] [:sequential :map]]
-            [:=> [:cat :datahike/SDB [:vector :any] :datahike/SEId] [:sequential :map]]]
+            [:=> [:cat :datahike/SDB [:vector :any] [:sequential :datahike/SEId]] [:sequential :map]]]
      :ret [:sequential :map]
      :categories [:query :pull]
      :stability :stable
@@ -559,8 +559,8 @@
     ;; =========================================================================
 
     history
-    {:args [:=> [:cat :datahike/SDB] :any]
-     :ret :any
+    {:args [:=> [:cat :datahike/SDB] :datahike/SDB]
+     :ret :datahike/SDB
      :categories [:temporal :query]
      :stability :stable
      :supports-remote? true

@@ -11,21 +11,28 @@
   runtime detection into believing it's running in Node.js, leading to
   fileExistsSync errors in the browser. ESM avoids this entirely."
   (:require [datahike.api.specification :refer [api-specification]]
-            [datahike.codegen.naming :refer [js-skip-list clj-name->js-name]]
+            [datahike.codegen.naming :refer [assert-unique-js-names!
+                                             js-skip-list clj-name->js-name]]
             [clojure.string :as str]))
 
 ;; Additional exports defined in datahike.js.api that are not in the
 ;; api-specification (manually exported with ^:export metadata).
 (def ^:private extra-js-exports
-  ["isPromise" "uuid" "randomUuid"])
+  ["isPromise" "uuid" "randomUuid"
+   "openOptimistic" "optimisticDb" "optimisticPending"
+   "optimisticTransact" "optimisticPredict" "optimisticAck"
+   "optimisticReject" "optimisticAbandon" "optimisticListen"
+   "optimisticListenStatus" "closeOptimistic"])
 
 (defn generate-esm-wrapper
   "Generate ESM wrapper source that re-exports the IIFE bundle's API.
    Returns the file content as a string."
   []
-  (let [spec-exports (for [[fn-name _] (sort-by first api-specification)
-                           :when (not (contains? js-skip-list fn-name))]
-                       (clj-name->js-name fn-name))
+  (let [clj-exports (for [[fn-name _] (sort-by first api-specification)
+                          :when (not (contains? js-skip-list fn-name))]
+                      fn-name)
+        _ (assert-unique-js-names! clj-exports)
+        spec-exports (map clj-name->js-name clj-exports)
         all-exports (concat spec-exports extra-js-exports)
         lines (concat
                ["// Auto-generated ESM wrapper for browser bundlers (vite, rollup, esbuild)."

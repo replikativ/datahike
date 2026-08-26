@@ -4,8 +4,9 @@
   (:require [clojure.string :as str]))
 
 ;; Functions to skip in JS export (ClojureScript incompatible or aliases)
-;; - transact: synchronous version that throws error in ClojureScript
-;;             use transact! instead (which becomes 'transact' in JS)
+;; - transact/merge-db: synchronous writer operations are not the JavaScript
+;;             contract; use their async siblings, whose trailing ! is removed
+;;             (`transact!` -> `transact`, `merge-db!` -> `mergeDb`)
 ;; - warm-*:   EXPERIMENTAL index warming. The walk's ClojureScript arm is REAL
 ;;             now (persistent-sorted-set >= 0.5.142 owns it; datahike adapts
 ;;             its partial-cps shape onto a channel — see
@@ -13,7 +14,7 @@
 ;;             only the JS binding round: the generated wrappers need the
 ;;             channel->Promise adaptation and regenerated artifacts, which is
 ;;             its own change. Remove them from this set in that round.
-(def js-skip-list #{'transact 'warm-index 'warm-datoms 'warm-db})
+(def js-skip-list #{'transact 'merge-db 'warm-index 'warm-datoms 'warm-db})
 
 (defn clj-name->js-name
   "Convert Clojure kebab-case to JavaScript camelCase.
@@ -38,3 +39,18 @@
     (if (= base-name "with")
       "withDb"
       base-name)))
+
+(defn assert-unique-js-names!
+  "Fail code generation when two Clojure API names collapse to one JavaScript
+  name. A duplicate export can otherwise compile into the IIFE while producing
+  an invalid ESM wrapper and ambiguous TypeScript declarations."
+  [clj-names]
+  (let [collisions (->> clj-names
+                        (group-by clj-name->js-name)
+                        (keep (fn [[js-name names]]
+                                (when (< 1 (count names))
+                                  [js-name (vec names)])))
+                        (into {}))]
+    (when (seq collisions)
+      (throw (ex-info "JavaScript API name collision"
+                      {:collisions collisions})))))
