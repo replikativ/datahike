@@ -18,6 +18,7 @@
             [clojure.core.async :as a :refer [<!] :refer-macros [go]]
             [cljs.cache :as cache]
             [datahike.api :as d]
+            [datahike.index.persistent-set :as dip]
             [datahike.test.async :refer-macros [deftest-async]]
             [konserve.core :as k]
             [org.replikativ.persistent-sorted-set.impl.storage :as storage]))
@@ -40,6 +41,7 @@
   []
   (go
     (let [cfg {:store {:backend :memory :id (random-uuid)}
+               :index-config {:branching-factor 4}
                :schema-flexibility :write}]
       (<! (d/create-database cfg))
       (let [conn (<! (d/connect cfg {:sync? false}))
@@ -74,7 +76,8 @@
   (testing "an LRU miss whose synchronous read throws (async-only backend /
             tiered frontend miss) routes through the channel adapter"
     (let [{:keys [stor addr]} (<! (fresh-storage))
-          orig-get k/get]
+          orig-get k/get
+          async-opts (atom nil)]
       (evict! stor)
       (with-redefs [k/get (fn
                             ([store key] (orig-get store key))
@@ -82,13 +85,18 @@
                             ([store key default opts]
                              (if (:sync? opts)
                                (throw (ex-info "Synchronous operations not supported" {}))
-                               (orig-get store key default opts))))]
-        (let [{:keys [sync-completed? result-atom]} (run-async (storage/restore stor addr {:sync? false}))]
+                               (do (reset! async-opts opts)
+                                   (orig-get store key default opts)))))]
+        (let [{:keys [sync-completed? result-atom]}
+              (run-async (storage/restore stor addr {:sync? false
+                                                     :await-read-through? true}))]
           (is (false? sync-completed?)
               "channel-adapted miss defers instead of blocking")
           (<! (a/timeout 10))
           (is (= {:marker :node} @result-atom)
-              "…and resolves with the stored value on a later tick"))))))
+              "…and resolves with the stored value on a later tick")
+          (is (true? (:await-read-through? @async-opts))
+              "CachedStorage forwards operation options to the async backend read"))))))
 
 (deftest-async sync-restore-raises-actionable-error-on-async-only-read
   (testing "the SYNC arm surfaces an async-only read as an actionable error"
@@ -104,3 +112,30 @@
                                (orig-get store key default opts))))]
         (is (thrown-with-msg? js/Error #"requires asynchronous store access"
                               (storage/restore stor addr {:sync? true})))))))
+
+(deftest-async delta-walk-completes-without-listing
+  (let [cfg {:store {:backend :memory :id (random-uuid)}
+             :index-config {:branching-factor 4}
+             :store-cache-size 4
+             :schema-flexibility :write}
+        _ (<! (d/create-database cfg))
+        conn (<! (d/connect cfg {:sync? false}))
+        schema-report
+        (<! (d/transact! conn [{:db/ident :name
+                                :db/valueType :db.type/string
+                                :db/cardinality :db.cardinality/one}]))
+        old (:db-after schema-report)
+        new-report (<! (d/transact! conn
+                                    (mapv (fn [i] {:name (str "delta-" i)})
+                                          (range 80))))
+        new-db (:db-after new-report)
+        orig-keys k/keys
+        listed? (atom false)]
+    (with-redefs [k/keys (fn [& args]
+                           (reset! listed? true)
+                           (apply orig-keys args))]
+      (let [result (<! (dip/walk-index-delta (:eavt old) (:eavt new-db)
+                                             {:sync? false
+                                              :await-read-through? true}))]
+        (is (nil? result))
+        (is (false? @listed?) "delta hydration uses keyed reads, never keys/LIST")))))

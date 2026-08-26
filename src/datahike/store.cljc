@@ -85,9 +85,9 @@
    Datahike's query and transaction engines deliberately remain synchronous.
    An asynchronous durable backend (S3 in a browser) is therefore usable only
    behind a complete synchronous frontend. `ready-store` establishes that
-   invariant at connect; this function restores it after another shared writer
-   has moved the branch head and introduced immutable index nodes this process
-   has never seen.
+   invariant at connect. Moved persistent-set heads now hydrate their structural
+   delta directly; this full-store synchronization remains the compatibility
+   fallback for legacy index implementations that cannot expose that delta.
 
    The branch head must be read from the authoritative backend *before* this is
    called. S3's strongly consistent GET/LIST contract then guarantees that the

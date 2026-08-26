@@ -9,11 +9,19 @@
             [datahike.api :as d]
             [datahike.connector :as connector]
             [konserve-s3.core]
+            [konserve.node-filestore]
             [taoensso.trove :as trove]
             [taoensso.trove.console :as trove-console])
   (:require-macros [cljs.core.async :refer [go]]))
 
 (def store-id #uuid "8f487c89-5ca7-4ae8-bd9d-ae8e00d59531")
+
+(def local-tier-path
+  (str "/tmp/datahike-s3-concurrency-" (.-pid js/process)))
+
+;; Node filestore checks the directory while connecting the cache tier. Browser
+;; IndexedDB has no equivalent filesystem precondition.
+(.mkdirSync (js/require "fs") local-tier-path #js {:recursive true})
 
 (trove/set-log-fn! (trove-console/get-log-fn {:min-level :warn}))
 
@@ -32,7 +40,18 @@
     {:store {:backend :tiered
              :id store-id
              :frontend-config {:backend :memory :id store-id}
-             :backend-config s3
+             ;; Node's file store stands in for browser IndexedDB. This exercises
+             ;; the same double read-through chain users deploy:
+             ;; memory -> IndexedDB/file -> S3. Each worker has its own local
+             ;; path, just as each browser has its own IndexedDB database.
+             :backend-config {:backend :tiered
+                              :id store-id
+                              :frontend-config {:backend :file
+                                                :path local-tier-path
+                                                :id store-id}
+                              :backend-config s3
+                              :write-policy :write-through
+                              :read-policy :frontend-first}
              :write-policy :write-through
              :read-policy :frontend-first}
      :writer {:backend :self

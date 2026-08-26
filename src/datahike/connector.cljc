@@ -96,9 +96,12 @@
 
    Unlike deref, this may cross an asynchronous storage boundary. It is the
    acquisition API for a shared browser writer backed by a tiered memory/S3
-   store: the branch head is read from S3, newly referenced objects are copied
-   into the synchronous frontend, and the resulting DB remains synchronously
-   queryable. Remote/streaming and exclusive writers return their local value."
+   store: the branch head is read from S3 and the changed persistent-set index
+   frontier is read through every frontend tier without listing the bucket. The
+   resulting DB remains synchronously queryable. Out-of-line
+   `:db.type/store-ref` blobs retain their explicit asynchronous fetch contract;
+   they are not needed by the query engine and are not implicitly prefetched.
+   Remote/streaming and exclusive writers return their local value."
   [^Connection conn]
   (go-try-
    (let [wrapped-atom (.-wrapped-atom conn)

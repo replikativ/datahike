@@ -8,6 +8,7 @@
             [datahike.db.utils :as dbu]
             [datahike.db.interface :as dbi]
             [datahike.index :as di]
+            [datahike.index.persistent-set :as dip]
             [datahike.index.audit :as audit]
             [datahike.index.secondary :as sec]
             [datahike.store :as ds]
@@ -434,8 +435,9 @@
    The runtime config and the `:writer` are carried over from `old`: neither
    lives in storage (`:writer` is the connection's own transactor), and dropping
    it would leave the connection without a transactor."
-  ([old stored store] (reload-head old stored store nil))
-  ([old stored store head-revision]
+  ([old stored store] (reload-head old stored store nil nil))
+  ([old stored store head-revision] (reload-head old stored store head-revision nil))
+  ([old stored store head-revision materialized]
    (let [stored-cid (get-in stored [:meta :datahike/commit-id])
          ;; The konserve revision the head blob was AT when we read it, carried on
          ;; the db so a later commit can fence its head write against it. Distinct
@@ -450,8 +452,46 @@
        ;; Unmoved head: the db is unchanged, but the revision may not be — the blob
        ;; can have been rewritten with identical content. Take the fresh one.
        (stamp old)
-       (stamp (assoc (stored->db (assoc stored :config (:config old)) store)
+       (stamp (assoc (or materialized
+                         (stored->db (assoc stored :config (:config old)) store))
                      :writer (:writer old)))))))
+
+(def ^:private primary-index-keys
+  [:eavt :aevt :avet :temporal-eavt :temporal-aevt :temporal-avet])
+
+(defn- hydrate-moved-head
+  "Materialize a moved persistent-set head without enumerating the store.
+
+   Schema metadata is fetched explicitly because `stored->db` is synchronous.
+   Each primary index is then walked against the connection's old root. Shared
+   subtrees are pruned by persistent-sorted-set; reads of the remaining frontier
+   use Konserve's awaited read-through so a nested S3 -> IndexedDB -> memory
+   store is complete from the deepest tier outward before this returns."
+  [old stored store sync?]
+  (async+sync sync? *default-sync-translation*
+              (go-try-
+               (when-let [schema-key (:schema-meta-key stored)]
+                 (when-not (sc/cache-has? schema-key)
+                   (when-let [schema-meta
+                              (<?- (k/get store schema-key nil
+                                          {:sync? sync?
+                                           :await-read-through? true}))]
+                     (sc/cache-miss schema-key schema-meta))))
+               (let [new-db (stored->db (assoc stored :config (:config old)) store)
+                     walk-opts {:sync? sync? :await-read-through? true}]
+                 #?(:clj
+                    (doseq [index-key primary-index-keys]
+                      (let [old-index (get old index-key)
+                            new-index (get new-db index-key)]
+                        (when (and old-index new-index)
+                          (dip/walk-index-delta old-index new-index walk-opts))))
+                    :cljs
+                    (doseq [index-key primary-index-keys]
+                      (let [old-index (get old index-key)
+                            new-index (get new-db index-key)]
+                        (when (and old-index new-index)
+                          (<?- (dip/walk-index-delta old-index new-index walk-opts))))))
+                 new-db))))
 
 (defn reload-branch-head
   "Re-read `old`'s branch head from storage and rebuild an in-memory db from it
@@ -465,8 +505,11 @@
    stale snapshot and overwrite the other's commits. Re-reading before every
    transaction makes each one apply to whatever is actually stored.
 
-   Costs ONE konserve read (one S3 GET) — plus, on a lazily-loaded index, the
-   node reads the transaction itself touches, exactly as after a fresh connect.
+   An unchanged head costs ONE konserve read (one S3 GET). A moved
+   persistent-set head additionally walks and hydrates only the changed Merkle
+   frontier, pruning structurally shared subtrees and never listing the store.
+   A legacy index falls back to the full tier synchronization it required
+   before this incremental path existed.
 
    SECONDARY INDICES are re-read with the rest of the head whenever it moved.
    Stratum and proximum are konserve-backed copy-on-write values, so that is
@@ -496,16 +539,21 @@
                     (log/raise "Branch head vanished from the store; the database may have been deleted."
                                {:type   :branch-head-does-not-exist-in-store
                                 :branch branch}))
-                  ;; The engine below this boundary is synchronous. When a
-                  ;; foreign writer moved a tiered backend, fetch its newly
-                  ;; introduced immutable nodes before materializing the head.
-                  ;; An unchanged cid needs no refresh even if the storage
-                  ;; revision changed: it references exactly the nodes already
-                  ;; backing `old`.
-                  (when (not= (get-in stored [:meta :datahike/commit-id])
-                              (get-in old [:meta :datahike/commit-id]))
-                    (<?- (ds/refresh-tiered-frontend store {:sync? sync?})))
-                  (reload-head old stored store revision))))))
+                  ;; The engine below this boundary is synchronous. Hydrate only
+                  ;; the immutable PSS frontier introduced by a foreign head,
+                  ;; then publish the new db. The legacy hitchhiker index cannot
+                  ;; expose that structural delta and retains the full tier sync.
+                  (let [moved? (not= (get-in stored [:meta :datahike/commit-id])
+                                     (get-in old [:meta :datahike/commit-id]))
+                        materialized
+                        (when moved?
+                          (if (= :datahike.index/persistent-set
+                                 (get-in old [:config :index]))
+                            (<?- (hydrate-moved-head old stored store sync?))
+                            (do
+                              (<?- (ds/refresh-tiered-frontend store {:sync? sync?}))
+                              (stored->db (assoc stored :config (:config old)) store))))]
+                    (reload-head old stored store revision materialized)))))))
 
 (defn branch-heads-as-commits
   "Resolve keyword parents (branch names) to their head commit-ids.

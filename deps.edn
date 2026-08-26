@@ -1,7 +1,10 @@
 {:deps {org.clojure/clojure                         {:mvn/version "1.12.5"}
         org.replikativ/hasch                        {:mvn/version "0.4.102"
                                                      :exclusions [org.clojure/clojurescript]}
-        org.replikativ/konserve                     {:mvn/version "0.9.381"}
+        ;; Temporary PR pins for delta hydration. Replace with released Maven
+        ;; versions once konserve #182 and persistent-sorted-set #26 land.
+        org.replikativ/konserve                     {:git/url "https://github.com/replikativ/konserve.git"
+                                                     :git/sha "931790c69c04262fa91aa5f5205542f04258e5d3"}
 
         org.replikativ/superv.async                 {:mvn/version "0.3.50"
                                                      :exclusions [org.clojure/clojurescript]}
@@ -20,7 +23,8 @@
         ;; :cljs + :test (shadow-cljs.edn:1), and `bb test cljs-node` sees only
         ;; :cljs — so this is the one placement all three see. The old :bulk
         ;; alias reached none of the cljs ones.
-        org.replikativ/persistent-sorted-set        {:mvn/version "0.5.142"}
+        org.replikativ/persistent-sorted-set        {:git/url "https://github.com/replikativ/persistent-sorted-set.git"
+                                                     :git/sha "c329a764160834e40d77217a972c094c1c5cfa2f"}
         ;; MAIN deps, not a test alias. `datahike.cbor` is src/, so boring is a
         ;; real runtime dependency: the dump codec and the kabel wire format
         ;; both go through it. It used to be declared only under :test, which

@@ -787,6 +787,47 @@
                      @rebuilds)))
           (finally (release-separate-process p)))))))
 
+(deftest moved-tiered-head-walks-the-index-delta-without-listing
+  (testing "an async acquisition of a foreign PSS head follows Merkle links;
+            it must not enumerate the durable backend"
+    (let [store-id (random-uuid)
+          c {:store {:backend :tiered
+                     :id store-id
+                     :frontend-config {:backend :memory :id store-id}
+                     :backend-config {:backend :file
+                                      :path (str (System/getProperty "java.io.tmpdir")
+                                                 "/dh-delta-no-list-" store-id)
+                                      :id store-id}}
+             :index :datahike.index/persistent-set
+             :index-config {:branching-factor 4}
+             :store-cache-size 4
+             :schema-flexibility :read
+             :keep-history? false}]
+      (fresh-db! c)
+      (let [a (connect-as-separate-process c)
+            b (connect-as-separate-process c)]
+        (try
+          ;; B now holds the pre-transaction head. Make A publish enough nodes
+          ;; to span several small PSS branches, then acquire that head through B.
+          (d/transact (:conn a)
+                      (mapv (fn [i] {:db/id (- (inc i)) :name (str "remote-" i)})
+                            (range 80)))
+          (let [listed? (atom false)
+                orig-keys k/keys
+                acquired
+                (with-redefs [k/keys (fn [& args]
+                                       (reset! listed? true)
+                                       (apply orig-keys args))]
+                  (async/<!! (dcon/db-async (:conn b))))]
+            (is (not (instance? Throwable acquired)) (str acquired))
+            (is (= 80 (count (d/datoms acquired :aevt :name))))
+            (is (false? @listed?)
+                "the moved-head path must issue keyed GETs only, never keys/LIST"))
+          (finally
+            (release-separate-process a)
+            (release-separate-process b)
+            (d/delete-database c)))))))
+
 (deftest a-failed-restore-of-a-stored-index-fails-the-connect
   (testing "an index that EXISTS in storage and cannot be restored must abort
             the connect. Coming up without it is silent data loss on a delay:
