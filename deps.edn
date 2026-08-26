@@ -1,8 +1,7 @@
 {:deps {org.clojure/clojure                         {:mvn/version "1.12.5"}
         org.replikativ/hasch                        {:mvn/version "0.4.102"
                                                      :exclusions [org.clojure/clojurescript]}
-        org.replikativ/konserve                     {:git/url "https://github.com/replikativ/konserve.git"
-                                                     :git/sha "61d27199082b33db8038875872cf0d4c92e3c8cf"}
+        org.replikativ/konserve                     {:mvn/version "0.9.385"}
 
         org.replikativ/superv.async                 {:mvn/version "0.3.50"
                                                      :exclusions [org.clojure/clojurescript]}
