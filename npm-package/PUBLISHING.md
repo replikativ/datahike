@@ -60,9 +60,10 @@ attestations, so the job intentionally does not pass `--provenance`.
 
 ## Release behavior
 
-On `main`, after all tests pass:
+On `main`, after all release-gating tests pass:
 
-1. CircleCI creates a single npm tarball with `bb npm-pack`.
+1. CircleCI runs `bb npm-build` and creates a single tarball with
+   `npm pack ./npm-package`.
 2. The deploy job publishes the matching JAR to Clojars.
 3. The `npm-publish` job checks whether that exact version already exists.
 4. If absent, it obtains an OIDC token and publishes the tarball.
@@ -76,7 +77,6 @@ version. It does not rebuild or silently replace an npm artifact.
 ```bash
 bb npm-build
 bb npm-test
-bb npm-pack
 npm pack --dry-run ./npm-package
 ```
 

@@ -485,8 +485,11 @@ workflows:
           requires:
             - format
             - persistent-set-test
+            - persistent-set-test-base-engine
+            - planner-regression
             - hitchhiker-tree-test
             - backward-compatibility-test
+            - datomic-test
             - migrate-test
             - integration-test
             - kabel-test
