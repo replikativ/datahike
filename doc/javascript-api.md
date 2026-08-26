@@ -1,6 +1,6 @@
 # Datahike JavaScript API
 
-**Status: Beta** - API is functional and tested, but may receive breaking changes. Published as `datahike@next` on npm.
+**Status: Beta** - API is functional and tested, but may receive breaking changes.
 
 ## Overview
 
@@ -47,7 +47,7 @@ Output is generated in `npm-package/datahike.js.api.js` with advanced compilatio
 ## Installation
 
 ```bash
-npm install datahike@next
+npm install datahike
 ```
 
 ## Usage
@@ -63,7 +63,8 @@ async function example() {
     store: {
       backend: ':memory',
       id: d.randomUuid()
-    }
+    },
+    'value-caps': ':default'
   };
 
   // Create database
@@ -113,6 +114,18 @@ async function example() {
   await d.deleteDatabase(config);
 }
 ```
+
+### Logging
+
+The npm package logs warnings and errors by default. Use `setLogLevel` when an
+application needs more diagnostic detail or wants to disable library logging:
+
+```javascript
+d.setLogLevel('trace'); // 'off', 'trace', 'debug', 'info', 'warn', or 'error'
+```
+
+Node.js applications can set the initial level before import with
+`DATAHIKE_LOG_LEVEL`, for example `DATAHIKE_LOG_LEVEL=off node app.js`.
 
 ## Data Conversion
 

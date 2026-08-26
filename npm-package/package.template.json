@@ -42,7 +42,10 @@
         "default": "./s3/index.mjs"
       },
       "default": "./s3/index.mjs"
-    }
+    },
+    "./package.json": "./package.json",
+    "./browser/datahike.js": "./browser/datahike.js",
+    "./s3/datahike.js": "./s3/datahike.js"
   },
   "browser" : "./browser/datahike.js"
 }
