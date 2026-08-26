@@ -13,7 +13,8 @@
   (let [js-files (fs/glob npm-package-path "*.js")
         js-map-files (fs/glob npm-package-path "*.js.map")
         all-files (concat js-files js-map-files)
-        files-to-keep #{"test.js" "test-final.js" "test-config-keys.js" "test-key-duplication.js"}
+        files-to-keep #{"test.js" "test-log-level-env.js" "test-final.js"
+                        "test-config-keys.js" "test-key-duplication.js"}
         files-to-delete (remove #(contains? files-to-keep (str (fs/file-name %))) all-files)]
     (doseq [file files-to-delete]
       (fs/delete file))
@@ -129,6 +130,10 @@
   "Exercise both public entry points, compile the declaration contract, and
   audit the exact tarball before it can be published."
   [npm-package-path]
+  (run-package-command! npm-package-path "Default npm logging test"
+                        "node" "test-log-level-env.js" "default")
+  (run-package-command! npm-package-path "Environment npm logging test"
+                        "node" "test-log-level-env.js" "trace")
   (run-package-command! npm-package-path "CommonJS API test" "node" "test.js")
   (run-package-command! npm-package-path "ESM wrapper syntax check"
                         "node" "--check" "browser/index.mjs")

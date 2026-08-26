@@ -3,6 +3,8 @@
 import * as d from './index';
 
 async function typescriptTest() {
+  const configuredLogLevel: d.LogLevel = d.setLogLevel('warn');
+
   // DatabaseConfig type is now properly typed
   const config: d.DatabaseConfig = {
     store: {
@@ -122,7 +124,7 @@ async function typescriptTest() {
 
   console.log(queryResults, pullResult, schema, historyDb, pastDb, s3Config,
               uuidOutput, invalidConfig, temporaryId, branchNames, branchDb,
-              parentIds, mergeReport, reclaimed);
+              parentIds, mergeReport, reclaimed, configuredLogLevel);
 }
 
 void typescriptTest;

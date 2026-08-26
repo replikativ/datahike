@@ -18,7 +18,7 @@
 ;; Additional exports defined in datahike.js.api that are not in the
 ;; api-specification (manually exported with ^:export metadata).
 (def ^:private extra-js-exports
-  ["isPromise" "uuid" "randomUuid"
+  ["isPromise" "uuid" "randomUuid" "setLogLevel"
    "openOptimistic" "optimisticDb" "optimisticPending"
    "optimisticTransact" "optimisticPredict" "optimisticAck"
    "optimisticReject" "optimisticAbandon" "optimisticListen"

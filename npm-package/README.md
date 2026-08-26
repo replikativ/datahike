@@ -29,7 +29,8 @@ async function example() {
     store: {
       backend: ':memory',
       id: d.randomUuid()
-    }
+    },
+    'value-caps': ':default'
   };
 
   // Create and connect to database
@@ -75,6 +76,16 @@ async function example() {
 
 example();
 ```
+
+Datahike logs warnings and errors by default. Applications can change the
+runtime level, or disable library logging entirely:
+
+```javascript
+d.setLogLevel('debug'); // 'off', 'trace', 'debug', 'info', 'warn', or 'error'
+```
+
+In Node.js, set `DATAHIKE_LOG_LEVEL` before importing the package to choose the
+initial level (for example, `DATAHIKE_LOG_LEVEL=off node app.js`).
 
 ## Documentation
 

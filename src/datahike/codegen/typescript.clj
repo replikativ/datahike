@@ -474,6 +474,13 @@ export function closeOptimistic(overlay: OptimisticOverlay): null;
 export function isPromise(value: any): value is Promise<unknown>;
 export function uuid(value: string): DatahikeUuid;
 export function randomUuid(): DatahikeUuid;
+
+export type LogLevel = 'off' | 'trace' | 'debug' | 'info' | 'warn' | 'error';
+/**
+ * Configure logging for the Datahike JavaScript package.
+ * The initial level is `warn`, or `DATAHIKE_LOG_LEVEL` in Node.js.
+ */
+export function setLogLevel(level: LogLevel): LogLevel;
 "]
     (str header types "\n// API Functions\n\n" functions optimistic-functions "\n")))
 

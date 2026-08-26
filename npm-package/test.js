@@ -4,6 +4,83 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 
+function testPackageSubpathExports() {
+  console.log('\n=== Package Subpath Exports ===');
+
+  const packageJson = require.resolve('datahike/package.json');
+  const browserBundle = require.resolve('datahike/browser/datahike.js');
+  const s3Bundle = require.resolve('datahike/s3/datahike.js');
+
+  if (path.basename(packageJson) !== 'package.json') {
+    throw new Error(`Unexpected package metadata path: ${packageJson}`);
+  }
+  if (!browserBundle.endsWith(path.join('browser', 'datahike.js'))) {
+    throw new Error(`Unexpected browser bundle path: ${browserBundle}`);
+  }
+  if (!s3Bundle.endsWith(path.join('s3', 'datahike.js'))) {
+    throw new Error(`Unexpected S3 bundle path: ${s3Bundle}`);
+  }
+
+  console.log('  ✓ Package metadata and raw browser bundles are resolvable');
+}
+
+async function testLoggingControls() {
+  console.log('\n=== Logging Controls ===');
+
+  const originalDebug = console.debug;
+  const debugMessages = [];
+  console.debug = (...args) => debugMessages.push(args);
+
+  const exerciseDatabase = async () => {
+    const config = {
+      store: { backend: ':memory', id: d.randomUuid() },
+      'value-caps': ':default'
+    };
+    await d.createDatabase(config);
+    const conn = await d.connect(config);
+    d.release(conn);
+    await d.deleteDatabase(config);
+  };
+
+  try {
+    d.setLogLevel('warn');
+    await exerciseDatabase();
+    if (debugMessages.length !== 0) {
+      throw new Error(`Default logging emitted ${debugMessages.length} debug/trace messages`);
+    }
+
+    if (d.setLogLevel('trace') !== 'trace') {
+      throw new Error('setLogLevel should return the normalized level');
+    }
+    await exerciseDatabase();
+    if (debugMessages.length === 0) {
+      throw new Error('Trace logging did not emit any debug/trace messages');
+    }
+
+    const traceMessageCount = debugMessages.length;
+    d.setLogLevel('off');
+    await exerciseDatabase();
+    if (debugMessages.length !== traceMessageCount) {
+      throw new Error('The off log level still emitted debug/trace messages');
+    }
+
+    let rejectedInvalidLevel = false;
+    try {
+      d.setLogLevel('verbose');
+    } catch (_) {
+      rejectedInvalidLevel = true;
+    }
+    if (!rejectedInvalidLevel) {
+      throw new Error('setLogLevel accepted an unsupported level');
+    }
+  } finally {
+    d.setLogLevel('warn');
+    console.debug = originalDebug;
+  }
+
+  console.log('  ✓ Default, trace, off, and invalid log levels behave as documented');
+}
+
 // Helper to find entity ID by name
 async function findEntityByName(db, name) {
   const datoms = await d.datoms(db, ':eavt');
@@ -633,6 +710,8 @@ async function runAllTests() {
   let failed = 0;
   
   const tests = [
+    testPackageSubpathExports,
+    testLoggingControls,
     testBasicOperations,
     testSchemaAndTransactions,
     testDatomsAPI,

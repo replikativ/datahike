@@ -11,9 +11,61 @@
             [cljs.core.async :refer [<!]]
             [clojure.string :as str]
             [clojure.walk :as walk]
-            [goog.object :as gobj])
+            [goog.object :as gobj]
+            [taoensso.trove :as trove]
+            [taoensso.trove.console :as trove-console])
   (:require-macros [cljs.core.async.macros :refer [go]]
                    [datahike.js.api-macros :refer [emit-js-api]]))
+
+;; The Trove console backend deliberately defaults to logging every level in
+;; ClojureScript. That is useful during development, but makes the installed npm
+;; package print internal trace events during ordinary database operations.
+;; Keep the package quiet unless the application explicitly opts into more
+;; detail through setLogLevel() or DATAHIKE_LOG_LEVEL.
+(def ^:private default-log-level "warn")
+(def ^:private supported-log-levels
+  #{"off" "trace" "debug" "info" "warn" "error"})
+
+(defn- normalize-log-level [level]
+  (when (or (string? level) (keyword? level))
+    (-> (name level)
+        (str/replace #"^:" "")
+        str/lower-case)))
+
+(defn- configure-log-level! [level]
+  (let [normalized (normalize-log-level level)]
+    (when-not (contains? supported-log-levels normalized)
+      (throw (js/Error.
+              (str "Unsupported Datahike log level: " level
+                   ". Expected one of: off, trace, debug, info, warn, error."))))
+    (if (= "off" normalized)
+      (trove/set-log-fn! nil)
+      (trove/set-log-fn!
+       (trove-console/get-log-fn {:min-level (keyword normalized)})))
+    normalized))
+
+(defn- environment-log-level []
+  (let [process-env (when (exists? js/process)
+                      (gobj/get js/process "env"))
+        configured (when process-env
+                     (gobj/get process-env "DATAHIKE_LOG_LEVEL"))
+        normalized (normalize-log-level configured)]
+    ;; An unrelated or malformed environment value should never make importing
+    ;; a database library fail. The explicit setter remains strict.
+    (if (contains? supported-log-levels normalized)
+      normalized
+      default-log-level)))
+
+(configure-log-level! (environment-log-level))
+
+(defn ^:export setLogLevel
+  "Set logging for the JavaScript package.
+
+  Accepted levels are off, trace, debug, info, warn, and error. Returns the
+  normalized level name. Node.js applications may set the initial level with
+  the DATAHIKE_LOG_LEVEL environment variable before importing Datahike."
+  [level]
+  (configure-log-level! level))
 
 ;; Register Node.js file backend - conditional require
 ;; For Node.js: konserve.node-filestore is added to shadow-cljs :entries
