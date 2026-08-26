@@ -569,13 +569,28 @@
                             ;; Clear merge-parents from db meta before persisting
                             db (if merge-parents
                                  (update db :meta dissoc :datahike/merge-parents)
-                                 db)]
+                                 db)
+                            build-cleanup-complete? (atom false)]
                         (try
                           (let [start-ts (get-time-ms)
                                 {{:keys [datahike/commit-id]} :meta
                                  :as commit-db} (<?- (w/commit! db merge-parents false last-cid head-rev))
                                 commit-time (- (get-time-ms) start-ts)]
                             (log/trace :datahike/commit-time {:duration-ms commit-time})
+                            ;; The head is durable now, so the background build's
+                            ;; pin can be released. Do this BEFORE publishing
+                            ;; `commit-db` through the connection or callback:
+                            ;; observing :ready must mean its GC lifecycle is
+                            ;; finished, not merely that cleanup is about to run
+                            ;; in this loop's `finally`.
+                            #?(:clj
+                               (doseq [[tx-report _] txs
+                                       :let [build-guard
+                                             (:secondary-index-build-guard
+                                              tx-report)]
+                                       :when build-guard]
+                                 (w/finish-secondary-index-build! build-guard)))
+                            (reset! build-cleanup-complete? true)
                             (reset! connection commit-db)
                     ;; notify all processes that transaction is complete
                             (doseq [[tx-report callback] txs]
@@ -698,13 +713,14 @@
                             ;; A background secondary build holds a GC guard
                             ;; until the commit that publishes its ready key-map
                             ;; has either landed or definitively failed.
-                            #?(:clj
-                               (doseq [[tx-report _] txs
-                                       :let [build-guard
-                                             (:secondary-index-build-guard
-                                              tx-report)]
-                                       :when build-guard]
-                                 (w/finish-secondary-index-build! build-guard)))))
+                            (when-not @build-cleanup-complete?
+                              #?(:clj
+                                 (doseq [[tx-report _] txs
+                                         :let [build-guard
+                                               (:secondary-index-build-guard
+                                                tx-report)]
+                                         :when build-guard]
+                                   (w/finish-secondary-index-build! build-guard))))))
                         ;; Signalled AFTER the head flip (or after the failure
                         ;; path closed everything), so the transaction loop's
                         ;; next head read sees this commit.

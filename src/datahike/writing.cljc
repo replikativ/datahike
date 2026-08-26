@@ -1272,7 +1272,9 @@
                               (try (roots/release! db root-id {:sync? true})
                                    (catch Throwable e
                                      (log/warn :datahike/secondary-index-root-release-failed
-                                               {:idx-ident idx-ident :error (.getMessage ^Throwable e)}))))]
+                                               {:idx-ident idx-ident
+                                                :message (.getMessage ^Throwable e)
+                                                :error e}))))]
           (try
             (let [populated-idx
                   (reduce
