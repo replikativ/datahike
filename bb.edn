@@ -27,6 +27,7 @@
                 :task (clojure "-M:benchmark" "measure")}
 
          planner-bench {:doc "Planner regression: compiled-vs-base ratio per shape. Pass --assert to gate (exit 1 on regression)."
+                        :depends [prep]
                         :task (apply clojure "-M:bench" "-m" "benchmark.planner-regression" *command-line-args*)}
 
          ffix {:doc "Format source files"

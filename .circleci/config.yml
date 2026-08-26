@@ -129,7 +129,7 @@ jobs:
           at: /home/circleci
       - run:
           name: Planner regression (compiled-vs-base ratio gate)
-          command: clojure -M:bench -m benchmark.planner-regression --assert
+          command: bb planner-bench --assert
           no_output_timeout: 10m
   hitchhiker-tree-test:
     executor: tools/clojurecli
