@@ -51,16 +51,17 @@ def _find_library() -> str:
         )
 
     # Check common locations relative to this file
+    repo_target = os.path.join(os.path.dirname(__file__), '..', '..', '..', '..',
+                               'libdatahike', 'target')
     possible_paths = [
-        # Relative to datahike repo
-        os.path.join(os.path.dirname(__file__), '..', '..', '..', '..',
-                     'libdatahike', 'target', 'libdatahike.so'),
+        # Relative to datahike repo, one entry per platform's suffix
+        os.path.join(repo_target, 'libdatahike.so'),
+        os.path.join(repo_target, 'libdatahike.dylib'),
+        os.path.join(repo_target, 'libdatahike.dll'),
         # Linux system paths
         '/usr/local/lib/libdatahike.so',
         '/usr/lib/libdatahike.so',
         # macOS
-        os.path.join(os.path.dirname(__file__), '..', '..', '..', '..',
-                     'libdatahike', 'target', 'libdatahike.dylib'),
         '/usr/local/lib/libdatahike.dylib',
     ]
 

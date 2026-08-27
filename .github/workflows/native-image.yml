@@ -30,14 +30,14 @@ jobs:
             name: macos
             platform: macos
             arch: aarch64
-          # libdatahike is skipped here: it would build a .dll, and the only
-          # consumer, pydatahike's _native.py, searches for .so/.dylib only.
-          # Shipping it would add an artifact nothing can load.
+          # The .dll builds and ships. Only its C++ harness is skipped: that
+          # script exports LD_LIBRARY_PATH/DYLD_LIBRARY_PATH, which mean nothing
+          # on Windows, and drives compile-cpp through a gcc/clang toolchain.
           - os: windows-latest
             name: windows
             platform: windows
             arch: amd64
-            skip-libdatahike: true
+            skip-libdatahike-test: true
     runs-on: ${{ matrix.os }}
     env:
       GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -79,7 +79,6 @@ jobs:
         run: bb ni-cli
 
       - name: Build libdatahike
-        if: '!matrix.skip-libdatahike'
         run: bb ni-compile
 
       # Tests gate this platform's upload and nothing else. `continue-on-error`
@@ -96,7 +95,7 @@ jobs:
         run: bb test bb-pod
 
       - name: Test libdatahike
-        if: '!matrix.skip-libdatahike'
+        if: '!matrix.skip-libdatahike-test'
         id: test-libdatahike
         continue-on-error: true
         run: bb test libdatahike
@@ -106,7 +105,7 @@ jobs:
         run: bb release native-image
 
       - name: Release libdatahike
-        if: "!matrix.skip-libdatahike && steps.test-libdatahike.outcome == 'success'"
+        if: "matrix.skip-libdatahike-test || steps.test-libdatahike.outcome == 'success'"
         run: bb release libdatahike
 
       # The job still fails if anything above did, so the red X is not lost —
@@ -115,7 +114,7 @@ jobs:
         if: |
           steps.test-native-image.outcome != 'success' ||
           steps.test-bb-pod.outcome != 'success' ||
-          (!matrix.skip-libdatahike && steps.test-libdatahike.outcome != 'success')
+          (!matrix.skip-libdatahike-test && steps.test-libdatahike.outcome != 'success')
         run: |
           echo "native-image: ${{ steps.test-native-image.outcome }}"
           echo "bb-pod:       ${{ steps.test-bb-pod.outcome }}"
