@@ -4099,11 +4099,11 @@
                             no-in-rels?
                             (let [cdf (requiring-resolve 'datahike.query.execute/can-direct-fuse?)]
                               (boolean (cdf plan find-vars (:consts context-in)))))
-               columnar? (and has-aggs? find-rel? (not (:with query)) (not has-pull?) no-in-rels?)
+               aggregate-fast? (and has-aggs? (not has-pull?) no-in-rels?)
                path (cond
                       split?    "cartesian-split — disjoint components run as sub-queries and merge"
                       direct?   "direct — fused scans write straight to the result set"
-                      columnar? "columnar-aggregate if a secondary/columnar engine accepts (runtime probe); else relation"
+                      aggregate-fast? "aggregate-fast-path if primary ordered/secondary/columnar execution accepts (runtime probe); else relation"
                       :else     "relation — execute-plan over relations")]
            (str (header "planned" path) (format-plan-ops (:ops plan) 0) "\n"))))
      :cljs (throw (ex-info "explain is not supported in ClojureScript" {}))))
@@ -5210,21 +5210,30 @@
                                         (/ (- t3 t0) 1e6))))))
                 result)
 
-            ;; 2. Columnar aggregate (secondary index or PSS scan)
+            ;; 2. Aggregate fast paths (ordered primary, secondary, or PSS scan)
               (let [ta (when *profile?* #?(:clj (System/nanoTime) :cljs 0))
                     has-aggs? (some #(instance? Aggregate %) find-elements)
-                    columnar-eligible? (and has-aggs?
+                    aggregate-fast-eligible? (and has-aggs?
+                                                  (not (some #(instance? Pull %) find-elements))
+                                                  (empty? (:rels context-in))
+                                                  (not lookup-ref-reverse-map))
+                    columnar-eligible? (and aggregate-fast-eligible?
                                             (instance? FindRel qfind)
-                                            (not (:with query))
-                                            (not (some #(instance? Pull %) find-elements))
-                                            (empty? (:rels context-in))
-                                            (not lookup-ref-reverse-map))
+                                            (not qwith))
                     tb (when *profile?* #?(:clj (System/nanoTime) :cljs 0))
-                    columnar-result
-                    (when columnar-eligible?
-                      #?(:clj (or (try-secondary-index-aggregate db plan find-elements)
-                                  (try-columnar-aggregate plan db find-elements (:cancel context-in)))
+                    ordered-result
+                    (when aggregate-fast-eligible?
+                      #?(:clj (when-not stats?
+                                ((requiring-resolve
+                                  'datahike.query.index-ordered-aggregate/execute)
+                                 plan db find-elements qwith (:cancel context-in)))
                          :cljs nil))
+                    columnar-result
+                    (or ordered-result
+                        (when columnar-eligible?
+                          #?(:clj (or (try-secondary-index-aggregate db plan find-elements)
+                                      (try-columnar-aggregate plan db find-elements (:cancel context-in)))
+                             :cljs nil)))
                     tc (when *profile?* #?(:clj (System/nanoTime) :cljs 0))]
                 (if columnar-result
                   (let [result (-post-process qfind columnar-result)
@@ -5232,7 +5241,7 @@
                     #?(:clj
                        (when *profile?*
                          (let [t3 (System/nanoTime)]
-                           (println (format "parse=%.3f resolve=%.3f plan=%.3f elig=%.3f sec-idx=%.3f post=%.3f total=%.3f ms"
+                           (println (format "parse=%.3f resolve=%.3f plan=%.3f elig=%.3f agg-fast=%.3f post=%.3f total=%.3f ms"
                                             (/ (- t1 t0) 1e6) (/ (- t2 t1) 1e6) (/ (- ta t2) 1e6)
                                             (/ (- tb ta) 1e6) (/ (- tc tb) 1e6) (/ (- t3 tc) 1e6)
                                             (/ (- t3 t0) 1e6))))))
