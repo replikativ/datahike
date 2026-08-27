@@ -2,6 +2,8 @@
   "All the functions in this namespace must be implemented for each index type"
   #?(:cljs (:refer-clojure :exclude [-seq -count -persistent! -flush -lookup]))
   (:require
+   #?(:clj [clojure.core.cache :as cache]
+      :cljs [cljs.cache :as cache])
    ;; Only for `warm-result` below — `async+sync` and `go-try-` are MACROS, so
    ;; ClojureScript needs :refer-macros. Two whole libspecs rather than a reader
    ;; conditional on the option key; see the note in datahike.gc.
@@ -16,6 +18,19 @@
    ;; alone leaves them undeclared in a cljs build.
    [clojure.core.async])
   #?(:cljs (:require-macros [clojure.core.async :refer [go]])))
+
+(def node-cache-key
+  "Key under which a connection hands its storage the node cache it reserved.
+   Set by `datahike.connector` from `datahike.connections/acquire-node-cache!`;
+   read by the index implementation when it builds storage. Absent on the paths
+   that have no connection behind them, which then get a private cache."
+  ::node-cache)
+
+(defn make-node-cache
+  "A fresh, empty node cache bounded by `threshold` entries. Pure: safe to call
+   inside a `swap!` that may retry and discard the result."
+  [threshold]
+  (atom (cache/lru-cache-factory {} :threshold threshold)))
 
 (defprotocol IIndex
   (-all [index] "Returns a sequence of all datoms in the index")

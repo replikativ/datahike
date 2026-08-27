@@ -1,8 +1,10 @@
 (ns ^:no-doc datahike.connector
   (:require [datahike.connections :refer [get-connection add-connection! delete-connection!
+                                          acquire-node-cache! abandon-reservation!
                                           *connections*]]
             [datahike.readers]
             [datahike.store :as ds]
+            [datahike.index.interface :as dii]
             [datahike.writing :as dsi]
             [datahike.config :as dc]
             [datahike.tools :as dt #?(:clj :refer :cljs :refer-macros) [meta-data]]
@@ -362,100 +364,120 @@
                                            (or existing :shared)
                                            (:store @(:wrapped-atom conn)))))
                      conn)
-                   (let [raw-store (<?- (ks/connect-store store-config opts))
-                         _         (when-not raw-store
-                                     (log/raise "Backend does not exist." {:type   :backend-does-not-exist
-                                                                           :config store-config}))
-                         store     (ds/add-cache-and-handlers raw-store config)
-                         _ (<?- (ds/ready-store (assoc store-config :opts opts) store))
-                         stored-db (<?- (k/get store (:branch config) nil opts))
-                         _         (when-not stored-db
-                                     (ks/release-store store-config store opts)
-                                     (log/raise "Database does not exist." {:type   :db-does-not-exist
-                                                                            :config config}))
-                         [config store stored-db]
-                         (let [intended-index (:index config)
-                               stored-index   (get-in stored-db [:config :index])]
-                           (if-not (= intended-index stored-index)
-                             (do
-                               (log/warn :datahike/index-mismatch {:stored-index stored-index})
-                               (let [config    (assoc config :index stored-index)
-                                     store     (ds/add-cache-and-handlers raw-store config)
-                                     _ (<?- (ds/ready-store (assoc store-config :opts opts) store))
-                                     stored-db (<?- (k/get store (:branch config) nil opts))]
-                                 [config store stored-db]))
-                             [config store stored-db]))
+                   (try
+                     (let [raw-store (<?- (ks/connect-store store-config opts))
+                           _         (when-not raw-store
+                                       (log/raise "Backend does not exist." {:type   :backend-does-not-exist
+                                                                             :config store-config}))
+                         ;; Reserve this connection's node cache BEFORE building
+                         ;; storage, and hand it to storage explicitly. The
+                         ;; reservation is what lets a sibling branch connecting
+                         ;; concurrently find the same cache instead of building
+                         ;; a second one; the `catch` below removes it if
+                         ;; this connect never completes.
+                           threshold  (:store-cache-size config)
+                           node-cache (acquire-node-cache! conn-id threshold
+                                                           #(dii/make-node-cache threshold))
+                           raw-store  (assoc raw-store dii/node-cache-key node-cache)
+                           store     (ds/add-cache-and-handlers raw-store config)
+                           _ (<?- (ds/ready-store (assoc store-config :opts opts) store))
+                           stored-db (<?- (k/get store (:branch config) nil opts))
+                           _         (when-not stored-db
+                                       (ks/release-store store-config store opts)
+                                       (log/raise "Database does not exist." {:type   :db-does-not-exist
+                                                                              :config config}))
+                           [config store stored-db]
+                           (let [intended-index (:index config)
+                                 stored-index   (get-in stored-db [:config :index])]
+                             (if-not (= intended-index stored-index)
+                               (do
+                                 (log/warn :datahike/index-mismatch {:stored-index stored-index})
+                                 (let [config    (assoc config :index stored-index)
+                                       store     (ds/add-cache-and-handlers raw-store config)
+                                       _ (<?- (ds/ready-store (assoc store-config :opts opts) store))
+                                       stored-db (<?- (k/get store (:branch config) nil opts))]
+                                   [config store stored-db]))
+                               [config store stored-db]))
                          ;; Adopt create-time-fixed index settings (:index-config
                          ;; {:branching-factor :diff-buf-size}) from the stored config.
                          ;; When adoption changes the config, re-derive the store
                          ;; handlers with it (same pattern as the index reconciliation
                          ;; above) so e.g. a legacy store's non-default branching-factor
                          ;; reaches the node read handlers.
-                         [config store stored-db]
-                         (let [config' (check-online-gc-compatible
-                                        (adopt-create-time-fixed config (:config stored-db)))]
-                           (if (= config' config)
-                             [config store stored-db]
-                             (let [store     (ds/add-cache-and-handlers raw-store config')
-                                   _ (<?- (ds/ready-store (assoc store-config :opts opts) store))
-                                   stored-db (<?- (k/get store (:branch config') nil opts))]
-                               [config' store stored-db])))
+                           [config store stored-db]
+                           (let [config' (check-online-gc-compatible
+                                          (adopt-create-time-fixed config (:config stored-db)))]
+                             (if (= config' config)
+                               [config store stored-db]
+                               (let [store     (ds/add-cache-and-handlers raw-store config')
+                                     _ (<?- (ds/ready-store (assoc store-config :opts opts) store))
+                                     stored-db (<?- (k/get store (:branch config') nil opts))]
+                                 [config' store stored-db])))
                          ;; The runtime db is built from the connect-time config (below),
                          ;; but value-size caps live only in the *stored* config (written
                          ;; at create). Merge them in so enforcement sees them and the
                          ;; consistency check matches. Absent in the stored config (older
                          ;; DBs) → nothing merged → unbounded.
-                         config (merge config
-                                       (select-keys (:config stored-db)
-                                                    (keys dc/default-value-caps)))
-                         _ (version-check stored-db)
-                         _ (when-not (:allow-unsafe-config config)
-                             (ensure-stored-config-consistency config (:config stored-db)))
-                         conn      (conn-from-db (dsi/stored->db (assoc stored-db :config config) store))]
-                     (swap! (:wrapped-atom conn) assoc :writer
-                            (w/create-writer (:writer config) conn))
+                           config (merge config
+                                         (select-keys (:config stored-db)
+                                                      (keys dc/default-value-caps)))
+                           _ (version-check stored-db)
+                           _ (when-not (:allow-unsafe-config config)
+                               (ensure-stored-config-consistency config (:config stored-db)))
+                           conn      (conn-from-db (dsi/stored->db (assoc stored-db :config config) store))]
+                       (swap! (:wrapped-atom conn) assoc :writer
+                              (w/create-writer (:writer config) conn))
                      ;; Recovery: every :building index is reconstructed from
                      ;; the primary index. Its stored key-map, if any was written
                      ;; by an older release, is deliberately ignored by
                      ;; stored->db because it may describe a partial backfill.
-                     #?(:clj
-                        (let [db @(:wrapped-atom conn)
-                              schema (:schema db)
-                              writer (:writer db)]
-                          (doseq [[ident entry] schema
-                                  :when (and (map? entry)
-                                             (:db.secondary/type entry)
-                                             (= :building (:db.secondary/status entry)))]
-                            (log/trace :datahike/secondary-index-backfill {:ident ident})
-                            (go
+                       #?(:clj
+                          (let [db @(:wrapped-atom conn)
+                                schema (:schema db)
+                                writer (:writer db)]
+                            (doseq [[ident entry] schema
+                                    :when (and (map? entry)
+                                               (:db.secondary/type entry)
+                                               (= :building (:db.secondary/status entry)))]
+                              (log/trace :datahike/secondary-index-backfill {:ident ident})
+                              (go
                               ;; The delta journal that covered transactions
                               ;; after the stored boundary died with the
                               ;; previous process. Re-anchor the boundary at
                               ;; this head first so the scan picks those
                               ;; datoms up from the primary index; only
                               ;; transactions after this point are journaled.
-                              (let [reset-result (<! (w/dispatch! writer
-                                                                  {:op 'reset-secondary-index-build-boundary!
-                                                                   :args [ident]}))
-                                    build-result (if (map? reset-result)
-                                                   (<! (w/dispatch! writer
-                                                                    {:op 'build-secondary-index!
+                                (let [reset-result (<! (w/dispatch! writer
+                                                                    {:op 'reset-secondary-index-build-boundary!
                                                                      :args [ident]}))
-                                                   reset-result)]
-                                (if-not (map? build-result)
-                                  (log/warn :datahike/secondary-index-recovery-failed
-                                            {:ident ident :error build-result})
-                                  (let [install-result
-                                        (<! (w/dispatch! writer
-                                                         {:op 'install-secondary-index!
-                                                          :args [build-result]}))]
-                                    (when-not (map? install-result)
-                                      (log/warn :datahike/secondary-index-recovery-failed
-                                                {:ident ident :error install-result})
-                                      (dsi/finish-secondary-index-build!
-                                       build-result)))))))))
-                     (add-connection! conn-id conn)
-                     conn))))))
+                                      build-result (if (map? reset-result)
+                                                     (<! (w/dispatch! writer
+                                                                      {:op 'build-secondary-index!
+                                                                       :args [ident]}))
+                                                     reset-result)]
+                                  (if-not (map? build-result)
+                                    (log/warn :datahike/secondary-index-recovery-failed
+                                              {:ident ident :error build-result})
+                                    (let [install-result
+                                          (<! (w/dispatch! writer
+                                                           {:op 'install-secondary-index!
+                                                            :args [build-result]}))]
+                                      (when-not (map? install-result)
+                                        (log/warn :datahike/secondary-index-recovery-failed
+                                                  {:ident ident :error install-result})
+                                        (dsi/finish-secondary-index-build!
+                                         build-result)))))))))
+                       (add-connection! conn-id conn)
+                       conn)
+                     ;; Any failure between reserving the node cache and
+                     ;; registering the connection -- a missing branch, a bad
+                     ;; stored config, `ready-store`, writer creation -- would
+                     ;; otherwise strand the reservation, and with it a cache
+                     ;; nothing could reach to release. A no-op if the connect
+                     ;; got as far as `add-connection!`.
+                     (catch #?(:clj Exception :cljs :default) e
+                       (abandon-reservation! conn-id)
+                       (throw e))))))))
 
 ;; Multimethod dispatch for different writer backends
 

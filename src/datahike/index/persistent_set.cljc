@@ -661,7 +661,15 @@
 
 (defn create-storage [store config]
   (CachedStorage. store config
-                  (atom (cache/lru-cache-factory {} :threshold (:store-cache-size config)))
+                  ;; PASSED IN, not acquired here. A cache is owned by the
+                  ;; connection registry, which is what gives it a lifetime; a
+                  ;; storage that reached into a global for one could not be
+                  ;; released, isolated, or rolled back. Paths with no connection
+                  ;; behind them -- `create-database`, `database-exists?` -- pass
+                  ;; nothing and get a private cache, which is correct: nothing
+                  ;; will ever release them.
+                  (or (get store di/node-cache-key)
+                      (di/make-node-cache (:store-cache-size config)))
                   (atom init-stats)
                   (atom [])
                   (atom [])  ;; freed-addresses: vector of [address timestamp] pairs
