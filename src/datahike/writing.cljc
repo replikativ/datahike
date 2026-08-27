@@ -539,16 +539,35 @@
                     (log/raise "Branch head vanished from the store; the database may have been deleted."
                                {:type   :branch-head-does-not-exist-in-store
                                 :branch branch}))
+                  ;; A store id survives delete/recreate; :datahike/id does not.
+                  ;; Never use a head from another database as this connection's
+                  ;; delta, or silently rebind a writer to that database.
+                  (let [old-lineage    (get-in old [:meta :datahike/id])
+                        stored-lineage (get-in stored [:meta :datahike/id])]
+                    ;; One missing id and one present id is also a definite
+                    ;; transition (for example, legacy database -> modern recreate).
+                    (when (not= old-lineage stored-lineage)
+                      (log/raise "Branch head belongs to a different database; this connection outlived the database it was opened on. Reconnect."
+                                 {:type            :database-lineage-changed
+                                  :branch          branch
+                                  :connection-db   old-lineage
+                                  :stored-db       stored-lineage})))
                   ;; The engine below this boundary is synchronous. Hydrate only
                   ;; the immutable PSS frontier introduced by a foreign head,
                   ;; then publish the new db. The legacy hitchhiker index cannot
                   ;; expose that structural delta and retains the full tier sync.
                   (let [moved? (not= (get-in stored [:meta :datahike/commit-id])
                                      (get-in old [:meta :datahike/commit-id]))
+                        ;; Two id-less legacy heads are ambiguous. A full rebuild
+                        ;; cannot establish logical identity, but it avoids treating
+                        ;; the old tree as a proven delta base.
+                        lineage-known? (boolean (and (get-in old [:meta :datahike/id])
+                                                     (get-in stored [:meta :datahike/id])))
                         materialized
                         (when moved?
-                          (if (= :datahike.index/persistent-set
-                                 (get-in old [:config :index]))
+                          (if (and lineage-known?
+                                   (= :datahike.index/persistent-set
+                                      (get-in old [:config :index])))
                             (<?- (hydrate-moved-head old stored store sync?))
                             (do
                               (<?- (ds/refresh-tiered-frontend store {:sync? sync?}))

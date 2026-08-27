@@ -1238,3 +1238,80 @@
                    "with no competing writer in existence"))
           (is (every? #(= ::ok %) outcomes)))
         (finally (d/release conn))))))
+
+;; ---------------------------------------------------------------------------
+;; Lineage guard: a connection must not outlive its database
+;; ---------------------------------------------------------------------------
+;;
+;; The store id comes from the user's config and survives a delete/recreate
+;; unchanged, so it cannot distinguish "the head advanced" from "a different
+;; database now lives here". `:datahike/id` can. Without the guard the second
+;; case reaches the index as `Node not found in storage.` -- a true statement
+;; about a wrong question -- because the moved-head path walks the old root as a
+;; delta base.
+
+(defn- lineage-cfg [path]
+  {:store  {:backend :file :path path
+            :id (java.util.UUID/nameUUIDFromBytes (.getBytes ^String path))}
+   :schema-flexibility :read
+   :keep-history? false
+   ;; shared ownership re-reads the head on deref, which is the path under test
+   :writer {:backend :self :writer-ownership :shared}})
+
+(deftest a-connection-that-outlived-its-database-raises-rather-than-walking-a-foreign-tree
+  (testing "delete + recreate under the same store id is caught by :datahike/id"
+    (let [path (str (System/getProperty "java.io.tmpdir") "/dh-lineage-guard-" (random-uuid))
+          cfg  (lineage-cfg path)]
+      (try
+        (d/create-database cfg)
+        (let [stale (d/connect cfg)]
+          (try
+            (d/transact stale [{:db/ident :nm :db/valueType :db.type/string
+                                :db/cardinality :db.cardinality/one}])
+            (d/transact stale [{:db/id -1 :nm "before"}])
+            (is (some? @stale)
+                "control: the connection derefs fine before the database is replaced")
+            ;; A SECOND PROCESS deletes and recreates. Binding the registry away is
+            ;; how this namespace already simulates that; it also keeps the local
+            ;; invalidation in `delete-database` from releasing `stale`, which is
+            ;; precisely the cross-process case this guard exists for.
+            (binding [conns/*connections* (atom {})]
+              (d/delete-database cfg)
+              (d/create-database cfg)
+              (let [other (d/connect cfg)]
+                (d/transact other [{:db/ident :nm :db/valueType :db.type/string
+                                    :db/cardinality :db.cardinality/one}])
+                (d/transact other [{:db/id -1 :nm "after"}])
+                (d/release other)))
+            (is (= :database-lineage-changed
+                   (try @stale nil
+                        (catch clojure.lang.ExceptionInfo e (:type (ex-data e)))))
+                "the stale connection names the real problem instead of failing inside the index")
+            (swap! (:wrapped-atom stale) update :meta dissoc :datahike/id)
+            (is (= :database-lineage-changed
+                   (try @stale nil
+                        (catch clojure.lang.ExceptionInfo e (:type (ex-data e)))))
+                "a legacy connection cannot silently rebind to a modern recreate")
+            (finally
+              (d/release stale true))))
+        (finally
+          (binding [conns/*connections* (atom {})]
+            (try (d/delete-database cfg) (catch Exception _ nil))))))))
+
+(deftest an-unmoved-head-is-unaffected-by-the-lineage-guard
+  (testing "same database, same lineage: deref keeps working across commits"
+    (let [path (str (System/getProperty "java.io.tmpdir") "/dh-lineage-same-" (random-uuid))
+          cfg  (lineage-cfg path)]
+      (try
+        (d/create-database cfg)
+        (let [conn (d/connect cfg)]
+          (d/transact conn [{:db/ident :nm :db/valueType :db.type/string
+                             :db/cardinality :db.cardinality/one}])
+          (let [id-1 (get-in @conn [:meta :datahike/id])]
+            (d/transact conn [{:db/id -1 :nm "a"}])
+            (d/transact conn [{:db/id -1 :nm "b"}])
+            (is (= id-1 (get-in @conn [:meta :datahike/id]))
+                "the lineage id is stable across commits -- the guard depends on this")
+            (is (= 2 (count (d/q (quote [:find ?e :where [?e :nm _]]) @conn)))))
+          (d/release conn))
+        (finally (try (d/delete-database cfg) (catch Exception _ nil)))))))
