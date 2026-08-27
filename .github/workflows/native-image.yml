@@ -24,12 +24,21 @@ jobs:
         include:
           - os: macos-15-intel
             name: macos
+            platform: macos
+            arch: amd64
+          - os: macos-15          # Apple Silicon
+            name: macos
+            platform: macos
+            arch: aarch64
     runs-on: ${{ matrix.os }}
     env:
       GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       GRAALVM_VERSION: 25.0.0
-      DTHK_PLATFORM: macos
-      DTHK_ARCH: amd64
+      # Per matrix entry, not per job: bb/src/tools/release.clj reads these to
+      # render {{lib}}-{{version}}-{{platform}}-{{arch}}.zip, so hardcoding them
+      # here is what limited this workflow to one architecture.
+      DTHK_PLATFORM: ${{ matrix.platform }}
+      DTHK_ARCH: ${{ matrix.arch }}
     steps:
       - name: Git checkout
         uses: actions/checkout@v2
