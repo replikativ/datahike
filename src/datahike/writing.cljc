@@ -1,6 +1,6 @@
 (ns datahike.writing
   "Manage all state changes and access to state of durable store."
-  (:require [datahike.connections :refer [delete-connection! *connections*]]
+  (:require [datahike.connections :refer [invalidate-store-connections!]]
             [datahike.db :as db]
             [datahike.gc-guard :as guard]
             [datahike.gc-roots :as roots]
@@ -1114,14 +1114,9 @@
 (defn -delete-database* [config]
   (go-try-
    (let [config (dc/load-config config {})
-         config-store-id (ds/store-identity (:store config))
-         active-conns (filter (fn [[store-id _branch]]
-                                (= store-id config-store-id))
-                              (keys @*connections*))]
+         config-store-id (ds/store-identity (:store config))]
      (sc/clear-write-cache (:store config))
-     (doseq [conn active-conns]
-       (log/warn :datahike/delete-unreleased-connections {:connection conn})
-       (delete-connection! conn))
+     (invalidate-store-connections! config-store-id)
      ;; AWAIT the deletion.
      ;;
      ;; konserve.store/delete-store defaults to {:sync? false}, and the async backends

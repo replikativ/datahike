@@ -1,4 +1,5 @@
-(ns ^:no-doc datahike.connections)
+(ns ^:no-doc datahike.connections
+  (:require [replikativ.logging :as log]))
 
 ;; Entry shape: {:conn <Connection|nil> :count <n> :node-cache <atom> :threshold <n>}
 ;;
@@ -105,3 +106,15 @@
   (when-let [conn (get-connection conn-id)]
     (reset! conn :released)
     (swap! *connections* dissoc conn-id)))
+
+(defn invalidate-store-connections!
+  "Remove every local connection for `store-id` from the registry.
+
+   A connection to a deleted database must not survive to be handed out again:
+   its cached head can reference storage nodes that disappeared with the store."
+  [store-id]
+  (doseq [conn-id (filter (fn [[connection-store-id _branch]]
+                            (= connection-store-id store-id))
+                          (keys @*connections*))]
+    (log/warn :datahike/delete-unreleased-connections {:connection conn-id})
+    (delete-connection! conn-id)))

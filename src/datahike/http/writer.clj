@@ -1,8 +1,10 @@
 (ns datahike.http.writer
   "Remote writer implementation for datahike.http.server through datahike.http.client."
   (:require [datahike.writer :refer [PWriter create-writer create-database delete-database]]
+            [datahike.connections :refer [invalidate-store-connections!]]
             [datahike.http.client :refer [request-cbor] :as client]
             [datahike.connector :as connector]
+            [datahike.store :as ds]
             [datahike.tools :as dt :refer [throwable-promise]]
             [replikativ.logging :as log]
             [clojure.core.async :refer [promise-chan put!]]))
@@ -61,17 +63,20 @@
   (let [p (throwable-promise)
         {:keys [writer] :as config} (first args)]
     ;; redirect call to remote-peer as writer config
-    (deliver p (try
-                 (-> (request-cbor :post
-                                   "delete-database-writer"
-                                   writer
-                                   (vec (concat [(-> config
-                                                     (assoc  :remote-peer writer)
-                                                     (dissoc :writer))]
-                                                (rest args))))
-                     (dissoc :remote-peer))
-                 (catch Exception e
-                   e)))
+    (let [result (try
+                   (-> (request-cbor :post
+                                     "delete-database-writer"
+                                     writer
+                                     (vec (concat [(-> config
+                                                       (assoc :remote-peer writer)
+                                                       (dissoc :writer))]
+                                                  (rest args))))
+                       (dissoc :remote-peer))
+                   (catch Exception e
+                     e))]
+      (when-not (instance? Throwable result)
+        (invalidate-store-connections! (ds/store-identity (:store config))))
+      (deliver p result))
     p))
 
 ;; =============================================================================
