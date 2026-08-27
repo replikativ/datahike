@@ -4103,7 +4103,7 @@
                path (cond
                       split?    "cartesian-split — disjoint components run as sub-queries and merge"
                       direct?   "direct — fused scans write straight to the result set"
-                      columnar? "columnar-aggregate if a secondary/columnar engine accepts (runtime probe); else relation"
+                      columnar? "aggregate-fast-path if primary ordered/secondary/columnar execution accepts (runtime probe); else relation"
                       :else     "relation — execute-plan over relations")]
            (str (header "planned" path) (format-plan-ops (:ops plan) 0) "\n"))))
      :cljs (throw (ex-info "explain is not supported in ClojureScript" {}))))
@@ -5222,7 +5222,11 @@
                     tb (when *profile?* #?(:clj (System/nanoTime) :cljs 0))
                     columnar-result
                     (when columnar-eligible?
-                      #?(:clj (or (try-secondary-index-aggregate db plan find-elements)
+                      #?(:clj (or (when-not stats?
+                                    ((requiring-resolve
+                                      'datahike.query.index-ordered-aggregate/execute)
+                                     plan db find-elements (:cancel context-in)))
+                                  (try-secondary-index-aggregate db plan find-elements)
                                   (try-columnar-aggregate plan db find-elements (:cancel context-in)))
                          :cljs nil))
                     tc (when *profile?* #?(:clj (System/nanoTime) :cljs 0))]
