@@ -17,6 +17,9 @@ jobs:
   native:
     if: "!contains(github.event.head_commit.message, 'skip ci')"
     strategy:
+      # One platform's failure must not cancel the others, and must not
+      # withhold their artifacts. Matters as soon as this matrix grows.
+      fail-fast: false
       matrix:
         include:
           - os: macos-15-intel
@@ -61,20 +64,44 @@ jobs:
       - name: Build libdatahike
         run: bb ni-compile
 
+      # Tests gate this platform's upload and nothing else. `continue-on-error`
+      # records the outcome without ending the job, so a red test here cannot
+      # withhold another platform's binaries.
       - name: Test native image
+        id: test-native-image
+        continue-on-error: true
         run: bb test native-image
 
       - name: Test babashka pod
-        run:  bb test bb-pod
+        id: test-bb-pod
+        continue-on-error: true
+        run: bb test bb-pod
 
       - name: Test libdatahike
+        id: test-libdatahike
+        continue-on-error: true
         run: bb test libdatahike
 
       - name: Release native-image
+        if: steps.test-native-image.outcome == 'success' && steps.test-bb-pod.outcome == 'success'
         run: bb release native-image
 
       - name: Release libdatahike
+        if: steps.test-libdatahike.outcome == 'success'
         run: bb release libdatahike
+
+      # The job still fails if anything above did, so the red X is not lost —
+      # it just no longer pre-empts the uploads that did pass.
+      - name: Fail the job if any test failed
+        if: |
+          steps.test-native-image.outcome != 'success' ||
+          steps.test-bb-pod.outcome != 'success' ||
+          steps.test-libdatahike.outcome != 'success'
+        run: |
+          echo "native-image: ${{ steps.test-native-image.outcome }}"
+          echo "bb-pod:       ${{ steps.test-bb-pod.outcome }}"
+          echo "libdatahike:  ${{ steps.test-libdatahike.outcome }}"
+          exit 1
 
       - name: Save cache
         uses: actions/cache/save@v4

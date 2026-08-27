@@ -32,13 +32,34 @@ for i in {1..100}; do
   ./dthk transact conn:$CONFIG "[[:db/add -$i :name \"User-$i\"]]"
 done
 ./dthk transact conn:$CONFIG '[[:db/add -1 :name "Judea"]]'
-QUERY_OUT=`./dthk query '[:find (count ?e) . :where [?e :name _]]' db:$CONFIG`
+# Capture stdout and stderr separately. Command substitution swallows stdout,
+# and under `set -o errexit` a non-zero exit here kills the script before
+# anything is printed -- which is how a silent failure in CI left no evidence
+# at all beyond "exit 1". Report both streams and the status before exiting.
+set +o errexit
+QUERY_ERR=$(mktemp)
+QUERY_OUT=$(./dthk query '[:find (count ?e) . :where [?e :name _]]' db:$CONFIG 2>"$QUERY_ERR")
+QUERY_STATUS=$?
+set -o errexit
 
-if [ $QUERY_OUT -eq 101 ]
+if [ $QUERY_STATUS -ne 0 ]; then
+  echo "Exception: dthk query exited $QUERY_STATUS"
+  echo "--- stdout ---"; echo "$QUERY_OUT"
+  echo "--- stderr ---"; cat "$QUERY_ERR"
+  rm -f "$QUERY_ERR"
+  exit 1
+fi
+
+if [ "$QUERY_OUT" = "101" ]
 then
   echo "Test successful."
+  rm -f "$QUERY_ERR"
 else
   echo "Exception: Query did not return correct value."
+  echo "  expected: 101"
+  echo "  actual:   '$QUERY_OUT'"
+  echo "--- stderr ---"; cat "$QUERY_ERR"
+  rm -f "$QUERY_ERR"
   exit 1
 fi
 
