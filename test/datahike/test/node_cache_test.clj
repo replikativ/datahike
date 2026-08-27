@@ -26,12 +26,12 @@
   (let [registry (atom {})
         store-id (random-uuid)]
     (binding [connections/*connections* registry]
-      (let [main-cache (connections/acquire-node-cache!
-                        [store-id :db] 64 #(atom :main-cache))
-            branch-cache (connections/acquire-node-cache!
-                          [store-id :feature] 64 #(atom :unused))
-            small-cache (connections/acquire-node-cache!
-                         [store-id :small] 8 #(atom :small-cache))]
+      (let [[_ main-cache] (connections/acquire-node-cache!
+                            [store-id :db] 64 #(atom :main-cache))
+            [_ branch-cache] (connections/acquire-node-cache!
+                              [store-id :feature] 64 #(atom :unused))
+            [_ small-cache] (connections/acquire-node-cache!
+                             [store-id :small] 8 #(atom :small-cache))]
         (is (identical? main-cache branch-cache)
             "branches of one store and threshold share the cache")
         (is (not (identical? main-cache small-cache))
@@ -41,12 +41,12 @@
   (let [store-id (random-uuid)
         first-registry (atom {})
         second-registry (atom {})
-        first-cache (binding [connections/*connections* first-registry]
-                      (connections/acquire-node-cache!
-                       [store-id :db] 64 #(atom :first-cache)))
-        second-cache (binding [connections/*connections* second-registry]
-                       (connections/acquire-node-cache!
-                        [store-id :db] 64 #(atom :second-cache)))]
+        [_ first-cache] (binding [connections/*connections* first-registry]
+                          (connections/acquire-node-cache!
+                           [store-id :db] 64 #(atom :first-cache)))
+        [_ second-cache] (binding [connections/*connections* second-registry]
+                           (connections/acquire-node-cache!
+                            [store-id :db] 64 #(atom :second-cache)))]
     (is (not (identical? first-cache second-cache)))
     (is (identical? first-cache
                     (get-in @first-registry [[store-id :db] :node-cache])))
@@ -76,6 +76,29 @@
         (is (not (contains? @registry [store-id :missing])))
         (finally
           (d/delete-database cfg))))))
+
+(deftest invalidation-rejects-an-in-flight-connection
+  (let [registry (atom {})
+        store-id (random-uuid)
+        conn-id [store-id :db]
+        conn (atom :connected)]
+    (binding [connections/*connections* registry]
+      (let [lease (connections/reserve-connection! conn-id)]
+        (connections/invalidate-store-connections! store-id)
+        (is (false? (connections/add-connection! conn-id lease conn)))
+        (is (empty? @registry))))))
+
+(deftest invalidation-releases-exactly-the-connections-it-removes
+  (let [registry (atom {})
+        store-id (random-uuid)
+        conn-id [store-id :db]
+        conn (atom :connected)]
+    (binding [connections/*connections* registry]
+      (let [lease (connections/reserve-connection! conn-id)]
+        (is (connections/add-connection! conn-id lease conn))
+        (connections/invalidate-store-connections! store-id)
+        (is (= :released @conn))
+        (is (empty? @registry))))))
 
 (deftest shared-cache-preserves-branch-write-isolation-and-reconnects
   (let [registry (atom {})

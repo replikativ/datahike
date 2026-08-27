@@ -1,7 +1,8 @@
 (ns ^:no-doc datahike.connections
   (:require [replikativ.logging :as log]))
 
-;; Entry shape: {:conn <Connection|nil> :count <n> :node-cache <atom> :threshold <n>}
+;; Entry shape: {:conn <Connection|nil> :count <n> :leases #{<uuid>}
+;;               :node-cache <atom> :threshold <n>}
 ;;
 ;; A `:conn` of nil is a RESERVATION: a connect that has begun but not finished.
 ;; `get-connection` ignores it, so it neither satisfies nor blocks a lookup; it
@@ -10,9 +11,15 @@
 (def ^:dynamic *connections* (atom {}))
 
 (defn get-connection [conn-id]
-  (when-let [conn (get-in @*connections* [conn-id :conn])]
-    (swap! *connections* update-in [conn-id :count] inc)
-    conn))
+  ;; Lookup and ref-count increment must be one registry operation. Otherwise a
+  ;; concurrent invalidation can remove the entry between them and `update-in`
+  ;; recreates a connection-less entry.
+  (get-in (swap! *connections*
+                 (fn [m]
+                   (if (get-in m [conn-id :conn])
+                     (update-in m [conn-id :count] inc)
+                     m)))
+          [conn-id :conn]))
 
 ;; ---------------------------------------------------------------------------
 ;; Node cache
@@ -71,41 +78,68 @@
         entries))
 
 (defn acquire-node-cache!
-  "Reserve `conn-id` and return the node cache its storage must use.
+  "Reserve `conn-id` and return `[lease node-cache]` for its storage.
 
    Atomic: the lookup of a sibling's cache and the installation of this
    reservation happen in one `swap!`, so two branches connecting concurrently
    cannot each create a cache for the same store. `make-cache` must be PURE --
    a `swap!` retry may call it and discard the result."
   [conn-id threshold make-cache]
-  (let [store-id (first conn-id)
+  (let [lease    (random-uuid)
+        store-id (first conn-id)
         entries  (swap! *connections*
                         (fn [m]
                           (if (contains? m conn-id)
-                            m
+                            (update-in m [conn-id :leases] (fnil conj #{}) lease)
                             (assoc m conn-id
-                                   {:conn nil :count 0 :threshold threshold
+                                   {:conn nil :count 0 :leases #{lease}
+                                    :threshold threshold
                                     :node-cache (or (sibling-cache m store-id threshold)
                                                     (make-cache))}))))]
-    (get-in entries [conn-id :node-cache])))
+    [lease (get-in entries [conn-id :node-cache])]))
+
+(defn reserve-connection!
+  "Return a lease that prevents an invalidated in-flight connect from later
+   publishing itself back into the registry. Used by connectors that own their
+   storage cache setup."
+  [conn-id]
+  (let [lease (random-uuid)]
+    (swap! *connections*
+           (fn [m]
+             (if (contains? m conn-id)
+               (update-in m [conn-id :leases] (fnil conj #{}) lease)
+               (assoc m conn-id {:conn nil :count 0 :leases #{lease}}))))
+    lease))
 
 (defn abandon-reservation!
   "Remove a reservation whose connect never completed. A no-op once the entry
    has become a real connection."
-  [conn-id]
+  [conn-id lease]
   (swap! *connections*
-         (fn [m] (if (nil? (get-in m [conn-id :conn])) (dissoc m conn-id) m)))
+         (fn [m]
+           (let [m (update-in m [conn-id :leases] disj lease)]
+             (if (and (nil? (get-in m [conn-id :conn]))
+                      (empty? (get-in m [conn-id :leases])))
+               (dissoc m conn-id)
+               m))))
   nil)
 
-(defn add-connection! [conn-id conn]
-  ;; `update`, not `assoc`: fills in the reservation taken by
-  ;; `acquire-node-cache!` without discarding the cache it selected.
-  (swap! *connections* update conn-id merge {:conn conn :count 1}))
+(defn add-connection!
+  "Publish `conn` only if its exact reservation survived invalidation."
+  [conn-id lease conn]
+  (let [entries (swap! *connections*
+                       (fn [m]
+                         (if (contains? (get-in m [conn-id :leases]) lease)
+                           (-> m
+                               (update conn-id merge {:conn conn :count 1})
+                               (update-in [conn-id :leases] disj lease))
+                           m)))]
+    (identical? conn (get-in entries [conn-id :conn]))))
 
 (defn delete-connection! [conn-id]
-  (when-let [conn (get-connection conn-id)]
-    (reset! conn :released)
-    (swap! *connections* dissoc conn-id)))
+  (let [[before _] (swap-vals! *connections* dissoc conn-id)]
+    (when-let [conn (get-in before [conn-id :conn])]
+      (reset! conn :released))))
 
 (defn invalidate-store-connections!
   "Remove every local connection for `store-id` from the registry.
@@ -120,15 +154,14 @@
    later `d/connect` will hand back -- which stayed latent until the optimistic
    overlay work started dereferencing the old root on a moved head."
   [store-id]
-  (let [mine? (fn [[connection-store-id _branch]] (= connection-store-id store-id))]
-    (doseq [conn-id (filter mine? (keys @*connections*))]
+  (let [mine? (fn [[connection-store-id _branch]] (= connection-store-id store-id))
+        [before _]
+        (swap-vals! *connections*
+                    (fn [m]
+                      (reduce (fn [acc k] (if (mine? k) (dissoc acc k) acc))
+                              m (keys m))))]
+    ;; Reset only connections removed by the same atomic operation. A later
+    ;; connection can neither be reset here nor publish with one of these leases.
+    (doseq [[conn-id {:keys [conn]}] (filter (comp mine? key) before)]
       (log/warn :datahike/delete-unreleased-connections {:connection conn-id})
-      (delete-connection! conn-id))
-    ;; `delete-connection!` goes through `get-connection`, which ignores
-    ;; RESERVATIONS (:conn nil -- a connect that has begun but not finished), so
-    ;; a delete racing an in-flight connect would leave one behind, holding the
-    ;; store's node cache alive for a database that no longer exists. Drop those
-    ;; too: a reservation for a deleted store cannot become a valid connection.
-    (swap! *connections*
-           (fn [m] (reduce (fn [acc k] (if (mine? k) (dissoc acc k) acc))
-                           m (keys m))))))
+      (when conn (reset! conn :released)))))

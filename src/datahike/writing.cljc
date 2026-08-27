@@ -1115,8 +1115,6 @@
   (go-try-
    (let [config (dc/load-config config {})
          config-store-id (ds/store-identity (:store config))]
-     (sc/clear-write-cache (:store config))
-     (invalidate-store-connections! config-store-id)
      ;; AWAIT the deletion.
      ;;
      ;; konserve.store/delete-store defaults to {:sync? false}, and the async backends
@@ -1131,7 +1129,12 @@
      ;; :tiered dropped its backend's channel entirely — so a tiered delete over S3
      ;; removed nothing. konserve#152 makes all backends honour the contract, which is
      ;; what lets us simply await here.
-     (<?- (ks/delete-store (:store config))))))
+     (let [result (<?- (ks/delete-store (:store config)))]
+       ;; Do not invalidate healthy connections when the physical deletion
+       ;; failed. Successful remote backends follow the same ordering.
+       (sc/clear-write-cache (:store config))
+       (invalidate-store-connections! config-store-id)
+       result))))
 
 (extend-protocol PDatabaseManager
   #?(:clj String :cljs string)

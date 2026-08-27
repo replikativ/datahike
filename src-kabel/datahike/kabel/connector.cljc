@@ -5,7 +5,8 @@
    It is called by datahike.connector when a kabel writer is detected."
   (:require [datahike.db :as db]
             [datahike.config :as dc]
-            [datahike.connections :refer [add-connection!]]
+            [datahike.connections :refer [add-connection! abandon-reservation!
+                                          reserve-connection!]]
             [datahike.connector :refer [->Connection]]
             [datahike.cbor :as dcbor]
             [datahike.kabel.writer :as kw]
@@ -111,7 +112,11 @@
   (log/info "connect-kabel called" {:store-backend (get-in raw-config [:store :backend])
                                     :opts opts})
   (go-try-
-   (let [;; Normalize config with defaults (cache sizes, etc.)
+   (let [config (dissoc (dc/load-config raw-config) :initial-tx :remote-peer :name)
+         conn-id [(ds/store-identity (:store config)) (or (:branch config) :db)]
+         lease (reserve-connection! conn-id)]
+     (try
+      (let [;; Normalize config with defaults (cache sizes, etc.)
          config (dissoc (dc/load-config raw-config) :initial-tx :remote-peer :name)
          store-config (:store config)
          store-id (ds/store-identity store-config)
@@ -318,11 +323,19 @@
          _ (log/trace "Connection atom set, ongoing sync enabled")]
 
       ;; 7. Register connection
-     (add-connection! conn-id conn)
+     (when-not (add-connection! conn-id lease conn)
+       (w/shutdown writer)
+       (reset! conn :released)
+       (log/raise "Database was deleted while connecting."
+                  {:type :database-deleted-during-connect
+                   :config config}))
 
      (log/info "KabelWriter connection complete" {:store-id store-id :max-tx (:max-tx stored-db)})
       ;; Return connection - caller must take from channel
-     conn)))
+       conn)
+      (catch #?(:clj Exception :cljs :default) e
+        (abandon-reservation! conn-id lease)
+        (throw e))))))
 
 ;; =============================================================================
 ;; Multimethod Integration
