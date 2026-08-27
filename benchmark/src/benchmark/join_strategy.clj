@@ -240,6 +240,8 @@
     :db/cardinality :db.cardinality/one :db/unique :db.unique/identity}
    {:db/ident :l/payload :db/valueType :db.type/long
     :db/cardinality :db.cardinality/one}
+   {:db/ident :l/run-key :db/valueType :db.type/long
+    :db/cardinality :db.cardinality/one :db/index true}
    {:db/ident :r/key :db/valueType :db.type/long
     :db/cardinality :db.cardinality/one :db/index true}
    {:db/ident :r/filter :db/valueType :db.type/long
@@ -253,6 +255,8 @@
    {:db/ident :l/key :db/valueType :db.type/tuple :db/cardinality :db.cardinality/one
     :db/tupleAttrs [:l/k1 :l/k2] :db/unique :db.unique/identity}
    {:db/ident :l/payload :db/valueType :db.type/long :db/cardinality :db.cardinality/one}
+   {:db/ident :l/run-key :db/valueType :db.type/long :db/cardinality :db.cardinality/one
+    :db/index true}
    {:db/ident :r/k1 :db/valueType :db.type/long :db/cardinality :db.cardinality/one}
    {:db/ident :r/k2 :db/valueType :db.type/long :db/cardinality :db.cardinality/one}
    {:db/ident :r/key :db/valueType :db.type/tuple :db/cardinality :db.cardinality/one
@@ -284,8 +288,9 @@
         left-row (fn [i]
                    (if tuple?
                      (let [[k1 k2] (key-parts i)]
-                       {:l/k1 k1 :l/k2 k2 :l/payload i})
-                     {:l/key i :l/payload i}))
+                       {:l/k1 k1 :l/k2 k2 :l/payload i
+                        :l/run-key (mod i filter-distinct)})
+                     {:l/key i :l/payload i :l/run-key (mod i filter-distinct)}))
         right-row (fn [i]
                     (let [k (+ right-offset
                                (quot (* (long i) right-distinct) right-rows))]
@@ -347,6 +352,24 @@
     [?r :r/filter ?filter]
     [(<= ?filter ?max-filter)]])
 
+(def scalar-sum-query
+  '[:find (sum ?amount) .
+    :with ?r
+    :where
+    [?l :l/key ?key]
+    [?r :r/key ?key]
+    [?r :r/payload ?amount]])
+
+(def duplicate-run-sum-query
+  '[:find (sum ?amount) .
+    :in $ ?max-key
+    :with ?l ?r
+    :where
+    [?l :l/run-key ?key]
+    [(<= ?key ?max-key)]
+    [?r :r/filter ?key]
+    [?r :r/payload ?amount]])
+
 (defn measure-query
   "Measure the current compiled/hash path and relational fallback in the same
   warmed JVM. Result equality is checked before timing."
@@ -388,11 +411,21 @@
                         ioa/*enabled* enabled?]
                 (apply d/q query db inputs)))
         baseline-result (run false)
-        ordered-result (run true)]
-    (assert (= (set baseline-result) (set ordered-result)))
-    (let [baseline (measure #(run false) count)
-          ordered (measure #(run true) count)]
-      {:rows (count ordered-result)
+        ordered-result (run true)
+        reference-result (binding [q/*disable-planner* true
+                                   q/*query-result-cache?* false]
+                           (apply d/q query db inputs))
+        equivalent? (fn [a b]
+                      (if (and (number? a) (number? b))
+                        (<= (Math/abs (- (double a) (double b)))
+                            (* 1.0e-12 (max 1.0 (Math/abs (double b)))))
+                        (= (set a) (set b))))]
+    (assert (equivalent? reference-result ordered-result))
+    (let [summarize #(if (coll? %) (count %) %)
+          baseline (measure #(run false) summarize)
+          ordered (measure #(run true) summarize)]
+      {:rows (if (coll? ordered-result) (count ordered-result) 1)
+       :baseline-correct? (equivalent? reference-result baseline-result)
        :baseline baseline
        :ordered ordered
        :time-ratio (/ (:ms ordered) (:ms baseline))
@@ -400,9 +433,10 @@
                            (/ (:allocated-mb ordered) (:allocated-mb baseline)))})))
 
 (defn print-ordered-result
-  [label {:keys [rows baseline ordered time-ratio allocation-ratio] :as result}]
-  (println (format "%s rows=%d\n  relation %8.2fms / %7.1fMB\n  ordered  %8.2fms / %7.1fMB\n  ratios   %8.2fx / %7.2fx"
+  [label {:keys [rows baseline-correct? baseline ordered time-ratio allocation-ratio] :as result}]
+  (println (format "%s rows=%d%s\n  relation %8.2fms / %7.1fMB\n  ordered  %8.2fms / %7.1fMB\n  ratios   %8.2fx / %7.2fx"
                    label rows
+                   (if baseline-correct? "" " (relation result differs from legacy oracle)")
                    (:ms baseline) (:allocated-mb baseline)
                    (:ms ordered) (:allocated-mb ordered)
                    time-ratio (or allocation-ratio Double/NaN)))
@@ -569,6 +603,7 @@
 (defn -main [& args]
   (let [query? (boolean (some #{"--query"} args))
         scale? (boolean (some #{"--scale"} args))
+        sum? (boolean (some #{"--sum"} args))
         assert? (boolean (some #{"--assert"} args))]
     (if-not query?
       (print-results (run-kernels (boolean (some #{"--materialize"} args))))
@@ -579,12 +614,21 @@
                                :right-rows right-rows
                                :right-distinct left-rows
                                :filter-distinct 30000})
-            result (print-ordered-result
-                    (format "ordered aggregate %d x %d" left-rows right-rows)
-                    (measure-ordered-query (:db fixture) branch-shape-query 0 15000))
-            bad? (or (> (:time-ratio result) 0.75)
-                     (and (:allocation-ratio result)
-                          (> (:allocation-ratio result) 0.80)))]
+            cases (if sum?
+                    [["scalar sum, unique other side" scalar-sum-query []]
+                     ["scalar sum, duplicate runs" duplicate-run-sum-query [15000]]]
+                    [[(format "ordered aggregate %d x %d" left-rows right-rows)
+                      branch-shape-query [0 15000]]])
+            results (mapv (fn [[label query inputs]]
+                            (print-ordered-result
+                             label
+                             (apply measure-ordered-query (:db fixture) query inputs)))
+                          cases)
+            bad? (some (fn [result]
+                         (or (> (:time-ratio result) 0.75)
+                             (and (:allocation-ratio result)
+                                  (> (:allocation-ratio result) 0.80))))
+                       results)]
         (when (and assert? bad?)
           (println "REGRESSION: ordered aggregate missed its relative performance bounds")
           (System/exit 1))))))
