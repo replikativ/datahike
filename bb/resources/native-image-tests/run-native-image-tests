@@ -3,42 +3,46 @@
 set -o errexit
 set -o pipefail
 
+# native-image appends .exe on Windows; everything below goes through $DTHK.
+DTHK=./dthk
+[ -x "$DTHK" ] || DTHK=./dthk.exe
+
 TMPSTORE=/tmp/dh-test-store
 CONFIG=bb/resources/native-image-tests/testconfig.edn
 ATTR_REF_CONFIG=bb/resources/native-image-tests/testconfig.attr-refs.edn
 
 trap "rm -rf $TMPSTORE" EXIT
 
-./dthk delete-database edn:$ATTR_REF_CONFIG
-./dthk create-database edn:$ATTR_REF_CONFIG
+"$DTHK" delete-database edn:$ATTR_REF_CONFIG
+"$DTHK" create-database edn:$ATTR_REF_CONFIG
 
-./dthk database-exists edn:$ATTR_REF_CONFIG
+"$DTHK" database-exists edn:$ATTR_REF_CONFIG
 
 # test that warnings etc. get logged to stderr
-LOG_OUTPUT="$(./dthk query '[:find ?e . :where [?e :nonexistent _]]' db:$ATTR_REF_CONFIG 2>&1 >/dev/null | grep ':nonexistent')"
+LOG_OUTPUT="$("$DTHK" query '[:find ?e . :where [?e :nonexistent _]]' db:$ATTR_REF_CONFIG 2>&1 >/dev/null | grep ':nonexistent')"
 if [ -z "$LOG_OUTPUT" ]
 then
   echo "Exception: binary did not log to stderr"
   exit 1
 fi
 
-./dthk delete-database edn:$CONFIG
-./dthk create-database edn:$CONFIG
+"$DTHK" delete-database edn:$CONFIG
+"$DTHK" create-database edn:$CONFIG
 
-./dthk database-exists edn:$CONFIG
+"$DTHK" database-exists edn:$CONFIG
 
 # Add test data with tx transact (benchmark command no longer available)
 for i in {1..100}; do
-  ./dthk transact conn:$CONFIG "[[:db/add -$i :name \"User-$i\"]]"
+  "$DTHK" transact conn:$CONFIG "[[:db/add -$i :name \"User-$i\"]]"
 done
-./dthk transact conn:$CONFIG '[[:db/add -1 :name "Judea"]]'
+"$DTHK" transact conn:$CONFIG '[[:db/add -1 :name "Judea"]]'
 # Capture stdout and stderr separately. Command substitution swallows stdout,
 # and under `set -o errexit` a non-zero exit here kills the script before
 # anything is printed -- which is how a silent failure in CI left no evidence
 # at all beyond "exit 1". Report both streams and the status before exiting.
 set +o errexit
 QUERY_ERR=$(mktemp)
-QUERY_OUT=$(./dthk query '[:find (count ?e) . :where [?e :name _]]' db:$CONFIG 2>"$QUERY_ERR")
+QUERY_OUT=$("$DTHK" query '[:find (count ?e) . :where [?e :name _]]' db:$CONFIG 2>"$QUERY_ERR")
 QUERY_STATUS=$?
 set -o errexit
 
@@ -64,22 +68,22 @@ else
 fi
 
 # test history input parsing
-./dthk query '[:find (count ?e) . :where [?e :name _]]' history:$CONFIG
-./dthk query '[:find (count ?e) . :where [?e :name _]]' since:0:$CONFIG
-./dthk query '[:find (count ?e) . :where [?e :name _]]' asof:0:$CONFIG
+"$DTHK" query '[:find (count ?e) . :where [?e :name _]]' history:$CONFIG
+"$DTHK" query '[:find (count ?e) . :where [?e :name _]]' since:0:$CONFIG
+"$DTHK" query '[:find (count ?e) . :where [?e :name _]]' asof:0:$CONFIG
 
 # other calls
-./dthk pull db:$CONFIG "[:db/id, :name]" "1"
-./dthk pull-many db:$CONFIG "[:db/id, :name]" "[1]"
-./dthk entity db:$CONFIG "1"
-./dthk datoms db:$CONFIG "{:index :eavt :components [1]}"
-./dthk schema db:$CONFIG
-./dthk reverse-schema db:$CONFIG
-./dthk metrics db:$CONFIG
+"$DTHK" pull db:$CONFIG "[:db/id, :name]" "1"
+"$DTHK" pull-many db:$CONFIG "[:db/id, :name]" "[1]"
+"$DTHK" entity db:$CONFIG "1"
+"$DTHK" datoms db:$CONFIG "{:index :eavt :components [1]}"
+"$DTHK" schema db:$CONFIG
+"$DTHK" reverse-schema db:$CONFIG
+"$DTHK" metrics db:$CONFIG
 
 # test serialization
-./dthk query '[:find ?e . :where [?e :name ?n]]' db:$CONFIG --format cbor >> /tmp/test
-./dthk query '[:find ?i :in $ ?i . :where [?e :name ?n]]' db:$CONFIG cbor:/tmp/test # => 1
+"$DTHK" query '[:find ?e . :where [?e :name ?n]]' db:$CONFIG --format cbor >> /tmp/test
+"$DTHK" query '[:find ?i :in $ ?i . :where [?e :name ?n]]' db:$CONFIG cbor:/tmp/test # => 1
 
 # CBOR through a POPULATED registry, which the two lines above do not reach:
 # they use the empty interop registry, so no tag-27 record is ever constructed.
@@ -110,9 +114,9 @@ then
   exit 1
 fi
 
-./dthk create-database edn:$CBOR_CONFIG
-./dthk transact conn:$CBOR_CONFIG '[{:name "Kwame"}]'
-CBOR_OUT=`./dthk query '[:find (count ?e) . :where [?e :name _]]' db:$CBOR_CONFIG`
+"$DTHK" create-database edn:$CBOR_CONFIG
+"$DTHK" transact conn:$CBOR_CONFIG '[{:name "Kwame"}]'
+CBOR_OUT=`"$DTHK" query '[:find (count ?e) . :where [?e :name _]]' db:$CBOR_CONFIG`
 if [ "$CBOR_OUT" -eq 1 ]
 then
   echo "CBOR remote-writer test successful."
@@ -120,12 +124,12 @@ else
   echo "Exception: CBOR remote writer did not round-trip (got '$CBOR_OUT')."
   exit 1
 fi
-./dthk delete-database edn:$CBOR_CONFIG
+"$DTHK" delete-database edn:$CBOR_CONFIG
 kill $CBOR_SERVER_PID 2>/dev/null || true
 trap "rm -rf $TMPSTORE /tmp/dh-cbor-writer-store" EXIT
 
 # test arbitrary :in[puts] as positional args
-QUERY_OUT=`./dthk query '[:find (pull ?e [*]) . :in $ ?name :where [?e :name ?name]]' db:$CONFIG '"Judea"'`
+QUERY_OUT=`"$DTHK" query '[:find (pull ?e [*]) . :in $ ?name :where [?e :name ?name]]' db:$CONFIG '"Judea"'`
 if [ "$QUERY_OUT" = '{:db/id 101, :name "Judea"}' ]
 then
   echo "Positional input test successful."
@@ -134,5 +138,5 @@ else
   exit 1
 fi
 
-./dthk delete-database edn:$CONFIG
-./dthk delete-database edn:$ATTR_REF_CONFIG
+"$DTHK" delete-database edn:$CONFIG
+"$DTHK" delete-database edn:$ATTR_REF_CONFIG

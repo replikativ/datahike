@@ -69,16 +69,26 @@
         (fs/zip zip-name [target-dir])
         zip-name))))
 
+(defn- built-binary
+  "The configured :binary-name is the POSIX spelling. native-image appends .exe
+   on Windows, so take whichever one actually landed rather than deciding from
+   the platform. Returns the bare name (what fs/zip wants) or nil."
+  [target-dir binary-name]
+  (->> [binary-name (str binary-name ".exe")]
+       (filter #(fs/exists? (str target-dir "/" %)))
+       first))
+
 (defn zip-cli [config project]
   (let [{:keys [target-dir binary-name zip-pattern]} (-> config :release project)
         lib (:lib config)
         version (version/string config)
-        binary-path (str target-dir "/" binary-name)]
-    (if-not (fs/exists? binary-path)
-      (do (println (str "ERROR: " binary-path " executable not found, please compile first."))
+        built (built-binary target-dir binary-name)]
+    (if-not built
+      (do (println (str "ERROR: " target-dir "/" binary-name " (or .exe) executable not found, "
+                        "please compile first."))
           (System/exit 1))
       (let [zip-name (zip-path lib version target-dir zip-pattern)]
-        (fs/zip zip-name [binary-name])
+        (fs/zip zip-name [built])
         zip-name))))
 
 (defn -main [config args]

@@ -63,18 +63,25 @@
                        " :paths [\"test/datahike/backward_compatibility_test/src\"]}")
          "-X" "backward-test/read")))
 
+(defn- cli-binary
+  "native-image appends .exe on Windows; the rest of the tree spells it dthk."
+  []
+  (first (filter fs/exists? ["./dthk" "./dthk.exe"])))
+
 (defn native-image []
-  (if (fs/exists? "./dthk")
-    (p/shell "./bb/resources/native-image-tests/run-native-image-tests")
+  (if (cli-binary)
+    ;; Invoked through bash rather than executed directly: the script carries a
+    ;; shebang, which Windows does not honour, and Git Bash is on PATH there.
+    (p/shell "bash" "./bb/resources/native-image-tests/run-native-image-tests")
     (println "Native image cli missing. Please run 'bb ni-cli' and try again.")))
 
 (defn libdatahike []
   (if (fs/exists? "./libdatahike/target")
-    (p/shell "./bb/resources/native-image-tests/run-libdatahike-tests")
+    (p/shell "bash" "./bb/resources/native-image-tests/run-libdatahike-tests")
     (println "libdatahike binaries missing. Please run 'bb ni-compile' and try again.")))
 
 (defn bb-pod []
-  (if (fs/exists? "./dthk")
+  (if (cli-binary)
     (p/shell "./bb/resources/native-image-tests/run-bb-pod-tests.clj")
     (do (println "Native image cli missing. Please run 'bb ni-cli' and try again.")
         (System/exit 1))))
