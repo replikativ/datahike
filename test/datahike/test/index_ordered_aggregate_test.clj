@@ -13,12 +13,14 @@
            :db/tupleAttrs [:l/k1 :l/k2]
            :db/unique :db.unique/identity}
    :l/nonunique {:db/index true}
+   :l/run-key {:db/index true}
    :l/payload {}
    :r/k1 {}
    :r/k2 {}
    :r/key {:db/valueType :db.type/tuple
            :db/tupleAttrs [:r/k1 :r/k2]
            :db/index true}
+   :r/amount {}
    :r/filter {:db/index true}})
 
 (def write-schema
@@ -33,14 +35,16 @@
   (let [left (mapv (fn [i]
                      (let [[k1 k2] (key-parts i)]
                        {:db/id (- (inc i))
-                        :l/k1 k1 :l/k2 k2 :l/nonunique i :l/payload i}))
+                        :l/k1 k1 :l/k2 k2 :l/nonunique i
+                        :l/run-key (mod i 200) :l/payload i}))
                    (range 1000))
         ;; Ten rows per key, with only keys 500..999 overlapping the producer.
         right (mapv (fn [i]
                       (let [k (+ 500 (quot i 10))
                             [k1 k2] (key-parts k)]
                         {:db/id (- (+ 1001 i))
-                         :r/k1 k1 :r/k2 k2 :r/filter (mod i 20)}))
+                         :r/k1 k1 :r/k2 k2 :r/filter (mod i 20)
+                         :r/amount (inc (mod i 7))}))
                     (range 10000))]
     (d/db-with (if (:attribute-refs? config)
                  (d/db-with (db/empty-db nil config)
@@ -80,6 +84,30 @@
     [?l :l/payload ?payload]
     [?r :r/key ?key]])
 
+(def unique-side-sum-query
+  '[:find (sum ?amount) .
+    :with ?r
+    :where
+    [?l :l/key ?key]
+    [?r :r/key ?key]
+    [?r :r/amount ?amount]])
+
+(def duplicate-run-sum-query
+  '[:find (sum ?amount) .
+    :with ?l ?r
+    :where
+    [?l :l/run-key ?key]
+    [(<= ?key 9)]
+    [?r :r/filter ?key]
+    [?r :r/amount ?amount]])
+
+(def missing-with-sum-query
+  '[:find (sum ?amount) .
+    :where
+    [?l :l/run-key ?key]
+    [?r :r/filter ?key]
+    [?r :r/amount ?amount]])
+
 (defn- run-query
   ([query inputs enabled?]
    (run-query query inputs enabled? @test-db))
@@ -95,7 +123,13 @@
                                     (when result (reset! selected? true))
                                     result))]
                     (apply d/q query database inputs)))]
-     {:result (set result) :selected? @selected?})))
+     {:result (if (coll? result) (set result) result)
+      :selected? @selected?})))
+
+(defn- run-legacy-query [query inputs]
+  (binding [q/*disable-planner* true
+            q/*query-result-cache?* false]
+    (apply d/q query @test-db inputs)))
 
 (deftest ordered-count-aggregate-is-differentially-correct
   (doseq [[label inputs selected?]
@@ -127,3 +161,25 @@
         ordered (run-query filtered-count-query [250 9] true database)]
     (is (= (:result baseline) (:result ordered)))
     (is (true? (:selected? ordered)))))
+
+(deftest scalar-sum-preserves-with-multiplicity
+  (doseq [[label query]
+          [[:unique-other-side unique-side-sum-query]
+           [:duplicate-runs-and-pushdown duplicate-run-sum-query]]]
+    (testing (name label)
+      (let [baseline (run-query query [] false)
+            legacy (run-legacy-query query [])
+            ordered (run-query query [] true)]
+        (if (= :duplicate-runs-and-pushdown label)
+          ;; The ordinary planned Relation path currently loses this pushed
+          ;; join-key predicate; the legacy engine is the semantic oracle.
+          (is (= legacy (:result ordered)))
+          (is (= (:result baseline) (:result ordered))))
+        (is (integer? (:result ordered)))
+        (is (true? (:selected? ordered)))))))
+
+(deftest sum-without-multiplicity-proof-falls-back
+  (let [baseline (run-query missing-with-sum-query [] false)
+        enabled (run-query missing-with-sum-query [] true)]
+    (is (= (:result baseline) (:result enabled)))
+    (is (false? (:selected? enabled)))))
