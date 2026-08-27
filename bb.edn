@@ -180,11 +180,23 @@
          ;; native image
 
          ni-check {:doc "Check for 'native-image' program"
-                   :task (try (shell "which" "native-image")
-                              (println "Program native-image found!")
-                              (catch Exception _
-                                (println "PATH does not contain native-image! Make sure to add your GraalVM to it.")
-                                (System/exit 1)))}
+                   ;; Resolve it the way clj.native-image will, rather than with
+                   ;; `which`: on Windows the file is native-image.cmd, and the
+                   ;; builder looks in GRAALVM_HOME before PATH. Checking
+                   ;; differently from the builder is how this passed on POSIX
+                   ;; and failed on a runner that had GraalVM on PATH all along.
+                   :task (let [windows? (str/starts-with? (System/getProperty "os.name") "Windows")
+                               filename (if windows? "native-image.cmd" "native-image")
+                               home (System/getenv "GRAALVM_HOME")
+                               candidates (concat (when home
+                                                    [(fs/path home "bin" filename)
+                                                     (fs/path home filename)])
+                                                  (when-let [w (fs/which filename)] [w]))]
+                           (if-let [found (first (filter fs/exists? candidates))]
+                             (println "Program native-image found:" (str found))
+                             (do (println (str "Could not find " filename
+                                               ". Set GRAALVM_HOME or put it on PATH."))
+                                 (System/exit 1))))}
 
          ni-cli {:doc "Build native image cli"
                  :depends [jcompile ni-check version-resource]
