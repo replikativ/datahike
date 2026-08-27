@@ -3,7 +3,7 @@
                                                      :exclusions [org.clojure/clojurescript]}
         org.replikativ/konserve                     {:mvn/version "0.9.385"}
 
-        org.replikativ/superv.async                 {:mvn/version "0.3.50"
+        org.replikativ/superv.async                 {:mvn/version "0.3.51"
                                                      :exclusions [org.clojure/clojurescript]}
         org.replikativ/datalog-parser               {:mvn/version "0.2.42"}
         ;; canonical fressian node+root handlers + MST boundary (0.4.126); diff-buf write-buffering
