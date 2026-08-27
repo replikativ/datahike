@@ -64,6 +64,188 @@
      persist alongside their content keys.
      Returns updated index instance (must be persistent/immutable)."))
 
+(defprotocol ISecondaryCandidateScan
+  "Optional, paged candidate API for secondary indexes.
+
+   `ISecondaryIndex` deliberately remains unchanged: existing adapters keep
+   working and query paths may adopt this richer API incrementally.  This
+   protocol is for indexes which can expose enough information for Datahike to
+   decide whether a primary-index recheck is required and whether exhausting
+   the scan is guaranteed to find every match.
+
+   The result of `-candidate-page` is validated by `candidate-page` and has:
+
+     :candidates    vector of candidate maps
+     :precision     :exact or :recheck
+     :recall        :complete or :approximate
+     :ordering      :exact, :approximate, or :none
+     :exhausted?    boolean
+     :continuation  opaque token when more pages remain, nil when exhausted
+
+   A candidate map contains at least `:entity-id` and `:attribute`.  Those two
+   fields identify the primary datoms that core must inspect for an exact
+   recheck.  `:value-hash` may additionally identify one value of a
+   cardinality-many or `:db.secondary/only` attribute.  Adapters may attach
+   result columns such as `:score` or `:distance`.
+
+   Precision and recall are independent.  For example, a text index may return
+   a complete superset (`:recheck` + `:complete`), while ANN typically has
+   approximate recall even if every returned distance is subsequently
+   rechecked.  Ordering describes the advertised result order, relative to the
+   order requested by `query-spec`; it does not describe match precision."
+  (-candidate-page [this query-spec entity-filter page-request]
+    "Return one candidate page. `page-request` contains a positive `:limit`
+     and optionally the opaque `:continuation` returned by the previous page."))
+
+(def ^:private candidate-precisions #{:exact :recheck})
+(def ^:private candidate-recalls #{:complete :approximate})
+(def ^:private candidate-orderings #{:exact :approximate :none})
+
+(defn candidate-scannable?
+  "Whether `index` implements the optional paged candidate contract."
+  [index]
+  (satisfies? ISecondaryCandidateScan index))
+
+(defn candidate-recheck-required?
+  "Whether candidates must be checked against canonical primary datoms."
+  [page]
+  (= :recheck (:precision page)))
+
+(defn candidate-recall-complete?
+  "Whether exhausting the scan is guaranteed to enumerate every match."
+  [page]
+  (= :complete (:recall page)))
+
+(defn candidate-order-exact?
+  "Whether the page's advertised ordering is exact."
+  [page]
+  (= :exact (:ordering page)))
+
+(defn- invalid-candidate-page!
+  [message data]
+  (throw (ex-info message (assoc data :type :invalid-secondary-candidate-page))))
+
+(defn validate-candidate-page
+  "Validate and normalize a page returned by `ISecondaryCandidateScan`.
+
+   Returns the page with `:candidates` realized as a vector.  Throws a typed
+   `ExceptionInfo` for malformed adapter output, so a bad index cannot silently
+   turn into incomplete query results."
+  [page]
+  (when-not (map? page)
+    (invalid-candidate-page! "A secondary candidate page must be a map."
+                             {:page page}))
+  (let [{:keys [candidates precision recall ordering exhausted? continuation]}
+        page]
+    (when-not (sequential? candidates)
+      (invalid-candidate-page! "Secondary candidate :candidates must be sequential."
+                               {:page page}))
+    (when-not (contains? candidate-precisions precision)
+      (invalid-candidate-page! "Secondary candidate :precision must be :exact or :recheck."
+                               {:page page :precision precision}))
+    (when-not (contains? candidate-recalls recall)
+      (invalid-candidate-page! "Secondary candidate :recall must be :complete or :approximate."
+                               {:page page :recall recall}))
+    (when-not (contains? candidate-orderings ordering)
+      (invalid-candidate-page! "Secondary candidate :ordering must be :exact, :approximate, or :none."
+                               {:page page :ordering ordering}))
+    (when-not (boolean? exhausted?)
+      (invalid-candidate-page! "Secondary candidate :exhausted? must be boolean."
+                               {:page page :exhausted? exhausted?}))
+    (when (and exhausted? (some? continuation))
+      (invalid-candidate-page! "An exhausted candidate page cannot have a continuation."
+                               {:page page}))
+    (when (and (not exhausted?) (nil? continuation))
+      (invalid-candidate-page! "A non-exhausted candidate page must have a continuation."
+                               {:page page}))
+    (doseq [candidate candidates]
+      (when-not (and (map? candidate)
+                     (integer? (:entity-id candidate))
+                     (keyword? (:attribute candidate)))
+        (invalid-candidate-page!
+         "Each secondary candidate must identify an integer :entity-id and keyword :attribute."
+         {:page page :candidate candidate})))
+    (assoc page :candidates (vec candidates))))
+
+(defn- candidate-identity
+  [candidate]
+  (cond-> [(:entity-id candidate) (:attribute candidate)]
+    (contains? candidate :value-hash) (conj (:value-hash candidate))))
+
+(defn- invalid-candidate-scan!
+  [message data]
+  (throw (ex-info message (assoc data :type :invalid-secondary-candidate-scan))))
+
+(defn validate-candidate-scan
+  "Validate pages collected from one candidate scan and return them normalized.
+
+   This is also the reusable adapter conformance assertion: Scriptum, Proximum,
+   and third-party indexes can collect a small fixture scan by feeding each
+   page's `:continuation` into the next request, then pass the pages here.
+
+   A scan has stable precision, recall, and ordering declarations; every page
+   except the last has a distinct continuation; the last is exhausted; and a
+   candidate identity does not repeat across pages.  Identity is
+   `[entity-id attribute]`, extended by `value-hash` when supplied."
+  [pages]
+  (when-not (seq pages)
+    (invalid-candidate-scan! "A secondary candidate scan must contain at least one page."
+                             {:pages pages}))
+  (let [pages (mapv validate-candidate-page pages)
+        declaration (select-keys (first pages) [:precision :recall :ordering])
+        declarations (mapv #(select-keys % [:precision :recall :ordering]) pages)
+        preceding (pop pages)
+        final-page (peek pages)
+        continuations (mapv :continuation preceding)
+        identities (mapv candidate-identity (mapcat :candidates pages))]
+    (when-not (every? #(= declaration %) declarations)
+      (invalid-candidate-scan!
+       "Secondary candidate precision, recall, and ordering must remain stable across pages."
+       {:pages pages :declarations declarations}))
+    (when (some :exhausted? preceding)
+      (invalid-candidate-scan! "Only the final secondary candidate page may be exhausted."
+                               {:pages pages}))
+    (when-not (:exhausted? final-page)
+      (invalid-candidate-scan! "The final secondary candidate page must be exhausted."
+                               {:pages pages}))
+    (when-not (= (count continuations) (count (distinct continuations)))
+      (invalid-candidate-scan! "Secondary candidate continuations must not repeat."
+                               {:pages pages :continuations continuations}))
+    (when-not (= (count identities) (count (distinct identities)))
+      (invalid-candidate-scan! "Secondary candidate identities must not repeat within a scan."
+                               {:pages pages :candidate-identities identities}))
+    pages))
+
+(declare require-query-eligible!)
+
+(defn candidate-page
+  "Read and validate one candidate page from `index`.
+
+   The database and index ident are mandatory so every core caller goes through
+   the same lifecycle-readiness gate as existing external-engine queries.
+   Direct calls to the adapter protocol are intentionally low-level."
+  [db idx-ident index query-spec entity-filter page-request]
+  (require-query-eligible! db idx-ident)
+  (when-not (candidate-scannable? index)
+    (throw (ex-info (str "Secondary index " (pr-str idx-ident)
+                         " does not support candidate scans.")
+                    {:type :secondary-candidate-scan-unsupported
+                     :index-ident idx-ident})))
+  (when-not (and (map? page-request)
+                 (integer? (:limit page-request))
+                 (pos? (:limit page-request)))
+    (throw (ex-info "A secondary candidate page request requires a positive integer :limit."
+                    {:type :invalid-secondary-candidate-request
+                     :index-ident idx-ident
+                     :request page-request})))
+  (let [page (validate-candidate-page
+              (-candidate-page index query-spec entity-filter page-request))]
+    (when (> (count (:candidates page)) (:limit page-request))
+      (invalid-candidate-page!
+       "A secondary candidate page cannot exceed the requested :limit."
+       {:page page :request page-request}))
+    page))
+
 (defprotocol ISecondaryScannable
   "Optional: enumerate what this index holds, so a BACKUP can carry it.
 
