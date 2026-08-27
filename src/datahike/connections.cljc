@@ -111,7 +111,14 @@
   "Remove every local connection for `store-id` from the registry.
 
    A connection to a deleted database must not survive to be handed out again:
-   its cached head can reference storage nodes that disappeared with the store."
+   its cached head can reference storage nodes that disappeared with the store.
+
+   EVERY writer backend whose `delete-database` deletes REMOTELY must call this
+   on success, because nothing else in this process will. `:self` gets it via
+   `writing/-delete-database*`; `:datahike-server` and `:kabel` call it from
+   their own methods. A backend that forgets leaves a stale connection that a
+   later `d/connect` will hand back -- which stayed latent until the optimistic
+   overlay work started dereferencing the old root on a moved head."
   [store-id]
   (doseq [conn-id (filter (fn [[connection-store-id _branch]]
                             (= connection-store-id store-id))

@@ -14,6 +14,8 @@
    ```"
   (:require [datahike.writer :as writer :refer [PWriter]]
             [datahike.writing :as dw]
+            [datahike.connections :refer [invalidate-store-connections!]]
+            [datahike.store :as dstore]
             [datahike.cbor :as dcbor]
             [datahike.tools :refer [throwable-promise]]
             [is.simm.distributed-scope :as ds]
@@ -321,6 +323,18 @@
         (let [result (<?- (ds/invoke-remote peer-id
                                             'datahike.kabel/delete-database
                                             {:config remote-config}))]
+          ;; Same reason as the :datahike-server backend: the delete happened on
+          ;; the remote peer, so nothing here has touched THIS process's
+          ;; connection registry. Left alone, a later `d/connect` with the same
+          ;; config hands back a connection whose head belongs to the deleted
+          ;; database. Only on success -- a failed delete must leave the
+          ;; connection usable.
+          ;;
+          ;; The server side needs no equivalent: its handler already releases
+          ;; every registered branch connection before deleting
+          ;; (kabel/handlers.cljc), and the delete itself goes through
+          ;; `-delete-database*`, which invalidates.
+          (invalidate-store-connections! (dstore/store-identity (:store config)))
           (#?(:clj deliver :cljs put!) p result))
         (catch #?(:clj Exception :cljs js/Error) e
           (log/error "Error in delete-database :kabel" e)

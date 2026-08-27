@@ -7,6 +7,8 @@
             [datahike.query :as dq]
             [datahike.writing :as dw]
             [datahike.writer :as writer]
+            [datahike.connections :as connections]
+            [is.simm.distributed-scope :as ds]
             [clojure.core.async :refer [<!! go timeout alts!! promise-chan]]))
 
 (def test-peer-id #uuid "10000000-0000-0000-0000-000000000001")
@@ -240,3 +242,47 @@
       (is (true? (writer/streaming? w)))
       (is (false? (writer/refresh-on-deref? w))
           "konserve-sync keeps the connection current"))))
+
+;; ---------------------------------------------------------------------------
+;; Remote delete must invalidate this process's connection registry
+;; ---------------------------------------------------------------------------
+;;
+;; The delete happens on the remote peer, so nothing local touches the registry.
+;; Left alone, a later `d/connect` with the same config returns a connection
+;; whose head belongs to the deleted database -- which stayed latent until the
+;; optimistic overlay work began dereferencing the old root on a moved head.
+
+(def ^:private delete-store-id #uuid "21000000-0000-0000-0000-000000000021")
+
+(def ^:private delete-config
+  {:store  {:backend :memory :id delete-store-id}
+   :writer {:backend :kabel :peer-id test-peer-id}})
+
+(deftest successful-remote-delete-invalidates-local-store-connections
+  (testing "every branch of the deleted store is released; other stores untouched"
+    (let [db-branch      (atom :connected)
+          feature-branch (atom :connected)
+          other-store    (atom :connected)
+          other-store-id #uuid "22000000-0000-0000-0000-000000000022"
+          registry (atom {[delete-store-id :db]      {:conn db-branch :count 1}
+                          [delete-store-id :feature] {:conn feature-branch :count 1}
+                          [other-store-id :db]       {:conn other-store :count 1}})]
+      (binding [connections/*connections* registry]
+        (with-redefs [ds/invoke-remote (fn [& _] (go {:success true}))]
+          (is (= {:success true} @(writer/delete-database delete-config)))))
+      (is (= :released @db-branch))
+      (is (= :released @feature-branch))
+      (is (= {[other-store-id :db] {:conn other-store :count 1}} @registry)))))
+
+(deftest failed-remote-delete-preserves-local-store-connections
+  (testing "a failed delete must leave the connection usable"
+    (let [conn     (atom :connected)
+          registry (atom {[delete-store-id :db] {:conn conn :count 1}})]
+      (binding [connections/*connections* registry]
+        ;; `throwable-promise` RETHROWS on deref, so the failure surfaces as a
+        ;; throw here rather than as a returned value.
+        (with-redefs [ds/invoke-remote (fn [& _] (go (ex-info "remote delete failed" {})))]
+          (is (thrown-with-msg? Exception #"remote delete failed"
+                                @(writer/delete-database delete-config)))))
+      (is (= :connected @conn))
+      (is (= conn (get-in @registry [[delete-store-id :db] :conn]))))))
