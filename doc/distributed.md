@@ -31,7 +31,7 @@ The DIS model provides fundamental advantages for distributed systems:
 - **Efficient sharding**: Create one database per logical unit (e.g., per customer, per project)—readers can join across databases locally
 - **Offline-first capable**: Readers can cache indices locally and sync differentially when online
 
-This architecture enables collaborative systems where multiple processes share access to evolving datasets without centralized coordination. The same design principles that enable DIS (immutability, structural sharing) also support more advanced distribution patterns including CRDT-based merge strategies (see [replikativ](https://github.com/replikativ/replikativ)) and peer-to-peer synchronization (demonstrated with [dat-sync](https://github.com/replikativ/dat-sync)).
+This architecture enables collaborative systems where multiple processes share access to evolving datasets without centralized coordination. The same design principles that enable DIS (immutability, structural sharing) also support more advanced distribution patterns including CRDT-based merge strategies (see [replikativ](https://github.com/replikativ/replikativ)) and peer-to-peer synchronization (demonstrated with [konserve-sync](https://github.com/replikativ/konserve-sync)).
 
 These capabilities are valuable even in centralized production environments: differential sync reduces bandwidth, immutable snapshots simplify caching and recovery, and the architecture naturally handles network partitions.
 
