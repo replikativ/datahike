@@ -198,9 +198,29 @@
                                                ". Set GRAALVM_HOME or put it on PATH."))
                                  (System/exit 1))))}
 
+         ni-cli-uber {:doc "Build the CLI uber jar (input for the Windows native build)"
+                      :depends [jcompile version-resource]
+                      :task (do (build/compile-clojure (-> config :build :native-cli))
+                                (build/uber config (-> config :build :native-cli)))}
+
          ni-cli {:doc "Build native image cli"
                  :depends [jcompile ni-check version-resource]
-                 :task (clojure "-M:native-cli")}
+                 ;; clj.native-image passes the whole classpath as -cp, which on
+                 ;; Windows exceeds the 8191-character command line and fails with
+                 ;; "The command line is too long." Build an uber jar there and
+                 ;; hand native-image a single -jar instead, which is what
+                 ;; clj-kondo and friends do. POSIX keeps the existing path.
+                 :task (if (str/starts-with? (System/getProperty "os.name") "Windows")
+                         (do (run 'ni-cli-uber)
+                             (let [jar (build/jar-path config (-> config :build :native-cli))
+                                   ni (str (System/getenv "GRAALVM_HOME") "/bin/native-image.cmd")]
+                               (shell ni "-jar" jar
+                                      "--initialize-at-build-time"
+                                      "--no-fallback"
+                                      "-H:IncludeResources=DATAHIKE_VERSION"
+                                      "-J-Xmx4g"
+                                      "-o" "dthk")))
+                         (clojure "-M:native-cli"))}
 
          ni-ccompile {:doc "Compile clojure namespaces for native-image"
                       :depends [jcompile]
