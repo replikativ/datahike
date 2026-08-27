@@ -120,8 +120,15 @@
    later `d/connect` will hand back -- which stayed latent until the optimistic
    overlay work started dereferencing the old root on a moved head."
   [store-id]
-  (doseq [conn-id (filter (fn [[connection-store-id _branch]]
-                            (= connection-store-id store-id))
-                          (keys @*connections*))]
-    (log/warn :datahike/delete-unreleased-connections {:connection conn-id})
-    (delete-connection! conn-id)))
+  (let [mine? (fn [[connection-store-id _branch]] (= connection-store-id store-id))]
+    (doseq [conn-id (filter mine? (keys @*connections*))]
+      (log/warn :datahike/delete-unreleased-connections {:connection conn-id})
+      (delete-connection! conn-id))
+    ;; `delete-connection!` goes through `get-connection`, which ignores
+    ;; RESERVATIONS (:conn nil -- a connect that has begun but not finished), so
+    ;; a delete racing an in-flight connect would leave one behind, holding the
+    ;; store's node cache alive for a database that no longer exists. Drop those
+    ;; too: a reservation for a deleted store cannot become a valid connection.
+    (swap! *connections*
+           (fn [m] (reduce (fn [acc k] (if (mine? k) (dissoc acc k) acc))
+                           m (keys m))))))
