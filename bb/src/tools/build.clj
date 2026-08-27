@@ -92,18 +92,29 @@
            :main main})
   (println "Done."))
 
+(def ^:private windows?
+  (str/starts-with? (System/getProperty "os.name") "Windows"))
+
 (defn native-compile [repo-config {:keys [project-target-dir class-path project-name java-interface] :as project-config}]
   (if-let [graalvm-dir (System/getenv "GRAALVM_HOME")]
     (let [native-jar (jar-path repo-config project-config)
           svm-jar (str graalvm-dir "/lib/svm/builder/svm.jar")
+          ;; ":" is the POSIX classpath separator; Windows uses ";". Getting this
+          ;; wrong makes javac read the whole string as one bogus entry, which
+          ;; surfaces as "package clojure.lang does not exist".
+          cp-sep (java.io.File/pathSeparator)
+          javac (str graalvm-dir "/bin/javac" (when windows? ".exe"))
+          native-image (str graalvm-dir "/bin/native-image" (when windows? ".cmd"))
           java-base-file (str/replace java-interface #"LibDatahike\.java$" "LibDatahikeBase.java")]
       (println "Compiling native bindings Java classes.")
-      (p/shell (str graalvm-dir "/bin/javac")
-               "-cp" (str native-jar ":" svm-jar)
+      (p/shell javac
+               "-cp" (str native-jar cp-sep svm-jar)
                "-d" class-path
                java-base-file java-interface)
       (println "Compiling shared library through native image.")
-      (p/shell (str graalvm-dir "/bin/native-image")
+      (apply p/shell
+             (concat
+              [native-image
                "-jar" native-jar
                "-cp" class-path
                (str "-o " project-name)
@@ -116,9 +127,10 @@
                "--initialize-at-build-time"
                "-H:Log=registerResource:"
                "--verbose"
-               "--no-fallback"
-               "--no-server"
-               "-J-Xmx5g")
+               "--no-fallback"]
+              ;; --no-server is not supported by native-image on Windows.
+              (when-not windows? ["--no-server"])
+              ["-J-Xmx5g"]))
       (fs/delete-tree project-target-dir)
       (fs/create-dir project-target-dir)
       (->> (slurp "build-artifacts.json")
