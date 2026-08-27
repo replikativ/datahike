@@ -315,7 +315,8 @@
                (let [_ (log/debug :datahike/connect {:config (update-in config [:store] dissoc :password)})
                      store-config (:store config)
                      store-id (ds/store-identity store-config)
-                     conn-id [store-id (:branch config)]]
+                     conn-id [store-id (:branch config)]
+                     lease* (volatile! nil)]
                  (if-let [conn (get-connection conn-id)]
                    (let [conn-config (:config @(:wrapped-atom conn))
                ;; replace store config with its identity
@@ -376,8 +377,9 @@
                          ;; a second one; the `catch` below removes it if
                          ;; this connect never completes.
                            threshold  (:store-cache-size config)
-                           node-cache (acquire-node-cache! conn-id threshold
-                                                           #(dii/make-node-cache threshold))
+                           [lease node-cache] (acquire-node-cache! conn-id threshold
+                                                                   #(dii/make-node-cache threshold))
+                           _ (vreset! lease* lease)
                            raw-store  (assoc raw-store dii/node-cache-key node-cache)
                            store     (ds/add-cache-and-handlers raw-store config)
                            _ (<?- (ds/ready-store (assoc store-config :opts opts) store))
@@ -467,8 +469,14 @@
                                                   {:ident ident :error install-result})
                                         (dsi/finish-secondary-index-build!
                                          build-result)))))))))
-                       (add-connection! conn-id conn)
-                       conn)
+                       (if (add-connection! conn-id lease conn)
+                         conn
+                         (do
+                           (w/shutdown (:writer @(:wrapped-atom conn)))
+                           (reset! conn :released)
+                           (log/raise "Database was deleted while connecting."
+                                      {:type :database-deleted-during-connect
+                                       :config config}))))
                      ;; Any failure between reserving the node cache and
                      ;; registering the connection -- a missing branch, a bad
                      ;; stored config, `ready-store`, writer creation -- would
@@ -476,7 +484,8 @@
                      ;; nothing could reach to release. A no-op if the connect
                      ;; got as far as `add-connection!`.
                      (catch #?(:clj Exception :cljs :default) e
-                       (abandon-reservation! conn-id)
+                       (when-some [lease @lease*]
+                         (abandon-reservation! conn-id lease))
                        (throw e))))))))
 
 ;; Multimethod dispatch for different writer backends

@@ -1,6 +1,6 @@
 (ns datahike.writing
   "Manage all state changes and access to state of durable store."
-  (:require [datahike.connections :refer [delete-connection! *connections*]]
+  (:require [datahike.connections :refer [invalidate-store-connections!]]
             [datahike.db :as db]
             [datahike.gc-guard :as guard]
             [datahike.gc-roots :as roots]
@@ -1114,14 +1114,7 @@
 (defn -delete-database* [config]
   (go-try-
    (let [config (dc/load-config config {})
-         config-store-id (ds/store-identity (:store config))
-         active-conns (filter (fn [[store-id _branch]]
-                                (= store-id config-store-id))
-                              (keys @*connections*))]
-     (sc/clear-write-cache (:store config))
-     (doseq [conn active-conns]
-       (log/warn :datahike/delete-unreleased-connections {:connection conn})
-       (delete-connection! conn))
+         config-store-id (ds/store-identity (:store config))]
      ;; AWAIT the deletion.
      ;;
      ;; konserve.store/delete-store defaults to {:sync? false}, and the async backends
@@ -1136,7 +1129,12 @@
      ;; :tiered dropped its backend's channel entirely — so a tiered delete over S3
      ;; removed nothing. konserve#152 makes all backends honour the contract, which is
      ;; what lets us simply await here.
-     (<?- (ks/delete-store (:store config))))))
+     (let [result (<?- (ks/delete-store (:store config)))]
+       ;; Do not invalidate healthy connections when the physical deletion
+       ;; failed. Successful remote backends follow the same ordering.
+       (sc/clear-write-cache (:store config))
+       (invalidate-store-connections! config-store-id)
+       result))))
 
 (extend-protocol PDatabaseManager
   #?(:clj String :cljs string)
