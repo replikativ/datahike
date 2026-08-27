@@ -26,6 +26,18 @@
                            :aliases       [:http-server]
                            :main          datahike.http.server
                            :lib           org.replikativ/datahike-http-server}
+         ;; Used only on Windows, where native-image cannot take the classpath
+         ;; on the command line (8191-char limit). Same shape as :native, but
+         ;; carrying the CLI's own aliases rather than libdatahike's.
+         :native-cli {:src-dirs ["src"]
+                      :java-src-dirs ["java"]
+                      :resource-dir "resources"
+                      :target-dir "target"
+                      :class-dir "target/classes"
+                      :deps-file "deps.edn"
+                      :aliases [:native-cli]
+                      :jar-pattern "{{repo.lib}}-{{version-str}}-cli-standalone.jar"
+                      :main datahike.cli}
          :native {:src-dirs ["src" "libdatahike/src"]
                   :java-src-dirs ["java"]
                   :resource-dir "resources"
