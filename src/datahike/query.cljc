@@ -34,6 +34,11 @@
    #?(:cljs [datahike.query.lower :as lower])
    #?(:clj [datahike.index.entity-set :as es])
    #?(:clj [datahike.index.secondary :as sec])
+   ;; Static, not `requiring-resolve`: this namespace has no cycle with
+   ;; datahike.query and is not an optional dependency, so a dynamic load only
+   ;; hid it from native-image's reachability analysis. See the aggregate call
+   ;; site below.
+   #?(:clj [datahike.query.index-ordered-aggregate :as ioa])
    ;; NOTE: datahike.index.secondary.stratum is loaded lazily via requiring-resolve
    ;; to keep stratum as an optional dependency
    [org.replikativ.persistent-sorted-set.arrays :as da]
@@ -5224,8 +5229,7 @@
                     ordered-result
                     (when aggregate-fast-eligible?
                       #?(:clj (when-not stats?
-                                ((requiring-resolve
-                                  'datahike.query.index-ordered-aggregate/execute)
+                                (ioa/execute
                                  plan db find-elements qwith (:cancel context-in)))
                          :cljs nil))
                     columnar-result
