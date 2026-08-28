@@ -248,7 +248,7 @@
                 (({:transit request-transit
                    :edn     request-edn
                    :json    request-json
-                   :cbor    request-cbor} (or format# :transit))
+                   :cbor    request-cbor} (or format# :cbor))
                  ~(if referentially-transparent? :get :post)
                  ~(api/->url n)
                  remote/*remote-peer* (vec ~'args)))))))))

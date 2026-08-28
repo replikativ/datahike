@@ -26,6 +26,9 @@ When something is added, it's typically marked *Experimental*. When the API cont
   bodies, fails writer operations the server does not implement by name
   instead of with a 404, and returns database handles that can make remote
   calls.
+  **The HTTP client now defaults to CBOR** (`:format :cbor` in the remote
+  peer); pass `:format :transit`, `:edn` or `:json` to keep the old wire
+  format.
 
 - **Index warming is unified across the stack, and real on ClojureScript.**
   The breadth-first walk moved to persistent-sorted-set (>= 0.5.142), where
