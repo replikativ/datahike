@@ -191,44 +191,16 @@
            :native-cli {:main-opts ["-e" "(set! *warn-on-reflection* true)"
                                     "-m" "clj.native-image" "datahike.cli"
                                     "--initialize-at-build-time"
-                                    ;; X-Ray is a hard dependency of konserve-s3 and
-                                    ;; its build-time init fails against modern
-                                    ;; Jackson. Only the tracing interceptor needs
-                                    ;; it, and that is opt-in via :x-ray?, so
-                                    ;; deferring the whole package costs nothing a
-                                    ;; store without tracing would notice.
-                                    "--initialize-at-run-time=com.amazonaws.xray"
                                     "--no-fallback"
-                                    ;; The S3 endpoint rules engine resolves an
-                                    ;; endpoint through `RuleUrl.parse`, which calls
-                                    ;; `new java.net.URL(..)`. A native image
-                                    ;; registers no URL protocol handlers by default,
-                                    ;; so that throws MalformedURLException and the
-                                    ;; SDK reports it as "Custom endpoint <uri> was
-                                    ;; not a valid URI" -- which reads like a bad
-                                    ;; config rather than a missing handler.
-                                    "--enable-url-protocols=http,https"
                                     "-H:IncludeResources=DATAHIKE_VERSION"
                                     ; "--future-defaults=all"
-                                    ;; 5g, not 4g: pulling in konserve-s3 brings the
-                                    ;; AWS SDK with it, and the analysis then needs
-                                    ;; more than 4g. It does not fail cleanly at that
-                                    ;; budget -- the builder thrashes and the deadlock
-                                    ;; watchdog aborts it, which reads like a hang
-                                    ;; rather than OOM.
-                                    "-J-Xmx5g"
+                                    "-J-Xmx4g"
                                     "-o dthk"]
                         :jvm-opts  ["-Dclojure.compiler.direct-linking=true"]
                         :extra-deps
                          {clj.native-image/clj.native-image
                          {:git/url "https://github.com/taylorwood/clj.native-image.git"
                           :sha     "4604ae76855e09cdabc0a2ecc5a7de2cc5b775d6"}
-                         ;; S3 in the binary. 0.1.39 or newer is REQUIRED, not
-                         ;; merely preferred: before it every S3 call resolved
-                         ;; reflectively, which a native image cannot do unless
-                         ;; the target was registered at build time. The image
-                         ;; built and then died on the first client construction.
-                         org.replikativ/konserve-s3 {:mvn/version "0.1.39"}
                          com.cognitect/transit-clj {:mvn/version "1.1.363"}
                          babashka/pods             {:git/url "https://github.com/babashka/pods"
                                                     :git/sha "ed5e1f3390b9dfca564f66b6e79c739c3cd82d78"}}}
