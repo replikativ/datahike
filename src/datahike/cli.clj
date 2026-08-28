@@ -165,7 +165,15 @@
                       options)]
           (report (:format options) result))
         (catch Exception e
-          (println "❌ Error executing command:" (.getMessage e))
+          ;; Class AND message. A java.nio.file exception carries only the
+          ;; offending path as its message, so on its own the line reads as
+          ;; "Error executing command: target\native-image-tests" — a bare
+          ;; path that says nothing about whether it was missing, locked, or
+          ;; (as it was on Windows) a directory that cannot be fsynced. That
+          ;; one line cost five CI rounds; the class turns it into a diagnosis.
+          (println "❌ Error executing command:" (.getName (class e)) "-" (.getMessage e))
+          (when-let [cause (.getCause e)]
+            (println "   caused by:" (.getName (class cause)) "-" (.getMessage cause)))
           (when (>= (:verbosity options) 2)
             (.printStackTrace e))
           (exit 1 "")))
