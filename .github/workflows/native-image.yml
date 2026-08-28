@@ -4,11 +4,15 @@ on:
   push:
     branches:
       - main
+    # NOT bb/**: bb/src/tools/build.clj is the native build itself -- it is
+    # what invokes javac and native-image. Ignoring it meant a change to how
+    # we build the image could not trigger a build of the image, which is
+    # exactly backwards. #1010 fixed three Windows bugs in that file and
+    # touched nothing else, so it merged without a single native build running.
     paths-ignore:
       - '**/README.md'
       - 'doc/**'
       - '.circleci/**'
-      - 'bb/**'
       - 'dev/**'
       - 'examples/**'
       - 'test/**'
