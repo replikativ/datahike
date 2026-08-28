@@ -36,7 +36,7 @@
 
 (defn- rand-uuid [] #?(:clj (java.util.UUID/randomUUID) :cljs (random-uuid)))
 
-(defn- tmp-path [id] (fs/temp-dir! (str "dh-walker-" id "-")))
+(defn- tmp-path [id] (fs/temp-store-path! (str "dh-walker-" id "-")))
 
 (defn- str->bytes [s]
   #?(:clj (.getBytes ^String s "UTF-8") :cljs (js/Buffer.from s "utf-8")))

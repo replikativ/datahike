@@ -62,7 +62,7 @@
                                 :token    "securerandompassword"})]
       (try
         (let [cfg    {:store              {:backend :file
-                                           :path  (fs/temp-dir! "dh-distributed-writer")
+                                           :path  (fs/temp-store-path! "dh-distributed-writer")
                                            :id #uuid "17100000-0000-0000-0000-000000000001"}
                       :keep-history?      true
                       :schema-flexibility :read

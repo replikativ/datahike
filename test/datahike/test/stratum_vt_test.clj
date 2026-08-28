@@ -158,7 +158,7 @@
 (defn- file-cfg []
   {:store {:backend :file
            :id (java.util.UUID/randomUUID)
-           :path (fs/temp-dir! "datahike-stratum-vt-test-")}
+           :path (fs/temp-store-path! "datahike-stratum-vt-test-")}
    :keep-history? true
    :schema-flexibility :write})
 

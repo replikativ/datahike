@@ -29,7 +29,7 @@
            :id store-id
            :frontend-config frontend-cfg
            :backend-config {:backend :file
-                            :path (fs/temp-dir! "dh-tiered-storage-test")
+                            :path (fs/temp-store-path! "dh-tiered-storage-test")
                             :id store-id}}
    :keep-history? false
    :schema-flexibility :read

@@ -53,12 +53,13 @@
 (defn- rand-uuid [] #?(:clj (java.util.UUID/randomUUID) :cljs (random-uuid)))
 
 (defn- tmp-path
-  "A fresh store directory, created under the platform's temp location.
-   `fs/temp-dir!` is the one spelling both runtimes share; `id` only makes the
-   directory identifiable in a listing, since the uniqueness comes from the
-   helper."
+  "A fresh store path under the platform's temp location. NOT created — konserve
+   creates the store, and refuses a path that already exists.
+   `fs/temp-store-path!` is the one spelling both runtimes share; `id` only
+   makes the directory identifiable in a listing, since the uniqueness comes
+   from the helper."
   [id]
-  (fs/temp-dir! (str "dh-store-ref-" id "-")))
+  (fs/temp-store-path! (str "dh-store-ref-" id "-")))
 
 (defn- str->bytes [s]
   #?(:clj  (.getBytes ^String s "UTF-8")

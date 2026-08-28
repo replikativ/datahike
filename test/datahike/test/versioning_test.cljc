@@ -13,7 +13,7 @@
 (deftest datahike-versioning-test
   (testing "Testing versioning functionality."
     (let [cfg {:store              {:backend :file
-                                    :path    (fs/temp-dir! "dh-versioning-test")
+                                    :path    (fs/temp-store-path! "dh-versioning-test")
                                     :id #uuid "1e510000-0000-0000-0000-00000000001e"}
                :keep-history?      true
                :schema-flexibility :write

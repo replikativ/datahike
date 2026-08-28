@@ -23,7 +23,7 @@
                    :db/index       avet?
                    :db/valueType   :db.type/long}]
 
-          cfg {:store  {:backend :file :path (fs/temp-dir! "dh-stress")
+          cfg {:store  {:backend :file :path (fs/temp-store-path! "dh-stress")
                         :id #uuid "57e55000-0000-0000-0000-000000000001"
                         :config {:sync-blob? true :in-place? false}}
                :keep-history? false

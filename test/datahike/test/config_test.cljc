@@ -117,7 +117,7 @@
     ;; `file-path` is bound ONCE: file-start and file-index differ only in
     ;; :index, and that is the whole setup — two different paths would be two
     ;; different store identities and the test would assert the wrong error.
-    (let [file-path  (fs/temp-dir! "dh-store-identity-test")
+    (let [file-path  (fs/temp-store-path! "dh-store-identity-test")
           mem-start  {:store {:backend :memory
                               :id #uuid "51de0715-1000-0000-0000-000000000001"}}
           mem-other  {:store {:backend :memory
@@ -158,7 +158,7 @@
   (testing "different connections with equal identities"
     ;; as above: one path, bound once — file-index has to reach the store
     ;; file-start is already connected to.
-    (let [file-path  (fs/temp-dir! "dh-store-connection-test")
+    (let [file-path  (fs/temp-store-path! "dh-store-connection-test")
           mem-start  {:store {:backend :memory
                               :id #uuid "51dec000-ec71-0000-0000-000000000001"}}
           mem-other  {:store {:backend :memory

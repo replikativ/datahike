@@ -228,13 +228,13 @@
     (temporal-history-test config)))
 
 (deftest temporal-history-file
-  (let [config {:store {:backend :file :path (fs/temp-dir! "dh-temp-hist-hht") :id #uuid "ab5e0000-0000-0000-0000-000000000001"}
+  (let [config {:store {:backend :file :path (fs/temp-store-path! "dh-temp-hist-hht") :id #uuid "ab5e0000-0000-0000-0000-000000000001"}
                 :schema-flexibility :write
                 :keep-history? true}]
     (temporal-history-test config)))
 
 (deftest temporal-history-file-with-attr-refs
-  (let [config {:store {:backend :file :path (fs/temp-dir! "dh-temp-hist-attr-refs") :id #uuid "ab5e0000-0000-0000-0000-000000000002"}
+  (let [config {:store {:backend :file :path (fs/temp-store-path! "dh-temp-hist-attr-refs") :id #uuid "ab5e0000-0000-0000-0000-000000000002"}
                 :schema-flexibility :write
                 :keep-history? true
                 :attribute-refs? true}]
@@ -243,11 +243,11 @@
 (deftest test-upsert-after-large-coll
   (let [ascii-ish (map char (concat (range 48 58) (range 65 91) (range 97 123)))
         file-cfg {:store {:backend :file
-                          :path (fs/temp-dir! "dh-upsert-large-test")
+                          :path (fs/temp-store-path! "dh-upsert-large-test")
                           :id #uuid "ab5e0000-0000-0000-0000-000000000003"}}
         file-pss-cfg {:store {:backend :file
                               :index :datahike.index/persistent-set
-                              :path    (fs/temp-dir! "dh-upsert-large-pss-test")
+                              :path    (fs/temp-store-path! "dh-upsert-large-pss-test")
                               :id #uuid "ab5e0000-0000-0000-0000-000000000004"}}
         mem-cfg {:store {:backend :memory
                          :id #uuid "90000000-0000-0000-0000-000000000009"}}

@@ -148,6 +148,18 @@
                 prefix (make-array java.nio.file.attribute.FileAttribute 0)))
      :cljs (str (.mkdtempSync (fs) (join (.tmpdir (os*)) prefix)))))
 
+(defn temp-store-path!
+  "A unique path that does NOT exist yet, inside a freshly created temp directory.
+
+   `temp-dir!` CREATES the directory it names, which is exactly what a dump
+   wants — the exporter writes its files into it. A konserve file store is the
+   opposite: `create-store` REFUSES a path that already exists, so a store
+   cannot be created at a `temp-dir!` at all. Wrapping the name one level down
+   keeps both properties a temp path is wanted for — a portable root and
+   uniqueness — while handing back something nothing has created yet."
+  [prefix]
+  (join (temp-dir! prefix) "store"))
+
 (defonce ^:private temp-seq (atom 0))
 
 (defn temp-file!

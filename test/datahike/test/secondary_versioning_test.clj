@@ -207,7 +207,7 @@
   (testing "secondary index state survives release + reconnect"
     (let [cfg {:store {:backend :file
                        :id (java.util.UUID/randomUUID)
-                       :path (fs/temp-dir! "datahike-ver-test-")}
+                       :path (fs/temp-store-path! "datahike-ver-test-")}
                :writer {:backend :self :writer-ownership :exclusive}
                :keep-history? false
                :schema-flexibility :write}

@@ -695,7 +695,7 @@
    never written here — i.e. a blob living outside this store, which is the case
    a dump cannot carry."
   []
-  (let [path (fs/temp-dir! "dh-blob-test-")
+  (let [path (fs/temp-store-path! "dh-blob-test-")
         cfg  {:store {:backend :file :path path :id (java.util.UUID/randomUUID)}
               :schema-flexibility :write :keep-history? true}
         _    (d/create-database cfg)
@@ -734,7 +734,7 @@
       (testing "the bytes are in the dump, named by their content id"
         ;; the file name IS the checksum, so verification needs no side table
         (is (.exists (io/file dump mblobs/dir-name (str id))))))
-    (let [path2 (fs/temp-dir! "dh-blob-target-")
+    (let [path2 (fs/temp-store-path! "dh-blob-target-")
           cfg2  {:store {:backend :file :path path2 :id (java.util.UUID/randomUUID)}
                  :schema-flexibility :write :keep-history? true}
           _     (d/create-database cfg2)
@@ -1262,7 +1262,7 @@
           dump (fs/temp-dir! "dh-guard-dump-")]
       (.mkdirs (io/file dump))
       (m/export-db @conn dump {})
-      (let [path2 (fs/temp-dir! "dh-guard-target-")
+      (let [path2 (fs/temp-store-path! "dh-guard-target-")
             cfg2  {:store {:backend :file :path path2 :id (java.util.UUID/randomUUID)}
                    :schema-flexibility :write :keep-history? true}
             _     (d/create-database cfg2)

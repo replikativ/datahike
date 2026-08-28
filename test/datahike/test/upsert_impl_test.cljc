@@ -182,7 +182,7 @@
         (d/release conn)))))
 
 (deftest upsert-read-handlers
-  (let [config {:store {:backend :file :path (fs/temp-dir! "dh-upsert-read-handlers") :id #uuid "ab1d0000-0000-0000-0000-000000000001"}
+  (let [config {:store {:backend :file :path (fs/temp-store-path! "dh-upsert-read-handlers") :id #uuid "ab1d0000-0000-0000-0000-000000000001"}
                 :schema-flexibility :write
                 :keep-history? false}
         schema [{:db/ident       :block/string

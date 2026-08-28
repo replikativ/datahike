@@ -38,7 +38,7 @@
 
 (defn- now-date [] (#?(:clj java.util.Date. :cljs js/Date.)))
 
-(defn- tmp-path [id] (fs/temp-dir! (str "dh-bgc-portable-" id "-")))
+(defn- tmp-path [id] (fs/temp-store-path! (str "dh-bgc-portable-" id "-")))
 
 ;; ---------------------------------------------------------------------------
 ;; Portable smoke test — JVM + Node cljs (file backend, since GC needs a
@@ -220,7 +220,7 @@
        [tag]
        (let [id (java.util.UUID/randomUUID)]
          {:backend :file
-          :path (fs/temp-dir! (str "dh-bgc-" tag "-"))
+          :path (fs/temp-store-path! (str "dh-bgc-" tag "-"))
           :id id}))
 
      (deftest background-gc-under-pipelined-writes

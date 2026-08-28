@@ -23,7 +23,7 @@
 
 (deftest test-db-file-store
   (test-store {:store {:backend :file
-                       :path (fs/temp-dir! "dh-api-fs")
+                       :path (fs/temp-store-path! "dh-api-fs")
                        :id #uuid "f11e0000-0000-0000-0000-00000000000f"}}))
 
 (deftest test-db-mem-store
@@ -112,7 +112,7 @@
      ;; collapsing the two entries and dropping the removal → a stale old datom survives reopen.
      (testing "many value-changing upserts survive store→reopen with no stale/duplicate datoms (diff-buf)"
        (let [cfg {:store {:backend :file
-                          :path (fs/temp-dir! "dh-diffbuf-upsert")
+                          :path (fs/temp-store-path! "dh-diffbuf-upsert")
                           :id #uuid "d1ffb000-0000-0000-0000-00000000d1ff"}
                   :schema-flexibility :write :keep-history? false
                   :index-config {:diff-buf-size 256 :branching-factor 16}}
@@ -148,7 +148,7 @@
      ;; reconnect mid-stream.
      (testing "commits keep succeeding across reopen+mutate on a deep tree"
        (let [cfg {:store {:backend :file
-                          :path (fs/temp-dir! "dh-detached-count")
+                          :path (fs/temp-store-path! "dh-detached-count")
                           :id #uuid "d1ffb000-0000-0000-0000-00000000dead"}
                   :schema-flexibility :write :keep-history? true
                   :index-config {:branching-factor 16}}

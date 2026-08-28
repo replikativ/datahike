@@ -222,7 +222,7 @@
     ;; cannot run at all ("Index needs to be properly flushed before marking").
     (let [cfg {:store {:backend :file
                        :id (random-uuid)
-                       :path (fs/temp-dir! "datahike-sec-deltas-")}
+                       :path (fs/temp-store-path! "datahike-sec-deltas-")}
                :writer {:backend :self :writer-ownership :exclusive}
                :keep-history? false
                :schema-flexibility :write}
@@ -404,7 +404,7 @@
 
 (deftest recovery-after-crash-scans-the-journaled-transactions
   (testing "a datom journaled by the crashed process is indexed on reconnect"
-    (let [path (fs/temp-dir! "datahike-sec-crash-")
+    (let [path (fs/temp-store-path! "datahike-sec-crash-")
           cfg {:store {:backend :file
                        :id (java.util.UUID/randomUUID)
                        :path path}
@@ -451,7 +451,7 @@
 
 (deftest test-secondary-index-recovery-on-reconnect
   (testing "secondary index in :building state is recovered after reconnect"
-    (let [path (fs/temp-dir! "datahike-sec-recovery-")
+    (let [path (fs/temp-store-path! "datahike-sec-recovery-")
           cfg {:store {:backend :file
                        :id (java.util.UUID/randomUUID)
                        :path path}

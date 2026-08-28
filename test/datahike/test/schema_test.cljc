@@ -298,7 +298,7 @@
 
 (deftest test-schema-persistence
   (testing "test file persistence"
-    (let [path (fs/temp-dir! "dh-test-persistence")
+    (let [path (fs/temp-store-path! "dh-test-persistence")
           cfg {:store {:backend :file
                        :path path
                        :id #uuid "5c6e0000-0000-0000-0000-000000000001"}

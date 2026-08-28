@@ -29,7 +29,7 @@
   (count (get-freed-addresses db)))
 
 (def base-cfg {:store              {:backend :file
-                                    :path (fs/temp-dir! "online-gc-test")
+                                    :path (fs/temp-store-path! "online-gc-test")
                                     :id #uuid "a0000000-0000-0000-0000-000000000001"}
                :keep-history?      false
                :schema-flexibility :write
@@ -49,7 +49,7 @@
 (deftest precise-freed-count-tracking-test
   (testing "Track exact number of freed addresses per transaction"
     (let [cfg (-> base-cfg
-                  (assoc-in [:store :path] (fs/temp-dir! "online-gc-precise-freed-test"))
+                  (assoc-in [:store :path] (fs/temp-store-path! "online-gc-precise-freed-test"))
                   (assoc :online-gc {:enabled? false}))  ;; Disabled to accumulate
           conn (do
                  (d/delete-database cfg)
@@ -96,7 +96,7 @@
 (deftest precise-gc-deletion-test
   (testing "Verify freed addresses are actually deleted from storage"
     (let [cfg (-> base-cfg
-                  (assoc-in [:store :path] (fs/temp-dir! "online-gc-precise-deletion-test"))
+                  (assoc-in [:store :path] (fs/temp-store-path! "online-gc-precise-deletion-test"))
                   (assoc :online-gc {:enabled? true
                                      :grace-period-ms 0
                                      :max-batch 1000}))
@@ -141,7 +141,7 @@
 (deftest manual-gc-freed-count-test
   (testing "Manual GC invocation returns exact deletion count"
     (let [cfg (-> base-cfg
-                  (assoc-in [:store :path] (fs/temp-dir! "online-gc-manual-count-test"))
+                  (assoc-in [:store :path] (fs/temp-store-path! "online-gc-manual-count-test"))
                   (assoc :online-gc {:enabled? false}))  ;; Disabled for manual control
           conn (do
                  (d/delete-database cfg)
@@ -184,7 +184,7 @@
 (deftest recycling-all-at-once-test
   (testing "Address recycling processes all eligible addresses at once"
     (let [cfg (-> base-cfg
-                  (assoc-in [:store :path] (fs/temp-dir! "online-gc-recycle-all-test"))
+                  (assoc-in [:store :path] (fs/temp-store-path! "online-gc-recycle-all-test"))
                   (assoc :online-gc {:enabled? false}))  ;; Start disabled
           conn (do
                  (d/delete-database cfg)
@@ -224,7 +224,7 @@
 
 (deftest online-gc-disabled-test
   (testing "Online GC disabled by default - addresses accumulate"
-    (let [cfg (assoc-in base-cfg [:store :path] (fs/temp-dir! "online-gc-disabled-test"))
+    (let [cfg (assoc-in base-cfg [:store :path] (fs/temp-store-path! "online-gc-disabled-test"))
           conn (do
                  (d/delete-database cfg)
                  (d/create-database cfg)
@@ -243,7 +243,7 @@
 (deftest online-gc-with-reconnect-test
   (testing "Data integrity verified via reconnect after GC"
     (let [cfg (-> base-cfg
-                  (assoc-in [:store :path] (fs/temp-dir! "online-gc-reconnect-test"))
+                  (assoc-in [:store :path] (fs/temp-store-path! "online-gc-reconnect-test"))
                   (assoc :online-gc {:enabled? true
                                      :grace-period-ms 0
                                      :max-batch 1000}))
@@ -278,7 +278,7 @@
 (deftest grace-period-accumulation-test
   (testing "Grace period causes freed addresses to accumulate"
     (let [cfg (-> base-cfg
-                  (assoc-in [:store :path] (fs/temp-dir! "online-gc-grace-accumulation-test"))
+                  (assoc-in [:store :path] (fs/temp-store-path! "online-gc-grace-accumulation-test"))
                   (assoc :online-gc {:enabled? true
                                      :grace-period-ms 300000  ;; 5 minutes
                                      :max-batch 1000}))
@@ -308,7 +308,7 @@
 (deftest online-gc-large-dataset-test
   (testing "Online GC integration with larger dataset"
     (let [cfg (-> base-cfg
-                  (assoc-in [:store :path] (fs/temp-dir! "online-gc-integration-test"))
+                  (assoc-in [:store :path] (fs/temp-store-path! "online-gc-integration-test"))
                   (assoc :online-gc {:enabled? true
                                      :grace-period-ms 0
                                      :max-batch 10000}))
@@ -345,7 +345,7 @@
 (deftest get-and-clear-eligible-freed-test
   (testing "get-and-clear-eligible-freed! correctly filters by timestamp"
     (let [cfg (-> base-cfg
-                  (assoc-in [:store :path] (fs/temp-dir! "online-gc-filter-test"))
+                  (assoc-in [:store :path] (fs/temp-store-path! "online-gc-filter-test"))
                   (assoc :online-gc {:enabled? false}))
           conn (do
                  (d/delete-database cfg)
@@ -379,7 +379,7 @@
 (deftest background-gc-test
   (testing "Background GC runs periodically"
     (let [cfg (-> base-cfg
-                  (assoc-in [:store :path] (fs/temp-dir! "online-gc-background-test"))
+                  (assoc-in [:store :path] (fs/temp-store-path! "online-gc-background-test"))
                   (assoc :online-gc {:enabled? false}))  ;; Disable automatic GC in commit
           conn (do
                  (d/delete-database cfg)
@@ -424,7 +424,7 @@
 (deftest multi-branch-safety-test
   (testing "Multi-branch databases skip online GC entirely for safety"
     (let [cfg (-> base-cfg
-                  (assoc-in [:store :path] (fs/temp-dir! "online-gc-multi-branch-test"))
+                  (assoc-in [:store :path] (fs/temp-store-path! "online-gc-multi-branch-test"))
                   (assoc :online-gc {:enabled? false})
                   (assoc :crypto-hash? false))
           conn (do
