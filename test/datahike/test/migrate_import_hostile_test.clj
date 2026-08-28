@@ -458,8 +458,8 @@
             and feeds the secondary `v` (correct). The double-hash was a symptom
             of the missing value, not a separate defect."
     (require 'datahike.index.secondary.scriptum)
-    (let [p1 (str "/tmp/dh-hostile-so-" (java.util.UUID/randomUUID))
-          p2 (str "/tmp/dh-hostile-so-" (java.util.UUID/randomUUID))
+    (let [p1 (fs/temp-dir! "dh-hostile-so-")
+          p2 (fs/temp-dir! "dh-hostile-so-")
           src (conn! (cfg true))]
       (d/transact src [{:db/ident :doc/body :db/valueType :db.type/string
                         :db/cardinality :db.cardinality/one :db.secondary/only true}])
@@ -562,7 +562,7 @@
             one value repeated, the other absent from the backup entirely."
     (require 'datahike.index.secondary.scriptum)
     (let [conn (conn! (cfg true))
-          p (str "/tmp/dh-hostile-cm-" (java.util.UUID/randomUUID))]
+          p (fs/temp-dir! "dh-hostile-cm-")]
       (try
         (d/transact conn [{:db/ident :doc/tag :db/valueType :db.type/string
                            :db/cardinality :db.cardinality/many :db.secondary/only true}])
@@ -599,7 +599,7 @@
             data, reporting success."
     (require 'datahike.index.secondary.scriptum)
     (let [conn (conn! (cfg true))
-          p (str "/tmp/dh-hostile-hist-" (java.util.UUID/randomUUID))]
+          p (fs/temp-dir! "dh-hostile-hist-")]
       (try
         (d/transact conn [{:db/ident :doc/body :db/valueType :db.type/string
                            :db/cardinality :db.cardinality/one :db.secondary/only true}])

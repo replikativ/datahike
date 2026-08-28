@@ -7,6 +7,7 @@
    [datahike.gc-roots :as roots]
    [konserve.core :as k]
    [datahike.index.secondary :as sec]
+   [datahike.migrate.fs :as fs]
    [datahike.writing :as writing]
    [superv.async :refer [<?? S]]))
 
@@ -221,7 +222,7 @@
     ;; cannot run at all ("Index needs to be properly flushed before marking").
     (let [cfg {:store {:backend :file
                        :id (random-uuid)
-                       :path (str "/tmp/datahike-sec-deltas-" (random-uuid))}
+                       :path (fs/temp-dir! "datahike-sec-deltas-")}
                :writer {:backend :self :writer-ownership :exclusive}
                :keep-history? false
                :schema-flexibility :write}
@@ -403,7 +404,7 @@
 
 (deftest recovery-after-crash-scans-the-journaled-transactions
   (testing "a datom journaled by the crashed process is indexed on reconnect"
-    (let [path (str "/tmp/datahike-sec-crash-" (random-uuid))
+    (let [path (fs/temp-dir! "datahike-sec-crash-")
           cfg {:store {:backend :file
                        :id (java.util.UUID/randomUUID)
                        :path path}
@@ -450,7 +451,7 @@
 
 (deftest test-secondary-index-recovery-on-reconnect
   (testing "secondary index in :building state is recovered after reconnect"
-    (let [path (str "/tmp/datahike-sec-recovery-" (random-uuid))
+    (let [path (fs/temp-dir! "datahike-sec-recovery-")
           cfg {:store {:backend :file
                        :id (java.util.UUID/randomUUID)
                        :path path}

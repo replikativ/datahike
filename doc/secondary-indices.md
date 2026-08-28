@@ -465,7 +465,7 @@ Secondary indices are declared via schema transactions:
 
 | Key | Description | Default |
 |-----|-------------|---------|
-| `:path` | Directory for Lucene index files | `/tmp/scriptum-<uuid>` |
+| `:path` | Directory for Lucene index files | a fresh directory under the system temp dir (`java.io.tmpdir`) |
 | `:branch` | Git branch name for versioning | `"main"` |
 
 ### Proximum Config

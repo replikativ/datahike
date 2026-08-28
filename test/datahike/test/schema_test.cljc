@@ -6,9 +6,9 @@
    [datahike.db.interface :as dbi]
    [datahike.db.transaction :as dbt]
    [datahike.datom :as da]
-   [datahike.constants :as const])
-  (:import [java.lang System]
-           [java.util UUID]))
+   [datahike.constants :as const]
+   [datahike.migrate.fs :as fs])
+  (:import [java.util UUID]))
 
 #?(:cljs (def Throwable js/Error))
 
@@ -298,10 +298,7 @@
 
 (deftest test-schema-persistence
   (testing "test file persistence"
-    (let [os (System/getProperty "os.name")
-          path (case os
-                 "Windows 10"  (str (System/getProperty "java.io.tmpdir") "dh-test-persistence")
-                 "/tmp/dh-test-persistence")
+    (let [path (fs/temp-dir! "dh-test-persistence")
           cfg {:store {:backend :file
                        :path path
                        :id #uuid "5c6e0000-0000-0000-0000-000000000001"}

@@ -8,7 +8,16 @@
               :db/cardinality :db.cardinality/one
               :db/valueType   :db.type/long}])
 (def cfg {:store  {:backend :file
-                   :path "/tmp/datahike-backward-comp-test"
+                   ;; NOT a freshly created temp directory, unlike the rest of
+                   ;; the suite: `bb test back-compat` runs `write` in a JVM
+                   ;; started inside a CLONE of the last release (which carries
+                   ;; its OWN copy of this file) and `read` in a second JVM at
+                   ;; the repo root. The two processes have to agree on the path
+                   ;; by name, so it stays fixed — only the temp ROOT is looked
+                   ;; up rather than assumed to be `/tmp`, which is what makes it
+                   ;; resolvable off POSIX.
+                   :path (.getPath (java.io.File. (System/getProperty "java.io.tmpdir")
+                                                  "datahike-backward-comp-test"))
                    :id #uuid "550e8400-e29b-41d4-a716-446655440000"}
           :keep-history? true
           :schema-flexibility :write

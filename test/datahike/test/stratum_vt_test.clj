@@ -22,6 +22,7 @@
             [datahike.api :as d]
             [datahike.index.secondary :as sec]
             [datahike.index.secondary.stratum]
+            [datahike.migrate.fs :as fs]
             [datahike.versioning :as dv]
             [stratum.api :as st]))
 
@@ -157,7 +158,7 @@
 (defn- file-cfg []
   {:store {:backend :file
            :id (java.util.UUID/randomUUID)
-           :path (str "/tmp/datahike-stratum-vt-test-" (random-uuid))}
+           :path (fs/temp-dir! "datahike-stratum-vt-test-")}
    :keep-history? true
    :schema-flexibility :write})
 

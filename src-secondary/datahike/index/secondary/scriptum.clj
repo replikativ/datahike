@@ -12,6 +12,7 @@
    [datahike.index.audit :as audit]
    [datahike.index.secondary :as sec]
    [datahike.index.entity-set :as es]
+   [datahike.migrate.fs :as fs]
    [scriptum.core :as sc]
    [replikativ.logging :as log]))
 
@@ -259,7 +260,12 @@
 (sec/register-index-type!
  :scriptum
  (fn [config _db]
-   (let [path (or (:path config) (str "/tmp/scriptum-" (random-uuid)))
+   ;; No `:path` means a throwaway index, so it belongs under the system temp
+   ;; directory — `java.io.tmpdir`, not a hardcoded `/tmp`, which Java resolves
+   ;; against the CURRENT DRIVE on Windows and so points at a directory that
+   ;; does not exist. `temp-dir!` also CREATES the directory, unique per index
+   ;; instance, which is what the uuid was for.
+   (let [path (or (:path config) (fs/temp-dir! "scriptum-"))
          branch (or (:branch config) "main")
          writer (sc/create-index path branch
                                  (select-keys config [:crypto-hash?]))]

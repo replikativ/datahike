@@ -91,7 +91,9 @@
 
 (defn python []
   (if (fs/exists? "./libdatahike/target")
-    (p/shell "./bb/resources/native-image-tests/run-python-tests")
+    ;; Through bash, like `native-image` and `libdatahike` above: the script
+    ;; carries a shebang, which Windows does not honour.
+    (p/shell "bash" "./bb/resources/native-image-tests/run-python-tests")
     (println "libdatahike binaries missing. Please run 'bb ni-compile' and try again.")))
 
 (defn specs []

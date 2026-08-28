@@ -12,6 +12,7 @@
                      [datahike.api :as d]
                      [datahike.gc :as gc]
                      [datahike.gc-guard :as guard]
+                     [datahike.migrate.fs :as fs]
                      [datahike.versioning :as v]
                      [datahike.writing :as dw]
                      [datahike.test.async :refer [deftest-async]]
@@ -22,13 +23,13 @@
                      [datahike.api :as d]
                      [datahike.gc :as gc]
                      [datahike.gc-guard :as guard]
+                     [datahike.migrate.fs :as fs]
                      [datahike.test.async :refer-macros [deftest-async]]
                      ;; register the :file backend on Node (the smoke test needs a
                      ;; FLUSHING store — GC's mark walk requires stored index nodes,
                      ;; so :memory, which keeps the tree inline, does not apply).
                      [konserve.node-filestore]
                      [konserve.core :as k]
-                     [cljs.nodejs :as nodejs]
                      [clojure.core.async :as a :refer [<!] :refer-macros [go]])))
 
 (def ^:private schema
@@ -37,10 +38,7 @@
 
 (defn- now-date [] (#?(:clj java.util.Date. :cljs js/Date.)))
 
-(defn- tmp-path [id]
-  #?(:clj  (str (System/getProperty "java.io.tmpdir") "/dh-bgc-portable-" id)
-     :cljs (let [^js os (nodejs/require "os") ^js p (nodejs/require "path")]
-             (.join p (.tmpdir os) (str "dh-bgc-portable-" id)))))
+(defn- tmp-path [id] (fs/temp-dir! (str "dh-bgc-portable-" id "-")))
 
 ;; ---------------------------------------------------------------------------
 ;; Portable smoke test — JVM + Node cljs (file backend, since GC needs a
@@ -222,7 +220,7 @@
        [tag]
        (let [id (java.util.UUID/randomUUID)]
          {:backend :file
-          :path (str (System/getProperty "java.io.tmpdir") "/dh-bgc-" tag "-" id)
+          :path (fs/temp-dir! (str "dh-bgc-" tag "-"))
           :id id}))
 
      (deftest background-gc-under-pipelined-writes

@@ -7,6 +7,7 @@
    [datahike.index.secondary :as sec]
    [datahike.index.entity-set :as es]
    [datahike.index.secondary.scriptum]
+   [datahike.migrate.fs :as fs]
    [konserve.core :as k]))
 
 (defrecord HistoricalBranchRecorder [attrs values]
@@ -89,7 +90,7 @@
                :writer {:backend :self :writer-ownership :exclusive}
                :keep-history? false
                :schema-flexibility :write}
-          scriptum-path (str "/tmp/scriptum-ver-test-" (random-uuid))
+          scriptum-path (fs/temp-dir! "scriptum-ver-test-")
           _ (d/create-database cfg)
           conn (d/connect cfg)]
       (try
@@ -206,11 +207,11 @@
   (testing "secondary index state survives release + reconnect"
     (let [cfg {:store {:backend :file
                        :id (java.util.UUID/randomUUID)
-                       :path (str "/tmp/datahike-ver-test-" (random-uuid))}
+                       :path (fs/temp-dir! "datahike-ver-test-")}
                :writer {:backend :self :writer-ownership :exclusive}
                :keep-history? false
                :schema-flexibility :write}
-          scriptum-path (str "/tmp/scriptum-persist-" (random-uuid))
+          scriptum-path (fs/temp-dir! "scriptum-persist-")
           _ (d/create-database cfg)
           conn (d/connect cfg)]
       (try

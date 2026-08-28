@@ -6,6 +6,7 @@
             [datahike.api :as d]
             [datahike.index.secondary :as sec]
             [datahike.index.entity-set :as es]
+            [datahike.migrate.fs :as fs]
             datahike.index.secondary.scriptum))
 
 (defn- fresh-conn []
@@ -17,7 +18,7 @@
 (defn- with-secondary [conn attrs]
   (d/transact conn [{:db/ident :idx/ft :db.secondary/type :scriptum
                      :db.secondary/attrs attrs
-                     :db.secondary/config {:path (str "/tmp/dh-so-test-" (random-uuid))}}])
+                     :db.secondary/config {:path (fs/temp-dir! "dh-so-test-")}}])
   (Thread/sleep 400))
 
 (deftest secondary-only-stores-hash-in-primary

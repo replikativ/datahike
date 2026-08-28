@@ -12,6 +12,7 @@
             [datahike.migrate.manifest :as mman]
             [datahike.migrate.cbor :as mcbor]
             [datahike.migrate.blobs :as mblobs]
+            [datahike.migrate.fs :as fs]
             [datahike.migrate.compress :as mz]
             [datahike.migrate.digest :as dig]
             [datahike.blob :as blob]
@@ -694,7 +695,7 @@
    never written here — i.e. a blob living outside this store, which is the case
    a dump cannot carry."
   []
-  (let [path (str "/tmp/dh-blob-test-" (java.util.UUID/randomUUID))
+  (let [path (fs/temp-dir! "dh-blob-test-")
         cfg  {:store {:backend :file :path path :id (java.util.UUID/randomUUID)}
               :schema-flexibility :write :keep-history? true}
         _    (d/create-database cfg)
@@ -723,7 +724,7 @@
   ;; Without carrying the bytes the datom restores perfectly and names an object
   ;; that is not in the target store — a backup that silently lost its blobs.
   (let [{:keys [conn payload id]} (blob-fixture)
-        dump (str "/tmp/dh-blob-dump-" (java.util.UUID/randomUUID))]
+        dump (fs/temp-dir! "dh-blob-dump-")]
     (.mkdirs (io/file dump))
     (let [manifest (m/export-db @conn dump {})]
       (testing "the manifest declares what it carries"
@@ -733,7 +734,7 @@
       (testing "the bytes are in the dump, named by their content id"
         ;; the file name IS the checksum, so verification needs no side table
         (is (.exists (io/file dump mblobs/dir-name (str id))))))
-    (let [path2 (str "/tmp/dh-blob-target-" (java.util.UUID/randomUUID))
+    (let [path2 (fs/temp-dir! "dh-blob-target-")
           cfg2  {:store {:backend :file :path path2 :id (java.util.UUID/randomUUID)}
                  :schema-flexibility :write :keep-history? true}
           _     (d/create-database cfg2)
@@ -792,7 +793,7 @@
   ;; datahike's backwards-compat commitment. So the dump declares what it NEEDS,
   ;; and the reader compares against what it HAS.
   (let [{:keys [conn id]} (blob-fixture)
-        dump (str "/tmp/dh-cap-dump-" (java.util.UUID/randomUUID))]
+        dump (fs/temp-dir! "dh-cap-dump-")]
     (d/transact conn [{:db/ident :doc/vec :db/valueType :db.type/double-array
                        :db/cardinality :db.cardinality/one}])
     (d/transact conn [{:doc/name "vec" :doc/vec (double-array [1.5 2.5])}])
@@ -836,7 +837,7 @@
   ;; dump is unrestorable. Reporting :ok? true there is exactly the reassurance
   ;; nobody should get.
   (let [{:keys [conn id]} (blob-fixture)
-        dump (str "/tmp/dh-verify-blob-" (java.util.UUID/randomUUID))]
+        dump (fs/temp-dir! "dh-verify-blob-")]
     (.mkdirs (io/file dump))
     (m/export-db @conn dump {})
     (testing "an intact dump verifies, and says what it checked"
@@ -1258,10 +1259,10 @@
             blob set that is gigabytes written to be told the target was never
             eligible."
     (let [{:keys [conn payload id]} (blob-fixture)
-          dump (str "/tmp/dh-guard-dump-" (java.util.UUID/randomUUID))]
+          dump (fs/temp-dir! "dh-guard-dump-")]
       (.mkdirs (io/file dump))
       (m/export-db @conn dump {})
-      (let [path2 (str "/tmp/dh-guard-target-" (java.util.UUID/randomUUID))
+      (let [path2 (fs/temp-dir! "dh-guard-target-")
             cfg2  {:store {:backend :file :path path2 :id (java.util.UUID/randomUUID)}
                    :schema-flexibility :write :keep-history? true}
             _     (d/create-database cfg2)
@@ -1685,6 +1686,9 @@
           conn (d/connect cfg)]
       (try
         (d/transact conn [{:name "Amara"}])
+        ;; The two literal paths below stay literal: the refusal happens on the
+        ;; `conn`-instead-of-`@conn` argument BEFORE anything looks at the
+        ;; target, and the point is that nothing is ever written there.
         (doseq [[label f] {"export-db"      #(m/export-db conn "/tmp/should-not-exist")
                            "export-to-sink" #(m/export-to-sink conn {:open (fn [_] nil)
                                                                      :write (fn [c _] c)

@@ -1,5 +1,6 @@
 (ns datahike.test.stress-test
   (:require [datahike.api :as d]
+            [datahike.migrate.fs :as fs]
             #?(:cljs [cljs.test    :as t :refer-macros [is deftest testing]]
                :clj  [clojure.test :as t :refer        [is deftest testing]])))
 
@@ -22,7 +23,7 @@
                    :db/index       avet?
                    :db/valueType   :db.type/long}]
 
-          cfg {:store  {:backend :file :path "/tmp/dh-stress"
+          cfg {:store  {:backend :file :path (fs/temp-dir! "dh-stress")
                         :id #uuid "57e55000-0000-0000-0000-000000000001"
                         :config {:sync-blob? true :in-place? false}}
                :keep-history? false
