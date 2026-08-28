@@ -62,10 +62,19 @@
             (System/exit 1))
         form (str "(set! *warn-on-reflection* true)"
                   "(doseq [n '" (pr-str (vec (map symbol nses))) "]"
-                  "  (try (require n) (catch Throwable _ nil)))")
+                  "  (require n))")
         _ (println (format "Compiling %d namespaces with *warn-on-reflection*..."
                            (count nses)))
-        {:keys [err]} (p/sh "clojure" "-M:libdatahike" "-e" form)
+        {:keys [err exit]} (p/sh "clojure" "-M:libdatahike" "-e" form)
+        ;; A namespace that does not load is a hard failure, not a skip. The
+        ;; old form caught every Throwable, so a broken require was silently
+        ;; dropped and the gate reported "no reflective calls" over whatever
+        ;; happened to compile — the same silent pass the empty-list guard
+        ;; below exists to prevent, one level down.
+        _ (when-not (zero? exit)
+            (println "Compilation failed (exit" exit ") — the reflection gate did not run:")
+            (println err)
+            (System/exit 1))
         warnings (->> (str/split-lines (or err ""))
                       (filter #(str/starts-with? % "Reflection warning"))
                       (filter #(str/includes? % "datahike/"))

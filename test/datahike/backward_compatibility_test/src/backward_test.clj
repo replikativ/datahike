@@ -8,16 +8,17 @@
               :db/cardinality :db.cardinality/one
               :db/valueType   :db.type/long}])
 (def cfg {:store  {:backend :file
-                   ;; NOT a freshly created temp directory, unlike the rest of
-                   ;; the suite: `bb test back-compat` runs `write` in a JVM
-                   ;; started inside a CLONE of the last release (which carries
-                   ;; its OWN copy of this file) and `read` in a second JVM at
-                   ;; the repo root. The two processes have to agree on the path
-                   ;; by name, so it stays fixed — only the temp ROOT is looked
-                   ;; up rather than assumed to be `/tmp`, which is what makes it
-                   ;; resolvable off POSIX.
-                   :path (.getPath (java.io.File. (System/getProperty "java.io.tmpdir")
-                                                  "datahike-backward-comp-test"))
+                   ;; Deliberately the one `/tmp` literal left in the suite.
+                   ;; `bb test back-compat` runs `write` in a JVM started inside
+                   ;; a CLONE of the last release — which carries its OWN copy of
+                   ;; this file, frozen with this exact string — and `read` in a
+                   ;; second JVM here. Both must open the same directory, so this
+                   ;; side has to spell whatever the released copy spells. A
+                   ;; `java.io.tmpdir` lookup here only agrees with `/tmp` by
+                   ;; coincidence on Linux, and disagrees on macOS and Windows.
+                   ;; Moving it is a two-release step: change both sides in one
+                   ;; release, then the clone carries the new spelling too.
+                   :path "/tmp/datahike-backward-comp-test"
                    :id #uuid "550e8400-e29b-41d4-a716-446655440000"}
           :keep-history? true
           :schema-flexibility :write

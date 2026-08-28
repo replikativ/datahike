@@ -148,17 +148,26 @@
                 prefix (make-array java.nio.file.attribute.FileAttribute 0)))
      :cljs (str (.mkdtempSync (fs) (join (.tmpdir (os*)) prefix)))))
 
+(defonce ^:private store-root
+  ;; ONE created directory per process, under which every `temp-store-path!`
+  ;; is a not-yet-existing child. A fresh `temp-dir!` per call gave each store
+  ;; its own parent that `delete-database` never removed, so a suite run left
+  ;; one empty directory per test under the system temp dir. The uuid keeps
+  ;; the child unique; the root keeps the leak to one directory per run.
+  (delay (temp-dir! "dh-stores-")))
+
 (defn temp-store-path!
-  "A unique path that does NOT exist yet, inside a freshly created temp directory.
+  "A unique path that does NOT exist yet, under this process's temp root.
 
    `temp-dir!` CREATES the directory it names, which is exactly what a dump
    wants — the exporter writes its files into it. A konserve file store is the
    opposite: `create-store` REFUSES a path that already exists, so a store
-   cannot be created at a `temp-dir!` at all. Wrapping the name one level down
-   keeps both properties a temp path is wanted for — a portable root and
-   uniqueness — while handing back something nothing has created yet."
+   cannot be created at a `temp-dir!` at all. Naming a child of a directory
+   created once per process keeps both properties a temp path is wanted for —
+   a portable root and uniqueness — while handing back something nothing has
+   created yet."
   [prefix]
-  (join (temp-dir! prefix) "store"))
+  (join @store-root (str prefix (random-uuid))))
 
 (defonce ^:private temp-seq (atom 0))
 
