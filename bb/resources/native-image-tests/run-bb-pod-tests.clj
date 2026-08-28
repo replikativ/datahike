@@ -1,10 +1,14 @@
 #!/usr/bin/env bb
 
 (require '[babashka.pods :as pods]
+         '[babashka.fs :as fs]
          '[clojure.test :refer [run-tests deftest testing is]])
 (import '[java.util Date])
 
-(pods/load-pod "./dthk")
+;; native-image appends .exe on Windows; the rest of the tree spells it dthk.
+;; Same lookup as tools.test/cli-binary.
+(pods/load-pod (or (first (filter fs/exists? ["./dthk" "./dthk.exe"]))
+                   (throw (ex-info "No dthk binary; run 'bb ni-cli' first." {}))))
 
 (require '[datahike.pod :as d])
 
