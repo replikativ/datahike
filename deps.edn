@@ -185,8 +185,20 @@
                                       org.slf4j/slf4j-simple  {:mvn/version "2.0.18"}}
                          :main-opts ["-m" "datahike.http.server"]}
 
+           ;; konserve-s3 is here for the same reason it is in :native-cli, and it
+           ;; is NOT optional: `datahike.cli` requires `konserve-s3.core`
+           ;; statically (a backend registers by defmethod, so nothing makes :s3
+           ;; a dispatch value unless the namespace loads), and `bb ni-compile`
+           ;; AOT-compiles that namespace. Without it here the libdatahike build
+           ;; fails to compile datahike.cli at all — which is what broke every
+           ;; native leg after #1015, on a path #1015 never exercised.
+           ;;
+           ;; X-Ray excluded, as in :native-cli — see the note there.
            :libdatahike {:main-opts ["-e" "(set! *warn-on-reflection* true)"]
-                         :extra-paths ["libdatahike/src"]}
+                         :extra-paths ["libdatahike/src"]
+                         :extra-deps {org.replikativ/konserve-s3
+                                      {:mvn/version "0.1.40"
+                                       :exclusions [com.amazonaws/aws-xray-recorder-sdk-aws-sdk-v2]}}}
 
            :native-cli {:main-opts ["-e" "(set! *warn-on-reflection* true)"
                                     "-m" "clj.native-image" "datahike.cli"
