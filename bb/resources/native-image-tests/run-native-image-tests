@@ -48,7 +48,14 @@ ATTR_REF_CONFIG=bb/resources/native-image-tests/testconfig.attr-refs.edn
 # with `Test successful.`, `CBOR remote-writer test successful.` and
 # `Positional input test successful.` still reported failure.
 cleanup() {
-  rm -rf "$TMPSTORE" "$CBOR_STORE" 2>/dev/null || true
+  # `errexit` is still in force inside a trap, and `kill` here is the command
+  # after the final `&&` — the one place in an `&&` list errexit DOES apply.
+  # The server was already killed above, so on Git Bash, where the dead child
+  # is gone rather than a zombie, that `kill` failed and took a fully passing
+  # run down with it: every test green, exit 1, nothing printed. macOS never
+  # showed it because there the child lingers unreaped and `kill` succeeds.
+  set +o errexit
+  rm -rf "$TMPSTORE" "$CBOR_STORE" 2>/dev/null
   [ -n "${CBOR_SERVER_PID:-}" ] && kill "$CBOR_SERVER_PID" 2>/dev/null
   return 0
 }
