@@ -8,6 +8,7 @@
    [datahike.index.interface :refer [-mark]]
    [datahike.versioning :refer [branch! delete-branch! merge!
                                 branch-history]]
+   [datahike.migrate.fs :as fs]
    [konserve.core :as k]
    [datahike.gc]
    [datahike.test.core-test])
@@ -25,7 +26,10 @@
 (def txs (vec (for [i (range 1000)] {:age i})))
 
 (def cfg {:store              {:backend :file
-                               :path "/tmp/gc-test"
+                               ;; every deftest below overrides this; it is a
+                               ;; temp path rather than a literal so no path in
+                               ;; this namespace assumes a POSIX /tmp
+                               :path (fs/temp-store-path! "dh-gc-base")
                                :id #uuid "9c000000-0000-0000-0000-000000000001"}
           ;; These tests assert what a SINGLE-PROCESS collector reclaims, and say
           ;; so: under the default (shared) ownership the sweep carries a
@@ -41,7 +45,7 @@
               :db/valueType   :db.type/long}])
 
 (deftest datahike-gc-test
-  (let [cfg (assoc-in cfg [:store :path] "/tmp/dh-gc-test")
+  (let [cfg (assoc-in cfg [:store :path] (fs/temp-store-path! "dh-gc-test"))
         conn (do
                (d/delete-database cfg)
                (d/create-database cfg)
@@ -75,7 +79,7 @@
     (d/release conn)))
 
 (deftest datahike-gc-versioning-test
-  (let [cfg          (assoc-in cfg [:store :path] "/tmp/dh-gc-versioning-test")
+  (let [cfg          (assoc-in cfg [:store :path] (fs/temp-store-path! "dh-gc-versioning-test"))
         conn         (do
                        (d/delete-database cfg)
                        (d/create-database cfg)
@@ -103,8 +107,9 @@
     (d/release conn-branch2)
 
     (testing "Removed branch and after gc check."
-      (let [cfg          (assoc-in cfg [:store :path] "/tmp/dh-gc-versioning-test")
-            conn         (d/connect cfg)
+      ;; the same store as above — reconnecting is the point, so the path is
+      ;; the one already bound rather than a second temp path
+      (let [conn         (d/connect cfg)
             ;; create two more branches
             cfg1         (assoc cfg :branch :branch1)
             conn-branch1 (d/connect cfg1)
@@ -117,7 +122,7 @@
         (d/release conn-branch1)))))
 
 (deftest datahike-gc-range-test
-  (let [cfg           (assoc-in cfg [:store :path] "/tmp/dh-gc-range-test")
+  (let [cfg           (assoc-in cfg [:store :path] (fs/temp-store-path! "dh-gc-range-test"))
         conn          (do
                         (d/delete-database cfg)
                         (d/create-database cfg)
@@ -188,7 +193,7 @@
 (deftest min-age-spares-recent-garbage
   (testing "an object young enough is spared even though the mark called it
             garbage — the property an offline collector rests on"
-    (let [conn (churned-conn "/tmp/dh-gc-min-age")]
+    (let [conn (churned-conn (fs/temp-store-path! "dh-gc-min-age"))]
       (try
         (let [before (count-store @conn)
               swept  (<?? S (d/gc-storage conn (Date.) {:min-age-ms 86400000}))]
@@ -211,7 +216,7 @@
     (is (zero? datahike.gc/DEFAULT_SWEEP_MIN_AGE_MS))
     (is (zero? (datahike.gc/default-min-age-ms
                 {:writer {:backend :self :writer-ownership :exclusive}})))
-    (let [conn (churned-conn "/tmp/dh-gc-min-age-default")]
+    (let [conn (churned-conn (fs/temp-store-path! "dh-gc-min-age-default"))]
       (try
         (is (seq (<?? S (d/gc-storage conn (Date.))))
             "the default collects the garbage it always did")
@@ -229,7 +234,7 @@
     (is (= datahike.gc/DEFAULT_SHARED_SWEEP_MIN_AGE_MS
            (datahike.gc/default-min-age-ms {:writer {:backend :datahike-server}}))
         "a remote writer means the writes happen elsewhere entirely")
-    (let [conn (churned-conn "/tmp/dh-gc-min-age-shared"
+    (let [conn (churned-conn (fs/temp-store-path! "dh-gc-min-age-shared")
                              {:writer {:backend :self :writer-ownership :shared}})]
       (try
         (let [before (count-store @conn)]
@@ -245,7 +250,7 @@
 (deftest min-age-is-a-floor-not-a-replacement
   (testing "cutoff is the MINIMUM of the guard and the floor, so the floor can
             only ever collect LESS — never more than the safe point allows"
-    (let [conn (churned-conn "/tmp/dh-gc-min-age-floor")]
+    (let [conn (churned-conn (fs/temp-store-path! "dh-gc-min-age-floor"))]
       (try
         (let [with-floor (<?? S (d/gc-storage conn (Date.) {:min-age-ms 86400000}))
               no-floor   (<?? S (d/gc-storage conn (Date.) {:min-age-ms 0}))]

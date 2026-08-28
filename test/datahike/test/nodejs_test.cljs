@@ -107,6 +107,17 @@
   (let [dir (path.join (os.tmpdir) (str "datahike-node-test-" (rand-int 100000)))]
     dir))
 
+(defn tmp-path
+  "`nm` under the platform's temp directory.
+
+   The paths built with this are deliberately FIXED, unlike everything reached
+   through `tmp-dir` above: each one is either an artifact a JVM script drops
+   for a probe test to pick up, or a store left behind on purpose so the
+   buffering can be inspected afterwards. A fresh unique directory would defeat
+   both. Only the ROOT stops being assumed to be a POSIX `/tmp`."
+  [nm]
+  (path.join (os.tmpdir) nm))
+
 (deftest bigdec-roundtrip-test
   ;; :db.type/bigdec must accept a fress `Bigdec` (unscaled js/BigInt + scale) in
   ;; cljs and round-trip it. The spec was `(complement any?)` — it rejected EVERY
@@ -465,7 +476,7 @@
 ;; buffered-leaf projection (Branch.child) reconstructs identical datoms cross-host.
 ;; The store + reference datoms are produced by /tmp/dh_exchange_build.clj on the JVM;
 ;; this test is a no-op (passes) when that artifact is absent (e.g. normal CI).
-(def ^:private exchange-expected-file "/tmp/dh-exchange-expected.edn")
+(def ^:private exchange-expected-file (tmp-path "dh-exchange-expected.edn"))
 
 (deftest jvm-opbuf-exchange-test
   (async done
@@ -503,7 +514,7 @@
 ;; avoiding the pre-existing cross-host connect bug). Incremental commits make leaves
 ;; content-only dirty → buffered leaf slots in the root → on cold reopen they project back.
 ;; Writes to a FIXED dir (not deleted) so buffering can be confirmed externally (grep slots).
-(def ^:private cljs-opbuf-dir "/tmp/dh-cljs-opbuf")
+(def ^:private cljs-opbuf-dir (tmp-path "dh-cljs-opbuf"))
 
 (deftest cljs-opbuf-write-roundtrip-test
   (let [sid #uuid "00000000-0000-0000-0000-00000000c1c5"
@@ -546,7 +557,7 @@
 ;; diff-buf phase-2 gate: cljs $remove path (retractions → leaf underflow → merge/borrow,
 ;; exercising the rotate/merge/merge-split slot-carry). Insert 2000, retract the even ones,
 ;; cold-reopen and verify the surviving odd set exactly.
-(def ^:private cljs-opbuf-rm-dir "/tmp/dh-cljs-opbuf-rm")
+(def ^:private cljs-opbuf-rm-dir (tmp-path "dh-cljs-opbuf-rm"))
 
 (deftest cljs-opbuf-remove-roundtrip-test
   (let [sid #uuid "00000000-0000-0000-0000-0000000c1c5b"
@@ -593,7 +604,7 @@
 ;; diff-buf phase-2 gate: cljs $replace path. A cardinality-one re-assertion (upsert with an
 ;; old value) routes through psset/replace → Branch.$replace for eavt/aevt. Insert 1000 ids
 ;; with :n 0, then update each :n to its id in small commits, cold-reopen and verify :n == id.
-(def ^:private cljs-opbuf-rep-dir "/tmp/dh-cljs-opbuf-rep")
+(def ^:private cljs-opbuf-rep-dir (tmp-path "dh-cljs-opbuf-rep"))
 
 (deftest cljs-opbuf-replace-roundtrip-test
   (let [sid #uuid "00000000-0000-0000-0000-0000000c1c5c"
@@ -640,7 +651,7 @@
 ;; diff-buf phase-2 soundness gate: randomized insert/retract churn under a SMALL diff-buf
 ;; budget (more frequent buffer/write decisions, merges, borrows, splits) with periodic cold
 ;; reopens, compared against a reference set. Seeded LCG ⇒ deterministic/reproducible.
-(def ^:private cljs-opbuf-gen-dir "/tmp/dh-cljs-opbuf-gen")
+(def ^:private cljs-opbuf-gen-dir (tmp-path "dh-cljs-opbuf-gen"))
 
 (deftest cljs-opbuf-generative-test
   (let [sid  #uuid "00000000-0000-0000-0000-0000000c1c5d"
@@ -750,9 +761,9 @@
   (async done
          (go
            (try
-             (if-not (fs.existsSync "/tmp/kons-probe")
+             (if-not (fs.existsSync (tmp-path "kons-probe"))
                (is true "kons-probe artifact absent — skipped")
-               (let [store (<! (nfs/connect-fs-store "/tmp/kons-probe" :opts {:sync? false}))
+               (let [store (<! (nfs/connect-fs-store (tmp-path "kons-probe") :opts {:sync? false}))
                      v     (<! (k/get store :probe nil {:sync? false}))]
                  (is (= :datahike.index/persistent-set (:ns-kw v)) (str ":ns-kw = " (pr-str (:ns-kw v))))
                  (is (= :db.type/long (:ns-kw2 v)) (str ":ns-kw2 = " (pr-str (:ns-kw2 v))))

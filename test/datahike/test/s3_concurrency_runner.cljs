@@ -8,6 +8,7 @@
   (:require [cljs.core.async :refer [<!]]
             [datahike.api :as d]
             [datahike.connector :as connector]
+            [datahike.migrate.fs :as dfs]
             [konserve-s3.core]
             [konserve.node-filestore]
             [taoensso.trove :as trove]
@@ -16,12 +17,13 @@
 
 (def store-id #uuid "8f487c89-5ca7-4ae8-bd9d-ae8e00d59531")
 
+;; Node filestore checks the directory while connecting the cache tier, so it has
+;; to exist before the connect — `temp-dir!` creates it, and resolves it against
+;; `os.tmpdir()` rather than assuming a POSIX `/tmp`. The pid keeps the two
+;; orchestrated processes' cache tiers apart by name as well as by uniqueness.
+;; Browser IndexedDB has no equivalent filesystem precondition.
 (def local-tier-path
-  (str "/tmp/datahike-s3-concurrency-" (.-pid js/process)))
-
-;; Node filestore checks the directory while connecting the cache tier. Browser
-;; IndexedDB has no equivalent filesystem precondition.
-(.mkdirSync (js/require "fs") local-tier-path #js {:recursive true})
+  (dfs/temp-dir! (str "datahike-s3-concurrency-" (.-pid js/process) "-")))
 
 (trove/set-log-fn! (trove-console/get-log-fn {:min-level :warn}))
 

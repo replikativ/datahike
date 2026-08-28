@@ -7,6 +7,7 @@
    [datahike.api :as d]
    [datahike.index :as di]
    [datahike.index.hitchhiker-tree :as dih]
+   [datahike.migrate.fs :as fs]
    [datahike.connector :as conn]))
 
 #?(:cljs (def Throwable js/Error))
@@ -19,6 +20,9 @@
   (is (c/bool-from-env :foo true)))
 
 (deftest uri-test
+  ;; The only /tmp literals in this namespace that stay: nothing here opens a
+  ;; store, `uri->config` just parses. The path is the parser's INPUT and its
+  ;; expected output, so it has to be spelled the same on both sides.
   (let [mem-uri "datahike:mem://config-test"
         file-uri "datahike:file:///tmp/config-test"]
 
@@ -110,16 +114,20 @@
 
 (deftest store-identity-config-test
   (testing "different configs with equal identities"
-    (let [mem-start  {:store {:backend :memory
+    ;; `file-path` is bound ONCE: file-start and file-index differ only in
+    ;; :index, and that is the whole setup — two different paths would be two
+    ;; different store identities and the test would assert the wrong error.
+    (let [file-path  (fs/temp-store-path! "dh-store-identity-test")
+          mem-start  {:store {:backend :memory
                               :id #uuid "51de0715-1000-0000-0000-000000000001"}}
           mem-other  {:store {:backend :memory
                               :id #uuid "a107be12-1de0-7157-0000-000000000001"}}
           file-start {:store {:backend :file
-                              :path "/tmp/store-identity-test"
+                              :path file-path
                               :id #uuid "1de07157-0000-0000-0000-000000000001"}}
           file-index {:index :datahike.index/hitchhiker-tree
                       :store {:backend :file
-                              :path "/tmp/store-identity-test"
+                              :path file-path
                               :id #uuid "1de07157-0000-0000-0000-000000000001"}}
           mem-named  {:name "has-name"
                       :store {:backend :memory
@@ -148,16 +156,19 @@
 
 (deftest store-identity-connection-test
   (testing "different connections with equal identities"
-    (let [mem-start  {:store {:backend :memory
+    ;; as above: one path, bound once — file-index has to reach the store
+    ;; file-start is already connected to.
+    (let [file-path  (fs/temp-store-path! "dh-store-connection-test")
+          mem-start  {:store {:backend :memory
                               :id #uuid "51dec000-ec71-0000-0000-000000000001"}}
           mem-other  {:store {:backend :memory
                               :id #uuid "a107be12-c000-ec71-0000-000000000001"}}
           file-start {:store {:backend :file
-                              :path "/tmp/store-connection-test"
+                              :path file-path
                               :id #uuid "c000ec71-0000-0000-0000-000000000001"}}
           file-index {:index :datahike.index/hitchhiker-tree
                       :store {:backend :file
-                              :path "/tmp/store-connection-test"
+                              :path file-path
                               :id #uuid "c000ec71-0000-0000-0000-000000000001"}}
           mem-named  {:name "has-name"
                       :store {:backend :memory

@@ -17,6 +17,7 @@
                      [datahike.api :as d]
                      [datahike.gc :as gc]
                      [datahike.blob :as blob]
+                     [datahike.migrate.fs :as fs]
                      [datahike.gc-guard :as guard :refer [with-unreferenced-writes]]
                      [datahike.test.async :refer [deftest-async]]
                      [konserve.core :as k]
@@ -27,13 +28,13 @@
                      [datahike.api :as d]
                      [datahike.gc :as gc]
                      [datahike.blob :as blob]
+                     [datahike.migrate.fs :as fs]
                      [datahike.gc-guard :as guard :refer-macros [with-unreferenced-writes]]
                      [datahike.test.async :refer-macros [deftest-async]]
                      ;; register the :file backend on Node — GC's mark walk needs a
                      ;; flushing store (a store-ref names an object that lives there).
                      [konserve.node-filestore]
                      [konserve.core :as k]
-                     [cljs.nodejs :as nodejs]
                      [clojure.core.async :as a :refer [<!] :refer-macros [go]])))
 
 (def ^:private schema
@@ -51,10 +52,14 @@
 
 (defn- rand-uuid [] #?(:clj (java.util.UUID/randomUUID) :cljs (random-uuid)))
 
-(defn- tmp-path [id]
-  #?(:clj  (str (System/getProperty "java.io.tmpdir") "/dh-store-ref-" id)
-     :cljs (let [^js os (nodejs/require "os") ^js p (nodejs/require "path")]
-             (.join p (.tmpdir os) (str "dh-store-ref-" id)))))
+(defn- tmp-path
+  "A fresh store path under the platform's temp location. NOT created — konserve
+   creates the store, and refuses a path that already exists.
+   `fs/temp-store-path!` is the one spelling both runtimes share; `id` only
+   makes the directory identifiable in a listing, since the uniqueness comes
+   from the helper."
+  [id]
+  (fs/temp-store-path! (str "dh-store-ref-" id "-")))
 
 (defn- str->bytes [s]
   #?(:clj  (.getBytes ^String s "UTF-8")

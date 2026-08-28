@@ -2,7 +2,8 @@
   (:require
    #?(:cljs [cljs.test    :as t :refer-macros [is deftest testing]]
       :clj  [clojure.test :as t :refer        [is deftest testing]])
-   [datahike.api :as d]))
+   [datahike.api :as d]
+   [datahike.migrate.fs :as fs]))
 
 #?(:cljs
    (def Throwable js/Error))
@@ -48,7 +49,7 @@
     (duplicate-test config)))
 
 (deftest duplicate-file
-  (let [config {:store {:backend :file :path "/tmp/duplicate" :id #uuid "1a5e0000-0000-0000-0000-000000000001"}
+  (let [config {:store {:backend :file :path (fs/temp-store-path! "dh-duplicate") :id #uuid "1a5e0000-0000-0000-0000-000000000001"}
                 :schema-flexibility :write}]
     (duplicate-test config)))
 
@@ -86,20 +87,20 @@
     (insert-history-test config)))
 
 (deftest insert-history-file
-  (let [config {:store {:backend :file :path "/tmp/insert-hist-hht" :id #uuid "1a5e0000-0000-0000-0000-000000000002"}
+  (let [config {:store {:backend :file :path (fs/temp-store-path! "dh-insert-hist-hht") :id #uuid "1a5e0000-0000-0000-0000-000000000002"}
                 :schema-flexibility :write
                 :keep-history? true}]
     (insert-history-test config)))
 
 (deftest insert-history-file-with-attr-refs
-  (let [config {:store {:backend :file :path "/tmp/insert-hist-attr-refs" :id #uuid "1a5e0000-0000-0000-0000-000000000003"}
+  (let [config {:store {:backend :file :path (fs/temp-store-path! "dh-insert-hist-attr-refs") :id #uuid "1a5e0000-0000-0000-0000-000000000003"}
                 :schema-flexibility :write
                 :keep-history? true
                 :attribute-refs? true}]
     (insert-history-test config)))
 
 (deftest insert-read-handlers
-  (let [config {:store {:backend :file :path "/tmp/insert-read-handlers-9" :id #uuid "1a5e0000-0000-0000-0000-000000000004"}
+  (let [config {:store {:backend :file :path (fs/temp-store-path! "dh-insert-read-handlers-9") :id #uuid "1a5e0000-0000-0000-0000-000000000004"}
                 :schema-flexibility :write
                 :keep-history? false}
         schema [{:db/ident       :block/string

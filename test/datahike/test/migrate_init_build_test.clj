@@ -278,6 +278,8 @@
             a real tree — so the refusal has to happen at this boundary."
     (doseq [f [:eavtt :temporal-eavt nil "eavt"]]
       (is (= :init/unknown-index-family
+             ;; the directory argument is never touched — `sort-family!` refuses
+             ;; the family first, which is what this asserts
              (try (init/sort-family! [] f 10 "/tmp") nil
                   (catch clojure.lang.ExceptionInfo e (:error (ex-data e)))))
           (str "sort-family! must refuse " (pr-str f)))

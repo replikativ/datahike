@@ -11,6 +11,7 @@
   #?(:clj  (:require [clojure.test :refer [deftest is testing]]
                      [datahike.api :as d]
                      [datahike.blob :as blob]
+                     [datahike.migrate.fs :as fs]
                      [datahike.kabel.walker :as w]
                      [datahike.test.async :refer [deftest-async]]
                      [konserve.core :as k]
@@ -18,11 +19,11 @@
      :cljs (:require [cljs.test :refer [deftest is testing] :include-macros true]
                      [datahike.api :as d]
                      [datahike.blob :as blob]
+                     [datahike.migrate.fs :as fs]
                      [datahike.kabel.walker :as w]
                      [datahike.test.async :refer-macros [deftest-async]]
                      [konserve.node-filestore]        ;; register :file backend on Node
                      [konserve.core :as k]
-                     [cljs.nodejs :as nodejs]
                      [clojure.core.async :as a :refer [<!] :refer-macros [go]])))
 
 (def ^:private schema
@@ -35,10 +36,7 @@
 
 (defn- rand-uuid [] #?(:clj (java.util.UUID/randomUUID) :cljs (random-uuid)))
 
-(defn- tmp-path [id]
-  #?(:clj  (str (System/getProperty "java.io.tmpdir") "/dh-walker-" id)
-     :cljs (let [^js os (nodejs/require "os") ^js p (nodejs/require "path")]
-             (.join p (.tmpdir os) (str "dh-walker-" id)))))
+(defn- tmp-path [id] (fs/temp-store-path! (str "dh-walker-" id "-")))
 
 (defn- str->bytes [s]
   #?(:clj (.getBytes ^String s "UTF-8") :cljs (js/Buffer.from s "utf-8")))

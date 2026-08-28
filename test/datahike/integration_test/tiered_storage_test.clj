@@ -17,6 +17,7 @@
    storage regardless of how `k/get` returned the value."
   (:require [clojure.test :refer [deftest is]]
             [datahike.api :as d]
+            [datahike.migrate.fs :as fs]
             [konserve.store :as ks]))
 
 (def store-id #uuid "0e7000b9-0000-0000-0000-00000e100001")
@@ -28,7 +29,7 @@
            :id store-id
            :frontend-config frontend-cfg
            :backend-config {:backend :file
-                            :path "/tmp/datahike-tiered-storage-test"
+                            :path (fs/temp-store-path! "dh-tiered-storage-test")
                             :id store-id}}
    :keep-history? false
    :schema-flexibility :read

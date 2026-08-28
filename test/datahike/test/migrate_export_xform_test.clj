@@ -27,6 +27,7 @@
   (:require [clojure.test :refer [deftest testing is]]
             [datahike.api :as d]
             [datahike.migrate :as m]
+            [datahike.migrate.fs :as fs]
             [datahike.test.utils :as utils]))
 
 (defn- fresh-conn []
@@ -75,7 +76,7 @@
 (defn- dump-values
   "The `:n` values that survive an export-db → import-db round trip under `xform`."
   [conn xform]
-  (let [dir (str "/tmp/claude-1000/xform-test-" (System/currentTimeMillis) "-" (rand-int 100000))
+  (let [dir (fs/temp-dir! "dh-xform-test")
         tgt (fresh-conn)]
     (m/export-transformed @conn dir xform {})
     (m/import-db tgt dir)

@@ -33,6 +33,7 @@
   (:require [clojure.test :refer [deftest testing is]]
             [datahike.api :as d]
             [datahike.migrate :as m]
+            [datahike.migrate.fs :as fs]
             [datahike.test.utils :as utils]
             [clojure.core.async :as a])
   (:import [java.lang.ref WeakReference]))
@@ -108,7 +109,7 @@
             leave `write-chunked!` holding the whole dump."
     (let [conn (populate! (fresh-conn))
           seen (atom [])
-          dir  (str "/tmp/claude-1000/retention-" (System/currentTimeMillis))]
+          dir  (fs/temp-dir! "dh-retention")]
       (with-redefs [m/sorted-record-seq (watching-sorted-record-seq seen)]
         (a/<!! (m/export-db @conn dir {:history? true :sync? false})))
       (is (seq @seen) "precondition: sorted-record-seq was called")

@@ -6,6 +6,7 @@
    [datahike.http.server :refer [start-server stop-server]]
    [datahike.http.writer :as http-writer]
    [datahike.writer :as writer]
+   [datahike.migrate.fs :as fs]
    [datahike.api :as d]))
 
 (def remote-store-id #uuid "19000000-0000-0000-0000-000000000019")
@@ -61,7 +62,7 @@
                                 :token    "securerandompassword"})]
       (try
         (let [cfg    {:store              {:backend :file
-                                           :path  "/tmp/distributed_writer"
+                                           :path  (fs/temp-store-path! "dh-distributed-writer")
                                            :id #uuid "17100000-0000-0000-0000-000000000001"}
                       :keep-history?      true
                       :schema-flexibility :read

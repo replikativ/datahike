@@ -10,6 +10,7 @@
    [datahike.index.secondary.scriptum]
    [datahike.index.secondary.stratum]
    [datahike.migrate :as m]
+   [datahike.migrate.fs :as fs]
    [stratum.api :as st]
    [datahike.test.query-aggregates-test :refer [aggregate-contract]]))
 
@@ -99,7 +100,7 @@
   (testing "create, index documents, search, delete"
     (let [idx (sec/create-index :scriptum
                                 {:attrs #{:person/name :person/bio}
-                                 :path (str "/tmp/scriptum-test-" (random-uuid))}
+                                 :path (fs/temp-dir! "scriptum-test-")}
                                 nil)]
       (is (= #{:person/name :person/bio} (sec/-indexed-attrs idx)))
 
@@ -161,7 +162,7 @@
                                       nil)
             ft-idx (sec/create-index :scriptum
                                      {:attrs #{:person/bio}
-                                      :path (str "/tmp/scriptum-cross-" (random-uuid))}
+                                      :path (fs/temp-dir! "scriptum-cross-")}
                                      nil)
           ;; Transact vectors
             vec-idx (-> vec-idx
@@ -210,11 +211,11 @@
                   :person/bio {}
                   :idx/fulltext {:db.secondary/type :scriptum
                                  :db.secondary/attrs [:person/name :person/bio]
-                                 :db.secondary/config {:path (str "/tmp/scriptum-tx-" (random-uuid))}}}
+                                 :db.secondary/config {:path (fs/temp-dir! "scriptum-tx-")}}}
           empty-db (db/empty-db schema)
           ft-idx (sec/create-index :scriptum
                                    {:attrs [:person/name :person/bio]
-                                    :path (str "/tmp/scriptum-tx-" (random-uuid))}
+                                    :path (fs/temp-dir! "scriptum-tx-")}
                                    empty-db)
           db (assoc empty-db :secondary-indices {:idx/fulltext ft-idx})
           db2 (d/db-with db [{:db/id 1 :person/name "Alice" :person/bio "ML researcher"}
@@ -430,13 +431,13 @@
                   :person/dept {}
                   :idx/fulltext {:db.secondary/type :scriptum
                                  :db.secondary/attrs [:person/bio]
-                                 :db.secondary/config {:path (str "/tmp/scriptum-cross-strat-" (random-uuid))}}
+                                 :db.secondary/config {:path (fs/temp-dir! "scriptum-cross-strat-")}}
                   :idx/analytics {:db.secondary/type :stratum
                                   :db.secondary/attrs [:person/salary :person/dept]}}
           empty-db (db/empty-db schema)
           ft-idx (sec/create-index :scriptum
                                    {:attrs #{:person/bio}
-                                    :path (str "/tmp/scriptum-cross-strat-" (random-uuid))}
+                                    :path (fs/temp-dir! "scriptum-cross-strat-")}
                                    empty-db)
           st-idx (sec/create-index :stratum
                                    {:attrs #{:person/salary :person/dept}}
@@ -483,11 +484,11 @@
                   :person/salary {}
                   :idx/fulltext {:db.secondary/type :scriptum
                                  :db.secondary/attrs [:person/bio]
-                                 :db.secondary/config {:path (str "/tmp/scriptum-fused-" (random-uuid))}}}
+                                 :db.secondary/config {:path (fs/temp-dir! "scriptum-fused-")}}}
           empty-db (db/empty-db schema)
           ft-idx (sec/create-index :scriptum
                                    {:attrs #{:person/bio}
-                                    :path (str "/tmp/scriptum-fused-" (random-uuid))}
+                                    :path (fs/temp-dir! "scriptum-fused-")}
                                    empty-db)
           db (assoc empty-db :secondary-indices {:idx/fulltext ft-idx})
           db (d/db-with db [{:db/id 1 :person/name "Alice" :person/bio "ML researcher" :person/salary 90000}
@@ -520,7 +521,7 @@
     (let [cfg {:store {:backend :memory :id (java.util.UUID/randomUUID)}
                :keep-history? true
                :schema-flexibility :write}
-          scriptum-path (str "/tmp/scriptum-purge-test-" (random-uuid))
+          scriptum-path (fs/temp-dir! "scriptum-purge-test-")
           _ (d/create-database cfg)
           conn (d/connect cfg)]
       (try
@@ -813,7 +814,7 @@
                            :db/cardinality :db.cardinality/one :db.secondary/only true}])
         (d/transact conn [{:db/ident :idx/ft :db.secondary/type :scriptum
                            :db.secondary/attrs [:doc/body :doc/title]
-                           :db.secondary/config {:path (str "/tmp/dh-retr-" (java.util.UUID/randomUUID))}}])
+                           :db.secondary/config {:path (fs/temp-dir! "dh-retr-")}}])
         (Thread/sleep 800)
         (let [eid (get-in (d/transact conn [{:db/id -1 :doc/body "the whole document"
                                              :doc/title "My Title"}])
@@ -837,7 +838,7 @@
           (testing "so the database can still be backed up — the export refuses
                     any :db.secondary/only value it cannot recover, and this one
                     is recoverable again"
-            (is (map? (m/export-db @conn (str "/tmp/dh-retr-dump-" (java.util.UUID/randomUUID)) {})))))
+            (is (map? (m/export-db @conn (fs/temp-dir! "dh-retr-dump-") {})))))
         (finally (d/release conn))))))
 
 (deftest proximum-covers-exactly-one-attribute

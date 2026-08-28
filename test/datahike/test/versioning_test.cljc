@@ -6,13 +6,14 @@
               commit-id commit-as-db]]
             [datahike.db.utils :refer [db?]]
             [datahike.api :as d]
+            [datahike.migrate.fs :as fs]
             [konserve.core :as k]
             [superv.async :refer [<?? S]]))
 
 (deftest datahike-versioning-test
   (testing "Testing versioning functionality."
     (let [cfg {:store              {:backend :file
-                                    :path    "/tmp/dh-versioning-test"
+                                    :path    (fs/temp-store-path! "dh-versioning-test")
                                     :id #uuid "1e510000-0000-0000-0000-00000000001e"}
                :keep-history?      true
                :schema-flexibility :write
