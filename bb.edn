@@ -219,11 +219,22 @@
                          (do (run 'ni-cli-uber)
                              (let [jar (build/jar-path config (-> config :build :native-cli))
                                    ni (str (System/getenv "GRAALVM_HOME") "/bin/native-image.cmd")]
+                               ;; THESE MUST MATCH the :native-cli alias in
+                               ;; deps.edn. They are a hand-copied parallel of it
+                               ;; and have already drifted once: the alias moved
+                               ;; to 5g and gained --enable-url-protocols when S3
+                               ;; went in, this branch did not, and Windows spent
+                               ;; a CI round on the watchdog aborting a 4g build
+                               ;; (exit 30, "Maximum heap size: 3641") — after
+                               ;; which it would have shipped a binary whose S3
+                               ;; endpoint resolution cannot parse a URL.
+                               ;; Change one, change the other.
                                (shell ni "-jar" jar
                                       "--initialize-at-build-time"
                                       "--no-fallback"
+                                      "--enable-url-protocols=http,https"
                                       "-H:IncludeResources=DATAHIKE_VERSION"
-                                      "-J-Xmx4g"
+                                      "-J-Xmx5g"
                                       "-o" "dthk")))
                          (clojure "-M:native-cli"))}
 
