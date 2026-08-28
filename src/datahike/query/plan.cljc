@@ -309,10 +309,26 @@
   [{:keys [kind] :as source}]
   (case kind
     :pattern
-    (let [{:keys [classified db]} source
+    (let [{:keys [classified db bound-var-cards]} source
           si (analyze/pattern-schema-info db classified)
-          est (or (estimate/estimate-pattern db classified si)
-                  (di/-count (:eavt db)))
+          base (or (estimate/estimate-pattern db classified si)
+                   (di/-count (:eavt db)))
+          ;; BOUND-AWARE when the caller knows what is bound entering this
+          ;; clause. A scan cannot OUTPUT more rows than it matches, so
+          ;; advertising the unconstrained attribute extent over-states every
+          ;; var it binds — and a downstream consumer inherits that.
+          ;;
+          ;; This is where a selective probe used to evaporate. `[?c :concept/id
+          ;; ?from-id]` with `?from-id` bound to a one-element `:in` collection
+          ;; matched one row and costed itself at one, then advertised `?c` at
+          ;; the full 2000-concept extent — so `[?r :relation/concept-1 ?c]` was
+          ;; priced against 2000 and came out at the whole 8000-row relation.
+          ;; See `lower/node->output-cards` for the other half. (#973)
+          est (if (seq bound-var-cards)
+                (or (estimate/estimate-pattern-with-bindings
+                     db classified si bound-var-cards base)
+                    base)
+                base)
           free-output-vars (filter analyze/free-var? (:vars classified))]
       (when (seq free-output-vars)
         (zipmap free-output-vars (repeat (long est)))))
@@ -871,9 +887,24 @@
         ;; cardinalities — for now the group-level bound suffices for downstream
         ;; planning decisions (it differentiates a 4k-tuple group from a 150k one).
         group-card-final (max 1 group-card)
+        ;; The same reduction, started from the driving scan's BOUND-AWARE card.
+        ;;
+        ;; `:estimated-card` above is deliberately the unconstrained count — the
+        ;; pass-rate math needs `merge-est / total-entities` to be a ratio of full
+        ;; attribute extents, and feeding it a filtered count would double-count
+        ;; the selectivity. But that left the GROUP with no bound-aware cost at
+        ;; all, so `group-effective-card` (which prefers `:scan-card` for exactly
+        ;; this purpose) fell back to the unbound number for every group and
+        ;; ordered a probe-driven group as though nothing were bound.
+        ;;
+        ;; Only the STARTING card changes; the per-merge pass rates are untouched.
+        ;; The bound-aware bound when there is one: a group cannot OUTPUT more
+        ;; rows than it produces under the bindings entering it, and a consumer
+        ;; downstream inherits whatever this says.
+        output-card-bound (long group-card-final)
         output-var-cards (into {}
                                (comp (filter analyze/free-var?)
-                                     (map (fn [v] [v group-card-final])))
+                                     (map (fn [v] [v output-card-bound])))
                                output-vars)
         ;; Merge-ops' pushdown preds can't be applied (merge uses EAVT lookupGE,
         ;; not AVET scan). Collect them so they can be restored as standalone preds.
@@ -1229,10 +1260,33 @@
                                :cljs (loop [v x c 0]
                                        (if (zero? v) c
                                            (recur (bit-and v (dec v)) (inc c))))))
+                 ;; Largest component wins, and on a TIE the CHEAPEST one — not
+                 ;; whichever happened to come first in `groups`.
+                 ;;
+                 ;; The tie is the common case, not an edge case: two groups
+                 ;; joined only THROUGH a non-group op (an `or`, a rule call, a
+                 ;; function) share no variable, so each is its own singleton
+                 ;; component. Keeping the first meant a 2000-row group could be
+                 ;; chosen as the seed over a 100-row probe scan purely by array
+                 ;; order, and everything after it multiplied against 2000 —
+                 ;; while `sorted-remaining` two lines below already sorts the
+                 ;; REST by cardinality. This makes the seed agree with the tail.
+                 ;;
+                 ;; Ordering the probe first is also what lets the interleaver
+                 ;; place the `or`/rule after it, so the rule runs with its input
+                 ;; var bound and can seek instead of materialising. (#973)
                  best-mask (reduce (fn [best mask]
-                                     (if (aget dp (int mask))
-                                       (if (> (long (popcount mask)) (long (popcount best)))
-                                         mask best)
+                                     (if-let [entry (aget dp (int mask))]
+                                       (let [bp (long (popcount best))
+                                             mp (long (popcount mask))]
+                                         (cond
+                                           (zero? (long best)) mask
+                                           (> mp bp) mask
+                                           (and (= mp bp)
+                                                (< (long (:cost entry))
+                                                   (long (:cost (aget dp (int best))))))
+                                           mask
+                                           :else best))
                                        best))
                                    0
                                    (range 1 (unchecked-inc full)))
