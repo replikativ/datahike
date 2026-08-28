@@ -153,21 +153,24 @@
                       _       (when-not head
                                 (throw (ex-info "verify-chain: no head cid on db"
                                                 {:type :audit/no-head})))
-                      commits (volatile! [])
-                      missing (volatile! [])
-                      visited (volatile! #{})]
+                      ;; Atoms, not volatiles: `vswap!` inlines `.deref`/`.reset`,
+                      ;; and the go macro erases the local's type hint, so those
+                      ;; calls reflect. `swap!` is an ordinary function call.
+                      commits (atom [])
+                      missing (atom [])
+                      visited (atom #{})]
                   (loop [frontier [head] n 0]
                     (when (and (seq frontier) (< n limit))
                       (let [cid (first frontier) rest-f (rest frontier)]
                         (if (contains? @visited cid)
                           (recur rest-f n)
-                          (do (vswap! visited conj cid)
+                          (do (swap! visited conj cid)
                               (if-let [entry (<?- (step store cid sync?))]
-                                (do (vswap! commits conj entry)
+                                (do (swap! commits conj entry)
                                     (recur (into (vec rest-f)
                                                  (remove @visited (:parents entry)))
                                            (inc n)))
-                                (do (vswap! missing conj cid)
+                                (do (swap! missing conj cid)
                                     (recur rest-f n))))))))
                   (let [es @commits
                         mism (filterv (comp #{:mismatch} :status) es)

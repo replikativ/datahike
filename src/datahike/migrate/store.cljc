@@ -93,6 +93,16 @@
 
 (defn- chunk-key [prefix n codec] (ckey prefix (chunk-name n codec)))
 
+(defn- byte-count
+  "Length of an encoded chunk.
+
+  A function rather than an inline `alength`: the call sites sit inside a
+  `go-try-` block, and the go macro rewrites locals into its state-machine
+  array, dropping the `^bytes` hint and leaving a reflective call behind. A
+  parameter hint on an ordinary function survives."
+  ^long [b]
+  #?(:clj (alength ^bytes b) :cljs (.-length b)))
+
 (defn chunk-descriptor
   "One entry of the manifest's `:chunks` vector.
 
@@ -217,8 +227,8 @@
                   (conj chunks (chunk-descriptor
                                 (chunk-name n codec)
                                 (count part)
-                                #?(:clj (alength ^bytes stored) :cljs (.-length stored))
-                                #?(:clj (alength ^bytes content) :cljs (.-length content))
+                                (byte-count stored)
+                                (byte-count content)
                                 (dig/sha256-hex content)))
                   (reduce dig/add-record dacc encs)))))))))
 
