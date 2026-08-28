@@ -125,6 +125,11 @@
                "-J-Dclojure.compiler.direct-linking=true"
                (str "-H:IncludeResources=" (version/string repo-config))
                "--initialize-at-build-time"
+               ;; Same reason as :native-cli in deps.edn: the S3 endpoint rules
+               ;; engine resolves through `RuleUrl.parse`, which calls
+               ;; `new java.net.URL(..)`, and a native image registers no URL
+               ;; protocol handlers by default.
+               "--enable-url-protocols=http,https"
                "-H:Log=registerResource:"
                "--verbose"
                "--no-fallback"]
