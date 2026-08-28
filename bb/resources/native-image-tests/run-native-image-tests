@@ -16,6 +16,23 @@ DTHK=./dthk
 TESTDIR=./target/native-image-tests
 mkdir -p "$TESTDIR"
 
+# The binary is a native Windows program, so it resolves a relative path against
+# ITS notion of the working directory, not Git Bash's. Those agree here, but the
+# agreement is an assumption and it is the assumption that failed: a run whose
+# very first command died with
+#
+#     Error executing command: target\native-image-tests
+#
+# i.e. the store's PARENT reported missing, immediately after this `mkdir -p`
+# reported success. So say where we are and what is actually on disk; a
+# one-line failure with no context cost two CI rounds already.
+echo "native-image tests: cwd=$(pwd) testdir=$TESTDIR"
+if [ ! -d "$TESTDIR" ]; then
+  echo "Exception: $TESTDIR does not exist after mkdir -p."
+  ls -la . || true
+  exit 1
+fi
+
 TMPSTORE=$TESTDIR/dh-test-store
 CBOR_STORE=$TESTDIR/dh-cbor-writer-store
 CBOR_OUT_FILE=$TESTDIR/cbor-out
