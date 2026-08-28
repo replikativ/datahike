@@ -67,6 +67,16 @@ jobs:
           paths:
             - /home/circleci/.m2
             - /home/circleci/.deps.clj
+  reflection:
+    executor: tools/clojurecli
+    steps:
+      - attach_workspace:
+          at: /home/circleci
+      - run:
+          name: Check for reflective calls
+          command: bb reflection
+          no_output_timeout: 10m
+
   native-image:
     executor: tools/clojurecli
     steps:
@@ -419,6 +429,10 @@ workflows:
           requires:
             - setup
       - format:
+          context: ghcr-read-package
+          requires:
+            - setup
+      - reflection:
           context: ghcr-read-package
           requires:
             - setup
