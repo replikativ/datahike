@@ -13,13 +13,17 @@
         ;; and hasch. Datahike compiles konserve into `dthk`, where a reflective
         ;; call resolves at run time and so works only if it was registered when
         ;; the image was built.
-        ;; 0.9.388: the file store no longer fails `delete-store` on Windows
-        ;; (konserve#186). It fsyncs the parent directory after removing an
-        ;; entry, Windows cannot open a directory as a channel, and the catch
-        ;; around it RETURNED the exception — which superv.async's <?- then
-        ;; re-threw. That was the whole of "Error executing command:
-        ;; target\native-image-tests", five Windows CI rounds long.
-        org.replikativ/konserve                     {:mvn/version "0.9.388"}
+        ;; 0.9.389 (konserve#187): the second Windows fix and a hardening of
+        ;; the whole file-store write path behind it. The target blob is closed
+        ;; before `.new` is moved over it — Windows refuses to replace an open
+        ;; file — and the review of that change found and fixed: a shared
+        ;; staging path two writers could interleave into (now per-writer);
+        ;; `dissoc` bypassing the sidecar fence; `k/revision` handing out a
+        ;; token without making the key fenceable; no truncation on shorter
+        ;; in-place writes; streaming writes ignoring short reads and returned
+        ;; counts; and Reader input splitting surrogate pairs. Six external
+        ;; review rounds; the last reported no remaining High or Medium.
+        org.replikativ/konserve                     {:mvn/version "0.9.389"}
 
         org.replikativ/superv.async                 {:mvn/version "0.3.51"
                                                      :exclusions [org.clojure/clojurescript]}
