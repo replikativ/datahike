@@ -23,7 +23,19 @@ CBOR_SERVER_LOG=$TESTDIR/cbor-server.log
 CONFIG=bb/resources/native-image-tests/testconfig.edn
 ATTR_REF_CONFIG=bb/resources/native-image-tests/testconfig.attr-refs.edn
 
-trap "rm -rf $TMPSTORE" EXIT
+# `cleanup` is deliberately incapable of failing. A non-zero command in an
+# EXIT trap becomes the script's exit status, so a store directory that cannot
+# be removed turns a fully passing run into a red one with nothing printed to
+# explain it. That is not hypothetical: on Windows the just-killed JVM can still
+# hold a handle on the CBOR store when the trap runs, which is exactly how a run
+# with `Test successful.`, `CBOR remote-writer test successful.` and
+# `Positional input test successful.` still reported failure.
+cleanup() {
+  rm -rf "$TMPSTORE" "$CBOR_STORE" 2>/dev/null || true
+  [ -n "${CBOR_SERVER_PID:-}" ] && kill "$CBOR_SERVER_PID" 2>/dev/null
+  return 0
+}
+trap cleanup EXIT
 
 "$DTHK" delete-database edn:$ATTR_REF_CONFIG
 "$DTHK" create-database edn:$ATTR_REF_CONFIG
@@ -105,25 +117,14 @@ fi
 # under a closed-world image rather than erroring.
 CBOR_CONFIG=bb/resources/native-image-tests/testconfig.cbor-writer.edn
 
-# This leg needs a JVM server, so it needs the Clojure CLI callable FROM THIS
-# SHELL. On Windows the CLI is a PowerShell module and Git Bash cannot see it,
-# while `bb` (which invoked this script) can. Rather than assume either way,
-# ask: where `clojure` resolves the leg runs, and where it does not the skip is
-# announced instead of quietly shrinking the suite. Both macOS legs run it, so
-# the path stays covered.
-if ! command -v clojure > /dev/null 2>&1
-then
-  echo "SKIPPING CBOR remote-writer test: no 'clojure' on PATH in this shell."
-  echo "  The rest of this script exercises CBOR with the EMPTY interop"
-  echo "  registry; what goes uncovered here is tag-27 record construction"
-  echo "  through a populated one. Covered on the macOS legs."
-else
-
+# This leg needs a JVM server. `clojure` resolves in Git Bash on the Windows
+# runner as well as on macOS -- verified by this leg passing there -- so it is
+# required rather than probed for: a missing CLI should fail loudly, not shrink
+# the suite to a green run that no longer covers tag-27 record construction.
 clojure -M:http-server \
         bb/resources/native-image-tests/cbor-server-config.edn \
         > "$CBOR_SERVER_LOG" 2>&1 &
 CBOR_SERVER_PID=$!
-trap "rm -rf $TMPSTORE $CBOR_STORE; kill $CBOR_SERVER_PID 2>/dev/null || true" EXIT
 
 # The server binds asynchronously; poll rather than sleeping a guessed interval.
 # The budget is generous on purpose: measured at 79s locally with a warm ~/.m2,
@@ -153,9 +154,6 @@ else
 fi
 "$DTHK" delete-database edn:$CBOR_CONFIG
 kill $CBOR_SERVER_PID 2>/dev/null || true
-trap "rm -rf $TMPSTORE $CBOR_STORE" EXIT
-
-fi
 
 # test arbitrary :in[puts] as positional args
 QUERY_OUT=`"$DTHK" query '[:find (pull ?e [*]) . :in $ ?name :where [?e :name ?name]]' db:$CONFIG '"Judea"'`
