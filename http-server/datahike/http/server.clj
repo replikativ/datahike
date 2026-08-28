@@ -1,9 +1,11 @@
 (ns datahike.http.server
-  "HTTP server implementation for Datahike: `datahike.http.routes` behind
-   Jetty, with swagger-ui at `/` and CORS. Embedding hosts want `routes`."
+  "HTTP server implementation for Datahike: `datahike.http.routes/handler`
+   behind Jetty, with swagger-ui at `/`, CORS, and — given an `:auth-db` —
+   eacl-backed permissions. Embedding hosts want `datahike.http.routes`."
   (:gen-class)
   (:require
    [clojure.edn :as edn]
+   [datahike.http.permissions :as permissions]
    [datahike.http.routes :as routes]
    [reitit.ring :as ring]
    [reitit.swagger :as swagger]
@@ -13,51 +15,59 @@
    [replikativ.logging :as log]
    [ring.adapter.jetty :refer [run-jetty]]))
 
-(defn app [config server-connections]
-  (let [rtr (routes/router
-             config
-             {:extra-routes
-              [["/swagger.json"
-                {:public? true
-                 :get {:no-doc  true
-                  :swagger {:info {:title       "Datahike API"
-                                   :description "Transaction and query functions for Datahike.\n\nThe signatures match those of the Clojure API. All functions take their arguments passed as a vector/list in the POST request body."}}
-                  :handler (swagger/create-swagger-handler)}}]]})]
-    (routes/wrap-api
-     (-> (ring/ring-handler
-          rtr
-          (ring/routes
-           (swagger-ui/create-swagger-ui-handler
-            {:path   "/"
-             :config {:validatorUrl     nil
-                      :operationsSorter "alpha"}})
-           (ring/create-default-handler)))
-         (wrap-cors :access-control-allow-origin (or (:access-control-allow-origin config)
-                                                     [#"http://localhost" #"http://localhost:8080"])
-                    :access-control-allow-methods [:get :put :post :delete]))
-     rtr config server-connections)))
+(def ^:private swagger-route
+  ["/swagger.json"
+   {:public? true
+    :get {:no-doc  true
+          :swagger {:info {:title       "Datahike API"
+                           :description "Transaction and query functions for Datahike.\n\nThe signatures match those of the Clojure API. All functions take their arguments passed as a vector/list in the POST request body."}}
+          :handler (swagger/create-swagger-handler)}}])
 
-(defonce ^:private owned-connections
-  ;; server -> the atom its routes share, so `stop-server` can release the
-  ;; databases the server opened without changing its signature.
+(defn app
+  "The server's Ring handler over `connections`. With `:auth-db` in `config`
+   the permissions database is opened here; `(::config (meta app))` is the
+   configured config, for `stop-server`."
+  [config connections]
+  (let [config  (if (:auth-db config) (permissions/configure config) config)
+        handler (routes/handler config
+                                {:connections     connections
+                                 :extra-routes    (concat [swagger-route] (permissions/routes config))
+                                 :default-handler (ring/routes
+                                                   (swagger-ui/create-swagger-ui-handler
+                                                    {:path   "/"
+                                                     :config {:validatorUrl     nil
+                                                              :operationsSorter "alpha"}})
+                                                   (ring/create-default-handler))})]
+    ;; CORS outermost, so the gate's own 401/413 carry the headers too.
+    (with-meta (wrap-cors handler
+                          :access-control-allow-origin (or (:access-control-allow-origin config)
+                                                           [#"http://localhost" #"http://localhost:8080"])
+                          :access-control-allow-methods [:get :put :post :delete])
+      (assoc (meta handler) ::config config))))
+
+(defonce ^:private owned
+  ;; server -> what it opened, so `stop-server` can close it without a
+  ;; change of signature.
   (atom {}))
 
 (defn start-server [config]
   (let [connections (atom {})
-        server      (run-jetty (app config connections) config)]
-    (swap! owned-connections assoc server connections)
+        app         (app config connections)
+        server      (run-jetty app config)]
+    (swap! owned assoc server {:connections connections :config (::config (meta app))})
     server))
 
 (defn stop-server [^org.eclipse.jetty.server.Server server]
   (.stop server)
-  (when-let [connections (get @owned-connections server)]
-    (swap! owned-connections dissoc server)
-    (routes/release-all! connections)))
+  (when-let [{:keys [connections config]} (get @owned server)]
+    (swap! owned dissoc server)
+    (routes/release-all! connections)
+    (permissions/close! config)))
 
 (defn -main [& args]
-  (let [{:keys [level token] :as config} (edn/read-string (slurp (first args)))]
+  (let [{:keys [level] :as config} (edn/read-string (slurp (first args)))]
     (when (#{:trace :debug :info nil} level)
       (println "Datahike HTTP Server" datahike-version "- https://datahike.io"))
-    (log/info :datahike/http-server-config {:config (if token (assoc config :token "REDACTED") config)})
+    (log/info :datahike/http-server-config {:config (routes/redact config)})
     (start-server config)
     (log/info :datahike/http-server-started "Server started")))

@@ -23,7 +23,7 @@
         fmt                 "application/edn"
         url                 (str url "/" end-point)
         body                (remote/edn-replace-remote-literals (pr-str data))
-        _                   (log/trace :datahike/http-request {:url url :end-point end-point :data data})
+        _                   (log/trace :datahike/http-request {:url url :end-point end-point})
         response
         (try
           (http/request (merge
@@ -59,7 +59,7 @@
          out      (ByteArrayOutputStream. (or max-output-buffer-size MAX_OUTPUT_BUFFER_SIZE))
          writer   (transit/writer out :json {:handlers write-handlers})
          _        (transit/write writer data)
-         _        (log/trace :datahike/http-request {:url url :end-point end-point :data data})
+         _        (log/trace :datahike/http-request {:url url :end-point end-point})
          response
          (try
            (http/request (merge
@@ -162,7 +162,7 @@
          fmt      "application/json"
          url      (str url "/" end-point)
          out      (j/write-value-as-bytes data mapper)
-         _        (log/trace :datahike/http-request {:url url :end-point end-point :data data})
+         _        (log/trace :datahike/http-request {:url url :end-point end-point})
          response
          (try
            (http/request (merge
@@ -198,7 +198,7 @@
         fmt      "application/json"
         url      (str url "/" end-point)
         out      data
-        _        (log/trace :datahike/http-request {:url url :end-point end-point :data data})
+        _        (log/trace :datahike/http-request {:url url :end-point end-point})
         response
         (http/request (merge
                        {:method method

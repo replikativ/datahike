@@ -55,36 +55,171 @@ Any Datahike client now talks to `http://host:8080/datahike`:
 ## What `handler` gives you
 
 `(routes/handler config opts)` returns a Ring handler. `config` is the server
-config map (`:token`, `:dev-mode`, `:max-body-bytes`); `opts`:
+config map — authentication (`:token`, `:validator`, `:dev-mode`,
+`:auth :upstream`), `:authorize`, `:max-body-bytes`; `opts`:
 
 | option | default | meaning |
 |---|---|---|
 | `:prefix` | none (mount at `/`) | Path every route is nested under. `"/datahike"`, `"datahike/"` and `"/datahike/"` all mean `/datahike`. |
 | `:connections` | a fresh atom | The connection registry the routes use. Pass your own to share databases with the host (below). |
-| `:extra-routes` | none | Your own reitit routes on the same router, under the same prefix; the server adds `/swagger.json` this way. Mark a route `:public? true` to exempt it from the token gate. |
+| `:extra-routes` | none | Your own reitit routes on the same router, under the same prefix and behind the gate; the server adds `/swagger.json` and the permission routes this way. Mark a route `:public? true` to exempt it from authentication (not from the body cap). |
+| `:default-handler` | reitit's 404 | What answers a request the router does not match (the server puts swagger-ui here). |
 
-Requests the router does not match fall through with a 404 from
-`reitit.ring/create-default-handler`. CORS, static files, TLS and the rest of
-your application are yours — the handler adds no middleware beyond what the
-API itself needs.
+The handler adds no middleware beyond what the API itself needs — CORS,
+static files, TLS and the rest of your application are yours. It carries
+its connections atom as metadata: `(routes/release-all! handler)` releases
+everything the routes opened when the host shuts down.
 
 ### The request contract
 
-Every request the router matches goes through `routes/wrap-api`, in this order:
+Every request the router matches for its method goes through the gate, in
+this order — a request it does not match, or matches for another method (an
+OPTIONS preflight, a wrong method), is handed on untouched, to your CORS
+middleware, reitit's 405 or the `:default-handler`:
 
-1. **The gate, before any decoding.** A public route passes. Every other
-   route requires the token *here*: `authorization: token <token>` (also the
-   `token` header), or `:dev-mode true` in the config. A request without it
-   is answered `401` without its body ever being parsed. Then the body is
-   capped at `:max-body-bytes` (default 64 MiB) — by `Content-Length` and by
-   the stream itself, so a chunked body cannot skip the check — with `413`.
-2. **The registry.** `datahike.connections/*connections*` is bound to your
+1. **The body is read in full and capped** at `:max-body-bytes` (default
+   64 MiB), by `Content-Length` and by actually reading it, public route or
+   not, before any decoder sees a byte: `413` past the cap. No decoder ever
+   gets an unbounded stream, and a body a decoder would read only the first
+   form of is still measured whole.
+2. **Authentication, before decoding.** Unless the route is `:public? true`
+   (`/swagger.json`), the caller must be accepted by one of the validators
+   `config` describes (next section), or gets `401` with nothing parsed. The
+   principal is put on the request as `:datahike/principal`.
+3. **The registry.** `datahike.connections/*connections*` is bound to your
    atom for the *whole* request, decoding included. Every route — `connect`,
    `q`, `release`, the writer routes, a database handle inside a body —
    resolves connections in that atom, never in the process-wide default.
+4. **Authorization, after decoding**, per route, with the databases the call
+   reaches (below).
 
-A handler with no `:token` and no `:dev-mode` admits nobody; that is the
-secure default, not a bug.
+A handler with no `:token`, no `:validator`, no `:dev-mode` and no
+`:auth :upstream` admits nobody; that is the secure default, not a bug.
+
+## Authentication: who is calling
+
+The config describes a chain of validators, each
+`(fn [ring-request] → principal | nil)`, tried in order; the first principal
+wins. A principal is a map with `:sub`, the subject's id — the same shape
+`kabel.auth.jwt/build-bearer-validator` returns, so one validator can serve
+the HTTP API and a kabel WebSocket peer.
+
+| config | who gets in |
+|---|---|
+| `:token "…"` | Whoever sends `authorization: token <token>`, as the principal `:token-subject` (`"root"` by default). The shared secret; keep it in an environment variable or a secrets manager. |
+| `:validator f` | Whoever `f` accepts. JWT, JWKS-backed OIDC (WorkOS, Clerk, Auth0), mTLS-derived identity — `kabel.auth.jwt` has the JWT ones ready. |
+| `:auth :upstream` | Everyone, as the `:datahike/principal` your own middleware put on the request (or `{:sub "upstream"}`). For a host that authenticates before the request reaches Datahike. Only ever behind such middleware. |
+| `:dev-mode true` | Everyone, as `{:sub "dev"}`. Local development only; never deploy with it. |
+
+```clojure
+(require '[kabel.auth.jwt :as jwt])   ; kabel's :auth alias
+
+(routes/handler {:token     (System/getenv "DATAHIKE_TOKEN")        ; break-glass
+                 :validator (jwt/build-bearer-validator             ; everyone else
+                             {:issuers {"https://issuer" {:alg :RS256 :jwks-url "…"}}
+                              :key-resolver (jwks/make-key-resolver)})}
+                {:prefix "/datahike" :connections connections})
+```
+
+## Authorization: what they may do
+
+`:authorize` is one function, `(fn [{:keys [op principal db payload]}] → boolean)`,
+asked per call for every database the call reaches — a config, a connection,
+a database value or any history/as-of/since/filtered view of one, positional
+or in the map form — and once with `:db nil` for a call that reaches none.
+Every database must be allowed, or the call is `403` with
+`{:type :datahike.http/forbidden :op … :databases […]}` in its ex-data,
+which the clients raise as an exception.
+
+| `op` | routes |
+|---|---|
+| `:read` | every GET (`q`, `pull`, `datoms`, `history`, `as-of`, `metrics`, …) and the POSTs that only open, inspect or close: `connect`, `release`, `db`, `database-exists?`, `branches`, `branch-as-db`, `commit-as-db` |
+| `:transact` | `transact`, `load-entities`, `merge-db`, `branch!`, and the writer's `transact!` |
+| `:create` | `create-database`, the writer's too |
+| `:delete` | `delete-database`, `delete-branch!`, the writer's `delete-database` |
+| `:admin` | `gc-storage` |
+
+`db` is `{:store-id uuid :branch keyword}`; `payload` is the call's argument
+vector. Without `:authorize`, every authenticated caller may do everything —
+today's behaviour.
+
+### Permissions in an auth database (eacl)
+
+The server ships a policy so you need not write one: relationship-based
+authorization in the [SpiceDB](https://authzed.com/spicedb) model via
+[eacl](https://github.com/theronic/eacl), *situated* — the permission graph
+lives in a Datahike database of its own, `:auth-db`, and every check is a
+local read. Give the server one and it is on:
+
+```clojure
+;; config.edn
+{:port     4444
+ :token    "…"                                   ; the break-glass identity
+ :validator …                                    ; everyone else, by JWT
+ :auth-db  {:store {:backend :file :path "/var/lib/datahike/auth"}}}
+```
+
+The graph (`datahike.http.permissions/schema`):
+
+```
+definition user {}
+definition server {
+  relation admin: user
+  permission administer = admin
+  permission create = admin
+}
+definition database {
+  relation owner: user
+  relation writer: user
+  relation reader: user
+  permission admin = owner
+  permission grant = owner
+  permission delete = owner
+  permission transact = writer + owner
+  permission read = reader + writer + owner
+}
+```
+
+Users are principals by their `:sub`; the one server has admins who may do
+everything; a database — by store id, its branches share it — has owners,
+writers and readers, and `grant` is the permission to edit that database's
+relationships, so permission administration is one more permission in the
+graph rather than a special case. The token principal (`:token-subject`,
+`"root"`) is seeded as a server admin on every start, so the shared secret
+stays the break-glass identity and everyone else is granted:
+
+```clojure
+;; as root: alice may write to the database, bob may read it
+(client/request-cbor :post "permissions/relationships!" root-peer
+  [{:operation :touch :relationship {:subject  {:type :user :id "alice"}
+                                     :relation :writer
+                                     :resource {:type :database :id "<store uuid>"}}}
+   {:operation :touch :relationship {:subject  {:type :user :id "bob"}
+                                     :relation :reader
+                                     :resource {:type :database :id "<store uuid>"}}}])
+```
+
+Routes, all behind the gate, bodies as maps, objects as
+`{:type :user|:database|:server :id "…"}`:
+
+- `POST /permissions/check` `{:subject :permission :resource}` → `{:allowed}`.
+  Anyone may ask about themselves (omit `:subject`); about others only who may
+  grant on the resource.
+- `POST /permissions/relationships` `{:resource}` → the relationships on it,
+  for who may grant on it.
+- `POST /permissions/relationships!` `[{:operation :touch|:create|:delete :relationship {…}} …]`,
+  each allowed by grant on its resource (server admins anywhere).
+
+Only server admins create databases — the creator then grants an owner —
+and only owners delete. A database's permissions apply to what the server
+mediates: the full remote API, and the writer routes for a process that
+reads storage directly and sends its writes here. Such a process has read
+access by holding the storage credentials; the server governs its writes.
+
+Embedding hosts get the same by calling `permissions/configure` on their
+config and adding `(permissions/routes config)` to `:extra-routes`; the
+`datahike.http.permissions` namespace needs eacl on the classpath, which the
+`:http-server` alias brings and `datahike.http.routes` does not need.
 
 ### Sharing connections with the host
 
@@ -108,15 +243,17 @@ it does not hold.
 
 Two rules that follow from sharing:
 
-- **Leases.** The writer routes hold *one* connection per database in the
-  atom, opened on first use, and never release it per request; ordinary
-  `connect`/`release` routes count leases exactly as the API does for a local
-  caller. Call `(routes/release-all! connections)` when your service shuts
+- **Leases.** The writer routes hold one base lease per database, taken on
+  first use, so the connection and its writer survive between requests; each
+  request pins the connection for its duration and lets go. `connect` and
+  `release` through the API count leases exactly as the API does for a local
+  caller; decoding a database handle takes none. Call
+  `(routes/release-all! handler)` (or with the atom) when your service shuts
   down.
 - **Deletion is process-wide.** `delete-database` through the API releases
   and invalidates *every* connection to that database in the atom, the host's
   included — as it would if the host called it itself. If your service must
-  keep a database, do not hand out the token that can delete it.
+  keep a database, do not grant `delete` on it.
 
 ### What the writer routes accept
 
@@ -124,31 +261,26 @@ A `:datahike-server` writer sends `create-database`, `delete-database` and
 `transact!` to your service. Other writer-side operations
 (`load-entities`, `merge-db!`, `gc-storage!`, `publish-built-db!`) are not
 available over this writer; a client calling them gets an error naming the
-operation. Run those where the writer runs — in your service — or give that
-client a `:self` writer.
+operation and the writer stays usable. Run those where the writer runs — in
+your service — or give that client a `:self` writer.
 
-## Authentication and security
+## Security
 
-- The token is a shared secret; put it in an environment variable or a
-  secrets manager, never in the config file you commit. Use different tokens
-  per environment and rotate them.
-- Tokens travel in a header, never in the body: the writer client strips its
-  own credentials from what it sends, and the server strips `:writer` and
-  `:remote-peer` from any config it receives before using it.
+- Tokens travel in the `authorization` header only: the writer client strips
+  its credentials from what it sends, the server strips `:writer` and
+  `:remote-peer` from any config it receives, and neither logs request
+  bodies.
 - Error bodies (500) carry the exception's message and `ex-data` with
   credential-valued keys (`:token`, `:secret`, `:access-key`, `:secret-key`,
   `:password`) redacted.
 - TLS is your reverse proxy's job (nginx, Caddy, a cloud load balancer). Do
   not send tokens over plain HTTP outside a private network.
-- `:dev-mode true` disables authentication entirely. Never deploy with it.
-- For anything beyond a shared token — OAuth, JWT, mTLS, per-user
-  authorization — wrap the handler in your own middleware and run Datahike
-  with `:dev-mode true` *behind* it, so that only your middleware decides who
-  gets in. The API has no notion of users; authorization is per token.
+- `:dev-mode true` disables authentication entirely; `:auth :upstream`
+  trusts whatever reached the handler. Never deploy either exposed.
 
-Checklist: token set · `:dev-mode` false · token in env/secret store · TLS at
-the edge · `release-all!` on shutdown · deletion token held only by whoever
-may delete.
+Checklist: a token or validator set · `:dev-mode` false · secrets in
+env/secret store · TLS at the edge · `release-all!` on shutdown · `delete`
+granted only to owners who may.
 
 ## Running the standalone server
 
@@ -169,9 +301,10 @@ clojure -M:http-server -m datahike.http.server config.edn
 ```
 
 `datahike.http.server/start-server` and `stop-server` do the same from a
-REPL; `stop-server` releases every database the server opened. `app` takes
-the config and a connections atom, for hosts that want the server's exact
-handler (Swagger included) inside their own Jetty.
+REPL; `stop-server` releases every database the server opened, the auth
+database included. `app` takes the config and a connections atom, for hosts
+that want the server's exact handler (Swagger, CORS, permissions) inside
+their own Jetty.
 
 ## Migrating from the standalone server
 
@@ -182,11 +315,17 @@ atom, and bind it where the host connects. The server's `app` now takes
 
 ## Troubleshooting
 
-- **401 on everything** — no `:token` in the config and no `:dev-mode`. Set
-  the token; the client must send `authorization: token <token>`.
+- **401 on everything** — no `:token`, `:validator`, `:dev-mode` or
+  `:auth :upstream` in the config. The client sends
+  `authorization: token <token>`.
+- **403** — the call reaches a database the principal has no permission on;
+  the ex-data names the op and the databases. Grant, or check the principal
+  your validator returns.
 - **404 under the prefix** — the prefix is normalized, but the *host* must
   route the prefixed paths to the handler; check the host's dispatch.
 - **413** — raise `:max-body-bytes`, or transact in smaller batches.
+- **A permission does not take effect** — objects are keyed by exact `:sub`
+  and store id; check `POST /permissions/relationships` as root.
 - **The host does not see what a client wrote** — the host connected outside
   `(binding [*connections* connections] …)`; two connections, two views.
 - **A client gets "not available over the :datahike-server writer"** — it

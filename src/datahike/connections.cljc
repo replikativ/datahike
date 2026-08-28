@@ -10,6 +10,13 @@
 ;; instead of racing to build a second one.
 (def ^:dynamic *connections* (atom {}))
 
+(defn lookup-connection
+  "The connection under `conn-id` without taking a lease — for code that only
+   needs the store behind it, such as decoding a database handle, and would
+   otherwise leak one count per lookup."
+  [conn-id]
+  (get-in @*connections* [conn-id :conn]))
+
 (defn get-connection [conn-id]
   ;; Lookup and ref-count increment must be one registry operation. Otherwise a
   ;; concurrent invalidation can remove the entry between them and `update-in`

@@ -1,23 +1,15 @@
 (ns datahike.http.routes
-  "Datahike's HTTP API as Ring routes, for embedding.
+  "Datahike's HTTP API as a Ring handler, for embedding.
 
-   Everything the server serves is here as DATA — reitit route vectors built
-   from `datahike.api.specification` — plus the muuntaja instance and middleware
-   chain that make them work: edn, json, transit and CBOR, malli coercion of
-   request bodies, token auth. `datahike.http.server` is a thin main over this
-   namespace; an application with its own Ring stack takes `handler` (or the
-   route data itself) and mounts it where it likes.
-
-   Two things an embedding host needs beyond the routes, both explicit here:
-
-   - `handler` takes a `:prefix`, so the API can live under `/datahike` (or
-     anything) in a host that already owns `/`. A remote writer or client then
-     names that prefix in its `:url`.
-   - The connections the routes open live in an atom the host passes in (or
-     one made for it), bound as `datahike.connections/*connections*` for every
-     request. A host that also uses those databases directly shares them by
-     binding the same atom — one connection per database per process, not one
-     per caller.
+   Everything the server serves is here — reitit route data built from
+   `datahike.api.specification`, the muuntaja instance (edn, json, transit,
+   CBOR), malli coercion, the writer routes — behind ONE composition unit,
+   `handler`, that adds what the routes cannot do for themselves: authenticate
+   before anything is decoded, cap the body, bind the connection registry for
+   the whole request, and authorize each call. `datahike.http.server` is a thin
+   main over it; an application with its own Ring stack mounts it under a
+   `:prefix`, shares its databases through `:connections`, and lets its own
+   auth in through `:validator`/`:authorize`. See doc/http-routes.md.
 
    The shape follows alekcz's `datahike.http.router` (#755): routes without a
    server, a mountable handler, a shared registry. What differs is that nothing
@@ -54,18 +46,22 @@
    [muuntaja.core :as m]
    [replikativ.logging :as log]))
 
+;; ---------------------------------------------------------------------------
+;; Errors, secrets, authorization
+;; ---------------------------------------------------------------------------
+
 (def ^:private secret-keys
   "Config keys whose values must never leave the server in an error body."
   #{:token :secret :access-key :secret-key :password})
 
-(defn- redact
-  "ex-data with secret-valued keys blanked, at any depth."
+(defn redact
+  "`x` with secret-valued keys blanked, at any depth."
   [x]
   (cond (map? x)  (into {} (map (fn [[k v]] [k (if (secret-keys k) "REDACTED" (redact v))])) x)
         (coll? x) (into (empty x) (map redact) x)
         :else     x))
 
-(defn- error-response
+(defn error-response
   "The 500 body the clients decode into a throwable: message plus ex-data,
    with credentials redacted — a backend config in ex-data used to carry them
    straight to the caller."
@@ -73,60 +69,139 @@
   {:status 500
    :body   {:msg (ex-message e) :ex-data (redact (ex-data e))}})
 
-(defn- borrow-connection
-  "The server's ONE connection to `cfg`'s database, opened on first use.
+(defn forbidden
+  "The 403 for `op` on `databases` (`[{:store-id :branch}]`, may be empty)."
+  [op databases]
+  {:status 403
+   :body   {:msg     (str "Forbidden: " (name op)
+                          (when (seq databases)
+                            (str " on " (str/join ", " (map (comp str :store-id) databases)))))
+            :ex-data {:type :datahike.http/forbidden :op op :databases databases}}})
 
-   `api/connect` on a cached connection increments a ref count that a request
-   would never decrement, so the writer routes borrow the existing connection
-   from `*connections*` and connect only when there is none. The server holds
-   exactly one lease per database and releases it on shutdown
-   (`release-all!`); requests change no counts."
-  [cfg]
-  (let [conn-id [(datahike.store/store-identity (:store cfg)) (:branch cfg :db)]]
-    (or (get-in @*connections* [conn-id :conn])
-        (api/connect cfg))))
+(defn- config-of
+  "The database config behind an argument: a config map, a DB (or a history,
+   as-of, since or filtered view of one), or a connection."
+  [x]
+  (cond (instance? clojure.lang.IDeref x) (config-of @x)
+        ;; A DB carries its konserve store under :store too, so :config first.
+        (map? x) (cond (:config x)        (config-of (:config x))
+                       (:origin-db x)     (config-of (:origin-db x))
+                       (:unfiltered-db x) (config-of (:unfiltered-db x))
+                       (:store x)         x
+                       :else              nil)
+        :else nil))
+
+(defn- database-of [x]
+  (when-let [{:keys [store branch]} (config-of x)]
+    (when-let [store-id (datahike.store/store-identity store)]
+      {:store-id store-id :branch (or branch :db)})))
+
+(defn databases
+  "The databases an API call's argument vector reaches — as positional
+   arguments or inside the map form (`:conn`, `:db`, the `:args` of a query)."
+  [args]
+  (->> (concat args (mapcat #(when (map? %) (concat [(:conn %) (:db %)] (:args %))) args))
+       (keep database-of)
+       distinct
+       vec))
+
+(defn authorize
+  "The 403 for `op` with `args` under `config`'s `:authorize`, or nil when the
+   call may proceed. `:authorize` is `(fn [{:keys [op principal db payload]}])`
+   and is asked once per database the call reaches — every one must be
+   allowed — or once with `:db nil` when it reaches none. Without `:authorize`
+   every authenticated caller may do everything."
+  [config request op args]
+  (when-let [policy (:authorize config)]
+    (let [dbs       (databases args)
+          principal (:datahike/principal request)
+          ask       (fn [db] (policy {:op op :principal principal :db db :payload args}))]
+      (when-not (if (seq dbs) (every? ask dbs) (ask nil))
+        (forbidden op dbs)))))
+
+(defn route-op
+  "What an API function does, for authorization: every GET is a `:read`, and
+   so are the POSTs that only open, inspect or close; the rest write."
+  [n referentially-transparent?]
+  (cond referentially-transparent? :read
+        ('#{create-database} n) :create
+        ('#{delete-database delete-branch!} n) :delete
+        ('#{connect release db database-exists? branches branch-as-db commit-as-db} n) :read
+        ('#{gc-storage} n) :admin
+        :else :transact))
+
+;; ---------------------------------------------------------------------------
+;; Connections the routes hold
+;; ---------------------------------------------------------------------------
+
+(defn- conn-id [cfg]
+  [(datahike.store/store-identity (:store cfg)) (:branch cfg :db)])
+
+(defn- with-connection
+  "Run `f` with a connection to `cfg`'s database, pinned for the duration.
+
+   Two leases are at work. This request's own — `api/connect` validates the
+   config against the cached connection and counts one up, `api/release` in
+   `finally` counts it back — which keeps a concurrent release or delete from
+   pulling the connection out from under the call. And the server's base
+   lease, taken once per database under `leases` so that the connection (and
+   its writer) survives between requests instead of being rebuilt for each;
+   it is dropped by `release-all!` on shutdown, or by a delete."
+  [cfg leases f]
+  (let [id (conn-id cfg)]
+    (locking leases
+      (when-not (and (@leases id) (get-in @*connections* [id :conn]))
+        (api/connect cfg)
+        (swap! leases conj id)))
+    (let [conn (api/connect cfg)]
+      (try (f conn)
+           (finally (api/release conn))))))
 
 (defn release-all!
-  "Release every connection in `connections`, for a server shutting down."
-  [connections]
-  (doseq [[_ {:keys [conn]}] @connections]
-    (when conn
-      (try (api/release conn true) (catch Exception _)))))
+  "Release every connection the routes hold, for a host shutting down. Takes
+   the connections atom or the handler `handler` returned."
+  [handler-or-connections]
+  (let [connections (or (::connections (meta handler-or-connections)) handler-or-connections)]
+    (binding [*connections* connections]
+      (doseq [[_ {:keys [conn]}] @connections]
+        (when conn
+          (try (api/release conn true) (catch Exception _)))))))
 
-(defn generic-handler [config f]
+;; ---------------------------------------------------------------------------
+;; The API routes
+;; ---------------------------------------------------------------------------
+
+(defn generic-handler [config op f]
   (fn [request]
     (try
       (let [{{body :body} :parameters
-             :keys [headers params method]} request
-            _ (log/trace :datahike/http-handler-request {:handler f :body body})
-          ;; TODO move this to client
-            ret-body
-            (cond (= f #'api/create-database)
-                ;; remove remote-peer and re-add
-                  (assoc
-                   (apply f (dissoc (first body) :remote-peer) (rest body))
-                   :remote-peer (:remote-peer (first body)))
+             :keys [headers params method]} request]
+        (log/trace :datahike/http-handler-request {:handler f :op op})
+        (or (authorize config request op body)
+            (let [ret-body
+                  (cond (= f #'api/create-database)
+                        ;; remove remote-peer and re-add
+                        (assoc
+                         (apply f (dissoc (first body) :remote-peer) (rest body))
+                         :remote-peer (:remote-peer (first body)))
 
-                  (= f #'api/delete-database)
-                  (apply f (dissoc (first body) :remote-peer) (rest body))
+                        (= f #'api/delete-database)
+                        (apply f (dissoc (first body) :remote-peer) (rest body))
 
-                  :else
-                  (apply f body))]
-        (log/trace :datahike/http-handler-response {:body ret-body})
-        (merge
-         {:status 200
-          :body
-          (when-not (headers "no-return-value")
-            ret-body)}
-         (when (and (= method :get)
-                    (get params "args-id")
-                    (get-in config [:cache :get :max-age]))
-           {:headers {"Cache-Control" (str (when-not (:token config) "public, ")
-                                           "max-age=" (get-in config [:cache :get :max-age]))}})))
+                        :else
+                        (apply f body))]
+              (merge
+               {:status 200
+                :body
+                (when-not (headers "no-return-value")
+                  ret-body)}
+               (when (and (= method :get)
+                          (get params "args-id")
+                          (get-in config [:cache :get :max-age]))
+                 {:headers {"Cache-Control" (str (when (:dev-mode config) "public, ")
+                                                 "max-age=" (get-in config [:cache :get :max-age]))}})))))
       (catch Exception e
-        {:status 500
-         :body   {:msg (ex-message e)
-                  :ex-data (ex-data e)}}))))
+        (error-response e)))))
 
 (declare create-routes)
 
@@ -181,22 +256,6 @@
     ;; Fallback
     :else [:sequential :any]))
 
-;; This code expands and evals the server route construction given the
-;; API specification.
-(eval
- `(defn ~'create-routes [~'config]
-    ~(vec
-      (for [[n {:keys [args doc supports-remote? referentially-transparent?]}] api-specification
-            :when supports-remote?]
-        `[~(str "/" (->url n))
-          {:swagger {:tags ["API"]}
-           ~(if referentially-transparent? :get :post)
-           {:operationId ~(str n)
-            :summary     ~(extract-first-sentence doc)
-            :description ~doc
-            :parameters  {:body ~(extract-input-schema args)}
-            :handler     (generic-handler ~'config ~(resolve n))}}]))))
-
 ;; One registry per process, not per request: building it walks every handler
 ;; and the result is immutable.
 (def ^:private cbor-registry (rcbor/server-registry))
@@ -240,54 +299,78 @@
                             multipart/multipart-middleware
                             middleware/patch-swagger-json]}})
 
-(defn internal-writer-routes []
+
+;; This code expands and evals the server route construction given the
+;; API specification.
+(eval
+ `(defn ~'create-routes [~'config]
+    ~(vec
+      (for [[n {:keys [args doc supports-remote? referentially-transparent?]}] api-specification
+            :when supports-remote?]
+        `[~(str "/" (->url n))
+          {:swagger {:tags ["API"]}
+           ~(if referentially-transparent? :get :post)
+           {:operationId ~(str n)
+            :summary     ~(extract-first-sentence doc)
+            :description ~doc
+            :parameters  {:body ~(extract-input-schema args)}
+            :handler     (generic-handler ~'config ~(route-op n referentially-transparent?) ~(resolve n))}}]))))
+
+(defn- internal-writer-routes
+  "What a `:datahike-server` writer posts to. `leases` is the set of databases
+   the server holds a base lease on (see `with-connection`)."
+  [config leases]
   [["/delete-database-writer"
     {:post {:parameters  {:body [:sequential :any]},
             :summary     "Internal endpoint. DO NOT USE!"
             :no-doc      true
-            :handler     (fn [{{:keys [body]} :parameters}]
+            :handler     (fn [{{:keys [body]} :parameters :as request}]
                            ;; Deletion is process-wide by nature: it releases
                            ;; and invalidates every connection to the store,
                            ;; the host's included. A host sharing the atom
                            ;; must treat it as such.
                            (let [cfg (dissoc (first body) :remote-peer :writer)]
-                             (try
-                               (try
-                                 (api/release (api/connect cfg) true)
-                                 (catch Exception _))
-                               {:status 200
-                                :body   (async/<!! (apply datahike.writing/delete-database cfg (rest body)))}
-                               (catch Exception e
-                                 (error-response e)))))
+                             (or (authorize config request :delete [cfg])
+                                 (try
+                                   (swap! leases disj (conn-id cfg))
+                                   (try
+                                     (api/release (api/connect cfg) true)
+                                     (catch Exception _))
+                                   {:status 200
+                                    :body   (async/<!! (apply datahike.writing/delete-database cfg (rest body)))}
+                                   (catch Exception e
+                                     (error-response e))))))
             :operationId "delete-database"},
      :swagger {:tags ["Internal"]}}]
    ["/create-database-writer"
     {:post {:parameters  {:body [:sequential :any]},
             :summary     "Internal endpoint. DO NOT USE!"
             :no-doc      true
-            :handler     (fn [{{:keys [body]} :parameters}]
+            :handler     (fn [{{:keys [body]} :parameters :as request}]
                            (let [cfg (dissoc (first body) :remote-peer :writer)]
-                             (try
-                               {:status 200
-                                :body   (async/<!! (apply datahike.writing/create-database
-                                                          cfg
-                                                          (rest body)))}
-                               (catch Exception e
-                                 (error-response e)))))
+                             (or (authorize config request :create [cfg])
+                                 (try
+                                   {:status 200
+                                    :body   (async/<!! (apply datahike.writing/create-database
+                                                              cfg
+                                                              (rest body)))}
+                                   (catch Exception e
+                                     (error-response e))))))
             :operationId "create-database"},
      :swagger {:tags ["Internal"]}}]
    ["/transact!-writer"
     {:post {:parameters  {:body [:sequential :any]},
             :summary     "Internal endpoint. DO NOT USE!"
             :no-doc      true
-            :handler     (fn [{{:keys [body]} :parameters}]
-                           (try
-                             (let [conn (borrow-connection (dissoc (first body) :remote-peer :writer))
-                                   res  @(apply datahike.writer/transact! conn (rest body))]
-                               {:status 200
-                                :body   res})
-                             (catch Exception e
-                               (error-response e))))
+            :handler     (fn [{{:keys [body]} :parameters :as request}]
+                           (let [cfg (dissoc (first body) :remote-peer :writer)]
+                             (or (authorize config request :transact [cfg])
+                                 (try
+                                   {:status 200
+                                    :body   (with-connection cfg leases
+                                              (fn [conn] @(apply datahike.writer/transact! conn (rest body))))}
+                                   (catch Exception e
+                                     (error-response e))))))
             :operationId "transact"},
      :swagger {:tags ["Internal"]}}]])
 
@@ -295,108 +378,102 @@
 ;; The embeddable surface
 ;; ---------------------------------------------------------------------------
 
-(defn- with-auth
-  "Every API route behind the token/auth middleware, as `app` always applied
-   them — an embedded handler must not be less protected than the server."
-  [config routes]
-  (map (fn [route]
-         (let [method (if (:get (second route)) :get :post)]
-           (assoc-in route [1 method :middleware]
-                     [(partial middleware/token-auth config)
-                      (partial middleware/auth config)])))
-       routes))
-
-(defn api-routes
-  "The API and internal writer routes as reitit route data, authenticated."
-  [config]
-  (with-auth config (concat (create-routes config)
-                            (internal-writer-routes))))
-
 (defn- normalize-prefix
   "\"/datahike/\" and \"datahike\" mean \"/datahike\"; \"\" and \"/\" mean none."
   [prefix]
   (let [p (str/replace (str prefix) #"^/*|/*$" "")]
     (when (seq p) (str "/" p))))
 
-(defn router
-  "A reitit router over `api-routes`, with Datahike's coercion, formats and
-   middleware. `:prefix` nests every route under a path; `:extra-routes` are
-   the host's own routes on the same router — the server adds `/swagger.json`
-   this way, marked `:public? true` so the gate lets it through unauthenticated."
-  [config {:keys [prefix extra-routes]}]
-  (let [routes (vec (concat extra-routes (api-routes config)))]
+(defn- router
+  [config {:keys [prefix extra-routes leases]}]
+  (let [routes (vec (concat extra-routes
+                            (create-routes config)
+                            (internal-writer-routes config leases)))]
     (ring/router (if-let [p (normalize-prefix prefix)] [p routes] routes)
                  (default-route-opts muuntaja-with-opts))))
 
 (def default-max-body-bytes (* 64 1024 1024))
 
-(defn- limited-stream
-  "`in`, failing past `limit` bytes and flagging `exceeded` — so a chunked
-   body cannot bypass the Content-Length check by omitting it."
-  [^java.io.InputStream in ^long limit exceeded]
-  (let [read-so-far (atom 0)
-        check!      (fn [n] (when (and (pos? n) (> (swap! read-so-far + n) limit))
-                              (reset! exceeded true)
-                              (throw (java.io.IOException. "Request body too large"))))]
-    (proxy [java.io.FilterInputStream] [in]
-      (read
-        ([] (let [b (.read in)] (check! (if (neg? b) 0 1)) b))
-        ([^bytes buf] (let [n (.read in buf)] (check! n) n))
-        ([^bytes buf off len] (let [n (.read in buf off len)] (check! n) n))))))
+(defn- read-body
+  "The whole body as bytes, or `::too-large` past `limit` — read up front, so
+   no decoder ever sees an unbounded stream and a body that a decoder would
+   read only the first form of is still measured in full."
+  [^java.io.InputStream in ^long limit]
+  (let [out (java.io.ByteArrayOutputStream.)
+        buf (byte-array 8192)]
+    (loop [total 0]
+      (let [n (.read in buf)]
+        (cond (neg? n)             (.toByteArray out)
+              (> (+ total n) limit) ::too-large
+              :else                (do (.write out buf 0 n)
+                                       (recur (+ total n))))))))
 
 (def ^:private too-large {:status 413 :body "Request body too large"})
 
-(defn wrap-api
+(defn- wrap-api
   "Everything a Datahike API request needs around the router's handler, in
    the order that matters:
 
-   1. The gate. Before ANY decoding: a request the router does not route is
-      handed on untouched (the host's, or the server's swagger-ui and 404); a
-      public route (`:public? true`, i.e. `/swagger.json`) passes; every other
-      route requires the token here, and its body is capped at
-      `:max-body-bytes` (default 64 MiB), Content-Length and stream alike. The
-      per-route auth middleware still runs — this only makes sure nothing is
-      parsed, and no database handle decoded, for a caller that has no token.
+   1. The gate, before ANY decoding. A request the router does not route, or
+      routes but not for that method (an OPTIONS preflight, a wrong method),
+      is handed on untouched — the host's, CORS, swagger-ui, 404, 405. For a
+      routed one: the body is read in full and capped at `:max-body-bytes`
+      (default 64 MiB), public route or not, so no decoder sees an unbounded
+      stream; then, unless the route is `:public? true` (`/swagger.json`),
+      the caller must authenticate — `:token`, `:validator`, `:dev-mode`,
+      `:auth :upstream`, see `middleware/validators` — or gets 401 with
+      nothing parsed. The principal is on the request as
+      `:datahike/principal` for the route's authorization.
    2. The registry. `*connections*` is bound to `connections` for the WHOLE
       request, decoding included, so every route — `connect`, `q`, `release`,
       a database handle inside a body — resolves the same connection a host
       holds under that atom."
   [ring-handler rtr config connections]
-  (let [max-bytes (or (:max-body-bytes config) default-max-body-bytes)
-        authed?   (fn [request]
-                    (or (:dev-mode config)
-                        (= (str "token " (:token config))
-                           (get-in request [:headers "authorization"]))))]
+  (let [max-bytes  (or (:max-body-bytes config) default-max-body-bytes)
+        validators (middleware/validators config)]
     (fn [request]
       (binding [*connections* connections]
-        (if-let [match (reitit/match-by-path rtr (:uri request))]
-          (cond
-            (get-in match [:data :public?]) (ring-handler request)
-            (not (authed? request))          {:status 401 :body "Not authorized"}
-            (> (or (some-> (get-in request [:headers "content-length"]) parse-long) 0) max-bytes)
-            too-large
-            :else
-            (let [exceeded (atom false)
-                  response (ring-handler (cond-> request
-                                           (:body request) (update :body limited-stream max-bytes exceeded)))]
-              (if @exceeded too-large response)))
-          (ring-handler request))))))
+        (let [match (reitit/match-by-path rtr (:uri request))]
+          (if-not (and match (contains? (:data match) (:request-method request)))
+            (ring-handler request)
+            (let [principal (middleware/authenticate validators request)
+                  body      (when (:body request) (read-body (:body request) max-bytes))]
+              (cond
+                (> (or (some-> (get-in request [:headers "content-length"]) parse-long) 0) max-bytes)
+                too-large
+                (= ::too-large body) too-large
+                (and (not (get-in match [:data :public?])) (nil? principal))
+                {:status 401 :body "Not authorized"}
+                :else
+                (ring-handler (cond-> (assoc request :datahike/principal principal)
+                                body (assoc :body (java.io.ByteArrayInputStream. body))))))))))))
 
 (defn handler
   "A Ring handler serving Datahike's HTTP API, for mounting in a host app.
 
      (routes/handler {:token \"…\"} {:prefix \"/datahike\" :connections conns})
 
-   Requests the router does not match fall through as 404 — CORS, static
-   files and the host's other routes are the host's business. `connections`
-   defaults to a fresh atom; pass your own to share databases with the host:
-   the host's `(binding [*connections* conns] (d/connect cfg))` and a client's
-   `/connect` then resolve the identical connection. Deletion through the API
-   invalidates every connection to that database, the host's included.
-   Call `release-all!` on the atom when the host shuts down."
+   `config` is the server config: `:token`, `:validator`, `:dev-mode`,
+   `:auth :upstream`, `:authorize`, `:max-body-bytes`. Options:
+
+   - `:prefix` — the path every route lives under; normalized.
+   - `:connections` — the registry, an atom; a fresh one by default. Pass
+     your own to share databases with the host: the host's
+     `(binding [*connections* conns] (d/connect cfg))` and a client's
+     `/connect` then resolve the identical connection. Deletion through the
+     API invalidates every connection to that database, the host's included.
+   - `:extra-routes` — your reitit routes on the same router, under the
+     prefix, behind the gate unless marked `:public? true`.
+   - `:default-handler` — what answers a request the router does not match;
+     reitit's default 404 unless given (the server puts swagger-ui here).
+
+   The returned fn carries the atom as metadata; `(release-all! handler)`
+   releases what the routes opened when the host shuts down."
   ([config] (handler config {}))
-  ([config {:keys [connections] :as opts}]
+  ([config {:keys [connections default-handler] :as opts}]
    (let [connections (or connections (atom {}))
-         rtr         (router config opts)]
-     (wrap-api (ring/ring-handler rtr (ring/create-default-handler))
-               rtr config connections))))
+         leases      (atom #{})
+         rtr         (router config (assoc opts :leases leases))
+         h           (wrap-api (ring/ring-handler rtr (or default-handler (ring/create-default-handler)))
+                               rtr config connections)]
+     (with-meta h {::connections connections}))))

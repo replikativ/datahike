@@ -54,7 +54,7 @@
         (is (= 404 (:status (http/get (str url "/no-such-route") {:throw false})))))
 
       (testing "the gate: no or wrong token is 401 before anything is decoded"
-        (doseq [end-point ["q" "transact!-writer" "connect"]
+        (doseq [end-point ["transact" "transact!-writer" "connect"]
                 headers   [{} {"authorization" "token wrong"}]]
           (is (= 401 (:status (http/post (str url "/" end-point)
                                          {:throw   false
@@ -117,20 +117,22 @@
           (d/delete-database cfg)))
       (finally
         (.stop server)
-        (routes/release-all! connections)))))
+        (routes/release-all! connections)
+        (is (empty? (filter (comp :conn val) @connections))
+            "release-all! released the server's own leases, in the server's own atom")))))
 
 (deftest prefix-and-gate-without-a-server
   (let [req (fn [uri] {:request-method :post :uri uri :headers {}})]
     (testing "a prefix is normalized: leading and trailing slashes do not matter"
       (doseq [prefix ["/datahike" "datahike" "/datahike/" "datahike/"]]
         (let [h (routes/handler {:token token} {:prefix prefix})]
-          (is (= 401 (:status (h (req "/datahike/q")))) (pr-str prefix))
-          (is (= 404 (:status (h (req "/q")))) (pr-str prefix)))))
+          (is (= 401 (:status (h (req "/datahike/transact")))) (pr-str prefix))
+          (is (= 404 (:status (h (req "/transact")))) (pr-str prefix)))))
     (testing "no prefix, and an empty or root prefix, mount at /"
       (doseq [prefix [nil "" "/"]]
-        (is (= 401 (:status ((routes/handler {:token token} {:prefix prefix}) (req "/q")))) (pr-str prefix))))
+        (is (= 401 (:status ((routes/handler {:token token} {:prefix prefix}) (req "/transact")))) (pr-str prefix))))
     (testing "a handler without a token and without :dev-mode admits nobody"
-      (is (= 401 (:status ((routes/handler {}) (req "/q"))))))))
+      (is (= 401 (:status ((routes/handler {}) (req "/transact"))))))))
 
 (deftest the-server-app-shares-the-contract
   (let [port   23201
@@ -141,6 +143,119 @@
       (is (= 200 (:status (http/get (str url "/swagger.json") {:throw false}))) "swagger.json is public")
       (is (contains? #{200 302} (:status (http/get (str url "/") {:throw false :follow-redirects :never})))
           "the swagger UI at / is served outside the router, untouched by the gate")
-      (is (= 401 (:status (http/post (str url "/q") {:throw false :body "garbage"}))))
+      (is (= 401 (:status (http/post (str url "/transact") {:throw false :body "garbage"}))))
+      (is (= 200 (:status (http/request {:method :options :uri (str url "/q") :throw false
+                                         :headers {"origin" "http://localhost:8080"
+                                                   "access-control-request-method" "GET"}})))
+          "a CORS preflight carries no token and must reach the CORS middleware, not the gate")
+      (is (= 405 (:status (http/post (str url "/q") {:throw false
+                                                     :headers {"authorization" (str "token " token)}
+                                                     :body "garbage"})))
+          "a wrong method is reitit's 405, whoever asks")
       (finally
+        (.stop server)))))
+
+(defn- error-of [f]
+  (try (f) nil (catch Exception e e)))
+
+(deftest the-gate-caps-and-redacts
+  (let [port   23203
+        conns  (atom {})
+        server (run-jetty (server/app {:token token :dev-mode false :max-body-bytes 4096} conns)
+                          {:port port :join? false})
+        url    (str "http://localhost:" port)
+        big    (byte-array 10000 (byte 32))
+        auth   {"authorization" (str "token " token)}]
+    (try
+      (testing "a public route's body is capped too"
+        (is (= 413 (:status (http/request {:method :get :uri (str url "/swagger.json") :throw false :body big})))))
+      (testing "a body the decoder would read only the first form of is measured in full"
+        (is (= 413 (:status (http/post (str url "/transact")
+                                       {:throw   false
+                                        :headers (assoc auth "content-type" "application/edn")
+                                        :body    (java.io.ByteArrayInputStream.
+                                                  (.getBytes (str "[1]" (apply str (repeat 10000 " ")))))})))))
+      (testing "an unsupported content type over the limit is 413, not 400"
+        (is (= 413 (:status (http/post (str url "/transact")
+                                       {:throw false :headers (assoc auth "content-type" "text/plain") :body big})))))
+      (testing "the gate's own responses carry CORS headers"
+        (let [r (http/post (str url "/transact") {:throw false :headers {"origin" "http://localhost"} :body "x"})]
+          (is (= 401 (:status r)))
+          (is (= "http://localhost" (get-in r [:headers "access-control-allow-origin"])))))
+      (testing "an error body never carries a credential"
+        (let [peer {:backend :datahike-server :url url :token token}
+              e    (error-of #(client/connect {:store {:backend :file :path "/nonexistent/dh-routes-test"
+                                                       :id (random-uuid) :password "s3cret-pw"}
+                                               :remote-peer peer}))]
+          (is (some? e))
+          (is (not (str/includes? (str (ex-message e) (pr-str (ex-data e))) "s3cret-pw")))))
+      (finally
+        (.stop server)
+        (routes/release-all! conns)))))
+
+(deftest leases-and-concurrency
+  (let [port        23204
+        connections (atom {})
+        h           (routes/handler {:token token} {:connections connections})
+        server      (run-jetty h {:port port :join? false})
+        url         (str "http://localhost:" port)
+        peer        {:backend :datahike-server :url url :token token}
+        store-id    (random-uuid)
+        cfg         (assoc (file-config store-id)
+                           :writer {:backend :datahike-server :url url :token token})
+        conn        (do (d/create-database cfg) (d/connect cfg))]
+    (try
+      (testing "concurrent first transactions: every one succeeds, one connection, one base lease"
+        (let [go (promise)
+              fs (doall (repeatedly 16 #(future @go (d/transact conn [{:name (str (random-uuid))}]))))]
+          (deliver go true)
+          (is (every? some? (map (comp :db-after deref) fs)))
+          (is (= 16 (count (d/q '[:find ?n :where [?e :name ?n]] @conn))))
+          (is (= 1 (get-in @connections [[store-id :db] :count])))))
+      (testing "decoding a database handle takes no lease"
+        (let [api-conn (client/connect (assoc (dissoc cfg :writer) :remote-peer peer))
+              before   (get-in @connections [[store-id :db] :count])]
+          (dotimes [_ 5] (client/q '[:find ?n :where [?e :name ?n]] @api-conn))
+          (is (= before (get-in @connections [[store-id :db] :count])))
+          (client/release api-conn)))
+      (testing "a rejected writer operation leaves the writer usable"
+        (is (instance? Throwable (try @(d/load-entities conn [[1 :name "x" 1 true]]) (catch Exception e e))))
+        (is (some? (:db-after (d/transact conn [{:name "after"}])))))
+      (testing "release-all! empties the registry it is given, handler or atom"
+        (routes/release-all! h)
+        (is (empty? (filter (comp :conn val) @connections))))
+      (finally
+        ;; Deletion goes through the remote writer, so before the server stops.
+        (d/release conn)
+        (d/delete-database cfg)
+        (.stop server)))))
+
+(deftest validator-and-authorize
+  (let [port      23205
+        validator (fn [request]
+                    (case (some->> (get-in request [:headers "authorization"]) (re-find #"token (.+)") second)
+                      "alice-token" {:sub "alice"}
+                      "bob-token"   {:sub "bob"}
+                      nil))
+        h         (routes/handler {:validator validator
+                                   :authorize (fn [{:keys [op principal]}]
+                                                (or (= "alice" (:sub principal)) (= :read op)))})
+        server    (run-jetty h {:port port :join? false})
+        url       (str "http://localhost:" port)
+        peer      (fn [t] {:backend :datahike-server :url url :token t})
+        cfg       {:store {:backend :memory :id (random-uuid)} :schema-flexibility :read}]
+    (try
+      (let [alice (client/connect (client/create-database (assoc cfg :remote-peer (peer "alice-token"))))]
+        (client/transact alice [{:name "Ada"}])
+        (testing "bob may read but not write"
+          (let [bob (client/connect (assoc cfg :remote-peer (peer "bob-token")))
+                e   (error-of #(client/transact bob [{:name "x"}]))]
+            (is (= #{["Ada"]} (client/q '[:find ?n :where [?e :name ?n]] @bob)))
+            (is (= :datahike.http/forbidden (:type (ex-data e))))
+            (is (= :transact (:op (ex-data e))))))
+        (testing "a token no validator accepts is 401"
+          (is (= 401 (:status (http/post (str url "/transact")
+                                         {:throw false :headers {"authorization" "token nobody"} :body "x"}))))))
+      (finally
+        (routes/release-all! h)
         (.stop server)))))

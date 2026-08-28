@@ -29,6 +29,16 @@ When something is added, it's typically marked *Experimental*. When the API cont
   **The HTTP client now defaults to CBOR** (`:format :cbor` in the remote
   peer); pass `:format :transit`, `:edn` or `:json` to keep the old wire
   format.
+- **The HTTP API authenticates through validators and authorizes per call.**
+  *Experimental.* Besides `:token`, the server config takes `:validator`
+  (`(fn [request] → principal | nil)`, kabel's shape — JWT/JWKS via
+  `kabel.auth.jwt`) and `:auth :upstream`; every request carries its
+  principal, and `:authorize` (`(fn [{:keys [op principal db payload]}])`) is
+  asked for each database a call reaches. With `:auth-db` the server keeps an
+  eacl permission graph (users, server admins, database owners/writers/readers)
+  in a Datahike database of its own and manages it through
+  `/permissions/*`. Token auth no longer uses buddy; the header is
+  `authorization: token <token>` as before.
 
 - **Index warming is unified across the stack, and real on ClojureScript.**
   The breadth-first walk moved to persistent-sorted-set (>= 0.5.142), where

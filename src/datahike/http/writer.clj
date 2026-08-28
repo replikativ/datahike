@@ -7,7 +7,7 @@
             [datahike.store :as ds]
             [datahike.tools :as dt :refer [throwable-promise]]
             [replikativ.logging :as log]
-            [clojure.core.async :refer [promise-chan put!]]))
+            [clojure.core.async :as async :refer [promise-chan put!]]))
 
 (defrecord DatahikeServerWriter [remote-peer conn]
   PWriter
@@ -16,14 +16,19 @@
           p (promise-chan)
           config (:config @(:wrapped-atom conn))]
       (log/debug :datahike/http-write-op {:op op})
-      (put! p
-            (try
+      ;; On a real thread: `-dispatch!` is called from inside the writer's go
+      ;; block, and a blocking HTTP call there occupies a core.async dispatch
+      ;; thread for the round trip — enough concurrent transactions starve the
+      ;; pool, and a server in the same JVM (tests, embedded hosts) deadlocks.
+      (async/thread
+        (put! p
+              (try
               ;; The server implements one writer operation. Say so here, with
               ;; the operation named, rather than let it become a 404.
-              (when-not (= "transact!" (name op))
-                (throw (ex-info (str op " is not available over the :datahike-server writer; "
-                                     "only transact! is. Run it where the writer runs, or use a :self writer.")
-                                {:type :remote-writer-unsupported-op :op op})))
+                (when-not (= "transact!" (name op))
+                  (throw (ex-info (str op " is not available over the :datahike-server writer; "
+                                       "only transact! is. Run it where the writer runs, or use a :self writer.")
+                                  {:type :remote-writer-unsupported-op :op op})))
               ;; CBOR, not JSON. This channel is machine-to-machine only —
               ;; never a browser, never read by a human — so JSON's
               ;; readability buys nothing here while its costs all apply: the
@@ -31,19 +36,19 @@
               ;; `write-to-generator`, and the server-side schema lookup that
               ;; re-infers types JSON could not carry. CBOR carries them.
               ;; `:writer` holds the token; the server strips it anyway.
-              (request-cbor :post
-                            (str op "-writer")
-                            remote-peer
-                            (vec (concat [(dissoc config :writer)] args)))
-              (catch Exception e
-                e)))
+                (request-cbor :post
+                              (str op "-writer")
+                              remote-peer
+                              (vec (concat [(dissoc config :writer)] args)))
+                (catch Exception e
+                  e))))
       p))
   (-shutdown [_])
   (-streaming? [_] false))
 
 (defmethod create-writer :datahike-server
   [config connection]
-  (log/debug :datahike/http-writer-create {:config (update config :writer dissoc :token)})
+  (log/debug :datahike/http-writer-create {:config (dissoc config :token)})
   (->DatahikeServerWriter config connection))
 
 (defmethod create-database :datahike-server

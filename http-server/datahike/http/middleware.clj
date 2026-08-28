@@ -1,8 +1,5 @@
 (ns datahike.http.middleware
   (:require
-   [buddy.auth :refer [authenticated?]]
-   [buddy.auth.backends :as buddy-auth-backends]
-   [buddy.auth.middleware :as buddy-auth-middleware]
    [clojure.edn :as edn]
    [clojure.walk :as cw]
    [datahike.json :as json]
@@ -12,27 +9,40 @@
   (:import
    [clojure.lang ExceptionInfo]))
 
-(defn auth
-  "Middleware used in routes that require authentication. If request is not
-   authenticated a 401 not authorized response will be returned.
-   Dev mode always authenticates."
-  [config handler]
-  (fn [request]
-    (if (or (:dev-mode config) (authenticated? request))
-      (handler request)
-      {:status 401 :error "Not authorized"})))
+(defn- bearer [request]
+  (some->> (get-in request [:headers "authorization"])
+           (re-find #"(?i)^token\s+(\S+)\s*$")
+           second))
 
-(defn token-auth
-  "Middleware used on routes requiring token authentication"
-  [config handler]
-  (buddy-auth-middleware/wrap-authentication
-   handler
-   (buddy-auth-backends/token {:token-name "token"
-                               :authfn     (fn [_ token]
-                                             (let [valid-token?  (not (nil? token))
-                                                   correct-auth? (= (:token config) token)]
-                                               (when (and correct-auth? valid-token?)
-                                                 "authenticated-user")))})))
+(defn validators
+  "The authentication chain `config` describes, each a
+   `(fn [request] -> principal | nil)` — the shape kabel's
+   `kabel.auth.jwt/build-bearer-validator` returns, so one validator serves
+   both transports. In order:
+
+   - `:dev-mode true` — everyone is `{:sub \"dev\"}`. Never in production.
+   - `:auth :upstream` — the host's own middleware authenticated already; its
+     `:datahike/principal` on the request, or `{:sub \"upstream\"}`.
+   - `:token` — the shared secret, sent as `authorization: token <token>`;
+     the principal is `:token-subject`, \"root\" by default.
+   - `:validator` — yours.
+
+   A principal is a map with `:sub`, the subject's id."
+  [{:keys [dev-mode auth token token-subject validator]}]
+  (remove nil?
+          [(when dev-mode
+             (constantly {:sub "dev" :auth :dev-mode}))
+           (when (= :upstream auth)
+             (fn [request] (or (:datahike/principal request) {:sub "upstream" :auth :upstream})))
+           (when token
+             (fn [request] (when (= token (bearer request))
+                             {:sub (or token-subject "root") :auth :token})))
+           validator]))
+
+(defn authenticate
+  "The principal the first accepting validator returns, or nil."
+  [validators request]
+  (some #(% request) validators))
 
 ;; TOOD map more errors
 (defn cause->status-code [cause]
