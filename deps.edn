@@ -191,13 +191,6 @@
            :native-cli {:main-opts ["-e" "(set! *warn-on-reflection* true)"
                                     "-m" "clj.native-image" "datahike.cli"
                                     "--initialize-at-build-time"
-                                    ;; X-Ray is a hard dependency of konserve-s3 and
-                                    ;; its build-time init fails against modern
-                                    ;; Jackson. Only the tracing interceptor needs
-                                    ;; it, and that is opt-in via :x-ray?, so
-                                    ;; deferring the whole package costs nothing a
-                                    ;; store without tracing would notice.
-                                    "--initialize-at-run-time=com.amazonaws.xray"
                                     "--no-fallback"
                                     ;; The S3 endpoint rules engine resolves an
                                     ;; endpoint through `RuleUrl.parse`, which calls
@@ -223,12 +216,27 @@
                          {clj.native-image/clj.native-image
                          {:git/url "https://github.com/taylorwood/clj.native-image.git"
                           :sha     "4604ae76855e09cdabc0a2ecc5a7de2cc5b775d6"}
-                         ;; S3 in the binary. 0.1.39 or newer is REQUIRED, not
-                         ;; merely preferred: before it every S3 call resolved
-                         ;; reflectively, which a native image cannot do unless
-                         ;; the target was registered at build time. The image
-                         ;; built and then died on the first client construction.
-                         org.replikativ/konserve-s3 {:mvn/version "0.1.39"}
+                         ;; S3 in the binary. 0.1.40 or newer is REQUIRED, for two
+                         ;; separate reasons: before 0.1.39 every S3 call resolved
+                         ;; reflectively, which a native image cannot do unless the
+                         ;; target was registered at build time (the image built and
+                         ;; then died on the first client construction); and 0.1.40
+                         ;; stops importing X-Ray's TracingInterceptor at namespace
+                         ;; level, which is what makes the exclusion below possible.
+                         ;;
+                         ;; X-Ray is EXCLUDED rather than deferred. It is opt-in
+                         ;; (`:x-ray?`), which dthk never sets, and its 2.x recorder
+                         ;; reads a Jackson field this classpath no longer has —
+                         ;; jsonista pulls Jackson to 2.21.x here, konserve-s3 alone
+                         ;; resolves 2.12.x, so the clash exists only in combination.
+                         ;; `--initialize-at-run-time` was tried and is not
+                         ;; dependable: it loses to the reflection registration in
+                         ;; X-Ray's own META-INF/native-image config, and whether it
+                         ;; loses differs by builder — the same source built on
+                         ;; Oracle GraalVM 25.0.1 and failed on GraalVM Community in
+                         ;; CI. Excluding the jar removes the question.
+                         org.replikativ/konserve-s3 {:mvn/version "0.1.40"
+                                                     :exclusions [com.amazonaws/aws-xray-recorder-sdk-aws-sdk-v2]}
                          com.cognitect/transit-clj {:mvn/version "1.1.363"}
                          babashka/pods             {:git/url "https://github.com/babashka/pods"
                                                     :git/sha "ed5e1f3390b9dfca564f66b6e79c739c3cd82d78"}}}
