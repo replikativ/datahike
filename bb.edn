@@ -14,6 +14,7 @@
                     [tools.examples :as examples]
                     [tools.npm :as npm]
                     [tools.python :as python]
+                    [tools.reflection :as reflection]
                     [tools.release :as release]
                     [tools.test :as test]
                     [tools.version :as version]]
@@ -47,6 +48,10 @@
          lint {:doc "Run clj-kondo linter"
                :require [[pod.borkdude.clj-kondo :as clj-kondo]]
                :task (clj-kondo/print! (clj-kondo/run! {:lint "."}))}
+
+         reflection {:doc "Fail on reflective calls in datahike sources"
+                     :depends [jcompile]
+                     :task (reflection/check)}
 
          test {:doc "Run all tests or restrict to 'native-image', 'back-compat' or a kaocha test id (see tests.edn)"
                :depends [jcompile]

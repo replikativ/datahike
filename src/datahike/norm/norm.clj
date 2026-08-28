@@ -18,6 +18,16 @@
 
 (def checksums-file "checksums.edn")
 
+(defn- entry-name
+  "Name of a norm entry. `retrieve-file-list` yields Files for a folder and
+  JarEntries for a resource inside a jar, so callers downstream of it cannot
+  hint a single type."
+  ^String [entry]
+  (condp instance? entry
+    File     (.getName ^File entry)
+    JarEntry (.getName ^JarEntry entry)
+    (log/raise "Can only read a File or a JarEntry" {:entry entry :type (type entry)})))
+
 (defn- attribute-installed? [conn attr]
   (some? (d/entity @conn [:db/ident attr])))
 
@@ -37,7 +47,7 @@
        d/q
        some?))
 
-(defn- get-jar [resource]
+(defn- get-jar ^JarFile [^URL resource]
   (-> (.getPath resource)
       (string/split #"!" 2)
       first
@@ -47,16 +57,16 @@
 (defmulti ^:private retrieve-file-list
   (fn [file-or-resource] (type file-or-resource)))
 
-(defmethod ^:private retrieve-file-list File [file]
+(defmethod ^:private retrieve-file-list File [^File file]
   (if (.exists file)
     (let [migration-files (file-seq file)
           xf (comp
-              (filter #(.isFile %))
-              (filter #(string/ends-with? (.getPath %) ".edn")))]
+              (filter (fn [^File f] (.isFile f)))
+              (filter (fn [^File f] (string/ends-with? (.getPath f) ".edn"))))]
       (into [] xf migration-files))
     (log/raise (format "Norms folder %s does not exist." (str file)) {:folder file})))
 
-(defmethod ^:private retrieve-file-list URL [resource]
+(defmethod ^:private retrieve-file-list URL [^URL resource]
   (if resource
     (let [abs-path (.getPath resource)
           last-path-segment (-> abs-path (string/split #"/") peek)]
@@ -64,11 +74,12 @@
         (->> (get-jar resource)
              .entries
              enumeration-seq
-             (filter #(and (string/starts-with? (.getName %) last-path-segment)
-                           (not (.isDirectory %))
-                           (string/ends-with? % ".edn"))))
+             (filter (fn [^JarEntry e]
+                       (and (string/starts-with? (.getName e) last-path-segment)
+                            (not (.isDirectory e))
+                            (string/ends-with? e ".edn")))))
         (->> (file-seq (io/file abs-path))
-             (filter #(not (.isDirectory %))))))
+             (filter (fn [^File f] (not (.isDirectory f)))))))
     (log/raise "Resource does not exist." {:resource (str resource)})))
 
 (defmethod ^:private retrieve-file-list :default [arg]
@@ -76,7 +87,7 @@
 
 (defn- filter-file-list [file-list]
   (filter #(and (string/ends-with? % ".edn")
-                (not (string/ends-with? (.getName %) checksums-file)))
+                (not (string/ends-with? (entry-name %) checksums-file)))
           file-list))
 
 (defn filename->keyword [filename]
@@ -87,7 +98,7 @@
 (defmulti ^:private read-edn-file
   (fn [file-or-entry _file-or-resource] (type file-or-entry)))
 
-(defmethod ^:private read-edn-file File [f _file]
+(defmethod ^:private read-edn-file File [^File f _file]
   (when (not (.exists f))
     (log/raise "Failed reading file because it does not exist" {:filename (str f)}))
   [(-> (slurp f)
@@ -95,7 +106,7 @@
    {:name (.getName f)
     :norm (filename->keyword (.getName f))}])
 
-(defmethod ^:private read-edn-file JarEntry [entry resource]
+(defmethod ^:private read-edn-file JarEntry [^JarEntry entry resource]
   (when (nil? resource)
     (log/raise "Failed reading resource because it does not exist" {:resource (str resource)}))
   (let [file-name (-> (.getName entry)
@@ -179,7 +190,7 @@
         norm-list (-> (filter-file-list file-list)
                       (read-norm-files resource))
         edn-content (-> (->> file-list
-                             (filter #(-> (.getName %) (string/ends-with? checksums-file)))
+                             (filter #(-> (entry-name %) (string/ends-with? checksums-file)))
                              first)
                         (read-edn-file resource)
                         first)]

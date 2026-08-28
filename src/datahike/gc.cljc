@@ -348,7 +348,7 @@
                  ;; it, where the safe point degenerates to `now` because this
                  ;; heap has no in-flight sequences to report, the wall clock is
                  ;; the only bound there is.
-                 floor (#?(:clj Date. :cljs js/Date.) (- (get-time now) min-age-ms))
+                 floor (#?(:clj Date. :cljs js/Date.) (long (- (get-time now) min-age-ms)))
                  cutoff (->> [(guard/safe-point store-id) now floor]
                              (sort-by get-time)
                              first)

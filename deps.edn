@@ -1,7 +1,19 @@
 {:deps {org.clojure/clojure                         {:mvn/version "1.12.5"}
-        org.replikativ/hasch                        {:mvn/version "0.4.102"
+        ;; 0.4.104 carries incognito 0.3.71 (hasch#34), the other half of
+        ;; pulling that fix in — see the konserve note below. Hashes are
+        ;; unchanged across the incognito bump; that was checked directly, since
+        ;; a version bump under a hashing library is the kind that can move
+        ;; stored data silently.
+        org.replikativ/hasch                        {:mvn/version "0.4.104"
                                                      :exclusions [org.clojure/clojurescript]}
-        org.replikativ/konserve                     {:mvn/version "0.9.385"}
+        ;; 0.9.386 clears the reflective calls out of gc, mmap, the simulation
+        ;; backings and the zstd compressor (konserve#184); 0.9.387 carries
+        ;; incognito 0.3.71 (konserve#185), which is how the transit write
+        ;; handler's fix reaches us — we resolve incognito only through konserve
+        ;; and hasch. Datahike compiles konserve into `dthk`, where a reflective
+        ;; call resolves at run time and so works only if it was registered when
+        ;; the image was built.
+        org.replikativ/konserve                     {:mvn/version "0.9.387"}
 
         org.replikativ/superv.async                 {:mvn/version "0.3.51"
                                                      :exclusions [org.clojure/clojurescript]}
@@ -20,7 +32,11 @@
         ;; :cljs + :test (shadow-cljs.edn:1), and `bb test cljs-node` sees only
         ;; :cljs — so this is the one placement all three see. The old :bulk
         ;; alias reached none of the cljs ones.
-        org.replikativ/persistent-sorted-set        {:mvn/version "0.5.143"}
+        ;; 0.5.144 hints the Leaf/Branch constructors in `blob->leaf` and
+        ;; `blob->branch` (persistent-sorted-set#27) — the deserialization path,
+        ;; so the reflective lookup was paid per node on every cache miss. These
+        ;; were the last two reflection warnings left in datahike's native build.
+        org.replikativ/persistent-sorted-set        {:mvn/version "0.5.144"}
         ;; MAIN deps, not a test alias. `datahike.cbor` is src/, so boring is a
         ;; real runtime dependency: the dump codec and the kabel wire format
         ;; both go through it. It used to be declared only under :test, which
@@ -69,7 +85,9 @@
                                ;; Optional `datahike/s3` browser entry. The
                                ;; regular browser bundle does not require this
                                ;; namespace, so Closure keeps S3 signing code out.
-                               org.replikativ/konserve-s3 {:mvn/version "0.1.38"}}
+                               ;; 0.1.39: all 45 reflective S3 calls hinted
+                               ;; (konserve-s3#19).
+                               org.replikativ/konserve-s3 {:mvn/version "0.1.39"}}
                                
                   :extra-paths ["test"]}
 
@@ -136,7 +154,7 @@
                                org.replikativ/konserve-sync  {:mvn/version "0.1.40"}
 
                                ;; S3-compatible store integration test (migrate-s3-test, needs docker; runs Garage)
-                               org.replikativ/konserve-s3    {:mvn/version "0.1.38"}
+                               org.replikativ/konserve-s3    {:mvn/version "0.1.39"}
                                http-kit/http-kit             {:mvn/version "2.8.1"}}}
 
            ;; Datomic Pro peer API, for `datahike.migrate.datomic` and its
