@@ -10,7 +10,7 @@
 ;; SILENTLY under a closed-world image, returning a carrier or an empty
 ;; registry rather than an error.
 {:store  {:backend :file
-          :path "/tmp/dh-cbor-writer-store"
+          :path "target/native-image-tests/dh-cbor-writer-store"
           :id #uuid "550e8400-e29b-41d4-a716-44665544cb02"}
  :keep-history? true
  :schema-flexibility :read

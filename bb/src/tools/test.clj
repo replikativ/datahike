@@ -82,7 +82,10 @@
 
 (defn bb-pod []
   (if (cli-binary)
-    (p/shell "./bb/resources/native-image-tests/run-bb-pod-tests.clj")
+    ;; Through `bb` rather than executed directly, for the same reason
+    ;; `native-image` goes through bash: the script carries a shebang, and
+    ;; Windows does not honour one.
+    (p/shell "bb" "./bb/resources/native-image-tests/run-bb-pod-tests.clj")
     (do (println "Native image cli missing. Please run 'bb ni-cli' and try again.")
         (System/exit 1))))
 
