@@ -905,13 +905,15 @@
      (plan/source-cards {:kind :pattern :classified (scan->classified node) :db db
                          :bound-var-cards bound-var-cards})
 
-     ;; Function binds whose var advertises :datahike/output-cardinality (e.g.
-     ;; a graph algorithm whose result size is data-dependent). Without this the
-     ;; bind is opaque and downstream patterns over its output var fall back to
-     ;; the full attribute extent. Only the binding's own free vars are bounded.
+     ;; Scalar/tuple binds preserve the cardinality of their input relation;
+     ;; collection/relation binds may advertise :datahike/output-cardinality
+     ;; (e.g. a graph algorithm whose result size is data-dependent). Without
+     ;; either signal the bind is opaque and downstream patterns over its output
+     ;; var fall back to the full attribute extent. Only the binding's own free
+     ;; vars are bounded.
      (ir/bind? node)
      (plan/source-cards {:kind :bind :classified (bind->classified node) :db db
-                         :provenance provenance})
+                         :provenance provenance :bound-var-cards bound-var-cards})
 
      :else nil)))
 
@@ -1202,9 +1204,15 @@
                                        (merge-bindings (node-binding-vars logical-plan n)))))))
                  {:cards {} :bvc initial-bvc}
                  ordered-nodes))
-        ;; Pre-compute bvc per node from PRECEDING source-idx nodes'
-        ;; outputs (cardinality, scan-only) and bindings (every binder
-        ;; node).
+        ;; Pre-compute bvc per node from PRECEDING source-idx nodes' outputs
+        ;; (cardinality, scan-only) and bindings (every binder node). Also fold
+        ;; in a DIRECT function-bind producer of one of this node's vars when
+        ;; that producer has a numeric output estimate. Datalog clause order is
+        ;; not semantic: a cheap scalar conversion may be written after the
+        ;; indexed pattern that consumes its output. Restricting this
+        ;; order-independent edge to an actual producer/consumer var and a
+        ;; known card avoids reviving the sibling-pattern over-binding that the
+        ;; directional source-order rule prevents.
         node->bvc (into {}
                         (map (fn [n]
                                (let [my-idx (node->src-idx n)
@@ -1219,7 +1227,23 @@
                                                      (merge-cards (node->output-cards o))
                                                      (seq (node->binding-vars o))
                                                      (merge-bindings (node->binding-vars o))))
-                                                 initial-bvc prior)]
+                                                 initial-bvc prior)
+                                     consumed-vars (set (node->binding-vars n))
+                                     direct-bind-producers
+                                     (filter (fn [other]
+                                               (let [outs (node->output-cards other)]
+                                                 (and (not (identical? other n))
+                                                      (ir/bind? other)
+                                                      (seq outs)
+                                                      (every? number? (vals outs))
+                                                      (seq (clojure.set/intersection
+                                                            consumed-vars
+                                                            (set (keys outs)))))))
+                                             nodes)
+                                     bvc (reduce (fn [acc producer]
+                                                   (merge-cards
+                                                    acc (node->output-cards producer)))
+                                                 bvc direct-bind-producers)]
                                  [n bvc])))
                         nodes)
 

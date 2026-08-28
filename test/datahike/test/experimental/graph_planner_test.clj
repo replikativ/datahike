@@ -79,11 +79,15 @@
                  [?n :node/name ?nm]]
                :node/name)))))
 
-(deftest scalar-binding-not-bounded
-  (testing "a scalar binding holds the whole result ⇒ metadata does not apply"
-    (is (< 16 (scan-card-of
-               '[[(datahike.experimental.graph-spec/attr-graph :follows) ?g]
-                 [(datahike.experimental.graph/transitive-closure ?g $ 100) ?whole]
-                 [?whole :node/name ?nm]]
-               :node/name))
-        "scalar ?whole is not a destructured collection")))
+(deftest scalar-binding-is-one-probe
+  (testing "a scalar binding holds the whole result, but emits one relation row"
+    ;; The transitive-closure metadata describes the number of elements when
+    ;; its result is destructured as a collection. Bound as a scalar, the whole
+    ;; result is one value and the downstream entity pattern is one point
+    ;; probe (which will normally find no matching entity).
+    (is (= 1 (scan-card-of
+              '[[(datahike.experimental.graph-spec/attr-graph :follows) ?g]
+                [(datahike.experimental.graph/transitive-closure ?g $ 100) ?whole]
+                [?whole :node/name ?nm]]
+              :node/name))
+        "scalar ?whole is one binding, not a destructured collection")))
