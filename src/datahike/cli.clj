@@ -6,6 +6,10 @@
             [clojure.tools.cli :refer [parse-opts]]
             [datahike.api :as d]
             [datahike.query.execute]
+            ;; Backends register with defmethod, so the namespace has to be
+            ;; loaded for :s3 to exist as a dispatch value at all. Nothing
+            ;; else here references it, which is why it needs naming.
+            [konserve-s3.core]
             [datahike.pod :refer [run-pod]]
             [datahike.codegen.cli :as cli-gen]
             [clojure.edn :as edn]
