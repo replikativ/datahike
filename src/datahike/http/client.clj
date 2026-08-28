@@ -123,7 +123,7 @@
          fmt      "application/cbor"
          url      (str url "/" end-point)
          out      (boring/encode data (rcbor/encode-opts registry))
-         _        (log/trace :datahike/http-request {:url url :end-point end-point :data data})
+         _        (log/trace :datahike/http-request {:url url :end-point end-point})
          response
          (try
            (http/request (merge
@@ -145,7 +145,11 @@
                    new-data (update data :body decode-error-body registry)]
                (throw (ex-info (or (:msg (:body new-data)) msg)
                                (or (:ex-data (:body new-data)) new-data))))))
-         response (boring/decode (:body response) (rcbor/decode-opts registry))]
+         ;; Bound around decoding, as the generated client fns do: a database
+         ;; handle in the response carries this peer, and without it the
+         ;; writer's `:db-after` came back unable to make a remote call.
+         response (binding [remote/*remote-peer* remote-peer]
+                    (boring/decode (:body response) (rcbor/decode-opts registry)))]
      (log/trace :datahike/http-response {:response response})
      response)))
 

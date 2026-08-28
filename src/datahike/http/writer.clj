@@ -16,19 +16,25 @@
           p (promise-chan)
           config (:config @(:wrapped-atom conn))]
       (log/debug :datahike/http-write-op {:op op})
-      (log/trace :datahike/http-write-args {:arg-map arg-map})
       (put! p
             (try
+              ;; The server implements one writer operation. Say so here, with
+              ;; the operation named, rather than let it become a 404.
+              (when-not (= "transact!" (name op))
+                (throw (ex-info (str op " is not available over the :datahike-server writer; "
+                                     "only transact! is. Run it where the writer runs, or use a :self writer.")
+                                {:type :remote-writer-unsupported-op :op op})))
               ;; CBOR, not JSON. This channel is machine-to-machine only —
               ;; never a browser, never read by a human — so JSON's
               ;; readability buys nothing here while its costs all apply: the
               ;; `!kw`/`!date` tagged-string encoding, the re-entrant
               ;; `write-to-generator`, and the server-side schema lookup that
               ;; re-infers types JSON could not carry. CBOR carries them.
+              ;; `:writer` holds the token; the server strips it anyway.
               (request-cbor :post
                             (str op "-writer")
                             remote-peer
-                            (vec (concat [config] args)))
+                            (vec (concat [(dissoc config :writer)] args)))
               (catch Exception e
                 e)))
       p))
@@ -37,7 +43,7 @@
 
 (defmethod create-writer :datahike-server
   [config connection]
-  (log/debug :datahike/http-writer-create {:config config})
+  (log/debug :datahike/http-writer-create {:config (update config :writer dissoc :token)})
   (->DatahikeServerWriter config connection))
 
 (defmethod create-database :datahike-server
@@ -50,7 +56,7 @@
                                    "create-database-writer"
                                    writer
                                    (vec (concat [(-> config
-                                                     (assoc :remote-peer writer)
+                                                     (assoc :remote-peer (dissoc writer :token))
                                                      (dissoc :writer))]
                                                 (rest args))))
                      (dissoc :remote-peer))
@@ -68,7 +74,7 @@
                                      "delete-database-writer"
                                      writer
                                      (vec (concat [(-> config
-                                                       (assoc :remote-peer writer)
+                                                       (assoc :remote-peer (dissoc writer :token))
                                                        (dissoc :writer))]
                                                   (rest args))))
                        (dissoc :remote-peer))

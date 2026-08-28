@@ -13,6 +13,20 @@ When something is added, it's typically marked *Experimental*. When the API cont
   map entry per entity, is no longer returned by default; ask for it with
   `(metrics db {:per-entity-counts? true})`. **Status change:** the key is
   optional in `SMetrics` now.
+- **The HTTP API is embeddable.** *Experimental.* `datahike.http.routes/handler`
+  returns the server's routes as a Ring handler for mounting inside a host
+  application, under a prefix, sharing the host's connection registry
+  (`:connections`), with the token checked and the body capped *before*
+  anything is decoded. `datahike.http.server` is now a thin shell around it.
+  See [doc/http-routes.md](doc/http-routes.md).
+  **Breaking for embedders of the server namespace:** `datahike.http.server/app`
+  now takes `(app config connections)`; `start-server`/`stop-server`/`-main`
+  are unchanged, and `stop-server` now releases the databases the server
+  opened. The `:datahike-server` writer no longer sends its token in request
+  bodies, fails writer operations the server does not implement by name
+  instead of with a 404, and returns database handles that can make remote
+  calls.
+
 - **Index warming is unified across the stack, and real on ClojureScript.**
   The breadth-first walk moved to persistent-sorted-set (>= 0.5.142), where
   every consumer shares it; `datahike.index.persistent-set.warm` is now the
