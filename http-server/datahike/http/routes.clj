@@ -257,21 +257,46 @@
             (let [local    (fn [cfg] (dissoc cfg :remote-peer :writer))
                   ret-body
                   (cond (= f #'api/create-database)
-                        ;; remove remote-peer and re-add
-                        (let [created (apply f (local (first body)) (rest body))]
-                          (when-let [register! (:datahike.http.system/register! config)]
-                            (register! created (:datahike/principal request)))
-                          (assoc created :remote-peer (:remote-peer (first body))))
+                        (with-exclusive state
+                          (fn []
+                            ;; Remove remote-peer while this server creates the
+                            ;; physical store, then restore it in the response.
+                            (let [requested (local (first body))
+                                  principal (:datahike/principal request)]
+                              (when-let [prepare! (:datahike.http.system/prepare-register! config)]
+                                (prepare! requested principal))
+                              (let [created (apply f requested (rest body))]
+                                (when-let [register! (:datahike.http.system/register! config)]
+                                  (register! created principal))
+                                (assoc created :remote-peer (:remote-peer (first body)))))))
 
                         (= f #'api/delete-database)
                         (with-exclusive state
                           (fn []
-                            (swap! (:leases state) dissoc (conn-id (first body)))
-                            (let [local-config (local (first body))
-                                  result (apply f local-config (rest body))]
-                              (when-let [deleted! (:datahike.http.system/delete! config)]
-                                (deleted! local-config (:datahike/principal request)))
-                              result)))
+                            (let [id           (conn-id (first body))
+                                  lease-state  (get @(:leases state) id)
+                                  local-config (local (first body))
+                                  principal    (:datahike/principal request)]
+                              (when-let [prepare! (:datahike.http.system/prepare-delete! config)]
+                                (prepare! local-config principal))
+                              (swap! (:leases state) dissoc id)
+                              (let [result
+                                    (try
+                                      (apply f local-config (rest body))
+                                      (catch Throwable e
+                                        (when lease-state
+                                          (swap! (:leases state) assoc id lease-state))
+                                        (when-let [cancel! (:datahike.http.system/cancel-delete! config)]
+                                          (try
+                                            (cancel! local-config principal)
+                                            (catch Throwable cleanup-error
+                                              (log/error :datahike/catalog-delete-rollback-failed
+                                                         (ex-message cleanup-error)
+                                                         {:error-class (.getName (class cleanup-error))}))))
+                                        (throw e)))]
+                                (when-let [deleted! (:datahike.http.system/delete! config)]
+                                  (deleted! local-config principal))
+                                result))))
 
                         (= f #'api/connect)
                         (granted! state (apply f (cons (local (first body)) (rest body))))

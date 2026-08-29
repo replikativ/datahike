@@ -174,6 +174,49 @@ principal. `GET /databases` returns active entries filtered through the same
 `:read` permission as database calls; callers cannot discover databases they
 cannot read.
 
+### Optional PostgreSQL listener (beta)
+
+The batteries-included server bundles
+[pg-datahike](https://github.com/replikativ/pg-datahike). Add a
+`:pg-listener` map to serve every active catalog entry under its `:name` (or
+store UUID when unnamed):
+
+```clojure
+{:system-db {:store {:backend :file :path "/var/lib/datahike/system"}}
+ :pg-listener
+ {:host "127.0.0.1"
+  :port 5432
+  :database-overrides
+  {"accounts" {:store {:password "secret-from-deployment"}}}}}
+```
+
+Set `:pg-listener {:enabled? false}` to keep a deployment-supplied listener
+configuration present without opening the port.
+
+Catalog configs never retain passwords or cloud credentials. Generate or
+mount the deployment config securely. If a redacted value is still unresolved
+after applying the matching name or store-id override, the listener refuses to
+start and reports only the missing config paths.
+
+HTTP creates are added to the PostgreSQL registry immediately. Before an HTTP
+delete touches storage, the listener unregisters the database and releases its
+connection; a failed delete restores it. pg-datahike's independent
+`CREATE/DROP DATABASE` hooks are rejected so there is no second catalog.
+Catalog names exposed through PostgreSQL must be unique; the server rejects a
+conflicting HTTP create before it changes physical storage.
+
+This listener is beta and currently restricted to loopback because released
+pg-datahike versions do not authenticate the wire connection. Once password
+authentication is available, the server will accept an authenticated public
+bind. Use the HTTP API for provisioning and permission administration in the
+meantime.
+
+The PostgreSQL listener is currently a trusted local data surface: PostgreSQL
+users are not mapped to Datahike EACL principals, so a client that can reach
+the listener can access every database it exposes. The loopback restriction is
+a security boundary, not merely a beta convenience. Do not publish or proxy
+this port to untrusted clients.
+
 The graph (`datahike.http.permissions/schema`):
 
 ```

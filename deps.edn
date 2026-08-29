@@ -186,6 +186,8 @@
                                 :exclusions [com.amazonaws/aws-xray-recorder-sdk-aws-sdk-v2]}
                                org.replikativ/konserve-redis {:mvn/version "0.1.29"}
                                org.postgresql/postgresql     {:mvn/version "42.7.13"}
+                               org.replikativ/pg-datahike    {:mvn/version "0.1.159"
+                                                               :exclusions [org.replikativ/datahike]}
                                http-kit/http-kit             {:mvn/version "2.8.1"}}}
 
            ;; Datomic Pro peer API, for `datahike.migrate.datomic` and its
@@ -238,7 +240,10 @@
                                       org.replikativ/konserve-redis
                                       {:mvn/version "0.1.29"}
                                       org.postgresql/postgresql
-                                      {:mvn/version "42.7.13"}}
+                                      {:mvn/version "42.7.13"}
+                                      org.replikativ/pg-datahike
+                                      {:mvn/version "0.1.159"
+                                       :exclusions [org.replikativ/datahike]}}
                          :main-opts ["-m" "datahike.http.main"]}
 
            ;; konserve-s3 is here for the same reason it is in :native-cli, and it

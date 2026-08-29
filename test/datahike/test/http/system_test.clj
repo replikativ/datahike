@@ -63,3 +63,53 @@
        clojure.lang.ExceptionInfo
        #"replaced by :system-db"
        (system/configure {:auth-db {:store {:backend :memory}}}))))
+
+(deftest catalog-lifecycle-events-follow-durable-state
+  (let [configured (system/configure
+                    {:system-db {:store {:backend :memory}}})
+        events     (atom [])
+        database   {:name "events"
+                    :store {:backend :memory :id (random-uuid)}}
+        subscription (system/subscribe!
+                      configured
+                      #(swap! events conj (select-keys % [:event :config :principal])))]
+    (try
+      ((get configured system/prepare-register-key) database {:sub "alice"})
+      ((get configured system/register-key) database {:sub "alice"})
+      ((get configured system/prepare-delete-key) database {:sub "bob"})
+      ((get configured system/cancel-delete-key) database {:sub "bob"})
+      ((get configured system/prepare-delete-key) database {:sub "carol"})
+      ((get configured system/delete-key) database {:sub "carol"})
+      (is (= [:creating :created :deleting :delete-cancelled :deleting :deleted]
+             (mapv :event @events)))
+      (is (= ["alice" "alice" "bob" "bob" "carol" "carol"]
+             (mapv (comp :sub :principal) @events)))
+      (system/unsubscribe! configured subscription)
+      ((get configured system/register-key) database {:sub "nobody"})
+      (is (= 6 (count @events)))
+      (finally
+        (system/close! configured)))))
+
+(deftest failed-delete-preparation-restores-state-and-listeners
+  (let [configured (system/configure
+                    {:system-db {:store {:backend :memory}}})
+        events     (atom [])
+        database   {:name "rollback"
+                    :store {:backend :memory :id (random-uuid)}}]
+    (try
+      ((get configured system/register-key) database {:sub "root"})
+      (system/subscribe!
+       configured
+       (fn [{:keys [event]}]
+         (swap! events conj event)
+         (when (= :deleting event)
+           (throw (ex-info "listener could not release" {})))))
+      (is (thrown-with-msg?
+           clojure.lang.ExceptionInfo
+           #"could not release"
+           ((get configured system/prepare-delete-key) database {:sub "root"})))
+      (is (= [:deleting :delete-cancelled] @events))
+      (is (= :active (:state (first (system/entries
+                                     (get configured system/conn-key))))))
+      (finally
+        (system/close! configured)))))
