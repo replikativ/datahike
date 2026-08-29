@@ -139,6 +139,7 @@
         bound-aware (when (seq bound-var-cards)
                       (estimate/estimate-pattern-with-bindings
                        db pattern-info schema-info bound-var-cards))
+        output-est (long (or bound-aware est))
         scan-est (cond
                    (empty? bound-var-cards) est
                    ;; Non-indexed attr with v as the only bound free var:
@@ -162,7 +163,16 @@
               :schema-info schema-info
               :pushdown-preds effective-preds
               :estimated-card est
+              ;; Logical rows emitted after bound-value/probe filtering. This
+              ;; is deliberately distinct from :scan-card: an unindexed
+              ;; `attr = ?bound` scan may inspect the whole AEVT slice while
+              ;; emitting only a small fraction of it.
+              :output-card output-est
               :scan-card scan-est
+              ;; Keep downstream var-card propagation conservative. The
+              ;; filtered :output-card is used for this entity group's local
+              ;; scan/merge choice only; exporting it here changes unrelated
+              ;; inter-group/rule ordering contracts.
               :output-var-cards (pattern-output-var-cards pattern-info est)
               :join-method join-method
               :vars (:vars pattern-info)
@@ -284,6 +294,8 @@
    instead of a singleton."
   100)
 
+(declare args-free-vars)
+
 (defn source-cards
   "Unified produce-side cardinality seed for the planner's {var → card} map.
 
@@ -295,8 +307,10 @@
    Dispatch on :kind:
      {:kind :pattern :classified ci :db db}
         → attribute-stats estimate for an LScan's free output vars
-     {:kind :bind    :classified ci :db db :provenance prov}
-        → :datahike/output-cardinality estimate for an LBind's free vars
+     {:kind :bind    :classified ci :db db :provenance prov
+                     :bound-var-cards cards}
+        → scalar/tuple binds preserve their input-relation cardinality;
+          collection/relation binds use :datahike/output-cardinality metadata
           (ci carries :fn-sym / :args / :binding)
      {:kind :input   :shape <kw> :vars <syms>}
         → shape-based seed for :in vars: collection/relation bindings bind many
@@ -334,11 +348,25 @@
         (zipmap free-output-vars (repeat (long est)))))
 
     :bind
-    (let [{:keys [classified db provenance]} source
-          card (resolve-fn-output-cardinality
-                (:fn-sym classified) (:args classified) (:binding classified) db provenance)]
+    (let [{:keys [classified db provenance bound-var-cards]} source
+          binding (:binding classified)
+          shape (binding-shape binding)
+          ;; A scalar or tuple function bind emits at most one output tuple for
+          ;; each input tuple. Preserve the upstream relation cardinality so a
+          ;; downstream indexed pattern can cost the produced var as a probe
+          ;; rather than as an unconstrained attribute scan. Collection and
+          ;; relation binds remain data-dependent and use their explicit
+          ;; :datahike/output-cardinality contract below.
+          scalar-card (when (contains? #{:scalar :tuple} shape)
+                        (let [input-vars (args-free-vars (:args classified))
+                              cards (map bound-var-cards input-vars)]
+                          (when (every? number? cards)
+                            (reduce * 1 (map #(max 1 (long %)) cards)))))
+          card (or scalar-card
+                   (resolve-fn-output-cardinality
+                    (:fn-sym classified) (:args classified) binding db provenance))]
       (when card
-        (let [bvars (filter analyze/free-var? (analyze/extract-vars (:binding classified)))]
+        (let [bvars (filter analyze/free-var? (analyze/extract-vars binding))]
           (when (seq bvars)
             (zipmap bvars (repeat (long card)))))))
 
@@ -544,21 +572,28 @@
   [op]
   (long (or (:scan-card op) (:estimated-card op) 0)))
 
+(defn- output-card-of
+  "Rows a pattern is expected to emit after its bound probes/filters."
+  [op]
+  (long (or (:output-card op) (:estimated-card op) 0)))
+
 (defn dp-order-fuse-ops
   "For N pattern ops on same entity var, find optimal (scan, merge-order).
    Uses short-circuit AND ordering: sort merges by ascending
    merge-cost / (1 - pass-rate). Try each pattern as scan, pick minimum total cost.
 
-   Scan selection uses bound-aware :scan-card so a pattern whose value is
-   constrained by upstream context (smaller effective scan size) is preferred
-   over a pattern with all-free positions on the same attribute. Pass-rate
-   computation still uses :estimated-card (the base attribute count) to
-   preserve the existing per-entity match-probability semantics."
+   Scan selection separates physical :scan-card (datoms inspected) from
+   :output-card (rows surviving a bound probe/filter). This matters for an
+   unindexed `attr = ?bound`: the scan still reads the full AEVT attribute
+   slice, but choosing it as the driver can avoid merge lookups for all rows
+   that do not match."
   [db pattern-ops total-entities]
   (let [n (count pattern-ops)
-        ;; Pass-rate estimates use base (unconstrained) cardinality.
+        ;; Merge pass rates use logical output cardinality. For unconstrained
+        ;; patterns this is the base extent; for a bound value it is the
+        ;; estimated matching subset.
         estimates (mapv (fn [op]
-                          (max 1 (or (:estimated-card op) total-entities)))
+                          (max 1 (output-card-of op)))
                         pattern-ops)]
     (if (<= n 2)
       (let [;; Patterns with variable attribute can only be scan, not merge
@@ -590,10 +625,8 @@
                              (or (not has-non-optional?)
                                  (not (:optional? (nth pattern-ops si)))))]
               (let [scan-op (nth pattern-ops si)
-                    ;; Use bound-aware :scan-card for the scan-side cost; merges
-                    ;; still use the unconstrained :estimated-card via `estimates`
-                    ;; for pass-rate computation.
-                    scan-card (double (scan-cost-of scan-op))
+                    scan-work (double (scan-cost-of scan-op))
+                    scan-output (double (max 1 (output-card-of scan-op)))
                     merges (into [] (keep-indexed
                                      (fn [i op]
                                        (when (not= i si)
@@ -603,10 +636,10 @@
                                            {:op op :pass-rate pass-rate :sort-key sort-key}))))
                                  pattern-ops)
                     sorted-merges (sort-by :sort-key merges)
-                    total-cost (reduce (fn [[cost cum-pass] m]
-                                         [(+ cost (* scan-card cum-pass))
-                                          (* cum-pass (:pass-rate m))])
-                                       [scan-card 1.0]
+                    total-cost (reduce (fn [[cost rows] m]
+                                         [(+ cost rows)
+                                          (* rows (:pass-rate m))])
+                                       [scan-work scan-output]
                                        sorted-merges)]
                 {:scan scan-op
                  :merges (mapv :op sorted-merges)
@@ -867,9 +900,13 @@
                         (into (vec normal)
                               (mapv #(dissoc % ::anti-pass-rate) sorted-anti)))))
         ;; Estimate output cardinality
+        ;; Keep the entity group's exported cardinality contract conservative.
+        ;; :output-card only guides the LOCAL scan/merge choice above; using it
+        ;; here perturbs unrelated inter-group/rule ordering.
         scan-card (max 1 (or (:estimated-card scan) total-entities))
         group-card (reduce (fn [card merge-op]
-                             (let [merge-est (max 1 (or (:estimated-card merge-op) total-entities))
+                             (let [merge-est (max 1 (or (:estimated-card merge-op)
+                                                        total-entities))
                                    pass-rate (estimate/estimate-conditional-pass-rate merge-est total-entities)]
                                (cond
                                  ;; Optional merges don't filter — all entities pass

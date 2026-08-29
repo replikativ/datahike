@@ -35,6 +35,11 @@
     (is (= (set (seq legacy)) (set (seq compiled)))
         (str "Engines disagree on: " (pr-str query)))))
 
+(defn coerce-long
+  "Scalar bind used to model a cheap typed parameter conversion."
+  [value]
+  (long value))
+
 ;; ---------------------------------------------------------------------------
 ;; Test data
 
@@ -1038,3 +1043,62 @@
       (is (boolean (#'ex/probe-set-contains? ps (byte-array [1 2 3])))))
     (testing "seek values are the RAW arrays, never the wrapped keys"
       (is (every? arr/value-array? (#'ex/probe-set-seek-vals ps))))))
+
+(deftest scalar-bind-cardinality-drives-downstream-index-selection
+  ;; A scalar function emits one output tuple per input tuple. Losing that
+  ;; cardinality made the entity group drive from the 5k-row presence attr
+  ;; rather than the unique id produced by the bind — a point lookup became a
+  ;; full table scan. SQL parameter coercion is one real-world instance of this
+  ;; ordinary Datalog shape.
+  (let [db (d/db-with
+            (db/empty-db {:item/id      {:db/unique :db.unique/identity}
+                          :item/present {:db/index true}
+                          :item/value   {}})
+            (mapv (fn [i]
+                    {:item/id i :item/present true :item/value (str "v" i)})
+                  (range 5000)))
+        ;; Patterns deliberately precede their scalar producer. Datalog clause
+        ;; order is not semantic, and SQL normalization emits this shape.
+        query '[:find ?value :in $ ?raw :where
+                [?e :item/id ?id]
+                [?e :item/present true]
+                [?e :item/value ?value]
+                [(datahike.test.query-planner-test/coerce-long ?raw) ?id]]
+        explanation (q/explain query db 2500)]
+    (testing "the scalar output retains the one-row input cardinality"
+      ;; The scan op retains its base AEVT annotation; at execution the bound
+      ;; ?id relation turns it into an AVET point seek through SIP. The critical
+      ;; plan choice is that this selective clause drives the entity group.
+      (is (re-find #"scan: \[\?e :item/id \?id\]"
+                   explanation)))
+    (testing "both engines return the same point result"
+      (assert-engines-agree db query [2500])
+      (is (= #{["v2500"]} (d/q query db 2500))))))
+
+(deftest bound-unindexed-filter-separates-scan-work-from-output-cardinality
+  ;; Every candidate scan reads 5k datoms, but :item/category emits only 50
+  ;; matches. Driving from it avoids category lookups for the other 4,950
+  ;; entities; treating scanned datoms as emitted rows instead drove from the
+  ;; non-selective presence marker.
+  (let [db (d/db-with
+            (db/empty-db {:item/id      {:db/unique :db.unique/identity}
+                          :item/present {:db/index true}
+                          :item/category {}
+                          :item/value   {}})
+            (mapv (fn [i]
+                    {:item/id i
+                     :item/present true
+                     :item/category (mod i 100)
+                     :item/value (str "v" i)})
+                  (range 5000)))
+        query '[:find ?id :in $ ?raw :where
+                [?e :item/category ?category]
+                [?e :item/present true]
+                [?e :item/id ?id]
+                [(datahike.test.query-planner-test/coerce-long ?raw) ?category]]
+        explanation (q/explain query db 42)]
+    (testing "the selective unindexed attribute drives the fused scan"
+      (is (re-find #"scan: \[\?e :item/category \?category\]" explanation)))
+    (testing "the optimization preserves results on both engines"
+      (assert-engines-agree db query [42])
+      (is (= 50 (count (d/q query db 42)))))))
