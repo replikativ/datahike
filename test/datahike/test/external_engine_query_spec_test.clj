@@ -43,6 +43,35 @@
                               '?e entity-set))
         "overlapping relations retain collapse-rels' transitive join semantics")))
 
+(deftest entity-bitset-collection-input-preserves-binding-semantics
+  (let [cfg {:store {:backend :memory :id (java.util.UUID/randomUUID)}
+             :schema-flexibility :write :keep-history? false}
+        query '[:find ?name
+                :in $ [?e ...]
+                :where [?e :person/name ?name]]]
+    (d/create-database cfg)
+    (let [conn (d/connect cfg)]
+      (try
+        (d/transact conn [{:db/ident :person/name
+                           :db/valueType :db.type/string
+                           :db/cardinality :db.cardinality/one}])
+        (d/transact conn [{:person/name "Ada"}
+                          {:person/name "Grace"}
+                          {:person/name "Edsger"}])
+        (let [db (d/db conn)
+              eids (into {} (d/q '[:find ?name ?e
+                                   :where [?e :person/name ?name]] db))
+              selected [(get eids "Ada") (get eids "Edsger")]
+              bitmap (es/entity-bitset-from-longs selected)]
+          (is (= #{["Ada"] ["Edsger"]}
+                 (d/q query db bitmap)))
+          (is (= (d/q query db selected)
+                 (d/q query db bitmap))
+              "the bitmap is an execution hint, not a new binding semantic"))
+        (finally
+          (d/release conn)
+          (d/delete-database cfg))))))
+
 ;; ---- minimal self-contained secondary index for the join regression ----
 ;; Stores the eids it is fed; -search returns all of them. Enough to exercise
 ;; the external-engine :filter execution path end-to-end via datalog.

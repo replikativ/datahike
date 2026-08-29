@@ -1378,6 +1378,24 @@
     (if (or *fold-scalar-ins* (fn? value))
       (assoc-in context [:consts (get-in binding [:variable :symbol])] value)
       (update context :rels conj (in->rel binding value)))
+
+    ;; Preserve the ordinary collection relation for complete Datalog binding
+    ;; semantics, but also expose a native entity bitmap to planned primary
+    ;; scans. Candidate rechecks can then seek/semijoin the requested entities
+    ;; instead of scanning the full AVET/EAVT relation and joining boxed ids
+    ;; afterward. This is an additive JVM fast path; ordinary collections and
+    ;; the CLJS sorted-set representation keep the established behavior.
+    #?(:clj (and (instance? BindColl binding)
+                 (es/entity-bitset? value))
+       :cljs false)
+    #?(:clj
+       (let [entity-var (get-in binding [:binding :variable :symbol])]
+         (-> context
+             (update :rels conj
+                     (in->rel binding (es/entity-bitset-seq value)))
+             (update :entity-filters (fnil assoc {}) entity-var value)))
+       :cljs context)
+
     #_(instance? BindColl binding)                          ;; TODO: later
     :else
     (update context :rels conj (in->rel binding value))))

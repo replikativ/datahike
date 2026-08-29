@@ -6,6 +6,18 @@
   #?(:clj (:import [org.roaringbitmap.longlong Roaring64NavigableMap])))
 
 #?(:clj
+   (defn entity-bitset?
+     "Whether x is the JVM EntityBitSet representation."
+     [x]
+     (instance? Roaring64NavigableMap x))
+
+   :cljs
+   (defn entity-bitset?
+     "Whether x is the CLJS EntityBitSet representation."
+     [x]
+     (sorted-set? x)))
+
+#?(:clj
    (defn entity-bitset
      "Create an empty EntityBitSet (RoaringBitmap)."
      ^Roaring64NavigableMap []
