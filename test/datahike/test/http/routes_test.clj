@@ -246,11 +246,14 @@
       (testing "a rejected writer operation leaves the writer usable"
         (is (instance? Throwable (try @(d/load-entities conn [[1 :name "x" 1 true]]) (catch Exception e e))))
         (is (some? (:db-after (d/transact conn [{:name "after"}])))))
-      (testing "a client's release never closes the shared connection"
+      (testing "a client's releases never close the shared connection"
         (let [api-conn (client/connect (assoc (dissoc cfg :writer) :remote-peer peer))]
           (client/release api-conn true)
           (is (some? (get-in @connections [[store-id :db] :conn]))
-              "release-all? from a client is ignored: the base lease stays")))
+              "release-all? from a client is ignored: the base lease stays")
+          (dotimes [_ 5] (client/release api-conn))
+          (is (= 1 (get-in @connections [[store-id :db] :count]))
+              "releasing more often than connecting gives back nothing the caller was not granted")))
       (testing "release-all! empties the registry it is given, handler or atom"
         (routes/release-all! h)
         (is (empty? (filter (comp :conn val) @connections))))

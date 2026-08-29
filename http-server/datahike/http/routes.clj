@@ -46,7 +46,8 @@
    [muuntaja.core :as m]
    [replikativ.logging :as log])
   (:import [datahike.datom Datom]
-           [datahike.impl.entity Entity]))
+           [datahike.impl.entity Entity]
+           [java.util.concurrent.locks ReentrantReadWriteLock]))
 
 ;; ---------------------------------------------------------------------------
 ;; Errors, secrets, authorization
@@ -153,25 +154,61 @@
 (defn- conn-id [cfg]
   [(datahike.store/store-identity (:store cfg)) (:branch cfg :db)])
 
+(defn- new-state
+  "What the routes keep per handler: `leases`, per database — `:base`, whether
+   the server holds its base lease, and `:api`, how many leases it has handed
+   out through `connect` — and a read-write lock that lets a delete wait for
+   the calls pinned on the database it removes."
+  []
+  {:leases (atom {})
+   :lock   (ReentrantReadWriteLock.)})
+
 (defn- with-connection
   "Run `f` with a connection to `cfg`'s database, pinned for the duration.
 
    Two leases are at work. This request's own — `api/connect` validates the
    config against the cached connection and counts one up, `api/release` in
-   `finally` counts it back — which keeps a concurrent release or delete from
-   pulling the connection out from under the call. And the server's base
-   lease, taken once per database under `leases` so that the connection (and
-   its writer) survives between requests instead of being rebuilt for each;
-   it is dropped by `release-all!` on shutdown, or by a delete."
-  [cfg leases f]
+   `finally` counts it back — which keeps a concurrent release from pulling
+   the connection out from under the call. And the server's base lease, taken
+   once per database so that the connection (and its writer) survives between
+   requests instead of being rebuilt for each; `release-all!` drops it on
+   shutdown, a delete drops it. The call holds the read side of the lock, so
+   a delete (`with-exclusive`) waits for it."
+  [cfg {:keys [leases ^ReentrantReadWriteLock lock]} f]
   (let [id (conn-id cfg)]
-    (locking leases
-      (when-not (and (@leases id) (get-in @*connections* [id :conn]))
-        (api/connect cfg)
-        (swap! leases conj id)))
-    (let [conn (api/connect cfg)]
-      (try (f conn)
-           (finally (api/release conn))))))
+    (.lock (.readLock lock))
+    (try
+      (locking leases
+        (when-not (and (get-in @leases [id :base]) (get-in @*connections* [id :conn]))
+          (api/connect cfg)
+          (swap! leases assoc-in [id :base] true)))
+      (let [conn (api/connect cfg)]
+        (try (f conn)
+             (finally (api/release conn))))
+      (finally (.unlock (.readLock lock))))))
+
+(defn- with-exclusive
+  "Run `f`, a deletion, once every pinned call has finished and none starts."
+  [{:keys [^ReentrantReadWriteLock lock]} f]
+  (.lock (.writeLock lock))
+  (try (f)
+       (finally (.unlock (.writeLock lock)))))
+
+(defn- granted!
+  "Count a lease handed out through `connect`."
+  [{:keys [leases]} conn]
+  (swap! leases update-in [(conn-id (:config @conn)) :api] (fnil inc 0))
+  conn)
+
+(defn- give-back!
+  "Release one lease `connect` handed out — and only such a lease: a caller
+   releasing more often than it connected must not drain the host's or the
+   server's own."
+  [{:keys [leases]} conn]
+  (when-let [id (try (conn-id (:config @conn)) (catch Exception _ nil))]
+    (when (pos? (get-in @leases [id :api] 0))
+      (swap! leases update-in [id :api] dec)
+      (api/release conn))))
 
 (defn release-all!
   "Release every connection in the registry — the routes' and, if the host
@@ -188,7 +225,7 @@
 ;; The API routes
 ;; ---------------------------------------------------------------------------
 
-(defn- generic-handler [config op f]
+(defn- generic-handler [config state op f]
   (fn [request]
     (try
       (let [{{body :body} :parameters
@@ -203,12 +240,19 @@
                          :remote-peer (:remote-peer (first body)))
 
                         (= f #'api/delete-database)
-                        (apply f (dissoc (first body) :remote-peer) (rest body))
+                        (with-exclusive state
+                          (fn []
+                            (swap! (:leases state) dissoc (conn-id (first body)))
+                            (apply f (dissoc (first body) :remote-peer) (rest body))))
 
-                        ;; One caller releases one lease. `release-all?` would
-                        ;; close a connection the host and other callers share.
+                        (= f #'api/connect)
+                        (granted! state (apply f body))
+
+                        ;; One caller releases one lease of its own.
+                        ;; `release-all?` would close a connection the host
+                        ;; and other callers share.
                         (= f #'api/release)
-                        (f (first body))
+                        (give-back! state (first body))
 
                         :else
                         (apply f body))]
@@ -325,7 +369,7 @@
 ;; This code expands and evals the server route construction given the
 ;; API specification.
 (eval
- `(defn- ~'create-routes [~'config]
+ `(defn- ~'create-routes [~'config ~'state]
     ~(vec
       (for [[n {:keys [args doc supports-remote? referentially-transparent?]}] api-specification
             :when supports-remote?]
@@ -336,12 +380,11 @@
             :summary     ~(extract-first-sentence doc)
             :description ~doc
             :parameters  {:body ~(extract-input-schema args)}
-            :handler     (generic-handler ~'config ~(route-op n referentially-transparent?) ~(resolve n))}}]))))
+            :handler     (generic-handler ~'config ~'state ~(route-op n referentially-transparent?) ~(resolve n))}}]))))
 
 (defn- internal-writer-routes
-  "What a `:datahike-server` writer posts to. `leases` is the set of databases
-   the server holds a base lease on (see `with-connection`)."
-  [config leases]
+  "What a `:datahike-server` writer posts to; `state` as in `new-state`."
+  [config state]
   [["/delete-database-writer"
     {:post {:parameters  {:body [:sequential :any]},
             :summary     "Internal endpoint. DO NOT USE!"
@@ -354,12 +397,14 @@
                            (let [cfg (dissoc (first body) :remote-peer :writer)]
                              (or (authorize config request :delete [cfg])
                                  (try
-                                   (swap! leases disj (conn-id cfg))
-                                   (try
-                                     (api/release (api/connect cfg) true)
-                                     (catch Exception _))
-                                   {:status 200
-                                    :body   (async/<!! (apply datahike.writing/delete-database cfg (rest body)))}
+                                   (with-exclusive state
+                                     (fn []
+                                       (swap! (:leases state) dissoc (conn-id cfg))
+                                       (try
+                                         (api/release (api/connect cfg) true)
+                                         (catch Exception _))
+                                       {:status 200
+                                        :body   (async/<!! (apply datahike.writing/delete-database cfg (rest body)))}))
                                    (catch Exception e
                                      (error-response e))))))
             :operationId "delete-database"},
@@ -389,7 +434,7 @@
                              (or (authorize config request :transact [cfg])
                                  (try
                                    {:status 200
-                                    :body   (with-connection cfg leases
+                                    :body   (with-connection cfg state
                                               (fn [conn] @(apply datahike.writer/transact! conn (rest body))))}
                                    (catch Exception e
                                      (error-response e))))))
@@ -407,10 +452,10 @@
     (when (seq p) (str "/" p))))
 
 (defn- router
-  [config {:keys [prefix extra-routes leases]}]
+  [config {:keys [prefix extra-routes state]}]
   (let [routes (vec (concat extra-routes
-                            (create-routes config)
-                            (internal-writer-routes config leases)))]
+                            (create-routes config state)
+                            (internal-writer-routes config state)))]
     (ring/router (if-let [p (normalize-prefix prefix)] [p routes] routes)
                  (default-route-opts muuntaja-with-opts))))
 
@@ -498,8 +543,7 @@
   ([config] (handler config {}))
   ([config {:keys [connections default-handler] :as opts}]
    (let [connections (or connections (atom {}))
-         leases      (atom #{})
-         rtr         (router config (assoc opts :leases leases))
+         rtr         (router config (assoc opts :state (new-state)))
          h           (wrap-api (ring/ring-handler rtr (or default-handler (ring/create-default-handler)))
                                rtr config connections)]
      (with-meta h {::connections connections}))))

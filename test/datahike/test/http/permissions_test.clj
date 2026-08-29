@@ -54,10 +54,12 @@
         (client/create-database (assoc cfg :remote-peer (peer root-token)))
         (is (forbidden? #(client/connect (assoc cfg :remote-peer (peer "alice-token"))))))
 
-      (testing "root grants alice writer; alice may read and write, not delete or grant"
-        (is (= {:written 1}
+      (testing "root grants alice writer and bob reader in one batch; alice may read and write, not delete or grant"
+        (is (= {:written 2}
                (grant! root-token [{:operation :touch
-                                    :relationship {:subject {:type :user :id "alice"} :relation :writer :resource db-obj}}])))
+                                    :relationship {:subject {:type :user :id "alice"} :relation :writer :resource db-obj}}
+                                   {:operation :touch
+                                    :relationship {:subject {:type :user :id "bob"} :relation :reader :resource db-obj}}])))
         (let [alice (client/connect (assoc cfg :remote-peer (peer "alice-token")))]
           (client/transact alice [{:name "Ada"}])
           (is (= #{["Ada"]} (client/q '[:find ?n :where [?e :name ?n]] @alice)))
@@ -73,8 +75,11 @@
               "asking about someone else needs grant")
           (client/release alice)))
 
-      (testing "bob has nothing"
-        (is (forbidden? #(client/connect (assoc cfg :remote-peer (peer "bob-token"))))))
+      (testing "bob reads and nothing else"
+        (let [bob (client/connect (assoc cfg :remote-peer (peer "bob-token")))]
+          (is (= #{["Ada"]} (client/q '[:find ?n :where [?e :name ?n]] @bob)))
+          (is (forbidden? #(client/transact bob [{:name "Bob"}])))
+          (client/release bob)))
 
       (testing "the remote writer is authorized the same way"
         ;; Two processes, so two registries: in one, bob's connect would hand
@@ -91,8 +96,9 @@
       (testing "relationships survive a restart, and root stays admin"
         (stop! @s)
         (reset! s (start!))
-        (is (= [{:subject {:type :user :id "alice"} :relation :writer :resource db-obj}]
-               (client/request-cbor :post "permissions/relationships" (peer root-token) {:resource db-obj})))
+        (is (= #{{:subject {:type :user :id "alice"} :relation :writer :resource db-obj}
+                 {:subject {:type :user :id "bob"} :relation :reader :resource db-obj}}
+               (set (client/request-cbor :post "permissions/relationships" (peer root-token) {:resource db-obj}))))
         (let [alice (client/connect (assoc cfg :remote-peer (peer "alice-token")))]
           (is (= #{["Ada"] ["Grace"]} (client/q '[:find ?n :where [?e :name ?n]] @alice)))
           (client/release alice))
@@ -101,6 +107,15 @@
                                     :relationship {:subject {:type :user :id "alice"} :relation :writer :resource db-obj}}])))
         (is (forbidden? #(client/connect (assoc cfg :remote-peer (peer "alice-token"))))
             "a revoked grant is gone at once")
+        (is (try (grant! root-token [{:operation :touch
+                                      :relationship {:subject {:type :user :id "alice"} :relation :reader :resource db-obj}}
+                                     {:operation :touch
+                                      :relationship {:subject {:type :user :id "alice"} :relation :nonsense :resource db-obj}}])
+                 false
+                 (catch Exception _ true))
+            "a batch with a bad relationship is refused whole")
+        (is (forbidden? #(client/connect (assoc cfg :remote-peer (peer "alice-token"))))
+            "…and its good half did not land")
         (client/delete-database (assoc cfg :remote-peer (peer root-token))))
       (finally
         (stop! @s)))))

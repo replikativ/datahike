@@ -197,7 +197,10 @@ definition database {
                                    :resource  (->object (:resource relationship))})]
                     (if (every? #(may-grant? acl principal (:resource %)) updates)
                       (do (ensure-objects! conn (mapcat (juxt :subject :resource) updates))
-                          (doseq [{:keys [operation subject relation resource]} updates]
-                            (eacl/write-relationship! acl operation subject relation resource))
+                          ;; One transaction: the batch lands whole or not at all.
+                          (eacl/write-relationships!
+                           acl
+                           (for [{:keys [operation subject relation resource]} updates]
+                             (eacl/->RelationshipUpdate operation (eacl/->Relationship subject relation resource))))
                           {:status 200 :body {:written (count updates)}})
                       (routes/forbidden :grant [])))))}}]])))
