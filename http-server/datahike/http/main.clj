@@ -21,7 +21,7 @@
         :version (println "Datahike HTTP Server" tools/datahike-version)
         :run (do
                (logging/configure! config)
-               (start! config))))
+               (start! (config/assert-safe-bind! config)))))
     (catch Exception e
       (log/error :datahike/http-server-start-failed
                  (ex-message e)

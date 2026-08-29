@@ -7,7 +7,8 @@
   (:require [clojure.edn :as edn]
             [clojure.java.io :as io]
             [clojure.string :as str]
-            [clojure.tools.cli :refer [parse-opts]]))
+            [clojure.tools.cli :refer [parse-opts]])
+  (:import [java.net InetAddress]))
 
 (defn- parse-port [value]
   (let [port (parse-long value)]
@@ -60,7 +61,7 @@
 (def ^:private cli-options
   [["-f" "--config FILE" "Base EDN configuration file"]
    ["-p" "--port PORT" "HTTP port" :parse-fn parse-port]
-   ["-H" "--host HOST" "HTTP bind address" :parse-fn non-blank]
+   ["-H" "--host HOST" "HTTP bind address (unauthenticated must be loopback)" :parse-fn non-blank]
    [nil "--token TOKEN" "Shared authentication token" :parse-fn non-blank]
    [nil "--token-file FILE" "Read the shared token from FILE" :parse-fn non-blank]
    [nil "--dev-mode BOOLEAN" "Enable or disable development authentication" :parse-fn parse-bool]
@@ -139,6 +140,49 @@
           (assoc-in [:auth-db :store :backend] :file)
           (assoc-in [:auth-db :store :path] path)))
     config))
+
+(defn- loopback-addresses [host]
+  (when (and (string? host) (not (str/blank? host)))
+    (try
+      (let [addresses (seq (InetAddress/getAllByName host))]
+        (when (and addresses
+                   (every? #(.isLoopbackAddress ^InetAddress %) addresses))
+          addresses))
+      (catch Exception _
+        nil))))
+
+(defn loopback-host?
+  "True when every address `host` resolves to is a loopback address. A missing,
+   wildcard, unknown, or partly non-loopback host is not safe for an
+   unauthenticated standalone server."
+  [host]
+  (boolean (loopback-addresses host)))
+
+(defn- configured-authentication?
+  [{:keys [dev-mode auth token validator]}]
+  ;; Dev mode and upstream auth precede the token/validator chain and admit
+  ;; requests themselves, so credentials beside either bypass do not make the
+  ;; effective standalone config safe.
+  (and (not dev-mode)
+       (not= :upstream auth)
+       (or (and (string? token) (not (str/blank? token)))
+           (ifn? validator))))
+
+(defn assert-safe-bind!
+  "Refuse to expose the standalone server without effective authentication.
+   An unauthenticated loopback hostname is pinned to the numeric address that
+   was checked, so the HTTP adapter does not perform a second DNS resolution.
+   Returns the validated config."
+  [{:keys [host] :as config}]
+  (if (configured-authentication? config)
+    config
+    (if-let [addresses (loopback-addresses host)]
+      (assoc config :host (.getHostAddress ^InetAddress (first addresses)))
+      (throw (ex-info
+              (str "Refusing unauthenticated HTTP bind to " (pr-str host)
+                   "; configure a nonblank :token or :validator, or set :host to a loopback address")
+              {:type :datahike.http/unsafe-bind
+               :host host})))))
 
 (defn usage [summary]
   (str "Usage: java -jar datahike-http-server.jar [options] [config.edn]\n\n"

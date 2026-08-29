@@ -13,6 +13,38 @@
   (is (= "DATAHIKE_LOG_FORMAT" (config/env-name :log-format)))
   (is (= "DATAHIKE_AUTH_DB_PATH" (config/env-name :auth-db-path))))
 
+(deftest standalone-bind-safety
+  (testing "literal and named loopback hosts need no authentication"
+    (doseq [host ["127.0.0.1" "127.23.4.5" "::1" "localhost"]]
+      (is (config/loopback-host? host) host)
+      (let [validated (config/assert-safe-bind! {:host host :port 4444})]
+        (is (= 4444 (:port validated)) host)
+        (is (config/loopback-host? (:host validated)) host))))
+  (testing "wildcard and non-loopback binds require effective authentication"
+    (doseq [host [nil "0.0.0.0" "::" "192.0.2.1"]]
+      (let [error (try
+                    (config/assert-safe-bind! {:host host})
+                    nil
+                    (catch clojure.lang.ExceptionInfo e e))]
+        (is (= :datahike.http/unsafe-bind (:type (ex-data error))) (pr-str host))
+        (is (= host (:host (ex-data error))) (pr-str host)))))
+  (testing "a token or custom validator protects a remote bind"
+    (is (= "0.0.0.0"
+           (:host (config/assert-safe-bind! {:host "0.0.0.0" :token "secret"}))))
+    (is (= "0.0.0.0"
+           (:host (config/assert-safe-bind! {:host "0.0.0.0"
+                                             :validator (constantly {:sub "user"})})))))
+  (testing "authentication bypasses do not make a public bind safe"
+    (doseq [unsafe [{:host "0.0.0.0" :token "secret" :dev-mode true}
+                    {:host "0.0.0.0" :validator identity :dev-mode true}
+                    {:host "0.0.0.0" :auth :upstream}
+                    {:host "0.0.0.0" :auth :upstream :token "secret"}
+                    {:host "0.0.0.0" :auth :upstream :validator identity}
+                    {:host "0.0.0.0" :token ""}]]
+      (is (thrown-with-msg? clojure.lang.ExceptionInfo #"Refusing unauthenticated HTTP bind"
+                            (config/assert-safe-bind! unsafe))
+          (pr-str unsafe)))))
+
 (deftest command-line-overrides-environment-overrides-file
   (let [file (temp-file (pr-str {:port 1001
                                  :host "file-host"

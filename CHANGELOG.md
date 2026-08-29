@@ -6,6 +6,12 @@ When something is added, it's typically marked *Experimental*. When the API cont
 
 ## 0.8
 
+- **The standalone server refuses accidental public exposure.** An
+  unauthenticated server may bind only to a host whose resolved addresses are
+  all loopback. Wildcard, missing, and non-loopback hosts require a nonblank
+  `:token` or a custom `:validator`; `:dev-mode true` and `:auth :upstream` do
+  not count because they do not authenticate requests in the standalone
+  process.
 - **The standalone HTTP server owns production logging.** Its artifact now
   configures Datahike and third-party SLF4J logs at one runtime level and sends
   them to stdout. `:log-format :json`, `DATAHIKE_LOG_FORMAT=json`, or

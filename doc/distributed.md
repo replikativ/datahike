@@ -319,6 +319,7 @@ The edn configuration file looks like:
 
 ```clojure
 {:port     4444
+ :host     "127.0.0.1"
  :level    :debug
  :log-format :json
  :dev-mode true
@@ -330,6 +331,12 @@ and `log-format` selects human-readable `:text` or newline-delimited `:json`.
 `dev-mode` deactivates authentication during development and if `token` is
 provided then you need to send this token as the HTTP header "token" to
 authenticate.
+
+The standalone server refuses to bind a wildcard or non-loopback address
+without effective authentication. Configure a nonblank `:token` or a custom
+`:validator`, or use an explicit loopback host such as `:host "127.0.0.1"` for
+unauthenticated local development. `:dev-mode true` bypasses authentication and
+therefore never permits a public bind, even if a token is also present.
 
 The server exports a swagger interface on the port and can serialize requests in
 `transit-json`, `edn` and `JSON` with
