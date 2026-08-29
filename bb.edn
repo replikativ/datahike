@@ -234,6 +234,7 @@
                                       "--no-fallback"
                                       "--enable-url-protocols=http,https"
                                       "-H:IncludeResources=DATAHIKE_VERSION"
+                                      "-H:IncludeResources=DATAHIKE_GIT_SHA"
                                       "-J-Xmx5g"
                                       "-o" "dthk")))
                          (clojure "-M:native-cli"))}

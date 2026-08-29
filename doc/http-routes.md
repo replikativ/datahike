@@ -357,6 +357,20 @@ the live connections the server knows about.
 Once the planned system database provides a durable database catalog, readiness
 can also cover its eagerly reconnected entries.
 
+`GET /version` returns build and runtime metadata: the Datahike version and Git
+SHA, Konserve version, registered Konserve backends, and the server
+configuration with credential-valued fields replaced by `REDACTED`. Unlike the
+health endpoints, it requires the server's normal authentication because even
+redacted configuration exposes deployment topology. Send an `Accept` header
+such as `application/json` or `application/edn` to choose the response format.
+
+The standalone server artifact registers the built-in file, memory, and tiered
+stores plus the official S3, JDBC, DynamoDB, and Redis backends. It includes the
+PostgreSQL JDBC driver. GCS remains an opt-in dependency because of its large
+SDK graph; RocksDB and LMDB remain opt-in because they impose native and
+platform-specific runtime requirements. Embedding applications can load any
+additional Konserve backend, and `/version` reports it automatically.
+
 `datahike.http.server/start-server` and `stop-server` do the same from a
 REPL; `stop-server` releases every database the server opened, the auth
 database included. `app` takes the config and a connections atom, for hosts

@@ -19,12 +19,15 @@
                     aliases (assoc :aliases aliases))))
 
 (defn write-version-resource
-  "Writes version string to resources/DATAHIKE_VERSION for embedding in builds"
+  "Writes version and commit resources for embedding in builds."
   [repo-config]
-  (print "Writing version resource file...")
-  (fs/create-dirs "resources")
-  (spit "resources/DATAHIKE_VERSION" (version/string repo-config))
-  (println "Done. Version:" (version/string repo-config)))
+  (let [version (version/string repo-config)
+        git-sha (version/current-commit)]
+    (print "Writing build metadata resources...")
+    (fs/create-dirs "resources")
+    (spit "resources/DATAHIKE_VERSION" version)
+    (spit "resources/DATAHIKE_GIT_SHA" git-sha)
+    (println "Done. Version:" version "Git SHA:" git-sha)))
 
 (defn compile-java
   ([] (compile-java (read-edn-file "config.edn")))

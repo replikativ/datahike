@@ -2,6 +2,7 @@
   (:require
    [superv.async :refer [throw-if-exception-]]
    [clojure.core.async.impl.protocols :as async-impl]
+   [clojure.string :as str]
    [hasch.core :refer [uuid]]
    [clojure.core.async :as async]
    #?(:clj [clojure.java.io :as io])
@@ -276,7 +277,20 @@
            (let [props (doto (Properties.) (.load stream))]
              (.getProperty props "version")))))))
 
-#?(:clj (def datahike-version (or (get-version 'org.replikativ/datahike) "DEVELOPMENT")))
+#?(:clj
+   (defn- build-resource
+     [resource-name]
+     (try
+       (some-> (io/resource resource-name) slurp str/trim not-empty)
+       (catch Exception _ nil))))
+
+#?(:clj (def datahike-version
+          (or (build-resource "DATAHIKE_VERSION")
+              (get-version 'org.replikativ/datahike)
+              "DEVELOPMENT")))
+
+#?(:clj (def datahike-git-sha
+          (or (build-resource "DATAHIKE_GIT_SHA") "DEVELOPMENT")))
 
 #?(:clj (def hitchhiker-tree-version
           (try (get-version 'io.replikativ/hitchhiker-tree)

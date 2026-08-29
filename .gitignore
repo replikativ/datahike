@@ -60,6 +60,7 @@ repl-mcp.log
 npm-package/output.txt
 /.internal/
 resources/DATAHIKE_VERSION
+resources/DATAHIKE_GIT_SHA
 
 # Auto-generated code (regenerate with bb codegen-*)
 java/src-generated/
