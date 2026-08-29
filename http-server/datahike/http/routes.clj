@@ -26,6 +26,7 @@
    [datahike.api.specification :refer [api-specification ->url]]
    [datahike.api.types :as types]
    [datahike.http.middleware :as middleware]
+   [datahike.metrics :as metrics]
    [datahike.readers :refer [edn-readers]]
    [datahike.transit :as transit]
    [datahike.remote.cbor :as rcbor]
@@ -44,6 +45,7 @@
    [reitit.ring.middleware.multipart :as multipart]
    [reitit.ring.middleware.parameters :as parameters]
    [muuntaja.core :as m]
+   [replikativ.metrics :as registry]
    [replikativ.logging :as log])
   (:import [datahike.datom Datom]
            [datahike.impl.entity Entity]
@@ -75,6 +77,7 @@
 (defn forbidden
   "The 403 for `op` on `databases` (`[{:store-id :branch}]`, may be empty)."
   [op databases]
+  (metrics/http-rejected! :forbidden)
   {:status 403
    :body   {:msg     (str "Forbidden: " (name op)
                           (when (seq databases)
@@ -395,6 +398,7 @@
           {:swagger {:tags ["API"]}
            ~(if referentially-transparent? :get :post)
            {:operationId ~(str n)
+            :metric-op   ~(route-op n referentially-transparent?)
             :summary     ~(extract-first-sentence doc)
             :description ~doc
             :parameters  {:body ~(extract-input-schema args)}
@@ -405,6 +409,7 @@
   [config state]
   [["/delete-database-writer"
     {:post {:parameters  {:body [:sequential :any]},
+            :metric-op   :delete
             :summary     "Internal endpoint. DO NOT USE!"
             :no-doc      true
             :handler     (fn [{{:keys [body]} :parameters :as request}]
@@ -429,6 +434,7 @@
      :swagger {:tags ["Internal"]}}]
    ["/create-database-writer"
     {:post {:parameters  {:body [:sequential :any]},
+            :metric-op   :create
             :summary     "Internal endpoint. DO NOT USE!"
             :no-doc      true
             :handler     (fn [{{:keys [body]} :parameters :as request}]
@@ -445,6 +451,7 @@
      :swagger {:tags ["Internal"]}}]
    ["/transact!-writer"
     {:post {:parameters  {:body [:sequential :any]},
+            :metric-op   :transact
             :summary     "Internal endpoint. DO NOT USE!"
             :no-doc      true
             :handler     (fn [{{:keys [body]} :parameters :as request}]
@@ -518,24 +525,37 @@
         validators (middleware/validators config)]
     (fn [request]
       (binding [*connections* connections]
-        (let [match (reitit/match-by-path rtr (:uri request))]
-          (if-not (and match (contains? (:data match) (:request-method request)))
-            (ring-handler request)
-            (let [body (when (:body request) (read-body (:body request) max-bytes))
-                  ;; Buffered before anyone reads it: a validator that looks
-                  ;; at the body (a signed request, say) gets its own copy and
-                  ;; the route still gets the whole thing.
-                  buffered  (fn [] (cond-> request body (assoc :body (java.io.ByteArrayInputStream. body))))
-                  principal (when-not (= ::too-large body)
-                              (middleware/authenticate validators (buffered)))]
-              (cond
-                (> (or (some-> (get-in request [:headers "content-length"]) parse-long) 0) max-bytes)
-                too-large
-                (= ::too-large body) too-large
-                (and (not (get-in match [:data :public?])) (nil? principal))
-                {:status 401 :body "Not authorized"}
-                :else
-                (ring-handler (assoc (buffered) :datahike/principal principal))))))))))
+        (let [method     (:request-method request)
+              match      (reitit/match-by-path rtr (:uri request))
+              matched?   (and match (contains? (:data match) method))
+              metric-op  (get-in match [:data method :metric-op])
+              started    (when metric-op (registry/timer))
+              response
+              (if-not matched?
+                (ring-handler request)
+                (let [body (when (:body request) (read-body (:body request) max-bytes))
+                      ;; Buffered before anyone reads it: a validator that looks
+                      ;; at the body (a signed request, say) gets its own copy and
+                      ;; the route still gets the whole thing.
+                      buffered  (fn [] (cond-> request body (assoc :body (java.io.ByteArrayInputStream. body))))
+                      principal (when-not (= ::too-large body)
+                                  (middleware/authenticate validators (buffered)))]
+                  (cond
+                    (> (or (some-> (get-in request [:headers "content-length"]) parse-long) 0) max-bytes)
+                    (do (metrics/http-rejected! :too-large) too-large)
+
+                    (= ::too-large body)
+                    (do (metrics/http-rejected! :too-large) too-large)
+
+                    (and (not (get-in match [:data :public?])) (nil? principal))
+                    (do (metrics/http-rejected! :unauthorized)
+                        {:status 401 :body "Not authorized"})
+
+                    :else
+                    (ring-handler (assoc (buffered) :datahike/principal principal)))))]
+          (when started
+            (metrics/http-request! metric-op (:status response) started))
+          response)))))
 
 (defn handler
   "A Ring handler serving Datahike's HTTP API, for mounting in a host app.

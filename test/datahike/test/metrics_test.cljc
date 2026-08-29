@@ -54,6 +54,23 @@
     (is (= 2 (get series (assoc labels :outcome "retried"))))
     (is (= 1 (get series (assoc labels :outcome "failed"))))))
 
+(deftest connection-samples-omit-reservations-and-preserve-branches
+  (let [samples (dhm/connection-samples
+                 (atom {[test-id :db]           {:conn ::db :count 3}
+                        [test-id :tenant/audit] {:conn ::audit :count 1}
+                        [(random-uuid) :db]      {:conn nil :count 0}}))]
+    (is (= #{{:name   :datahike_connections
+              :type   :gauge
+              :help   "Connection leases held in this process, by database and branch."
+              :labels {:database (str test-id) :branch "db"}
+              :value  3}
+             {:name   :datahike_connections
+              :type   :gauge
+              :help   "Connection leases held in this process, by database and branch."
+              :labels {:database (str test-id) :branch "tenant/audit"}
+              :value  1}}
+           (set samples)))))
+
 #?(:clj
    (deftest a-real-transaction-records-the-durable-result
      (let [config (assoc test-config :branch :db)]

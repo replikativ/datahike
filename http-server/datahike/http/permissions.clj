@@ -167,6 +167,7 @@ definition database {
       [["/permissions/check"
         {:swagger tags
          :post {:summary    "Is a subject allowed a permission on a resource?"
+                :metric-op  :read
                 :parameters {:body :any}
                 :handler
                 (guarded
@@ -179,6 +180,7 @@ definition database {
        ["/permissions/relationships"
         {:swagger tags
          :post {:summary    "The relationships on a resource."
+                :metric-op  :read
                 :parameters {:body :any}
                 :handler
                 (guarded
@@ -193,6 +195,7 @@ definition database {
        ["/permissions/relationships!"
         {:swagger tags
          :post {:summary    "Create, touch or delete relationships."
+                :metric-op  :admin
                 :parameters {:body :any}
                 :handler
                 (guarded

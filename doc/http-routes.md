@@ -310,6 +310,35 @@ clojure -M:http-server -m datahike.http.server config.edn
  :level    :info}
 ```
 
+### Prometheus metrics
+
+The standalone server exposes Prometheus text at
+`GET /prometheus`. The dedicated path is intentional: `GET /metrics` already
+belongs to Datahike's public API and returns database/index statistics from
+`d/metrics`.
+
+The endpoint requires the server's normal authentication by default:
+
+```bash
+curl -H 'Authorization: token securerandompassword' \
+  http://localhost:4444/prometheus
+```
+
+It includes durable transaction and conflict metrics, HTTP latency and
+rejections, live connection leases, Konserve operations, and JVM/process
+samples. A scraper on an otherwise protected private network can be admitted
+without a token with `:metrics {:public? true}`. Set `:metrics false` to omit
+the endpoint and keep the standalone server from installing the process-wide
+Konserve metrics sink.
+
+Multiple servers in one JVM share one reference-counted Konserve sink; stopping
+one does not interrupt the others, and the last stop removes it. Calling
+`datahike.http.server/app` directly does not claim ownership of that global
+sink—the embedding host owns its process lifecycle—but its endpoint still
+exports Datahike, connection, and JVM metrics. An embedding host that wants
+Konserve metrics can register `replikativ.metrics.konserve/sink` with
+`konserve.metrics/add-sink!` under its own id and remove it during shutdown.
+
 `datahike.http.server/start-server` and `stop-server` do the same from a
 REPL; `stop-server` releases every database the server opened, the auth
 database included. `app` takes the config and a connections atom, for hosts
