@@ -35,7 +35,47 @@
 
    :datahike_connections
    {:type :gauge
-    :help "Connection leases held in this process, by database and branch."}})
+    :help "Connection leases held in this process, by database and branch."}
+
+   :datahike_query_seconds
+   {:type :histogram
+    :help "Sampled caller-visible query latency, by outcome and result-cache disposition; see datahike_query_errors_total for exact failures."}
+
+   :datahike_query_planning_seconds
+   {:type :histogram
+    :help "Sampled time to obtain a query plan, by outcome and plan-cache disposition; see datahike_query_planning_errors_total for exact failures."}
+
+   :datahike_query_engine_total
+   {:type :counter
+    :help "Sampled uncached query executions, by engine and execution path."}
+
+   :datahike_query_errors_total
+   {:type :counter
+    :help "Caller-visible query failures; unlike latency observations, every error is counted."}
+
+   :datahike_query_planning_errors_total
+   {:type :counter
+    :help "Query planning failures; unlike latency observations, every error is counted."}
+
+   :datahike_query_sample_every
+   {:type :gauge
+    :help "Successful queries represented by each sampled query observation."}})
+
+(def ^:dynamic *query-metrics?*
+  "Whether query, planner, and query-engine metrics are recorded.
+
+   Enabled by default. The binding exists primarily for measuring the cost of
+   instrumentation against the identical warmed query path; hosts with an
+   exceptionally latency-sensitive embedded workload may also disable it."
+  true)
+
+(def ^:dynamic *query-metrics-sample-every*
+  "Record one in this many successful queries. Errors are always recorded."
+  256)
+
+(def ^:dynamic *record-query-metrics?*
+  "Internal scope shared by one query and its planner/engine work."
+  false)
 
 (defn describe!
   "Install Datahike's metric descriptions into the process registry.
@@ -46,6 +86,7 @@
   []
   (doseq [[metric description] descriptions]
     (metrics/describe! metric description))
+  (metrics/gauge! :datahike_query_sample_every {} *query-metrics-sample-every*)
   nil)
 
 ;; Namespace loading installs descriptions; repeated loads are safe because
@@ -104,6 +145,62 @@
    `reason` is `:unauthorized`, `:forbidden`, or `:too-large`."
   [reason]
   (metrics/inc! :datahike_http_rejected_total {:reason (name reason)})
+  nil)
+
+(defn query-timer
+  "Start a query/planner timer when query metrics are enabled, otherwise nil."
+  ([] (query-timer *record-query-metrics?*))
+  ([sampled?]
+   (when (and *query-metrics?* sampled?)
+     (metrics/timer))))
+
+(defn sample-query?
+  "Whether one successful query should record its query/planner/engine trace."
+  []
+  (let [sample-every (max 1 *query-metrics-sample-every*)]
+    (and *query-metrics?*
+         (or (= 1 sample-every)
+             #?(:clj (zero? (.nextInt (java.util.concurrent.ThreadLocalRandom/current)
+                                      (int sample-every)))
+                :cljs (zero? (rand-int sample-every)))))))
+
+(defn query!
+  "Record one caller-visible query.
+
+   `result-cache` is `:hit`, `:miss`, or `:bypass`; `outcome` is `:success`
+  or `:error`. `started` comes from `query-timer`."
+  [started result-cache outcome sampled?]
+  (when (and *query-metrics?* (= :error outcome))
+    (metrics/inc! :datahike_query_errors_total
+                  {:result_cache (name result-cache)}))
+  (when (and started sampled?)
+    (metrics/observe-since! :datahike_query_seconds
+                            {:outcome      (name outcome)
+                             :result_cache (name result-cache)}
+                            started))
+  nil)
+
+(defn query-planning!
+  "Record one attempt to obtain a plan.
+
+   `plan-cache` is `:hit` or `:miss`; `outcome` is `:success` or `:error`."
+  [started plan-cache outcome]
+  (when (and *query-metrics?* (= :error outcome))
+    (metrics/inc! :datahike_query_planning_errors_total
+                  {:plan_cache (name plan-cache)}))
+  (when (and started *record-query-metrics?*)
+    (metrics/observe-since! :datahike_query_planning_seconds
+                            {:outcome    (name outcome)
+                             :plan_cache (name plan-cache)}
+                            started))
+  nil)
+
+(defn query-engine!
+  "Count an uncached engine execution on a bounded engine/path pair."
+  [engine path]
+  (when (and *query-metrics?* *record-query-metrics?*)
+    (metrics/inc! :datahike_query_engine_total
+                  {:engine (name engine) :path (name path)}))
   nil)
 
 (defn connection-samples

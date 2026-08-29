@@ -62,6 +62,7 @@
       (is (= "text/plain; version=0.0.4; charset=utf-8"
              (get-in response [:headers "content-type"])))
       (is (str/includes? body "datahike_http_request_seconds_bucket"))
+      (is (str/includes? body "datahike_query_sample_every 256"))
       (is (str/includes? body "jvm_memory_used_bytes"))
       (is (str/includes? body
                          (str "datahike_connections{branch=\"db\",database=\"" store-id "\"} 3")))
