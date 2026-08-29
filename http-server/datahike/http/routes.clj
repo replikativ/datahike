@@ -44,7 +44,9 @@
    [reitit.ring.middleware.multipart :as multipart]
    [reitit.ring.middleware.parameters :as parameters]
    [muuntaja.core :as m]
-   [replikativ.logging :as log]))
+   [replikativ.logging :as log])
+  (:import [datahike.datom Datom]
+           [datahike.impl.entity Entity]))
 
 ;; ---------------------------------------------------------------------------
 ;; Errors, secrets, authorization
@@ -80,9 +82,10 @@
 
 (defn- config-of
   "The database config behind an argument: a config map, a DB (or a history,
-   as-of, since or filtered view of one), or a connection."
+   as-of, since or filtered view of one), a connection, or an entity."
   [x]
   (cond (instance? clojure.lang.IDeref x) (config-of @x)
+        (instance? Entity x) (config-of (.-db ^Entity x))
         ;; A DB carries its konserve store under :store too, so :config first.
         (map? x) (cond (:config x)        (config-of (:config x))
                        (:origin-db x)     (config-of (:origin-db x))
@@ -96,14 +99,27 @@
     (when-let [store-id (datahike.store/store-identity store)]
       {:store-id store-id :branch (or branch :db)})))
 
+(defn- descend?
+  "Walk into collections that can carry a database — not into a DB's own
+   internals, a datom, or bytes."
+  [x]
+  (and (coll? x) (nil? (database-of x)) (not (instance? Datom x))))
+
 (defn databases
-  "The databases an API call's argument vector reaches — as positional
-   arguments or inside the map form (`:conn`, `:db`, the `:args` of a query)."
-  [args]
-  (->> (concat args (mapcat #(when (map? %) (concat [(:conn %) (:db %)] (:args %))) args))
-       (keep database-of)
-       distinct
-       vec))
+  "The databases `op` with `args` reaches. A write's first argument names its
+   database — the connection, or the map form's `:conn` — and its transaction
+   data is not walked; everything else (queries, pulls, views) is searched in
+   full, so a database nested in a query's inputs is found."
+  [op args]
+  (let [roots (case op
+                (:transact :create :delete :admin)
+                (let [x (first args)] (if (map? x) [(:conn x) (:db x) x] [x]))
+                args)]
+    (->> roots
+         (mapcat #(tree-seq descend? seq %))
+         (keep database-of)
+         distinct
+         vec)))
 
 (defn authorize
   "The 403 for `op` with `args` under `config`'s `:authorize`, or nil when the
@@ -113,7 +129,7 @@
    every authenticated caller may do everything."
   [config request op args]
   (when-let [policy (:authorize config)]
-    (let [dbs       (databases args)
+    (let [dbs       (databases op args)
           principal (:datahike/principal request)
           ask       (fn [db] (policy {:op op :principal principal :db db :payload args}))]
       (when-not (if (seq dbs) (every? ask dbs) (ask nil))
@@ -172,7 +188,7 @@
 ;; The API routes
 ;; ---------------------------------------------------------------------------
 
-(defn generic-handler [config op f]
+(defn- generic-handler [config op f]
   (fn [request]
     (try
       (let [{{body :body} :parameters
@@ -211,16 +227,16 @@
 
 (declare create-routes)
 
-(defn extract-first-sentence [doc]
+(defn- extract-first-sentence [doc]
   (str (first (str/split doc #"\.\s")) "."))
 
-(defn has-cat-operators?
+(defn- has-cat-operators?
   "Check if args list contains :cat-specific operators like [:* ...], [:+ ...], [:alt ...], etc.
    These operators are only valid in :cat schemas, not in :tuple schemas."
   [args]
   (some #(and (vector? %) (#{:* :+ :? :alt :altn} (first %))) args))
 
-(defn extract-input-schema
+(defn- extract-input-schema
   "Extract input schema from malli function schema for HTTP body validation.
    Converts [:=> [:cat Type1 Type2] ret] to [:tuple Type1 Type2]
    or [:function [:=> [:cat T1] ret] [:=> [:cat T1 T2] ret]] to [:or [:tuple T1] [:tuple T1 T2]]
@@ -266,7 +282,7 @@
 ;; and the result is immutable.
 (def ^:private cbor-registry (rcbor/server-registry))
 
-(def muuntaja-with-opts
+(def ^:private muuntaja-with-opts
   (m/create
    (-> m/default-options
        ;; `application/cbor` is an addition, not a replacement — it takes its
@@ -285,7 +301,7 @@
        (assoc-in [:formats "application/transit+json" :encoder-opts]
                  {:handlers transit/write-handlers}))))
 
-(defn default-route-opts [muuntaja-with-opts]
+(defn- default-route-opts [muuntaja-with-opts]
   {:data      {:coercion   (reitit.coercion.malli/create
                             {:compile mu/closed-schema
                              :strip-extra-keys true
@@ -309,7 +325,7 @@
 ;; This code expands and evals the server route construction given the
 ;; API specification.
 (eval
- `(defn ~'create-routes [~'config]
+ `(defn- ~'create-routes [~'config]
     ~(vec
       (for [[n {:keys [args doc supports-remote? referentially-transparent?]}] api-specification
             :when supports-remote?]
@@ -442,8 +458,13 @@
         (let [match (reitit/match-by-path rtr (:uri request))]
           (if-not (and match (contains? (:data match) (:request-method request)))
             (ring-handler request)
-            (let [principal (middleware/authenticate validators request)
-                  body      (when (:body request) (read-body (:body request) max-bytes))]
+            (let [body (when (:body request) (read-body (:body request) max-bytes))
+                  ;; Buffered before anyone reads it: a validator that looks
+                  ;; at the body (a signed request, say) gets its own copy and
+                  ;; the route still gets the whole thing.
+                  buffered  (fn [] (cond-> request body (assoc :body (java.io.ByteArrayInputStream. body))))
+                  principal (when-not (= ::too-large body)
+                              (middleware/authenticate validators (buffered)))]
               (cond
                 (> (or (some-> (get-in request [:headers "content-length"]) parse-long) 0) max-bytes)
                 too-large
@@ -451,8 +472,7 @@
                 (and (not (get-in match [:data :public?])) (nil? principal))
                 {:status 401 :body "Not authorized"}
                 :else
-                (ring-handler (cond-> (assoc request :datahike/principal principal)
-                                body (assoc :body (java.io.ByteArrayInputStream. body))))))))))))
+                (ring-handler (assoc (buffered) :datahike/principal principal))))))))))
 
 (defn handler
   "A Ring handler serving Datahike's HTTP API, for mounting in a host app.

@@ -131,6 +131,29 @@
     (testing "no prefix, and an empty or root prefix, mount at /"
       (doseq [prefix [nil "" "/"]]
         (is (= 401 (:status ((routes/handler {:token token} {:prefix prefix}) (req "/transact")))) (pr-str prefix))))
+    (testing "a validator that reads the body neither defeats the cap nor starves the route"
+      (let [seen (atom nil)
+            h    (routes/handler {:max-body-bytes 4
+                                  :validator (fn [req] (reset! seen (count (.readAllBytes ^java.io.InputStream (:body req)))) {:sub "v"})})
+            post (fn [s] (h {:request-method :post :uri "/transact" :headers {"content-type" "application/edn"}
+                             :body (java.io.ByteArrayInputStream. (.getBytes ^String s))}))]
+        (is (= 413 (:status (post "0123456789"))))
+        (is (nil? @seen) "over the cap, no validator ran")
+        (is (not= 401 (:status (post "[1]"))))
+        (is (= 3 @seen) "the validator saw the whole (buffered) body")))
+    (testing "databases are found nested in query inputs and inside entities, not in tx-data"
+      (let [cfg  {:store {:backend :memory :id (random-uuid)} :schema-flexibility :read}
+            conn (do (d/create-database cfg) (d/connect cfg))
+            db   @conn
+            id   {:store-id (get-in cfg [:store :id]) :branch :db}]
+        (try
+          (is (= [id] (routes/databases :read [[db]])))
+          (is (= [id] (routes/databases :read [{:query '[:find ?e :in $ :where [?e]] :args [db]}])))
+          (is (= [id] (routes/databases :read [(d/history db)])))
+          (is (= [id] (routes/databases :read [(d/entity db 1)])))
+          (is (= [id] (routes/databases :transact [conn [{:db db}]])))
+          (is (= [id] (routes/databases :transact [{:conn conn :tx-data [{:db db}]}])))
+          (finally (d/release conn) (d/delete-database cfg)))))
     (testing "HEAD is not a way around the gate: routes have no HEAD, so reitit answers 405"
       (is (= 405 (:status ((routes/handler {:token token}) {:request-method :head :uri "/q" :headers {}})))))
     (testing "a handler without a token and without :dev-mode admits nobody"
