@@ -9,7 +9,7 @@
    [datahike.index :as di]
    [datahike.lru :refer [lru-datom-cache-factory]]
    [datahike.tools :refer [match-vector]]
-   [environ.core :refer [env]]
+   [datahike.env :refer [env]]
    [replikativ.logging :as log])
   #?(:cljs (:require-macros [datahike.db.search :refer [lookup-strategy]]))
   #?(:clj (:import [datahike.datom Datom])))
@@ -328,5 +328,4 @@
                          :avet
                          (di/-slice (:avet db) from to :avet)
                          (di/-slice (:temporal-avet db) from to :avet))))
-
 

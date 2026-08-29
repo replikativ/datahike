@@ -3,7 +3,7 @@
             [clojure.walk :refer [postwalk]]
             [clojure.string :as str]
             [clojure.spec.alpha :as s]
-            [environ.core :refer [env]]
+            [datahike.env :refer [env]]
             [datahike.tools :as dt]
             [datahike.store :as ds]
             [datahike.index :as di]

@@ -4,7 +4,7 @@ Datahike is highly configurable to support different deployment models and use c
 
 ## Configuration Methods
 
-Datahike uses the [environ library](https://github.com/weavejester/environ) for configuration, supporting three methods:
+Datahike reads its supported runtime defaults from three sources:
 
 1. **Environment variables** (lowest priority)
 2. **Java system properties** (middle priority)
@@ -56,19 +56,27 @@ Datahike supports multiple storage backends via [konserve](https://github.com/re
 
 ### Environment Variable Configuration
 
-When using environment variables or Java system properties, name them like:
+The database-default environment variables and equivalent Java system properties
+read by this configuration layer are:
 
 properties                  | envvar
 ----------------------------|--------------------------
 datahike.store.backend      | DATAHIKE_STORE_BACKEND
-datahike.store.username     | DATAHIKE_STORE_USERNAME
+datahike.index              | DATAHIKE_INDEX
+datahike.initial.tx         | DATAHIKE_INITIAL_TX
 datahike.schema.flexibility | DATAHIKE_SCHEMA_FLEXIBILITY
 datahike.keep.history       | DATAHIKE_KEEP_HISTORY
 datahike.attribute.refs     | DATAHIKE_ATTRIBUTE_REFS
-datahike.name               | DATAHIKE_NAME
-etc.
+datahike.search.cache.size  | DATAHIKE_SEARCH_CACHE_SIZE
+datahike.store.cache.size   | DATAHIKE_STORE_CACHE_SIZE
+datahike.index.config       | DATAHIKE_INDEX_CONFIG
+datahike.max.db.caches      | DATAHIKE_MAX_DB_CACHES
+schema.meta.cache.size      | SCHEMA_META_CACHE_SIZE
+schema.write.cache.size     | SCHEMA_WRITE_CACHE_SIZE
 
-**Note**: Do not use `:` in keyword strings for environment variables—it will be added automatically.
+Only the settings listed above are collected; unrelated process environment and
+JVM properties are ignored. Do not use `:` in keyword strings for environment
+variables—it will be added automatically.
 
 ### Backend Configuration Examples
 
@@ -84,7 +92,6 @@ Ephemeral storage for testing and development:
 Environment variables:
 ```bash
 DATAHIKE_STORE_BACKEND=memory
-DATAHIKE_STORE_CONFIG='{:id #uuid "550e8400-e29b-41d4-a716-446655440021"}'
 ```
 
 #### File (Built-in)
@@ -99,7 +106,6 @@ Persistent local file storage:
 Environment variables:
 ```bash
 DATAHIKE_STORE_BACKEND=file
-DATAHIKE_STORE_CONFIG='{:path "/var/db/datahike"}'
 ```
 
 #### LMDB (External Library)
