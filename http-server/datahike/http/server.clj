@@ -31,6 +31,8 @@
 
 (def ^:private readiness-probe-key ::readiness-probe)
 
+(def ^:private default-shutdown-timeout-ms 30000)
+
 (defn- text-response [status body]
   {:status  status
    :headers {"content-type" plain-text-content-type}
@@ -199,17 +201,39 @@
         (konserve-metrics/remove-sink! metrics-sink-id))))
   nil)
 
+(defn- shutdown-timeout
+  [{:keys [shutdown-timeout-ms]}]
+  (let [timeout (or shutdown-timeout-ms default-shutdown-timeout-ms)]
+    (when-not (and (integer? timeout) (<= 0 timeout Long/MAX_VALUE))
+      (throw (ex-info ":shutdown-timeout-ms must be a nonnegative 64-bit integer"
+                      {:type :datahike.http/invalid-shutdown-timeout
+                       :shutdown-timeout-ms timeout})))
+    timeout))
+
+(defn- with-graceful-shutdown
+  [{:keys [configurator] :as config} timeout]
+  (assoc config :configurator
+         (fn [^org.eclipse.jetty.server.Server server]
+           ;; A positive Jetty stop timeout first closes the connectors to
+           ;; new work, then waits for active handlers before stopping the
+           ;; thread pool. Zero deliberately requests an immediate stop.
+           (.setStopTimeout server (long timeout))
+           (when configurator
+             (configurator server)))))
+
 (defn start-server
   "Start Jetty and acquire the standalone server's shared Konserve metric sink
    unless `:metrics` is false. `stop-server` releases both."
   [config]
   (let [config      (server-config/assert-safe-bind! config)
+        timeout     (shutdown-timeout config)
         connections (atom {})
         app         (app config connections)
         config      (::config (meta app))
+        jetty-config (with-graceful-shutdown config timeout)
         metrics-lease (when-not (false? (:metrics config))
                         (acquire-metrics-sink!))
-        server      (try (run-jetty app config)
+        server      (try (run-jetty app jetty-config)
                          (catch Throwable t
                            ;; Nothing owns what `app` opened if Jetty never started.
                            (release-metrics-sink! metrics-lease)
@@ -220,29 +244,64 @@
                                :metrics-lease metrics-lease})
     server))
 
-(defn stop-server [^org.eclipse.jetty.server.Server server]
-  (try (.stop server)
-       (finally
-         (when-let [{:keys [connections config metrics-lease]} (get @owned server)]
-           ;; Each cleanup owns an inner `finally`, so one failure cannot skip
-           ;; the remaining process-global cleanup. Forget ownership last: a
-           ;; failing permissions close must not strand the metrics lease.
-           (try
-             (routes/release-all! connections)
-             (finally
-               (try
-                 (permissions/close! config)
-                 (finally
-                   (try
-                     (release-metrics-sink! metrics-lease)
-                     (finally
-                       (swap! owned dissoc server)))))))))))
+(defn stop-server
+  "Gracefully stop `server`, then release everything the standalone server
+   opened. Resource ownership is claimed atomically so concurrent or repeated
+   calls cannot release a connection, permission database, or metric lease
+   twice."
+  [^org.eclipse.jetty.server.Server server]
+  (let [[before _] (swap-vals! owned dissoc server)
+        {:keys [connections config metrics-lease]} (get before server)]
+    (try (.stop server)
+         (finally
+           (when connections
+             ;; Each cleanup owns an inner `finally`, so one failure cannot skip
+             ;; the remaining process-global cleanup.
+             (try
+               (routes/release-all! connections)
+               (finally
+                 (try
+                   (permissions/close! config)
+                   (finally
+                     (release-metrics-sink! metrics-lease))))))))))
+
+(defn- shutdown-hook [server config]
+  (Thread.
+   ^Runnable
+   (fn []
+     (log/info :datahike/http-server-stopping
+               {:reason :jvm-shutdown
+                :timeout-ms (get config :shutdown-timeout-ms default-shutdown-timeout-ms)})
+     (try
+       (stop-server server)
+       (log/info :datahike/http-server-stopped "Server stopped")
+       (catch Throwable t
+         (log/error :datahike/http-server-stop-failed
+                    (ex-message t)
+                    {:error-class (.getName (class t))}))))
+   "datahike-http-server-shutdown"))
 
 (defn start-main!
   "Start the standalone server after its lightweight launcher has configured
-   process logging. Kept separate so config and logging load before backends."
+   process logging, and own its JVM shutdown lifecycle. Kept separate so
+   config and logging load before backends."
   [config]
   (log/info :datahike/http-server-starting {:version tools/datahike-version})
   (log/info :datahike/http-server-config {:config (routes/redact config)})
-  (start-server config)
-  (log/info :datahike/http-server-started "Server started"))
+  (let [server  (start-server (assoc config :join? false))
+        runtime (Runtime/getRuntime)
+        hook    (shutdown-hook server config)
+        hooked? (atom false)]
+    (try
+      (.addShutdownHook runtime hook)
+      (reset! hooked? true)
+      (log/info :datahike/http-server-started "Server started")
+      (.join ^org.eclipse.jetty.server.Server server)
+      (finally
+        ;; During JVM shutdown hooks may not be removed. The hook is already
+        ;; stopping this server in that case; stop-server's ownership claim
+        ;; keeps the cleanup exactly once.
+        (when @hooked?
+          (try (.removeShutdownHook runtime hook)
+               (catch IllegalStateException _)))
+        (stop-server server)))))

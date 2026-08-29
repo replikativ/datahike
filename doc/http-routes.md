@@ -346,6 +346,21 @@ exports Datahike, connection, and JVM metrics. An embedding host that wants
 Konserve metrics can register `replikativ.metrics.konserve/sink` with
 `konserve.metrics/add-sink!` under its own id and remove it during shutdown.
 
+### Graceful shutdown
+
+The standalone launcher installs a JVM shutdown hook. On SIGTERM it stops
+Jetty from accepting new requests, gives active handlers up to 30 seconds to
+finish, and only then releases Datahike connections, the permissions database,
+and the process metrics lease. Configure the grace period with
+`:shutdown-timeout-ms`, `DATAHIKE_SHUTDOWN_TIMEOUT_MS`, or
+`--shutdown-timeout-ms`; zero requests an immediate stop. Set an orchestrator's
+termination grace period above the server timeout.
+
+Calling `stop-server` provides the same ordered drain for programmatic server
+instances and is idempotent with respect to Datahike-owned resources. An
+embedding host using `datahike.http.routes/handler` still owns its HTTP and JVM
+shutdown lifecycle and should call `release-all!` after its adapter drains.
+
 ### Health checks
 
 The server exposes two unauthenticated, plain-text health endpoints for

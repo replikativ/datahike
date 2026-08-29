@@ -309,11 +309,12 @@ The old positional `path/to/config.edn` form remains supported. Run with
 CLI flags, then `DATAHIKE_*` environment variables, then the EDN file. The
 supported environment variables are `DATAHIKE_PORT`, `DATAHIKE_HOST`,
 `DATAHIKE_TOKEN`, `DATAHIKE_DEV_MODE`, `DATAHIKE_LEVEL`,
-`DATAHIKE_LOG_FORMAT`, and `DATAHIKE_AUTH_DB_PATH`. Log format is `text` by
-default and accepts `json`. `DATAHIKE_TOKEN_FILE` reads the token from a Docker or
-Kubernetes secret mount without putting it in the process environment. CLI
-uses the corresponding `--port`, `--host`, `--token`, `--dev-mode`, `--level`,
-`--log-format`, `--auth-db-path`, and `--token-file` options.
+`DATAHIKE_LOG_FORMAT`, `DATAHIKE_SHUTDOWN_TIMEOUT_MS`, and
+`DATAHIKE_AUTH_DB_PATH`. Log format is `text` by default and accepts `json`.
+`DATAHIKE_TOKEN_FILE` reads the token from a Docker or Kubernetes secret mount
+without putting it in the process environment. CLI uses the corresponding
+`--port`, `--host`, `--token`, `--dev-mode`, `--level`, `--log-format`,
+`--shutdown-timeout-ms`, `--auth-db-path`, and `--token-file` options.
 
 The edn configuration file looks like:
 
@@ -322,6 +323,7 @@ The edn configuration file looks like:
  :host     "127.0.0.1"
  :level    :debug
  :log-format :json
+ :shutdown-timeout-ms 30000
  :dev-mode true
  :token    "securerandompassword"}
 ```
@@ -337,6 +339,14 @@ without effective authentication. Configure a nonblank `:token` or a custom
 `:validator`, or use an explicit loopback host such as `:host "127.0.0.1"` for
 unauthenticated local development. `:dev-mode true` bypasses authentication and
 therefore never permits a public bind, even if a token is also present.
+
+On SIGTERM or normal JVM shutdown, the standalone launcher first stops
+accepting requests, waits up to `:shutdown-timeout-ms` (30 seconds by default)
+for active requests and transactions, and then releases its database
+connections, permissions database, and metrics lease. Set the timeout to zero
+only when an immediate stop is preferable to draining work. Container stop
+grace periods must be longer than this value so the JVM is not killed while it
+is still draining.
 
 The server exports a swagger interface on the port and can serialize requests in
 `transit-json`, `edn` and `JSON` with
