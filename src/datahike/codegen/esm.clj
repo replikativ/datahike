@@ -7,8 +7,8 @@
   plus a default export of the full API object.
 
   Why ESM matters: the previous CJS wrapper (require/module.exports) causes
-  bundlers like Vite to inject a `require` shim, which tricks environ's
-  runtime detection into believing it's running in Node.js, leading to
+  bundlers like Vite to inject a `require` shim, which can trick runtime
+  environment detection into believing it's running in Node.js, leading to
   fileExistsSync errors in the browser. ESM avoids this entirely."
   (:require [datahike.api.specification :refer [api-specification]]
             [datahike.codegen.naming :refer [assert-unique-js-names!
@@ -39,7 +39,7 @@
                 "// DO NOT EDIT - Generated from datahike.api.specification"
                 "//"
                 "// Using ESM avoids CJS require() shims that confuse runtime environment"
-                "// detection (e.g. environ checking for `require` to detect Node.js)."
+                "// detection based on the presence of `require`."
                 ""
                 "import './datahike.js';"
                 ""

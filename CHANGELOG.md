@@ -6,6 +6,12 @@ When something is added, it's typically marked *Experimental*. When the API cont
 
 ## 0.8
 
+- **Runtime defaults no longer collect the entire process environment.**
+  Datahike replaced Environ with a small reader for the database defaults it
+  actually supports. Environment variables and JVM properties keep their
+  existing names and precedence, while unrelated settings (including secrets
+  and the colliding `JAVA_HOME` / `java.home` pair) are ignored rather than
+  merged or printed in an overwrite warning.
 - **`metrics` is cheap on a large database.** Per-attribute counts (and the
   AVET and history counts derived from them) come from the indices' subtree
   counts — one O(log n) `count-slice` per attribute — instead of a walk over
