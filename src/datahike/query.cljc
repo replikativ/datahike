@@ -12,6 +12,7 @@
    [datahike.array :refer [a= wrap-comparable]]
    [datahike.impl.entity :as de]
    [datahike.lru]
+   [datahike.metrics :as dhm]
    [datahike.pull-api :as dpa]
    [datahike.query-stats :as dqs]
    [datahike.tools :as dt]
@@ -3893,7 +3894,8 @@
    so the key is run through `scale-sensitive-key` to keep BigDecimals of
    different scale distinct (Clojure `=`/`hash` would otherwise collapse them)."
   [db clauses bound-vars rules in-cards]
-  (let [schema-hash (hash (dbi/-schema db))
+  (let [started (dhm/query-timer)
+        schema-hash (hash (dbi/-schema db))
         ;; `in-cards` is part of the key: it is value-independent (shape-only),
         ;; but it distinguishes bindings the bound-var SET cannot — e.g. a tuple
         ;; [?a ?b] (#{?a ?b}, card 1) from a relation [[?a ?b]] (#{?a ?b}, many)
@@ -3909,8 +3911,11 @@
                             (conj key-prefix schema-hash)
                             (scale-sensitive-key (conj key-prefix schema-hash))))]
     (if-some [cached (get @plan-cache cache-key nil)]
-      cached
-      (let [plan (-> (create-plan-via-ir db clauses bound-vars rules in-cards)
+      (do
+        (dhm/query-planning! started :hit :success)
+        cached)
+      (try
+        (let [plan (-> (create-plan-via-ir db clauses bound-vars rules in-cards)
                      ;; per-plan compiled-program slot: the direct executor
                      ;; caches its per-[find-vars consts-keys] compilation here
                      ;; (see execute/direct-program), so repeated executions of
@@ -3922,10 +3927,14 @@
                      ;; bit-identical (an atom in meta is not serializable);
                      ;; a plan cached while OFF simply compiles uncached if
                      ;; the flag flips later.
-                     (cond-> (prepared-execution?)
-                       (vary-meta assoc :datahike.query.execute/program-cache (atom {}))))]
-        (vswap! plan-cache assoc cache-key plan)
-        plan))))
+                       (cond-> (prepared-execution?)
+                         (vary-meta assoc :datahike.query.execute/program-cache (atom {}))))]
+          (vswap! plan-cache assoc cache-key plan)
+          (dhm/query-planning! started :miss :success)
+          plan)
+        (catch #?(:clj Exception :cljs :default) e
+          (dhm/query-planning! started :miss :error)
+          (throw e))))))
 
 (def ^:dynamic *profile?* false)
 
@@ -5194,7 +5203,9 @@
                                                         wide->find)))
                                            filtered)]
                        (apply-result-transforms projected order-spec offset limit qreturnmaps)))))]
-        split-result
+        (do
+          (dhm/query-engine! :planner :cartesian)
+          split-result)
 
         (if (and use-planner?
                ;; Nested temporal wrappers (e.g. (d/history (d/as-of ...))) → legacy
@@ -5222,6 +5233,7 @@
                                       plan db qfind find-elements context-in query stats? qreturnmaps
                                       result-demand))]
               (let [result (apply-result-transforms direct-result order-spec offset limit qreturnmaps)]
+                (dhm/query-engine! :planner :direct)
                 #?(:clj
                    (when *profile?*
                      (let [t3 (System/nanoTime)]
@@ -5257,6 +5269,7 @@
                 (if columnar-result
                   (let [result (-post-process qfind columnar-result)
                         result (apply-result-transforms result order-spec offset limit qreturnmaps)]
+                    (dhm/query-engine! :planner :aggregate)
                     #?(:clj
                        (when *profile?*
                          (let [t3 (System/nanoTime)]
@@ -5271,6 +5284,7 @@
                                 plan db qfind find-elements context-in query all-vars
                                 result-arity lookup-ref-reverse-map order-spec offset limit
                                 stats? qreturnmaps)]
+                    (dhm/query-engine! :planner :relation)
                     #?(:clj
                        (when *profile?*
                          (let [t3 (System/nanoTime)]
@@ -5282,6 +5296,7 @@
         ;; Legacy engine
           (let [result (execute-legacy context-in query qfind find-elements all-vars result-arity
                                        order-spec offset limit stats? qreturnmaps)]
+            (dhm/query-engine! :base :relation)
             #?(:clj
                (when *profile?*
                  (let [t3 (System/nanoTime)]
@@ -5324,23 +5339,35 @@
                      (when (and (empty? (:rels context-in))
                                 (seq (:ops plan)))
                        (when-let [result (try-secondary-index-aggregate db plan find-elements)]
+                         (dhm/query-engine! :secondary-index :aggregate)
                          (-post-process qfind result)))))))))))))
 
 (defn raw-q [{:keys [query args stats? count-fns? offset limit order-by] :as query-map}]
-  (let [uncached (fn []
-                   #?(:clj (or (try-secondary-index-aggregate-fast query-map)
-                               (raw-q* query-map))
-                      :cljs (raw-q* query-map)))]
+  (let [sampled? (dhm/sample-query?)
+        started (dhm/query-timer sampled?)
+        recorded (fn [result-cache f]
+                   (try
+                     (let [result (f)]
+                       (dhm/query! started result-cache :success sampled?)
+                       result)
+                     (catch #?(:clj Exception :cljs :default) e
+                       (dhm/query! started result-cache :error sampled?)
+                       (throw e))))
+        uncached (fn []
+                   (binding [dhm/*record-query-metrics?* sampled?]
+                     #?(:clj (or (try-secondary-index-aggregate-fast query-map)
+                                 (raw-q* query-map))
+                        :cljs (raw-q* query-map))))]
     (if (or (not *query-result-cache?*)
             stats?
             count-fns?                         ;; counting needs re-execution; a cache hit wouldn't re-run the fn
             #?(:clj *profile?* :cljs false))
-      (uncached)
+      (recorded :bypass uncached)
       ;; Try result cache
       (let [db (first args)
             cacheable? (and (dbu/db? db) (instance? DB db))]
         (if-not cacheable?
-          (uncached)
+          (recorded :bypass uncached)
           (let [non-db-args (vec (rest args))
                 ;; scale-sensitive-key: BigDecimal args/consts of equal value but
                 ;; different scale (1.50M vs 1.500M) are `=` with equal hash in
@@ -5357,14 +5384,17 @@
                                      [query non-db-args offset limit order-by *disable-planner*])))
                 entry (result-cache-get db cache-key)]
             (if entry
-              (:result entry)
-              (let [result (uncached)
-                    where-deps (extract-query-attr-deps (:where query))
-                    find-deps  (extract-find-pull-attr-deps
-                                (:qfind (memoized-parse-query query)))
-                    attr-deps  (merge-attr-deps where-deps find-deps)]
-                (result-cache-put! db cache-key result attr-deps)
-                result))))))))
+              (recorded :hit (fn [] (:result entry)))
+              (recorded
+               :miss
+               (fn []
+                 (let [result (uncached)
+                       where-deps (extract-query-attr-deps (:where query))
+                       find-deps  (extract-find-pull-attr-deps
+                                   (:qfind (memoized-parse-query query)))
+                       attr-deps  (merge-attr-deps where-deps find-deps)]
+                   (result-cache-put! db cache-key result attr-deps)
+                   result))))))))))
 
 ;; ---------------------------------------------------------------------------
 ;; Register legacy functions for CLJS execute.cljc (breaks circular dep)

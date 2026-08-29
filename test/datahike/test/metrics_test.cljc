@@ -2,6 +2,8 @@
   (:require #?(:clj [clojure.test :refer [deftest is testing]]
                :cljs [cljs.test :refer [deftest is testing]])
             [datahike.metrics :as dhm]
+            [datahike.query :as query]
+            [datahike.lru :as lru]
             [replikativ.metrics :as metrics]
             #?(:clj [datahike.api :as d])))
 
@@ -29,10 +31,16 @@
     (is (= :counter (get-in snapshot [:datahike_transactions_total :type])))
     (is (= :counter (get-in snapshot [:datahike_transacted_datoms_total :type])))
     (is (= :counter (get-in snapshot [:datahike_head_conflicts_total :type])))
+    (is (= :histogram (get-in snapshot [:datahike_query_seconds :type])))
+    (is (= :histogram (get-in snapshot [:datahike_query_planning_seconds :type])))
+    (is (= :counter (get-in snapshot [:datahike_query_engine_total :type])))
+    (is (= :counter (get-in snapshot [:datahike_query_errors_total :type])))
+    (is (= :counter (get-in snapshot [:datahike_query_planning_errors_total :type])))
+    (is (= 256 (get-in snapshot [:datahike_query_sample_every :series {}])))
     (is (every? seq (map :help (vals snapshot)))
         "every exported Datahike metric explains what it measures")
-    (is (every? empty? (map :series (vals snapshot)))
-        "describing instruments does not manufacture samples")))
+    (is (every? empty? (map :series (vals (dissoc snapshot :datahike_query_sample_every))))
+        "only the sampling configuration gauge has a startup sample")))
 
 (deftest one-durable-batch-counts-every-transaction
   (fresh-registry!)
@@ -93,3 +101,69 @@
            (finally
              (d/release conn)
              (d/delete-database config)))))))
+
+#?(:clj
+   (deftest queries-report-result-and-plan-cache-dispositions
+     (let [config (-> test-config
+                      (assoc :branch :db)
+                      (assoc-in [:store :id] (random-uuid)))]
+       (when (d/database-exists? config)
+         (d/delete-database config))
+       (d/create-database config)
+       (let [conn (d/connect config)
+             qform '[:find ?name :where [?e :name ?name]]]
+         (try
+           (d/transact conn [{:name "Ada"}])
+           (query/clear-query-cache!)
+           (vreset! @#'query/plan-cache (lru/lru query/lru-cache-size))
+           (fresh-registry!)
+
+           (binding [dhm/*query-metrics-sample-every* 1]
+             (is (= #{["Ada"]} (d/q qform @conn)))
+             (is (= #{["Ada"]} (d/q qform @conn)))
+
+             ;; Force another execution of the same form without throwing away
+             ;; its plan, so both plan-cache dispositions are observable.
+             (query/clear-query-cache!)
+             (is (= #{["Ada"]} (d/q qform @conn))))
+
+           (let [snapshot (metrics/snapshot)
+                 query-series (get-in snapshot [:datahike_query_seconds :series])
+                 planning-series (get-in snapshot [:datahike_query_planning_seconds :series])
+                 engine-series (get-in snapshot [:datahike_query_engine_total :series])]
+             (is (= 2 (get-in query-series [{:outcome "success" :result_cache "miss"} :count])))
+             (is (= 1 (get-in query-series [{:outcome "success" :result_cache "hit"} :count])))
+             (is (= 1 (get-in planning-series [{:outcome "success" :plan_cache "miss"} :count])))
+             (is (= 1 (get-in planning-series [{:outcome "success" :plan_cache "hit"} :count])))
+             (is (= 2 (reduce + 0 (vals engine-series)))
+                 "a result-cache hit does not execute an engine"))
+
+           (finally
+             (d/release conn)
+             (d/delete-database config)))))))
+
+(deftest query-metrics-can-be-disabled-for-overhead-measurement
+  (fresh-registry!)
+  (binding [dhm/*query-metrics?* false]
+    (let [started (dhm/query-timer)]
+      (is (nil? started))
+      (dhm/query! started :bypass :success false)
+      (dhm/query-planning! started :hit :success)
+      (dhm/query-engine! :planner :direct)))
+  (let [snapshot (metrics/snapshot)]
+    (is (empty? (get-in snapshot [:datahike_query_seconds :series])))
+    (is (empty? (get-in snapshot [:datahike_query_planning_seconds :series])))
+    (is (empty? (get-in snapshot [:datahike_query_engine_total :series])))))
+
+(deftest unsampled-query-errors-are-still-counted
+  (fresh-registry!)
+  (dhm/query! nil :miss :error false)
+  (binding [dhm/*record-query-metrics?* false]
+    (dhm/query-planning! nil :miss :error))
+  (let [snapshot (metrics/snapshot)]
+    (is (= 1 (get-in snapshot [:datahike_query_errors_total
+                               :series {:result_cache "miss"}])))
+    (is (= 1 (get-in snapshot [:datahike_query_planning_errors_total
+                               :series {:plan_cache "miss"}])))
+    (is (empty? (get-in snapshot [:datahike_query_seconds :series])))
+    (is (empty? (get-in snapshot [:datahike_query_planning_seconds :series])))))
