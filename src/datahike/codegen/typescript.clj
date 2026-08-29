@@ -338,7 +338,7 @@ export interface Metrics {
   count: number;
   'avet-count': number;
   'per-attr-counts': Record<string, number>;
-  'per-entity-counts': Record<string, number>;
+  'per-entity-counts'?: Record<string, number>;
   'temporal-count'?: number;
   'temporal-avet-count'?: number;
 }

@@ -6,6 +6,13 @@ When something is added, it's typically marked *Experimental*. When the API cont
 
 ## 0.8
 
+- **`metrics` is cheap on a large database.** Per-attribute counts (and the
+  AVET and history counts derived from them) come from the indices' subtree
+  counts — one O(log n) `count-slice` per attribute — instead of a walk over
+  every datom. `:per-entity-counts`, which is inherently a full walk with one
+  map entry per entity, is no longer returned by default; ask for it with
+  `(metrics db {:per-entity-counts? true})`. **Status change:** the key is
+  optional in `SMetrics` now.
 - **Index warming is unified across the stack, and real on ClojureScript.**
   The breadth-first walk moved to persistent-sorted-set (>= 0.5.142), where
   every consumer shares it; `datahike.index.persistent-set.warm` is now the

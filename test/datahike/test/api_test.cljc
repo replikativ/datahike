@@ -873,7 +873,9 @@
         (d/transact conn {:tx-data [[:db/add 3 :parents 1]
                                     [:db/add 3 :parents 2]]})
         (d/transact conn {:tx-data [[:db/retractEntity 1]]})))
-    (compare-vals (d/metrics @conn)
+    (testing "per-entity counts are a full walk, so only on request"
+      (is (not (contains? (d/metrics @conn) :per-entity-counts))))
+    (compare-vals (d/metrics @conn {:per-entity-counts? true})
                   (cond-> {:count               5
                            :per-attr-counts     {:name     2
                                                  :age      2

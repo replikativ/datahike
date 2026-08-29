@@ -1138,27 +1138,59 @@
                         :temporal-aevt (di/empty-index index store :aevt index-config)
                         :temporal-avet (di/empty-index index store :avet index-config)}))))))
 
-(defn metrics [^DB db]
-  (let [update-count-in (fn [m ks] (update-in m ks #(if % (inc %) 1)))
-        counts-map (->> (di/-seq (.-eavt db))
-                        (reduce (fn [m ^Datom datom]
-                                  (-> m
-                                      (update-count-in [:per-attr-counts (dbi/ident-for db (.-a datom) :error-on-missing)])
-                                      (update-count-in [:per-entity-counts (.-e datom)])))
-                                {:per-attr-counts    {}
-                                 :per-entity-counts  {}}))
-        sum-indexed-attr-counts (fn [attr-counts] (->> attr-counts
-                                                       (m/filter-keys #(contains? (:db/index (.-rschema db)) %))
-                                                       vals
-                                                       (reduce + 0)))]
-    (cond-> (merge counts-map
-                   {:count (di/-count (.-eavt db))
-                    :avet-count (->> (:per-attr-counts counts-map)
-                                     sum-indexed-attr-counts)})
-      (dbi/-keep-history? db)
-      (merge {:temporal-count (di/-count (.-temporal-eavt db))
-              :temporal-avet-count (->> (di/-seq (.-temporal-eavt db))
-                                        (reduce (fn [m ^Datom datom] (update-count-in m [(dbi/ident-for db (.-a datom) :error-on-missing)]))
-                                                {})
-                                        sum-indexed-attr-counts)}))))
+(defn- attributes-of
+  "The attributes that have datoms in an AEVT-ordered `index`, found by
+   seeking past each one — O(#attributes · log n), no scan."
+  [index]
+  (loop [d   (first (di/-seq index))
+         acc (transient [])]
+    (if d
+      (let [a (.-a ^Datom d)]
+        (recur (first (di/-slice index (datom emax a nil txmax) nil :aevt))
+               (conj! acc a)))
+      (persistent! acc))))
+
+(defn- attr-counts
+  "Datoms per attribute: one O(log n) `count-slice` per attribute on the
+   AEVT-ordered `aevt` when it carries subtree counts, else a scan of `eavt`
+   (the hitchhiker tree's `-seq` assumes EAVT order)."
+  [db aevt eavt temporal?]
+  (if (di/-has-subtree-counts? aevt)
+    (let [cmp (dd/index-type->cmp-quick :aevt (not temporal?))]
+      (into {}
+            (map (fn [a]
+                   [(dbi/ident-for db a :error-on-missing)
+                    (di/-count-slice aevt (datom e0 a nil tx0) (datom emax a nil txmax) cmp)]))
+            (attributes-of aevt)))
+    (reduce (fn [m ^Datom d]
+              (update m (dbi/ident-for db (.-a d) :error-on-missing) (fnil inc 0)))
+            {}
+            (di/-seq eavt))))
+
+(defn metrics
+  "Datom counts: `:count`, `:avet-count`, `:per-attr-counts`, and with history
+   `:temporal-count` and `:temporal-avet-count` — from the indices' subtree
+   counts, so a large database answers in O(#attributes · log n). Pass
+   `{:per-entity-counts? true}` for `:per-entity-counts` as well; that one is a
+   walk over every datom, with a map entry per entity, and is off by default."
+  ([^DB db] (metrics db {}))
+  ([^DB db {:keys [per-entity-counts?]}]
+   (let [rschema  (.-rschema db)
+         indexed  (fn [counts]
+                    (->> counts
+                         (m/filter-keys #(contains? (:db/index rschema) %))
+                         vals
+                         (reduce + 0)))
+         per-attr (attr-counts db (.-aevt db) (.-eavt db) false)]
+     (cond-> {:count           (di/-count (.-eavt db))
+              :avet-count      (indexed per-attr)
+              :per-attr-counts per-attr}
+       per-entity-counts?
+       (assoc :per-entity-counts
+              (reduce (fn [m ^Datom d] (update m (.-e d) (fnil inc 0))) {} (di/-seq (.-eavt db))))
+
+       (dbi/-keep-history? db)
+       (merge (let [temporal (attr-counts db (.-temporal-aevt db) (.-temporal-eavt db) true)]
+                {:temporal-count      (di/-count (.-temporal-eavt db))
+                 :temporal-avet-count (indexed temporal)}))))))
 

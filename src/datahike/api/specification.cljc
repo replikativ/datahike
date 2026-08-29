@@ -855,15 +855,19 @@
     ;; =========================================================================
 
     metrics
-    {:args [:=> [:cat :datahike/SDB] :datahike/SMetrics]
+    {:args [:function
+            [:=> [:cat :datahike/SDB] :datahike/SMetrics]
+            [:=> [:cat :datahike/SDB [:map [:per-entity-counts? {:optional true} :boolean]]] :datahike/SMetrics]]
      :ret :datahike/SMetrics
      :categories [:diagnostics :query]
      :stability :stable
      :supports-remote? true
      :referentially-transparent? true
-     :doc "Returns database metrics (datom counts, index sizes, etc)."
+     :doc "Returns database metrics: datom counts overall, per attribute and for the indexed (AVET) attributes, plus the same for history when kept. Computed from the indices' subtree counts — O(#attributes · log n) — so it is cheap on a large database. `{:per-entity-counts? true}` adds `:per-entity-counts`, a walk over every datom with one map entry per entity."
      :examples [{:desc "Get metrics"
-                 :code "(metrics @conn)"}]
+                 :code "(metrics @conn)"}
+                {:desc "With datoms per entity (a full walk)"
+                 :code "(metrics @conn {:per-entity-counts? true})"}]
      :impl datahike.db/metrics}
 
     gc-storage
