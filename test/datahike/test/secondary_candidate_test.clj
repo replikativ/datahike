@@ -49,6 +49,25 @@
                      #(sec/candidate-page
                        (db/empty-db {}) :idx/legacy idx {} nil {:limit 10}))))))))
 
+(deftest current-value-candidate-scan-fails-closed-at-valid-time
+  (let [calls (atom [])
+        page {:candidates []
+              :precision :exact
+              :recall :complete
+              :ordering :none
+              :exhausted? true
+              :continuation nil
+              :stop-reason :source-exhausted}
+        idx (candidate-index calls page)
+        vt-db (vary-meta (db/empty-db {}) assoc
+                         :datahike/valid-at #inst "2024-02-15")]
+    (is (= :secondary/temporal-view-unsupported
+           (:type (error-data
+                   #(sec/candidate-page vt-db :idx/search idx {} nil
+                                        {:limit 10})))))
+    (is (= [] @calls)
+        "the current generation is not queried before rejection")))
+
 (deftest candidate-scan-cancellation-is-optional-and-idempotent
   (let [closed (atom [])
         idx (reify

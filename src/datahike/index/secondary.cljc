@@ -6,7 +6,6 @@
   #?(:cljs (:refer-clojure :exclude [-as-transient -persistent!]))
   (:require [replikativ.logging :as log]
             [hasch.core :as hasch]
-            [datahike.bitemporal.predicate :as bp.pred]
             [datahike.db.interface :as dbi]
             [datahike.index.entity-set :as es]))
 
@@ -102,7 +101,12 @@
 (defprotocol ISecondaryCandidateScanLifecycle
   "Optional lifecycle hook for candidate continuations that pin resources."
   (-close-candidate-scan [this continuation]
-    "Cancel an unfinished continuation. Must be idempotent."))
+     "Cancel an unfinished continuation. Must be idempotent."))
+
+(defprotocol IValidTimeCandidateScan
+  "Optional candidate API for indices that retain historical value versions."
+  (-candidate-page-at-vt [this query-spec entity-filter page-request temporal-request]
+    "Return one page from the candidate universe selected by temporal-request."))
 
 (def ^:private candidate-precisions #{:exact :recheck})
 (def ^:private candidate-recalls #{:complete :approximate})
@@ -246,7 +250,92 @@
                                {:pages pages :candidate-identities identities}))
     pages))
 
-(declare require-query-eligible! close-candidate-scan!)
+(defn- unsupported-temporal!
+  [operation index temporal-request reason]
+  (throw (ex-info
+          "This secondary generation cannot preserve the database view's temporal semantics."
+          {:type :secondary/temporal-view-unsupported
+           :operation operation
+           :index-type (some-> index type)
+           :temporal-request temporal-request
+           :reason reason})))
+
+(def ^:private valid-time-markers
+  [[:datahike/valid-at :at]
+   [:datahike/valid-between :between]
+   [:datahike/valid-during :during]])
+
+(defn- valid-selector
+  [db]
+  (let [db-meta (meta db)
+        selectors
+        (keep (fn [[marker mode]]
+                (when-let [value (get db-meta marker)]
+                  (case mode
+                    :at {:mode :at :at value}
+                    :between {:mode :between
+                              :from (nth value 0)
+                              :to (nth value 1)}
+                    :during {:mode :during
+                             :from (nth value 0)
+                             :to (nth value 1)})))
+              valid-time-markers)]
+    (when (> (count selectors) 1)
+      (unsupported-temporal! :normalize nil
+                             {:valid selectors}
+                             :ambiguous-valid-time-selectors))
+    (first selectors)))
+
+(defn secondary-view
+  "Return the committed secondary generations and normalized database-view
+   semantics for `db`. Database views implement this through the leaf
+   `db.interface/ISecondaryView` protocol, avoiding unsafe map lookup on a
+   FilteredDB and accidental loss of history/as-of/since semantics."
+  [db]
+  (when-not (satisfies? dbi/ISecondaryView db)
+    (unsupported-temporal! :secondary-view nil nil :unknown-database-view))
+  (let [{:keys [indices system filtered-depth] :as view}
+        (dbi/-secondary-view db)
+        valid (valid-selector db)
+        temporal-request (cond-> {:system (or system {:mode :current})}
+                           valid (assoc :valid valid))]
+    (cond
+      ;; A plain d/filter predicate has no equivalent secondary operation.
+      (and (pos? (or filtered-depth 0)) (nil? valid))
+      (unsupported-temporal! :secondary-view nil temporal-request
+                             :unrepresented-filtered-db)
+
+      ;; One valid-* API call creates one FilteredDB. More predicates (or
+      ;; chained valid selectors) need a compositional adapter contract.
+      (> (or filtered-depth 0) (if valid 1 0))
+      (unsupported-temporal! :secondary-view nil temporal-request
+                             :composed-filtered-db)
+
+      :else
+      (assoc view :indices indices :temporal-request temporal-request))))
+
+(defn secondary-index
+  "Resolve `idx-ident` through a DB/view without discarding view semantics."
+  [db idx-ident]
+  (get (:indices (secondary-view db)) idx-ident))
+
+(defn- temporal-request
+  [operation db index]
+  (let [raw-request (:temporal-request (secondary-view db))
+        ;; `valid-*` is intentionally evaluated over d/history so the
+        ;; predicate can see every value version, then selects the current
+        ;; system-time belief (the greatest known transaction covering the
+        ;; requested valid time). It is not a request for raw system history.
+        request (if (and (:valid raw-request)
+                         (= :history (get-in raw-request [:system :mode])))
+                  (assoc raw-request :system {:mode :current})
+                  raw-request)]
+    (when-not (= :current (get-in request [:system :mode]))
+      (unsupported-temporal! operation index request :system-time-view))
+    (when (:valid request)
+      request)))
+
+(declare require-query-eligible! close-candidate-scan! vt-stable?)
 
 (defn candidate-page
   "Read and validate one candidate page from `index`.
@@ -269,10 +358,24 @@
                      :index-ident idx-ident
                      :request page-request})))
   (let [raw-page* (atom nil)
-        request-continuation (:continuation page-request)]
+        request-continuation (:continuation page-request)
+        temporal-request (temporal-request :candidate-page db index)]
     (try
-      (let [raw-page (-candidate-page
-                      index query-spec entity-filter page-request)
+      (let [raw-page (cond
+                       (nil? temporal-request)
+                       (-candidate-page index query-spec entity-filter page-request)
+
+                       (and (= :at (get-in temporal-request [:valid :mode]))
+                            (satisfies? IValidTimeCandidateScan index))
+                       (-candidate-page-at-vt index query-spec entity-filter
+                                              page-request temporal-request)
+
+                       (vt-stable? index)
+                       (-candidate-page index query-spec entity-filter page-request)
+
+                       :else
+                       (unsupported-temporal! :candidate-page index temporal-request
+                                              :valid-time-candidate-scan))
             _ (reset! raw-page* raw-page)
             page (validate-candidate-page raw-page)]
         (when (> (count (:candidates page)) (:limit page-request))
@@ -476,14 +579,14 @@
    vector, and future query paths one correctness gate."
   [db idx-ident]
   (contains? #{nil :ready}
-             (get-in db [:schema idx-ident :db.secondary/status])))
+             (get-in (dbi/-schema db) [idx-ident :db.secondary/status])))
 
 (defn require-query-eligible!
   "Raise a typed error when an explicitly requested secondary index is not
    queryable. Optimizations with an exact primary-index fallback should use
    `query-eligible?` and decline instead."
   [db idx-ident]
-  (let [status (get-in db [:schema idx-ident :db.secondary/status])]
+  (let [status (get-in (dbi/-schema db) [idx-ident :db.secondary/status])]
     (when-not (query-eligible? db idx-ident)
       (throw (ex-info (str "Secondary index " (pr-str idx-ident)
                            " cannot answer queries while its status is "
@@ -615,39 +718,42 @@
    columns at scan time; a scriptum implementation can search per-vt-period
    segments.
 
-   Indices that DON'T implement this still produce correct results —
-   `search-with-vt` / `slice-ordered-with-vt` apply a generic post-hoc
-   filter that drops eids whose tx-vt-supersession-winner doesn't admit
-   them at the query's valid-time. The post-hoc filter is correct but
-   slower than a native `-search-at-vt`; vt-aware adapters are the
-   fast path."
+   A current-value generation cannot answer historical queries by filtering
+   entity IDs after search: the old value may be absent, and a current hit may
+   belong to a different historical value. Non-native generations therefore
+   fail closed for valid-time queries unless they declare `IValidTimeStable`."
   (-native-valid-time? [this]
     "True when this particular index generation/configuration can execute
      `-search-at-vt` natively. This is per-instance because one adapter type
      may create both temporal and ordinary generations.")
-  (-search-at-vt [this query-spec entity-filter valid-at-window]
-    "Like `-search`, but restrict to entities whose tx-meta valid-time
-     window contains `valid-at-window`. `valid-at-window` is either:
+  (-search-at-vt [this query-spec entity-filter temporal-request]
+    "Like `-search`, with temporal visibility applied before matching.
+     `temporal-request` is tagged, for example
+     `{:valid {:mode :at :at instant} :system {:mode :current}}` or a
+     `:between` / `:during` valid selector. Returns the same shape as
+     `-search` — an EntityBitSet or ColumnSlice."))
 
-       a `java.util.Date`        — point-in-vt membership semantics
-                                   (equivalent to `valid-at` rule).
-       `[from to]` — half-open  — interval semantics (equivalent to
-                                   `valid-between` rule).
-
-     Returns the same shape as `-search` — an EntityBitSet or
-     ColumnSlice."))
+(defprotocol IValidTimeOrdered
+  "Optional ordered-search capability for a valid-time-aware generation."
+  (-slice-ordered-at-vt
+    [this query-spec entity-filter attr direction limit temporal-request]
+    "Like `-slice-ordered`, with row-version visibility applied before LIMIT.
+     Core currently dispatches only point `:at` selectors because interval
+     views may expose multiple versions of one entity/attribute."))
 
 (defprotocol IValidTimeStable
   "Optional opt-out protocol for secondary indices whose data is
-   invariant under valid-time — e.g., schema-only indices, hashes,
-   content-addressed indices. When `(-vt-stable? this)` returns true,
+   semantically invariant under every valid-time selector. Storage or
+   generation immutability alone does not imply this property. When
+   `(-vt-stable? this)` returns true,
    `search-with-vt` / `slice-ordered-with-vt` bypass the post-hoc vt
    filter entirely (the data has no vt-shadowing to compute).
 
    Default for indices that don't implement this protocol: NOT
    vt-stable (the safe assumption — apply the filter)."
   (-vt-stable? [this]
-    "True iff this index's data is invariant under valid-time."))
+    "True iff this index returns the same complete result for every
+     valid-time selector. This never opts out of system-time restrictions."))
 
 (defn vt-aware?
   "True iff `index` implements and enables native valid-time search."
@@ -661,62 +767,6 @@
   (and (satisfies? IValidTimeStable index)
        (boolean (-vt-stable? index))))
 
-;; ---------------------------------------------------------------------------
-;; Post-hoc vt filter for non-vt-aware secondaries
-;;
-;; A non-vt-aware secondary returns candidates that ignore valid-time;
-;; we keep only those whose entity has at least one datom visible to
-;; `d/valid-at`'s supersession-aware predicate. The check uses the same
-;; pred `d/valid-at` builds (cached per query call), so the algorithmic
-;; cost mirrors that of routing the same query through datalog's
-;; FilteredDB.
-;;
-;; Shape dispatch:
-;;   EntityBitSet                       → new EntityBitSet, survivors only
-;;   vec of {:entity-id …}              → filterv on :entity-id (preserves
-;;                                         per-result columns like :score
-;;                                         and :distance from -slice-ordered)
-;;   nil / empty                        → returned as-is
-;;
-;; Other shapes pass through untouched with a warning; ColumnSlice
-;; support is a follow-up once a non-vt-aware ColumnSlice-returning
-;; secondary actually exists.
-
-(defn- entity-bitset? [x]
-  #?(:clj  (instance? org.roaringbitmap.longlong.Roaring64NavigableMap x)
-     :cljs (set? x)))
-
-(defn- post-filter-vt
-  "Filter a secondary's result-set to entities whose `(e, a, v)` survives
-   `d/valid-at`'s supersession-aware predicate at valid-time `at`."
-  [db at result]
-  (let [;; Build the same pred d/valid-at would install. `mk-vt-pred`
-        ;; lives in the leaf ns `datahike.bitemporal.predicate` so that
-        ;; both `api.impl` and `secondary` can require it statically —
-        ;; no cycle, no `resolve` foot-gun.
-        vt-pred  (bp.pred/mk-vt-pred at)
-        keep?    (fn [eid]
-                   ;; Enumerate the entity's datoms and ask the pred.
-                   ;; Any survivor → entity is visible. Caches inside
-                   ;; vt-pred amortize across eids.
-                   (some (fn [d] (vt-pred db d))
-                         (dbi/datoms db :eavt [eid])))]
-    (cond
-      (nil? result) result
-
-      (entity-bitset? result)
-      (es/entity-bitset-from-longs
-       (filter keep? (es/entity-bitset-seq result)))
-
-      (sequential? result)
-      (filterv (fn [m] (keep? (or (:entity-id m) (get m :entity-id)))) result)
-
-      :else
-      (do
-        (log/warn :datahike/post-filter-vt-unknown-shape
-                  {:type (type result)})
-        result))))
-
 (defn search-with-vt
   "Dispatch a secondary-index search with valid-time routing.
 
@@ -728,21 +778,19 @@
      2. index satisfies `IValidTimeStable` (returns true)
           → `-search` (no filtering needed — data is vt-invariant)
      3. otherwise
-          → `-search` then `post-filter-vt` (correct, slower fallback)
+          → fail closed; a current-value generation cannot reconstruct history
 
    No marker → `-search` directly.
 
-   The post-filter dispatches on the result shape (EntityBitSet or
-   vec-of-maps-with-:entity-id), so non-vt-aware adapters get
-   correctness for free; they only need to opt into `IValidTimeAware`
-   if perf matters."
+   Callers with an exact primary implementation should decline the secondary
+   before reaching this function when case 3 applies."
   [db index query-spec entity-filter]
-  (if-let [at (:datahike/valid-at (meta db))]
+  (if-let [request (temporal-request :search db index)]
     (cond
-      (vt-aware? index)  (-search-at-vt index query-spec entity-filter at)
+      (vt-aware? index)  (-search-at-vt index query-spec entity-filter request)
       (vt-stable? index) (-search index query-spec entity-filter)
-      :else              (post-filter-vt db at
-                                         (-search index query-spec entity-filter)))
+      :else              (unsupported-temporal! :search index request
+                                                :valid-time-search))
     (-search index query-spec entity-filter)))
 
 (defn slice-ordered-with-vt
@@ -750,16 +798,20 @@
    Used by `:retrieval`-mode plan nodes that want both eids and a
    per-result column (score/distance)."
   [db index query-spec entity-filter attr direction limit]
-  (let [unfiltered (-slice-ordered index query-spec entity-filter attr direction limit)]
-    (if-let [at (:datahike/valid-at (meta db))]
-      (cond
-        ;; Native fast path: only if the index also implements vt-aware
-        ;; slice-ordered. Stratum doesn't ship that yet (a TODO), so for
-        ;; now even vt-aware indices flow through post-filter for the
-        ;; -slice-ordered axis. Add `-slice-ordered-at-vt` when needed.
-        (vt-stable? index) unfiltered
-        :else              (post-filter-vt db at unfiltered))
-      unfiltered)))
+  (if-let [request (temporal-request :slice-ordered db index)]
+    (cond
+      (and (= :at (get-in request [:valid :mode]))
+           (vt-aware? index)
+           (satisfies? IValidTimeOrdered index))
+      (-slice-ordered-at-vt index query-spec entity-filter attr direction limit request)
+
+      (vt-stable? index)
+      (-slice-ordered index query-spec entity-filter attr direction limit)
+
+      :else
+      (unsupported-temporal! :slice-ordered index request
+                             :valid-time-ordered-search))
+    (-slice-ordered index query-spec entity-filter attr direction limit)))
 
 ;; ---------------------------------------------------------------------------
 ;; Registry: index type → lifecycle descriptor

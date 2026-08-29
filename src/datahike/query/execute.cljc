@@ -5755,7 +5755,7 @@
      [db op ctx]
      (let [mode (:mode op)
            idx-ident (:idx-ident op)
-           idx (when idx-ident (get-in db [:secondary-indices idx-ident]))
+           idx (when idx-ident (sec/secondary-index db idx-ident))
            fn-sym (:fn-sym op)
            args (:args op)
            resolved-args (resolve-external-query-args args ctx)
