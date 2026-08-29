@@ -156,6 +156,7 @@
                                ring/ring-jetty-adapter       {:mvn/version "1.15.5"}
                                metosin/reitit                {:mvn/version "0.10.1"}
                                ring-cors/ring-cors           {:mvn/version "0.1.13"}
+                               org.clojure/tools.cli         {:mvn/version "1.4.256"}
 
                                ;; secondary index integrations (for testing)
                                org.replikativ/proximum       {:mvn/version "0.1.36"}
@@ -217,6 +218,7 @@
                                       metosin/reitit          {:mvn/version "0.10.1"}
                                       ring-cors/ring-cors     {:mvn/version "0.1.13"}
                                       nrepl/bencode           {:mvn/version "1.2.0"}
+                                      org.clojure/tools.cli   {:mvn/version "1.4.256"}
                                       org.slf4j/slf4j-simple  {:mvn/version "2.0.18"}
 
                                       ;; Batteries included for the standalone server. File,

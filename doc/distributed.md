@@ -301,8 +301,18 @@ The HTTP server provides a **REST/RPC interface** for conventional integrations 
 To build locally, clone the repository and run `bb http-server-uber` to create the jar. Run the server with:
 
 ```bash
-java -jar datahike-http-server-VERSION.jar path/to/config.edn
+java -jar datahike-http-server-VERSION.jar --config path/to/config.edn
 ```
+
+The old positional `path/to/config.edn` form remains supported. Run with
+`--help` for all deployment overrides. Configuration precedence is explicit
+CLI flags, then `DATAHIKE_*` environment variables, then the EDN file. The
+supported environment variables are `DATAHIKE_PORT`, `DATAHIKE_HOST`,
+`DATAHIKE_TOKEN`, `DATAHIKE_DEV_MODE`, `DATAHIKE_LEVEL`, and
+`DATAHIKE_AUTH_DB_PATH`. `DATAHIKE_TOKEN_FILE` reads the token from a Docker or
+Kubernetes secret mount without putting it in the process environment. CLI
+uses the corresponding `--port`, `--host`, `--token`, `--dev-mode`, `--level`,
+`--auth-db-path`, and `--token-file` options.
 
 The edn configuration file looks like:
 

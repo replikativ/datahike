@@ -4,8 +4,8 @@
    eacl-backed permissions. Embedding hosts want `datahike.http.routes`."
   (:gen-class)
   (:require
-   [clojure.edn :as edn]
    [datahike.http.backends]
+   [datahike.http.config :as server-config]
    [datahike.metrics :as metrics]
    [datahike.http.permissions :as permissions]
    [datahike.http.routes :as routes]
@@ -239,9 +239,18 @@
                        (swap! owned dissoc server)))))))))))
 
 (defn -main [& args]
-  (let [{:keys [level] :as config} (edn/read-string (slurp (first args)))]
-    (when (#{:trace :debug :info nil} level)
-      (println "Datahike HTTP Server" tools/datahike-version "- https://datahike.io"))
-    (log/info :datahike/http-server-config {:config (routes/redact config)})
-    (start-server config)
-    (log/info :datahike/http-server-started "Server started")))
+  (try
+    (let [{:keys [action message config]} (server-config/resolve-config args)]
+      (case action
+        :help (println message)
+        :version (println "Datahike HTTP Server" tools/datahike-version)
+        :run (let [{:keys [level]} config]
+               (when (#{:trace :debug :info nil} level)
+                 (println "Datahike HTTP Server" tools/datahike-version "- https://datahike.io"))
+               (log/info :datahike/http-server-config {:config (routes/redact config)})
+               (start-server config)
+               (log/info :datahike/http-server-started "Server started"))))
+    (catch Exception e
+      (binding [*out* *err*]
+        (println "Datahike HTTP Server:" (ex-message e)))
+      (System/exit 1))))
