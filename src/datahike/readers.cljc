@@ -1,5 +1,5 @@
 (ns datahike.readers
-  (:require [datahike.connections :refer [get-connection *connections*]]
+  (:require [datahike.connections :refer [lookup-connection *connections*]]
             [datahike.writing :as dw]
             [datahike.datom :refer [datom] :as dd]
             #?(:cljs [datahike.db :refer [HistoricalDB AsOfDB SinceDB]])
@@ -20,7 +20,7 @@
     #?(:cljs (throw (ex-info "Reader not supported." {:type   :reader-not-supported
                                                       :raw-db raw-db}))
        :clj
-       (if-let [conn (get-connection store-id)]
+       (if-let [conn (lookup-connection store-id)]
          (let [store (:store @conn)]
            (when-let [raw-db (k/get store commit-id nil {:sync? true})]
              (dw/stored->db-read-only raw-db store)))

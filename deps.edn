@@ -141,7 +141,13 @@
                                                                            io.replikativ/konserve]}
 
                                ;; http server
-                               buddy/buddy-auth              {:mvn/version "3.0.323"}
+                               io.github.whilo/eacl {:git/url "https://github.com/whilo/eacl.git"
+                                                     :git/sha "c11c3f855a5f795a2b66a0293a64dde7fe82d898"
+                                                     :deps/root "modules/eacl-datahike"
+                                                     ;; The fork's source-only datahike backend, until
+                                                     ;; upstream dev.eacl/eacl-datahike ships a jar that
+                                                     ;; is not AOT-compiled for a newer JDK.
+                                                     :exclusions [org.replikativ/datahike]}
                                ring/ring-core                {:mvn/version "1.15.5"}
                                ring/ring-jetty-adapter       {:mvn/version "1.15.5"}
                                metosin/reitit                {:mvn/version "0.10.1"}
@@ -186,7 +192,13 @@
            :deploy {:extra-deps {slipset/deps-deploy {:mvn/version "0.2.5"}}}
 
            :http-server {:extra-paths ["http-server"]
-                         :extra-deps {buddy/buddy-auth        {:mvn/version "3.0.323"}
+                         :extra-deps {io.github.whilo/eacl {:git/url "https://github.com/whilo/eacl.git"
+                                                     :git/sha "c11c3f855a5f795a2b66a0293a64dde7fe82d898"
+                                                     :deps/root "modules/eacl-datahike"
+                                                     ;; The fork's source-only datahike backend, until
+                                                     ;; upstream dev.eacl/eacl-datahike ships a jar that
+                                                     ;; is not AOT-compiled for a newer JDK.
+                                                     :exclusions [org.replikativ/datahike]}
                                       ring/ring-core          {:mvn/version "1.15.5"}
                                       ring/ring-jetty-adapter {:mvn/version "1.15.5"}
                                       metosin/reitit          {:mvn/version "0.10.1"}

@@ -66,6 +66,10 @@ You can now use the normal `datahike.api` as usual and all operations changing a
 database, e.g. `create-database`, `delete-database` and `transact` are sent to
 the server while all other calls are executed locally.
 
+The server side is either the standalone `datahike.http.server`, or the same
+routes mounted inside your own application — see
+[Embedding the HTTP API](http-routes.md).
+
 ### AWS lambda
 
 An example setup to run Datahike distributed in AWS lambda without a server can

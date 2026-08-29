@@ -23,7 +23,7 @@
         fmt                 "application/edn"
         url                 (str url "/" end-point)
         body                (remote/edn-replace-remote-literals (pr-str data))
-        _                   (log/trace :datahike/http-request {:url url :end-point end-point :data data})
+        _                   (log/trace :datahike/http-request {:url url :end-point end-point})
         response
         (try
           (http/request (merge
@@ -43,7 +43,7 @@
                   (update data :body #(edn/read-string {:readers remote/edn-readers} %))]
               (throw (ex-info msg new-data)))))
         response            (:body response)]
-    (log/trace :datahike/http-response {:response response})
+    (log/trace :datahike/http-response {:end-point end-point})
     (edn/read-string {:readers remote/edn-readers} response)))
 
 (defn request-transit
@@ -59,7 +59,7 @@
          out      (ByteArrayOutputStream. (or max-output-buffer-size MAX_OUTPUT_BUFFER_SIZE))
          writer   (transit/writer out :json {:handlers write-handlers})
          _        (transit/write writer data)
-         _        (log/trace :datahike/http-request {:url url :end-point end-point :data data})
+         _        (log/trace :datahike/http-request {:url url :end-point end-point})
          response
          (try
            (http/request (merge
@@ -85,7 +85,7 @@
                (throw (ex-info msg new-data)))))
          response (:body response)
          response (transit/read (transit/reader response :json {:handlers read-handlers}))]
-     (log/trace :datahike/http-response {:response response})
+     (log/trace :datahike/http-response {:end-point end-point})
      response)))
 
 ;; One registry per process; immutable once built. Private: its server twin
@@ -123,7 +123,7 @@
          fmt      "application/cbor"
          url      (str url "/" end-point)
          out      (boring/encode data (rcbor/encode-opts registry))
-         _        (log/trace :datahike/http-request {:url url :end-point end-point :data data})
+         _        (log/trace :datahike/http-request {:url url :end-point end-point})
          response
          (try
            (http/request (merge
@@ -145,8 +145,12 @@
                    new-data (update data :body decode-error-body registry)]
                (throw (ex-info (or (:msg (:body new-data)) msg)
                                (or (:ex-data (:body new-data)) new-data))))))
-         response (boring/decode (:body response) (rcbor/decode-opts registry))]
-     (log/trace :datahike/http-response {:response response})
+         ;; Bound around decoding, as the generated client fns do: a database
+         ;; handle in the response carries this peer, and without it the
+         ;; writer's `:db-after` came back unable to make a remote call.
+         response (binding [remote/*remote-peer* remote-peer]
+                    (boring/decode (:body response) (rcbor/decode-opts registry)))]
+     (log/trace :datahike/http-response {:end-point end-point})
      response)))
 
 (defn request-json
@@ -158,7 +162,7 @@
          fmt      "application/json"
          url      (str url "/" end-point)
          out      (j/write-value-as-bytes data mapper)
-         _        (log/trace :datahike/http-request {:url url :end-point end-point :data data})
+         _        (log/trace :datahike/http-request {:url url :end-point end-point})
          response
          (try
            (http/request (merge
@@ -185,7 +189,7 @@
                                (or (:ex-data (:body new-data)) new-data))))))
          response (:body response)
          response (j/read-value response mapper)]
-     (log/trace :datahike/http-response {:response response})
+     (log/trace :datahike/http-response {:end-point end-point})
      response)))
 
 (defn request-json-raw [method end-point remote-peer data]
@@ -194,7 +198,7 @@
         fmt      "application/json"
         url      (str url "/" end-point)
         out      data
-        _        (log/trace :datahike/http-request {:url url :end-point end-point :data data})
+        _        (log/trace :datahike/http-request {:url url :end-point end-point})
         response
         (http/request (merge
                        {:method method
@@ -209,7 +213,7 @@
                        (when (= method :get)
                          {:query-params {"args-id" (uuid data)}})))
         response (slurp (:body response))]
-    (log/trace :datahike/http-response {:response response})
+    (log/trace :datahike/http-response {:end-point end-point})
     response))
 
 (defn get-remote [args]
@@ -228,6 +232,19 @@
                                                                        :args args}))
       (first remotes))))
 
+(defn- without-credentials
+  "The arguments as sent: a config's `:remote-peer` and `:writer` name how to
+   reach a server, and their tokens belong in the authorization header, not
+   the body."
+  [args]
+  (mapv (fn [a]
+          (if (map? a)
+            (cond-> a
+              (map? (:remote-peer a)) (update :remote-peer dissoc :token)
+              (map? (:writer a))      (update :writer dissoc :token))
+            a))
+        args))
+
 (doseq [[n {:keys [args doc supports-remote? referentially-transparent?]}] api/api-specification]
   (eval
    `(def
@@ -240,13 +257,18 @@
                             {:type     :remote-not-supported
                              :function ~(str n)}))
            `(binding [remote/*remote-peer* (get-remote ~'args)]
-              (let [format# (:format remote/*remote-peer*)]
-                (({:transit request-transit
-                   :edn     request-edn
-                   :json    request-json
-                   :cbor    request-cbor} (or format# :transit))
-                 ~(if referentially-transparent? :get :post)
-                 ~(api/->url n)
-                 remote/*remote-peer* (vec ~'args)))))))))
+              (let [format# (:format remote/*remote-peer*)
+                    ~'result (({:transit request-transit
+                                :edn     request-edn
+                                :json    request-json
+                                :cbor    request-cbor} (or format# :cbor))
+                              ~(if referentially-transparent? :get :post)
+                              ~(api/->url n)
+                              remote/*remote-peer* (without-credentials (vec ~'args)))]
+                ;; The server echoes the config's :remote-peer as it received
+                ;; it — without the token. The caller's own peer goes back on.
+                ~(if (= n 'create-database)
+                   `(cond-> ~'result (map? ~'result) (assoc :remote-peer remote/*remote-peer*))
+                   'result))))))))
 
 (defmethod remote/remote-deref :datahike-server [conn] (db conn))

@@ -13,6 +13,33 @@ When something is added, it's typically marked *Experimental*. When the API cont
   map entry per entity, is no longer returned by default; ask for it with
   `(metrics db {:per-entity-counts? true})`. **Status change:** the key is
   optional in `SMetrics` now.
+- **The HTTP API is embeddable.** *Experimental.* `datahike.http.routes/handler`
+  returns the server's routes as a Ring handler for mounting inside a host
+  application, under a prefix, sharing the host's connection registry
+  (`:connections`), with the token checked and the body capped *before*
+  anything is decoded. `datahike.http.server` is now a thin shell around it.
+  See [doc/http-routes.md](doc/http-routes.md).
+  **Breaking for embedders of the server namespace:** `datahike.http.server/app`
+  now takes `(app config connections)`; `start-server`/`stop-server`/`-main`
+  are unchanged, and `stop-server` now releases the databases the server
+  opened. The `:datahike-server` writer no longer sends its token in request
+  bodies, fails writer operations the server does not implement by name
+  instead of with a 404, and returns database handles that can make remote
+  calls.
+  **The HTTP client now defaults to CBOR** (`:format :cbor` in the remote
+  peer); pass `:format :transit`, `:edn` or `:json` to keep the old wire
+  format.
+- **The HTTP API authenticates through validators and authorizes per call.**
+  *Experimental.* Besides `:token`, the server config takes `:validator`
+  (`(fn [request] → principal | nil)`, kabel's shape — JWT/JWKS via
+  `kabel.auth.jwt`) and `:auth :upstream`; every request carries its
+  principal, and `:authorize` (`(fn [{:keys [op principal db payload]}])`) is
+  asked for each database a call reaches. With `:auth-db` the server keeps an
+  eacl permission graph (users, server admins, database owners/writers/readers)
+  in a Datahike database of its own and manages it through
+  `/permissions/*`. Token auth no longer uses buddy; the header is
+  `authorization: token <token>` as before.
+
 - **Index warming is unified across the stack, and real on ClojureScript.**
   The breadth-first walk moved to persistent-sorted-set (>= 0.5.142), where
   every consumer shares it; `datahike.index.persistent-set.warm` is now the
