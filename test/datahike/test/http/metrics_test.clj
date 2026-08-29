@@ -2,9 +2,9 @@
   (:require [clojure.set :as set]
             [clojure.string :as str]
             [clojure.test :refer [deftest is testing use-fixtures]]
-            [datahike.http.permissions :as permissions]
             [datahike.http.routes :as routes]
             [datahike.http.server :as server]
+            [datahike.http.system :as system]
             [datahike.metrics :as dhm]
             [konserve.metrics :as konserve-metrics]
             [replikativ.metrics :as metrics]))
@@ -103,13 +103,13 @@
         (when-let [instance @second-server] (server/stop-server instance))
         (when-let [instance @disabled] (server/stop-server instance))))))
 
-(deftest shutdown-releases-the-process-sink-when-permission-cleanup-fails
+(deftest shutdown-releases-the-process-sink-when-system-cleanup-fails
   (let [before   @konserve-metrics/sinks
         instance (server/start-server {:port 0 :join? false :token token})]
-    (is (thrown-with-msg? clojure.lang.ExceptionInfo #"forced permission cleanup failure"
-                          (with-redefs [permissions/close!
+    (is (thrown-with-msg? clojure.lang.ExceptionInfo #"forced system cleanup failure"
+                          (with-redefs [system/close!
                                         (fn [_]
-                                          (throw (ex-info "forced permission cleanup failure" {})))]
+                                          (throw (ex-info "forced system cleanup failure" {})))]
                             (server/stop-server instance))))
     (is (= before @konserve-metrics/sinks)
         "permission cleanup failure does not strand the process metrics sink")))

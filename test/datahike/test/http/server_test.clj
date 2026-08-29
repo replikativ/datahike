@@ -4,9 +4,9 @@
    [clojure.string :as str]
    [clojure.test :as t :refer [is deftest testing]]
    [datahike.http.client :as api]
-   [datahike.http.permissions :as permissions]
    [datahike.http.routes :as routes]
-   [datahike.http.server :as server :refer [start-server stop-server]]))
+   [datahike.http.server :as server :refer [start-server stop-server]]
+   [datahike.http.system :as system]))
 
 (defn- local-port [^org.eclipse.jetty.server.Server instance]
   (.getLocalPort ^org.eclipse.jetty.server.ServerConnector
@@ -137,7 +137,7 @@
   (let [entered       (promise)
         finish        (promise)
         releases      (atom 0)
-        permission-closes (atom 0)
+        system-closes (atom 0)
         configured-timeout (promise)
         instance      (atom nil)]
     (with-redefs [server/app
@@ -151,7 +151,7 @@
                           {:status 200 :body "unexpected"}))
                       {::server/config config}))
                   routes/release-all! (fn [_] (swap! releases inc))
-                  permissions/close! (fn [_] (swap! permission-closes inc))]
+                  system/close! (fn [_] (swap! system-closes inc))]
       (try
         (reset! instance
                 (start-server {:host "127.0.0.1"
@@ -181,7 +181,7 @@
             (is (nil? (deref stopping 2000 ::timeout)))
             (stop-server @instance)
             (is (= 1 @releases))
-            (is (= 1 @permission-closes))))
+            (is (= 1 @system-closes))))
         (finally
           (deliver finish true)
           (when @instance (stop-server @instance)))))))

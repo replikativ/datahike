@@ -58,10 +58,12 @@ When something is added, it's typically marked *Experimental*. When the API cont
   (`(fn [request] → principal | nil)`, kabel's shape — JWT/JWKS via
   `kabel.auth.jwt`) and `:auth :upstream`; every request carries its
   principal, and `:authorize` (`(fn [{:keys [op principal db payload]}])`) is
-  asked for each database a call reaches. With `:auth-db` the server keeps an
-  eacl permission graph (users, server admins, database owners/writers/readers)
-  in a Datahike database of its own and manages it through
-  `/permissions/*`. Token auth no longer uses buddy; the header is
+  asked for each database a call reaches. With `:system-db` the server keeps
+  an eacl permission graph (users, server admins, database
+  owners/writers/readers) and a redacted database catalog in a Datahike
+  database of its own. It manages permissions through `/permissions/*` and
+  lists authorized catalog entries at `GET /databases`. Token auth no longer
+  uses buddy; the header is
   `authorization: token <token>` as before.
 
 - **Index warming is unified across the stack, and real on ClojureScript.**

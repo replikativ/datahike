@@ -6,6 +6,7 @@
             [datahike.connector :as connector]
             [datahike.http.permissions :as permissions]
             [datahike.http.server :as server]
+            [datahike.http.system :as system]
             [konserve.core :as k]))
 
 (def token "health-test-token")
@@ -40,14 +41,15 @@
       (finally
         (server/stop-server instance)))))
 
-(deftest readiness-checks-live-and-auth-stores
+(deftest readiness-checks-live-and-system-stores
   (let [data-id   #uuid "7bea093b-af2e-49a2-a02e-7cf4be87a77b"
         data-conn (connector/conn-from-db {:store ::data-store})
         auth-conn (connector/conn-from-db {:store ::auth-store})
         connections (atom {[data-id :db] {:conn data-conn :count 1}})
         probed      (atom [])]
-    (with-redefs [permissions/configure
-                  #(assoc % ::permissions/conn auth-conn)
+    (with-redefs [system/configure
+                  #(assoc % system/conn-key auth-conn)
+                  permissions/configure identity
                   connector/deref-conn
                   (fn [_]
                     (throw (ex-info "readiness must not refresh a connection" {})))
@@ -55,7 +57,7 @@
                   (fn [store key not-found opts]
                     (swap! probed conj [store key not-found opts])
                     nil)]
-      (let [handler  (server/app {:token token :metrics false :auth-db {}} connections)
+      (let [handler  (server/app {:token token :metrics false :system-db {}} connections)
             response (request handler "/health/ready")]
         (is (= 200 (:status response)))
         (is (= #{::data-store ::auth-store} (set (map first @probed))))

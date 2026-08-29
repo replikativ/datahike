@@ -146,26 +146,33 @@ transaction function can be handed a connection or database value for
 another database, and that database is then part of the call. Without `:authorize`, every authenticated caller may do everything —
 today's behaviour.
 
-### Permissions in an auth database (eacl)
+### Catalog and permissions in the system database
 
 The server ships a policy so you need not write one: relationship-based
 authorization in the [SpiceDB](https://authzed.com/spicedb) model via
 [eacl](https://github.com/theronic/eacl), *situated* — the permission graph
-lives in a Datahike database of its own, `:auth-db`, and every check is a
-local read. Give the server one and it is on:
+and database catalog live in a Datahike database of their own, `:system-db`,
+and every permission check is a local read. Give the server one and both are
+on:
 
 ```clojure
 ;; config.edn
 {:port     4444
  :token    "…"                                   ; the break-glass identity
  :validator …                                    ; everyone else, by JWT
- :auth-db  {:store {:backend :file :path "/var/lib/datahike/auth"}}}
+ :system-db {:store {:backend :file :path "/var/lib/datahike/system"}}}
 ```
 
 A durable store without an `:id` gets one derived from its path, the same
 on every start; a memory store gets a fresh one per server, so two servers
-in one process never share an auth database by accident. Servers that do
-share one share its admins.
+in one process never share a system database by accident. Servers that do
+share one share its catalog and admins. New system databases retain history.
+
+Successful database creates and deletes update the catalog with the store id,
+optional `:name`, a credential-redacted config, timestamps, and the acting
+principal. `GET /databases` returns active entries filtered through the same
+`:read` permission as database calls; callers cannot discover databases they
+cannot read.
 
 The graph (`datahike.http.permissions/schema`):
 
@@ -368,16 +375,16 @@ orchestrators and load balancers:
 
 - `GET /health/live` returns 200 while the HTTP process can answer requests.
 - `GET /health/ready` returns 200 only when every database store currently held
-  by the server, plus its configured `:auth-db`, accepts a non-mutating Konserve
+  by the server, plus its configured `:system-db`, accepts a non-mutating Konserve
   read. It returns 503 otherwise.
 
 Both responses intentionally contain only `live`, `ready`, or `not ready`. The
 server log identifies a failed store and the exception class/type without
 copying exception messages or data that might contain credentials. Data
 databases are supplied dynamically by API clients today, so readiness covers
-the live connections the server knows about.
-Once the planned system database provides a durable database catalog, readiness
-can also cover its eagerly reconnected entries.
+the live connections the server knows about. A later listener/reconnection
+stage will open catalog entries at startup so readiness can cover those before
+the first API call too.
 
 `GET /version` returns build and runtime metadata: the Datahike version and Git
 SHA, Konserve version, registered Konserve backends, and the server

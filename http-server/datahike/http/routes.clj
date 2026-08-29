@@ -57,7 +57,9 @@
 
 (def ^:private secret-keys
   "Config keys whose values must never leave the server in an error body."
-  #{:token :secret :access-key :secret-key :password})
+  #{:token :secret :access-key :secret-key :password
+    :account-key :api-key :client-secret :connection-string
+    :credential :credentials :private-key :sas-token})
 
 (defn redact
   "`x` with secret-valued keys blanked, at any depth."
@@ -256,15 +258,20 @@
                   ret-body
                   (cond (= f #'api/create-database)
                         ;; remove remote-peer and re-add
-                        (assoc
-                         (apply f (local (first body)) (rest body))
-                         :remote-peer (:remote-peer (first body)))
+                        (let [created (apply f (local (first body)) (rest body))]
+                          (when-let [register! (:datahike.http.system/register! config)]
+                            (register! created (:datahike/principal request)))
+                          (assoc created :remote-peer (:remote-peer (first body))))
 
                         (= f #'api/delete-database)
                         (with-exclusive state
                           (fn []
                             (swap! (:leases state) dissoc (conn-id (first body)))
-                            (apply f (local (first body)) (rest body))))
+                            (let [local-config (local (first body))
+                                  result (apply f local-config (rest body))]
+                              (when-let [deleted! (:datahike.http.system/delete! config)]
+                                (deleted! local-config (:datahike/principal request)))
+                              result)))
 
                         (= f #'api/connect)
                         (granted! state (apply f (cons (local (first body)) (rest body))))

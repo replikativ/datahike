@@ -21,7 +21,9 @@
                                     :user     "datahike"
                                     :password "database-secret"}}
                  :nested {:access-key "access-secret"
-                          :secret-key "secret-secret"}}
+                          :secret-key "secret-secret"
+                          :client-secret "oauth-secret"
+                          :connection-string "jdbc-secret"}}
         handler (with-redefs [tools/datahike-version "1.2.3"
                               tools/datahike-git-sha "0123456789abcdef0123456789abcdef01234567"
                               tools/konserve-version "9.8.7"]
@@ -47,4 +49,6 @@
           (is (= "REDACTED" (get-in info [:config :token])))
           (is (= "REDACTED" (get-in info [:config :database :store :password])))
           (is (= "REDACTED" (get-in info [:config :nested :access-key])))
-          (is (= "REDACTED" (get-in info [:config :nested :secret-key]))))))))
+          (is (= "REDACTED" (get-in info [:config :nested :secret-key])))
+          (is (= "REDACTED" (get-in info [:config :nested :client-secret])))
+          (is (= "REDACTED" (get-in info [:config :nested :connection-string]))))))))

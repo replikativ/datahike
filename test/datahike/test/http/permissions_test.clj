@@ -30,11 +30,11 @@
                  (.getCause e) (recur (.getCause e))
                  :else false)))))
 
-(deftest permissions-in-the-auth-db
+(deftest permissions-in-the-system-db
   (let [port     23210
         url      (str "http://localhost:" port)
         config   {:token root-token :validator validator
-                  :auth-db {:store {:backend :file :path (str (fs/temp-dir! "dh-auth-") "/auth")}}}
+                  :system-db {:store {:backend :file :path (str (fs/temp-dir! "dh-system-") "/system")}}}
         start!   (fn []
                    (let [conns (atom {}) app (server/app config conns)]
                      {:server (run-jetty app {:port port :join? false}) :app app :conns conns}))
@@ -48,10 +48,15 @@
                   :schema-flexibility :read}
         db-obj   {:type :database :id (str store-id)}
         grant!   (fn [t updates] (client/request-cbor :post "permissions/relationships!" (peer t) updates))
+        list!    (fn [t] (client/request-cbor :get "databases" (peer t) (random-uuid)))
         s        (atom (start!))]
     (try
       (testing "root creates; nobody else may touch the database"
         (client/create-database (assoc cfg :remote-peer (peer root-token)))
+        (is (= [{:store-id (str store-id) :state :active}]
+               (mapv #(select-keys % [:store-id :state]) (list! root-token))))
+        (is (empty? (list! "alice-token"))
+            "the catalog does not reveal databases the caller cannot read")
         (is (forbidden? #(client/connect (assoc cfg :remote-peer (peer "alice-token"))))))
 
       (testing "root grants alice writer and bob reader in one batch; alice may read and write, not delete or grant"
@@ -60,6 +65,8 @@
                                     :relationship {:subject {:type :user :id "alice"} :relation :writer :resource db-obj}}
                                    {:operation :touch
                                     :relationship {:subject {:type :user :id "bob"} :relation :reader :resource db-obj}}])))
+        (is (= #{(str store-id)} (set (map :store-id (list! "alice-token")))))
+        (is (= #{(str store-id)} (set (map :store-id (list! "bob-token")))))
         (let [alice (client/connect (assoc cfg :remote-peer (peer "alice-token")))]
           (client/transact alice [{:name "Ada"}])
           (is (= #{["Ada"]} (client/q '[:find ?n :where [?e :name ?n]] @alice)))
@@ -116,16 +123,17 @@
             "a batch with a bad relationship is refused whole")
         (is (forbidden? #(client/connect (assoc cfg :remote-peer (peer "alice-token"))))
             "…and its good half did not land")
-        (client/delete-database (assoc cfg :remote-peer (peer root-token))))
+        (client/delete-database (assoc cfg :remote-peer (peer root-token)))
+        (is (empty? (list! root-token))
+            "soft-deleted catalog entries are absent from the public list"))
       (finally
         (stop! @s)))))
 
-(deftest memory-auth-dbs-do-not-collide
-  (let [a (permissions/configure {:token "a" :auth-db {:store {:backend :memory}}})
-        b (permissions/configure {:token "b" :auth-db {:store {:backend :memory}}})]
+(deftest memory-system-dbs-do-not-collide
+  (let [a (permissions/configure {:token "a" :system-db {:store {:backend :memory}}})
+        b (permissions/configure {:token "b" :system-db {:store {:backend :memory}}})]
     (try
       (is (not (identical? (::permissions/conn a) (::permissions/conn b))))
       (is (true? ((:authorize a) {:op :create :principal {:sub "root"} :db nil})))
       (is (true? ((:authorize b) {:op :create :principal {:sub "root"} :db nil})))
       (finally (permissions/close! a) (permissions/close! b)))))
-

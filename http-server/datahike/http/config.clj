@@ -56,8 +56,8 @@
    {:key :level        :parse parse-level}
    {:key :log-format   :parse parse-log-format}
    ;; A deployment-friendly shorthand for the full
-   ;; {:auth-db {:store {:backend :file :path ...}}} EDN shape.
-   {:key :auth-db-path :parse non-blank}])
+   ;; {:system-db {:store {:backend :file :path ...}}} EDN shape.
+   {:key :system-db-path :parse non-blank}])
 
 (defn env-name
   "The mechanical DATAHIKE_* name for a supported top-level config key."
@@ -75,7 +75,7 @@
    [nil "--shutdown-timeout-ms MILLIS" "Grace period for in-flight requests" :parse-fn parse-nonnegative-long]
    ["-l" "--level LEVEL" "Log level" :parse-fn parse-level]
    [nil "--log-format FORMAT" "Log format: text or json" :parse-fn parse-log-format]
-   [nil "--auth-db-path PATH" "File-backed permissions database path" :parse-fn non-blank]
+   [nil "--system-db-path PATH" "File-backed catalog and permissions database path" :parse-fn non-blank]
    ["-h" "--help" "Show this help"]
    [nil "--version" "Show the Datahike version"]])
 
@@ -141,12 +141,12 @@
                         e))))))
 
 (defn- normalize-shorthands [config]
-  (if (contains? config :auth-db-path)
-    (let [path (non-blank (:auth-db-path config))]
+  (if (contains? config :system-db-path)
+    (let [path (non-blank (:system-db-path config))]
       (-> config
-          (dissoc :auth-db-path)
-          (assoc-in [:auth-db :store :backend] :file)
-          (assoc-in [:auth-db :store :path] path)))
+          (dissoc :system-db-path)
+          (assoc-in [:system-db :store :backend] :file)
+          (assoc-in [:system-db :store :path] path)))
     config))
 
 (defn- loopback-addresses [host]
