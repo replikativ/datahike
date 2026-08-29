@@ -176,8 +176,11 @@
         url    (str "http://localhost:" port)]
     (try
       (is (= 200 (:status (http/get (str url "/swagger.json") {:throw false}))) "swagger.json is public")
-      (is (contains? #{200 302} (:status (http/get (str url "/") {:throw false :follow-redirects :never})))
-          "the swagger UI at / is served outside the router, untouched by the gate")
+      (is (= 200 (:status (http/get (str url "/") {:throw false})))
+          "the public operator page is the first browser experience")
+      (is (contains? #{200 302} (:status (http/get (str url "/swagger")
+                                                   {:throw false :follow-redirects :never})))
+          "Swagger UI remains public at /swagger")
       (is (= 401 (:status (http/post (str url "/transact") {:throw false :body "garbage"}))))
       (is (= 200 (:status (http/request {:method :options :uri (str url "/q") :throw false
                                          :headers {"origin" "http://localhost:8080"

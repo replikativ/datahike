@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="light dark">
+    <title>Datahike server</title>
+    <link rel="stylesheet" href="/admin/style.css">
+  </head>
+  <body>
+    <header class="topbar">
+      <a class="brand" href="https://datahike.io" target="_blank" rel="noreferrer" aria-label="Datahike website">
+        <img class="brand-logo" src="/admin/datahike-logo.svg" alt="Datahike">
+      </a>
+      <nav aria-label="Server resources">
+        <a href="/swagger">API explorer</a>
+        <a href="https://github.com/replikativ/datahike/blob/main/doc/README.md" target="_blank" rel="noreferrer">Documentation</a>
+        <a href="https://datahike.io" target="_blank" rel="noreferrer">Website</a>
+        <a href="/health/live">Liveness</a>
+      </nav>
+    </header>
+
+    <main>
+      <section class="hero" aria-labelledby="page-title">
+        <div>
+          <p class="eyebrow">Standalone server</p>
+          <h1 id="page-title">Datahike server</h1>
+          <p class="lede">Runtime status, available storage backends, and databases accessible to the authenticated principal.</p>
+        </div>
+        <dl class="runtime" aria-live="polite">
+          <div><dt>Readiness</dt><dd><span id="ready-dot" class="dot unknown"></span><span id="ready">Checking</span></dd></div>
+          <div><dt>Version</dt><dd id="version">—</dd></div>
+          <div><dt>Git</dt><dd id="git-sha">—</dd></div>
+        </dl>
+      </section>
+
+      <section id="auth-panel" class="panel auth-panel" aria-labelledby="auth-title">
+        <div>
+          <p class="eyebrow">Identity</p>
+          <h2 id="auth-title">Authenticate to inspect the catalog</h2>
+          <p>The token stays in this browser tab only and is sent as the normal <code>Authorization</code> header. Leave it blank for development or upstream authentication.</p>
+        </div>
+        <form id="auth-form">
+          <label for="token">Server token</label>
+          <div class="token-row">
+            <input id="token" name="token" type="password" autocomplete="current-password" spellcheck="false" placeholder="token">
+            <button type="submit">Connect</button>
+            <button id="clear-token" class="secondary" type="button">Clear</button>
+          </div>
+          <p id="auth-status" class="status" role="status"></p>
+        </form>
+      </section>
+
+      <section class="catalog" aria-labelledby="catalog-title">
+        <div class="section-heading">
+          <div>
+            <p class="eyebrow">System catalog</p>
+            <h2 id="catalog-title">Databases <span id="database-count" class="count">0</span></h2>
+          </div>
+          <button id="refresh" class="secondary" type="button">Refresh</button>
+        </div>
+        <p id="catalog-status" class="status" role="status">Authenticate to load the databases visible to you.</p>
+        <div id="databases" class="database-grid" aria-live="polite"></div>
+      </section>
+
+      <section class="panel endpoints" aria-labelledby="endpoints-title">
+        <div>
+          <p class="eyebrow">Operations</p>
+          <h2 id="endpoints-title">Useful endpoints</h2>
+        </div>
+        <div class="endpoint-grid">
+          <a href="/health/ready"><code>/health/ready</code><span>Storage readiness</span></a>
+          <div class="endpoint"><code>/prometheus</code><span>Prometheus metrics · authenticated</span></div>
+          <div class="endpoint"><code>/databases</code><span>Visible catalog · authenticated</span></div>
+          <div class="endpoint"><code>/version</code><span>Build and backend inventory · authenticated</span></div>
+        </div>
+      </section>
+    </main>
+
+    <footer>Datahike keeps the data API authoritative. This page is a read-only view over it.</footer>
+    <script src="/admin/app.js" defer></script>
+  </body>
+</html>
