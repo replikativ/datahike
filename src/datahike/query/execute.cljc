@@ -5683,6 +5683,37 @@
        entity-filter)))
 
 #?(:clj
+   (defn- filter-context-by-entity-set
+     "Apply an external engine's entity bitmap directly to every relation that
+      already binds `entity-var`.
+
+      Returning nil means the variable is not present and the caller must
+      introduce a new one-column relation.  Keeping the existing relation
+      avoids materialising boxed `[eid]` tuples and immediately hash-joining
+      them back into the very relation from which the bitmap was derived."
+     [ctx entity-var entity-set]
+     (let [bound? (volatile! false)
+           rels
+           (mapv
+            (fn [relation]
+              (if-let [column (get (:attrs relation) entity-var)]
+                (do
+                  (vreset! bound? true)
+                  (assoc relation :tuples
+                         (into []
+                               (filter
+                                (fn [tuple]
+                                  (let [entity-id (relation-cell tuple column)]
+                                    (and (number? entity-id)
+                                         (es/entity-bitset-contains?
+                                          entity-set (long entity-id))))))
+                               (:tuples relation))))
+                relation))
+            (:rels ctx))]
+       (when @bound?
+         (assoc ctx :rels rels)))))
+
+#?(:clj
    (defn- resolve-external-query-args
      "Resolve value-free plan arguments from scalar input relations.
 
@@ -5764,18 +5795,19 @@
                                                  (build-query-spec query-args)
                                                  entity-filter)
                              (es/entity-bitset))
-                 ;; Create relation from entity IDs
-                 eids (es/entity-bitset-seq result-bs)
-                 ;; EntityBitSet (Roaring) yields 32-bit Ints; datom entity ids
-                 ;; are Longs. Coerce so the downstream hash-join on the entity
-                 ;; var matches (Java Integer != Long even when numerically equal,
-                 ;; which silently drops every joined row).
-                 tuples (mapv (fn [eid] [(long eid)]) eids)
-                 rel (rel/->Relation
-                      {entity-var 0}
-                      (set tuples))]
-             (-> ctx
-                 (update :rels rel/collapse-rels rel)
+                 filtered-ctx
+                 (filter-context-by-entity-set ctx entity-var result-bs)
+                 result-ctx
+                 (or filtered-ctx
+                     (let [;; Introduce a relation only when the entity var is
+                           ;; genuinely new. EntityBitSet IDs are Longs on JVM;
+                           ;; keep the explicit coercion for CLJS and third-party
+                           ;; implementations of the portable abstraction.
+                           tuples (mapv (fn [eid] [(long eid)])
+                                        (es/entity-bitset-seq result-bs))
+                           rel (rel/->Relation {entity-var 0} (set tuples))]
+                       (update ctx :rels rel/collapse-rels rel)))]
+             (-> result-ctx
                  ;; Store EntityBitSet for downstream entity-group scan optimization
                  (update :entity-filters (fnil assoc {}) entity-var result-bs)))
            ;; No index found — fall back to regular function execution

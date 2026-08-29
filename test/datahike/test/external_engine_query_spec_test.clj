@@ -8,7 +8,8 @@
    [datahike.index.secondary :as sec]
    [datahike.index.entity-set :as es]
    [datahike.query :as q]
-   [datahike.query.execute]))
+   [datahike.query.execute]
+   [datahike.query.relation :as rel]))
 
 ;; External-engine clauses are a planner feature: the planner recognizes the
 ;; `:datahike/external-engine` metadata and generates the op. The base
@@ -19,6 +20,23 @@
 (use-fixtures :each (fn [f] (binding [q/*disable-planner* false] (f))))
 
 (def ^:private build @#'datahike.query.execute/external-query-spec)
+(def ^:private filter-context @#'datahike.query.execute/filter-context-by-entity-set)
+
+(deftest external-entity-filter-semijoins-bound-relations-directly
+  (let [entity-set (es/entity-bitset-from-longs [2 3])
+        entity-rel (rel/->Relation {'?e 0 '?name 1}
+                                   [[1 "a"] [2 "b"] [3 "c"]])
+        unrelated-rel (rel/->Relation {'?x 0} [[10] [11]])
+        result (filter-context {:rels [entity-rel unrelated-rel]} '?e entity-set)]
+    (is (= 2 (count (:rels result)))
+        "a bound entity variable is filtered without introducing a join relation")
+    (is (= [[2 "b"] [3 "c"]]
+           (:tuples (first (:rels result))))
+        "all payload columns on the existing relation survive the bitmap semijoin")
+    (is (= unrelated-rel (second (:rels result)))
+        "relations that do not bind the entity variable are unchanged")
+    (is (nil? (filter-context {:rels [unrelated-rel]} '?e entity-set))
+        "nil tells the executor that it must introduce a new entity relation")))
 
 ;; ---- minimal self-contained secondary index for the join regression ----
 ;; Stores the eids it is fed; -search returns all of them. Enough to exercise
