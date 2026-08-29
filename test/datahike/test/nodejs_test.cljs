@@ -33,6 +33,7 @@
             [datahike.test.query-binding-seam-test]
             ;; Background GC (start-background-gc! / gc-storage!) — portable smoke.
             [datahike.test.background-gc-test]
+            [datahike.test.metrics-test]
             ;; :db.type/store-ref — blob GC contract, content-addressing, external
             ;; blobs (mark-without-sweep). Exercises with-unreferenced-writes on cljs.
             [datahike.test.store-ref-test]
@@ -802,6 +803,7 @@
                'datahike.test.array-test
                'datahike.test.query-binding-seam-test
                'datahike.test.background-gc-test
+               'datahike.test.metrics-test
                'datahike.test.store-ref-test
                'datahike.test.async-storage-test
                'datahike.kabel.walker-test
