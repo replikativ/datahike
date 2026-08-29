@@ -313,14 +313,13 @@
   sec/ISecondaryIndex
   (-search [_ query-spec entity-filter]
     (if-let [generation @generation*]
-      (let [results (sc/search generation (query->lucene query-spec)
+      (let [{:keys [query]} (filtered-lucene-query query-spec entity-filter)
+            results (sc/search generation query
                                {:limit (or (:limit query-spec) 1000)})
             bitset (es/entity-bitset)]
         (doseq [result results
                 :let [eid (result-eid result)]
-                :when (and eid
-                           (or (nil? entity-filter)
-                               (es/entity-bitset-contains? entity-filter eid)))]
+                :when eid]
           (es/entity-bitset-add! bitset eid))
         bitset)
       (sec/-search source-index query-spec entity-filter)))
@@ -330,14 +329,13 @@
   (-can-order? [_ _ direction] (= :desc direction))
   (-slice-ordered [_ query-spec entity-filter _ _ limit]
     (if-let [generation @generation*]
-      (let [results (sc/search generation (query->lucene query-spec)
+      (let [{:keys [query]} (filtered-lucene-query query-spec entity-filter)
+            results (sc/search generation query
                                {:limit (or limit 1000)})]
         (into []
               (keep (fn [result]
                       (when-let [eid (result-eid result)]
-                        (when (or (nil? entity-filter)
-                                  (es/entity-bitset-contains? entity-filter eid))
-                          {:entity-id eid :score (:score result)}))))
+                        {:entity-id eid :score (:score result)})))
               results))
       (sec/-slice-ordered source-index query-spec entity-filter nil :desc limit)))
   (-indexed-attrs [_] attrs)
@@ -518,17 +516,17 @@
                          :query-id query-id
                          :order :doc-id
                          :fields ["_entity_id" "_attr" "_vhash"]})
-                candidates
-                (into []
-                      (keep (partial result-candidate attrs))
-                      (:candidates page))]
-            {:candidates candidates
-             :precision precision
-             :recall recall
-             :ordering ordering
-             :exhausted? (:exhausted? page)
-             :continuation (:continuation page)
-             :stop-reason (when (:exhausted? page) :source-exhausted)}))))
+                  candidates
+                  (into []
+                        (keep (partial result-candidate attrs))
+                        (:candidates page))]
+              {:candidates candidates
+               :precision precision
+               :recall recall
+               :ordering ordering
+               :exhausted? (:exhausted? page)
+               :continuation (:continuation page)
+               :stop-reason (when (:exhausted? page) :source-exhausted)}))))
 
       sec/ISecondaryScannable
       (-sec-value [_ attr eid]
