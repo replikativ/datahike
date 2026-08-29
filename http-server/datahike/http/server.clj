@@ -53,16 +53,22 @@
 (defn start-server [config]
   (let [connections (atom {})
         app         (app config connections)
-        server      (run-jetty app config)]
-    (swap! owned assoc server {:connections connections :config (::config (meta app))})
+        config      (::config (meta app))
+        server      (try (run-jetty app config)
+                         (catch Throwable t
+                           ;; Nothing owns what `app` opened if Jetty never started.
+                           (permissions/close! config)
+                           (throw t)))]
+    (swap! owned assoc server {:connections connections :config config})
     server))
 
 (defn stop-server [^org.eclipse.jetty.server.Server server]
-  (.stop server)
-  (when-let [{:keys [connections config]} (get @owned server)]
-    (swap! owned dissoc server)
-    (routes/release-all! connections)
-    (permissions/close! config)))
+  (try (.stop server)
+       (finally
+         (when-let [{:keys [connections config]} (get @owned server)]
+           (swap! owned dissoc server)
+           (routes/release-all! connections)
+           (permissions/close! config)))))
 
 (defn -main [& args]
   (let [{:keys [level] :as config} (edn/read-string (slurp (first args)))]

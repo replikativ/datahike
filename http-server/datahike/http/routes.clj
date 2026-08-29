@@ -107,20 +107,18 @@
   (and (coll? x) (nil? (database-of x)) (not (instance? Datom x))))
 
 (defn databases
-  "The databases `op` with `args` reaches. A write's first argument names its
-   database — the connection, or the map form's `:conn` — and its transaction
-   data is not walked; everything else (queries, pulls, views) is searched in
-   full, so a database nested in a query's inputs is found."
-  [op args]
-  (let [roots (case op
-                (:transact :create :delete :admin)
-                (let [x (first args)] (if (map? x) [(:conn x) (:db x) x] [x]))
-                args)]
-    (->> roots
-         (mapcat #(tree-seq descend? seq %))
-         (keep database-of)
-         distinct
-         vec)))
+  "Every database `args` reaches, searched in full — a write's transaction
+   data included, since a transaction function can be handed a connection or
+   database value for another database and read it. Handles are what the wire
+   formats decode them to (connections, DB values and their views, entities)
+   plus config maps; the walk is linear in the size of the arguments, which
+   the request already paid to decode."
+  [args]
+  (->> args
+       (mapcat #(tree-seq descend? seq %))
+       (keep database-of)
+       distinct
+       vec))
 
 (defn authorize
   "The 403 for `op` with `args` under `config`'s `:authorize`, or nil when the
@@ -130,7 +128,7 @@
    every authenticated caller may do everything."
   [config request op args]
   (when-let [policy (:authorize config)]
-    (let [dbs       (databases op args)
+    (let [dbs       (databases args)
           principal (:datahike/principal request)
           ask       (fn [db] (policy {:op op :principal principal :db db :payload args}))]
       (when-not (if (seq dbs) (every? ask dbs) (ask nil))
@@ -405,7 +403,7 @@
                            ;; the host's included. A host sharing the atom
                            ;; must treat it as such.
                            (let [cfg (dissoc (first body) :remote-peer :writer)]
-                             (or (authorize config request :delete [cfg])
+                             (or (authorize config request :delete (cons cfg (rest body)))
                                  (try
                                    (with-exclusive state
                                      (fn []
@@ -425,7 +423,7 @@
             :no-doc      true
             :handler     (fn [{{:keys [body]} :parameters :as request}]
                            (let [cfg (dissoc (first body) :remote-peer :writer)]
-                             (or (authorize config request :create [cfg])
+                             (or (authorize config request :create (cons cfg (rest body)))
                                  (try
                                    {:status 200
                                     :body   (async/<!! (apply datahike.writing/create-database
@@ -441,7 +439,7 @@
             :no-doc      true
             :handler     (fn [{{:keys [body]} :parameters :as request}]
                            (let [cfg (dissoc (first body) :remote-peer :writer)]
-                             (or (authorize config request :transact [cfg])
+                             (or (authorize config request :transact (cons cfg (rest body)))
                                  (try
                                    {:status 200
                                     :body   (with-connection cfg state

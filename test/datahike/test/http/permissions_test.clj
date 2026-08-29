@@ -119,3 +119,13 @@
         (client/delete-database (assoc cfg :remote-peer (peer root-token))))
       (finally
         (stop! @s)))))
+
+(deftest memory-auth-dbs-do-not-collide
+  (let [a (permissions/configure {:token "a" :auth-db {:store {:backend :memory}}})
+        b (permissions/configure {:token "b" :auth-db {:store {:backend :memory}}})]
+    (try
+      (is (not (identical? (::permissions/conn a) (::permissions/conn b))))
+      (is (true? ((:authorize a) {:op :create :principal {:sub "root"} :db nil})))
+      (is (true? ((:authorize b) {:op :create :principal {:sub "root"} :db nil})))
+      (finally (permissions/close! a) (permissions/close! b)))))
+

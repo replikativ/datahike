@@ -40,7 +40,9 @@
                               (str op "-writer")
                               remote-peer
                               (vec (concat [(dissoc config :writer)] args)))
-                (catch Exception e
+                ;; Throwable: an Error on this thread must still deliver, or
+                ;; the caller waits on the promise forever.
+                (catch Throwable e
                   e))))
       p))
   (-shutdown [_])

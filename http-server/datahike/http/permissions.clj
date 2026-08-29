@@ -23,7 +23,8 @@
 
    `configure` opens the database and returns the config with `:authorize`
    set; `routes` are the permission management routes, authorized by the same
-   graph."
+   graph. Servers that share one auth database share its admins: the `server`
+   object is one per auth database, not per server."
   (:require
    [clojure.string :as str]
    [datahike.api :as d]
@@ -73,10 +74,16 @@ definition database {
 (defn- open-auth-db!
   "Connect to the auth database, creating it with eacl's attributes if it is new."
   [auth-db]
-  (let [cfg (-> (merge eschema/default-config auth-db)
-                (update-in [:store :id]
-                           #(or % (java.util.UUID/nameUUIDFromBytes
-                                   (.getBytes (str "datahike-auth-db:" (get-in auth-db [:store :path])))))))]
+  (let [path (get-in auth-db [:store :path])
+        cfg  (-> (merge eschema/default-config auth-db)
+                 ;; A durable store without an id gets one from its path, the
+                 ;; same on every start; a store without a path (memory) gets
+                 ;; a fresh one, so two servers in one process do not share
+                 ;; an auth database by accident.
+                 (update-in [:store :id]
+                            #(or % (if path
+                                     (java.util.UUID/nameUUIDFromBytes (.getBytes (str "datahike-auth-db:" path)))
+                                     (random-uuid)))))]
     (if (d/database-exists? cfg)
       (d/connect cfg)
       (do (d/create-database cfg)

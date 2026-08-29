@@ -147,12 +147,19 @@
             db   @conn
             id   {:store-id (get-in cfg [:store :id]) :branch :db}]
         (try
-          (is (= [id] (routes/databases :read [[db]])))
-          (is (= [id] (routes/databases :read [{:query '[:find ?e :in $ :where [?e]] :args [db]}])))
-          (is (= [id] (routes/databases :read [(d/history db)])))
-          (is (= [id] (routes/databases :read [(d/entity db 1)])))
-          (is (= [id] (routes/databases :transact [conn [{:db db}]])))
-          (is (= [id] (routes/databases :transact [{:conn conn :tx-data [{:db db}]}])))
+          (is (= [id] (routes/databases [[db]])))
+          (is (= [id] (routes/databases [{:query '[:find ?e :in $ :where [?e]] :args [db]}])))
+          (is (= [id] (routes/databases [(d/history db)])))
+          (is (= [id] (routes/databases [(d/entity db 1)])))
+          (is (= [id] (routes/databases [conn [{:db db}]])))
+          (is (= [id] (routes/databases [{:conn conn :tx-data [{:db db}]}])))
+          (let [cfg2  {:store {:backend :memory :id (random-uuid)} :schema-flexibility :read}
+                conn2 (do (d/create-database cfg2) (d/connect cfg2))
+                id2   {:store-id (get-in cfg2 [:store :id]) :branch :db}]
+            (try
+              (is (= #{id id2} (set (routes/databases [conn [[:db.fn/call :installed-fn conn2]]])))
+                  "a handle for another database inside transaction data is part of the call")
+              (finally (d/release conn2) (d/delete-database cfg2))))
           (finally (d/release conn) (d/delete-database cfg)))))
     (testing "HEAD is not a way around the gate: routes have no HEAD, so reitit answers 405"
       (is (= 405 (:status ((routes/handler {:token token}) {:request-method :head :uri "/q" :headers {}})))))

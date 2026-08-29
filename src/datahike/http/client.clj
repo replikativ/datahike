@@ -232,6 +232,19 @@
                                                                        :args args}))
       (first remotes))))
 
+(defn- without-credentials
+  "The arguments as sent: a config's `:remote-peer` and `:writer` name how to
+   reach a server, and their tokens belong in the authorization header, not
+   the body."
+  [args]
+  (mapv (fn [a]
+          (if (map? a)
+            (cond-> a
+              (map? (:remote-peer a)) (update :remote-peer dissoc :token)
+              (map? (:writer a))      (update :writer dissoc :token))
+            a))
+        args))
+
 (doseq [[n {:keys [args doc supports-remote? referentially-transparent?]}] api/api-specification]
   (eval
    `(def
@@ -244,13 +257,18 @@
                             {:type     :remote-not-supported
                              :function ~(str n)}))
            `(binding [remote/*remote-peer* (get-remote ~'args)]
-              (let [format# (:format remote/*remote-peer*)]
-                (({:transit request-transit
-                   :edn     request-edn
-                   :json    request-json
-                   :cbor    request-cbor} (or format# :cbor))
-                 ~(if referentially-transparent? :get :post)
-                 ~(api/->url n)
-                 remote/*remote-peer* (vec ~'args)))))))))
+              (let [format# (:format remote/*remote-peer*)
+                    ~'result (({:transit request-transit
+                                :edn     request-edn
+                                :json    request-json
+                                :cbor    request-cbor} (or format# :cbor))
+                              ~(if referentially-transparent? :get :post)
+                              ~(api/->url n)
+                              remote/*remote-peer* (without-credentials (vec ~'args)))]
+                ;; The server echoes the config's :remote-peer as it received
+                ;; it — without the token. The caller's own peer goes back on.
+                ~(if (= n 'create-database)
+                   `(cond-> ~'result (map? ~'result) (assoc :remote-peer remote/*remote-peer*))
+                   'result))))))))
 
 (defmethod remote/remote-deref :datahike-server [conn] (db conn))

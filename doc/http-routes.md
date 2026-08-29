@@ -68,7 +68,8 @@ config map — authentication (`:token`, `:validator`, `:dev-mode`,
 The handler adds no middleware beyond what the API itself needs — CORS,
 static files, TLS and the rest of your application are yours. It carries
 its connections atom as metadata: `(routes/release-all! handler)` releases
-everything the routes opened when the host shuts down.
+every connection in that atom — the routes' and, if you shared yours, the
+host's own — so call it when the process shuts down.
 
 ### The request contract
 
@@ -140,7 +141,9 @@ which the clients raise as an exception.
 | `:admin` | `gc-storage` |
 
 `db` is `{:store-id uuid :branch keyword}`; `payload` is the call's argument
-vector. Without `:authorize`, every authenticated caller may do everything —
+vector. The arguments are searched in full, transaction data included: a
+transaction function can be handed a connection or database value for
+another database, and that database is then part of the call. Without `:authorize`, every authenticated caller may do everything —
 today's behaviour.
 
 ### Permissions in an auth database (eacl)
@@ -158,6 +161,11 @@ local read. Give the server one and it is on:
  :validator …                                    ; everyone else, by JWT
  :auth-db  {:store {:backend :file :path "/var/lib/datahike/auth"}}}
 ```
+
+A durable store without an `:id` gets one derived from its path, the same
+on every start; a memory store gets a fresh one per server, so two servers
+in one process never share an auth database by accident. Servers that do
+share one share its admins.
 
 The graph (`datahike.http.permissions/schema`):
 
@@ -268,8 +276,8 @@ your service — or give that client a `:self` writer.
 
 ## Security
 
-- Tokens travel in the `authorization` header only: the writer client strips
-  its credentials from what it sends, the server strips `:writer` and
+- Tokens travel in the `authorization` header only: the clients strip their
+  credentials from the configs they send, the server strips `:writer` and
   `:remote-peer` from any config it receives, and neither logs request
   bodies.
 - Error bodies (500) carry the exception's message and `ex-data` with
