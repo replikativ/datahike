@@ -3,6 +3,7 @@
             [replikativ.logging :as log]
             [datahike.core]
             [datahike.config :as dc]
+            [datahike.metrics :as metrics]
             [datahike.writing :as w]
             [datahike.tx-preds :as txp]
             [datahike.gc :as gc]
@@ -577,6 +578,10 @@
                                  :as commit-db} (<?- (w/commit! db merge-parents false last-cid head-rev))
                                 commit-time (- (get-time-ms) start-ts)]
                             (log/trace :datahike/commit-time {:duration-ms commit-time})
+                            (metrics/commit! (:config db)
+                                             commit-time
+                                             (count txs)
+                                             (reduce + 0 (map (comp count :tx-data first) txs)))
                             ;; The head is durable now, so the background build's
                             ;; pin can be released. Do this BEFORE publishing
                             ;; `commit-db` through the connection or callback:
@@ -667,17 +672,21 @@
                                              (not @writer-down?)
                                              (put! retry-queue
                                                    (assoc invocation :datahike/attempt attempt)))
-                                      (log/trace :datahike/head-conflict-retry {:op op :attempt attempt})
-                                      (put! callback
-                                            (ex-info (str "The branch head moved while this transaction was being "
-                                                          "prepared, so it was NOT applied — another writer committed "
-                                                          "first. Nothing was lost and nothing partially applied; "
-                                                          "re-read and transact again.")
-                                                     {:type    :datahike/head-conflict
-                                                      :branch  (:branch (:config db))
-                                                      :op      op
-                                                      :attempt attempt
-                                                      :error   e}))))))
+                                      (do
+                                        (metrics/head-conflict! (:config db) :retried)
+                                        (log/trace :datahike/head-conflict-retry {:op op :attempt attempt}))
+                                      (do
+                                        (metrics/head-conflict! (:config db) :failed)
+                                        (put! callback
+                                              (ex-info (str "The branch head moved while this transaction was being "
+                                                            "prepared, so it was NOT applied — another writer committed "
+                                                            "first. Nothing was lost and nothing partially applied; "
+                                                            "re-read and transact again.")
+                                                       {:type    :datahike/head-conflict
+                                                        :branch  (:branch (:config db))
+                                                        :op      op
+                                                        :attempt attempt
+                                                        :error   e})))))))
                               :else
                               (do
                             ;; Close the queues BEFORE delivering the failed

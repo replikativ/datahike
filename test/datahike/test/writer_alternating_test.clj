@@ -18,10 +18,15 @@
             [datahike.db.transaction :as dbtx]
             [datahike.index.secondary :as sec]
             [datahike.index.secondary.stratum]
+            [datahike.metrics :as dhm]
             [datahike.writer :as w]
             [datahike.tx-preds :as txp]
             [datahike.writing :as dw]
-            [konserve.core :as k]))
+            [konserve.core :as k]
+            [replikativ.metrics :as metrics]))
+
+(defn- metric-value [metric labels]
+  (get-in (metrics/snapshot) [metric :series labels] 0))
 
 ;; A second `d/connect` with the same config normally returns the SAME cached
 ;; Connection out of the in-JVM registry — one writer, no race, nothing to test.
@@ -400,18 +405,23 @@
       (fresh-db! c)
       (let [{:keys [conn] :as p} (connect-as-separate-process c)]
         (try
-          (let [orig dw/commit!
-                left (atom 1)
-                r    (with-redefs [dw/commit!
-                                   (fn [db & args]
-                                     (if (pos? @left)
-                                       (do (swap! left dec)
-                                           (throw (ex-info "forced" {:type :konserve/revision-mismatch :key :db})))
-                                       (apply orig db args)))]
-                       (d/transact conn [{:db/id -1 :name "a"}]))]
+          (let [orig   dw/commit!
+                left   (atom 1)
+                labels (assoc (dhm/db-labels c) :outcome "retried")
+                before (metric-value :datahike_head_conflicts_total labels)
+                r      (with-redefs [dw/commit!
+                                     (fn [db & args]
+                                       (if (pos? @left)
+                                         (do (swap! left dec)
+                                             (throw (ex-info "forced" {:type :konserve/revision-mismatch :key :db})))
+                                         (apply orig db args)))]
+                         (d/transact conn [{:db/id -1 :name "a"}]))]
             (is (map? r) "the caller got a tx-report, not an error")
             (is (= ["a"] (map :v (d/datoms @conn :aevt :name)))
-                "and the transaction really landed"))
+                "and the transaction really landed")
+            (is (= (inc before)
+                   (metric-value :datahike_head_conflicts_total labels))
+                "the invocation is counted once as retried, not once per attempt"))
           (finally (release-separate-process p)))))))
 
 (deftest a-replayed-batch-keeps-its-order
@@ -493,16 +503,21 @@
       (fresh-db! c)
       (let [{:keys [conn] :as p} (connect-as-separate-process c)]
         (try
-          (let [calls (atom 0)
-                r     (with-redefs [dw/commit! (fn [& _]
-                                                 (swap! calls inc)
-                                                 (throw (ex-info "forced"
-                                                                 {:type :konserve/revision-mismatch :key :db})))]
-                        (try (d/transact conn [{:db/id -1 :name "x"}]) ::committed
-                             (catch Throwable e (ex-data e))))]
+          (let [calls  (atom 0)
+                labels (assoc (dhm/db-labels c) :outcome "failed")
+                before (metric-value :datahike_head_conflicts_total labels)
+                r      (with-redefs [dw/commit! (fn [& _]
+                                                  (swap! calls inc)
+                                                  (throw (ex-info "forced"
+                                                                  {:type :konserve/revision-mismatch :key :db})))]
+                         (try (d/transact conn [{:db/id -1 :name "x"}]) ::committed
+                              (catch Throwable e (ex-data e))))]
             (is (= 1 @calls) "exactly one commit attempt: no replay")
             (is (= :datahike/head-conflict (:type r)))
-            (is (= 1 (:attempt r))))
+            (is (= 1 (:attempt r)))
+            (is (= (inc before)
+                   (metric-value :datahike_head_conflicts_total labels))
+                "the invocation is counted as failed when its caller gets the conflict"))
           (finally (release-separate-process p))))))
 
   (testing "an out-of-range value is refused rather than coerced"
