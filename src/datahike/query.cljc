@@ -460,6 +460,22 @@
          (vswap! form-analysis-cache assoc k v)
          v))))
 
+(def ^:private extra-ks
+  [:offset :limit :order-by :stats? :count-fns? :settings :cancel])
+
+(defn- extras-in-query
+  "Pick the non-Datalog options out of a normalized query map. A vector query
+   collects everything following a key into a vector, so `:limit 5` arrives as
+   `[5]` and `:order-by [?v :desc]` as `[[?v :desc]]`; unwrap that so options
+   have the same shape as options supplied in a map query."
+  [query]
+  (reduce-kv (fn [m k v]
+               (assoc m k (if (and (sequential? v) (= 1 (count v)))
+                            (first v)
+                            v)))
+             {}
+             (select-keys query extra-ks)))
+
 (defn normalize-q-input
   "Turns input to q into a map with :query and :args fields.
    Also normalizes the query into a map representation."
@@ -479,16 +495,18 @@
                (do (when (seq arg-inputs)
                      (log/warn :datahike/query-input-ignored {:query query}))
                    (:args query-input))
-               arg-inputs)
-        extra-ks [:offset :limit :order-by :stats? :count-fns? :settings :cancel]]
-    (-> (cond-> {:query (-> (apply dissoc query extra-ks)
-                            normalize-list-fn-clauses
-                            normalize-repeated-vars)
-                 ;; Rules ride in as the argument bound to `%`; normalise their
-                 ;; bodies too, or a self-join inside a rule stays wrong on BOTH
-                 ;; engines.
-                 :args (normalize-rules-in-args query args)}
-          (map? query-input)
+               arg-inputs)]
+    (-> {:query (-> (apply dissoc query extra-ks)
+                    normalize-list-fn-clauses
+                    normalize-repeated-vars)
+         ;; Rules ride in as the argument bound to `%`; normalise their
+         ;; bodies too, or a self-join inside a rule stays wrong on BOTH
+         ;; engines.
+         :args (normalize-rules-in-args query args)}
+        ;; Options may sit in the query itself, in either syntax. Explicit
+        ;; options on an input envelope take precedence over nested options.
+        (merge (extras-in-query query))
+        (cond-> (map? query-input)
           (merge (select-keys query-input extra-ks)))
         auto-inject-built-in-rules)))
 

@@ -601,6 +601,20 @@
                                    :where [?e :name ?n]]
                                  :db))))
 
+  (testing "options embedded in a vector query"
+    (is (= {:query {:find '[?n]
+                    :where '[[?e :name ?n]]}
+            :args :db
+            :offset 2
+            :limit 5
+            :order-by '[?n :desc]}
+           (dq/normalize-q-input '[:find ?n
+                                   :where [?e :name ?n]
+                                   :offset 2
+                                   :limit 5
+                                   :order-by [?n :desc]]
+                                 :db))))
+
   (testing "query in :query field"
     (is (= {:query {:find '[?n]
                     :where '[[?e :name ?n]]}
@@ -631,6 +645,16 @@
                                   :limit 100
                                   :args [:db]}
                                  []))))
+
+  (testing "top-level options override options nested in :query"
+    (is (= 7
+           (:limit
+            (dq/normalize-q-input {:query '{:find [?n]
+                                            :where [[?e :name ?n]]
+                                            :limit 5}
+                                   :limit 7
+                                   :args [:db]}
+                                  [])))))
 
   (testing "query in top-level map"
     (is (= {:query {:find '[?e]
