@@ -23,7 +23,19 @@
 
    :datahike_head_conflicts_total
    {:type :counter
-    :help "Transaction invocations whose branch head moved, by whether they were retried or failed."}})
+    :help "Transaction invocations whose branch head moved, by whether they were retried or failed."}
+
+   :datahike_http_request_seconds
+   {:type :histogram
+    :help "Time to serve an HTTP API request, by operation and response status."}
+
+   :datahike_http_rejected_total
+   {:type :counter
+    :help "HTTP requests refused for missing credentials, missing permission, or excessive size."}
+
+   :datahike_connections
+   {:type :gauge
+    :help "Connection leases held in this process, by database and branch."}})
 
 (defn describe!
   "Install Datahike's metric descriptions into the process registry.
@@ -76,3 +88,36 @@
   (metrics/inc! :datahike_head_conflicts_total
                 (assoc (db-labels config) :outcome (name outcome)))
   nil)
+
+(defn http-request!
+  "Record an HTTP request for authorization operation `op`, response `status`,
+   and the monotonic timer value returned by `replikativ.metrics/timer`."
+  [op status started]
+  (metrics/observe-since! :datahike_http_request_seconds
+                          {:op (name op) :status (str status)}
+                          started)
+  nil)
+
+(defn http-rejected!
+  "Record a gate or authorization rejection.
+
+   `reason` is `:unauthorized`, `:forbidden`, or `:too-large`."
+  [reason]
+  (metrics/inc! :datahike_http_rejected_total {:reason (name reason)})
+  nil)
+
+(defn connection-samples
+  "Gauge samples for the live entries in a Datahike connection registry atom.
+
+   Reservations whose `:conn` is nil are omitted. The value is the registry's
+   reference count: one for its base lease plus any additional callers."
+  [connections]
+  (let [{:keys [type help]} (:datahike_connections descriptions)]
+    (for [[[store-id branch] {:keys [conn count]}] @connections
+          :when conn]
+      {:name   :datahike_connections
+       :type   type
+       :help   help
+       :labels {:database (str store-id)
+                :branch   (keyword-label (or branch :db))}
+       :value  (or count 1)})))
