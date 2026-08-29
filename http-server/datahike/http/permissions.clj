@@ -4,7 +4,7 @@
    Authentication says who a caller is (`datahike.http.middleware/validators`);
    this namespace says what they may do, with eacl — relationship-based
    authorization in the SpiceDB model, situated: the permission graph lives in
-   an `:auth-db` next to the server's data, and checks are local reads.
+   the server's `:system-db`, and checks are local reads.
 
    The graph has three kinds of object. `user`s are principals, by their
    `:sub`. The one `server` has `admin`s, who may do everything — create
@@ -23,15 +23,15 @@
 
    `configure` opens the database and returns the config with `:authorize`
    set; `routes` are the permission management routes, authorized by the same
-   graph. Servers that share one auth database share its admins: the `server`
-   object is one per auth database, not per server."
+   graph. Servers that share one system database share its admins: the `server`
+   object is one per system database, not per server."
   (:require
    [clojure.string :as str]
    [datahike.api :as d]
    [datahike.http.routes :as routes]
+   [datahike.http.system :as system]
    [eacl.core :as eacl]
-   [eacl.datahike.core :as ed]
-   [eacl.datahike.schema :as eschema]))
+   [eacl.datahike.core :as ed]))
 
 (def schema
   "The permission graph, in SpiceDB's schema language."
@@ -71,25 +71,6 @@ definition database {
   [conn objects]
   (d/transact conn (vec (for [{:keys [id]} objects] {:eacl/id id}))))
 
-(defn- open-auth-db!
-  "Connect to the auth database, creating it with eacl's attributes if it is new."
-  [auth-db]
-  (let [path (get-in auth-db [:store :path])
-        cfg  (-> (merge eschema/default-config auth-db)
-                 ;; A durable store without an id gets one from its path, the
-                 ;; same on every start; a store without a path (memory) gets
-                 ;; a fresh one, so two servers in one process do not share
-                 ;; an auth database by accident.
-                 (update-in [:store :id]
-                            #(or % (if path
-                                     (java.util.UUID/nameUUIDFromBytes (.getBytes (str "datahike-auth-db:" path)))
-                                     (random-uuid)))))]
-    (if (d/database-exists? cfg)
-      (d/connect cfg)
-      (do (d/create-database cfg)
-          (doto (d/connect cfg)
-            (d/transact (eschema/merge-schema)))))))
-
 (defn- admin? [acl principal]
   (eacl/can? acl (user principal) :administer server))
 
@@ -106,11 +87,15 @@ definition database {
                    (eacl/can? acl (user principal) op (database (:store-id db)))))))))
 
 (defn configure
-  "Open `(:auth-db config)` — a Datahike config, `:store` at least — write the
-   schema, seed the token principal as server admin, and return `config` with
-   `:authorize` set."
-  [{:keys [auth-db token-subject] :as config}]
-  (let [conn (open-auth-db! auth-db)
+  "Use the configured system database for EACL, seed the token principal as
+   server admin, and return `config` with `:authorize` set."
+  [{:keys [token-subject] :as input-config}]
+  (let [config (if (get input-config system/conn-key)
+                 input-config
+                 (system/configure input-config))
+        conn (or (get config system/conn-key)
+                 (throw (ex-info "Permissions require :system-db"
+                                 {:type :datahike.http/missing-system-database})))
         acl  (ed/make-client conn {})
         root (object :user (or token-subject "root"))]
     (eacl/write-schema! acl schema)
@@ -119,8 +104,7 @@ definition database {
     (assoc config :authorize (policy acl) ::acl acl ::conn conn)))
 
 (defn close! [config]
-  (when-let [conn (::conn config)]
-    (d/release conn)))
+  (system/close! config))
 
 ;; ---------------------------------------------------------------------------
 ;; Routes
@@ -151,7 +135,7 @@ definition database {
    :resource (<-object (:resource r))})
 
 (defn routes
-  "The permission routes for a `configure`d config; none without `:auth-db`.
+  "The permission routes for a `configure`d config; none without a system database.
    Bodies are maps; objects are `{:type :user|:database|:server :id \"…\"}`.
 
    - POST /permissions/check `{:subject :permission :resource}` → `{:allowed}`.

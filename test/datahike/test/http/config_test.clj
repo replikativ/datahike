@@ -12,7 +12,7 @@
   (is (= "DATAHIKE_DEV_MODE" (config/env-name :dev-mode)))
   (is (= "DATAHIKE_SHUTDOWN_TIMEOUT_MS" (config/env-name :shutdown-timeout-ms)))
   (is (= "DATAHIKE_LOG_FORMAT" (config/env-name :log-format)))
-  (is (= "DATAHIKE_AUTH_DB_PATH" (config/env-name :auth-db-path))))
+  (is (= "DATAHIKE_SYSTEM_DB_PATH" (config/env-name :system-db-path))))
 
 (deftest standalone-bind-safety
   (testing "literal and named loopback hosts need no authentication"
@@ -54,7 +54,7 @@
                                  :shutdown-timeout-ms 10000
                                  :level :info
                                  :metrics false
-                                 :auth-db {:store {:backend :memory}}}))
+                                 :system-db {:store {:backend :memory}}}))
         env  {"DATAHIKE_PORT" "2002"
               "DATAHIKE_HOST" "env-host"
               "DATAHIKE_TOKEN" "env-token"
@@ -62,7 +62,7 @@
               "DATAHIKE_SHUTDOWN_TIMEOUT_MS" "20000"
               "DATAHIKE_LEVEL" "warn"
               "DATAHIKE_LOG_FORMAT" "text"
-              "DATAHIKE_AUTH_DB_PATH" "/env/auth"}
+              "DATAHIKE_SYSTEM_DB_PATH" "/env/system"}
         args ["--config" (.getPath file)
               "--port" "3003"
               "--host" "cli-host"
@@ -71,7 +71,7 @@
               "--shutdown-timeout-ms" "30000"
               "--level" "error"
               "--log-format" "json"
-              "--auth-db-path" "/cli/auth"]
+              "--system-db-path" "/cli/system"]
         resolved (:config (config/resolve-config args env))]
     (is (= 3003 (:port resolved)))
     (is (= "cli-host" (:host resolved)))
@@ -81,13 +81,18 @@
     (is (= :error (:level resolved)))
     (is (= :json (:log-format resolved)))
     (is (false? (:metrics resolved)) "unoverridden EDN remains the full surface")
-    (is (= {:backend :file :path "/cli/auth"}
-           (get-in resolved [:auth-db :store])))))
+    (is (= {:backend :file :path "/cli/system"}
+           (get-in resolved [:system-db :store])))))
 
 (deftest positional-config-remains-backward-compatible
   (let [file (temp-file "{:port 4444}")]
     (is (= {:action :run :config {:port 4444}}
            (config/resolve-config [(.getPath file)] {})))))
+
+(deftest system-database-path-shorthand
+  (is (= {:backend :file :path "/catalog"}
+         (get-in (config/resolve-config [] {"DATAHIKE_SYSTEM_DB_PATH" "/catalog"})
+                 [:config :system-db :store]))))
 
 (deftest token-files-are-secret-mount-friendly-and-layered
   (let [env-token (temp-file "environment-secret\n")

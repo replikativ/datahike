@@ -310,11 +310,11 @@ CLI flags, then `DATAHIKE_*` environment variables, then the EDN file. The
 supported environment variables are `DATAHIKE_PORT`, `DATAHIKE_HOST`,
 `DATAHIKE_TOKEN`, `DATAHIKE_DEV_MODE`, `DATAHIKE_LEVEL`,
 `DATAHIKE_LOG_FORMAT`, `DATAHIKE_SHUTDOWN_TIMEOUT_MS`, and
-`DATAHIKE_AUTH_DB_PATH`. Log format is `text` by default and accepts `json`.
+`DATAHIKE_SYSTEM_DB_PATH`. Log format is `text` by default and accepts `json`.
 `DATAHIKE_TOKEN_FILE` reads the token from a Docker or Kubernetes secret mount
 without putting it in the process environment. CLI uses the corresponding
 `--port`, `--host`, `--token`, `--dev-mode`, `--level`, `--log-format`,
-`--shutdown-timeout-ms`, `--auth-db-path`, and `--token-file` options.
+`--shutdown-timeout-ms`, `--system-db-path`, and `--token-file` options.
 
 The edn configuration file looks like:
 

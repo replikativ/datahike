@@ -1,6 +1,6 @@
 (ns datahike.http.server
   "HTTP server implementation for Datahike: `datahike.http.routes/handler`
-   behind Jetty, with swagger-ui at `/`, CORS, and — given an `:auth-db` —
+   behind Jetty, with swagger-ui at `/`, CORS, and — given a `:system-db` —
    eacl-backed permissions. Embedding hosts want `datahike.http.routes`."
   (:require
    [datahike.http.backends]
@@ -8,6 +8,7 @@
    [datahike.metrics :as metrics]
    [datahike.http.permissions :as permissions]
    [datahike.http.routes :as routes]
+   [datahike.http.system :as system]
    [reitit.ring :as ring]
    [reitit.swagger :as swagger]
    [reitit.swagger-ui :as swagger-ui]
@@ -64,15 +65,15 @@
 
 (defn- ready?
   "Check every store the server currently owns: live API connections and the
-   configured auth database. Do not short-circuit, so one outage does not hide
+   configured system database. Do not short-circuit, so one outage does not hide
    another from the operator logs."
   [config connections]
   (let [targets (concat
                  (for [[[store-id _branch] {:keys [conn]}] @connections
                        :when conn]
                    [store-id conn])
-                 (when-let [conn (get config ::permissions/conn)]
-                   [[:auth-db conn]]))]
+                 (when-let [conn (get config system/conn-key)]
+                   [[:system-db conn]]))]
     (reduce (fn [ready target]
               (let [target-ready? (probe-connection! target)]
                 (and ready target-ready?)))
@@ -145,22 +146,26 @@
           :handler (swagger/create-swagger-handler)}}])
 
 (defn app
-  "The server's Ring handler over `connections`. With `:auth-db` in `config`
-   the permissions database is opened here; `(::config (meta app))` is the
-   configured config, for `stop-server`.
+  "The server's Ring handler over `connections`. With `:system-db` in `config`,
+   the catalog and permissions database is opened here; `(::config (meta app))`
+   is the configured config, for `stop-server`.
 
    This handler exposes process metrics but does not install a global Konserve
    sink: an embedding host owns that lifecycle. `start-server` installs and
    reference-counts the standalone server's sink."
   [config connections]
   (let [server-config config
-        config  (if (:auth-db config) (permissions/configure config) config)
+        config  (system/configure config)
+        config  (if (get config system/conn-key)
+                  (permissions/configure config)
+                  config)
         handler (routes/handler config
                                 {:connections     connections
                                  :extra-routes    (concat [swagger-route]
                                                           (health-routes config connections)
                                                           [(version-route server-config)]
                                                           (keep identity [(metrics-route config connections)])
+                                                          (system/routes config)
                                                           (permissions/routes config))
                                  :default-handler (ring/routes
                                                    (swagger-ui/create-swagger-ui-handler
@@ -237,7 +242,7 @@
                          (catch Throwable t
                            ;; Nothing owns what `app` opened if Jetty never started.
                            (release-metrics-sink! metrics-lease)
-                           (permissions/close! config)
+                           (system/close! config)
                            (throw t)))]
     (swap! owned assoc server {:connections connections
                                :config config
@@ -261,7 +266,7 @@
                (routes/release-all! connections)
                (finally
                  (try
-                   (permissions/close! config)
+                   (system/close! config)
                    (finally
                      (release-metrics-sink! metrics-lease))))))))))
 
