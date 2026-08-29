@@ -339,6 +339,24 @@ exports Datahike, connection, and JVM metrics. An embedding host that wants
 Konserve metrics can register `replikativ.metrics.konserve/sink` with
 `konserve.metrics/add-sink!` under its own id and remove it during shutdown.
 
+### Health checks
+
+The server exposes two unauthenticated, plain-text health endpoints for
+orchestrators and load balancers:
+
+- `GET /health/live` returns 200 while the HTTP process can answer requests.
+- `GET /health/ready` returns 200 only when every database store currently held
+  by the server, plus its configured `:auth-db`, accepts a non-mutating Konserve
+  read. It returns 503 otherwise.
+
+Both responses intentionally contain only `live`, `ready`, or `not ready`. The
+server log identifies a failed store and the exception class/type without
+copying exception messages or data that might contain credentials. Data
+databases are supplied dynamically by API clients today, so readiness covers
+the live connections the server knows about.
+Once the planned system database provides a durable database catalog, readiness
+can also cover its eagerly reconnected entries.
+
 `datahike.http.server/start-server` and `stop-server` do the same from a
 REPL; `stop-server` releases every database the server opened, the auth
 database included. `app` takes the config and a connections atom, for hosts
