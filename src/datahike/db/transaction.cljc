@@ -780,15 +780,11 @@
    The question is about how the index STORES, so it is answered from the
    schema. `IValidTimeAware` is a different property — a query capability, and
    an optional one: `secondary.cljc` says non-implementers stay correct via a
-   generic post-hoc filter, the protocol just lets an adapter push `valid-at`
-   into its own plan. `sec/vt-aware?` would be wrong here in both directions.
-   `StratumIndex` implements the protocol unconditionally and tests
-   `(vt-mode? config)` inside `-search-at-vt`, so every stratum index satisfies
-   it whether or not it keeps windows — excluding attributes whose rows are
-   plain current state and whose re-assertions really are redundant. And
-   mid-transaction `:secondary-indices` holds a `TransientStratumIndex`, which
-   does not implement the protocol at all, so the probe would answer false
-   exactly when it is asked."
+   generic post-hoc filter, while `-native-valid-time?` lets a persistent
+   adapter instance opt into native query pushdown. Mid-transaction
+   `:secondary-indices` holds a `TransientStratumIndex`, which does not expose
+   that query protocol, so `sec/vt-aware?` would answer false exactly when this
+   storage-layout question is asked."
   [db a-ident]
   (boolean
    (some #(get-in db [:schema % :db.secondary/config :valid-time])

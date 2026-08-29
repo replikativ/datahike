@@ -140,6 +140,9 @@
                              :db.secondary/config {}
                              :db.secondary/status :ready}])
         ds (index-dataset conn :idx/employees-plain)]
+    (testing "an ordinary Stratum generation declines native valid-time search"
+      (is (not (sec/vt-aware?
+                (-> (d/db conn) :secondary-indices :idx/employees-plain)))))
     (testing "no :bitemporal in metadata → no vt-config exposed"
       (is (nil? (:bitemporal (:metadata ds)))))
     (testing "no _valid_from / _valid_to columns"

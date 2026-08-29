@@ -453,6 +453,9 @@
                                ;; the owning snapshot identity for this cursor.
                                :primary-snapshot-id (gen/generation-id generation)}
                         scan-mode (assoc :mode scan-mode)
+                        entity-filter
+                        (assoc :entity-filter
+                               (es/entity-bitset-seq entity-filter))
                         (some? strict-order?) (assoc :strict-order? strict-order?)
                         ef (assoc :ef ef)
                         query-id (assoc :query-id query-id)
@@ -466,17 +469,12 @@
         (try
           (let [page (prox/candidate-page scan)
                 attr (first attrs)
-                candidates
-                (into []
-                      (keep (fn [{:keys [id] :as candidate}]
-                              (when (or (nil? entity-filter)
-                                        (es/entity-bitset-contains?
-                                         entity-filter (long id)))
-                                (-> candidate
-                                    (dissoc :id)
-                                    (assoc :entity-id (long id)
-                                           :attribute attr)))))
-                      (:candidates page))]
+                candidates (mapv (fn [{:keys [id] :as candidate}]
+                                   (-> candidate
+                                       (dissoc :id)
+                                       (assoc :entity-id (long id)
+                                              :attribute attr)))
+                                 (:candidates page))]
             {:candidates candidates
              :precision :recheck
              :recall :approximate

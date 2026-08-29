@@ -116,6 +116,7 @@
                (fnil conj []) {:e (.-e datom) :vf vf :vt vt})))
     this)
   sec/IValidTimeAware
+  (-native-valid-time? [_] true)
   (-search-at-vt [_ query _entity-filter valid-at-window]
     (let [windows (get-in @content-map [query :windows] [])
           at (if (vector? valid-at-window) (first valid-at-window) valid-at-window)]

@@ -609,10 +609,11 @@
   "Optional protocol for secondary indices that natively understand the
    tx-meta valid-time axis (`:db.valid/from` / `:db.valid/to`).
 
-   Indices that implement this can push the `valid-at` / `valid-between`
-   filter into their own query plan — for example, stratum can range-
-   prune on `_valid_from` / `_valid_to` columns at scan time; a
-   scriptum implementation can search per-vt-period segments.
+   Indices that implement this and return true from `-native-valid-time?`
+   can push the `valid-at` / `valid-between` filter into their own query plan
+   — for example, stratum can range-prune on `_valid_from` / `_valid_to`
+   columns at scan time; a scriptum implementation can search per-vt-period
+   segments.
 
    Indices that DON'T implement this still produce correct results —
    `search-with-vt` / `slice-ordered-with-vt` apply a generic post-hoc
@@ -620,6 +621,10 @@
    them at the query's valid-time. The post-hoc filter is correct but
    slower than a native `-search-at-vt`; vt-aware adapters are the
    fast path."
+  (-native-valid-time? [this]
+    "True when this particular index generation/configuration can execute
+     `-search-at-vt` natively. This is per-instance because one adapter type
+     may create both temporal and ordinary generations.")
   (-search-at-vt [this query-spec entity-filter valid-at-window]
     "Like `-search`, but restrict to entities whose tx-meta valid-time
      window contains `valid-at-window`. `valid-at-window` is either:
@@ -645,9 +650,10 @@
     "True iff this index's data is invariant under valid-time."))
 
 (defn vt-aware?
-  "True iff `index` implements `IValidTimeAware`."
+  "True iff `index` implements and enables native valid-time search."
   [index]
-  (satisfies? IValidTimeAware index))
+  (and (satisfies? IValidTimeAware index)
+       (boolean (-native-valid-time? index))))
 
 (defn vt-stable?
   "True iff `index` opts out of vt-filtering via `IValidTimeStable`."
@@ -717,7 +723,7 @@
    Routing when the db carries a `:datahike/valid-at` marker
    (set by `d/valid-at`):
 
-     1. index satisfies `IValidTimeAware`
+     1. index satisfies `IValidTimeAware` and enables it for this generation
           → `-search-at-vt` (native fast path)
      2. index satisfies `IValidTimeStable` (returns true)
           → `-search` (no filtering needed — data is vt-invariant)

@@ -65,27 +65,17 @@
     (sc/multi-field-query (map attr-name fields) query)
     :else (throw (ex-info "Invalid scriptum query-spec" {:spec query-spec}))))
 
-(defn- search-results [snapshot query-spec limit]
-  (if-not snapshot
-    []
-    (if-let [limit (or limit (:limit query-spec))]
-      (sc/search-store-snapshot snapshot (query->lucene query-spec)
-                                {:limit limit})
-      ;; ISecondaryIndex/-search is a complete set operation, not a top-N
-      ;; convenience API. Lucene's search call requires a bound, so enumerate
-      ;; its immutable snapshot with searchAfter pages instead of silently
-      ;; truncating every result at the old hard-coded 1000 documents.
-      (loop [after nil
-             acc []]
-        (let [page (sc/candidate-page
-                    snapshot (query->lucene query-spec)
-                    {:page-size 1024
-                     :after after
-                     :query-id (:query-id query-spec)})
-              acc (into acc (:candidates page))]
-          (if (:exhausted? page)
-            acc
-            (recur (:continuation page) acc)))))))
+(defn- filtered-lucene-query [query-spec entity-filter]
+  (let [query (query->lucene query-spec)]
+    (if entity-filter
+      (let [eids (vec (es/entity-bitset-seq entity-filter))]
+        {:query (sc/bool-query
+                 [[query :must]
+                  [(sc/terms-query :_entity_id (map str eids)) :filter]])
+         ;; Scriptum validates this value on every resume. Retaining the exact
+         ;; immutable filter avoids hash-collision or mutable-filter ambiguity.
+         :query-id [(:query-id query-spec) eids]})
+      {:query query :query-id (:query-id query-spec)})))
 
 (defn- result-eid [result]
   (when-let [eid-str (get result "_entity_id")]
@@ -100,16 +90,51 @@
     (or (some #(when (= stored (attr-name %)) %) attrs)
         stored)))
 
+(defn- result-candidate [attrs result]
+  (when-let [eid (result-eid result)]
+    {:entity-id eid
+     :attribute (result-attr attrs result)
+     :value-hash (get result "_vhash")
+     :score (:score result)}))
+
+(defn- reduce-result-candidates [attrs rf init results]
+  (reduce (fn [acc result]
+            (if-let [candidate (result-candidate attrs result)]
+              (rf acc candidate)
+              acc))
+          init results))
+
+(defn- reduce-matching-results
+  "Reduce one logical, pre-filtered candidate stream without materializing it."
+  [snapshot attrs query-spec entity-filter limit rf init]
+  (if-not snapshot
+    init
+    (let [{:keys [query query-id]}
+          (filtered-lucene-query query-spec entity-filter)]
+      (if-let [limit (or limit (:limit query-spec))]
+        (reduce-result-candidates
+         attrs rf init
+         (sc/search-store-snapshot snapshot query {:limit limit}))
+        ;; Complete set operations page in exact, score-free index order. The
+        ;; authoritative Datahike/PostgreSQL predicate owns visible ranking.
+        (loop [after nil
+               acc init]
+          (let [page (sc/candidate-page
+                      snapshot query
+                      {:page-size 1024
+                       :after after
+                       :query-id query-id
+                       :order :doc-id
+                       :fields ["_entity_id" "_attr" "_vhash"]})
+                acc (reduce-result-candidates attrs rf acc (:candidates page))]
+            (if (:exhausted? page)
+              acc
+              (recur (:continuation page) acc))))))))
+
 (defn- matching-results [snapshot attrs query-spec entity-filter limit]
-  (into []
-        (keep (fn [result]
-                (when-let [eid (result-eid result)]
-                  (when (or (nil? entity-filter)
-                            (es/entity-bitset-contains? entity-filter eid))
-                    {:entity-id eid
-                     :attribute (result-attr attrs result)
-                     :score (:score result)}))))
-        (search-results snapshot query-spec limit)))
+  (persistent!
+   (reduce-matching-results snapshot attrs query-spec entity-filter limit
+                            conj! (transient []))))
 
 (declare make-scriptum-index)
 
@@ -436,12 +461,12 @@
 
       sec/ISecondaryIndex
       (-search [_ query-spec entity-filter]
-        (let [bitset (es/entity-bitset)]
-          (doseq [{:keys [entity-id]}
-                  (matching-results snapshot attrs query-spec entity-filter
-                                    nil)]
-            (es/entity-bitset-add! bitset entity-id))
-          bitset))
+        (reduce-matching-results
+         snapshot attrs query-spec entity-filter nil
+         (fn [bitset {:keys [entity-id]}]
+           (es/entity-bitset-add! bitset entity-id)
+           bitset)
+         (es/entity-bitset)))
       (-estimate [_ query-spec]
         (if snapshot
           (sc/count-store-snapshot snapshot (query->lucene query-spec))
@@ -477,29 +502,25 @@
 
       sec/ISecondaryCandidateScan
       (-candidate-page [_ query-spec entity-filter page-request]
-        (let [precision (or (:precision query-spec) :exact)
-              recall (or (:recall query-spec) :complete)
-              ordering (or (:ordering query-spec) :exact)]
+        (let [precision :recheck
+              recall :complete
+              ordering :none]
           (if-not snapshot
             {:candidates [] :precision precision :recall recall
              :ordering ordering :exhausted? true :continuation nil
              :stop-reason :source-exhausted}
-            (let [page (sc/candidate-page
-                      snapshot (query->lucene query-spec)
-                      {:page-size (:limit page-request)
-                       :after (:continuation page-request)
-                       :query-id (:query-id query-spec)
-                       :fields ["_entity_id" "_attr"]})
+            (let [{:keys [query query-id]}
+                  (filtered-lucene-query query-spec entity-filter)
+                  page (sc/candidate-page
+                        snapshot query
+                        {:page-size (:limit page-request)
+                         :after (:continuation page-request)
+                         :query-id query-id
+                         :order :doc-id
+                         :fields ["_entity_id" "_attr" "_vhash"]})
                 candidates
                 (into []
-                      (keep (fn [result]
-                              (when-let [eid (result-eid result)]
-                                (when (or (nil? entity-filter)
-                                          (es/entity-bitset-contains?
-                                           entity-filter eid))
-                                  {:entity-id eid
-                                   :attribute (result-attr attrs result)
-                                   :score (:score result)}))))
+                      (keep (partial result-candidate attrs))
                       (:candidates page))]
             {:candidates candidates
              :precision precision

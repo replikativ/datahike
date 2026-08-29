@@ -535,14 +535,17 @@
     ;; Returns EntityBitSet of matching entity IDs
     (if (nil? dataset)
       (es/entity-bitset)
-      (let [result-maps (st/q (cond-> {:from dataset :select [:eid]}
-                                (:where query-spec) (assoc :where (:where query-spec))))
+      (let [eid-pred (when entity-filter
+                       (fn [^long eid]
+                         (es/entity-bitset-contains? entity-filter eid)))
+            where (cond-> (vec (:where query-spec))
+                    eid-pred (conj [:fn :eid eid-pred]))
+            result-maps (st/q (cond-> {:from dataset :select [:eid]}
+                                (seq where) (assoc :where where)))
             bs (es/entity-bitset)]
         (doseq [m result-maps]
           (es/entity-bitset-add! bs (long (:eid m))))
-        (if entity-filter
-          (es/entity-bitset-and bs entity-filter)
-          bs))))
+        bs)))
 
   (-estimate [_ query-spec]
     (if (nil? dataset)
@@ -556,15 +559,18 @@
     (if (nil? dataset)
       []
       (let [col-key (attr-col-key attr)
+            eid-pred (when entity-filter
+                       (fn [^long eid]
+                         (es/entity-bitset-contains? entity-filter eid)))
+            where (cond-> (vec (:where query-spec))
+                    eid-pred (conj [:fn :eid eid-pred]))
             result-maps (st/q (cond-> {:from dataset
                                        :select [:eid col-key]
                                        :order [[col-key direction]]}
                                 limit (assoc :limit limit)
-                                (:where query-spec) (assoc :where (:where query-spec))))]
-        (cond->> (mapv (fn [m] {:entity-id (long (:eid m)) :value (get m col-key)})
-                       result-maps)
-          entity-filter (filterv (fn [{:keys [entity-id]}]
-                                   (es/entity-bitset-contains? entity-filter entity-id)))))))
+                                (seq where) (assoc :where where)))]
+        (mapv (fn [m] {:entity-id (long (:eid m)) :value (get m col-key)})
+              result-maps))))
 
   sec/ISecondaryCandidateScan
   (-candidate-page [_ query-spec entity-filter page-request]
@@ -580,6 +586,11 @@
          :continuation nil
          :stop-reason :source-exhausted}
         (let [col-key (attr-col-key attribute)
+              eid-pred (when entity-filter
+                         (fn [^long eid]
+                           (es/entity-bitset-contains? entity-filter eid)))
+              where (cond-> (vec where)
+                      eid-pred (conj [:fn :eid eid-pred]))
               ;; Fetch one look-ahead row so exhaustion is unambiguous. The
               ;; continuation is an offset into this immutable generation,
               ;; hence stable for the lifetime of the scan.
@@ -591,17 +602,11 @@
                            where (assoc :where where)))
               more? (> (count rows) limit)
               page-rows (take limit rows)
-              candidates
-              (into []
-                    (keep (fn [row]
-                            (let [eid (long (:eid row))]
-                              (when (or (nil? entity-filter)
-                                        (es/entity-bitset-contains?
-                                         entity-filter eid))
-                                {:entity-id eid
-                                 :attribute attribute
-                                 :value (get row col-key)}))))
-                    page-rows)]
+              candidates (mapv (fn [row]
+                                 {:entity-id (long (:eid row))
+                                  :attribute attribute
+                                  :value (get row col-key)})
+                               page-rows)]
           {:candidates candidates
            :precision :exact
            :recall :complete
@@ -743,11 +748,10 @@
   ;; (`_valid_to = Long/MAX_VALUE`) participate normally because the
   ;; predicate uses strict-greater.
   ;;
-  ;; Index NOT in vt-mode falls back to plain `-search` — i.e. ignores
-  ;; the valid-at argument. Such indices stay correct via the post-hoc
-  ;; AVET filter described in `secondary.cljc`'s IValidTimeAware
-  ;; docstring; this `-search-at-vt` just returns the unfiltered set,
-  ;; which the call site composes with its own filter.
+  ;; `-native-valid-time?` is deliberately per instance: an ordinary Stratum
+  ;; generation uses the generic post-hoc fallback and must never route here.
+  (-native-valid-time? [_]
+    (boolean (vt-mode? config)))
   (-search-at-vt [this query-spec entity-filter valid-at-window]
     (if (and (vt-mode? config) dataset)
       (let [at-micros (cond

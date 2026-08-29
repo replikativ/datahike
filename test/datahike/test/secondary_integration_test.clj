@@ -234,6 +234,16 @@
             (is (= #{:person/embedding} (set (map :attribute candidates))))
             (is (every? :distance candidates)))
 
+          (let [filter-bs (es/entity-bitset-from-longs [2 3])
+                page (sec/-candidate-page
+                      idx
+                      {:vector (float-array [1.0 0.0 0.0 0.0])
+                       :candidate-limit 1}
+                      filter-bs
+                      {:limit 1})]
+            (is (= [3] (mapv :entity-id (:candidates page)))
+                "excluded nearest nodes do not consume the filtered page"))
+
           (let [query-spec {:vector (float-array [1.0 0.0 0.0 0.0])
                             :scan-mode :iterative
                             :strict-order? false
@@ -772,6 +782,16 @@
             (is (= #{1 1105}
                    (set (filter #{1 1105}
                                 (es/entity-bitset-seq results)))))
+            (let [filter-bs (es/entity-bitset-from-longs [1105])
+                  page (sec/-candidate-page
+                        persistent
+                        {:query "common" :field :value}
+                        filter-bs
+                        {:limit 1})]
+              (is (= [:recheck :complete :none]
+                     ((juxt :precision :recall :ordering) page)))
+              (is (= [1105] (mapv :entity-id (:candidates page)))
+                  "Lucene intersects entity IDs before candidate LIMIT"))
             (finally
               (.close ^java.io.Closeable persistent))))
         (finally
@@ -801,7 +821,12 @@
       (is (= [[2 10] [3 20] [1 30] [4 40]]
              (mapv (juxt :entity-id :value)
                    (mapcat :candidates
-                           (sec/validate-candidate-scan [page-1 page-2]))))))))
+                           (sec/validate-candidate-scan [page-1 page-2])))))
+      (let [filter-bs (es/entity-bitset-from-longs [4])
+            filtered (sec/-candidate-page persistent spec filter-bs {:limit 1})]
+        (is (= [[4 40]]
+               (mapv (juxt :entity-id :value) (:candidates filtered)))
+            "Stratum applies entity filters before exact top-N")))))
 
 (deftest secondary-declaration-removal-is-an-atomic-root-transition
   (let [cfg {:store {:backend :memory :id (random-uuid)}

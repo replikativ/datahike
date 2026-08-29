@@ -50,9 +50,27 @@
   (-transact [this _] this)
 
   sec/IValidTimeAware
+  (-native-valid-time? [_] true)
   (-search-at-vt [_ _qs _ef _at]
     (swap! call-log conj :-search-at-vt)
     ;; Native fast path — pretend we filtered correctly
+    bitset))
+
+(defrecord MockDisabledVtIndex [bitset call-log]
+  sec/ISecondaryIndex
+  (-search [_ _query-spec _entity-filter]
+    (swap! call-log conj :-search)
+    bitset)
+  (-estimate [_ _] (es/entity-bitset-cardinality bitset))
+  (-can-order? [_ _ _] false)
+  (-slice-ordered [_ _qs _ef _attr _dir _limit] nil)
+  (-indexed-attrs [_] #{})
+  (-transact [this _] this)
+
+  sec/IValidTimeAware
+  (-native-valid-time? [_] false)
+  (-search-at-vt [_ _qs _ef _at]
+    (swap! call-log conj :-search-at-vt)
     bitset))
 
 (defrecord MockVtStableIndex [bitset call-log]
@@ -99,6 +117,20 @@
     (testing "marker present + vt-aware → -search-at-vt"
       (sec/search-with-vt vt-db idx {} nil)
       (is (= [:-search-at-vt] @log)))))
+
+(deftest disabled-native-valid-time-uses-safe-fallback
+  (let [conn (setup-data)
+        bob (d/q '[:find ?e . :where [?e :emp/name "Bob"]] @conn)
+        alice (d/q '[:find ?e . :where [?e :emp/name "Alice"]] @conn)
+        bitset (es/entity-bitset-from-longs [bob alice])
+        log (atom [])
+        idx (->MockDisabledVtIndex bitset log)
+        vt-db (d/valid-at (d/history @conn) #inst "2024-02-15")]
+    (is (not (sec/vt-aware? idx)))
+    (is (= [bob]
+           (vec (es/entity-bitset-seq
+                 (sec/search-with-vt vt-db idx {} nil)))))
+    (is (= [:-search] @log))))
 
 (deftest vt-stable-index-bypasses-post-filter
   (let [conn (setup-data)
