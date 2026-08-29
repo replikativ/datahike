@@ -14,6 +14,8 @@
 (def -temporal-upsert di/-temporal-upsert)
 (def -remove di/-remove)
 (def -slice di/-slice)
+(def -count-slice di/-count-slice)
+(def -has-subtree-counts? di/-has-subtree-counts?)
 (def -rslice di/-rslice)
 (def -flush di/-flush)
 (def -transient di/-transient)

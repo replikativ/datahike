@@ -141,6 +141,13 @@
     (remove-datom tree datom index-type op-count))
   (-slice [tree from to index-type]
     (slice tree from to index-type))
+  ;; No subtree counts in a hitchhiker tree: a range count is a walk. Callers
+  ;; ask `-has-subtree-counts?` first and take their own scan when it is false.
+  (-has-subtree-counts? [_] false)
+  (-count-slice [tree from to cmp]
+    (count (filter (fn [d] (and (or (nil? from) (<= (cmp from d) 0))
+                                (or (nil? to) (<= (cmp d to) 0))))
+                   (di/-seq tree))))
   (-rslice [tree from to index-type]
     ;; hitchhiker-tree has no reverse iterator: realize the BOUNDED
     ;; range [to .. from] forward and reverse it. Correct semantics
@@ -184,6 +191,13 @@
     (remove-datom tree datom index-type op-count))
   (-slice [tree from to index-type]
     (slice tree from to index-type))
+  ;; No subtree counts in a hitchhiker tree: a range count is a walk. Callers
+  ;; ask `-has-subtree-counts?` first and take their own scan when it is false.
+  (-has-subtree-counts? [_] false)
+  (-count-slice [tree from to cmp]
+    (count (filter (fn [d] (and (or (nil? from) (<= (cmp from d) 0))
+                                (or (nil? to) (<= (cmp d to) 0))))
+                   (di/-seq tree))))
   (-rslice [tree from to index-type]
     ;; hitchhiker-tree has no reverse iterator: realize the BOUNDED
     ;; range [to .. from] forward and reverse it. Correct semantics

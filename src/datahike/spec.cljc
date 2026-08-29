@@ -96,6 +96,6 @@
     :spec {:count int?
            :avet-count int?
            :per-attr-counts map?
-           :per-entity-counts map?
+           (ds/opt :per-entity-counts) map?
            (ds/opt :temporal-count) int?
            (ds/opt :temporal-avet-count) int?}}))

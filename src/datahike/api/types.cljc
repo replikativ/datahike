@@ -135,7 +135,7 @@
    [:count :int]
    [:avet-count :int]
    [:per-attr-counts :map]
-   [:per-entity-counts :map]
+   [:per-entity-counts {:optional true} :map]
    [:temporal-count {:optional true} :int]
    [:temporal-avet-count {:optional true} :int]])
 
