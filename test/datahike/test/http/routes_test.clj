@@ -131,6 +131,8 @@
     (testing "no prefix, and an empty or root prefix, mount at /"
       (doseq [prefix [nil "" "/"]]
         (is (= 401 (:status ((routes/handler {:token token} {:prefix prefix}) (req "/transact")))) (pr-str prefix))))
+    (testing "HEAD is not a way around the gate: routes have no HEAD, so reitit answers 405"
+      (is (= 405 (:status ((routes/handler {:token token}) {:request-method :head :uri "/q" :headers {}})))))
     (testing "a handler without a token and without :dev-mode admits nobody"
       (is (= 401 (:status ((routes/handler {}) (req "/transact"))))))))
 

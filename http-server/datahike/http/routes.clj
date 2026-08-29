@@ -158,8 +158,9 @@
            (finally (api/release conn))))))
 
 (defn release-all!
-  "Release every connection the routes hold, for a host shutting down. Takes
-   the connections atom or the handler `handler` returned."
+  "Release every connection in the registry — the routes' and, if the host
+   shared its atom, the host's own — for a process shutting down. Takes the
+   connections atom or the handler `handler` returned."
   [handler-or-connections]
   (let [connections (or (::connections (meta handler-or-connections)) handler-or-connections)]
     (binding [*connections* connections]
