@@ -292,7 +292,7 @@
 (defn close-candidate-scan!
   "Cancel an unfinished candidate continuation when its adapter owns resources."
   [index continuation]
-  (when (and continuation
+  (when (and (some? continuation)
              (satisfies? ISecondaryCandidateScanLifecycle index))
     (-close-candidate-scan index continuation))
   nil)

@@ -57,7 +57,8 @@
                 (swap! closed conj continuation)))]
     (is (nil? (sec/close-candidate-scan! idx :cursor)))
     (is (nil? (sec/close-candidate-scan! idx :cursor)))
-    (is (= [:cursor :cursor] @closed)
+    (is (nil? (sec/close-candidate-scan! idx false)))
+    (is (= [:cursor :cursor false] @closed)
         "the adapter owns idempotence because it owns the resource")
     (is (nil? (sec/close-candidate-scan! (legacy-index) :ignored)))
     (is (nil? (sec/close-candidate-scan! idx nil)))))
