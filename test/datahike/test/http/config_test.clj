@@ -10,6 +10,7 @@
 (deftest environment-names-are-mechanical
   (is (= "DATAHIKE_PORT" (config/env-name :port)))
   (is (= "DATAHIKE_DEV_MODE" (config/env-name :dev-mode)))
+  (is (= "DATAHIKE_LOG_FORMAT" (config/env-name :log-format)))
   (is (= "DATAHIKE_AUTH_DB_PATH" (config/env-name :auth-db-path))))
 
 (deftest command-line-overrides-environment-overrides-file
@@ -25,6 +26,7 @@
               "DATAHIKE_TOKEN" "env-token"
               "DATAHIKE_DEV_MODE" "true"
               "DATAHIKE_LEVEL" "warn"
+              "DATAHIKE_LOG_FORMAT" "text"
               "DATAHIKE_AUTH_DB_PATH" "/env/auth"}
         args ["--config" (.getPath file)
               "--port" "3003"
@@ -32,6 +34,7 @@
               "--token" "cli-token"
               "--dev-mode" "false"
               "--level" "error"
+              "--log-format" "json"
               "--auth-db-path" "/cli/auth"]
         resolved (:config (config/resolve-config args env))]
     (is (= 3003 (:port resolved)))
@@ -39,6 +42,7 @@
     (is (= "cli-token" (:token resolved)))
     (is (false? (:dev-mode resolved)))
     (is (= :error (:level resolved)))
+    (is (= :json (:log-format resolved)))
     (is (false? (:metrics resolved)) "unoverridden EDN remains the full surface")
     (is (= {:backend :file :path "/cli/auth"}
            (get-in resolved [:auth-db :store])))))
@@ -72,7 +76,9 @@
     (is (thrown-with-msg? clojure.lang.ExceptionInfo #"Invalid DATAHIKE_PORT"
                           (config/resolve-config [] {"DATAHIKE_PORT" "not-a-port"})))
     (is (thrown-with-msg? clojure.lang.ExceptionInfo #"Invalid command line"
-                          (config/resolve-config ["--dev-mode" "perhaps"] {}))))
+                          (config/resolve-config ["--dev-mode" "perhaps"] {})))
+    (is (thrown-with-msg? clojure.lang.ExceptionInfo #"Invalid DATAHIKE_LOG_FORMAT"
+                          (config/resolve-config [] {"DATAHIKE_LOG_FORMAT" "xml"}))))
   (testing "config parse errors never echo the possibly secret EDN value"
     (let [secret "must-not-appear"
           file   (temp-file (str "{:token \"" secret "\" :broken"))]

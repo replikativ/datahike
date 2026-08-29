@@ -298,7 +298,7 @@ The server is the same routes with Swagger UI at `/`, `/swagger.json`, CORS
 and Jetty around them:
 
 ```bash
-clojure -M:http-server -m datahike.http.server config.edn
+clojure -M:http-server --config config.edn
 ```
 
 ```clojure
@@ -307,7 +307,8 @@ clojure -M:http-server -m datahike.http.server config.edn
  :join?    false
  :token    "securerandompassword"
  :dev-mode false
- :level    :info}
+ :level    :info
+ :log-format :text}
 ```
 
 ### Prometheus metrics

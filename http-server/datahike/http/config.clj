@@ -29,6 +29,12 @@
       (throw (ex-info "must be trace, debug, info, warn, error, or fatal" {})))
     level))
 
+(defn- parse-log-format [value]
+  (case (str/lower-case value)
+    "text" :text
+    "json" :json
+    (throw (ex-info "must be text or json" {}))))
+
 (defn- non-blank [value]
   (when (str/blank? value)
     (throw (ex-info "must not be blank" {})))
@@ -40,6 +46,7 @@
    {:key :token        :parse non-blank}
    {:key :dev-mode     :parse parse-bool}
    {:key :level        :parse parse-level}
+   {:key :log-format   :parse parse-log-format}
    ;; A deployment-friendly shorthand for the full
    ;; {:auth-db {:store {:backend :file :path ...}}} EDN shape.
    {:key :auth-db-path :parse non-blank}])
@@ -58,6 +65,7 @@
    [nil "--token-file FILE" "Read the shared token from FILE" :parse-fn non-blank]
    [nil "--dev-mode BOOLEAN" "Enable or disable development authentication" :parse-fn parse-bool]
    ["-l" "--level LEVEL" "Log level" :parse-fn parse-level]
+   [nil "--log-format FORMAT" "Log format: text or json" :parse-fn parse-log-format]
    [nil "--auth-db-path PATH" "File-backed permissions database path" :parse-fn non-blank]
    ["-h" "--help" "Show this help"]
    [nil "--version" "Show the Datahike version"]])

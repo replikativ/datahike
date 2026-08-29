@@ -24,7 +24,7 @@
                            :deps-file     "deps.edn"
                            :jar-pattern   "{{repo.lib}}-http-server-{{version-str}}.jar"
                            :aliases       [:http-server]
-                           :main          datahike.http.server
+                           :main          datahike.http.main
                            :lib           org.replikativ/datahike-http-server}
          ;; Used only on Windows, where native-image cannot take the classpath
          ;; on the command line (8191-char limit). Same shape as :native, but
