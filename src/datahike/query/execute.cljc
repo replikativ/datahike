@@ -3395,6 +3395,49 @@
             (recur (inc i) (conj! s (adopt-vector (result-list-get result-list i))))
             s))))))
 
+(defn- direct-group-output-may-duplicate?
+  "Whether one entity group can emit the same projected find tuple more than
+   once.  Shared by the finalizer's dedup choice and demand pushdown so those
+   two correctness decisions cannot drift apart."
+  [g find-vars]
+  (let [scan-op (entity-group-scan-op g)
+        merge-ops (entity-group-merge-ops g)
+        e-var (first (:clause scan-op))
+        v-var (nth (:clause scan-op) 2 nil)]
+    ;; A card-many merge can multiply one driving row; omitting the entity can
+    ;; collapse different entities; omitting a card-many driver's value can
+    ;; collapse that entity's several driving rows.
+    (or (some #(not (get-in % [:schema-info :card-one?] true)) merge-ops)
+        (not (some #{e-var} find-vars))
+        (and (not (get-in scan-op [:schema-info :card-one?] true))
+             (symbol? v-var)
+             (analyze/free-var? v-var)
+             (not (some #{v-var} find-vars))))))
+
+(defn- direct-group-output-unique?
+  "Whether one entity group's emitted find tuples are already distinct.
+
+   Keeping this explicit matters for demand pushdown: the scan loops count
+   emitted candidates, so stopping at OFFSET + LIMIT is only sound when no
+   later deduplication can shrink that prefix."
+  [g find-vars temporal]
+  (and (not= :historical (when temporal (:type temporal)))
+       (not (direct-group-output-may-duplicate? g find-vars))))
+
+(defn- safe-direct-demand
+  "Accept a caller's result demand only when scan emission is the final,
+   distinct result stream.  Predicates/functions/NOT-JOINs and attached
+   predicates run after scan collection; multiple groups materialize and
+   combine intermediate relations.  Both must remain unbounded for now."
+  [requested groups ops find-vars temporal]
+  (let [g (first groups)]
+    (when (and requested
+               (= 1 (count groups))
+               (every? #(#{:entity-group :pattern-scan} (:op %)) ops)
+               (empty? (:attached-preds g))
+               (direct-group-output-unique? g find-vars temporal))
+      requested)))
+
 (defn- try-point-group
   "Point-shape fast path: a single entity group whose (rebound) scan is an
    AVET ground-value seek and whose merges are all card-one same-entity EAVT
@@ -3515,6 +3558,11 @@
                              (vec (distinct (mapcat :vars groups))))
             emit-vars (if has-post-ops? all-group-vars find-vars)
             n-groups (count groups)
+            ;; Callers pass OFFSET + LIMIT as a demand hint.  Most direct plans
+            ;; cannot use it yet because their loops collect candidates before
+            ;; post-filtering/deduplication.  Narrow it to the proven-safe
+            ;; single-group subset rather than silently under-filling results.
+            max-results (safe-direct-demand max-results groups ops find-vars temporal)
             ;; Prepared mode: ArrayList grows amortized-O(1), so a small
             ;; initial capacity avoids a 4000-slot backing array per point
             ;; query. Stock mode keeps the historical pre-sizing.
@@ -3932,28 +3980,11 @@
                               var-index)]
               (project-tuples result-list find-vars var-index consts))))
         ;; Convert result-list → final result with appropriate dedup strategy
-        (let [has-card-many-dupes?
-              (some (fn [g]
-                      (let [scan-op (entity-group-scan-op g)
-                            mops (entity-group-merge-ops g)]
-                        (or (some (fn [op] (not (get-in op [:schema-info :card-one?] true))) mops)
-                            ;; Entity var not in find-vars → different entities can produce same tuple
-                            (let [e-var (first (:clause scan-op))]
-                              (not (some #{e-var} find-vars)))
-                            ;; DRIVING scan on a card-many attribute whose value
-                            ;; var is projected away → one tuple per value with
-                            ;; identical projection. (Found by the generative
-                            ;; differential test: [?e :tag ?t] chosen as the
-                            ;; driving scan with :find [?e] emitted duplicate
-                            ;; [e] tuples into the no-dedup QueryResult path.)
-                            (let [v-var (nth (:clause scan-op) 2 nil)]
-                              (and (not (get-in scan-op [:schema-info :card-one?] true))
-                                   (symbol? v-var) (analyze/free-var? v-var)
-                                   (not (some #{v-var} find-vars)))))))
-                    groups)
+        (let [has-output-dupes?
+              (some #(direct-group-output-may-duplicate? % find-vars) groups)
               is-historical? (= :historical (when temporal (:type temporal)))
               dedup-strategy (cond
-                               has-card-many-dupes? :hash
+                               has-output-dupes? :hash
                                is-historical? :adjacent
                                :else nil)]
           (finalize-direct-result result-list dedup-strategy))))))
@@ -4121,7 +4152,14 @@
                  (pss-instance? (:eavt db))
                  #?(:clj (not (:attribute-refs? (dbi/-config db))) :cljs true))
           (do (check-cancel! cancel)
-              (run-point-program prog db consts max-results cancel))
+              ;; A compiled point program applies attached predicates and hash
+              ;; dedup only after its scan.  Bound only the already-distinct,
+              ;; filter-free variant.
+              (run-point-program prog db consts
+                                 (when (and (nil? (:dedup prog))
+                                            (empty? (:attached prog)))
+                                   max-results)
+                                 cancel))
           (let [plan' (if (seq rel-consts) (bind-plan-consts plan rel-consts) plan)]
             (when plan'
               (execute-plan-direct plan' db find-vars max-results consts

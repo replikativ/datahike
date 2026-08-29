@@ -4133,6 +4133,19 @@
     (cond->> result
       qreturnmaps (convert-to-return-maps qreturnmaps))))
 
+(defn- unordered-result-demand
+  "Return the number of distinct tuples an unordered executor may need in
+   order to satisfy OFFSET + LIMIT, or nil when execution must remain
+   unbounded.  The executor is still responsible for declining this hint when
+   it cannot count final distinct tuples while scanning (post-filters,
+   projection duplicates, historical results, and so on)."
+  [order-spec offset limit]
+  (when (and (nil? order-spec) (some? limit) (pos? limit))
+    (let [n (+ (long (max 0 (or offset 0))) (long limit))]
+      ;; The direct executor uses int-sized counters. A larger demand cannot
+      ;; save work and narrowing it would stop too early.
+      (when (<= n 2147483647) n))))
+
 (defn- plan-sub-ops
   "Flatten plan ops into leaf sub-ops (expanding entity-groups)."
   [plan]
@@ -4861,7 +4874,7 @@
 (defn- execute-planned-direct
   "Direct HashSet path: write tuples directly, no Relations.
    Returns result set or nil if not eligible."
-  [plan db qfind find-elements context-in query stats? qreturnmaps]
+  [plan db qfind find-elements context-in query stats? qreturnmaps max-results]
   (let [prepared? (prepared-execution?)
         direct-eligible? (and (instance? FindRel qfind)
                               (not stats?)
@@ -4891,10 +4904,10 @@
                                  :cljs execute/execute-plan-prepared)]
             ;; pass the context so a NOT-JOIN sub-plan keeps its sources and cancel flag
             (exec-prepared plan db find-var-syms (:rels context-in) (:consts context-in)
-                           nil (:cancel context-in) context-in))
+                           max-results (:cancel context-in) context-in))
           (let [exec-direct #?(:clj (requiring-resolve 'datahike.query.execute/execute-plan-direct)
                                :cljs execute/execute-plan-direct)]
-            (exec-direct plan db find-var-syms nil (:consts context-in) (:cancel context-in)
+            (exec-direct plan db find-var-syms max-results (:consts context-in) (:cancel context-in)
                          context-in)))))))
 
 (defn- post-process-result
@@ -5020,6 +5033,7 @@
         result-arity  (count find-elements)
         order-spec    (when (and order-by (instance? FindRel qfind))
                         (parse-order-by order-by find-elements))
+        result-demand (unordered-result-demand order-spec offset limit)
 
         ;; Find the primary db for planning: $ if available, else first eligible source
         primary-db (let [sources (:sources context-in)]
@@ -5205,7 +5219,8 @@
             ;; lookup-ref-reverse-map. The direct paths would leak raw eids.
             (if-let [direct-result (when-not lookup-ref-reverse-map
                                      (execute-planned-direct
-                                      plan db qfind find-elements context-in query stats? qreturnmaps))]
+                                      plan db qfind find-elements context-in query stats? qreturnmaps
+                                      result-demand))]
               (let [result (apply-result-transforms direct-result order-spec offset limit qreturnmaps)]
                 #?(:clj
                    (when *profile?*
