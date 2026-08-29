@@ -5,6 +5,7 @@
   (:gen-class)
   (:require
    [clojure.edn :as edn]
+   [datahike.http.backends]
    [datahike.metrics :as metrics]
    [datahike.http.permissions :as permissions]
    [datahike.http.routes :as routes]
@@ -12,9 +13,10 @@
    [reitit.swagger :as swagger]
    [reitit.swagger-ui :as swagger-ui]
    [ring.middleware.cors :refer [wrap-cors]]
-   [datahike.tools :refer [datahike-version]]
+   [datahike.tools :as tools]
    [konserve.core :as k]
    [konserve.metrics :as konserve-metrics]
+   [konserve.store]
    [replikativ.metrics :as registry]
    [replikativ.metrics.jvm :as jvm-metrics]
    [replikativ.metrics.konserve :as metrics-konserve]
@@ -91,6 +93,30 @@
                           (text-response 200 "ready\n")
                           (text-response 503 "not ready\n")))}}]])
 
+(defn- registered-konserve-backends []
+  ;; Konserve backends become usable by registering a connect-store method.
+  ;; Report the runtime truth, including third-party backends loaded by an
+  ;; embedding host, rather than maintaining a second hard-coded list here.
+  (if-let [connect-store (ns-resolve 'konserve.store '-connect-store)]
+    (->> (methods @connect-store)
+         keys
+         (remove #{:default})
+         sort
+         vec)
+    []))
+
+(defn- version-route [server-config]
+  ["/version"
+   {:get {:no-doc    true
+          :metric-op :version
+          :handler   (fn [_]
+                       {:status 200
+                        :body   {:datahike-version  tools/datahike-version
+                                 :git-sha           tools/datahike-git-sha
+                                 :konserve-version  tools/konserve-version
+                                 :konserve-backends (registered-konserve-backends)
+                                 :config            (routes/redact server-config)}})}}])
+
 (defn- metrics-route [config connections]
   (when-not (false? (:metrics config))
     ["/prometheus"
@@ -126,11 +152,13 @@
    sink: an embedding host owns that lifecycle. `start-server` installs and
    reference-counts the standalone server's sink."
   [config connections]
-  (let [config  (if (:auth-db config) (permissions/configure config) config)
+  (let [server-config config
+        config  (if (:auth-db config) (permissions/configure config) config)
         handler (routes/handler config
                                 {:connections     connections
                                  :extra-routes    (concat [swagger-route]
                                                           (health-routes config connections)
+                                                          [(version-route server-config)]
                                                           (keep identity [(metrics-route config connections)])
                                                           (permissions/routes config))
                                  :default-handler (ring/routes
@@ -213,7 +241,7 @@
 (defn -main [& args]
   (let [{:keys [level] :as config} (edn/read-string (slurp (first args)))]
     (when (#{:trace :debug :info nil} level)
-      (println "Datahike HTTP Server" datahike-version "- https://datahike.io"))
+      (println "Datahike HTTP Server" tools/datahike-version "- https://datahike.io"))
     (log/info :datahike/http-server-config {:config (routes/redact config)})
     (start-server config)
     (log/info :datahike/http-server-started "Server started")))

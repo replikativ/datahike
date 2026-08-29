@@ -99,9 +99,9 @@
                                ;; Optional `datahike/s3` browser entry. The
                                ;; regular browser bundle does not require this
                                ;; namespace, so Closure keeps S3 signing code out.
-                               ;; 0.1.39: all 45 reflective S3 calls hinted
+                               ;; 0.1.39+: all 45 reflective S3 calls hinted
                                ;; (konserve-s3#19).
-                               org.replikativ/konserve-s3 {:mvn/version "0.1.39"}}
+                               org.replikativ/konserve-s3 {:mvn/version "0.1.42"}}
                                
                   :extra-paths ["test"]}
 
@@ -173,8 +173,17 @@
                                is.simm/distributed-scope     {:mvn/version "0.1.9"}
                                org.replikativ/konserve-sync  {:mvn/version "0.1.40"}
 
-                               ;; S3-compatible store integration test (migrate-s3-test, needs docker; runs Garage)
-                               org.replikativ/konserve-s3    {:mvn/version "0.1.39"}
+                               ;; Standalone-server backends. Keep these versions in sync with
+                               ;; :http-server below: tests load the same registration namespace
+                               ;; that the shipped server does.
+                               org.replikativ/konserve-s3    {:mvn/version "0.1.42"
+                                                               :exclusions [com.amazonaws/aws-xray-recorder-sdk-aws-sdk-v2]}
+                               org.replikativ/konserve-jdbc  {:mvn/version "0.2.101"}
+                               org.replikativ/konserve-dynamodb
+                               {:mvn/version "0.1.33"
+                                :exclusions [com.amazonaws/aws-xray-recorder-sdk-aws-sdk-v2]}
+                               org.replikativ/konserve-redis {:mvn/version "0.1.29"}
+                               org.postgresql/postgresql     {:mvn/version "42.7.13"}
                                http-kit/http-kit             {:mvn/version "2.8.1"}}}
 
            ;; Datomic Pro peer API, for `datahike.migrate.datomic` and its
@@ -208,7 +217,25 @@
                                       metosin/reitit          {:mvn/version "0.10.1"}
                                       ring-cors/ring-cors     {:mvn/version "0.1.13"}
                                       nrepl/bencode           {:mvn/version "1.2.0"}
-                                      org.slf4j/slf4j-simple  {:mvn/version "2.0.18"}}
+                                      org.slf4j/slf4j-simple  {:mvn/version "2.0.18"}
+
+                                      ;; Batteries included for the standalone server. File,
+                                      ;; memory and tiered ship with Konserve itself. GCS stays
+                                      ;; optional because its SDK graph is exceptionally large;
+                                      ;; RocksDB/LMDB stay optional because they add native and
+                                      ;; platform constraints to an otherwise portable jar.
+                                      org.replikativ/konserve-s3
+                                      {:mvn/version "0.1.42"
+                                       :exclusions [com.amazonaws/aws-xray-recorder-sdk-aws-sdk-v2]}
+                                      org.replikativ/konserve-jdbc
+                                      {:mvn/version "0.2.101"}
+                                      org.replikativ/konserve-dynamodb
+                                      {:mvn/version "0.1.33"
+                                       :exclusions [com.amazonaws/aws-xray-recorder-sdk-aws-sdk-v2]}
+                                      org.replikativ/konserve-redis
+                                      {:mvn/version "0.1.29"}
+                                      org.postgresql/postgresql
+                                      {:mvn/version "42.7.13"}}
                          :main-opts ["-m" "datahike.http.server"]}
 
            ;; konserve-s3 is here for the same reason it is in :native-cli, and it
@@ -223,7 +250,7 @@
            :libdatahike {:main-opts ["-e" "(set! *warn-on-reflection* true)"]
                          :extra-paths ["libdatahike/src"]
                          :extra-deps {org.replikativ/konserve-s3
-                                      {:mvn/version "0.1.40"
+                                      {:mvn/version "0.1.42"
                                        :exclusions [com.amazonaws/aws-xray-recorder-sdk-aws-sdk-v2]}}}
 
            :native-cli {:main-opts ["-e" "(set! *warn-on-reflection* true)"
@@ -240,6 +267,7 @@
                                     ;; config rather than a missing handler.
                                     "--enable-url-protocols=http,https"
                                     "-H:IncludeResources=DATAHIKE_VERSION"
+                                    "-H:IncludeResources=DATAHIKE_GIT_SHA"
                                     ; "--future-defaults=all"
                                     ;; 5g, not 4g: pulling in konserve-s3 brings the
                                     ;; AWS SDK with it, and the analysis then needs
@@ -273,7 +301,7 @@
                          ;; loses differs by builder — the same source built on
                          ;; Oracle GraalVM 25.0.1 and failed on GraalVM Community in
                          ;; CI. Excluding the jar removes the question.
-                         org.replikativ/konserve-s3 {:mvn/version "0.1.40"
+                         org.replikativ/konserve-s3 {:mvn/version "0.1.42"
                                                      :exclusions [com.amazonaws/aws-xray-recorder-sdk-aws-sdk-v2]}
                          com.cognitect/transit-clj {:mvn/version "1.1.363"}
                          babashka/pods             {:git/url "https://github.com/babashka/pods"
