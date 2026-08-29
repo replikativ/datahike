@@ -297,17 +297,24 @@
   (let [{:keys [indices system filtered-depth] :as view}
         (dbi/-secondary-view db)
         valid (valid-selector db)
+        provenance (:datahike/secondary-filter-provenance (meta db))
         temporal-request (cond-> {:system (or system {:mode :current})}
                            valid (assoc :valid valid))]
     (cond
+      (= :composed provenance)
+      (unsupported-temporal! :secondary-view nil temporal-request
+                             :composed-filtered-db)
+
       ;; A plain d/filter predicate has no equivalent secondary operation.
       (and (pos? (or filtered-depth 0)) (nil? valid))
       (unsupported-temporal! :secondary-view nil temporal-request
                              :unrepresented-filtered-db)
 
-      ;; One valid-* API call creates one FilteredDB. More predicates (or
-      ;; chained valid selectors) need a compositional adapter contract.
-      (> (or filtered-depth 0) (if valid 1 0))
+      ;; A valid marker on a FilteredDB is trusted only when the valid-* API
+      ;; created the sole predicate. FilteredDB flattens composed predicates,
+      ;; so wrapper depth alone cannot prove that provenance.
+      (and (pos? (or filtered-depth 0))
+           (not= :valid-only provenance))
       (unsupported-temporal! :secondary-view nil temporal-request
                              :composed-filtered-db)
 
@@ -326,8 +333,8 @@
         ;; predicate can see every value version, then selects the current
         ;; system-time belief (the greatest known transaction covering the
         ;; requested valid time). It is not a request for raw system history.
-        request (if (and (:valid raw-request)
-                         (= :history (get-in raw-request [:system :mode])))
+        request (if (and (= :at (get-in raw-request [:valid :mode]))
+                         (= {:mode :history} (:system raw-request)))
                   (assoc raw-request :system {:mode :current})
                   raw-request)]
     (when-not (= :current (get-in request [:system :mode]))
@@ -358,10 +365,10 @@
                      :index-ident idx-ident
                      :request page-request})))
   (let [raw-page* (atom nil)
-        request-continuation (:continuation page-request)
-        temporal-request (temporal-request :candidate-page db index)]
+        request-continuation (:continuation page-request)]
     (try
-      (let [raw-page (cond
+      (let [temporal-request (temporal-request :candidate-page db index)
+            raw-page (cond
                        (nil? temporal-request)
                        (-candidate-page index query-spec entity-filter page-request)
 
@@ -430,6 +437,20 @@
    list its ids."
   (-sec-value [this attr eid]
     "The full value this index holds for `[attr eid]`, or nil."))
+
+(defprotocol ISecondaryBackfillPolicy
+  "Optional declaration of which source can reconstruct a generation."
+  (-backfill-policy [this]
+    "Return `:current-values` when replaying current AEVT is complete, or
+     `:transaction-history` when current-value replay would invent or discard
+     temporal history. Indices without this protocol retain the established
+     `:current-values` behavior."))
+
+(defn current-value-backfill?
+  "Whether generic AEVT replay can reconstruct `index` completely."
+  [index]
+  (or (not (satisfies? ISecondaryBackfillPolicy index))
+      (= :current-values (-backfill-policy index))))
 
 (defprotocol ISecondaryHashAddressable
   "OPTIONAL, and the answer to a question `ISecondaryScannable` cannot ask.

@@ -282,6 +282,17 @@
                         needs-backfill?
                         (assoc ::sec/build-attempt (random-uuid)))
            idx (sec/create-index idx-type idx-config nil)
+           _ (when (and needs-backfill?
+                        (not (sec/current-value-backfill? idx)))
+               (throw
+                (ex-info
+                 (str "Secondary index " (pr-str idx-ident)
+                      " requires transaction-history reconstruction; generic "
+                      "current AEVT backfill would be incomplete.")
+                 {:type :secondary/transaction-history-backfill-required
+                  :index-ident idx-ident
+                  :index-type idx-type
+                  :backfill-policy (sec/-backfill-policy idx)})))
            base (-> db
                     (assoc-in [:secondary-indices idx-ident] idx)
                     (assoc-in [:schema idx-ident :db.secondary/status]
@@ -399,30 +410,6 @@
            (dbi/-datoms db :eavt [tx-id] (dbi/-search-context db)))]
     (not-empty m)))
 
-(defn- tx-meta-for-secondary
-  "Tx-meta for the *current* in-progress tx. We use `(inc max-tx)` —
-   incrementing matches the final bump in the transact loop's exit
-   branch — rather than `(dd/datom-tx datom)`. Retract datoms carry
-   the original asserting tx's id, but vt-aware adapters need the
-   writing tx's meta to close `_valid_to` correctly."
-  [db ^Datom _datom]
-  (let [m (meta-for-tx-id db (inc (long (:max-tx db))))]
-    ;; `:db/txInstant` is a datom ON the tx entity, and the in-progress tx's
-    ;; entity is not in EAVT yet when a data datom is being applied — so the
-    ;; seek above finds nothing and a vt-aware adapter received no instant at
-    ;; all. Measured downstream in the stratum index: every row stamped
-    ;; `_valid_from 0` AND `_valid_to 0`, a zero-width window, so a superseded
-    ;; generation was valid at no instant and `FOR VALID_TIME AS OF t` could
-    ;; never see it. The system axis was unaffected because it reads a clock.
-    ;;
-    ;; The fallback is that same clock — the one `:db/txInstant` is itself
-    ;; derived from — so the stamp is the writing moment rather than the
-    ;; instant the tx entity will record. They differ by the transaction's own
-    ;; duration, which is the accuracy a secondary index can have while the tx
-    ;; that would tell it exactly is still running.
-    (cond-> m
-      (nil? (:db/txInstant m)) (assoc :db/txInstant (get-date)))))
-
 (defn- update-secondary-indices
   "Update all secondary indices that cover the given attribute.
    When the index supports ITransientSecondaryIndex (batch mode), uses
@@ -437,8 +424,11 @@
 
    `idx-pred`, when given, restricts delivery to the covering indices it
    accepts — see `notify-vt-aware-indices`."
-  ([db a-ident ^Datom datom added?] (update-secondary-indices db a-ident datom added? any?))
-  ([db a-ident ^Datom datom added? idx-pred]
+  ([db a-ident ^Datom datom added?]
+   (update-secondary-indices db a-ident datom added? nil any?))
+  ([db a-ident ^Datom datom added? tx-meta]
+   (update-secondary-indices db a-ident datom added? tx-meta any?))
+  ([db a-ident ^Datom datom added? tx-meta idx-pred]
    (let [sec-idx-map (get-in db [:rschema :db.secondary/index a-ident])]
      (if (seq sec-idx-map)
        (let [secondary-only? (dbu/secondary-only? db a-ident)
@@ -449,7 +439,12 @@
                         :added? added?
                         :value-hash value-hash
                         :secondary-only? secondary-only?
-                        :tx-meta (tx-meta-for-secondary db datom)}]
+                        ;; The transactor allocated this exact monotonic value
+                        ;; before processing any datoms. Reading the in-progress
+                        ;; tx entity cannot work (its datoms are not searchable
+                        ;; yet), and a second wall-clock read can collide or
+                        ;; disagree with the primary commit timestamp.
+                        :tx-meta tx-meta}]
          (reduce (fn [db' idx-ident]
                    (let [status (get-in db' [:schema idx-ident :db.secondary/status])]
                      (cond
@@ -575,7 +570,7 @@
     (dd/datom (.-e datom) (.-a datom) (secondary-only-hash (.-v datom)) (.-tx datom) (datom-added datom))
     datom))
 
-(defn- with-datom [db ^Datom datom]
+(defn- with-datom [db ^Datom datom tx-meta]
   (validate-datom db datom)
   (let [{a-ident :ident} (dbu/attr-info db (.-a datom) :error-on-missing)
         indexing? (dbu/indexing? db a-ident)
@@ -600,7 +595,7 @@
         true (update-in [:eavt] #(di/-insert % prim :eavt op-count))
         true (update-in [:aevt] #(di/-insert % prim :aevt op-count))
         indexing? (update-in [:avet] #(di/-insert % prim :avet op-count))
-        has-secondary? (update-secondary-indices a-ident datom true)
+        has-secondary? (update-secondary-indices a-ident datom true tx-meta)
         true (advance-max-eid (.-e datom))
         true (update :hash + (hash prim))
         schema? (-> (update-schema datom)
@@ -612,7 +607,7 @@
           true (update-in [:eavt] #(di/-remove % removing :eavt op-count))
           true (update-in [:aevt] #(di/-remove % removing :aevt op-count))
           indexing? (update-in [:avet] #(di/-remove % removing :avet op-count))
-          has-secondary? (update-secondary-indices a-ident datom false)
+          has-secondary? (update-secondary-indices a-ident datom false tx-meta)
           true (update :hash - (hash removing))
           schema? (-> (remove-schema datom) update-rschema)
           keep-history? (update-in [:temporal-eavt] #(di/-temporal-insert % removing :eavt op-count))
@@ -691,8 +686,10 @@
    passed in rather than found again — the same lookup used to happen up to three
    times per cardinality-one write."
   ([db ^Datom datom]
-   (with-datom-upsert db datom (current-datom-for-ea db (.-e datom) (.-a datom))))
-  ([db ^Datom datom old-datom]
+   (with-datom-upsert db datom
+     (current-datom-for-ea db (.-e datom) (.-a datom))
+     nil))
+  ([db ^Datom datom old-datom tx-meta]
    (validate-datom-upsert db datom)
    (let [indexing?     (dbu/indexing? db (.-a datom))
          {a-ident :ident} (dbu/attr-info db (.-a datom) :error-on-missing)
@@ -730,8 +727,8 @@
        indexing?                     (update-in [:avet] #(di/-upsert % prim :avet op-count old-datom))
 
       ;; Secondary indices: retract old, assert new (full value)
-       (and has-secondary? old-datom) (update-secondary-indices a-ident old-datom false)
-       has-secondary? (update-secondary-indices a-ident datom true)
+       (and has-secondary? old-datom) (update-secondary-indices a-ident old-datom false tx-meta)
+       has-secondary? (update-secondary-indices a-ident datom true tx-meta)
 
        true    (update :op-count inc)
        true    (advance-max-eid (.-e datom))
@@ -859,11 +856,16 @@
   ([report datom upsert? old]
    (let [db      (:db-after report)
          a       (:a datom)
+         tx-meta (:tx-meta report)
          write   (fn [db]
                    (cond
-                     (not upsert?)            (with-datom db datom)
-                     (= ::not-looked-up old)  (with-datom-upsert db datom)
-                     :else                    (with-datom-upsert db datom old)))
+                     (not upsert?)            (with-datom db datom tx-meta)
+                     (= ::not-looked-up old)  (with-datom-upsert
+                                                db datom
+                                                (current-datom-for-ea db (.-e ^Datom datom)
+                                                                      (.-a ^Datom datom))
+                                                tx-meta)
+                     :else                    (with-datom-upsert db datom old tx-meta)))
          report' (-> report
                      (update-in [:db-after] write)
                      (update-in [:tx-data] conj datom))]

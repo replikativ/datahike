@@ -582,7 +582,9 @@
                       [])
         scan-identity
         {:version 2
-         :generation (if-let [generation-id (some-> dataset sd/generation-id)]
+         :generation (if-let [generation-id (and dataset
+                                                 (not (sd/dirty? dataset))
+                                                 (sd/generation-id dataset))]
                        [:dataset generation-id]
                        [:instance scan-id])
          :attribute attribute
@@ -761,6 +763,10 @@
                   (first rows))]
         (get row col-key))))
 
+  sec/ISecondaryBackfillPolicy
+  (-backfill-policy [_]
+    (if (vt-mode? config) :transaction-history :current-values))
+
   (-transact [this tx-report]
     (let [t (sec/-as-transient this)]
       (sec/-transact! t tx-report)
@@ -867,8 +873,12 @@
     (boolean (vt-mode? config)))
   (-search-at-vt [_ query-spec entity-filter temporal-request]
     (if (and (vt-mode? config) dataset)
-      (search-dataset dataset query-spec entity-filter
-                      (temporal-where :search temporal-request))
+      (do
+        (when-not (= :at (get-in temporal-request [:valid :mode]))
+          (unsupported-vt-view! :search temporal-request
+                                :transaction-event-interval-semantics))
+        (search-dataset dataset query-spec entity-filter
+                        (temporal-where :search temporal-request)))
       (if (vt-mode? config)
         (es/entity-bitset)
         (unsupported-vt-view! :search temporal-request

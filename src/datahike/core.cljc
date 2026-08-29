@@ -115,12 +115,14 @@
 (defn filter
   [db pred]
   {:pre [(dbu/db? db)]}
-  (if (is-filtered db)
-    (let [^FilteredDB fdb db
-          orig-pred (.-pred fdb)
-          orig-db (.-unfiltered-db fdb)]
-      (FilteredDB. orig-db #(and (orig-pred %) (pred orig-db %))))
-    (FilteredDB. db #(pred db %))))
+  (vary-meta
+   (if (is-filtered db)
+     (let [^FilteredDB fdb db
+           orig-pred (.-pred fdb)
+           orig-db (.-unfiltered-db fdb)]
+       (FilteredDB. orig-db #(and (orig-pred %) (pred orig-db %))))
+     (FilteredDB. db #(pred db %)))
+   assoc :datahike/secondary-filter-provenance :opaque))
 
 ; Changing DB
 

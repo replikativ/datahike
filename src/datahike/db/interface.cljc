@@ -134,6 +134,10 @@
      :system          {:mode :current|:history|:as-of|:since, ...}
      :filtered-depth  number of FilteredDB predicates around the source
 
+   Filter provenance is carried in database metadata rather than inferred from
+   `:filtered-depth`, because `datahike.core/filter` deliberately flattens
+   nested FilteredDBs into one wrapper.
+
    This protocol describes the database view only.  Whether an adapter can
    execute that view is decided by `datahike.index.secondary`."
   (-secondary-view [db]))

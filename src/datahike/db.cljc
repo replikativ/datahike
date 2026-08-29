@@ -638,8 +638,14 @@
 
   dbi/ISecondaryView
   (-secondary-view [db]
-                   (assoc (dbi/-secondary-view (.-origin-db db))
-                          :system {:mode :history}))
+                   (let [view (dbi/-secondary-view (.-origin-db db))]
+                     ;; History widens only an unbounded current view. A nested
+                     ;; as-of/since bound remains authoritative; replacing it
+                     ;; with :history would let valid-time pushdown read future
+                     ;; secondary state.
+                     (if (= :current (get-in view [:system :mode]))
+                       (assoc view :system {:mode :history})
+                       (assoc view :history? true))))
 
   dbi/ISearch
   (-search-context [db]

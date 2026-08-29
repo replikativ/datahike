@@ -2,6 +2,7 @@
   "Focused tests for the optional paged secondary candidate contract."
   (:require
    [clojure.test :refer [deftest is testing]]
+   [datahike.core :as dcore]
    [datahike.db :as db]
    [datahike.index.secondary :as sec]))
 
@@ -112,6 +113,39 @@
                      {:limit 1 :continuation :request})))))
     (is (= [:returned :request] @closed)
         "core closes the advanced token and the caller's input token")))
+
+(deftest temporal-normalization-closes-the-request-continuation
+  (let [closed (atom [])
+        calls (atom 0)
+        idx (reify
+              sec/ISecondaryIndex
+              (-search [_ _ _] nil)
+              (-estimate [_ _] 0)
+              (-can-order? [_ _ _] false)
+              (-slice-ordered [_ _ _ _ _ _] nil)
+              (-indexed-attrs [_] #{:doc/body})
+              (-transact [this _] this)
+
+              sec/ISecondaryCandidateScan
+              (-candidate-page [_ _ _ _]
+                (swap! calls inc))
+
+              sec/ISecondaryCandidateScanLifecycle
+              (-close-candidate-scan [_ continuation]
+                (swap! closed conj continuation)))
+        ;; A valid marker cannot make an arbitrary FilteredDB predicate
+        ;; representable. Normalization rejects before adapter dispatch.
+        invalid-view (-> (dcore/filter (db/empty-db {}) (fn [_ _] true))
+                         (vary-meta assoc
+                                    :datahike/valid-at #inst "2024-02-15"))]
+    (is (= :secondary/temporal-view-unsupported
+           (:type (error-data
+                   #(sec/candidate-page
+                     invalid-view :idx/search idx {} nil
+                     {:limit 1 :continuation :request})))))
+    (is (= 0 @calls))
+    (is (= [:request] @closed)
+        "core owns and closes an input token even when view dispatch fails")))
 
 (deftest candidate-page-preserves-independent-correctness-axes
   (doseq [[precision recall ordering]

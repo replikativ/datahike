@@ -205,25 +205,49 @@
                          vt-db idx {} nil nil :asc 1))))
     (is (= [] @log))))
 
-(deftest valid-intervals-route-only-to-unordered-native-search
+(deftest historical-valid-intervals-fail-closed
   (let [conn (setup-data)
         bitset (es/entity-bitset-from-longs [1])
         log (atom [])
         idx (->MockVtAwareIndex bitset log)
         between (d/valid-between (d/history @conn)
                                  #inst "2024-01-01" #inst "2024-07-01")]
-    (sec/search-with-vt between idx {} nil)
-    (is (= [[:-search-at-vt
-             {:system {:mode :current}
-              :valid {:mode :between
-                      :from #inst "2024-01-01"
-                      :to #inst "2024-07-01"}}]]
-           @log))
-    (reset! log [])
+    ;; Primary history applies interval predicates to transaction events.
+    ;; An SCD secondary may instead contain split current-belief fragments, so
+    ;; only point valid-at has a generally sound history -> current rewrite.
+    (is (= :secondary/temporal-view-unsupported
+           (error-type #(sec/search-with-vt between idx {} nil))))
     (is (= :secondary/temporal-view-unsupported
            (error-type #(sec/slice-ordered-with-vt
                          between idx {} nil nil :asc 1))))
     (is (= [] @log))))
+
+(deftest composed-filter-provenance-fails-closed
+  (let [conn (setup-data)
+        log (atom [])
+        idx (->MockVtAwareIndex (es/entity-bitset-from-longs [1]) log)
+        at #inst "2024-02-15"
+        arbitrary-then-valid (d/valid-at
+                              (d/filter @conn (fn [_ _] true)) at)
+        chained-valid (d/valid-at (d/valid-at @conn at) at)]
+    (doseq [view [arbitrary-then-valid chained-valid]]
+      (is (= :secondary/temporal-view-unsupported
+             (error-type #(sec/search-with-vt view idx {} nil)))))
+    (is (= [] @log)
+        "flattening FilteredDBs cannot erase an unrepresented predicate")))
+
+(deftest history-preserves-a-nested-system-bound
+  (let [conn (setup-data)
+        log (atom [])
+        idx (->MockVtAwareIndex (es/entity-bitset-from-longs [1]) log)
+        bounded-history (-> @conn
+                            (d/as-of (:max-tx @conn))
+                            d/history
+                            (d/valid-at #inst "2024-02-15"))]
+    (is (= :secondary/temporal-view-unsupported
+           (error-type #(sec/search-with-vt bounded-history idx {} nil))))
+    (is (= [] @log)
+        "an as-of history view never reads the current secondary generation")))
 
 (deftest system-time-and-arbitrary-filter-views-fail-closed
   (let [conn (setup-data)

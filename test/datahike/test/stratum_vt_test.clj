@@ -39,7 +39,10 @@
 
 (defn- vt-rows [conn idx-ident]
   (vec (st/q {:from (index-dataset conn idx-ident)
-              :select [:eid :_valid_from :_valid_to :name :salary]})))
+              :select [:eid
+                       :_valid_from :_valid_to
+                       :_system_from :_system_to
+                       :name :salary]})))
 
 (defn- error-data [f]
   (try (f) nil
@@ -183,6 +186,46 @@
       (is (= :secondary/stratum-valid-time-backfill-required
              (:type failure)))
       (is (= 1 (:row-count failure))))))
+
+(deftest schema-registration-refuses-current-value-vt-backfill
+  (let [conn (fresh-conn)]
+    (d/transact conn [{:db/ident :emp/salary
+                       :db/valueType :db.type/long
+                       :db/cardinality :db.cardinality/one}])
+    (d/transact conn [{:emp/salary 100000}])
+    (let [failure (error-data
+                   #(d/transact
+                     conn
+                     [{:db/ident :idx/employees
+                       :db.secondary/type :stratum
+                       :db.secondary/attrs [:emp/salary]
+                       :db.secondary/config {:valid-time true}}]))]
+      (is (= :secondary/transaction-history-backfill-required
+             (:type failure)))
+      (is (nil? (get-in (d/schema (d/db conn))
+                        [:idx/employees :db.secondary/status])))
+      (is (nil? (get-in (d/db conn)
+                        [:secondary-indices :idx/employees]))
+          "the failed transaction publishes neither :building nor an index"))))
+
+(deftest secondary-system-axis-uses-the-primary-transaction-instants
+  (let [conn (fresh-conn)
+        first-instant #inst "2030-01-01T00:00:00.100Z"
+        second-instant #inst "2030-01-01T00:00:00.101Z"]
+    (register-vt-index! conn)
+    (d/transact conn {:tx-data [{:emp/name "Bob" :emp/salary 100000}]
+                      :tx-meta {:db/txInstant first-instant
+                                :db.valid/from #inst "2024-01-01"}})
+    (d/transact conn {:tx-data [{:emp/name "Bob" :emp/salary 110000}]
+                      :tx-meta {:db/txInstant second-instant
+                                :db.valid/from #inst "2024-07-01"}})
+    (let [rows (vt-rows conn :idx/employees)
+          old-row (first (filter #(= 100000 (:salary %)) rows))
+          new-row (first (filter #(= 110000 (:salary %)) rows))]
+      (is (= 1893456000100000 (:_system_from old-row)))
+      (is (= 1893456000101000 (:_system_to old-row)))
+      (is (= 1893456000101000 (:_system_from new-row)))
+      (is (= Long/MAX_VALUE (:_system_to new-row))))))
 
 ;; ============================================================================
 ;; vt-mode off — adapter still works (regression / parity check)
