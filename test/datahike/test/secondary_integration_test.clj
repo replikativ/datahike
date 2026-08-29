@@ -415,10 +415,13 @@
         ;; Search for "machine learning"
           (let [results (sec/-search idx {:query "machine learning" :field :value :limit 10} nil)]
             (is (= #{1 3} (set (es/entity-bitset-seq results)))))
+          (is (= 2 (sec/-estimate idx {:query "machine learning"
+                                       :field :value})))
 
         ;; Search for "database"
           (let [results (sec/-search idx {:query "database" :field :value :limit 10} nil)]
             (is (= #{2} (set (es/entity-bitset-seq results)))))
+          (is (= 1 (sec/-estimate idx {:query "database" :field :value})))
 
         ;; Filtered search
           (let [filter-bs (es/entity-bitset-from-longs [3])

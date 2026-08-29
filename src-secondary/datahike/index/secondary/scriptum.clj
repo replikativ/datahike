@@ -302,7 +302,10 @@
                                     nil)]
             (es/entity-bitset-add! bitset entity-id))
           bitset))
-      (-estimate [_ query-spec] (if snapshot (or (:limit query-spec) 100) 0))
+      (-estimate [_ query-spec]
+        (if snapshot
+          (sc/count-store-snapshot snapshot (query->lucene query-spec))
+          0))
       (-can-order? [_ _ direction] (= :desc direction))
       (-slice-ordered [_ query-spec entity-filter _ _ limit]
         (mapv #(select-keys % [:entity-id :score])
