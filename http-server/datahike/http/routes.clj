@@ -81,6 +81,8 @@
                             (str " on " (str/join ", " (map (comp str :store-id) databases)))))
             :ex-data {:type :datahike.http/forbidden :op op :databases databases}}})
 
+(declare store-config?)
+
 (defn- config-of
   "The database config behind an argument: a config map, a DB (or a history,
    as-of, since or filtered view of one), a connection, or an entity."
@@ -91,14 +93,22 @@
         (map? x) (cond (:config x)        (config-of (:config x))
                        (:origin-db x)     (config-of (:origin-db x))
                        (:unfiltered-db x) (config-of (:unfiltered-db x))
-                       (:store x)         x
+                       (store-config? (:store x)) x
                        :else              nil)
         :else nil))
 
+(defn- store-config?
+  "A Datahike store config, not an application's own `:store` attribute: a
+   map naming a `:backend` and carrying the store's UUID."
+  [store]
+  (and (map? store)
+       (keyword? (:backend store))
+       (uuid? (datahike.store/store-identity store))))
+
 (defn- database-of [x]
   (when-let [{:keys [store branch]} (config-of x)]
-    (when-let [store-id (datahike.store/store-identity store)]
-      {:store-id store-id :branch (or branch :db)})))
+    (when (store-config? store)
+      {:store-id (datahike.store/store-identity store) :branch (or branch :db)})))
 
 (defn- descend?
   "Walk into collections that can carry a database — not into a DB's own

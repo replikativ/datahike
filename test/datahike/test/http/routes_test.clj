@@ -159,6 +159,9 @@
             (try
               (is (= #{id id2} (set (routes/databases [conn [[:db.fn/call :installed-fn conn2]]])))
                   "a handle for another database inside transaction data is part of the call")
+              (is (= [id] (routes/databases [conn [{:shop/name "x" :store {:id 5}}
+                                                   {:store {:backend "file" :id (random-uuid)}}]]))
+                  "an application's own :store attribute is not a database config")
               (finally (d/release conn2) (d/delete-database cfg2))))
           (finally (d/release conn) (d/delete-database cfg)))))
     (testing "HEAD is not a way around the gate: routes have no HEAD, so reitit answers 405"
