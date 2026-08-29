@@ -210,9 +210,9 @@ index**; the primary indices hold a small `hasch` content hash in its place:
 
 Because the hash is a deterministic, normal value, uniqueness/cardinality and
 retraction all work (`[:db/retract e a v]` re-hashes `v` to find the datom), and
-identical content de-duplicates. There is no separate value store and no extra GC:
-the value lives in the secondary, which already manages its own storage, GC
-(`d/gc-storage`) and branch-on-fork.
+identical content de-duplicates. There is no independent mutable value pointer:
+the value lives in the immutable secondary generation named by the same
+Datahike root as the primary hash.
 
 Writing such a value with no covering secondary raises — the value would be lost.
 
@@ -239,10 +239,10 @@ it. A value it cannot confirm is refused
 An index can serve both shapes by implementing **`ISecondaryHashAddressable`**
 (`-sec-value-by-hash [this attr eid hash]`). That is a claim about storage, not
 about lookup: it says values are kept one per *datom* rather than one per
-*entity*, and can be found by content hash. Of the indices shipped alongside
-datahike, none declares it yet — Stratum is columnar with one cell per
-`[eid column]` and Proximum is keyed by external id, so for those a second value
-overwrites the first at write time and no read protocol could recover it.
+*entity*, and can be found by content hash. Scriptum implements this protocol
+for strings by storing one document per `[eid attr value-hash]`. Stratum is
+columnar with one cell per `[eid column]` and Proximum is keyed by external id,
+so those two cannot cover cardinality-many authoritative values.
 
 Consequently a `:db.secondary/only` attribute may be `:db.cardinality/many`
 **only** where a covering index declares `ISecondaryHashAddressable`; otherwise
@@ -285,7 +285,10 @@ The `:db.secondary/type` and `:db.secondary/attrs` are immutable after creation.
 
 ## Branching and Versioning
 
-Secondary indices are first-class versioned state. When you branch a database, each secondary index is CoW-forked alongside the primary indices:
+Secondary indices are first-class versioned state. A committed Datahike root
+contains each ready index's immutable generation key-map. Branch creation copies
+those addresses exactly; it does not ask an adapter to move a mutable native
+branch pointer:
 
 ```clojure
 (require '[datahike.versioning :as dv])
@@ -303,13 +306,53 @@ Secondary indices are first-class versioned state. When you branch a database, e
 (dv/merge! conn #{:experiment} [{:person/name "New person on experiment branch"}] nil)
 ```
 
-Each index type uses its native CoW mechanism:
-- **Scriptum**: Lucene segment sharing via `BranchedDirectory` (~3-5ms fork)
-- **Stratum**: PSS structural sharing via `dataset/fork` (O(1))
-- **Proximum**: Reflink mmap + konserve CoW via `versioning/branch!`
+The adapters realize those immutable generations differently:
 
-Ready index state is persisted in commits via the `IVersionedSecondaryIndex`
-protocol. A building generation is deliberately not flushed, branched, or
+- **Scriptum** seals Lucene segments and manifests into Datahike's konserve;
+  local `:path` is only a disposable cache/workspace.
+- **Stratum** seals its column trees into Datahike's konserve.
+- **Proximum** seals a generation in its configured external store. Its current
+  implementation copies the mmap for every changed transaction; reflinks can
+  make that cheap, but high-frequency vector writes need an overlay/delta design
+  before this should be a production default.
+
+### Stored generation compatibility
+
+Generation key-maps are a durable storage format, not a best-effort cache hint.
+An adapter checks its type, format version, storage owner, and exact generation
+address before it reads storage or participates in GC. A malformed map, a map
+from another adapter, or an unsupported version fails the connection. It is
+never interpreted as an empty index: that would be silent data loss when an
+indexed attribute uses `:db.secondary/only`.
+
+The immutable-generation transition deliberately does not read these earlier
+experimental formats:
+
+- Proximum maps containing native `:commit-id` / `:branch` pointers. Current
+  format 2 requires an external `:generation-id`, a stable
+  `:external-store-id`, and `:generation-strategy :full-mmap-copy`.
+- Scriptum format 1 maps. Current format 2 names a sealed Lucene manifest with
+  `:snapshot-address` in Datahike's store.
+- Unversioned Stratum maps containing only `:dataset-commit-id`. Current format
+  1 also records Datahike as the storage owner.
+
+Do not change the version field to make one of those maps look current: the old
+address names a different persistence protocol. If all canonical values remain
+in the primary indexes, the recovery path is to run the matching older adapter,
+remove/disable the old secondary, upgrade, and create a new index ident so its
+backfill produces a current generation. The restore-failure `:drop` escape hatch
+permits inspection/export but not writes while the adapter is absent; explicitly
+remove the rebuildable secondary schema before writing. If any covered attribute
+uses `:db.secondary/only`, first run the older stack and export or copy the
+canonical values while its generation is still readable; the primary contains
+only hashes and cannot reconstruct them. The current adapter therefore fails
+closed rather than claiming to migrate such a database.
+
+Ready state is persisted through `IDurableSecondaryIndex` and
+`IPreparedSecondaryGeneration`. Preparation writes a complete immutable
+generation first; the Datahike branch head is the only publication point;
+release is cleanup, never another visibility transition. A building generation
+is deliberately not prepared, branched, or
 published as an audit/GC root: it may contain an arbitrary prefix. If a process
 stops during backfill, reconnect creates an empty generation and restarts the
 scan from AEVT. A branch made while an index is building likewise starts without
@@ -320,8 +363,16 @@ Factories invoked for a backfill receive the ephemeral configuration keys
 `:datahike.index.secondary/build-attempt`. An adapter backed by external mutable
 storage must namespace its private files/keys by `build-attempt`; the factory
 must not reopen a partial generation abandoned by an earlier process. The
-attempt identifier is runtime context, not schema, and a successful flush key-map
+attempt identifier is runtime context, not schema, and a successfully prepared key-map
 becomes the durable identity of the ready generation.
+
+Pure `d/db-with` can update a durable index only when the adapter declares that
+its transient is wholly in memory (`IPureSecondaryMutation`). Stratum does;
+Scriptum and Proximum currently do not, because opening their builders performs
+external writes. A pure transaction touching either fails before a builder is
+opened. Connection transactions support all three. An immutable in-memory delta
+overlay is the intended way to remove this limitation without leaking resources
+from abandoned database values.
 
 ### Backfill scalability
 
@@ -351,11 +402,14 @@ The intended scalable follow-up is a resumable generation protocol:
 and materializes each requested window, so it cannot yet replace the general
 path. The snapshot the scan reads is already pinned with a [durable GC
 root](./gc.md#durable-roots) (`:pin`, renewed in the background and released by
-the ready commit), so `d/gc-storage` — from this process or any other — collects
-around it rather than refusing; a build whose lease is lost is discarded at
-install instead of being published over swept nodes. What is not yet durable is
-a versioned adapter's build generation, which `datahike.gc-guard` still covers
-in-process only; a `:checkpoint` root for it is the next step.
+the ready commit); a build whose lease is lost is discarded at install instead
+of being published over swept snapshot nodes. The adapter's unpublished build
+generation is not yet named by a durable checkpoint. The shared Konserve guard
+protects it exactly in-process, and the durable `:building` schema state makes a
+collector in any process defer its sweep until the ready commit lands. This
+pauses reclamation, not transactions or the backfill. A resumable
+generation-specific `:checkpoint` root (or a durable Konserve fence) can later
+allow collection to proceed safely during long builds.
 
 ## Purge propagation
 
@@ -365,22 +419,46 @@ in-process only; a `:checkpoint` root for it is the next step.
 - **Proximum** skips it on KNN queries (HNSW mark-delete).
 - **Stratum** excludes it from columnar aggregates (columnar rewrite).
 
-Two storage-layer caveats:
+Two storage-layer cases matter:
 
-### Konserve-backed indices (Stratum, Proximum)
+### Datahike-store generations (Stratum and Scriptum)
 
-Stratum and Proximum store their durable state in konserve. `d/gc-storage` reclaims their unreachable blobs alongside the primary indices the same way: unreachable storage is swept once it ages past the grace-period cutoff, reachable structure persists. No extra step beyond the standard [purge + cutoff-GC](./gc.md) recipe.
+Stratum nodes and Scriptum's Lucene segments/manifests are immutable objects in
+Datahike's konserve. `d/gc-storage` obtains their exact marks from every retained
+Datahike branch/commit root. A divergent branch therefore keeps its older
+generation alive, while a generation no retained root names is reclaimed after
+the normal cutoff. Scriptum's `:path` cache is disposable and may be cleaned
+independently.
 
-### Scriptum (filesystem)
+Datahike must be the sole mark/sweep authority for that shared store. Do not
+also publish independent native Scriptum, Stratum, or other application roots
+there and run their standalone collectors: a common Konserve write guard fences
+in-flight writes, but it cannot make one collector discover another owner's
+roots. A future store-wide root-provider registry can support that topology;
+today use separate stores or make every root reachable from a Datahike key-map,
+store-ref, or durable GC root.
 
-Scriptum's Lucene segments live on the writer node's local disk, not in konserve. Two consequences for erasure:
+Lucene deletion is still tombstone-and-merge within a generation. In addition,
+old immutable Datahike roots deliberately preserve the older generation. Full
+physical erasure therefore requires removing every branch/history/GC root that
+retains the value, then running the ordinary collector; it is not correct to
+delete a segment still named by an old branch.
 
-1. **`d/gc-storage` cannot reach Scriptum's segments.** Scriptum's `-sec-mark` returns the empty set, so the konserve sweep skips Lucene segment files.
-2. **Lucene's own delete model is tombstones-until-segment-merge.** A purge marks the document as deleted in Scriptum's index, but the bytes linger inside the segment file until Lucene merges that segment away.
+### External generations (Proximum)
 
-For full Scriptum erasure you typically need to:
-- Force a Lucene segment merge so the purged document's bytes are physically removed from segments. Scriptum exposes this via its own API; see the [Scriptum repo](https://github.com/replikativ/scriptum).
-- Confirm the writer's filesystem snapshot / backup policy doesn't pin old segment files (NFS, ZFS snapshots, filesystem-level backups all retain segments on their own terms).
+Proximum's generation ID lives in the Datahike root, but its mmap objects live in
+the configured Proximum store. The Proximum collector fails closed unless it is
+given the complete set of generation IDs retained by Datahike. `d/gc-storage`
+does not yet coordinate that external sweep automatically. Until a coordinator
+collects roots across all branches, commits, and durable GC pins, collect only
+the primary/Datahike store and retain Proximum generations.
+
+`datahike.gc/reachable-external-secondary-roots` performs that complete
+retained-root discovery and groups each generation with the durable external
+store identity recorded in its key-map. It is intentionally not a sweep token:
+a branch or pin can publish an old generation after a read-only walk returns.
+External deletion remains disabled until a durable collection epoch fences all
+root publications from the primary root snapshot through the external sweep.
 
 For the full erasure procedure across the primary store and secondary indices, see [Garbage Collection: GC and purging together](./gc.md#gc-and-purging-together) and [Time-variance: Purge and storage](./time_variance.md#purge-and-storage).
 
@@ -388,42 +466,13 @@ For the full erasure procedure across the primary store and secondary indices, s
 
 Datahike supports distributed deployments with remote writers (`:http` or `:kabel` backends). Each secondary index type has different characteristics for distributed use:
 
-### Stratum and Proximum (konserve-backed)
-
-Stratum and Proximum store their data in konserve, the same key-value store that Datahike uses for primary indices. This means they are **automatically available to all readers** in a distributed setup — readers sync from konserve and can restore the index state.
-
-### Scriptum (filesystem-backed)
-
-Scriptum stores Lucene segments on the **writer node's local filesystem**, not in konserve. This means:
-
-- **Writer node**: Has full read/write access to the Lucene index. Transactions maintain the index in real-time.
-- **Reader nodes**: Cannot directly access the Lucene files. Fulltext search queries must be routed to the writer.
-
-**Current approach (Option A)**: Scriptum is a writer-side index. Readers that need fulltext search results should query through the writer connection (via kabel/http). This is similar to how Elasticsearch routes search requests to the shards that hold the data.
-
-```
-┌───────────┐     transact      ┌────────────────┐
-│  Client   │ ────────────────> │  Writer Node   │
-│           │ <── tx-report ─── │   (scriptum)   │
-└───────────┘                   └───────┬────────┘
-                                        │ konserve sync
-      ┌─────────────────────────────────┼──────────────────┐
-      │                                 │                  │
-┌─────▼──────┐                   ┌──────▼───────┐   ┌──────▼───────┐
-│  Reader 1  │                   │  Reader 2    │   │  Reader 3    │
-│  stratum ✓ │                   │  stratum ✓   │   │  stratum ✓   │
-│  scriptum ✗│                   │  scriptum ✗  │   │  scriptum ✗  │
-└────────────┘                   └──────────────┘   └──────────────┘
-
-Readers have stratum/proximum (via konserve).
-Scriptum queries must go through the writer.
-```
-
-**Future options** (not yet implemented):
-- **Segment replication via konserve**: Store Lucene segments as blobs in konserve, implement a read-only `KonserveDirectory` for readers
-- **NRT segment replication via kabel**: Use Lucene's built-in primary/replica protocol over kabel for near-real-time search replication
-
-**Important**: Lucene does not support NFS or shared network filesystems. Do not mount the scriptum index path over NFS — this will cause index corruption.
+Stratum and Scriptum restore their exact immutable generation from Datahike's
+konserve. A reader needs access to that store and a writable local cache path;
+it does not need a shared Lucene filesystem or a writer-side mutable index.
+Proximum readers additionally need access to the same external generation store
+named by `:store-config`. Remote transaction writers still need to satisfy the
+backfill constraints described above; read availability and coordinated writes
+are separate concerns.
 
 ## Composing Indices with Entity Bitmaps
 
@@ -465,8 +514,9 @@ Secondary indices are declared via schema transactions:
 
 | Key | Description | Default |
 |-----|-------------|---------|
-| `:path` | Directory for Lucene index files | a fresh directory under the system temp dir (`java.io.tmpdir`) |
-| `:branch` | Git branch name for versioning | `"main"` |
+| `:path` | Disposable local Lucene cache/workspace | a fresh directory under the system temp dir (`java.io.tmpdir`) |
+| `:max-merged-segment-mb` | Optional Lucene merge-size tuning | Scriptum default |
+| `:ram-buffer-mb` | Optional Lucene writer buffer tuning | Scriptum default |
 
 ### Proximum Config
 
@@ -486,7 +536,9 @@ Secondary indices are declared via schema transactions:
 |-----|-------------|---------|
 | `:attrs` | Set of attribute keywords to index | required |
 
-Stratum requires no external storage — it maintains an in-memory columnar dataset that is updated transactionally alongside the primary index.
+Stratum requires no separate store configuration. Transactions construct an
+immutable in-memory dataset value; commit preparation seals its column trees
+into Datahike's konserve.
 
 ## Index-like reads from the store itself: konserve-lmdb
 
@@ -570,6 +622,31 @@ sec/ITransientSecondaryIndex
 (-transact! [this tx-report]) ;; mutate in place
 (-persistent! [this] ...)     ;; freeze back to immutable
 ```
+
+A transient that owns files, guards, or native memory must also implement
+`IAbortableSecondaryTransient`; Datahike calls it if primary validation or a
+backfill/install replay fails. If the transient freezes to a durable index,
+implement `IDurableSecondaryTransient`. Implement `IPureSecondaryMutation` on
+the persistent index only when those transient operations perform no external
+writes, which opts the adapter into pure `d/db-with`.
+
+Durable adapters additionally implement `IDurableSecondaryIndex`:
+
+```clojure
+sec/IDurableSecondaryIndex
+(-sec-generation-key-map [this] ...) ; complete immutable generation envelope
+(-sec-prepare [this context] ...)    ; => async IPreparedSecondaryGeneration
+(-sec-restore [this store key-map] ...)
+```
+
+The key-map must include `:type`, `:format-version`, and `:storage-owner`, and
+must fail closed if it cannot identify an exact generation. Register a
+`mark-from-key-map` method for generations stored in Datahike's konserve. The
+key-map of an externally owned generation must additionally carry a stable,
+non-secret store identity and register `external-root-from-key-map`; Datahike
+uses it to discover roots, not to open an arbitrary store configuration. The
+prepared generation must remain readable across an `:unknown` publication
+outcome; its release hook is idempotent cleanup, not a second commit point.
 
 For columnar aggregate pushdown, implement `IColumnarAggregate`:
 

@@ -365,6 +365,16 @@
           [_ policy] (plan/op-required-vars op)]
       (is (= :any policy))))
 
+  (testing ":external-engine can require its entity binding as an input filter"
+    (is (= [#{'?e} :all]
+           (plan/op-required-vars
+            {:op :external-engine
+             :args [:idx/test :query]
+             :binding '[?e ...]
+             :vars #{'?e}
+             :input-vars-spec :all-bound
+             :requires-entity-filter? true}))))
+
   (testing ":rule-lookup is a producer (accumulator-driven, no pre-bound deps)"
     (is (= [#{} :none] (plan/op-required-vars
                         {:op :rule-lookup :rule-name 'some-rule
@@ -461,4 +471,3 @@
       (is (= '{?a 100 ?b 100} rel-seed) "relation binds many rows → non-empty seed")
       (is (not= tuple-seed rel-seed)
           "distinct seeds keep the two queries on distinct plan-cache keys"))))
-

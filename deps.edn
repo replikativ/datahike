@@ -10,7 +10,8 @@
         ;; backings and the zstd compressor (konserve#184); 0.9.387 carries
         ;; incognito 0.3.71 (konserve#185), which is how the transit write
         ;; handler's fix reaches us — we resolve incognito only through konserve
-        ;; and hasch. Datahike compiles konserve into `dthk`, where a reflective
+        ;; and hasch. 0.9.388 is the first released version carrying that stack.
+        ;; Datahike compiles konserve into `dthk`, where a reflective
         ;; call resolves at run time and so works only if it was registered when
         ;; the image was built.
         ;; 0.9.389 (konserve#187): the second Windows fix and a hardening of
@@ -122,7 +123,8 @@
                               orchestra/orchestra         {:mvn/version "2021.01.01-1"}}}
 
            :test {:extra-paths ["test" "bechmark/src" "benchmark/test" "http-server" "src-hitchhiker-tree" "src-kabel" "src-secondary"]
-                  :jvm-opts ["-ea" "--add-modules" "jdk.incubator.vector"]
+                  :jvm-opts ["-ea" "--add-modules" "jdk.incubator.vector"
+                             "--enable-native-access=ALL-UNNAMED"]
                   :extra-deps {lambdaisland/kaocha         {:mvn/version "1.91.1392"}
                                lambdaisland/kaocha-cljs    {:mvn/version "1.9.181"}
                                org.clojure/test.check      {:mvn/version "1.1.3"}
@@ -159,10 +161,12 @@
                                ch.qos.logback/logback-classic {:mvn/version "1.5.32"}
 
                                ;; secondary index integrations (for testing)
-                               org.replikativ/proximum       {:mvn/version "0.1.36"
-                                                               :exclusions [org.slf4j/slf4j-simple]}
-                               org.replikativ/scriptum       {:mvn/version "0.1.30"}
-                               org.replikativ/stratum        {:mvn/version "0.3.82"}
+                               org.replikativ/proximum       {:git/url "https://github.com/replikativ/proximum.git"
+                                                              :git/sha "b53974666662665e54b8482815cdf41ece2fcafa"
+                                                              :exclusions [org.slf4j/slf4j-simple]}
+                               org.replikativ/scriptum       {:git/url "https://github.com/replikativ/scriptum.git"
+                                                              :git/sha "84b847f85ac366a5d5d777cf73dbec02a68aac6b"}
+                               org.replikativ/stratum        {:mvn/version "0.3.83"}
 
                                ;; kabel integration for distributed datahike.
                                ;; src-kabel's connector requires datahike.cbor,
@@ -378,7 +382,7 @@
                                         ;; slf4j-reload4j binding: with datomic's log4j-over-slf4j
                                         ;; on the same classpath the two form an org.apache.log4j.MDC
                                         ;; bridge loop (StackOverflowError on Datomic init).
-                                        org.replikativ/stratum {:mvn/version "0.3.81"
+                                        org.replikativ/stratum {:mvn/version "0.3.83"
                                                                 :exclusions [org.slf4j/slf4j-reload4j
                                                                              ch.qos.reload4j/reload4j]}
                                         com.clojure-goes-fast/clj-async-profiler {:mvn/version "1.8.0"}

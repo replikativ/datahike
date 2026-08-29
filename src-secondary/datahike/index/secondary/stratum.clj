@@ -19,10 +19,12 @@
    The secondary index path is preferred when available — it avoids the
    PSS scan + column extraction overhead entirely."
   (:require
+   [clojure.core.async :as async]
    [datahike.index.audit :as audit]
    [datahike.index.secondary :as sec]
    [datahike.index.entity-set :as es]
    [datahike.db.interface :as dbi]
+   [datalog.parser.type]
    [stratum.api :as st]
    [stratum.dataset :as sd]
    [stratum.warm :as stratum-warm]
@@ -484,6 +486,44 @@
 (declare make-transient-stratum-index)
 (declare persist-transient-stratum-index)
 
+(defn- delivered [value]
+  (let [ch (async/promise-chan)]
+    (async/put! ch value)
+    ch))
+
+(defrecord StratumPreparation [prepared-index]
+  sec/IPreparedSecondaryGeneration
+  (-sec-generation-index [_] prepared-index)
+  ;; Datahike's root is the only publication point. Stratum generations need
+  ;; no post-head native ref movement; unreachable attempts are ordinary GC.
+  (-sec-release [_ _outcome] (delivered true)))
+
+(defn- stratum-key-map-failure-reason [key-map]
+  (cond
+    (not= :stratum (:type key-map)) :wrong-type
+    ;; The first detached-generation bridge wrote a UUID without a versioned
+    ;; ownership envelope. Its object may be immutable, but the stored map does
+    ;; not establish the format or who must retain it.
+    (not (contains? key-map :format-version))
+    :legacy-stratum-generation-envelope
+    (not= 1 (:format-version key-map)) :unsupported-format-version
+    (not= :datahike (:storage-owner key-map)) :wrong-storage-owner
+    (not (uuid? (:dataset-commit-id key-map))) :invalid-dataset-commit-id
+    :else nil))
+
+(defn- validate-stratum-generation-key-map [key-map]
+  (when-let [reason (stratum-key-map-failure-reason key-map)]
+    (throw (ex-info
+            "Invalid Stratum generation key-map."
+            {:type :secondary/invalid-stratum-generation
+             :reason reason
+             :key-map key-map
+             :expected {:type :stratum
+                        :format-version 1
+                        :storage-owner :datahike
+                        :dataset-commit-id :uuid}})))
+  key-map)
+
 (deftype StratumIndex [dataset    ;; StratumDataset or nil
                        attrs      ;; set of datahike attribute idents being indexed
                        attr-refs  ;; set of numeric refs (for attr-refs mode) or nil
@@ -525,6 +565,48 @@
                        result-maps)
           entity-filter (filterv (fn [{:keys [entity-id]}]
                                    (es/entity-bitset-contains? entity-filter entity-id)))))))
+
+  sec/ISecondaryCandidateScan
+  (-candidate-page [_ query-spec entity-filter page-request]
+    (let [{:keys [attribute direction where]} query-spec
+          limit (long (:limit page-request))
+          offset (long (or (:continuation page-request) 0))]
+      (if (or (nil? dataset) (not (contains? attrs attribute)))
+        {:candidates []
+         :precision :exact
+         :recall :complete
+         :ordering :exact
+         :exhausted? true
+         :continuation nil}
+        (let [col-key (attr-col-key attribute)
+              ;; Fetch one look-ahead row so exhaustion is unambiguous. The
+              ;; continuation is an offset into this immutable generation,
+              ;; hence stable for the lifetime of the scan.
+              rows (st/q (cond-> {:from dataset
+                                  :select [:eid col-key]
+                                  :order [[col-key (or direction :asc)]]
+                                  :limit (inc limit)
+                                  :offset offset}
+                           where (assoc :where where)))
+              more? (> (count rows) limit)
+              page-rows (take limit rows)
+              candidates
+              (into []
+                    (keep (fn [row]
+                            (let [eid (long (:eid row))]
+                              (when (or (nil? entity-filter)
+                                        (es/entity-bitset-contains?
+                                         entity-filter eid))
+                                {:entity-id eid
+                                 :attribute attribute
+                                 :value (get row col-key)}))))
+                    page-rows)]
+          {:candidates candidates
+           :precision :exact
+           :recall :complete
+           :ordering :exact
+           :exhausted? (not more?)
+           :continuation (when more? (+ offset limit))}))))
 
   (-indexed-attrs [_] attrs)
 
@@ -574,6 +656,9 @@
 
   (-persistent! [this] this)
 
+  sec/IPureSecondaryMutation
+  (-pure-secondary-mutation? [_] true)
+
   sec/IDbContextAware
   (-with-db-context [this context]
     (let [irm (:ident-ref-map context)
@@ -595,66 +680,45 @@
       (stratum-warm/warm! dataset opts)
       {:fetched 0 :ms 0.0 :budget-exhausted? false}))
 
-  sec/IVersionedSecondaryIndex
-  (-sec-flush [_ store branch]
-    ;; Persist dataset to konserve via stratum's sync!. The dataset
-    ;; commit-id IS a content-addressed hash of the persisted state,
-    ;; so we surface it under both :dataset-commit-id (existing)
-    ;; and the standardized :merkle-root that datahike's audit-chain
-    ;; folds into the commit-id.
-    (if dataset
-      (let [synced-ds (sd/sync! dataset store (name branch))
-            commit-id (get-in synced-ds [:commit-info :id])]
-        {:type :stratum
-         :branch (name branch)
-         :dataset-commit-id commit-id
-         :merkle-root commit-id})
-      {:type :stratum :branch (name branch) :dataset-commit-id nil}))
+  sec/IDurableSecondaryIndex
+  (-sec-generation-key-map [_]
+    {:type :stratum
+     :format-version 1
+     :storage-owner :datahike
+     :dataset-commit-id (some-> dataset sd/generation-id)})
+
+  (-sec-prepare [_ {:keys [store]}]
+    (let [;; Reuse an already sealed clean generation. Besides avoiding one
+          ;; metadata commit per unrelated Datahike transaction, this is what
+          ;; makes Datahike branch creation a genuine O(1) root copy.
+          sealed-ds (cond
+                      (nil? dataset) nil
+                      (and (sd/generation-id dataset)
+                           (not (sd/dirty? dataset))) dataset
+                      :else (sd/seal-generation! dataset store))
+          prepared-index (StratumIndex. sealed-ds attrs attr-refs config)]
+      (delivered (->StratumPreparation prepared-index))))
 
   (-sec-restore [_ store key-map]
-    ;; Restore dataset from konserve
-    (if-let [commit-id (:dataset-commit-id key-map)]
-      (let [restored-ds (sd/load store commit-id)]
-        (StratumIndex. restored-ds attrs attr-refs config))
-      (StratumIndex. nil attrs attr-refs config)))
-
-  (-sec-branch [_ store _from-branch new-branch]
-    ;; Fork dataset (O(1) structural sharing) and sync to new branch
-    (if dataset
-      (let [forked-ds (sd/fork dataset)
-            synced-ds (sd/sync! forked-ds store (name new-branch))]
-        (StratumIndex. synced-ds attrs attr-refs config))
-      (StratumIndex. nil attrs attr-refs config)))
-
-  (-sec-mark [_]
-    ;; Stratum shares datahike's store but -sec-mark on a live instance
-    ;; doesn't have access to the store. GC uses mark-from-key-map instead,
-    ;; which gets the key-map + store from the stored commit.
-    #{})
+    ;; A stored ready index always names an exact generation. Absence is not an
+    ;; empty dataset: treating it that way loses the only authoritative value
+    ;; for :db.secondary/only attributes.
+    (let [{:keys [dataset-commit-id]}
+          (validate-stratum-generation-key-map key-map)
+          restored-ds (sd/open-generation store dataset-commit-id)]
+      (StratumIndex. restored-ds attrs attr-refs config)))
 
   audit/IAuditable
-  ;; The live instance's `dataset` field is immutable; the synced
-  ;; commit-id is only available locally inside -sec-flush. The
-  ;; flush-time merkle-root is captured via the :merkle-root key in
-  ;; -sec-flush's return map, and writing.cljc folds it into the cid.
   (-merkle-root [_]
-    ;; Returns nil when unsynced; never throws.
-    (some-> dataset :commit-info :id))
+    ;; A Stratum generation ID is immutable, but its default UUID is opaque,
+    ;; not a content hash. Advertising it as a Merkle root would make an
+    ;; audit-grade Datahike commit claim more than it can verify.
+    nil)
   (-recompute-merkle-root [_]
-    ;; Stratum's audit ns ships the same IAuditable shape, so when it's
-    ;; on the classpath we delegate the deep walk to it. Older stratum
-    ;; versions (pre-audit) make this resolve nil and we degrade to
-    ;; :unsupported. Resolved lazily so this bridge keeps loading
-    ;; against any stratum version.
-    (cond
-      (nil? dataset)
-      {:status :unsupported :reason :unsynced}
-
-      :else
-      (if-let [recompute (try (requiring-resolve 'stratum.audit/-recompute-merkle-root)
-                              (catch Throwable _ nil))]
-        (recompute dataset)
-        {:status :unsupported :reason :stratum-audit-unavailable})))
+    {:status :unsupported
+     :reason (if dataset
+               :stratum-generation-id-not-content-addressed
+               :unsynced)})
 
   sec/IColumnarAggregate
   (-columnar-aggregate [this query-spec]
@@ -752,7 +816,10 @@
   (-persistent! [this]
     (persist-transient-stratum-index dataset attrs attr-refs config
                                      pending-adds pending-retracts
-                                     (aget tx-meta-ref 0))))
+                                     (aget tx-meta-ref 0)))
+
+  sec/IDurableSecondaryTransient
+  (-durable-persistent-result? [_] true))
 
 (defn- make-transient-stratum-index [dataset attrs attr-refs config]
   (let [;; Build ref→col-key map from ident-ref-map in config
@@ -918,63 +985,24 @@
 ;; ---------------------------------------------------------------------------
 ;; Registration
 
-(let [factory (fn [config db]
-                (let [attrs (set (:attrs config))
-                      ident-ref-map (:ident-ref-map config)
-                      attr-refs (when ident-ref-map
-                                  (not-empty (set (keep ident-ref-map attrs))))]
-                  (StratumIndex. (build-initial-dataset db attrs config)
-                                 attrs
-                                 attr-refs
-                                 config)))]
-  (sec/register-index-type! :stratum factory)
-  (sec/register-index-type! :datahike.index.secondary/stratum factory))
+(let [descriptor
+      {:create
+       (fn [config db]
+         (let [attrs (set (:attrs config))
+               ident-ref-map (:ident-ref-map config)
+               attr-refs (when ident-ref-map
+                           (not-empty (set (keep ident-ref-map attrs))))]
+           (StratumIndex. (build-initial-dataset db attrs config)
+                          attrs
+                          attr-refs
+                          config)))
+       :validate-generation validate-stratum-generation-key-map
+       :mark-generation
+       (fn [key-map store]
+         (ss/generation-reachable-keys store (:dataset-commit-id key-map)))}]
+  (sec/register-index-type! :stratum descriptor)
+  (sec/register-index-type! :datahike.index.secondary/stratum descriptor))
 
-;; GC: stratum writes to datahike's konserve store, so datahike's GC must
-;; preserve stratum's keys. Walk the dataset commit chain to collect all
-;; reachable keys: dataset commits, index commits, PSS node addresses,
-;; plus branch metadata keys.
-(defmethod sec/mark-from-key-map :stratum [key-map store]
-  (if-let [commit-id (:dataset-commit-id key-map)]
-    (let [;; Walk parent chain from this commit to collect all reachable dataset commits
-          reachable-ds-commits
-          (loop [queue [commit-id]
-                 visited #{}]
-            (if (empty? queue)
-              visited
-              (let [[current & rest] queue]
-                (if (or (nil? current) (visited current))
-                  (recur (vec rest) visited)
-                  (let [snapshot (ss/load-dataset-commit store current)
-                        parents (when snapshot (seq (:parents snapshot)))]
-                    (recur (into (vec rest) parents)
-                           (conj visited current)))))))
-          ;; Collect reachable index commits from dataset snapshots
-          reachable-idx-commits (ss/collect-live-index-commits store reachable-ds-commits)
-          ;; Collect reachable PSS node addresses from index snapshots
-          reachable-pss-addrs (ss/collect-live-pss-addresses store reachable-idx-commits)]
-      ;; Return the union of all reachable keys in datahike's store format
-      (into #{}
-            (concat
-             ;; PSS node addresses (flat UUIDs)
-             reachable-pss-addrs
-             ;; Index commit keys
-             (map (fn [id] [:indices :commits id]) reachable-idx-commits)
-             ;; Dataset commit keys
-             (map (fn [id] [:datasets :commits id]) reachable-ds-commits)
-             ;; Branch metadata keys
-             (when-let [branch (:branch key-map)]
-               [[:datasets :heads branch]
-                [:datasets :branches]]))))
-    #{}))
-
-;; Branch: fork dataset and sync to new branch
-(defmethod sec/branch-from-key-map :stratum [key-map store _from-branch new-branch]
-  (if-let [commit-id (:dataset-commit-id key-map)]
-    (let [ds (sd/load store commit-id)
-          forked (sd/fork ds)
-          synced (sd/sync! forked store (name new-branch))]
-      (assoc key-map
-             :branch (name new-branch)
-             :dataset-commit-id (get-in synced [:commit-info :id])))
-    (assoc key-map :branch (name new-branch))))
+;; Stratum writes into Datahike's konserve store. The owning Datahike commit
+;; marks exactly the immutable generation it names; Stratum parent history and
+;; mutable standalone branch refs are separate retention policies.

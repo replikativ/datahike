@@ -8,6 +8,7 @@
             [datahike.index.interface :refer [-mark -seed-root! -slice with-storage]]
             [datahike.index.secondary :as sec]
             [datahike.schema :as schema]
+            [datahike.store :as ds]
             [konserve.core :as k]
             [konserve.gc :refer [sweep!]]
             [replikativ.logging :as log]
@@ -94,10 +95,12 @@
       (loop [[to-check & r] [branch]
              visited        #{}
              reachable      #{branch head-cid}
-             refs           #{}]
+             refs           #{}
+             external-roots #{}
+             building-secondary? false]
         (if to-check
           (if (visited to-check) ;; skip
-            (recur r visited reachable refs)
+            (recur r visited reachable refs external-roots building-secondary?)
             (if-let [record (<?- (k/get store to-check nil opts))]
               (let [{:keys                         [eavt-key avet-key aevt-key
                                                     temporal-eavt-key temporal-avet-key temporal-aevt-key
@@ -118,6 +121,12 @@
                                        (fn [acc _idx-ident key-map]
                                          (set/union acc (sec/mark-from-key-map key-map store)))
                                        #{} secondary-index-keys))
+                      sec-external-roots
+                      (when (seq secondary-index-keys)
+                        (into #{}
+                              (keep (fn [[_idx-ident key-map]]
+                                      (sec/external-root-from-key-map key-map)))
+                              secondary-index-keys))
                           ;; Stored roots are storage-detached; bind them to
                           ;; this store's storage so -mark can walk the tree.
                           ;; Root fusion: inlined roots aren't separate konserve
@@ -157,6 +166,16 @@
                             ;; :db.type/store-ref and so declare no key-bearing
                             ;; attribute (store-refs → #{} regardless).
                       schema (or (:schema schema-meta) (:schema record))
+                      ;; Only the seed record is the CURRENT branch/root head.
+                      ;; Historical commits may legitimately contain an old
+                      ;; :building schema after the live head made it :ready;
+                      ;; letting those defer GC would retain forever whenever
+                      ;; history is kept.
+                      head-building-secondary?
+                      (and (= to-check branch)
+                           (some (fn [[_ entry]]
+                                   (= :building (:db.secondary/status entry)))
+                                 schema))
                             ;; Kept SEPARATE from the node addresses, not folded in.
                             ;; A store-ref names an object; it does NOT say where the
                             ;; bytes live. If they are in this konserve store, the
@@ -201,14 +220,54 @@
                   (recur (concat r (when in-range? parents))
                          (conj visited to-check)
                          new-reachable
-                         (set/union refs record-refs))))
+                         (set/union refs record-refs)
+                         (set/union external-roots sec-external-roots)
+                         (or building-secondary?
+                             head-building-secondary?))))
                     ;; Record absent: already swept by an earlier pass with a
                     ;; narrower window, or the store runs :commit-graph? false
                     ;; and never persisted it. Lineage ends here — nothing to
                     ;; mark. (Without this guard the nil destructure NPEs at
                     ;; get-time.)
-              (recur r (conj visited to-check) reachable refs)))
-          {:reachable reachable :store-refs refs}))))))
+              (recur r (conj visited to-check) reachable refs external-roots
+                     building-secondary?)))
+          {:reachable reachable
+           :store-refs refs
+           :external-secondary-roots external-roots
+           :building-secondary? building-secondary?}))))))
+
+(defn- external-secondary-roots-in-branch
+  "Walk only commit envelopes and external secondary key-maps. Unlike the full
+   primary-store mark, this read-only discovery does not restore or require
+   flushed primary PSS roots."
+  [store branch after-date opts]
+  (async+sync
+   (:sync? opts) *default-sync-translation*
+   (go-try-
+    (loop [[to-check & r] [branch] visited #{} external-roots #{}]
+      (if to-check
+        (if (visited to-check)
+          (recur r visited external-roots)
+          (if-let [record (<?- (k/get store to-check nil opts))]
+            (let [{:keys [secondary-index-keys]}
+                  record
+                  {:keys [datahike/parents
+                          datahike/created-at
+                          datahike/updated-at]}
+                  (:meta record)
+                  in-range? (if-let [d (or updated-at created-at)]
+                              (> (get-time d) (get-time after-date))
+                              false)
+                  record-roots
+                  (into #{}
+                        (keep (fn [[_idx-ident key-map]]
+                                (sec/external-root-from-key-map key-map)))
+                        secondary-index-keys)]
+              (recur (concat r (when in-range? parents))
+                     (conj visited to-check)
+                     (set/union external-roots record-roots)))
+            (recur r (conj visited to-check) external-roots)))
+        external-roots)))))
 
 (def ^:const DEFAULT_SWEEP_MIN_AGE_MS
   "The floor under an EXCLUSIVE local writer: OFF, so single-process collection
@@ -227,8 +286,7 @@
    for everyone; a default small enough to be harmless would not protect anyone
    while looking as though it did.
 
-   So under an exclusive writer it is opt-in, and collecting from outside the
-   writer process without it is warned about by name. See [[gc-storage!]]."
+   So under an exclusive writer it is opt-in. See [[gc-storage!]]."
   0)
 
 (def ^:const DEFAULT_SHARED_SWEEP_MIN_AGE_MS
@@ -322,13 +380,22 @@
   commits, but a fence guards the pointer, not the values — the objects of a commit in
   flight elsewhere are on disk and reachable from nothing, and this collector cannot
   see them. A collection under shared ownership therefore needs the floor as well.
-  Readers are unconstrained."
+  Readers are unconstrained.
+
+  LONG SECONDARY BACKFILLS are the exception to a finite wall-clock floor. Their
+  base snapshot has a durable GC root, but an adapter may write private Konserve
+  objects for hours before its generation becomes publishable. While any current
+  retained head says a secondary is `:building`, this function completes the mark
+  but deliberately skips the sweep. This is a durable cross-process fence: it
+  pauses reclamation, never the writer, and disappears with the ready commit. A
+  future durable Konserve lease or adapter checkpoint can make that conservative
+  deferral unnecessary."
   ([db] (gc-storage! db (#?(:clj Date. :cljs js/Date.) 0) nil))
   ([db remove-before] (gc-storage! db remove-before nil))
   ([db remove-before {:keys [min-age-ms]}]
    (go-try S
            (let [{:keys [config store]} db
-                 store-id (:id (:store config))
+                 store-id (ds/canonical-store-id store (:store config))
                  min-age-ms (or min-age-ms (default-min-age-ms config))
                  ;; Cutoff from konserve's monotonic write clock — the SAME
                  ;; source that stamps :last-write. Strictly increasing, so a
@@ -353,24 +420,6 @@
                              (sort-by get-time)
                              first)
                  _ (log/debug :datahike/gc-start {:time now :cutoff cutoff :min-age-ms min-age-ms})
-                 ;; The condition that matters is not which writer backend this
-                 ;; config names — a second process connecting to the same store
-                 ;; gets a `:self` writer by default and looks like the writer —
-                 ;; it is whether anything in THIS process has ever written here.
-                 ;; If not, `safe-point` is `now` because this heap is idle, not
-                 ;; because the store is quiet, and only `min-age-ms` is holding
-                 ;; the line.
-                 _ (when-not (guard/ever-guarded? store-id)
-                     (if (pos? min-age-ms)
-                       (log/info :datahike/gc-outside-writer-process
-                                 {:min-age-ms min-age-ms
-                                  :note "collecting a store this process has never written: the sweep is bounded by :min-age-ms alone"})
-                       (log/warn :datahike/gc-outside-writer-process
-                                 {:min-age-ms min-age-ms
-                                  :note (str "collecting a store this process has never written, and with no sweep floor. "
-                                             "Another process's in-flight commit is invisible here — its objects are on disk, "
-                                             "reachable from nothing yet, and this sweep can delete them. "
-                                             "Set :min-age-ms above the longest values-then-pointer window your writers can have.")})))
                  _ (sc/clear-write-cache (:store config)) ; Clear the schema write cache for this store
                  branches (<? S (k/get store :branches))
                  _ (log/trace :datahike/gc-retain-branches {:branches branches})
@@ -465,10 +514,16 @@
                  reachable (-> (apply set/union (map :reachable walked))
                                (set/union (apply set/union (map :store-refs walked)))
                                (conj :branches)
-                               (conj roots/registry-key))]
+                               (conj roots/registry-key))
+                 building-secondary? (boolean (some :building-secondary? walked))]
              (log/trace :datahike/gc-reachable {:reachable-count (count reachable)
                                                 :cutoff cutoff})
-             (<? S (sweep! store reachable cutoff))))))
+             (if building-secondary?
+               (do
+                 (log/debug :datahike/gc-deferred-secondary-build
+                            {:reason :secondary-index-backfill-in-progress})
+                 #{})
+               (<? S (sweep! store reachable cutoff)))))))
 
 (defn reachable-store-refs
   "The set of `:db.type/store-ref` values the database still names — its live blob
@@ -534,6 +589,40 @@
                              (:store-refs (<?- (reachable-in-branch
                                                 store (first bs) remove-before
                                                 config schema-cache opts))))))))))))
+
+(defn reachable-external-secondary-roots
+  "Discover the exact external secondary generations named by every retained
+   branch, commit-history record, and durable GC root.
+
+   The result is a set of adapter-defined root envelopes containing a stable
+   external-store identity. It is deliberately read-only: until Datahike holds
+   a durable collection epoch from this snapshot through the external sweep,
+   this set is diagnostic input and MUST NOT authorize deletion. In particular,
+   a branch or pin can still publish an old generation after this walk returns.
+
+   Same-store generations are absent because `gc-storage!` marks them directly."
+  ([db]
+   (reachable-external-secondary-roots
+    db (#?(:clj Date. :cljs js/Date.) 0) {:sync? false}))
+  ([db remove-before]
+   (reachable-external-secondary-roots db remove-before {:sync? false}))
+  ([db remove-before opts]
+   (async+sync
+    (:sync? opts) *default-sync-translation*
+    (go-try-
+     (let [{:keys [store]} db
+           branches (<?- (k/get store :branches nil opts))
+           root-keys (map roots/record-key (keys (<?- (roots/roots store opts))))
+           seeds (concat branches root-keys)]
+       (loop [bs (seq seeds) acc #{}]
+         (if (nil? bs)
+           acc
+           (recur
+            (next bs)
+            (set/union
+             acc
+             (<?- (external-secondary-roots-in-branch
+                   store (first bs) remove-before opts)))))))))))
 
 (defn record-store-refs
   "The store-ref blob keys named by the datom VALUES in a SINGLE stored-db record —

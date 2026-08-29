@@ -15,6 +15,7 @@
    [datahike.tools :refer [get-date date->epoch-ms]]
    [replikativ.logging :as log]
    [datahike.schema :as ds]
+   [datahike.store :as store]
    [datahike.index.secondary :as sec]
    ;; The id-mapping vocabulary. `migrated-eid`/`remember-eid` below serve
    ;; `transact-entities-directly` and nothing else — they are import helpers
@@ -254,9 +255,28 @@
      (let [idx-type (:db.secondary/type idx-schema)
            idx-attrs (set (:db.secondary/attrs idx-schema))
            needs-backfill? (attrs-have-datoms? db idx-attrs)
+           secondary-only-attrs (set (filter #(dbu/secondary-only? db %) idx-attrs))
+           _ (when (and needs-backfill? (seq secondary-only-attrs))
+               (throw (ex-info
+                       (str "Secondary index " (pr-str idx-ident)
+                            " cannot be backfilled from the primary index because "
+                            "it covers :db.secondary/only attributes whose primary "
+                            "values are content hashes. Migrate from an existing "
+                            "authoritative secondary generation explicitly.")
+                       {:type :secondary/secondary-only-backfill-requires-source-generation
+                        :index-ident idx-ident
+                        :attributes secondary-only-attrs})))
+           primary-store (:store db)
+           primary-store-config (get-in db [:config :store])
+           primary-store-id (when (or primary-store (:id primary-store-config))
+                              (store/canonical-store-id primary-store
+                                                        primary-store-config))
            idx-config (cond-> (merge (:db.secondary/config idx-schema)
                                      {:attrs idx-attrs
-                                      ::sec/index-ident idx-ident})
+                                      ::sec/index-ident idx-ident
+                                      ::sec/store primary-store})
+                        primary-store-id
+                        (assoc ::sec/store-id primary-store-id)
                         (seq (:ident-ref-map db))
                         (assoc :ident-ref-map (:ident-ref-map db))
                         needs-backfill?
@@ -275,9 +295,13 @@
 
 #?(:clj
    (defn finalize-secondary-indices
-     "Walk the post-tx schema for secondary-index entities that have
-      `:db.secondary/type` + `:db.secondary/attrs` but no instance yet,
-      and create them with their full config.
+     "Reconcile the runtime secondary-index map with the post-tx schema, then
+      create instances for declarations that do not have one yet.
+
+      A removed declaration is dissociated from the new db value without
+      closing the old instance: historical db values may still reference that
+      immutable generation.  Storage reclamation therefore remains the job of
+      commit-root-aware secondary GC.
 
       Called at the end of `transact-tx-data` so the factory sees a
       complete schema entry — fixes the race where instantiating per-
@@ -286,16 +310,30 @@
       `build-secondary-index!`) populates the new index from AEVT, so
       data datoms applied in the same tx are picked up asynchronously."
      [db]
-     (reduce-kv
-      (fn [d k entry]
-        (if (and (keyword? k)
-                 (map? entry)
-                 (:db.secondary/type entry)
-                 (:db.secondary/attrs entry)
-                 (not (get-in d [:secondary-indices k])))
-          (instantiate-secondary d k entry)
-          d))
-      db (:schema db)))
+     (let [declared (into #{}
+                          (keep (fn [[k entry]]
+                                  (when (and (keyword? k)
+                                             (map? entry)
+                                             (:db.secondary/type entry)
+                                             (:db.secondary/attrs entry))
+                                    k)))
+                          (:schema db))
+           db (update db :secondary-indices
+                      (fn [indices]
+                        ;; Keep the canonical no-secondary representation nil.
+                        ;; Unconditionally reducing into {} made every ordinary
+                        ;; transaction differ from an otherwise identical bulk
+                        ;; import even when neither database declared an index.
+                        (when (or (seq indices) (seq declared))
+                          (into {}
+                                (filter (comp declared key))
+                                indices))))]
+       (reduce
+        (fn [d k]
+          (if (get-in d [:secondary-indices k])
+            d
+            (instantiate-secondary d k (get-in d [:schema k]))))
+        db declared)))
    :cljs
    (defn finalize-secondary-indices [db] db))
 
@@ -403,8 +441,15 @@
   ([db a-ident ^Datom datom added? idx-pred]
    (let [sec-idx-map (get-in db [:rschema :db.secondary/index a-ident])]
      (if (seq sec-idx-map)
-       (let [tx-report (cond-> {:datom datom :added? added?}
-                         true (assoc :tx-meta (tx-meta-for-secondary db datom)))]
+       (let [secondary-only? (dbu/secondary-only? db a-ident)
+             value-hash (if (and secondary-only? (not added?))
+                          (.-v datom)
+                          (sec/secondary-only-hash (.-v datom)))
+             tx-report {:datom datom
+                        :added? added?
+                        :value-hash value-hash
+                        :secondary-only? secondary-only?
+                        :tx-meta (tx-meta-for-secondary db datom)}]
          (reduce (fn [db' idx-ident]
                    (let [status (get-in db' [:schema idx-ident :db.secondary/status])]
                      (cond
@@ -423,6 +468,14 @@
                        (if-let [idx (get-in db' [:secondary-indices idx-ident])]
                          (cond
                            (not (idx-pred idx)) db'
+                           (and (sec/durable-secondary? idx)
+                                (= :pure sec/*durable-secondary-write-context*))
+                           (throw
+                            (ex-info
+                             "Pure d/db-with cannot mutate a durable external secondary index until that adapter provides an immutable in-memory delta overlay. Use a connection transaction."
+                             {:type :secondary/durable-db-with-unsupported
+                              :index-ident idx-ident
+                              :attribute a-ident}))
                            (satisfies? sec/ITransientSecondaryIndex idx)
                            (do (sec/-transact! idx tx-report) db')
                            :else (assoc-in db' [:secondary-indices idx-ident]
@@ -451,7 +504,7 @@
    values, and the loss surfaced later as a backup that could not name which
    value a datom meant.
 
-   So cardinality-many is allowed only where an index declares
+   So cardinality-many is allowed only when every covering index declares
    `ISecondaryHashAddressable`, which is the claim that it stores values one per
    datom and can find one by its content hash. Refused at the first such write,
    next to the uncovered check, because that is the moment a value would be
@@ -463,15 +516,53 @@
   [db a-ident datom sec-idx-idents]
   (when (dbu/multival? db a-ident)
     (let [idxs (keep #(get (:secondary-indices db) %) sec-idx-idents)]
-      (when-not (some sec/hash-addressable? idxs)
-        (log/raise "Attribute " a-ident " is :db.secondary/only AND :db.cardinality/many, but no "
-                   "index covering it can store more than one value per entity — the second value "
-                   "would overwrite the first and be lost silently. An index that stores values "
-                   "per datom can declare this by implementing ISecondaryHashAddressable."
+      (when-not (and (= (count idxs) (count sec-idx-idents))
+                     (every? sec/hash-addressable? idxs))
+        (log/raise "Attribute " a-ident " is :db.secondary/only AND :db.cardinality/many, but every "
+                   "covering index must store values per datom and resolve them by content hash — "
+                   "otherwise one covering index would silently lose the second value."
                    {:error :transact/secondary-only-multival-unstorable
                     :attribute a-ident
                     :datom datom
-                    :index-idents (vec sec-idx-idents)})))))
+                    :index-idents (vec sec-idx-idents)
+                    :incapable-index-idents
+                    (into []
+                          (remove (fn [ident]
+                                    (some-> (get (:secondary-indices db) ident)
+                                            sec/hash-addressable?)))
+                          sec-idx-idents)})))))
+
+(defn- assert-secondary-only-transactional!
+  "Require every covering index to be a ready durable generation.
+
+   The primary keeps only a hash, so a transient, missing, disabled, or building
+   adapter cannot be repaired after a crash. Requiring every covering index also
+   prevents a declared index from silently becoming empty on reconnect."
+  [db a-ident datom sec-idx-idents]
+  (let [invalid
+        (keep (fn [idx-ident]
+                (let [idx (get-in db [:secondary-indices idx-ident])
+                      status (get-in db [:schema idx-ident :db.secondary/status])]
+                  (when-not (and (= :ready status)
+                                 idx
+                                 (sec/transactionally-durable-secondary? idx))
+                    {:index-ident idx-ident
+                     :status status
+                     :present? (some? idx)
+                     :durable? (boolean
+                                (and idx
+                                     (sec/transactionally-durable-secondary?
+                                      idx)))})))
+              sec-idx-idents)]
+    (when (seq invalid)
+      (log/raise
+       (str "Attribute " a-ident " is :db.secondary/only, but every covering "
+            "secondary must be ready and transactionally durable before its "
+            "value can be removed from the primary index.")
+       {:error :transact/secondary-only-requires-durable-index
+        :attribute a-ident
+        :datom datom
+        :invalid-indices (vec invalid)}))))
 
 (defn- project-primary
   "For an *added* `:db.secondary/only` datom, a copy with its value replaced by
@@ -501,7 +592,9 @@
       (log/raise "Attribute " a-ident " is :db.secondary/only but no secondary index covers it — its value would be lost"
                  {:error :transact/secondary-only-uncovered :attribute a-ident :datom datom}))
     (when (and secondary-only? (datom-added datom) has-secondary?)
-      (assert-secondary-only-storable! db a-ident datom (get-in db [:rschema :db.secondary/index a-ident])))
+      (let [sec-idx-idents (get-in db [:rschema :db.secondary/index a-ident])]
+        (assert-secondary-only-transactional! db a-ident datom sec-idx-idents)
+        (assert-secondary-only-storable! db a-ident datom sec-idx-idents)))
     (if (datom-added datom)
       (cond-> db
         true (update-in [:eavt] #(di/-insert % prim :eavt op-count))
@@ -617,7 +710,9 @@
        (log/raise "Attribute " a-ident " is :db.secondary/only but no secondary index covers it — its value would be lost"
                   {:error :transact/secondary-only-uncovered :attribute a-ident :datom datom}))
      (when (and secondary-only? has-secondary?)
-       (assert-secondary-only-storable! db a-ident datom (get-in db [:rschema :db.secondary/index a-ident])))
+       (let [sec-idx-idents (get-in db [:rschema :db.secondary/index a-ident])]
+         (assert-secondary-only-transactional! db a-ident datom sec-idx-idents)
+         (assert-secondary-only-storable! db a-ident datom sec-idx-idents)))
      (cond-> db
             ;; Optimistic removal of the schema entry (because we don't know whether it is already present or not)
        schema? (try
@@ -1141,6 +1236,7 @@
     (let [tempids' (-> (:tempids report)
                        (assoc tempid upserted-eid))
           report' (assoc initial-report :tempids tempids')]
+      (sec/abort-tracked-secondary-transients!)
       (transact-tx-data report' es))))
 
 (defn assert-preds [db [_ e _ preds]]

@@ -329,6 +329,72 @@
   (-persistent! [this]
     "Freeze the transient index back to a persistent/immutable instance."))
 
+(defprotocol IDurableSecondaryTransient
+  "Internal capability of a transaction-local mutable view whose
+   `ITransientSecondaryIndex/-persistent!` result is a durable secondary.
+
+   This marker is intentionally separate from `IDurableSecondaryIndex`: an open
+   mutable generation cannot be prepared, restored, or named by a key-map. It
+   only proves that a `:db.secondary/only` value accepted while the DB is in its
+   transient transaction phase will become part of the durable generation that
+   is prepared before the primary head moves."
+  (-durable-persistent-result? [this]
+    "True when -persistent! returns an IDurableSecondaryIndex."))
+
+(defprotocol IPureSecondaryMutation
+  "Capability of a durable index whose transient is entirely in memory.
+
+   Such an index may participate in pure `d/db-with`: mutation neither writes
+   storage nor acquires external resources, and `-persistent!` returns an
+   immutable value. Durable CAS objects are produced later by `-sec-prepare`
+   when a writer commits that value. This must not be inferred from
+   `:storage-owner`: Scriptum stores generations in Datahike's konserve but
+   still writes them while its transient is open."
+  (-pure-secondary-mutation? [this]
+    "True only when -as-transient/-transact!/-persistent! have no external effects."))
+
+(defn pure-secondary-mutation? [index]
+  (and (satisfies? IPureSecondaryMutation index)
+       (-pure-secondary-mutation? index)))
+
+(defprotocol IAbortableSecondaryTransient
+  "A transaction-local secondary builder that owns resources until frozen.
+
+   Core calls `-abort-transient!` when primary transaction validation fails.
+   Implementations must be idempotent and must not invalidate a generation
+   already returned successfully by `-persistent!`."
+  (-abort-transient! [this]
+    "Release guards, writers, and private files owned by an abandoned builder."))
+
+(def ^:dynamic *durable-secondary-write-context*
+  "`:pure` for immutable `d/db-with`; `:commit` while a writer owns cleanup and
+   publication. Durable external builders are forbidden in the pure context
+   until an adapter can represent an in-memory immutable delta overlay."
+  :pure)
+
+(def ^:dynamic *secondary-transient-tracker* nil)
+
+(defn track-secondary-transient!
+  "Register an abortable transaction-local builder with the current owner."
+  [idx]
+  (when (and *secondary-transient-tracker*
+             (satisfies? IAbortableSecondaryTransient idx))
+    (swap! *secondary-transient-tracker* conj idx))
+  idx)
+
+(defn abort-tracked-secondary-transients!
+  "Abort and forget every builder registered in the current transaction."
+  []
+  (when *secondary-transient-tracker*
+    (let [tracked (rseq (vec @*secondary-transient-tracker*))]
+      (reset! *secondary-transient-tracker* [])
+      (doseq [idx tracked]
+        (try
+          (-abort-transient! idx)
+          (catch #?(:clj Throwable :cljs js/Error) failure
+            (log/warn :datahike/secondary-transient-abort-failed
+                      {:error failure})))))))
+
 (defprotocol IDbContextAware
   "Optional protocol for secondary indices that need database context
    (e.g., ident-ref-map for attribute-refs mode) injected before transient use.
@@ -375,41 +441,42 @@
                        :index-ident idx-ident
                        :status status})))))
 
-(defprotocol IVersionedSecondaryIndex
-  "Optional protocol for secondary indices with durable CoW storage.
-   When implemented, index state is persisted in commits, restored on connect,
-   and branched/forked alongside the primary indices. Indices that do NOT
-   implement this protocol are transient and rebuilt from AEVT on connect."
+(defprotocol IDurableSecondaryIndex
+  "A secondary index that prepares and restores immutable generations.
 
-  (-sec-flush [this store branch]
-    "Persist current index state to durable storage.
-     store: konserve store (index may use its own storage internally).
-     branch: current branch keyword.
-     Returns an opaque key-map that can be stored in the commit and used
-     by -sec-restore. Must include :type keyword for dispatch.")
+   Preparation seals a generation before Datahike publishes its root. Indices
+   that do not implement this protocol are transient, contain no authoritative
+   values, and are rebuilt from the primary AEVT index on connect.
+
+   A stored key-map must identify one exact immutable generation. It may not
+   name a mutable native branch, `latest` pointer, filesystem path whose visible
+   contents advance, or any other adapter-owned publication cell.
+
+   `context` contains `:store`, `:branch`, `:index-ident`, `:attempt-id`, and
+   `:base-primary-commit-id`. `:attempt-id` is shared by every secondary in one
+   primary attempt, so private resources must also include `:index-ident`."
+
+  (-sec-generation-key-map [this]
+    "Return the key-map for this exact pinned generation. A dirty/unsealed or
+     empty skeleton may return nil. Core obtains the committed key-map from the
+     prepared index itself so a preparation cannot pair one address with a
+     different live view.")
+
+  (-sec-prepare [this context]
+    "Asynchronously seal this index without moving an adapter-owned mutable
+     ref. Returns an awaitable yielding an IPreparedSecondaryGeneration.")
 
   (-sec-restore [this store key-map]
-    "Restore index state from a previously flushed key-map.
+    "Restore exactly the immutable generation named by key-map.
      Called on a skeleton instance (from create-index with nil db).
      Returns a fully populated index instance.
      store: konserve store.
-     key-map: the opaque map returned by -sec-flush.")
-
-  (-sec-branch [this store from-branch new-branch]
-    "Create a CoW branch of this index.
-     Returns a new index instance on the new branch.
-     For scriptum: forks Lucene segments. For stratum: forks dataset.
-     For proximum: forks HNSW graph.")
-
-  (-sec-mark [this]
-    "Return the set of konserve keys referenced by this index instance.
-     Used by GC to mark reachable storage. Indices using external storage
-     (e.g., scriptum/Lucene filesystem) return #{}."))
+     key-map: the opaque map returned by the preparation."))
 
 (defprotocol ISecondaryWarmable
   "EXPERIMENTAL. Optional protocol for secondary indices whose storage can be
    prefetched ahead of demand. A SEPARATE protocol rather than a method on
-   `IVersionedSecondaryIndex`, deliberately: adding a method to a protocol
+   `IDurableSecondaryIndex`, deliberately: adding a method to a protocol
    breaks every existing implementer at call time, and warmth is orthogonal to
    versioning anyway — an index that does not implement this is simply skipped
    by `datahike.api/warm-db`'s `:secondary` pass (a transient index rebuilt
@@ -436,6 +503,56 @@
   (if (satisfies? ISecondaryWarmable idx)
     (-sec-warm! idx opts)
     {:fetched 0 :ms 0.0 :budget-exhausted? false :unsupported? true}))
+
+(defprotocol IPreparedSecondaryGeneration
+  "A durable secondary generation prepared for one primary commit.
+
+   Only the Datahike head publishes this generation. `-sec-release` is an
+   idempotent asynchronous cleanup/reconciliation hook, never a visibility
+   boundary. Its outcome map has `:status` equal to `:committed`, `:aborted`, or
+   `:unknown`; committed outcomes also carry `:primary-commit-id`, aborted ones
+   carry `:cause`. Unknown means the head write may have landed and therefore
+   MUST retain generation readability."
+
+  (-sec-generation-index [this]
+    "Immutable/pinned live view of the prepared generation. It must satisfy
+     ISecondaryIndex and IDurableSecondaryIndex; later commits may not mutate
+     this view or its candidate cursors.")
+
+  (-sec-release [this outcome]
+    "Asynchronously release or reconcile preparation resources for outcome.
+     Must not move an authoritative native ref. A cleanup failure after a
+     committed or unknown head outcome cannot make the generation unreadable."))
+
+(defn durable-secondary?
+  "Whether idx claims durable restoration from an immutable generation."
+  [idx]
+  (satisfies? IDurableSecondaryIndex idx))
+
+(defn transactionally-durable-secondary?
+  "Whether an index is durable already or is a transaction-local view that
+   freezes to a durable index before commit preparation."
+  [idx]
+  (or (durable-secondary? idx)
+      (and (satisfies? IDurableSecondaryTransient idx)
+           (-durable-persistent-result? idx))))
+
+(defn validate-generation-key-map
+  "Validate the portable envelope every newly prepared durable generation uses.
+
+   Adapter-specific identity fields remain opaque to core, but the envelope is
+   deliberately strict: format evolution must be explicit and storage ownership
+   determines whether Datahike GC is responsible for tracing the generation."
+  [key-map]
+  (when-not (and (map? key-map)
+                 (keyword? (:type key-map))
+                 (pos-int? (:format-version key-map))
+                 (contains? #{:datahike :external} (:storage-owner key-map)))
+    (throw (ex-info
+            "A prepared secondary generation key-map requires a keyword :type, a positive integer :format-version, and :storage-owner of :datahike or :external."
+            {:type :invalid-secondary-generation-key-map
+             :key-map key-map})))
+  key-map)
 
 (defprotocol IValidTimeAware
   "Optional protocol for secondary indices that natively understand the
@@ -588,46 +705,111 @@
       unfiltered)))
 
 ;; ---------------------------------------------------------------------------
-;; GC: static key-map marking (avoids loading full index just for GC)
-
-(defmulti mark-from-key-map
-  "Given a stored key-map from -sec-flush, return the set of konserve keys
-   that are reachable (for GC mark phase). Dispatches on (:type key-map).
-   Avoids instantiating the full index — works directly from the stored metadata."
-  (fn [key-map store] (:type key-map)))
-
-(defmethod mark-from-key-map :default [_ _] #{})
-
-;; ---------------------------------------------------------------------------
-;; Static branch-from-key-map (for branch! without loading full index)
-
-(defmulti branch-from-key-map
-  "Given a stored key-map, create a CoW branch in the index's native storage.
-   Returns a new key-map for the branched index. Dispatches on (:type key-map).
-   Used by versioning/branch! which operates at the store level without connections."
-  (fn [key-map store from-branch new-branch] (:type key-map)))
-
-(defmethod branch-from-key-map :default [key-map _ _ _] key-map)
-
-;; ---------------------------------------------------------------------------
-;; Registry: index-type keyword → factory function
+;; Registry: index type → lifecycle descriptor
 
 (defonce ^:private index-types (atom {}))
 
 (defn register-index-type!
-  "Register a secondary index type. Factory-fn takes (config, db) and returns
-   an ISecondaryIndex instance. Anyone can register their own index type.
+  "EXPERIMENTAL. Register one secondary adapter descriptor.
+
+   A descriptor has a mandatory `:create` function of `[config db]`. Durable
+   adapters also register their static generation operations here:
+
+     :validate-generation  validate and return one stored generation key-map
+     :mark-generation      return primary-Konserve keys reachable from it
+     :external-root        return its external-store root descriptor
+
+   Keeping these operations beside creation makes storage ownership and GC
+   participation properties of one adapter, rather than independent extension
+   points an adapter can accidentally forget. `mark-generation` is mandatory
+   for every durable type (externally owned adapters return the empty set);
+   `external-root` is mandatory exactly when `:storage-owner` is `:external`.
+
+   Passing a factory function remains shorthand for `{:create factory}` and is
+   suitable for transient/rebuildable adapters. This integration surface has
+   no compatibility guarantee until the lifecycle conformance suite is stable.
 
    Example:
      (register-index-type! :my-geo-index
-       (fn [config db] (->MyGeoIndex config)))"
-  [type-keyword factory-fn]
-  (swap! index-types assoc type-keyword factory-fn))
+       {:create (fn [config db] (->MyGeoIndex config))
+        :validate-generation validate-geo-generation
+        :mark-generation mark-geo-generation})"
+  [type-keyword descriptor]
+  (when-not (keyword? type-keyword)
+    (throw (ex-info "A secondary index type must be a keyword."
+                    {:type :secondary/invalid-adapter-type
+                     :index-type type-keyword})))
+  (let [descriptor (if (fn? descriptor) {:create descriptor} descriptor)
+        operations [:create :validate-generation :mark-generation :external-root]]
+    (when-not (and (map? descriptor) (fn? (:create descriptor)))
+      (throw (ex-info "A secondary adapter descriptor requires a :create function."
+                      {:type :secondary/invalid-adapter-descriptor
+                       :index-type type-keyword
+                       :descriptor descriptor})))
+    (doseq [operation operations
+            :let [implementation (get descriptor operation)]
+            :when (and (some? implementation) (not (fn? implementation)))]
+      (throw (ex-info (str "Secondary adapter operation " operation " must be a function.")
+                      {:type :secondary/invalid-adapter-operation
+                       :index-type type-keyword
+                       :operation operation})))
+    (swap! index-types assoc type-keyword descriptor)))
 
 (defn registered-types
   "Returns the set of currently registered secondary index type keywords."
   []
   (set (keys @index-types)))
+
+(defn- adapter-for-key-map
+  [key-map]
+  (or (and (map? key-map) (get @index-types (:type key-map)))
+      (throw (ex-info (str "No secondary adapter is registered for key-map type "
+                           (pr-str (:type key-map)) ".")
+                      {:type :secondary/missing-generation-adapter
+                       :key-map-type (:type key-map)}))))
+
+(defn- validated-adapter-generation
+  [key-map adapter]
+  (validate-generation-key-map
+   (if-let [validate (:validate-generation adapter)]
+     (validate key-map)
+     key-map)))
+
+(defn mark-from-key-map
+  "Return the primary-Konserve keys reachable from one stored immutable
+   generation without instantiating the live index. Fails closed when the
+   adapter did not register a marker."
+  [key-map store]
+  (let [adapter (adapter-for-key-map key-map)
+        key-map (validated-adapter-generation key-map adapter)]
+    (if-let [mark (:mark-generation adapter)]
+      (mark key-map store)
+      (throw (ex-info (str "No secondary GC marker is registered for key-map type "
+                           (pr-str (:type key-map)) ". Refusing to sweep because an "
+                           "empty mark could delete a committed generation.")
+                      {:type :secondary/missing-generation-marker
+                       :key-map-type (:type key-map)})))))
+
+(defn external-root-from-key-map
+  "Return the durable external-store root described by `key-map`, or nil for a
+   generation owned by Datahike's primary Konserve store.
+
+   External roots are discovery data, not permission to sweep. A collector
+   needs the complete set from one fenced Datahike GC snapshot before it may
+   delete from the external store."
+  [key-map]
+  (let [adapter (adapter-for-key-map key-map)
+        key-map (validated-adapter-generation key-map adapter)]
+    (when (= :external (:storage-owner key-map))
+      (if-let [external-root (:external-root adapter)]
+        (external-root key-map)
+        (throw
+         (ex-info
+          (str "No external GC root exporter is registered for key-map type "
+               (pr-str (:type key-map)) ". Refusing to treat an externally owned "
+               "generation as unrooted.")
+          {:type :secondary/missing-external-root-exporter
+           :key-map-type (:type key-map)}))))))
 
 (defn create-index
   "Create a secondary index instance from a registered type.
@@ -635,11 +817,11 @@
    db is the current database (for initial population if needed).
    Auto-requires the integration namespace if the type is namespace-qualified.
 
-   A factory invoked for an asynchronous backfill also receives the ephemeral
-   keys `::index-ident` and `::build-attempt`. An adapter with external mutable
-   storage must use `::build-attempt` to create a private, empty generation;
-   reopening a path left by an earlier crashed attempt can duplicate replayed
-   datoms. These keys are runtime context and are not stored in schema."
+   A factory receives ephemeral `::index-ident` and `::store` keys. During an
+   asynchronous backfill it also receives `::build-attempt`. An adapter must use
+   the attempt identity for private workspaces rather than reopening mutable
+   state left by a crashed replay. These keys are runtime context and are not
+   stored in schema."
   [type-keyword config db]
   #?(:clj
      (when-not (get @index-types type-keyword)
@@ -650,8 +832,8 @@
               (catch Exception e
                 (log/warn :datahike/secondary-index-require-failed {:ns ns-sym :error (.getMessage e)})))))
      :cljs nil)
-  (if-let [factory (get @index-types type-keyword)]
-    (factory config db)
+  (if-let [adapter (get @index-types type-keyword)]
+    ((:create adapter) config db)
     (throw (ex-info (str "Unknown secondary index type: " type-keyword
                          ". Registered types: " (registered-types)
                          ". Did you require the integration namespace?")

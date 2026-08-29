@@ -5598,6 +5598,116 @@
         :field (second query-args)})))
 
 #?(:clj
+   (defn- relation-cell
+     "Read one relation tuple column across the tuple representations used by
+      the fused and relation executors."
+     [tuple column]
+     (cond
+       (instance? clojure.lang.Indexed tuple)
+       (.nth ^clojure.lang.Indexed tuple (int column))
+       (.isArray (class tuple)) (aget ^objects tuple (int column))
+       (sequential? tuple) (nth tuple column)
+       :else (get tuple column))))
+
+#?(:clj
+   (defn- scalar-context-binding
+     "Return [true value] when `var` has one distinct value across every
+      context relation that binds it, otherwise [false nil]. Other relations
+      may contain arbitrarily many tuples; only the queried variable matters."
+     [ctx var]
+     (let [missing (Object.)
+           multiple (Object.)
+           found
+           (reduce
+            (fn [current relation]
+              (if-let [column (get (:attrs relation) var)]
+                (reduce
+                 (fn [value tuple]
+                   (let [candidate (relation-cell tuple column)]
+                     (cond
+                       (identical? value missing) candidate
+                       (= value candidate) value
+                       :else (reduced multiple))))
+                 current (:tuples relation))
+                current))
+            missing (:rels ctx))]
+       (if (or (identical? found missing) (identical? found multiple))
+         [false nil]
+         [true found]))))
+
+#?(:clj
+   (defn- context-entity-filter
+     "Project every current relation that binds `entity-var` to an
+      EntityBitSet and intersect those projections.  Returns nil when the
+      variable is not yet represented in the context; an empty relation
+      deliberately returns an empty bitset."
+     [ctx entity-var]
+     (let [relation-filters
+           (keep (fn [relation]
+                   (when-let [column (get (:attrs relation) entity-var)]
+                     (es/entity-bitset-from-longs
+                      (map (fn [tuple]
+                             (let [entity-id (relation-cell tuple column)]
+                               (when-not (number? entity-id)
+                                 (throw
+                                  (ex-info
+                                   "An external-engine entity filter must contain numeric entity ids."
+                                   {:type :query/external-engine-invalid-entity-filter
+                                    :entity-var entity-var
+                                    :value entity-id})))
+                               (long entity-id)))
+                           (:tuples relation)))))
+                 (:rels ctx))
+           filters (cond-> (vec relation-filters)
+                     (get (:entity-filters ctx) entity-var)
+                     (conj (get (:entity-filters ctx) entity-var)))]
+       (when (seq filters)
+         (reduce es/entity-bitset-and filters)))))
+
+#?(:clj
+   (defn- external-context-filter
+     "Resolve the optional upstream entity filter declared by an external op.
+      A required filter is a correctness contract and therefore fails closed
+      if planner/executor drift ever runs the op without its producer."
+     [ctx op index-ident entity-var]
+     (let [entity-filter (when (:accepts-entity-filter? op)
+                           (context-entity-filter ctx entity-var))]
+       (when (and (:requires-entity-filter? op)
+                  (nil? entity-filter))
+         (throw
+          (ex-info
+           "External engine requires a bound entity filter."
+           {:type :query/external-engine-missing-entity-filter
+            :index-ident index-ident
+            :entity-var entity-var})))
+       entity-filter)))
+
+#?(:clj
+   (defn- resolve-external-query-args
+     "Resolve value-free plan arguments from scalar input relations.
+
+      Prepared query execution deliberately keeps scalar :in values out of the
+      cached plan. External-engine ops therefore see symbols in `:args`; passing
+      those symbols to an adapter makes the plan cache value-independent but
+      produces an invalid backend query. Resolve only unambiguous single-tuple
+      bindings here. A relation-valued argument needs per-row/union semantics
+      and must be represented by a solver engine rather than silently choosing
+      one value."
+     [args ctx]
+     (mapv (fn [arg]
+             (if (analyze/free-var? arg)
+               (let [[bound? value] (scalar-context-binding ctx arg)]
+                 (if bound?
+                   value
+                   (throw
+                    (ex-info
+                     "External-engine query arguments must be scalar-bound before execution."
+                     {:type :query/external-engine-argument-not-scalar
+                      :argument arg}))))
+               arg))
+           args)))
+
+#?(:clj
    (defn- execute-external-engine
      "Execute an external engine op and merge results into context.
       Dispatches on :mode — :filter, :retrieval, or :solver."
@@ -5607,11 +5717,24 @@
            idx (when idx-ident (get-in db [:secondary-indices idx-ident]))
            fn-sym (:fn-sym op)
            args (:args op)
+           resolved-args (resolve-external-query-args args ctx)
            binding-form (:binding op)
-           binding-vars (if (and (sequential? binding-form)
-                                 (sequential? (first binding-form)))
+           binding-vars (cond
+                          ;; Collection binding: [?e ...] binds ?e, not the
+                          ;; collection form itself. Treating `[?e ...]` as an
+                          ;; attribute key made a late external filter an
+                          ;; unrelated relation, so collapse-rels could not
+                          ;; semijoin the already-scanned entity rows.
+                          (and (sequential? binding-form)
+                               (= '... (second binding-form)))
+                          [(first binding-form)]
+
+                          ;; Tuple/relation binding: [[?e ?score]].
+                          (and (sequential? binding-form)
+                               (sequential? (first binding-form)))
                           (first binding-form)
-                          [binding-form])
+
+                          :else [binding-form])
            engine-meta (:engine-meta op)
            build-query-spec (fn [query-args] (external-query-spec engine-meta query-args))]
        ;; External-engine marker functions return query specifications, not an
@@ -5626,8 +5749,9 @@
          :filter
          (if idx
            (let [;; Build query-spec from args (skip the index ident arg)
-                 query-args (vec (drop 1 args))
-                 resolved-args query-args
+                 query-args (vec (drop 1 resolved-args))
+                 entity-var (first binding-vars)
+                 entity-filter (external-context-filter ctx op idx-ident entity-var)
                  ;; Build query-spec — the engine function knows its own format
                  ;; For now, call the resolved function with args to get query-spec
                  resolved-fn (when (and (symbol? fn-sym) (namespace fn-sym))
@@ -5637,11 +5761,10 @@
                              ;; marker (set by `d/valid-at`) and routes through
                              ;; `-search-at-vt` for vt-aware indices.
                              (sec/search-with-vt db idx
-                                                 (build-query-spec resolved-args)
-                                                 nil)
+                                                 (build-query-spec query-args)
+                                                 entity-filter)
                              (es/entity-bitset))
                  ;; Create relation from entity IDs
-                 entity-var (first binding-vars)
                  eids (es/entity-bitset-seq result-bs)
                  ;; EntityBitSet (Roaring) yields 32-bit Ints; datom entity ids
                  ;; are Longs. Coerce so the downstream hash-join on the entity
@@ -5661,10 +5784,12 @@
          ;; Retrieval: EntityBitSet + extra columns (score, distance)
          :retrieval
          (if idx
-           (let [query-args (vec (drop 1 args))
+           (let [query-args (vec (drop 1 resolved-args))
+                 entity-var (first binding-vars)
+                 entity-filter (external-context-filter ctx op idx-ident entity-var)
                  results (sec/slice-ordered-with-vt db idx
                                                     (build-query-spec query-args)
-                                                    nil nil nil nil)
+                                                    entity-filter nil nil nil)
                  ;; Map binding vars to column indices
                  attrs (into {} (map-indexed (fn [i v] [v i]) binding-vars))
                  ;; The engine declares which result key each binding position

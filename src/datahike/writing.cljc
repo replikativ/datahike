@@ -30,12 +30,31 @@
 
 ;; mapping to storage
 
+(defonce ^:private value-caps-warning-emitted? (atom false))
+
 (defn stored-db? [obj]
   ;; TODO use proper schema to match?
   (let [keys-to-check [:eavt-key :aevt-key :avet-key :config
                        :max-tx :max-eid :op-count :hash :meta]]
     (= (count (select-keys obj keys-to-check))
        (count keys-to-check))))
+
+(def ^:private stored-head-identity-keys
+  "Persisted fields that determine a database materialized from a legacy head.
+
+   Current heads carry a commit id. Older heads do not, so a shared writer needs
+   a complete non-persistent comparison token to retain an unchanged live
+   secondary generation without becoming blind to a foreign update. Fused root
+   values are excluded: their content-derived keys already name them."
+  [:eavt-key :aevt-key :avet-key
+   :temporal-eavt-key :temporal-aevt-key :temporal-avet-key
+   :schema-meta-key :secondary-index-keys
+   :schema :rschema :system-entities :ref-ident-map :ident-ref-map
+   :max-tx :max-eid :op-count :hash :meta])
+
+(defn- stored-head-identity [stored]
+  (-> (select-keys stored stored-head-identity-keys)
+      (update :meta dissoc :datahike/commit-id)))
 
 (defn get-and-clear-pending-kvs!
   "Retrieves and clears pending key-value pairs from the store's pending-writes atom.
@@ -48,9 +67,110 @@
       (swap! pending-writes-atom (fn [old-kvs] (reset! kvs-to-write old-kvs) [])))
     @kvs-to-write))
 
-(defn db->stored
-  "Maps memory db to storage layout. Index flushes will add [k v] pairs to pending-writes."
-  [db flush?]
+(defn- delivered
+  "Return an already-delivered awaitable in the core.async dialect used by the
+   commit path."
+  [value]
+  (let [ch (async/promise-chan)]
+    (put! ch value)
+    ch))
+
+#?(:clj
+   (defn- throw-if-lifecycle-failure [value]
+     (cond
+       (instance? Error value)
+       (throw (ex-info "Fatal error during secondary index lifecycle."
+                       {:type :fatal-commit-error}
+                       value))
+
+       (instance? Throwable value) (throw value)
+       :else value)))
+
+#?(:clj
+   (defn- take-result!! [awaitable]
+     (throw-if-lifecycle-failure (async/<!! awaitable))))
+
+#?(:clj
+   (defn- invoke-lifecycle [f]
+     (try
+       (f)
+       (catch Throwable failure
+         (throw-if-lifecycle-failure failure)))))
+
+#?(:clj
+   (defn ^:no-doc prepare-secondary-generations
+     "Prepare every durable secondary index and retain each preparation in
+      `prepared*` as soon as it exists, so a later failure can abort a partial
+      prepare set. Transient indices are not persisted."
+     [db prepared* attempt-id]
+     (go-try-
+      (loop [entries (seq (:secondary-indices db))
+             prepared-db db
+             key-maps {}]
+        (if-let [[idx-ident idx] (first entries)]
+          (if (= :building
+                 (get-in db [:schema idx-ident :db.secondary/status]))
+            ;; A partial backfill is not a publishable generation. Its pointer
+            ;; and audit root are deliberately omitted by db->stored.
+            (recur (next entries) prepared-db key-maps)
+            (if (sec/durable-secondary? idx)
+              (let [preparation
+                    (throw-if-lifecycle-failure
+                     (<?- (invoke-lifecycle
+                           #(sec/-sec-prepare
+                             idx {:store (:store db)
+                                  :branch (get-in db [:config :branch])
+                                  :index-ident idx-ident
+                                  :attempt-id attempt-id
+                                  :base-primary-commit-id
+                                  (get-in db [:meta :datahike/commit-id])}))))]
+                (when-not (satisfies? sec/IPreparedSecondaryGeneration preparation)
+                  (throw (ex-info "A durable secondary index returned an invalid prepared generation."
+                                  {:type :invalid-secondary-preparation
+                                   :index-ident idx-ident
+                                   :value preparation})))
+                ;; Retain the handle before consulting it so accessor or validation
+                ;; failures can still abort an already-created durable generation.
+                (swap! prepared* assoc idx-ident preparation)
+                (let [prepared-index (invoke-lifecycle
+                                      #(sec/-sec-generation-index preparation))
+                      _ (when-not (and (satisfies? sec/ISecondaryIndex prepared-index)
+                                       (satisfies? sec/IDurableSecondaryIndex prepared-index))
+                          (throw (ex-info "A preparation must expose a pinned durable secondary index."
+                                          {:type :invalid-prepared-secondary-index
+                                           :index-ident idx-ident})))
+                      key-map (invoke-lifecycle
+                               #(sec/validate-generation-key-map
+                                 (sec/-sec-generation-key-map prepared-index)))]
+                  (recur (next entries)
+                         (assoc-in prepared-db [:secondary-indices idx-ident]
+                                   prepared-index)
+                         (assoc key-maps idx-ident key-map))))
+              (recur (next entries) prepared-db key-maps)))
+          {:db prepared-db :key-maps key-maps})))))
+
+#?(:clj
+   (defn ^:no-doc release-secondary-generations!
+     [preparations outcome]
+     (go-try-
+      (doseq [[idx-ident preparation] preparations]
+        (try
+          (throw-if-lifecycle-failure
+           (<?- (invoke-lifecycle
+                 #(sec/-sec-release preparation outcome))))
+          (catch Throwable release-error
+            ;; Cleanup never controls visibility. In particular, a committed or
+            ;; ambiguous head may already name this generation, so a release
+            ;; failure is logged and may not turn it into a retry or deletion.
+            (log/warn :datahike/secondary-generation-release-failed
+                      {:index idx-ident
+                       :outcome (dissoc outcome :cause)
+                       :error release-error})))))))
+
+(defn- db->stored*
+  "Maps memory db to storage layout. Durable secondary key-maps must already
+   have been prepared; serialization never invokes an adapter."
+  [db flush? prepared-secondary-index-keys]
   (when-not (dbu/db? db)
     (log/raise "Argument is not a database."
                {:type     :argument-is-not-a-db
@@ -89,56 +209,72 @@
           ;; konserve, mmap) so they must always be flushed regardless of
           ;; the primary store backend.
           secondary-index-keys
-          #?(:clj
-             (when flush?
-               (let [flushed (reduce-kv
-                              (fn [acc idx-ident idx]
-                                ;; A :building index is not a durable snapshot.
-                                ;; Publishing its key-map lets a crash preserve an
-                                ;; arbitrary prefix of the backfill, which cannot
-                                ;; safely be replayed for non-idempotent indices.
-                                (if (and (satisfies? sec/IVersionedSecondaryIndex idx)
-                                         (not= :building
-                                               (get-in db [:schema idx-ident
-                                                           :db.secondary/status])))
-                                  (assoc acc idx-ident (sec/-sec-flush idx store (:branch config)))
-                                  acc))
-                              {} (:secondary-indices db))
-                     ;; Carry forward the stored pointer of every index the
-                     ;; SCHEMA still declares but that has no live instance
-                     ;; right now. A restore that failed once (it is caught and
-                     ;; the ident dropped, see restore-secondary-indices) must
-                     ;; not durably DELETE the index: writing a head without its
-                     ;; key would make the next reconnect build an empty
-                     ;; skeleton marked :ready, which nothing ever backfills
-                     ;; (only :building is). Removal is explicit — retract the
-                     ;; index's schema entry and its key goes with it; "no live
-                     ;; instance" is never read as "delete".
-                     carried (into {}
-                                   (filter (fn [[ident _]]
-                                             (and (get-in db [:schema ident :db.secondary/type])
-                                                  (not= :building
-                                                        (get-in db [:schema ident
-                                                                    :db.secondary/status])))))
-                                   (:secondary-index-keys db))]
-                 (not-empty (merge carried flushed))))
-             :cljs nil)
+          (when flush?
+            (let [;; Carry opaque committed addresses even in a runtime that
+                  ;; cannot instantiate their adapters.  In particular, a CLJS
+                  ;; writer may share a store with JVM Scriptum/Stratum/Proximum
+                  ;; readers.  Lack of a live CLJS adapter is not authorization
+                  ;; to delete the generation from the next root.
+                  carried (into {}
+                                (filter (fn [[ident _]]
+                                          (and (get-in db [:schema ident
+                                                           :db.secondary/type])
+                                               (not= :building
+                                                     (get-in db [:schema ident
+                                                                 :db.secondary/status])))))
+                                (:secondary-index-keys db))
+                  unavailable (seq (remove #(contains? (:secondary-indices db) %)
+                                           (keys carried)))
+                  _ (when unavailable
+                      (throw
+                       (ex-info
+                        (str "Cannot publish a database update while committed durable "
+                             "secondary generations are unavailable in this runtime. "
+                             "Restore their adapters, or explicitly remove and rebuild "
+                             "the secondary schema before writing.")
+                        {:type :secondary/unavailable-durable-generations
+                         :index-idents (vec unavailable)})))]
+              #?(:clj
+                 (let [durable-ready-idents
+                       (into #{}
+                             (keep (fn [[idx-ident idx]]
+                                     (when (and (sec/durable-secondary? idx)
+                                                (not= :building
+                                                      (get-in db [:schema idx-ident
+                                                                  :db.secondary/status])))
+                                       idx-ident)))
+                             (:secondary-indices db))
+                       _ (when (and (seq durable-ready-idents)
+                                    (nil? prepared-secondary-index-keys))
+                           (throw (ex-info
+                                   "Durable secondary indices must be prepared before serializing a database root."
+                                   {:type :secondary/unprepared-durable-indices
+                                    :index-idents durable-ready-idents})))
+                       missing-preparations
+                       (when (some? prepared-secondary-index-keys)
+                         (seq (remove #(contains? prepared-secondary-index-keys %)
+                                      durable-ready-idents)))
+                       _ (when missing-preparations
+                           (throw (ex-info
+                                   "Prepared secondary key maps are missing durable indices."
+                                   {:type :secondary/missing-prepared-generations
+                                    :index-idents (vec missing-preparations)})))
+                       prepared (or prepared-secondary-index-keys {})]
+                   ;; A prepared generation supersedes its carried predecessor.
+                   ;; Removal remains explicit: retracting the schema entry is
+                   ;; what removes the carried address.
+                   (not-empty (merge carried prepared)))
+                 :cljs (not-empty carried))))
           ;; Audit roots: per-index content-addressed UUIDs that feed
           ;; into the commit-id via merkle-leaves.
           ;;
           ;; Primary indexes implement IAuditable: their flushed instance
           ;; carries the merkle root (e.g. PSS `_address` is post-flush).
           ;;
-          ;; Secondary indexes can produce their merkle root in two
-          ;; ways: (a) extend IAuditable when their live instance has
-          ;; post-flush state visible to the bridge — scriptum, whose
-          ;; underlying Java writer is mutable so `(.getLastContentHash
-          ;; bw)` reflects the latest commit on the same handle; (b)
-          ;; surface `:merkle-root` in their -sec-flush return map when
-          ;; sync produces a new immutable value the bridge field
-          ;; doesn't capture — stratum and proximum, whose record-typed
-          ;; live values stay pinned to the pre-sync state. The reader
-          ;; below tries (a) first, then (b).
+          ;; Secondary roots come from the exact prepared generation: either
+          ;; its immutable live view implements IAuditable or its key-map
+          ;; carries a truthful :merkle-root. An opaque immutable generation ID
+          ;; is not a Merkle root and must omit that key.
           safe-root      (fn [x]
                            (when x
                              (try (audit/-merkle-root x)
@@ -212,13 +348,21 @@
           {:secondary-index-keys secondary-index-keys})
         fused-roots)])))
 
+(defn db->stored
+  "Maps memory db to storage layout. Index flushes add [k v] pairs to pending-writes."
+  ([db flush?] (db->stored* db flush? nil))
+  ([db flush? prepared-secondary-index-keys]
+   (db->stored* db flush? prepared-secondary-index-keys)))
+
 (def ^:dynamic *on-secondary-restore-failure*
   "What to do when a secondary index that EXISTS in storage cannot be restored.
 
    `:fail` (default) aborts materialization — see `restore-secondary-indices` for
-   why silently continuing loses the index for good. `:drop` comes up without it,
-   which is the pre-existing behaviour and is what a deployment wants when it can
-   rebuild the index and would rather be degraded than down.
+   why silently continuing loses the index for good. `:drop` comes up without it
+   for degraded reads, but the resulting database is deliberately read-only:
+   publishing while an adapter is absent could carry a stale generation. Remove
+   the secondary schema explicitly before writing if its primary values make it
+   rebuildable.
 
    Not a config key: it is a property of the PROCESS doing the restoring, not of
    the database, and the stored config is the wrong place to record it."
@@ -226,8 +370,10 @@
 
 (defn- restore-secondary-indices
   "Restore secondary index instances from stored key-maps.
-   For versioned indices (IVersionedSecondaryIndex), restores from durable storage.
-   For non-versioned or missing keys, creates empty instances that need backfill.
+   For durable indices (IDurableSecondaryIndex), restores from immutable storage.
+   Transient indices with no key-map are created empty and need backfill. A
+   stored key-map for a transient adapter is rejected: silently rebuilding would
+   discard authoritative state while pretending the same snapshot was opened.
 
    A failure to restore an index THAT HAS A STORED KEY-MAP aborts the whole
    materialization. Dropping it instead — which is what this did — produces a db
@@ -241,17 +387,25 @@
    An index with NO stored key-map is a different case and still yields an empty
    skeleton: there is nothing to lose, and backfill is the normal path.
 
-   Binding `*on-secondary-restore-failure*` to `:drop` restores the old behaviour
-   for a deployment that would rather come up degraded than not at all — e.g. one
-   whose index backend is not multi-process safe (scriptum's Lucene directory)
-   and that accepts rebuilding. It logs at ERROR, not WARN."
-  [schema ident-ref-map secondary-index-keys store]
+   Binding `*on-secondary-restore-failure*` to `:drop` permits degraded reads for
+   a deployment that would rather inspect/export the primary than remain down.
+   It does not permit writes until the adapter is restored or the secondary is
+   explicitly removed. It logs at ERROR, not WARN."
+  [schema ident-ref-map secondary-index-keys store store-id]
   #?(:clj
      (reduce-kv
       (fn [acc ident entry]
         (if (and (map? entry) (:db.secondary/type entry))
           (let [idx-type (:db.secondary/type entry)
                 idx-attrs (set (:db.secondary/attrs entry))
+                close-all! (fn [indices]
+                             (doseq [[_ idx] indices]
+                               (when (instance? java.io.Closeable idx)
+                                 (try
+                                   (.close ^java.io.Closeable idx)
+                                   (catch Throwable close-e
+                                     (log/warn :datahike/secondary-index-close-failed
+                                               {:error (.getMessage close-e)}))))))
                 ;; A key-map written while the schema says :building is, at
                 ;; best, a partial snapshot from an older Datahike. Ignore it
                 ;; and rebuild from the primary index instead.
@@ -259,21 +413,17 @@
                           (get secondary-index-keys ident))
                 idx-config (cond-> (merge (:db.secondary/config entry)
                                           {:attrs idx-attrs
-                                           ::sec/index-ident ident})
+                                           ::sec/index-ident ident
+                                           ::sec/store store
+                                           ::sec/store-id store-id})
                              (seq ident-ref-map)
                              (assoc :ident-ref-map ident-ref-map)
                              (= :building (:db.secondary/status entry))
-                             (assoc ::sec/build-attempt (random-uuid))
-                             ;; When a key-map carries a branch, route the
-                             ;; skeleton into that branch too — otherwise
-                             ;; the factory defaults to "main" and a non-
-                             ;; main connection re-opens the main writer,
-                             ;; contending for its per-branch lock.
-                             (:branch key-map)
-                             (assoc :branch (:branch key-map)))]
+                             (assoc ::sec/build-attempt (random-uuid)))]
             (try
               (let [skeleton (sec/create-index idx-type idx-config nil)]
-                (if (and key-map (satisfies? sec/IVersionedSecondaryIndex skeleton))
+                (cond
+                  (and key-map (satisfies? sec/IDurableSecondaryIndex skeleton))
                   ;; Restore from durable storage. The skeleton existed
                   ;; only to satisfy the protocol check; close its native
                   ;; resources (e.g. Lucene's per-branch write lock)
@@ -283,10 +433,33 @@
                         (try (.close ^java.io.Closeable skeleton)
                              (catch Exception _)))
                       (assoc acc ident (sec/-sec-restore skeleton store key-map)))
+
+                  key-map
+                  (do
+                    ;; This skeleton is not transferred into the accumulator.
+                    ;; Close it before raising, including for an adapter whose
+                    ;; factory acquired native state before revealing that it
+                    ;; cannot restore the stored generation.
+                    (close-all! [[ident skeleton]])
+                    (throw (ex-info
+                            (str "Secondary index " (pr-str ident)
+                                 " has a stored durable generation, but its adapter "
+                                 "does not implement IDurableSecondaryIndex.")
+                            {:type :secondary/stored-generation-with-transient-adapter
+                             :index-ident ident
+                             :key-map key-map})))
+
                   ;; No stored keys — empty index, needs backfill
+                  :else
                   (assoc acc ident skeleton)))
-              (catch Exception e
-                (if (and key-map (not= :drop *on-secondary-restore-failure*))
+              (catch Throwable e
+                (cond
+                  (instance? Error e)
+                  (do
+                    (close-all! acc)
+                    (throw e))
+
+                  (and key-map (not= :drop *on-secondary-restore-failure*))
                   (do
                     ;; Nobody will ever hold the indices restored before this
                     ;; one: the accumulator dies with the raise. Close them, or
@@ -294,21 +467,19 @@
                     ;; for a lock-holding backend (Lucene) the leaked lock is
                     ;; what makes the NEXT attempt fail too, turning a transient
                     ;; failure into a permanent one.
-                    (doseq [[_ idx] acc]
-                      (when (instance? java.io.Closeable idx)
-                        (try (.close ^java.io.Closeable idx)
-                             (catch Exception close-e
-                               (log/warn :datahike/secondary-index-close-failed
-                                         {:error (.getMessage close-e)})))))
-                    (log/raise "Could not restore a secondary index that exists in storage. Continuing would overwrite it with an empty one on the next commit. Bind datahike.writing/*on-secondary-restore-failure* to :drop to come up without it anyway (the stored index is then lost on the next write)."
+                    (close-all! acc)
+                    (log/raise "Could not restore a secondary index that exists in storage. Bind datahike.writing/*on-secondary-restore-failure* to :drop only to come up for degraded reads; writes remain refused until the adapter is restored or the secondary schema is explicitly removed."
                                {:type  :secondary-index-restore-failed
                                 :ident ident
                                 :index-type idx-type
                                 :error e}))
-                  (do (log/error :datahike/secondary-index-restore-failed
-                                 {:ident ident :has-stored-index? (some? key-map)
-                                  :error (.getMessage e)})
-                      acc)))))
+
+                  :else
+                  (do
+                    (log/error :datahike/secondary-index-restore-failed
+                               {:ident ident :has-stored-index? (some? key-map)
+                                :error (.getMessage e)})
+                    acc)))))
           acc))
       {} schema)
      :cljs {}))
@@ -340,8 +511,30 @@
                             (get-in effective-schema [ident :db.secondary/status]))))
                secondary-index-keys))
         effective-ident-ref-map (or (:ident-ref-map schema-meta) ident-ref-map)
-        sec-indices (restore-secondary-indices effective-schema effective-ident-ref-map
-                                               secondary-index-keys store)
+        sec-indices (restore-secondary-indices
+                     effective-schema effective-ident-ref-map
+                     secondary-index-keys store
+                     (ds/canonical-store-id store (:store config)))
+        ;; A rebuildable index has no durable generation. A stored :ready
+        ;; status describes the committed schema, not a newly connected
+        ;; process's empty skeleton; fail it closed until recovery has replayed
+        ;; AEVT. Without this runtime transition a reconnect silently answers
+        ;; from an empty index forever.
+        transient-idents (into #{}
+                               (keep (fn [[ident idx]]
+                                       (when (and (not (sec/durable-secondary? idx))
+                                                  (= :ready
+                                                     (get-in effective-schema
+                                                             [ident :db.secondary/status])))
+                                         ident)))
+                               sec-indices)
+        runtime-schema (reduce (fn [s ident]
+                                 (-> s
+                                     (assoc-in [ident :db.secondary/status] :building)
+                                     (assoc-in [ident :db.secondary/building-since-tx]
+                                               max-tx)))
+                               effective-schema transient-idents)
+        runtime-schema-meta (assoc schema-meta :schema runtime-schema)
         empty       (db/empty-db nil config store)
         ;; Bind each index to THIS connection's storage (as a copy). Stored
         ;; values are storage-detached (db->stored) and deserializing
@@ -367,7 +560,7 @@
             :max-eid max-eid
             :config config
             :meta meta
-            :schema schema
+            :schema runtime-schema
             :hash hash
             :op-count op-count
             :eavt (attach eavt-key eavt-root)
@@ -389,7 +582,11 @@
        {:secondary-index-keys secondary-index-keys})
      (when (seq sec-indices)
        {:secondary-indices sec-indices})
-     schema-meta)))
+     ;; Runtime-only identity for cid-less legacy heads. db->stored deliberately
+     ;; does not include this field.
+     (when-not (get-in stored-db [:meta :datahike/commit-id])
+       {::stored-head-identity (stored-head-identity stored-db)})
+     runtime-schema-meta)))
 
 (defn stored->db-read-only
   "`stored->db` for a db that can never be written back — a historical commit, a
@@ -419,12 +616,10 @@
   "`old` itself when `stored` is the very commit `old` already is, otherwise a
    fresh in-memory db built from `stored`.
 
-   A record with NO cid is never treated as unmoved, even against an `old` that
-   also has none: neither side knowing its identity is not evidence that the two
-   match, and reading it as a match would make the writer blind to every other
-   process's commits — precisely the failure shared writer ownership exists to
-   prevent. Unreachable for databases this version creates (`create-database`
-   stamps a cid); the guard is for foreign or legacy records.
+   A record with no cid uses the complete persisted-head identity cached by
+   `stored->db`. This retains an unchanged legacy head's live secondary handles
+   while still rebuilding after any primary root, schema, secondary generation,
+   transaction boundary, hash, or metadata change.
 
    Identity is the commit-id: the same cid means the same stored record, hence
    the same primary index roots AND the same secondary-index key-maps, so there
@@ -439,6 +634,10 @@
   ([old stored store head-revision] (reload-head old stored store head-revision nil))
   ([old stored store head-revision materialized]
    (let [stored-cid (get-in stored [:meta :datahike/commit-id])
+         same-head? (if stored-cid
+                      (= stored-cid (get-in old [:meta :datahike/commit-id]))
+                      (= (stored-head-identity stored)
+                         (::stored-head-identity old)))
          ;; The konserve revision the head blob was AT when we read it, carried on
          ;; the db so a later commit can fence its head write against it. Distinct
          ;; from the commit-id: the cid identifies datahike's state, the revision
@@ -448,7 +647,7 @@
          ;; public database metadata, or the content-derived commit id.
          stamp (fn [db] (cond-> db head-revision
                                 (assoc ::head-revision head-revision)))]
-     (if (and stored-cid (= stored-cid (get-in old [:meta :datahike/commit-id])))
+     (if same-head?
        ;; Unmoved head: the db is unchanged, but the revision may not be — the blob
        ;; can have been rewritten with identical content. Take the fresh one.
        (stamp old)
@@ -795,13 +994,39 @@
                 ;; GC GUARD: everything from here until the head flips is written
                 ;; UNREFERENCED — the head still names the previous snapshot — so a
                 ;; concurrent collector would call it garbage and sweep it. Opened
-                ;; BEFORE db->stored because a secondary index's -sec-flush (stratum)
+                ;; BEFORE preparation because a same-store secondary generation
                 ;; writes konserve keys from inside it. Closed in the finally: an
                 ;; aborted commit leaves orphans, which are genuinely collectable.
-                  (let [gc-store-id (:id (:store (:config db)))
-                        gc-token    (guard/writing! gc-store-id)]
+                  (let [gc-store-id   (ds/canonical-store-id
+                                       (:store db) (get-in db [:config :store]))
+                        gc-token      (guard/writing! gc-store-id)
+                        attempt-id    (random-uuid)
+                        preparations* (atom {})
+                        head-write-issued? (atom false)
+                        head-published? (atom false)]
                     (try
-                      (let [{:keys [store config]} db
+                      (let [;; Secondary generations become durable before the
+                          ;; primary record is serialized.  Their prepared live
+                          ;; instances replace the pre-flush values in the db we
+                          ;; eventually publish and return.
+                            preparation-result
+                            #?(:clj (let [prepared (prepare-secondary-generations
+                                                    db preparations* attempt-id)]
+                                      (if sync?
+                                        (take-result!! prepared)
+                                        (<?- prepared)))
+                               :cljs {:db db :key-maps {}})
+                            prepared-db (:db preparation-result)
+                            key-maps (:key-maps preparation-result)
+                            db prepared-db
+                            _ (when-not (dbu/db? db)
+                                (throw (ex-info "Prepared value is not a database."
+                                                {:type :invalid-prepared-database
+                                                 :value-type (type db)
+                                                 :result-type (type preparation-result)
+                                                 :result-keys (when (map? preparation-result)
+                                                                (keys preparation-result))})))
+                            {:keys [store config]} db
                         ;; Head-cid cache: for an ORDINARY commit (no explicit
                         ;; parents) the writer's own head cid is already in
                         ;; memory — stamped by the previous commit!, or by
@@ -832,7 +1057,7 @@
                       ;; Flush first → cid sees post-flush storage
                       ;; addresses (true merkle leaves under crypto-hash?).
                             [schema-meta-kv-to-write db-to-store-pre]
-                            (db->stored db true)
+                            (db->stored db true key-maps)
                             cid           (create-commit-id db db-to-store-pre)
                             db            (assoc-in db [:meta :datahike/commit-id] cid)
                             db-to-store   (assoc-in db-to-store-pre
@@ -896,6 +1121,8 @@
                             ;; Some transactional backends (DynamoDB in particular)
                             ;; reject an empty transaction, so do not issue one.
                             (when (seq writes)
+                              (when-not head-revision
+                                (reset! head-write-issued? true))
                               (<?- (k/multi-assoc store writes metas {:sync? sync?})))
                             (when head-revision
                               ;; `:with-revision? true` and the capture below are
@@ -909,7 +1136,8 @@
                               ;; from a SOLE writer, each one a retry with backoff,
                               ;; and each one a caller-visible error under
                               ;; :head-conflict-retries 0.
-                              (let [r (<?- (k/assoc store branch-key db-to-store
+                              (let [_ (reset! head-write-issued? true)
+                                    r (<?- (k/assoc store branch-key db-to-store
                                                     {:sync? sync?
                                                      :expected-revision head-revision
                                                      :with-revision? true}))]
@@ -941,6 +1169,7 @@
                             ;; there since. nil means unfenced — a store that cannot
                             ;; compare, or a caller that did not read a revision —
                             ;; and behaves exactly as before.
+                                _ (reset! head-write-issued? true)
                                 branch-written     (k/assoc store (:branch config) db-to-store
                                                             (cond-> {:sync? sync?}
                                                               head-revision
@@ -950,9 +1179,39 @@
                                     (let [r (if sync? branch-written (<?- branch-written))]
                                       (when head-revision (second r))))))
 
+                      ;; Everything before this point is preparation.  Both
+                      ;; storage paths return only after the mutable primary
+                      ;; branch head has landed, which is the publication point.
+                        (reset! head-published? true)
+
+                      ;; The primary head now names each prepared generation.
+                      ;; Release is cleanup/reconciliation only; failures may not
+                      ;; turn this committed transaction into a retry.
+                        #?(:clj
+                           (let [released (release-secondary-generations!
+                                           @preparations*
+                                           {:status :committed
+                                            :primary-commit-id cid})]
+                             (if sync?
+                               (take-result!! released)
+                               (<?- released))))
+
                   ;; Online GC: delete freed addresses after writes are committed
                         (when (get-in config [:online-gc :enabled?])
-                          (<?- (online-gc/online-gc! store (assoc (:online-gc config) :sync? false))))
+                          (try
+                            (let [collected (online-gc/online-gc!
+                                             store (assoc (:online-gc config)
+                                                          :sync? false))]
+                              #?(:clj (if sync?
+                                        (take-result!! collected)
+                                        (<?- collected))
+                                 :cljs (<?- collected)))
+                            (catch #?(:clj Throwable :cljs :default) gc-error
+                              ;; The head is already durable. GC is maintenance,
+                              ;; so its failure cannot make the committed
+                              ;; transaction look retryable to the caller.
+                              (log/warn :datahike/post-commit-online-gc-failed
+                                        {:commit-id cid :error gc-error}))))
 
                       ;; Keep what we just wrote on the db we hand back, so the
                       ;; NEXT db->stored can carry a pointer forward for an
@@ -961,15 +1220,43 @@
                       ;; same reason: the next commit of the same batch fences
                       ;; against it, and asking storage for it would be a read we
                       ;; just earned the right not to make.
-                        (cond-> db
-                          (seq (:secondary-index-keys db-to-store))
-                          (assoc :secondary-index-keys (:secondary-index-keys db-to-store))
+                        (cond-> (if (contains? db-to-store
+                                               :secondary-index-keys)
+                                  (assoc db :secondary-index-keys
+                                         (:secondary-index-keys db-to-store))
+                                  (dissoc db :secondary-index-keys))
                           @new-head-revision
                           (assoc ::head-revision @new-head-revision)))
-                      (catch #?(:clj Error :cljs :default) e
-                        #?(:clj  (throw (ex-info "Fatal error during commit."
-                                                 {:type :fatal-commit-error}
-                                                 e))
+                      (catch #?(:clj Throwable :cljs :default) e
+                      ;; A pre-write or revision-mismatch failure is definitively
+                      ;; aborted. Any other failed head write has an unknown
+                      ;; outcome and the adapter must retain readability.
+                        #?(:clj
+                           (let [aborted? (or (not @head-write-issued?)
+                                              (= :konserve/revision-mismatch
+                                                 (:type (ex-data e))))
+                                 released (release-secondary-generations!
+                                           @preparations*
+                                           (if aborted?
+                                             {:status :aborted :cause e}
+                                             {:status :unknown :cause e}))]
+                             (if sync?
+                               (take-result!! released)
+                               (<?- released))))
+                        (when (and (seq @preparations*)
+                                   @head-write-issued?
+                                   (not @head-published?)
+                                   (not= :konserve/revision-mismatch
+                                         (:type (ex-data e))))
+                          (log/warn :datahike/secondary-preparation-head-outcome-unknown
+                                    {:branch (get-in db [:config :branch])
+                                     :attempt-id attempt-id
+                                     :error e}))
+                        #?(:clj  (if (instance? Error e)
+                                   (throw (ex-info "Fatal error during commit."
+                                                   {:type :fatal-commit-error}
+                                                   e))
+                                   (throw e))
                            :cljs (throw e)))
                       (finally
                         (guard/done! gc-store-id gc-token)))))))))
@@ -1026,7 +1313,8 @@
          ;; and drop the selector at create only; an unconfigured database is left
          ;; unbounded. Warn once so the choice is conscious rather than silent.
          loaded-config (dc/load-config config deprecated-config)
-         _ (when-not (dc/value-caps-configured? loaded-config)
+         _ (when (and (not (dc/value-caps-configured? loaded-config))
+                      (compare-and-set! value-caps-warning-emitted? false true))
              (log/warn :datahike/value-caps-unset
                        (str "No value-size caps set — large :db.type/string / :db.type/bytes / "
                             ":db.type/float-array / :db.type/double-array values can bloat the "
@@ -1094,7 +1382,8 @@
          ;; store cannot be collected (no :branches key yet), but a store being
          ;; RE-created after delete-database can still have a background collector
          ;; running against it from a previous connection.
-         gc-token (guard/writing! (:id store-config))]
+         gc-store-id (ds/canonical-store-id store store-config)
+         gc-token (guard/writing! gc-store-id)]
      (try
        ;;we just created the first data base in this store, so the write cache is empty
        ;; schema-meta-key = (uuid schema-meta) → content-addressed, immutable
@@ -1128,7 +1417,7 @@
        (ks/release-store store-config store)
        config
        (finally
-         (guard/done! (:id store-config) gc-token))))))
+         (guard/done! gc-store-id gc-token))))))
 
 (defn -delete-database* [config]
   (go-try-
@@ -1240,7 +1529,10 @@
                           {:type :secondary-index-missing-build-boundary
                            :idx-ident idx-ident}))
            use-transient? (satisfies? sec/ITransientSecondaryIndex idx)
-           t-idx (if use-transient? (sec/-as-transient idx) idx)
+           t-idx (if use-transient?
+                   (binding [sec/*durable-secondary-write-context* :commit]
+                     (sec/-as-transient idx))
+                   idx)
            ;; The scan reads the DURABLE head, not `old`. The db a writer op
            ;; receives can run ahead of the commit loop — unflushed roots, a
            ;; lagging :meta — and nothing unflushed can be pinned. Any committed
@@ -1262,8 +1554,9 @@
            ;; primary AEVT only, and restoring adapters (a Lucene lock, say)
            ;; is work and hazard for nothing.
            snapshot (stored->db-read-only (dissoc head-record :secondary-index-keys) store)
-           gc-store-id (:id (:store (:config db)))
-           ;; A versioned adapter may write private nodes while it builds. They
+           gc-store-id (ds/canonical-store-id (:store db)
+                                              (get-in db [:config :store]))
+           ;; A durable adapter may write private nodes while it builds. They
            ;; remain unreachable until install's commit publishes its key-map,
            ;; so protect the whole scan -> ready-commit window from GC in this
            ;; process. (A durable checkpoint for them is the follow-up.)
@@ -1328,6 +1621,8 @@
                ::root-lost lost
                ::release-root! release-root!})
             (catch Throwable e
+              (when (satisfies? sec/IAbortableSecondaryTransient t-idx)
+                (sec/-abort-transient! t-idx))
               (close-secondary-index! idx)
               (guard/done! gc-store-id gc-token)
               (release-root!)
@@ -1342,7 +1637,9 @@
      (when-let [token (::gc-token build-result)]
        (guard/done! (::gc-store-id build-result) token))
      (when-let [release! (::release-root! build-result)]
-       (release!))))
+       (release!))
+     (when-let [precursor (::precursor-index build-result)]
+       (close-secondary-index! precursor))))
 
 #?(:clj
    (defn- assert-build-root-live!
@@ -1368,48 +1665,67 @@
 #?(:clj
    (defn install-secondary-index!
      "Replay changes accumulated during an asynchronous backfill and publish
-      the resulting index. This operation is serialized by the writer, which
-      closes the handoff gap between the delta journal and normal live updates."
+     the resulting index. This operation is serialized by the writer, which
+     closes the handoff gap between the delta journal and normal live updates."
      [old {:keys [idx-ident index building-since-tx] :as build-result}]
-     (try
-       (let [status (get-in old [:schema idx-ident :db.secondary/status])
-             current-boundary (get-in old [:schema idx-ident
-                                           :db.secondary/building-since-tx])]
-         (when-not (and (= :building status)
-                        (= building-since-tx current-boundary))
-           (log/raise "Discarding a stale secondary-index build"
-                      {:type :secondary-index-stale-build
-                       :idx-ident idx-ident
-                       :expected-building-since-tx current-boundary
-                       :actual-building-since-tx building-since-tx
-                       :status status}))
-         (assert-build-root-live! build-result)
-         (let [deltas (get-in old [:secondary-index-build-deltas idx-ident] [])
-               use-transient? (satisfies? sec/ITransientSecondaryIndex index)
-               t-idx (if use-transient? (sec/-as-transient index) index)
-               replayed (reduce (fn [idx tx-report]
-                                  (if use-transient?
-                                    (do (sec/-transact! idx tx-report) idx)
-                                    (sec/-transact idx tx-report)))
-                                t-idx deltas)
-               final-idx (if use-transient? (sec/-persistent! replayed) replayed)
-               db-after (-> old
-                            (assoc-in [:secondary-indices idx-ident] final-idx)
-                            (assoc-in [:schema idx-ident :db.secondary/status] :ready)
-                            (update-in [:schema idx-ident] dissoc
-                                       :db.secondary/building-since-tx)
-                            (drop-build-deltas idx-ident))]
-           (complete-db-update
-            old {:db-before old
-                 :db-after db-after
-                 :tx-data []
-                 :tx-meta {:db/txInstant (get-in old [:meta :datahike/updated-at])}
-                 :secondary-index-build-guard
-                 (select-keys build-result [::gc-store-id ::gc-token ::release-root!])})))
-       (catch Throwable e
-         (close-secondary-index! index)
-         (finish-secondary-index-build! build-result)
-         (throw e)))))
+     (let [transient-index (atom nil)
+           final-index (atom nil)]
+       (try
+         (let [status (get-in old [:schema idx-ident :db.secondary/status])
+               current-boundary (get-in old [:schema idx-ident
+                                             :db.secondary/building-since-tx])]
+           (when-not (and (= :building status)
+                          (= building-since-tx current-boundary))
+             (log/raise "Discarding a stale secondary-index build"
+                        {:type :secondary-index-stale-build
+                         :idx-ident idx-ident
+                         :expected-building-since-tx current-boundary
+                         :actual-building-since-tx building-since-tx
+                         :status status}))
+           (assert-build-root-live! build-result)
+           (let [deltas (get-in old [:secondary-index-build-deltas idx-ident] [])
+                 use-transient? (satisfies? sec/ITransientSecondaryIndex index)
+                 t-idx (if use-transient?
+                         (binding [sec/*durable-secondary-write-context* :commit]
+                           (sec/-as-transient index))
+                         index)
+                 _ (reset! transient-index t-idx)
+                 replayed (reduce (fn [idx tx-report]
+                                    (if use-transient?
+                                      (do (sec/-transact! idx tx-report) idx)
+                                      (sec/-transact idx tx-report)))
+                                  t-idx deltas)
+                 final-idx (if use-transient? (sec/-persistent! replayed) replayed)
+                 _ (reset! final-index final-idx)
+                 db-after (-> old
+                              (assoc-in [:secondary-indices idx-ident] final-idx)
+                              (assoc-in [:schema idx-ident :db.secondary/status] :ready)
+                              (update-in [:schema idx-ident] dissoc
+                                         :db.secondary/building-since-tx)
+                              (drop-build-deltas idx-ident))]
+             (complete-db-update
+              old {:db-before old
+                   :db-after db-after
+                   :tx-data []
+                   :tx-meta {:db/txInstant (get-in old [:meta :datahike/updated-at])}
+                   :secondary-index-build-guard
+                   (cond-> (select-keys build-result
+                                        [::gc-store-id ::gc-token ::release-root!])
+                     (not (identical? index final-idx))
+                     (assoc ::precursor-index index))})))
+         (catch Throwable e
+           (when-let [t-idx @transient-index]
+             (when (satisfies? sec/IAbortableSecondaryTransient t-idx)
+               (sec/-abort-transient! t-idx)))
+           ;; Once persistence succeeds the transient is deliberately frozen,
+           ;; so aborting it is a no-op. Close the unpublished immutable result
+           ;; as well; it owns the sealed generation until commit preparation.
+           (when-let [final-idx @final-index]
+             (when-not (identical? index final-idx)
+               (close-secondary-index! final-idx)))
+           (close-secondary-index! index)
+           (finish-secondary-index-build! build-result)
+           (throw e))))))
 
 #?(:clj
    (defn reset-secondary-index-build-boundary!
@@ -1443,7 +1759,10 @@
    on the db meta so the commit loop creates a multi-parent merge commit."
   [old {:keys [parents tx-data tx-meta]}]
   (log/trace :datahike/merge {:parent-count (count parents) :tx-count (count tx-data)})
-  (let [tx-report (complete-db-update old (core/with old tx-data tx-meta))
+  (let [tx-report (complete-db-update
+                   old
+                   (binding [sec/*durable-secondary-write-context* :commit]
+                     (core/with old tx-data tx-meta)))
         ;; Add merge parents to db meta — commit loop picks these up
         branch (get-in old [:config :branch])
         all-parents (conj (set parents) branch)]
@@ -1485,14 +1804,18 @@
 (defn transact! [old {:keys [tx-data tx-meta]}]
   (log/debug :datahike/transact {:tx-count (count tx-data)})
   (log/trace :datahike/transact-detail {:tx-data tx-data :tx-meta tx-meta})
-  (let [tx-report (core/with old tx-data tx-meta)]
+  (let [tx-report (binding [sec/*durable-secondary-write-context* :commit]
+                    (core/with old tx-data tx-meta))]
     #?(:clj (validate-secondary-backfill-writer! old tx-report))
     (complete-db-update old tx-report)))
 
 (defn load-entities
   [old entities]
   (log/debug :datahike/load-entities {:entity-count (count entities)})
-  (complete-db-update old (core/load-entities-with old entities nil nil)))
+  (complete-db-update
+   old
+   (binding [sec/*durable-secondary-write-context* :commit]
+     (core/load-entities-with old entities nil nil))))
 
 (defn ^:no-doc load-entities-migrating
   "`load-entities` threading an import's id mapping. **Internal to
@@ -1513,7 +1836,57 @@
    is a habit."
   [old entities migration]
   (log/debug :datahike/load-entities-migrating {:entity-count (count entities)})
-  (complete-db-update old (core/load-entities-with old entities nil migration)))
+  ;; A dump may put several source transactions in one import batch. If one of
+  ;; those transactions declares a secondary index and a later one contains
+  ;; :db.secondary/only values, applying the whole batch as one pure step would
+  ;; instantiate the index only at the very end. The primary would have to
+  ;; discard the values before an authoritative secondary existed.
+  ;;
+  ;; Checkpoint the PURE in-memory replay after each transaction that declares
+  ;; a secondary. Nothing is published between segments: complete-db-update is
+  ;; still called exactly once below. The checkpoint merely lets
+  ;; finalize-secondary-indices create the fully configured, empty generation
+  ;; before later source transactions feed values into it. Transaction groups
+  ;; without a declaration stay coalesced, so ordinary import throughput is
+  ;; unchanged.
+  (let [secondary-declaration?
+        (fn [records]
+          (some (fn [record]
+                  (contains? #{:db.secondary/type :db.secondary/attrs}
+                             (nth record 1)))
+                records))
+        segments
+        (loop [tx-groups (seq (partition-by #(nth % 3) entities))
+               current []
+               result []]
+          (if-let [group (first tx-groups)]
+            (let [current (into current group)]
+              (if (secondary-declaration? group)
+                (recur (next tx-groups) [] (conj result current))
+                (recur (next tx-groups) current result)))
+            (cond-> result (seq current) (conj current))))
+        report
+        (loop [remaining (seq segments)
+               db old
+               migration migration
+               tx-data []
+               tempids {}]
+          (if-let [segment (first remaining)]
+            (let [segment-report
+                  (binding [sec/*durable-secondary-write-context* :commit]
+                    (core/load-entities-with db segment nil migration))]
+              (recur (next remaining)
+                     (:db-after segment-report)
+                     (:migration segment-report)
+                     (into tx-data (:tx-data segment-report))
+                     (merge tempids (:tempids segment-report))))
+            {:db-before old
+             :db-after db
+             :tx-data tx-data
+             :tempids tempids
+             :tx-meta nil
+             :migration migration}))]
+    (complete-db-update old report)))
 
 (defn publish-built-db!
   "Replace `old`'s indexes and derived fields wholesale with ones built OUTSIDE

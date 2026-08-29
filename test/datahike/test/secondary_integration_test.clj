@@ -2,15 +2,21 @@
   "Integration tests for Proximum and Scriptum secondary index implementations."
   (:require
    [clojure.test :refer [deftest testing is]]
+   [clojure.core.async :as async]
    [datahike.api :as d]
    [datahike.db :as db]
+   [datahike.gc :as gc]
    [datahike.index.secondary :as sec]
    [datahike.index.entity-set :as es]
    [datahike.query :as q]
+   [datahike.query.execute :as execute]
    [datahike.index.secondary.scriptum]
    [datahike.index.secondary.stratum]
    [datahike.migrate :as m]
    [datahike.migrate.fs :as fs]
+   [konserve.core :as k]
+   [konserve.gc-guard :as guard]
+   [konserve.memory :refer [new-mem-store]]
    [stratum.api :as st]
    [datahike.test.query-aggregates-test :refer [aggregate-contract]]))
 
@@ -33,6 +39,131 @@
                   {:estimated-card 1 :cost-per-result 0.01})}}
   [_idx-ident query]
   {:query query})
+
+(defn prepared-secondary-search
+  "Test marker for a value-free prepared external-engine plan. Its deliberately
+   high cost lets a small primary relation run first, proving that an unrelated
+   multi-tuple relation does not obscure the scalar query-spec input."
+  {:datahike/external-engine
+   {:index-key 0
+    :binding-columns [:entity-id]
+    :query-spec-fn first
+    :input-vars :all-bound
+    :cost-model (fn [_db _idx-ident _args _n-cols]
+                  {:estimated-card 1000 :cost-per-result 1.0})}}
+  [_idx-ident query-spec]
+  query-spec)
+
+(defn filtered-secondary-search
+  "Test marker for an engine that must consume an upstream entity relation."
+  {:datahike/external-engine
+   {:index-key 0
+    :binding-columns [:entity-id]
+    :query-spec-fn first
+    :input-vars :all-bound
+    :accepts-entity-filter? true
+    :requires-entity-filter? true
+    :cost-model (fn [_db _idx-ident _args _n-cols]
+                  {:estimated-card 100 :cost-per-result 0.02})}}
+  [_idx-ident query-spec]
+  query-spec)
+
+(defn filtered-secondary-retrieval
+  "Test marker for ordered retrieval constrained by an upstream relation."
+  {:datahike/external-engine
+   {:index-key 0
+    :binding-columns [:entity-id :score]
+    :query-spec-fn first
+    :input-vars :all-bound
+    :accepts-entity-filter? true
+    :requires-entity-filter? true
+    :cost-model (fn [_db _idx-ident _args _n-cols]
+                  {:estimated-card 100 :cost-per-result 0.02})}}
+  [_idx-ident query-spec]
+  query-spec)
+
+(deftest external-engine-consumes-upstream-entity-filter
+  (testing "a filter-requiring secondary runs after and receives primary candidates"
+    (let [seen-filter (atom nil)
+          idx (reify sec/ISecondaryIndex
+                (-search [_ _ entity-filter]
+                  (reset! seen-filter entity-filter)
+                  (es/entity-bitset-from-longs [1 2 3]))
+                (-estimate [_ _] 3)
+                (-can-order? [_ _ _] false)
+                (-slice-ordered [_ _ entity-filter _ _ _]
+                  (reset! seen-filter entity-filter)
+                  [{:entity-id 1 :score 0.1}
+                   {:entity-id 2 :score 0.2}
+                   {:entity-id 3 :score 0.3}])
+                (-indexed-attrs [_] #{:person/priority})
+                (-transact [this _] this))
+          base (-> (db/empty-db {:person/priority {}
+                                 :idx/filter {:db.secondary/status :ready}})
+                   (d/db-with [{:db/id 1 :person/priority 10}
+                               {:db/id 2 :person/priority 20}
+                               {:db/id 3 :person/priority 20}])
+                   (assoc :secondary-indices {:idx/filter idx}))
+          query '[:find [?e ...]
+                  :where
+                  [?e :person/priority 20]
+                  [(datahike.test.secondary-integration-test/filtered-secondary-search
+                    :idx/filter :all) [?e ...]]]]
+      (binding [q/*disable-planner* false
+                q/*query-result-cache?* false]
+        (is (= #{2 3} (set (d/q query base))))
+        (is (= #{2 3} (set (es/entity-bitset-seq @seen-filter))))
+
+        (testing "ordered retrieval receives the same upstream bitmap"
+          (let [retrieval-query
+                '[:find ?e ?score
+                  :where
+                  [?e :person/priority 20]
+                  [(datahike.test.secondary-integration-test/filtered-secondary-retrieval
+                    :idx/filter :all) [[?e ?score]]]]]
+            (reset! seen-filter nil)
+            (is (= #{[2 0.2] [3 0.3]}
+                   (set (d/q retrieval-query base))))
+            (is (= #{2 3}
+                   (set (es/entity-bitset-seq @seen-filter))))))
+
+        (testing "a required filter fails closed when no producer binds it"
+          (is (thrown-with-msg?
+               clojure.lang.ExceptionInfo
+               #"requires a bound entity filter"
+               (d/q '[:find [?e ...]
+                      :where
+                      [(datahike.test.secondary-integration-test/filtered-secondary-search
+                        :idx/filter :all) [?e ...]]]
+                    base))))))))
+
+(defn- await-secondary-status [conn ident expected]
+  (let [deadline (+ (System/currentTimeMillis) 10000)]
+    (loop []
+      (let [status (get-in (d/db conn) [:schema ident :db.secondary/status])]
+        (cond
+          (= expected status) status
+          (>= (System/currentTimeMillis) deadline)
+          (throw (ex-info "Timed out waiting for secondary-index status."
+                          {:index ident :expected expected :actual status}))
+          :else (do (Thread/sleep 20) (recur)))))))
+
+(defn- thrown-data [f]
+  (try
+    (f)
+    nil
+    (catch clojure.lang.ExceptionInfo failure
+      (ex-data failure))))
+
+(defn fail-after-scriptum-builder-opens
+  "Test transaction function: prove the preceding datom opened Scriptum's
+   guarded generation, then fail the primary transaction deliberately."
+  [_db store-id]
+  (when-not (guard/in-flight? store-id)
+    (throw (ex-info "Scriptum builder was not open before the test failure."
+                    {:type :test/scriptum-builder-not-open})))
+  (throw (ex-info "Deliberate failure after Scriptum mutation."
+                  {:type :test/fail-after-scriptum-mutation})))
 
 ;; ---------------------------------------------------------------------------
 ;; Proximum (Vector Search) Tests
@@ -81,6 +212,27 @@
             (is (= 1 (:entity-id (first ordered)))) ;; closest
             (is (< (:distance (first ordered)) (:distance (second ordered)))))
 
+          ;; PostgreSQL-style consumers need more than a top-k convenience
+          ;; call: candidates must page over one immutable generation and say
+          ;; independently whether rows need recheck and whether recall is
+          ;; complete. HNSW distances are ordered within the discovered set,
+          ;; while corpus membership remains approximate.
+          (let [query-spec {:vector (float-array [1.0 0.0 0.0 0.0])
+                            :candidate-limit 3}
+                page-1 (sec/-candidate-page idx query-spec nil {:limit 2})
+                page-2 (sec/-candidate-page
+                        idx query-spec nil
+                        {:limit 2 :continuation (:continuation page-1)})
+                pages (sec/validate-candidate-scan [page-1 page-2])
+                candidates (mapcat :candidates pages)]
+            (is (= [:recheck :approximate :exact]
+                   ((juxt :precision :recall :ordering) page-1)))
+            (is (false? (:exhausted? page-1)))
+            (is (true? (:exhausted? page-2)))
+            (is (= #{1 2 3} (set (map :entity-id candidates))))
+            (is (= #{:person/embedding} (set (map :attribute candidates))))
+            (is (every? :distance candidates)))
+
         ;; Delete entity 2
           (let [idx-del (sec/-transact idx {:datom d2 :added? false})
                 results (sec/-search idx-del {:vector (float-array [0.0 1.0 0.0 0.0]) :k 3} nil)]
@@ -92,6 +244,150 @@
                 idx2 (sec/-transact idx {:datom d-str :added? true})
                 results (sec/-search idx2 {:vector (float-array [1.0 0.0 0.0 0.0]) :k 10} nil)]
             (is (= 3 (es/entity-bitset-cardinality results)))))))))
+
+(deftest proximum-generation-key-maps-fail-closed
+  (when-not proximum-available?
+    (is (not proximum-available?) "SKIP: proximum requires Java 22+"))
+  (when proximum-available?
+    (let [idx (sec/create-index
+               :proximum
+               {:attrs #{:person/embedding}
+                :dim 4 :distance :cosine
+                :store-config {:backend :memory :id (random-uuid)}}
+               nil)
+          store-id (random-uuid)
+          cases [[{:type :proximum
+                   :branch "db"
+                   :commit-id (random-uuid)}
+                  :legacy-proximum-commit-root]
+                 [{:type :not-proximum
+                   :format-version 2
+                   :storage-owner :external
+                   :generation-strategy :full-mmap-copy
+                   :external-store-id store-id
+                   :generation-id (random-uuid)}
+                  :wrong-type]
+                 [{:type :proximum
+                   :format-version 1
+                   :storage-owner :external
+                   :generation-strategy :full-mmap-copy
+                   :external-store-id store-id
+                   :generation-id (random-uuid)}
+                  :unsupported-format-version]
+                 [{:type :proximum
+                   :format-version 2
+                   :storage-owner :datahike
+                   :generation-strategy :full-mmap-copy
+                   :external-store-id store-id
+                   :generation-id (random-uuid)}
+                  :wrong-storage-owner]
+                 [{:type :proximum
+                   :format-version 2
+                   :storage-owner :external
+                   :generation-strategy :delta-overlay
+                   :external-store-id store-id
+                   :generation-id (random-uuid)}
+                  :unsupported-generation-strategy]
+                 [{:type :proximum
+                   :format-version 2
+                   :storage-owner :external
+                   :generation-strategy :full-mmap-copy
+                   :generation-id (random-uuid)}
+                  :invalid-external-store-id]
+                 [{:type :proximum
+                   :format-version 2
+                   :storage-owner :external
+                   :generation-strategy :full-mmap-copy
+                   :external-store-id store-id}
+                  :invalid-generation-id]]]
+      (try
+        (doseq [[key-map reason] cases]
+          (let [data (thrown-data #(sec/-sec-restore idx nil key-map))]
+            (is (= :secondary/invalid-proximum-generation (:type data)))
+            (is (= reason (:reason data)))))
+        (doseq [[key-map reason] (remove #(= :wrong-type (second %)) cases)]
+          (is (= reason
+                 (:reason (thrown-data #(sec/mark-from-key-map key-map nil))))))
+        (finally
+          (.close ^java.io.Closeable idx))))))
+
+(deftest proximum-refuses-datahikes-primary-store
+  (when-not proximum-available?
+    (is (not proximum-available?) "SKIP: proximum requires Java 22+"))
+  (when proximum-available?
+    (let [store-id (random-uuid)
+          data (thrown-data
+                #(sec/create-index
+                  :proximum
+                  {:attrs #{:person/embedding}
+                   :dim 4 :distance :cosine
+                   ::sec/store-id store-id
+                   :store-config {:backend :memory :id store-id}}
+                  nil))]
+      (is (= :secondary/proximum-primary-store (:type data)))
+      (is (= store-id (:store-id data))))
+
+    (testing "the live Konserve identity wins over an aliased config id"
+      (let [live-id (random-uuid)
+            alias-id (random-uuid)
+            live-store (k/create-store {:backend :memory :id live-id}
+                                       {:sync? true})
+            idx (sec/create-index
+                 :proximum
+                 {:attrs #{:person/embedding}
+                  :dim 4 :distance :cosine
+                  ::sec/store-id live-id
+                  ;; The config UUID differs, but the connected store is the
+                  ;; primary store. Only the live identity can detect this.
+                  :store live-store
+                  :store-config {:backend :memory :id alias-id}}
+                 nil)]
+        (try
+          (let [failure (async/<!! (sec/-sec-prepare idx {}))]
+            (is (instance? clojure.lang.ExceptionInfo failure))
+            (is (= :proximum/generation-store-forbidden
+                   (:type (ex-data failure))))
+            (is (= live-id (:store-id (ex-data failure)))))
+          (finally
+            (.close ^java.io.Closeable idx)))))))
+
+(deftest proximum-ambiguous-publication-releases-its-guard
+  (when-not proximum-available?
+    (is (not proximum-available?) "SKIP: proximum requires Java 22+"))
+  (when proximum-available?
+    (let [store-id (random-uuid)
+          idx (sec/create-index
+               :proximum
+               {:attrs #{:person/embedding}
+                :dim 4 :distance :cosine
+                :store-config {:backend :memory :id store-id}}
+               nil)
+          preparation (async/<!! (sec/-sec-prepare idx {}))
+          prepared (sec/-sec-generation-index preparation)
+          key-map (sec/-sec-generation-key-map prepared)]
+      (try
+        (is (= store-id (:external-store-id key-map)))
+        (is (= {:secondary-type :proximum
+                :external-store-id store-id
+                :generation-id (:generation-id key-map)}
+               (sec/external-root-from-key-map key-map)))
+        (is (guard/in-flight? store-id)
+            "the unpublished mmap generation initially holds the store fence")
+        (async/<!! (sec/-sec-release preparation {:status :unknown}))
+        (is (not (guard/in-flight? store-id))
+            "an ambiguous but completed head call cannot pin external GC forever")
+        (let [restored (sec/-sec-restore idx nil key-map)]
+          (try
+            (is (= key-map (sec/-sec-generation-key-map restored))
+                "the immutable generation remains restorable if the head landed")
+            (finally
+              (.close ^java.io.Closeable restored))))
+        ;; A later authoritative read of the primary head may reconcile unknown
+        ;; to committed. Cleanup is already complete and remains idempotent.
+        (async/<!! (sec/-sec-release preparation {:status :committed}))
+        (finally
+          (.close ^java.io.Closeable prepared)
+          (.close ^java.io.Closeable idx))))))
 
 ;; ---------------------------------------------------------------------------
 ;; Scriptum (Full-Text Search) Tests
@@ -111,40 +407,133 @@
             d4 (datahike.datom/datom 2 :person/bio "Database engineer")
             d5 (datahike.datom/datom 3 :person/name "Charlie Brown")
             d6 (datahike.datom/datom 3 :person/bio "Machine learning researcher")]
-        ;; Scriptum writer is mutable, so -transact returns `this`
-        (sec/-transact idx {:datom d1 :added? true})
-        (sec/-transact idx {:datom d2 :added? true})
-        (sec/-transact idx {:datom d3 :added? true})
-        (sec/-transact idx {:datom d4 :added? true})
-        (sec/-transact idx {:datom d5 :added? true})
-        (sec/-transact idx {:datom d6 :added? true})
+        (let [t-idx (sec/-as-transient idx)
+              _ (doseq [datom [d1 d2 d3 d4 d5 d6]]
+                  (sec/-transact! t-idx {:datom datom :added? true}))
+              idx (sec/-persistent! t-idx)]
 
         ;; Search for "machine learning"
-        (let [results (sec/-search idx {:query "machine learning" :field :value :limit 10} nil)]
-          (is (= #{1 3} (set (es/entity-bitset-seq results)))))
+          (let [results (sec/-search idx {:query "machine learning" :field :value :limit 10} nil)]
+            (is (= #{1 3} (set (es/entity-bitset-seq results)))))
 
         ;; Search for "database"
-        (let [results (sec/-search idx {:query "database" :field :value :limit 10} nil)]
-          (is (= #{2} (set (es/entity-bitset-seq results)))))
+          (let [results (sec/-search idx {:query "database" :field :value :limit 10} nil)]
+            (is (= #{2} (set (es/entity-bitset-seq results)))))
 
         ;; Filtered search
-        (let [filter-bs (es/entity-bitset-from-longs [3])
-              results (sec/-search idx {:query "machine learning" :field :value} filter-bs)]
-          (is (= #{3} (set (es/entity-bitset-seq results)))))
+          (let [filter-bs (es/entity-bitset-from-longs [3])
+                results (sec/-search idx {:query "machine learning" :field :value} filter-bs)]
+            (is (= #{3} (set (es/entity-bitset-seq results)))))
 
         ;; Ordered results
-        (is (sec/-can-order? idx :person/bio :desc))
-        (is (not (sec/-can-order? idx :person/bio :asc)))
-        (let [ordered (sec/-slice-ordered idx {:query "machine learning" :field :value}
-                                          nil nil :desc 10)]
-          (is (= 2 (count ordered)))
-          (is (every? #(contains? % :score) ordered))
-          (is (every? #(contains? #{1 3} (:entity-id %)) ordered)))
+          (is (sec/-can-order? idx :person/bio :desc))
+          (is (not (sec/-can-order? idx :person/bio :asc)))
+          (let [ordered (sec/-slice-ordered idx {:query "machine learning" :field :value}
+                                            nil nil :desc 10)]
+            (is (= 2 (count ordered)))
+            (is (every? #(contains? % :score) ordered))
+            (is (every? #(contains? #{1 3} (:entity-id %)) ordered)))
 
-        ;; Delete entity 1
-        (sec/-transact idx {:datom d1 :added? false})
-        (let [results (sec/-search idx {:query "Alice" :field :value :limit 10} nil)]
-          (is (zero? (es/entity-bitset-cardinality results))))))))
+          ;; Delete one value into a new immutable generation.
+          (let [idx' (sec/-transact idx {:datom d1 :added? false})
+                results (sec/-search idx' {:query "Alice" :field :value :limit 10} nil)]
+            (is (zero? (es/entity-bitset-cardinality results)))
+            (is (= #{1}
+                   (set (es/entity-bitset-seq
+                         (sec/-search idx {:query "Alice" :field :value} nil))))
+                "deriving a generation does not mutate its source")))))))
+
+(deftest scriptum-complete-search-pages-past-lucene-top-n
+  (testing "set-valued search does not silently truncate at 1000 matches"
+    (let [idx (sec/create-index :scriptum
+                                {:attrs #{:doc/body}
+                                 :path (str "/tmp/scriptum-complete-"
+                                            (random-uuid))}
+                                nil)
+          transient (sec/-as-transient idx)]
+      (try
+        (doseq [eid (range 1 1106)]
+          (sec/-transact! transient
+                          {:datom (datahike.datom/datom eid :doc/body
+                                                        "common token")
+                           :added? true}))
+        (let [persistent (sec/-persistent! transient)
+              results (sec/-search persistent
+                                   {:query "common" :field :value}
+                                   nil)]
+          (try
+            (is (= 1105 (es/entity-bitset-cardinality results)))
+            (is (= #{1 1105}
+                   (set (filter #{1 1105}
+                                (es/entity-bitset-seq results)))))
+            (finally
+              (.close ^java.io.Closeable persistent))))
+        (finally
+          ;; A successfully frozen transient transfers its generation to the
+          ;; persistent index; abort is consequently a no-op.
+          (sec/-abort-transient! transient)
+          (.close ^java.io.Closeable idx))))))
+
+(deftest stratum-candidate-pages-preserve-exact-order
+  (let [idx (sec/create-index :stratum
+                              {:attrs #{:item/price}
+                               :ident-ref-map {:item/price 42}}
+                              nil)
+        transient (sec/-as-transient idx)]
+    (doseq [[eid price] [[1 30] [2 10] [3 20] [4 40]]]
+      (sec/-transact! transient
+                      {:datom (datahike.datom/datom eid 42 price)
+                       :added? true}))
+    (let [persistent (sec/-persistent! transient)
+          spec {:attribute :item/price :direction :asc}
+          page-1 (sec/-candidate-page persistent spec nil {:limit 2})
+          page-2 (sec/-candidate-page
+                  persistent spec nil
+                  {:limit 2 :continuation (:continuation page-1)})]
+      (is (= [:exact :complete :exact]
+             ((juxt :precision :recall :ordering) page-1)))
+      (is (= [[2 10] [3 20] [1 30] [4 40]]
+             (mapv (juxt :entity-id :value)
+                   (mapcat :candidates
+                           (sec/validate-candidate-scan [page-1 page-2]))))))))
+
+(deftest secondary-declaration-removal-is-an-atomic-root-transition
+  (let [cfg {:store {:backend :memory :id (random-uuid)}
+             :writer {:backend :self :writer-ownership :exclusive}
+             :schema-flexibility :write
+             :max-string-length 0}]
+    (d/create-database cfg)
+    (let [conn (d/connect cfg)]
+      (try
+        (d/transact conn [{:db/ident :item/price
+                           :db/valueType :db.type/long
+                           :db/cardinality :db.cardinality/one}
+                          {:item/price 10}
+                          {:item/price 20}])
+        (d/transact conn [{:db/ident :idx/price
+                           :db.secondary/type :stratum
+                           :db.secondary/attrs [:item/price]
+                           :db.secondary/config {}}])
+        (await-secondary-status conn :idx/price :ready)
+        (let [before (d/db conn)
+              index-entity (d/q '{:find [?entity .]
+                                  :where [[?entity :db/ident :idx/price]]}
+                                before)]
+          (is (some? (get-in before [:secondary-indices :idx/price])))
+          (d/transact conn [[:db/retractEntity index-entity]])
+          (let [after (d/db conn)]
+            (is (nil? (get-in after [:schema :idx/price])))
+            (is (nil? (get-in after [:secondary-indices :idx/price])))
+            (is (nil? (get-in (k/get (:store after)
+                                     (get-in after [:config :branch])
+                                     nil {:sync? true})
+                              [:secondary-index-keys :idx/price]))
+                "the durable branch root no longer names the generation")
+            (is (some? (get-in before [:schema :idx/price])))
+            (is (some? (get-in before [:secondary-indices :idx/price])))))
+        (finally
+          (d/release conn)
+          (d/delete-database cfg))))))
 
 ;; ---------------------------------------------------------------------------
 ;; Cross-Index Composition Tests
@@ -174,14 +563,17 @@
                                         :added? true})
                         (sec/-transact {:datom (datahike.datom/datom 3 :person/embedding
                                                                      (float-array [0.9 0.1 0.0 0.0]))
-                                        :added? true}))]
-      ;; Transact text
-        (sec/-transact ft-idx {:datom (datahike.datom/datom 1 :person/bio "ML researcher")
-                               :added? true})
-        (sec/-transact ft-idx {:datom (datahike.datom/datom 2 :person/bio "Database admin")
-                               :added? true})
-        (sec/-transact ft-idx {:datom (datahike.datom/datom 3 :person/bio "ML engineer")
-                               :added? true})
+                                        :added? true}))
+            ft-idx (-> ft-idx
+                       (sec/-transact
+                        {:datom (datahike.datom/datom 1 :person/bio "ML researcher")
+                         :added? true})
+                       (sec/-transact
+                        {:datom (datahike.datom/datom 2 :person/bio "Database admin")
+                         :added? true})
+                       (sec/-transact
+                        {:datom (datahike.datom/datom 3 :person/bio "ML engineer")
+                         :added? true}))]
 
       ;; Fulltext "ML" → entities {1, 3}
         (let [ml-bits (sec/-search ft-idx {:query "ML" :field :value} nil)]
@@ -206,7 +598,7 @@
 ;; In-Transaction Maintenance via d/db-with
 
 (deftest test-in-transaction-maintenance
-  (testing "secondary indices updated during d/db-with"
+  (testing "pure d/db-with refuses an externally durable secondary before opening a writer"
     (let [schema {:person/name {:db/index true}
                   :person/bio {}
                   :idx/fulltext {:db.secondary/type :scriptum
@@ -218,24 +610,19 @@
                                     :path (fs/temp-dir! "scriptum-tx-")}
                                    empty-db)
           db (assoc empty-db :secondary-indices {:idx/fulltext ft-idx})
-          db2 (d/db-with db [{:db/id 1 :person/name "Alice" :person/bio "ML researcher"}
-                             {:db/id 2 :person/name "Bob" :person/bio "Database engineer"}])]
-
-      ;; The fulltext index should have been updated in-transaction
-      (let [ft (get-in db2 [:secondary-indices :idx/fulltext])
-            results (sec/-search ft {:query "ML" :field :value} nil)]
-        (is (= #{1} (set (es/entity-bitset-seq results)))))
-
-      ;; Search for name
-      (let [ft (get-in db2 [:secondary-indices :idx/fulltext])
-            results (sec/-search ft {:query "Alice" :field :value} nil)]
-        (is (= #{1} (set (es/entity-bitset-seq results))))))))
+          error (try
+                  (d/db-with db [{:db/id 1 :person/name "Alice"
+                                  :person/bio "ML researcher"}])
+                  nil
+                  (catch clojure.lang.ExceptionInfo e (ex-data e)))]
+      (is (= :secondary/durable-db-with-unsupported (:type error)))
+      (is (= :idx/fulltext (:index-ident error))))))
 
 (deftest test-in-transaction-proximum
   (when-not proximum-available?
     (is (not proximum-available?) "SKIP: proximum requires Java 22+"))
   (when proximum-available?
-    (testing "vector index updated during d/db-with"
+    (testing "pure d/db-with refuses a durable vector builder before copying its mmap"
       (let [schema {:person/embedding {}
                     :idx/vectors {:db.secondary/type :proximum
                                   :db.secondary/attrs [:person/embedding]
@@ -249,14 +636,14 @@
                                        :store-config {:backend :memory :id (random-uuid)}}
                                       empty-db)
             db (assoc empty-db :secondary-indices {:idx/vectors vec-idx})
-            db2 (d/db-with db [{:db/id 1 :person/embedding (float-array [1.0 0.0 0.0 0.0])}
-                               {:db/id 2 :person/embedding (float-array [0.0 1.0 0.0 0.0])}])]
-
-        (let [vt (get-in db2 [:secondary-indices :idx/vectors])
-              results (sec/-search vt {:vector (float-array [1.0 0.0 0.0 0.0]) :k 2} nil)]
-          (is (= 2 (es/entity-bitset-cardinality results)))
-          (is (es/entity-bitset-contains? results 1))
-          (is (es/entity-bitset-contains? results 2)))))))
+            error (try
+                    (d/db-with db [{:db/id 1
+                                    :person/embedding
+                                    (float-array [1.0 0.0 0.0 0.0])}])
+                    nil
+                    (catch clojure.lang.ExceptionInfo e (ex-data e)))]
+        (is (= :secondary/durable-db-with-unsupported (:type error)))
+        (is (= :idx/vectors (:index-ident error)))))))
 
 (deftest test-proximum-knn-clause
   ;; KNN as a first-class Datalog :where clause via the external-engine
@@ -265,7 +652,8 @@
     (is (not proximum-available?) "SKIP: proximum requires Java 22+"))
   (when proximum-available?
     (binding [q/*disable-planner* false]
-      (let [cfg {:store {:backend :memory :id (random-uuid)} :schema-flexibility :write}]
+      (let [external-store-id (random-uuid)
+            cfg {:store {:backend :memory :id (random-uuid)} :schema-flexibility :write}]
         (d/create-database cfg)
         (try
           (let [conn (d/connect cfg)]
@@ -274,12 +662,27 @@
                                :db/cardinality :db.cardinality/one :db.secondary/only true}])
             (d/transact conn [{:db/ident :idx/emb :db.secondary/type :proximum :db.secondary/attrs [:doc/embedding]
                                :db.secondary/config {:dim 4 :distance :cosine :capacity 100
-                                                     :store-config {:backend :memory :id (random-uuid)}}}])
+                                                     :store-config {:backend :memory
+                                                                    :id external-store-id}}}])
             (Thread/sleep 800)
             (d/transact conn [{:doc/name "east"  :doc/embedding (float-array [1.0 0.0 0.0 0.0])}
                               {:doc/name "east2" :doc/embedding (float-array [0.9 0.1 0.0 0.0])}
                               {:doc/name "north" :doc/embedding (float-array [0.0 1.0 0.0 0.0])}])
             (Thread/sleep 500)
+            (let [db (d/db conn)
+                  roots (async/<!! (gc/reachable-external-secondary-roots db))
+                  current-key-map
+                  (get-in (k/get (:store db) (get-in db [:config :branch])
+                                 nil {:sync? true})
+                          [:secondary-index-keys :idx/emb])]
+              (is (<= 2 (count roots))
+                  "the current and retained pre-insert generation are both roots")
+              (is (every? #(= external-store-id (:external-store-id %)) roots))
+              (is (every? #(uuid? (:generation-id %)) roots))
+              (is (contains? roots
+                             {:secondary-type :proximum
+                              :external-store-id external-store-id
+                              :generation-id (:generation-id current-key-map)})))
             (testing "retrieval: [[?e ?distance]] binds entity + cosine distance and joins to a scalar attr"
               (let [rows (d/q '[:find ?name ?distance :in $ ?qvec
                                 :where [(datahike.index.secondary.proximum/knn :idx/emb ?qvec 3) [[?e ?distance]]]
@@ -425,89 +828,126 @@
 
 (deftest test-cross-index-scriptum-to-stratum-aggregate
   (testing "scriptum search produces bitmap → constrains stratum aggregate"
-    (let [schema {:person/name {:db/index true}
-                  :person/bio {}
-                  :person/salary {}
-                  :person/dept {}
-                  :idx/fulltext {:db.secondary/type :scriptum
-                                 :db.secondary/attrs [:person/bio]
-                                 :db.secondary/config {:path (fs/temp-dir! "scriptum-cross-strat-")}}
-                  :idx/analytics {:db.secondary/type :stratum
-                                  :db.secondary/attrs [:person/salary :person/dept]}}
-          empty-db (db/empty-db schema)
-          ft-idx (sec/create-index :scriptum
-                                   {:attrs #{:person/bio}
-                                    :path (fs/temp-dir! "scriptum-cross-strat-")}
-                                   empty-db)
-          st-idx (sec/create-index :stratum
-                                   {:attrs #{:person/salary :person/dept}}
-                                   empty-db)
-          db (assoc empty-db :secondary-indices
-                    {:idx/fulltext ft-idx :idx/analytics st-idx})
-          db (d/db-with db [{:db/id 1 :person/name "Alice" :person/bio "ML researcher" :person/salary 90000 :person/dept "eng"}
-                            {:db/id 2 :person/name "Bob" :person/bio "Database admin" :person/salary 60000 :person/dept "ops"}
-                            {:db/id 3 :person/name "Charlie" :person/bio "ML engineer" :person/salary 80000 :person/dept "eng"}
-                            {:db/id 4 :person/name "Diana" :person/bio "PM" :person/salary 70000 :person/dept "eng"}
-                            {:db/id 5 :person/name "Eve" :person/bio "ML ops" :person/salary 75000 :person/dept "ops"}])]
+    (let [cfg {:store {:backend :memory :id (random-uuid)}
+               :writer {:backend :self :writer-ownership :exclusive}
+               :keep-history? false :schema-flexibility :write}
+          _ (d/create-database cfg)
+          conn (d/connect cfg)]
+      (try
+        (d/transact conn [{:db/ident :person/name :db/valueType :db.type/string
+                           :db/cardinality :db.cardinality/one :db/index true}
+                          {:db/ident :person/bio :db/valueType :db.type/string
+                           :db/cardinality :db.cardinality/one}
+                          {:db/ident :person/salary :db/valueType :db.type/long
+                           :db/cardinality :db.cardinality/one}
+                          {:db/ident :person/dept :db/valueType :db.type/string
+                           :db/cardinality :db.cardinality/one}])
+        (let [report (d/transact
+                      conn [{:db/id -1 :person/name "Alice" :person/bio "ML researcher"
+                             :person/salary 90000 :person/dept "eng"}
+                            {:db/id -2 :person/name "Bob" :person/bio "Database admin"
+                             :person/salary 60000 :person/dept "ops"}
+                            {:db/id -3 :person/name "Charlie" :person/bio "ML engineer"
+                             :person/salary 80000 :person/dept "eng"}
+                            {:db/id -4 :person/name "Diana" :person/bio "PM"
+                             :person/salary 70000 :person/dept "eng"}
+                            {:db/id -5 :person/name "Eve" :person/bio "ML ops"
+                             :person/salary 75000 :person/dept "ops"}])
+              ml-eids (set (map (:tempids report) [-1 -3 -5]))]
+          (d/transact conn [{:db/ident :idx/fulltext
+                             :db.secondary/type :scriptum
+                             :db.secondary/attrs [:person/bio]
+                             :db.secondary/config
+                             {:path (fs/temp-dir! "scriptum-cross-strat-")}}
+                            {:db/ident :idx/analytics
+                             :db.secondary/type :stratum
+                             :db.secondary/attrs [:person/salary :person/dept]}])
+          (await-secondary-status conn :idx/fulltext :ready)
+          (await-secondary-status conn :idx/analytics :ready)
 
-      ;; Direct protocol-level test: scriptum → bitmap → stratum aggregate
-      (let [ft (get-in db [:secondary-indices :idx/fulltext])
-            st (get-in db [:secondary-indices :idx/analytics])
-            ;; Step 1: scriptum search for "ML" → EntityBitSet
-            ml-entities (sec/-search ft {:query "ML" :field :value} nil)]
-        ;; ML entities: {1, 3, 5}
-        (is (= #{1 3 5} (set (es/entity-bitset-seq ml-entities))))
-
-        ;; Step 2: pass bitmap as entity-filter to stratum aggregate
-        (let [result (sec/-columnar-aggregate st
-                                              {:agg [[:avg :salary]] :group [:dept]}
-                                              ml-entities)]
-          ;; eng: (90000 + 80000)/2 = 85000 (only entities 1,3 — not 4)
-          ;; ops: 75000/1 = 75000 (only entity 5 — not 2)
-          (is (= 2 (count result)))
-          (let [eng (first (filter #(= "eng" (:dept %)) result))
-                ops (first (filter #(= "ops" (:dept %)) result))]
-            (is (== 85000.0 (:avg eng)))
-            (is (== 75000.0 (:avg ops)))))
-
-        ;; Step 3: chain scriptum → proximum → stratum (if proximum available)
-        ;; Not tested here — but the bitmap algebra works the same way
-        ))))
+          (let [db (d/db conn)
+                ft (get-in db [:secondary-indices :idx/fulltext])
+                st (get-in db [:secondary-indices :idx/analytics])
+                ml-entities (sec/-search ft {:query "ML" :field :value} nil)]
+            (is (= ml-eids (set (es/entity-bitset-seq ml-entities))))
+            (testing "prepared external-engine arguments resolve from scalar :in bindings"
+              (let [query '[:find [?name ...]
+                            :in $ ?query-spec
+                            :where
+                            [?e :person/name ?name]
+                            [(datahike.test.secondary-integration-test/prepared-secondary-search
+                              :idx/fulltext ?query-spec) [?e ...]]]
+                    ;; This assertion is specifically about executing the
+                    ;; prepared external-engine path. A process-global result
+                    ;; cache hit would bypass that path and make test order
+                    ;; observable, so keep only the plan cache under test.
+                    names (binding [q/*disable-planner* false
+                                    q/*query-result-cache?* false
+                                    q/*fold-scalar-ins* false
+                                    execute/*prepared-execution* true]
+                            (d/q query db {:query "ML" :field :value}))]
+                (is (= #{"Alice" "Charlie" "Eve"} (set names)))))
+            (let [result (sec/-columnar-aggregate
+                          st {:agg [[:avg :salary]] :group [:dept]} ml-entities)]
+              (is (= 2 (count result)))
+              (let [eng (first (filter #(= "eng" (:dept %)) result))
+                    ops (first (filter #(= "ops" (:dept %)) result))]
+                (is (== 85000.0 (:avg eng)))
+                (is (== 75000.0 (:avg ops)))))))
+        (finally
+          (d/release conn)
+          (d/delete-database cfg))))))
 
 ;; ---------------------------------------------------------------------------
 ;; Entity-Filter Constraining Fused Scan (General Non-Aggregate Path)
 
 (deftest test-entity-filter-constrains-fused-scan
   (testing "secondary index search produces entity-filter that constrains PSS scan"
-    (let [schema {:person/name {:db/index true}
-                  :person/bio {}
-                  :person/salary {}
-                  :idx/fulltext {:db.secondary/type :scriptum
-                                 :db.secondary/attrs [:person/bio]
-                                 :db.secondary/config {:path (fs/temp-dir! "scriptum-fused-")}}}
-          empty-db (db/empty-db schema)
-          ft-idx (sec/create-index :scriptum
-                                   {:attrs #{:person/bio}
-                                    :path (fs/temp-dir! "scriptum-fused-")}
-                                   empty-db)
-          db (assoc empty-db :secondary-indices {:idx/fulltext ft-idx})
-          db (d/db-with db [{:db/id 1 :person/name "Alice" :person/bio "ML researcher" :person/salary 90000}
-                            {:db/id 2 :person/name "Bob" :person/bio "Database admin" :person/salary 60000}
-                            {:db/id 3 :person/name "Charlie" :person/bio "ML engineer" :person/salary 80000}
-                            {:db/id 4 :person/name "Diana" :person/bio "PM" :person/salary 70000}
-                            {:db/id 5 :person/name "Eve" :person/bio "ML ops" :person/salary 75000}])]
-
-      ;; Scriptum produces entity bitmap → used as entity-filter for PSS name lookup
-      ;; Direct protocol test: filter PSS results using scriptum bitmap
-      (let [ft (get-in db [:secondary-indices :idx/fulltext])
-            ml-entities (sec/-search ft {:query "ML" :field :value} nil)]
-        (is (= #{1 3 5} (set (es/entity-bitset-seq ml-entities))))
-
-        ;; Now verify this can filter a PSS scan
-        ;; Get all names, then filter by ML entity bitmap
-        (let [all-names (d/q '[:find ?e ?n :where [?e :person/name ?n]] db)
-              ml-names (filter (fn [[eid _]] (es/entity-bitset-contains? ml-entities eid)) all-names)]
-          (is (= #{[1 "Alice"] [3 "Charlie"] [5 "Eve"]} (set ml-names))))))))
+    (let [cfg {:store {:backend :memory :id (random-uuid)}
+               :writer {:backend :self :writer-ownership :exclusive}
+               :keep-history? false :schema-flexibility :write}
+          _ (d/create-database cfg)
+          conn (d/connect cfg)]
+      (try
+        (d/transact conn [{:db/ident :person/name :db/valueType :db.type/string
+                           :db/cardinality :db.cardinality/one :db/index true}
+                          {:db/ident :person/bio :db/valueType :db.type/string
+                           :db/cardinality :db.cardinality/one}
+                          {:db/ident :person/salary :db/valueType :db.type/long
+                           :db/cardinality :db.cardinality/one}])
+        (let [report (d/transact
+                      conn [{:db/id -1 :person/name "Alice" :person/bio "ML researcher"
+                             :person/salary 90000}
+                            {:db/id -2 :person/name "Bob" :person/bio "Database admin"
+                             :person/salary 60000}
+                            {:db/id -3 :person/name "Charlie" :person/bio "ML engineer"
+                             :person/salary 80000}
+                            {:db/id -4 :person/name "Diana" :person/bio "PM"
+                             :person/salary 70000}
+                            {:db/id -5 :person/name "Eve" :person/bio "ML ops"
+                             :person/salary 75000}])
+              expected (set (map (fn [[tempid name]]
+                                   [((:tempids report) tempid) name])
+                                 [[-1 "Alice"] [-3 "Charlie"] [-5 "Eve"]]))]
+          (d/transact conn [{:db/ident :idx/fulltext
+                             :db.secondary/type :scriptum
+                             :db.secondary/attrs [:person/bio]
+                             :db.secondary/config
+                             {:path (fs/temp-dir! "scriptum-fused-")}}])
+          (await-secondary-status conn :idx/fulltext :ready)
+          (let [db (d/db conn)
+                ft (get-in db [:secondary-indices :idx/fulltext])
+                ml-entities (sec/-search ft {:query "ML" :field :value} nil)
+                all-names (d/q '[:find ?e ?n :where [?e :person/name ?n]] db)
+                ml-names (filter (fn [[eid _]]
+                                   (es/entity-bitset-contains? ml-entities eid))
+                                 all-names)]
+            (is (= (set (map first expected))
+                   (set (es/entity-bitset-seq ml-entities))))
+            (is (= expected (set ml-names)))))
+        (finally
+          (d/release conn)
+          (d/delete-database cfg))))))
 
 ;; ---------------------------------------------------------------------------
 ;; Purge propagation — end-to-end
@@ -786,6 +1226,226 @@
   {:store {:backend :memory :id (java.util.UUID/randomUUID)}
    :index :datahike.index/persistent-set
    :keep-history? false :schema-flexibility :write})
+
+(defn- exception-chain [failure]
+  (take-while some? (iterate ex-cause failure)))
+
+(deftest failed-transaction-aborts-scriptum-generation
+  (testing "a primary failure after a secondary mutation releases every private write"
+    (let [store-id (random-uuid)
+          cfg {:store {:backend :memory :id store-id}
+               :writer {:backend :self :writer-ownership :exclusive}
+               :index :datahike.index/persistent-set
+               :keep-history? false
+               :schema-flexibility :write}
+          _ (d/create-database cfg)
+          conn (d/connect cfg)]
+      (try
+        (d/transact conn [{:db/ident :person/bio
+                           :db/valueType :db.type/string
+                           :db/cardinality :db.cardinality/one}
+                          {:db/ident :person/age
+                           :db/valueType :db.type/long
+                           :db/cardinality :db.cardinality/one}])
+        (d/transact conn [{:db/ident :idx/bio
+                           :db.secondary/type :scriptum
+                           :db.secondary/attrs [:person/bio]
+                           :db.secondary/config
+                           {:path (str "/tmp/dh-scriptum-abort-" (random-uuid))}}])
+        (await-secondary-status conn :idx/bio :ready)
+        (let [eid (get-in (d/transact conn [{:db/id -1 :person/age 20}])
+                          [:tempids -1])
+              failure (try
+                        (d/transact
+                         conn [[:db/add eid :person/bio "must not survive"]
+                               [:db.fn/call fail-after-scriptum-builder-opens
+                                store-id]])
+                        nil
+                        (catch Throwable e e))]
+          (is (some? failure))
+          (is (some #{:test/fail-after-scriptum-mutation}
+                    (keep (comp :type ex-data) (exception-chain failure)))
+              "the tx function observed an open guarded Scriptum generation")
+          (is (not (guard/in-flight? store-id))
+              "the failed primary transaction aborts the detached generation")
+          (is (nil? (sec/-sec-value
+                     (get-in (d/db conn) [:secondary-indices :idx/bio])
+                     :person/bio eid))
+              "the unpublished value is absent from the still-current generation")
+
+          (d/transact conn [[:db/add eid :person/bio "committed value"]])
+          (is (= "committed value"
+                 (sec/-sec-value
+                  (get-in (d/db conn) [:secondary-indices :idx/bio])
+                  :person/bio eid))
+              "the writer remains usable after cleanup")
+          (is (not (guard/in-flight? store-id)))
+
+          (let [before (sec/-sec-generation-key-map
+                        (get-in (d/db conn) [:secondary-indices :idx/bio]))]
+            (d/transact conn [[:db/add eid :person/age 21]])
+            (is (= before
+                   (sec/-sec-generation-key-map
+                    (get-in (d/db conn) [:secondary-indices :idx/bio])))
+                "an unrelated transaction reuses the exact immutable generation")))
+        (finally
+          (d/release conn)
+          (d/delete-database cfg))))))
+
+(deftest chained-scriptum-generations-release-intermediate-guards
+  (testing "only the last unpublished generation owns the batch guard"
+    (let [store-id (random-uuid)
+          store (new-mem-store (atom {}) {:sync? true})
+          idx (sec/create-index :scriptum
+                                {:attrs #{:doc/body}
+                                 ::sec/store store
+                                 ::sec/store-id store-id
+                                 ::sec/index-ident :idx/body
+                                 :path (str "/tmp/dh-scriptum-chain-" (random-uuid))}
+                                nil)
+          mutate (fn [source eid value]
+                   (let [transient (sec/-as-transient source)]
+                     (sec/-transact! transient
+                                     {:datom (datahike.datom/datom
+                                              eid :doc/body value)
+                                      :added? true})
+                     (sec/-persistent! transient)))
+          first-generation (mutate idx 1 "first")
+          final-generation (mutate first-generation 2 "second")]
+      (try
+        (is (guard/in-flight? store-id)
+            "the final unpublished generation still protects its objects")
+        (let [preparation (async/<!! (sec/-sec-prepare final-generation {}))]
+          (is (satisfies? sec/IPreparedSecondaryGeneration preparation))
+          (async/<!! (sec/-sec-release preparation {:status :committed})))
+        (is (not (guard/in-flight? store-id))
+            "the intermediate and final generation guards are both released")
+        (finally
+          (.close ^java.io.Closeable first-generation)
+          (.close ^java.io.Closeable final-generation))))))
+
+(deftest scriptum-preserves-keyword-namespaces-in-document-identity
+  (testing "same-local-name attributes with equal values do not collide"
+    (let [cfg (retraction-cfg)
+          _ (d/create-database cfg)
+          conn (d/connect cfg)]
+      (try
+        (d/transact conn [{:db/ident :foo/body :db/valueType :db.type/string
+                           :db/cardinality :db.cardinality/one
+                           :db.secondary/only true}
+                          {:db/ident :bar/body :db/valueType :db.type/string
+                           :db/cardinality :db.cardinality/one
+                           :db.secondary/only true}])
+        (d/transact conn [{:db/ident :idx/namespaced-body
+                           :db.secondary/type :scriptum
+                           :db.secondary/attrs [:foo/body :bar/body]
+                           :db.secondary/config
+                           {:path (str "/tmp/dh-scriptum-ns-" (random-uuid))}}])
+        (await-secondary-status conn :idx/namespaced-body :ready)
+        (let [eid (get-in (d/transact conn [{:db/id -1
+                                             :foo/body "same"
+                                             :bar/body "same"}])
+                          [:tempids -1])
+              current-index #(get-in (d/db conn)
+                                     [:secondary-indices :idx/namespaced-body])]
+          (is (= "same" (sec/-sec-value (current-index) :foo/body eid)))
+          (is (= "same" (sec/-sec-value (current-index) :bar/body eid)))
+          (d/transact conn [[:db/retract eid :foo/body "same"]])
+          (is (nil? (sec/-sec-value (current-index) :foo/body eid)))
+          (is (= "same" (sec/-sec-value (current-index) :bar/body eid))
+              "retracting :foo/body leaves :bar/body's equal value intact"))
+        (finally
+          (d/release conn)
+          (d/delete-database cfg))))))
+
+(deftest scriptum-refuses-non-string-authoritative-values
+  (testing "Scriptum cannot stringify the only authoritative copy of a typed value"
+    (let [cfg (retraction-cfg)
+          _ (d/create-database cfg)
+          conn (d/connect cfg)]
+      (try
+        (d/transact conn [{:db/ident :metric/value
+                           :db/valueType :db.type/long
+                           :db/cardinality :db.cardinality/one
+                           :db.secondary/only true}])
+        (d/transact conn [{:db/ident :idx/metric
+                           :db.secondary/type :scriptum
+                           :db.secondary/attrs [:metric/value]
+                           :db.secondary/config
+                           {:path (str "/tmp/dh-scriptum-typed-" (random-uuid))}}])
+        (await-secondary-status conn :idx/metric :ready)
+        (let [failure (try
+                        (d/transact conn [{:metric/value 42}])
+                        nil
+                        (catch Throwable e e))]
+          (is (some #{:secondary/scriptum-secondary-only-requires-string}
+                    (keep (comp :type ex-data) (exception-chain failure)))))
+        (finally
+          (d/release conn)
+          (d/delete-database cfg))))))
+
+(deftest scriptum-generation-key-maps-fail-closed
+  (let [idx (sec/create-index :scriptum
+                              {:attrs #{:doc/body}
+                               :path (str "/tmp/dh-scriptum-keymap-" (random-uuid))}
+                              nil)
+        cases [[{:type :scriptum
+                 :format-version 2
+                 :storage-owner :datahike}
+                :invalid-snapshot-address]
+               [{:type :scriptum
+                 :format-version 1
+                 :storage-owner :datahike
+                 :snapshot-address (random-uuid)}
+                :legacy-scriptum-v1-generation]
+               [{:type :scriptum
+                 :path "/tmp/old-scriptum"
+                 :branch "db"}
+                :legacy-scriptum-v1-generation]
+               [{:type :scriptum
+                 :format-version 2
+                 :storage-owner :external
+                 :snapshot-address (random-uuid)}
+                :wrong-storage-owner]]]
+    (doseq [[key-map reason] cases]
+      (let [restore-data (thrown-data #(sec/-sec-restore idx nil key-map))
+            mark-data (thrown-data #(sec/mark-from-key-map key-map nil))]
+        (is (= :secondary/invalid-scriptum-generation (:type restore-data)))
+        (is (= reason (:reason restore-data)))
+        (is (= :secondary/invalid-scriptum-generation (:type mark-data)))
+        (is (= reason (:reason mark-data)))))))
+
+(deftest stratum-generation-key-maps-fail-closed
+  (let [idx (sec/create-index :stratum {:attrs #{:doc/body}} nil)
+        cases [[{:type :stratum
+                 :dataset-commit-id (random-uuid)}
+                :legacy-stratum-generation-envelope]
+               [{:type :not-stratum
+                 :format-version 1
+                 :storage-owner :datahike
+                 :dataset-commit-id (random-uuid)}
+                :wrong-type]
+               [{:type :stratum
+                 :format-version 2
+                 :storage-owner :datahike
+                 :dataset-commit-id (random-uuid)}
+                :unsupported-format-version]
+               [{:type :stratum
+                 :format-version 1
+                 :storage-owner :external
+                 :dataset-commit-id (random-uuid)}
+                :wrong-storage-owner]
+               [{:type :stratum
+                 :format-version 1
+                 :storage-owner :datahike}
+                :invalid-dataset-commit-id]]]
+    (doseq [[key-map reason] cases]
+      (let [data (thrown-data #(sec/-sec-restore idx nil key-map))]
+        (is (= :secondary/invalid-stratum-generation (:type data)))
+        (is (= reason (:reason data)))))
+    (doseq [[key-map reason] (remove #(= :wrong-type (second %)) cases)]
+      (is (= reason
+             (:reason (thrown-data #(sec/mark-from-key-map key-map nil))))))))
 
 (deftest scriptum-retraction-keeps-the-entitys-other-attributes
   (testing "the retract branch deleted by `_entity_id` alone, which removed

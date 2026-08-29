@@ -459,6 +459,7 @@
      :idx-ident idx-ident
      :engine-meta engine-meta
      :accepts-entity-filter? (:accepts-entity-filter? engine-meta false)
+     :requires-entity-filter? (:requires-entity-filter? engine-meta false)
      ;; The engine declares its binding requirements via the :input-vars
      ;; key in its var metadata. Recognised values:
      ;;   :all-bound  → every input arg must be bound (the safe default;
@@ -1528,6 +1529,20 @@
           ;; engine before its producers and runs it on an empty ctx.
           spec-args (external-engine-spec-vars (:args op))
           input-args (into direct-args spec-args)
+          ;; A filtering external engine may deliberately consume the entity
+          ;; relation that it also constrains.  This is different from an
+          ;; ordinary producer: filtered ANN, for example, must not run until
+          ;; the primary predicates have produced a candidate entity set.
+          ;; The first declared binding column is the portable way an adapter
+          ;; identifies that entity output.
+          entity-filter-var
+          (when (:requires-entity-filter? op)
+            (let [binding-vars (into []
+                                     (filter analyze/free-var?)
+                                     (analyze/extract-vars (:binding op)))]
+              (first binding-vars)))
+          input-args (cond-> input-args
+                       entity-filter-var (conj entity-filter-var))
           spec (:input-vars-spec op)]
       (case spec
         :any-bound [input-args :any]

@@ -78,7 +78,7 @@
                 :task (build/clean (-> config :build :clj))}
 
          prep {:doc "Prepare git dependencies (compile Java sources)"
-               :task (clojure "-X:deps prep")}
+               :task (clojure "-X:deps" "prep" ":aliases" "[:test]")}
 
          codegen-java {:doc "Generate Java API bindings from specification"
                        :depends [prep]
@@ -303,7 +303,8 @@
                                  ;; node-script target, causing a false-green zero-test run.
                                  (shell "npx shadow-cljs compile node-test")
                                  (println "Running CLJS node tests...")
-                                 (shell "node target/out/node-test.js"))}
+                                 (shell {:extra-env {"DATAHIKE_LOG_LEVEL" "off"}}
+                                        "node target/out/node-test.js"))}
 
          cljs-s3-concurrency-test
          {:doc "Run two independent CLJS Datahike writers against an available S3/MinIO bucket"

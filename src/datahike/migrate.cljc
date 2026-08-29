@@ -31,6 +31,7 @@
    A `:history? true` export resurrects retracted data — see the data-protection
    note in `import-db`/the backup guide."
   (:require [datahike.api :as api]
+            [datahike.store :as dh-store]
             [datahike.writer :as dwriter]
             [datahike.constants :as c]
             [datahike.datom :as d]
@@ -2473,7 +2474,7 @@
         config     (:config db0)
         keep-hist? (boolean (:keep-history? config))
         store      (:store db0)
-        store-id   (:id (:store config))
+        store-id   (dh-store/canonical-store-id store (:store config))
         ;; 200k, not the export path's 1,000,000.
         ;;
         ;; `spill-runs` holds `run-size` records in memory, sorts them, and
@@ -3262,7 +3263,8 @@
                ;; guards its own trees; the commits guard themselves; nothing
                ;; guarded the blobs. Released explicitly below on both paths,
                ;; for the same reason the store close is (no `finally` here).
-               gc-sid (:id (:store (:config @conn)))
+               gc-sid (dh-store/canonical-store-id (:store @conn)
+                                                   (get-in @conn [:config :store]))
                gc-token (guard/writing! gc-sid)
                ;; The blobs restore-blobs! writes are reachable from nothing
                ;; until a datom names them, possibly in the LAST batch. The
@@ -3333,7 +3335,8 @@
              ;; that were never written. The store arm above always awaited this;
              ;; only the filesystem arm did not.
                ;; Same GC guard as the store arm, for the same blob window.
-               (let [gc-sid (:id (:store (:config @conn)))
+               (let [gc-sid (dh-store/canonical-store-id
+                             (:store @conn) (get-in @conn [:config :store]))
                      gc-token (guard/writing! gc-sid)
                      [blob-root stop-blob-renewal! blob-lost]
                      (if-let [carried (seq (get-in manifest [:store-refs :carried]))]
@@ -3884,4 +3887,3 @@
 
 ;; ---------------------------------------------------------------------------
 ;; legacy CBOR path (backward compatibility for old dumps)
-

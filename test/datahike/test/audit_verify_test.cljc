@@ -125,9 +125,9 @@
 
 ;; ============================================================================
 ;; Secondary-index integration — only run when stratum is on the classpath.
-;; Stratum is the cleanest test target: its dataset commit-id is content-
-;; addressed and is bridged into the standardized :merkle-root field of
-;; the secondary key-map, so audit picks it up automatically.
+;; Stratum's default generation UUID is immutable but opaque. It therefore
+;; exercises the honest advisory path while still proving that detectable
+;; commit-record tampering takes precedence over incomplete secondary audit.
 ;; ============================================================================
 
 #?(:clj
@@ -154,9 +154,9 @@
 
 #?(:clj
    (when stratum-available?
-     (deftest stratum-secondary-contributes-merkle-root
-       (testing "stratum's dataset commit-id surfaces under
-                 :merkle-roots :secondary; audit walks clean"
+     (deftest stratum-secondary-is-advisory-until-generations-are-content-addressed
+       (testing "an opaque Stratum generation ID is not mislabeled as a
+                 content-addressed Merkle root"
          (let [[conn cfg] (bootstrap-stratum)]
            (try
              (let [db (d/db conn)
@@ -165,34 +165,34 @@
                    strat-root (get-in stored [:merkle-roots :secondary :idx/strat])
                    strat-key (get-in stored [:secondary-index-keys :idx/strat])
                    report (audit/verify-chain db)]
-               (is (some? strat-root)
-                   "stratum should provide a merkle-root via IAuditable")
-               (is (uuid? strat-root))
-               (is (= (:dataset-commit-id strat-key) strat-root)
-                   "merkle-root equals the dataset commit-id")
-               (is (= :ok (:status report))
-                   "every commit verifies cleanly with audit-grade secondary"))
+               (is (nil? strat-root))
+               (is (uuid? (:dataset-commit-id strat-key)))
+               (is (= :advisory (:status report)))
+               (is (= :secondary-not-audit-grade
+                      (->> (:commits report)
+                           (keep :reason)
+                           (filter #{:secondary-not-audit-grade})
+                           first))))
              (finally (cleanup conn cfg))))))
 
      (deftest stratum-deep-verify-ok
        (testing ":deep? true succeeds when primary storage is intact.
-                 Stratum's secondary delegates the deep walk to
-                 stratum.audit when it's on the classpath; otherwise
-                 (older published stratum) it degrades to :unsupported
-                 with reason :stratum-audit-unavailable. Either way the
-                 overall report stays :ok and the secondary lives in
-                 :deep :unsupported."
+                 Stratum's opaque generation ID keeps the chain advisory,
+                 while deep verification reports the unsupported secondary
+                 without inventing a mismatch."
          (let [[conn cfg] (bootstrap-stratum)]
            (try
              (let [r (audit/verify-chain (d/db conn) nil {:deep? true})
                    strat-uns (first (filter #(= :idx/strat (:index %))
                                             (-> r :deep :unsupported)))]
-               (is (= :ok (:status r)) "overall :ok — no mismatches")
+               (is (= :advisory (:status r))
+                   "opaque secondary generations cannot make an audit-grade chain")
                (is (= :ok (-> r :deep :status)))
                (is (empty? (-> r :deep :diffs)) "no diffs")
                (is (some? strat-uns)
                    "stratum surfaces under :unsupported")
                (is (contains? #{:advisory :stratum-audit-unavailable
+                                :stratum-generation-id-not-content-addressed
                                 :no-store :unsynced}
                               (:reason strat-uns))
                    "reason depends on whether stratum.audit is loaded
@@ -242,7 +242,7 @@
 ;; ============================================================================
 ;; Proximum end-to-end through commit!. The whole point of this test is to
 ;; drive `d/transact` so it goes through `commit!` → `db->stored` → the
-;; proximum bridge's `-sec-flush`. If the bridge calls the wrong sync! (an
+;; Proximum generation sealing. If the bridge calls the wrong sync! (an
 ;; earlier regression invoked the low-level VectorStore sync! against the
 ;; HnswIndex, NPE'd, and got past CI because no existing test exercised
 ;; this path), we catch it here.
@@ -261,11 +261,10 @@
 #?(:clj
    (when proximum-available?
      (deftest proximum-secondary-contributes-merkle-root
-       (testing "proximum's commit-id surfaces under
-                 :merkle-roots :secondary via the -sec-flush key-map
-                 (path b); audit walks clean. Regression guard for the
+       (testing "a crypto-addressed proximum generation surfaces under
+                 :merkle-roots :secondary; audit walks clean. Regression guard for the
                  NPE caused by calling the wrong (VectorStore-shaped)
-                 sync! against the HnswIndex from -sec-flush."
+                 sync! against the HnswIndex while sealing."
          (let [cfg (file-cfg true)]
            (d/create-database cfg)
            (let [conn (d/connect cfg)]
@@ -288,21 +287,16 @@
                  (is (some? prox-root)
                      "proximum must contribute a non-nil merkle-root")
                  (is (uuid? prox-root))
-                 (is (= prox-root (:merkle-root prox-key))
-                     "the key-map's :merkle-root and the folded root must match")
-                 (is (= prox-root (:commit-id prox-key))
-                     "key-map :commit-id stays the post-sync cid (was previously
-                      reading the pre-sync value off the bridge's discarded sync result)")
+                 (is (= prox-root (:generation-id prox-key))
+                     "the immutable generation id and folded root match")
+                 (is (= :full-mmap-copy (:generation-strategy prox-key)))
                  (is (= :ok (:status report))
                      "with proximum contributing a real root, audit walks clean"))
                (finally (cleanup conn cfg)))))))))
 
 ;; ============================================================================
-;; Scriptum without crypto-hash → advisory.
-;; (Scriptum WITH crypto-hash is blocked by a pre-existing upstream bug:
-;;  maybe-create-secondary-index instantiates as soon as :type+:attrs are
-;;  present, before :db.secondary/config arrives, so the writer is created
-;;  with default config — :crypto-hash? never reaches the bridge.)
+;; Detached Scriptum snapshots are content-addressed independently of the
+;; adapter's optional tuning flags. Even the empty ready state has a real root.
 ;; ============================================================================
 
 ;; ============================================================================
@@ -341,6 +335,24 @@
           (is (= :mismatch (-> r :deep :status)))
           (is (some #(= :idx/fake (:index %)) (-> r :deep :diffs))
               "the fake index is flagged in :diffs"))
+        (finally (cleanup conn cfg))))))
+
+(deftest deep-verify-reports-a-stored-secondary-with-no-live-adapter
+  (testing "a missing live adapter is visible in the deep report, not silently omitted"
+    (let [[conn cfg] (bootstrap true)]
+      (try
+        (let [db (d/db conn)
+              head (get-in db [:meta :datahike/commit-id])
+              stored (k/get (:store db) head nil {:sync? true})
+              root #?(:clj (java.util.UUID/randomUUID) :cljs (random-uuid))
+              stored' (assoc-in stored [:merkle-roots :secondary :idx/missing] root)
+              _ (k/assoc (:store db) head stored' {:sync? true})
+              report (audit/verify-chain db nil {:deep? true})]
+          (is (= :secondary-index-unavailable
+                 (->> report :deep :unsupported
+                      (some #(when (= :idx/missing (:index %)) (:reason %))))))
+          (is (= :ok (get-in report [:deep :status]))
+              "unsupported is advisory but explicit"))
         (finally (cleanup conn cfg))))))
 
 ;; ============================================================================
@@ -481,9 +493,9 @@
 
 #?(:clj
    (when scriptum-available?
-     (deftest scriptum-without-crypto-hash-is-advisory
-       (testing "scriptum that didn't opt into crypto-hash leaves :merkle-root
-                 absent → audit downgrades affected commits to advisory"
+     (deftest scriptum-detached-generation-is-audit-grade-by-default
+       (testing "a detached Scriptum generation has a content root without an
+                 additional adapter crypto flag"
          (let [cfg (file-cfg true)]
            (d/create-database cfg)
            (let [conn (d/connect cfg)]
@@ -498,20 +510,17 @@
                                         (get-in db [:meta :datahike/commit-id])
                                         nil {:sync? true})
                      sc-root (get-in stored-head [:merkle-roots :secondary :idx/sc])
-                     report (audit/verify-chain db)]
-                 (is (nil? sc-root)
-                     "scriptum without crypto-hash should fail to produce a merkle-root")
-                 (is (= :advisory (:status report)))
-                 (is (some #{:secondary-not-audit-grade}
-                           (map :reason (:commits report)))
-                     "at least one commit should be flagged with the secondary reason"))
+                     report (audit/verify-chain db nil {:deep? true})]
+                 (is (uuid? sc-root))
+                 (is (= :ok (:status report)))
+                 (is (= :ok (get-in report [:deep :status]))))
                (finally (cleanup conn cfg)))))))))
 
 #?(:clj
    (when scriptum-available?
      (deftest scriptum-with-crypto-hash-is-audit-grade
        (testing "scriptum opted into :crypto-hash? exposes :merkle-root
-                 via -sec-flush, and audit walks :ok end-to-end"
+                 and audit walks :ok end-to-end"
          (let [cfg (file-cfg true)
                scriptum-path (str (System/getProperty "java.io.tmpdir")
                                   "/scriptum-audit-"
@@ -531,10 +540,11 @@
                                         (get-in db [:meta :datahike/commit-id])
                                         nil {:sync? true})
                      sc-root (get-in stored-head [:merkle-roots :secondary :idx/sc])
-                     report (audit/verify-chain db)]
+                     report (audit/verify-chain db nil {:deep? true})]
                  (is (some? sc-root)
                      "scriptum's :content-hash should reach merkle-roots")
                  (is (uuid? sc-root))
                  (is (= :ok (:status report))
-                     "every commit verifies cleanly with audit-grade scriptum"))
+                     "every commit verifies cleanly with audit-grade scriptum")
+                 (is (= :ok (get-in report [:deep :status]))))
                (finally (cleanup conn cfg)))))))))

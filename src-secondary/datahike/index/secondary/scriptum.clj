@@ -1,284 +1,457 @@
 (ns datahike.index.secondary.scriptum
-  "Scriptum (Lucene full-text search) integration with Datahike secondary indices.
+  "Scriptum/Lucene full-text secondary index backed by immutable generations.
 
-   Require this namespace to register the :scriptum index type:
-     (require 'datahike.index.secondary.scriptum)
-
-   Then declare in schema:
-     {:idx/fulltext {:db.secondary/type :scriptum
-                     :db.secondary/attrs [:person/name :person/bio]
-                     :db.secondary/config {:path \"/tmp/idx\" :analyzer :standard}}}"
+   `:path` is a disposable local segment cache. The authoritative identity is
+   the immutable Scriptum snapshot address stored in the Datahike root."
   (:require
+   [clojure.core.async :as async]
    [datahike.index.audit :as audit]
-   [datahike.index.secondary :as sec]
    [datahike.index.entity-set :as es]
+   [datahike.index.secondary :as sec]
    [datahike.migrate.fs :as fs]
-   [scriptum.core :as sc]
-   [replikativ.logging :as log]))
+   [konserve.memory :refer [new-mem-store]]
+   [replikativ.logging :as log]
+   [scriptum.core :as sc]))
 
-(defn- attr-name
-  "The attribute as scriptum stores it. `a` is a keyword normally and a numeric
-   ref under `:attribute-refs? true`, so both shapes must land on one spelling."
-  [a]
-  (if (keyword? a) (name a) (str a)))
+(defn- delivered [value]
+  (let [ch (async/promise-chan)]
+    (async/put! ch value)
+    ch))
 
-(defn- ea-key
-  "`\"<eid>|<attr>\"` — the term a retraction deletes by. `|` cannot occur in an
-   entity id and is not produced by `name` on a keyword, so the two components
-   cannot run together into a third meaning."
-  [eid a]
-  (str eid "|" (attr-name a)))
+(defn- scriptum-key-map-failure-reason [key-map]
+  (cond
+    (not= :scriptum (:type key-map)) :wrong-type
+    ;; Scriptum v1 named the old mutable/path-backed representation. A v1
+    ;; address is not a v2 sealed Lucene manifest and cannot be upgraded by
+    ;; relabelling its envelope.
+    (or (= 1 (:format-version key-map))
+        (and (nil? (:format-version key-map))
+             (or (contains? key-map :path)
+                 (contains? key-map :branch))))
+    :legacy-scriptum-v1-generation
+    (not= 2 (:format-version key-map)) :unsupported-format-version
+    (not= :datahike (:storage-owner key-map)) :wrong-storage-owner
+    (not (uuid? (:snapshot-address key-map))) :invalid-snapshot-address
+    :else nil))
+
+(defn- validate-scriptum-generation-key-map [key-map]
+  (when-let [reason (scriptum-key-map-failure-reason key-map)]
+    (throw (ex-info
+            "Invalid Scriptum generation key-map."
+            {:type :secondary/invalid-scriptum-generation
+             :reason reason
+             :key-map key-map
+             :expected {:type :scriptum
+                        :format-version 2
+                        :storage-owner :datahike
+                        :snapshot-address :uuid}})))
+  key-map)
+
+(defn- attr-name [a]
+  ;; Preserve the namespace. `(name :foo/body)` and `(name :bar/body)` both
+  ;; produced "body", so equal values collided in `_key` and retracting one
+  ;; attribute deleted the other.
+  (if (keyword? a) (pr-str a) (str a)))
+
+(defn- doc-key [eid a value-hash]
+  (str eid "|" (attr-name a) "|" value-hash))
+
+(defn- query->lucene [{:keys [query field fields] :as query-spec}]
+  (cond
+    (instance? org.apache.lucene.search.Query query) query
+    (= :all query) :all
+    (and field (string? query)) (sc/text-query field query)
+    (and (seq fields) (string? query))
+    (sc/multi-field-query (map attr-name fields) query)
+    :else (throw (ex-info "Invalid scriptum query-spec" {:spec query-spec}))))
+
+(defn- search-results [snapshot query-spec limit]
+  (if-not snapshot
+    []
+    (if-let [limit (or limit (:limit query-spec))]
+      (sc/search-store-snapshot snapshot (query->lucene query-spec)
+                                {:limit limit})
+      ;; ISecondaryIndex/-search is a complete set operation, not a top-N
+      ;; convenience API. Lucene's search call requires a bound, so enumerate
+      ;; its immutable snapshot with searchAfter pages instead of silently
+      ;; truncating every result at the old hard-coded 1000 documents.
+      (loop [after nil
+             acc []]
+        (let [page (sc/candidate-page
+                    snapshot (query->lucene query-spec)
+                    {:page-size 1024
+                     :after after
+                     :query-id (:query-id query-spec)})
+              acc (into acc (:candidates page))]
+          (if (:exhausted? page)
+            acc
+            (recur (:continuation page) acc)))))))
+
+(defn- result-eid [result]
+  (when-let [eid-str (get result "_entity_id")]
+    (try
+      (Long/parseLong eid-str)
+      (catch NumberFormatException _
+        (log/warn :datahike/invalid-lucene-eid {:eid-str eid-str})
+        nil))))
+
+(defn- result-attr [attrs result]
+  (let [stored (get result "_attr")]
+    (or (some #(when (= stored (attr-name %)) %) attrs)
+        stored)))
+
+(defn- matching-results [snapshot attrs query-spec entity-filter limit]
+  (into []
+        (keep (fn [result]
+                (when-let [eid (result-eid result)]
+                  (when (or (nil? entity-filter)
+                            (es/entity-bitset-contains? entity-filter eid))
+                    {:entity-id eid
+                     :attribute (result-attr attrs result)
+                     :score (:score result)}))))
+        (search-results snapshot query-spec limit)))
+
+(declare make-scriptum-index)
+
+(defprotocol ^:private IUnpublishedScriptumGeneration
+  (-release-unpublished-generation! [index]))
+
+(defn- take-sealed-generation! [generation*]
+  (locking generation*
+    (let [generation @generation*]
+      (reset! generation* nil)
+      generation)))
+
+(defrecord ScriptumPreparation [prepared-index generation owns-prepared?
+                                release-state]
+  sec/IPreparedSecondaryGeneration
+  (-sec-generation-index [_] prepared-index)
+  (-sec-release [_ outcome]
+    (try
+      (locking release-state
+        (when-not @release-state
+          (try
+            (when generation
+              (case (:status outcome)
+                :committed (sc/release-generation! generation)
+                :aborted (sc/abort-generation! generation)
+                :unknown (sc/abort-generation! generation)))
+            (finally
+              ;; A release hook is one-shot even when cleanup itself fails.
+              ;; Re-entering Lucene cleanup after a partial close is not a safe
+              ;; retry protocol, and visibility was already decided by the
+              ;; Datahike head before this hook ran.
+              (try
+                (when (and owns-prepared? (not= :committed (:status outcome)))
+                  (.close ^java.io.Closeable prepared-index))
+                (finally
+                  (reset! release-state (:status outcome))))))))
+      (delivered true)
+      (catch Throwable failure
+        (delivered failure)))))
+
+(defn- ensure-generation! [generation* source-index config store cache store-id]
+  (or @generation*
+      (let [base-address
+            (:snapshot-address (sec/-sec-generation-key-map source-index))
+            generation
+            (sc/begin-generation
+             store cache base-address
+             {:store-id store-id
+              :logical-name (str (or (::sec/index-ident config) :scriptum))
+              :workspace-id (str (when-let [attempt (::sec/build-attempt config)]
+                                   (str attempt "-"))
+                                 (random-uuid))
+              :max-merged-segment-mb (:max-merged-segment-mb config)
+              :ram-buffer-mb (:ram-buffer-mb config)})]
+        (reset! generation* generation)
+        generation)))
+
+(defrecord TransientScriptumIndex [generation* source-index attrs config store
+                                   cache store-id dirty? frozen?]
+  sec/ISecondaryIndex
+  (-search [_ query-spec entity-filter]
+    (if-let [generation @generation*]
+      (let [results (sc/search generation (query->lucene query-spec)
+                               {:limit (or (:limit query-spec) 1000)})
+            bitset (es/entity-bitset)]
+        (doseq [result results
+                :let [eid (result-eid result)]
+                :when (and eid
+                           (or (nil? entity-filter)
+                               (es/entity-bitset-contains? entity-filter eid)))]
+          (es/entity-bitset-add! bitset eid))
+        bitset)
+      (sec/-search source-index query-spec entity-filter)))
+  (-estimate [_ query-spec]
+    (if @generation* (or (:limit query-spec) 100)
+        (sec/-estimate source-index query-spec)))
+  (-can-order? [_ _ direction] (= :desc direction))
+  (-slice-ordered [_ query-spec entity-filter _ _ limit]
+    (if-let [generation @generation*]
+      (let [results (sc/search generation (query->lucene query-spec)
+                               {:limit (or limit 1000)})]
+        (into []
+              (keep (fn [result]
+                      (when-let [eid (result-eid result)]
+                        (when (or (nil? entity-filter)
+                                  (es/entity-bitset-contains? entity-filter eid))
+                          {:entity-id eid :score (:score result)}))))
+              results))
+      (sec/-slice-ordered source-index query-spec entity-filter nil :desc limit)))
+  (-indexed-attrs [_] attrs)
+  (-transact [this tx-report]
+    (sec/-transact! this tx-report)
+    this)
+
+  sec/ITransientSecondaryIndex
+  (-as-transient [this] this)
+  (-transact! [_ {:keys [datom added? value-hash secondary-only?]}]
+    (let [eid (.-e datom)
+          attr (.-a datom)
+          value (.-v datom)
+          value-hash (or value-hash (sec/secondary-only-hash value))
+          key (doc-key eid attr value-hash)
+          _ (when (and added? secondary-only? (not (string? value)))
+              (throw (ex-info
+                      "Scriptum can be authoritative for :db.secondary/only only for string values."
+                      {:type :secondary/scriptum-secondary-only-requires-string
+                       :attribute attr
+                       :value-type (type value)})))
+          generation (ensure-generation! generation* source-index config store
+                                         cache store-id)]
+      (reset! dirty? true)
+      (if added?
+        (sc/add-doc generation
+                    {:_entity_id {:value (str eid) :type :string :store? true}
+                     :_attr {:value (attr-name attr) :type :string :store? true}
+                     :_key {:value key :type :string :store? true}
+                     :_vhash {:value value-hash :type :string :store? true}
+                     :value {:value (if (string? value) value (str value))
+                             :type :text :store? true}})
+        (sc/delete-docs generation "_key" key))))
+  (-persistent! [_]
+    (if-not @dirty?
+      source-index
+      (let [generation @generation*]
+        (try
+          (let [address (sc/seal-generation! generation
+                                             "datahike-secondary-generation")]
+            (try
+              (let [snapshot (sc/open-store-snapshot store cache address)
+                    result (make-scriptum-index snapshot attrs config store cache
+                                                store-id address generation)]
+                ;; Writer batching may derive several sealed generations before
+                ;; publishing only the last one.  Once the child is complete it
+                ;; roots every shared Lucene object it needs, so the unpublished
+                ;; parent's guard can be released.  Keep its snapshot readable
+                ;; for an intermediate tx-report db-before; only ownership of
+                ;; the preparation handle moves forward.
+                (when (satisfies? IUnpublishedScriptumGeneration source-index)
+                  (-release-unpublished-generation! source-index))
+                (reset! frozen? true)
+                result)
+              (catch Throwable open-failure
+                (sc/abort-generation! generation)
+                (throw open-failure))))
+          (catch Throwable seal-failure
+            (sc/abort-generation! generation)
+            (throw seal-failure))))))
+
+  sec/ISecondaryHashAddressable
+  (-sec-value-by-hash [_ attr eid value-hash]
+    (some (fn [result]
+            (when (= value-hash (get result "_vhash"))
+              (get result "value")))
+          (if-let [generation @generation*]
+            (sc/search generation {:term [:_key (doc-key eid attr value-hash)]}
+                       {:limit 1})
+            [])))
+
+  sec/IDurableSecondaryTransient
+  (-durable-persistent-result? [_] true)
+
+  sec/IAbortableSecondaryTransient
+  (-abort-transient! [_]
+    (when (and (not @frozen?) @generation*)
+      (sc/abort-generation! @generation*))))
 
 (defn- make-scriptum-index
-  "Create an ISecondaryIndex backed by Scriptum.
-   Documents are stored with an '_entity_id' field for entity-level filtering.
-   Each attribute value becomes a separate document: {_entity_id, _attr, <field-value>}."
-  [writer config]
-  (let [attrs (set (:attrs config))]
+  [snapshot attrs config store cache store-id address sealed-generation]
+  (let [attrs (set attrs)
+        sealed-generation* (atom sealed-generation)]
     (reify
       java.io.Closeable
-      (close [_] (sc/close! writer))
+      (close [_]
+        (try
+          (when snapshot (.close ^java.io.Closeable snapshot))
+          (finally
+            (when-let [generation (take-sealed-generation! sealed-generation*)]
+              (sc/abort-generation! generation)))))
+
+      IUnpublishedScriptumGeneration
+      (-release-unpublished-generation! [_]
+        (when-let [generation (take-sealed-generation! sealed-generation*)]
+          (sc/release-generation! generation)))
 
       sec/ISecondaryIndex
       (-search [_ query-spec entity-filter]
-        ;; query-spec: {:query string-or-Query, :field keyword, :limit int}
-        ;; Returns EntityBitSet of matching entity IDs
-        (let [{:keys [query field limit fields]} query-spec
-              limit (or limit 1000)
-              lucene-query (cond
-                             (instance? org.apache.lucene.search.Query query)
-                             query
-
-                             (and field query (string? query))
-                             (sc/text-query field query)
-
-                             (and fields query (string? query))
-                             (sc/multi-field-query (map name fields) query)
-
-                             :else
-                             (throw (ex-info "Invalid scriptum query-spec" {:spec query-spec})))
-              results (sc/search writer lucene-query {:limit limit})]
-          ;; Filter by entity-filter if provided, build EntityBitSet
-          ;; Search results use string keys for stored fields
-          (let [bs (es/entity-bitset)]
-            (doseq [r results]
-              (when-let [eid-str (get r "_entity_id")]
-                (try
-                  (let [eid (Long/parseLong eid-str)]
-                    (when (or (nil? entity-filter)
-                              (es/entity-bitset-contains? entity-filter eid))
-                      (es/entity-bitset-add! bs eid)))
-                  (catch NumberFormatException e
-                    (log/warn :datahike/invalid-lucene-eid {:eid-str eid-str})))))
-            bs)))
-
-      (-estimate [_ query-spec]
-        ;; Rough estimate — search with limit 0 would give TotalHits but
-        ;; Scriptum API doesn't expose that. Use a heuristic.
-        (or (:limit query-spec) 100))
-
-      (-can-order? [_ _attr direction]
-        ;; Lucene results are naturally ordered by relevance score (descending)
-        (= direction :desc))
-
-      (-slice-ordered [_ query-spec entity-filter _attr _direction limit]
-        ;; Search with score ordering (Lucene natural order)
-        (let [{:keys [query field fields]} query-spec
-              lucene-query (cond
-                             (instance? org.apache.lucene.search.Query query)
-                             query
-                             (and field query (string? query))
-                             (sc/text-query field query)
-                             (and fields query (string? query))
-                             (sc/multi-field-query (map name fields) query)
-                             :else
-                             (throw (ex-info "Invalid scriptum query-spec" {:spec query-spec})))
-              results (sc/search writer lucene-query {:limit (or limit 1000)})]
-          (->> results
-               (keep (fn [r]
-                       (when-let [eid-str (get r "_entity_id")]
-                         (try
-                           (let [eid (Long/parseLong eid-str)]
-                             (when (or (nil? entity-filter)
-                                       (es/entity-bitset-contains? entity-filter eid))
-                               {:entity-id eid :score (:score r)}))
-                           (catch NumberFormatException _
-                             (log/warn :datahike/invalid-lucene-eid {:eid-str eid-str})
-                             nil)))))
-               vec)))
-
+        (let [bitset (es/entity-bitset)]
+          (doseq [{:keys [entity-id]}
+                  (matching-results snapshot attrs query-spec entity-filter
+                                    nil)]
+            (es/entity-bitset-add! bitset entity-id))
+          bitset))
+      (-estimate [_ query-spec] (if snapshot (or (:limit query-spec) 100) 0))
+      (-can-order? [_ _ direction] (= :desc direction))
+      (-slice-ordered [_ query-spec entity-filter _ _ limit]
+        (mapv #(select-keys % [:entity-id :score])
+              (matching-results snapshot attrs query-spec entity-filter
+                                (or limit 1000))))
       (-indexed-attrs [_] attrs)
+      (-transact [this tx-report]
+        (let [transient-index (sec/-as-transient this)]
+          (sec/-transact! transient-index tx-report)
+          (sec/-persistent! transient-index)))
 
-      sec/ISecondaryWarmable
-      (-sec-warm! [_ opts]
-        ;; Units are Lucene segment FILES (scriptum's own — budgets do not
-        ;; translate across index families). Meaningful only for a
-        ;; store-backed (konserve) scriptum, where a cold machine fetches its
-        ;; segments ahead of Lucene's serial demand; this adapter still opens
-        ;; scriptum by PATH, where the files are local by construction and
-        ;; scriptum's warm! answers nil — normalized to a zero report here, so
-        ;; the delegation is already right when the adapter moves to the
-        ;; konserve backing.
-        (or (sc/warm! writer opts)
-            {:fetched 0 :ms 0.0 :budget-exhausted? false}))
+      sec/ITransientSecondaryIndex
+      (-as-transient [this]
+        (when-not (and store store-id)
+          (throw (ex-info "Scriptum generation has no storage context."
+                          {:type :secondary/scriptum-missing-store})))
+        (->TransientScriptumIndex
+         (atom nil) this attrs config store cache store-id (atom false)
+         (atom false)))
+      (-transact! [_ _]
+        (throw (IllegalStateException.
+                "Call -as-transient before mutating a Scriptum generation.")))
+      (-persistent! [this] this)
 
-      sec/IVersionedSecondaryIndex
-      (-sec-flush [_ _store branch]
-        ;; Scriptum manages its own storage (Lucene files), not konserve.
-        ;; Commit the current state and return a key-map for restore.
-        ;; The merkle-root for audit is exposed via IAuditable below,
-        ;; computed from the writer's most recent content-hash.
-        (sc/commit! writer "datahike-flush"
-                    {"datahike.branch" (name branch)})
-        {:type :scriptum
-         :path (:path config)
-         :branch (or (:branch config) "main")})
-
-      (-sec-restore [_ _store key-map]
-        ;; Reopen the Lucene branch at the stored path.
-        ;; open-branch handles both main (root) and non-main (branches/) layouts.
-        (let [branch-name (:branch key-map)
-              restored-writer (sc/open-branch (:path key-map) branch-name
-                                              (select-keys config [:crypto-hash?]))]
-          (make-scriptum-index restored-writer (assoc config :path (:path key-map) :branch branch-name))))
-
-      (-sec-branch [_ _store _from-branch new-branch]
-        ;; Fork the Lucene writer to a new branch (COW via segment sharing)
-        (let [forked-writer (sc/fork writer (name new-branch))
-              new-config (assoc config :branch (name new-branch))]
-          (make-scriptum-index forked-writer new-config)))
-
-      (-sec-mark [_]
-        ;; Scriptum uses filesystem, not konserve — nothing to mark
-        #{})
-
-      audit/IAuditable
-      ;; Scriptum's content-hash is the merkle root over its Lucene
-      ;; segments. Available only when the writer was constructed with
-      ;; :crypto-hash? true.
-      (-merkle-root [_]
-        ;; Returns nil pre-commit / pre-crypto-hash; never throws.
-        (let [bw (sc/->writer writer)
-              h (.getLastContentHash bw)]
-          (when h (java.util.UUID/fromString h))))
-      (-recompute-merkle-root [_]
-        ;; When scriptum.audit (>= 0.1.x audit-chain release) is on the
-        ;; classpath we delegate the deep walk to it. Older scriptum
-        ;; versions degrade to a local translation of
-        ;; sc/verify-commit's {:valid? :commit-id :errors} shape.
-        (or (when-let [recompute (try (requiring-resolve 'scriptum.audit/-recompute-merkle-root)
-                                      (catch Throwable _ nil))]
-              (recompute writer))
-            (let [bw (sc/->writer writer)
-                  h (.getLastContentHash bw)]
-              (cond
-                (nil? h)
-                {:status :unsupported :reason :crypto-hash-disabled}
-
-                :else
-                (let [r (sc/verify-commit writer)
-                      root (java.util.UUID/fromString h)]
-                  (if (:valid? r)
-                    {:status :ok :root root}
-                    {:status :mismatch :root nil
-                     :errors [{:type :audit/merkle-mismatch
-                               :address root
-                               :expected root
-                               :details (:errors r)}]}))))))
+      sec/ISecondaryCandidateScan
+      (-candidate-page [_ query-spec entity-filter page-request]
+        (let [precision (or (:precision query-spec) :exact)
+              recall (or (:recall query-spec) :complete)
+              ordering (or (:ordering query-spec) :exact)]
+          (if-not snapshot
+            {:candidates [] :precision precision :recall recall
+             :ordering ordering :exhausted? true :continuation nil}
+            (let [page (sc/candidate-page
+                      snapshot (query->lucene query-spec)
+                      {:page-size (:limit page-request)
+                       :after (:continuation page-request)
+                       :query-id (:query-id query-spec)
+                       :fields ["_entity_id" "_attr"]})
+                candidates
+                (into []
+                      (keep (fn [result]
+                              (when-let [eid (result-eid result)]
+                                (when (or (nil? entity-filter)
+                                          (es/entity-bitset-contains?
+                                           entity-filter eid))
+                                  {:entity-id eid
+                                   :attribute (result-attr attrs result)
+                                   :score (:score result)}))))
+                      (:candidates page))]
+            {:candidates candidates
+             :precision precision
+             :recall recall
+             :ordering ordering
+             :exhausted? (:exhausted? page)
+             :continuation (:continuation page)}))))
 
       sec/ISecondaryScannable
       (-sec-value [_ attr eid]
-        ;; A term query on the stored `_entity_id`, reading back the stored
-        ;; `value`. `-search` above throws that field away — it builds an
-        ;; EntityBitSet because that is what a query needs — but the text is
-        ;; there: `add-doc` writes `:value` with no `:store?` key and scriptum's
-        ;; default is `store? true`, i.e. `Field$Store/YES`.
-        ;;
-        ;; A point lookup rather than a scan, because the caller is streaming a
-        ;; dump and must not accumulate a corpus in memory. `:limit` is small but
-        ;; not 1: one entity can hold several attributes, each its own document.
-        (let [want (if (keyword? attr) (name attr) (str attr))]
-          (some (fn [r] (when (= want (get r "_attr")) (get r "value")))
-                (sc/search writer {:term [:_entity_id (str eid)]} {:limit 64}))))
+        (some (fn [result]
+                (when (= (attr-name attr) (get result "_attr"))
+                  (get result "value")))
+              (if snapshot
+                (sc/search-store-snapshot
+                 snapshot {:term [:_entity_id (str eid)]} {:limit 64})
+                [])))
 
-      (-transact [this tx-report]
-        ;; tx-report: {:datom datom :added? bool}
-        (let [{:keys [datom added?]} tx-report
-              eid (.-e datom)
-              attr (.-a datom)
-              val (.-v datom)]
-          (if added?
-            ;; Add document with entity ID, attribute, and value.
-            ;;
-            ;; `_ea` is a COMPOSITE key, `"<eid>|<attr>"`, and it exists only so
-            ;; that the retraction below can name this document. Composite
-            ;; rather than a conjunction of `_entity_id` and `_attr` because
-            ;; `sc/delete-docs` takes a single Lucene Term — so one field that
-            ;; already holds both is what makes an exact delete expressible
-            ;; without changing scriptum's API.
-            (do
-              (sc/add-doc writer
-                          {:_entity_id {:value (str eid) :type :string :store? true}
-                           :_attr {:value (attr-name attr) :type :string :store? true}
-                           :_ea {:value (ea-key eid attr) :type :string :store? true}
-                           :value (if (string? val) val (str val))})
-              this)
-            ;; Retract: delete the documents for THIS [entity, attribute].
-            ;;
-            ;; This used to delete by `_entity_id` alone, which removed every
-            ;; document the entity had — all of its other indexed attributes
-            ;; with it. Measured: one entity with `:doc/body` and `:doc/title`,
-            ;; retracting `:doc/body` left `-sec-value` returning nil for
-            ;; `:doc/title` while the primary still held it. For an ordinary
-            ;; attribute that is index drift, repairable by a rebuild; for a
-            ;; `:db.secondary/only` one the index was the only copy, so it was
-            ;; permanent loss of a value the database still reported as present.
-            ;;
-            ;; Why not by VALUE as well, which would also separate the several
-            ;; values of a cardinality-many attribute:
-            ;;
-            ;;   * for a `:db.secondary/only` attribute it is not possible — the
-            ;;     retraction datom carries the content HASH (the transactor
-            ;;     rewrites it to search the primary), not the text this index
-            ;;     stored, so there is nothing here to match on. Resolving that
-            ;;     needs a stored `_vhash`, which is the same field
-            ;;     `ISecondaryHashAddressable` needs; until some index wants
-            ;;     that, cardinality-many is refused on those attributes anyway,
-            ;;     so `[eid attr]` names exactly one document.
-            ;;   * for an ordinary cardinality-many attribute the value IS here
-            ;;     and this over-deletes the entity's other values of the same
-            ;;     attribute. That is the one case still imprecise — index drift
-            ;;     with the primary intact, and strictly narrower than the
-            ;;     everything-for-this-entity delete it replaces. Keying on the
-            ;;     value would mean hashing it into a term on every add, which
-            ;;     is new work on the transaction path for every scriptum user
-            ;;     to fix a case none of them may have.
-            (do
-              (sc/delete-docs writer "_ea" (ea-key eid attr))
-              this)))))))
+      sec/ISecondaryHashAddressable
+      (-sec-value-by-hash [_ attr eid value-hash]
+        (some (fn [result]
+                (when (and (= (attr-name attr) (get result "_attr"))
+                           (= value-hash (get result "_vhash")))
+                  (get result "value")))
+              (if snapshot
+                (sc/search-store-snapshot
+                 snapshot {:term [:_key (doc-key eid attr value-hash)]}
+                 {:limit 1})
+                [])))
+
+      sec/ISecondaryWarmable
+      (-sec-warm! [_ _]
+        {:fetched 0 :ms 0.0 :budget-exhausted? false :unsupported? true})
+
+      sec/IDurableSecondaryIndex
+      (-sec-generation-key-map [_]
+        {:type :scriptum
+         :format-version 2
+         :storage-owner :datahike
+         :snapshot-address address})
+      (-sec-prepare [this _]
+        (try
+          (let [[prepared generation owns?]
+                (if-let [generation
+                         (take-sealed-generation! sealed-generation*)]
+                  [(make-scriptum-index (sc/retain-store-snapshot snapshot)
+                                        attrs config store cache store-id address
+                                        nil)
+                   generation true]
+                  (if address
+                    [this nil false]
+                    (let [generation (sc/begin-generation
+                                      store cache nil
+                                      {:store-id store-id
+                                       :logical-name
+                                       (str (or (::sec/index-ident config)
+                                                :scriptum))})]
+                      (try
+                        (let [address (sc/seal-generation!
+                                       generation
+                                       "datahike-empty-secondary-generation")
+                              snapshot (sc/open-store-snapshot store cache address)]
+                          [(make-scriptum-index snapshot attrs config store cache
+                                                store-id address nil)
+                           generation true])
+                        (catch Throwable failure
+                          (sc/abort-generation! generation)
+                          (throw failure))))))]
+            (delivered (->ScriptumPreparation prepared generation owns?
+                                              (atom nil))))
+          (catch Throwable failure
+            (delivered failure))))
+      (-sec-restore [_ restore-store key-map]
+        (let [restore-address (:snapshot-address
+                               (validate-scriptum-generation-key-map key-map))
+              restored (sc/open-store-snapshot restore-store cache
+                                               restore-address)]
+          (make-scriptum-index restored attrs config restore-store cache store-id
+                               restore-address nil)))
+
+      audit/IAuditable
+      (-merkle-root [_] (when (uuid? address) address))
+      (-recompute-merkle-root [_]
+        (if address
+          (let [{:keys [status recomputed-root errors] :as result}
+                (sc/verify-generation store address)]
+            (cond-> {:status status :root recomputed-root}
+              (seq errors) (assoc :errors errors)
+              (:objects result) (assoc :objects (:objects result))))
+          {:status :unsupported :reason :empty-generation})))))
 
 (sec/register-index-type!
  :scriptum
- (fn [config _db]
-   ;; No `:path` means a throwaway index, so it belongs under the system temp
-   ;; directory — `java.io.tmpdir`, not a hardcoded `/tmp`, which Java resolves
-   ;; against the CURRENT DRIVE on Windows and so points at a directory that
-   ;; does not exist. `temp-dir!` also CREATES the directory, unique per index
-   ;; instance, which is what the uuid was for.
-   (let [path (or (:path config) (fs/temp-dir! "scriptum-"))
-         branch (or (:branch config) "main")
-         writer (sc/create-index path branch
-                                 (select-keys config [:crypto-hash?]))]
-     (make-scriptum-index writer (assoc config :path path :branch branch)))))
-
-;; GC: scriptum uses filesystem, nothing in konserve to mark
-(defmethod sec/mark-from-key-map :scriptum [_ _] #{})
-
-;; Branch: open source, fork via scriptum's native segment-sharing fork
-(defmethod sec/branch-from-key-map :scriptum [key-map _store _from-branch new-branch]
-  (let [writer (sc/open-branch (:path key-map) (:branch key-map))]
-    (let [forked (sc/fork writer (name new-branch))]
-      (sc/commit! forked "branch" {"datahike.branch" (name new-branch)})
-      (sc/close! forked))
-    (sc/close! writer)
-    (assoc key-map :branch (name new-branch))))
+ {:create
+  (fn [config _db]
+    (let [provided-store (::sec/store config)
+          store (or provided-store (new-mem-store (atom {}) {:sync? true}))
+          store-id (or (::sec/store-id config) (random-uuid))
+          cache (or (:path config) (fs/temp-dir! "datahike-scriptum-"))]
+      (make-scriptum-index nil (:attrs config) config store cache store-id nil nil)))
+  :validate-generation validate-scriptum-generation-key-map
+  :mark-generation
+  (fn [key-map store]
+    (sc/mark-generation store (:snapshot-address key-map)))})

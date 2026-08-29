@@ -17,9 +17,11 @@
    so a cutoff of `now` does not spare them.
 
    The blind spot belongs to the STORE, not to the writer: `commit!` runs in the
-   writer's commit loop, but `datahike.versioning/branch!` performs the very same
-   values-then-pointer sequence OUTSIDE the writer entirely. So the guard lives
-   here, next to the invariant, and every such sequence takes it.
+   writer's commit loop, but `datahike.versioning/branch!` and Konserve-backed
+   secondary adapters perform the same values-then-pointer sequence elsewhere.
+   Konserve therefore owns the canonical per-store registry. This namespace is
+   Datahike's compatibility facade over that registry, and every such sequence
+   takes the same fence.
 
    USAGE — wrap the whole values-then-pointer sequence:
 
@@ -33,66 +35,36 @@
    are unreachable, i.e. garbage, and a later cycle collects them. Correct by
    construction.
 
-   SCOPE: this is in-process state. It is exact for every writer in THIS process
-   and knows nothing about any other. Head fencing (#963) lets writers in several
-   processes share a branch without losing each other's commits, but a fence
-   protects the POINTER, not the values: a commit in another process is invisible
-   here, its objects are on disk reachable from nothing, and this guard cannot
-   spare them. Across processes the only protection is `gc-storage!`'s
-   `:min-age-ms` floor — see its docstring for how that is sized. Readers are
-   unconstrained."
-  (:require [konserve.utils :as ku])
-  #?(:clj (:import [java.util Date]))
+   SCOPE: Konserve's registry is in-process state. It is exact for every writer
+   using the store in THIS process and knows nothing about any other. Head
+   fencing (#963) lets writers in several processes share a branch without
+   losing each other's commits, but a fence protects the POINTER, not the
+   values: a commit in another process is invisible here, its objects are on
+   disk reachable from nothing, and this guard cannot spare them. Across
+   processes the only protection is `gc-storage!`'s `:min-age-ms` floor (or an
+   external collector/writer coordinator) — see its docstring for how that is
+   sized. Readers are unconstrained."
+  (:require [konserve.gc-guard :as guard])
   ;; Self-require the macro namespace so `with-unreferenced-writes` is available to
   ;; ClojureScript consumers that `:refer` it (the `datahike.test.async` pattern).
   #?(:cljs (:require-macros [datahike.gc-guard])))
 
-(defn- now
-  "Monotonic stamp from konserve's write clock. MUST be the same source that
-   stamps :last-write (konserve.utils/now): the sweep spares an object iff
-   last-write >= safe-point, and that comparison is only meaningful when both
-   sides come from one strictly-monotonic clock — a raw (Date.) here let an
-   NTP step-back stamp a live object BEFORE the safe-point that guards it."
-  [] (ku/now))
-(defn- ms [d] #?(:clj (.getTime ^Date d) :cljs (.getTime d)))
-
-;; store-id -> {token start-instant}. Keyed by the store's :id (from the store
-;; config) rather than the store object: separate connections to the same
-;; physical store hold DIFFERENT konserve store instances, and a collection on
-;; one must see a sequence in flight on another.
-(defonce ^:private in-flight (atom {}))
-
-;; Tokens are counter values, not fresh objects: a token is a MAP KEY, and a bare
-;; `(js/Object.)` implements neither IHash nor IEquiv in cljs, so it cannot be one.
-(defonce ^:private token-seq (atom 0))
-
-;; `in-flight` only knows about sequences that are open RIGHT NOW — `done!`
-;; removes the entry. So it cannot answer "has this process ever written to this
-;; store", which is what distinguishes a collector running beside its writer from
-;; one running outside it. That distinction has no other reliable signal: a second
-;; process connecting to the same store gets a `:self` writer by default and looks
-;; exactly like the writer.
-(defonce ^:private ever (atom #{}))
+;; Konserve owns the one canonical per-store guard registry. Every operation in
+;; this namespace delegates to it, so Scriptum and every other Konserve-backed
+;; index shares the same safe point as primary Datahike writes and collection. A
+;; future compactor must consume this same fence rather than introduce another.
 
 (defn writing!
   "Open an unreferenced-write sequence on `store-id`. Returns a token to close it
    with. Call BEFORE the first value is written."
   [store-id]
-  (let [token (swap! token-seq inc)]
-    (swap! ever conj store-id)
-    (swap! in-flight assoc-in [store-id token] (now))
-    token))
+  (guard/writing! store-id))
 
 (defn done!
   "Close the sequence — its pointer has landed, so everything it wrote is now
    reachable (or garbage, if the pointer superseded it)."
   [store-id token]
-  (swap! in-flight (fn [m]
-                     (let [m' (update m store-id dissoc token)]
-                       (if (empty? (get m' store-id))
-                         (dissoc m' store-id)
-                         m'))))
-  nil)
+  (guard/done! store-id token))
 
 (defn in-flight?
   "Is an unreferenced-write sequence currently open on `store-id`?
@@ -101,18 +73,7 @@
    flight AND when a sequence opened within the same millisecond, so a test that
    compares timestamps cannot tell a held guard from a missing one. This can."
   [store-id]
-  (boolean (seq (get @in-flight store-id))))
-
-(defn ever-guarded?
-  "Has THIS PROCESS ever opened an unreferenced-write sequence on `store-id`?
-
-   False means nothing here has ever written to that store, so a collector
-   running here cannot see any writer's in-flight window and its safe point is
-   meaningless — it is `now` only because this heap is idle. Unlike
-   [[in-flight?]] this stays true after the sequence closes, which is what makes
-   it usable as a \"is this the writer process\" test at collection time."
-  [store-id]
-  (contains? @ever store-id))
+  (guard/in-flight? store-id))
 
 (defn safe-point
   "The instant before which every object written to `store-id` is either
@@ -128,10 +89,7 @@
    through: if it completed, its pointer landed and the mark (which runs after)
    sees it."
   [store-id]
-  (let [starts (vals (get @in-flight store-id))]
-    (if (seq starts)
-      (reduce (fn [a b] (if (< (ms a) (ms b)) a b)) starts)
-      (now))))
+  (guard/safe-point store-id))
 
 #?(:clj
    (defmacro with-unreferenced-writes

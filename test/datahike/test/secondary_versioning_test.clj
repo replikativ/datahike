@@ -1,6 +1,7 @@
 (ns datahike.test.secondary-versioning-test
   "Integration tests for secondary indices with branching, merging, and GC."
   (:require
+   [clojure.core.async :as async]
    [clojure.test :refer [deftest testing is]]
    [datahike.api :as d]
    [datahike.versioning :as dv]
@@ -8,7 +9,18 @@
    [datahike.index.entity-set :as es]
    [datahike.index.secondary.scriptum]
    [datahike.migrate.fs :as fs]
-   [konserve.core :as k]))
+   [konserve.core :as k]
+   [superv.async :refer [<?? S]]))
+
+(defn- delivered [value]
+  (let [ch (async/promise-chan)]
+    (async/put! ch value)
+    ch))
+
+(defrecord HistoricalBranchPreparation [index]
+  sec/IPreparedSecondaryGeneration
+  (-sec-generation-index [_] index)
+  (-sec-release [_ _] (delivered true)))
 
 (defrecord HistoricalBranchRecorder [attrs values]
   sec/ISecondaryIndex
@@ -21,20 +33,25 @@
     (let [value [(:e datom) (:v datom)]]
       (assoc this :values ((if added? conj disj) values value))))
 
-  sec/IVersionedSecondaryIndex
-  (-sec-flush [_ _ _]
+  sec/IDurableSecondaryIndex
+  (-sec-generation-key-map [_]
     {:type :test/historical-branch-recorder
+     :format-version 1
+     :storage-owner :external
      :values values})
+  (-sec-prepare [this _]
+    (delivered (->HistoricalBranchPreparation this)))
   (-sec-restore [this _ key-map]
-    (assoc this :values (:values key-map)))
-  (-sec-branch [this _ _ _] this)
-  (-sec-mark [_] #{}))
+    (assoc this :values (:values key-map))))
 
 (defonce _register-historical-branch-recorder
   (sec/register-index-type!
    :test/historical-branch-recorder
-   (fn [config _db]
-     (->HistoricalBranchRecorder (set (:attrs config)) #{}))))
+   {:create
+    (fn [config _db]
+      (->HistoricalBranchRecorder (set (:attrs config)) #{}))
+    :mark-generation (fn [_ _] #{})
+    :external-root (fn [_] {:secondary-type :test/historical-branch-recorder})}))
 
 (defn- await-ready [conn idx-ident]
   (let [deadline (+ (System/currentTimeMillis) 5000)]
@@ -44,6 +61,28 @@
           (= :ready status) status
           (< (System/currentTimeMillis) deadline) (do (Thread/sleep 10) (recur))
           :else status)))))
+
+(deftest force-branch-removes-new-registry-entry-after-definitive-failure
+  (testing "a failed values write does not leave a branch name with no head"
+    (let [cfg {:store {:backend :memory :id (random-uuid)}
+               :writer {:backend :self :writer-ownership :exclusive}
+               :keep-history? false
+               :schema-flexibility :write}
+          _ (d/create-database cfg)
+          conn (d/connect cfg)]
+      (try
+        (let [failure (ex-info "injected value batch failure"
+                               {:type :test/value-batch-failure})]
+          (with-redefs [k/multi-assoc (fn [& _] (throw failure))]
+            (is (thrown-with-msg? clojure.lang.ExceptionInfo
+                                  #"injected value batch failure"
+                                  (dv/force-branch! @conn :never-published #{:db}))))
+          (is (not (contains? (dv/branches conn) :never-published))
+              "the provisional GC root is removed on a definitive abort")
+          (is (nil? (k/get (:store @conn) :never-published nil {:sync? true}))))
+        (finally
+          (d/release conn)
+          (d/delete-database cfg))))))
 
 ;; ---------------------------------------------------------------------------
 ;; Scriptum + branching + merge (end-to-end)
@@ -86,7 +125,9 @@
 
 (deftest test-scriptum-branch-and-merge
   (testing "secondary index survives branch, diverge, and merge"
-    (let [cfg {:store {:backend :memory :id (java.util.UUID/randomUUID)}
+    (let [cfg {:store {:backend :file
+                       :id (java.util.UUID/randomUUID)
+                       :path (str "/tmp/datahike-scriptum-gc-" (random-uuid))}
                :writer {:backend :self :writer-ownership :exclusive}
                :keep-history? false
                :schema-flexibility :write}
@@ -138,6 +179,22 @@
                 (let [results (sec/-search ft {:query "machine" :field :value} nil)]
                   (is (= 2 (es/entity-bitset-cardinality results))
                       "Feature should find Alice + Charlie for 'machine'"))))
+
+            ;; Both immutable generation roots are live at once. A full sweep
+            ;; must walk every registered Datahike branch and then Scriptum's
+            ;; exact snapshot manifests, not just whichever adapter view the
+            ;; main connection currently holds.
+            (is (set? (<?? S (d/gc-storage conn (java.util.Date.)
+                                           {:min-age-ms 0}))))
+            (let [main-ft (get-in (d/db conn) [:secondary-indices :idx/fulltext])
+                  feature-ft (get-in (d/db feat-conn)
+                                     [:secondary-indices :idx/fulltext])]
+              (is (= 1 (es/entity-bitset-cardinality
+                        (sec/-search main-ft {:query "machine" :field :value} nil)))
+                  "GC preserves main's exact older generation")
+              (is (= 2 (es/entity-bitset-cardinality
+                        (sec/-search feature-ft {:query "machine" :field :value} nil)))
+                  "GC preserves feature's divergent generation"))
 
             ;; Step 4: Merge feature into main
             (dv/merge! conn #{:feature}

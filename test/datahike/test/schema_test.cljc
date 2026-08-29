@@ -1,4 +1,5 @@
 (ns datahike.test.schema-test
+  (:refer-clojure :exclude [random-uuid])
   (:require
    #?(:cljs [cljs.test :as t :refer-macros [is deftest testing]]
       :clj  [clojure.test :as t :refer [is deftest testing]])

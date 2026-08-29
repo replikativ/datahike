@@ -287,7 +287,13 @@
                                              (sec/-with-db-context idx ctx)
                                              idx)]
                                    [k (if (satisfies? sec/ITransientSecondaryIndex idx)
-                                        (sec/-as-transient idx)
+                                        (if (and (sec/durable-secondary? idx)
+                                                 (= :pure
+                                                    sec/*durable-secondary-write-context*)
+                                                 (not (sec/pure-secondary-mutation? idx)))
+                                          idx
+                                          (sec/track-secondary-transient!
+                                           (sec/-as-transient idx)))
                                         idx)])))
                           indices)))))))
 
@@ -1193,4 +1199,3 @@
        (merge (let [temporal (attr-counts db (.-temporal-aevt db) (.-temporal-eavt db) true)]
                 {:temporal-count      (di/-count (.-temporal-eavt db))
                  :temporal-avet-count (indexed temporal)}))))))
-

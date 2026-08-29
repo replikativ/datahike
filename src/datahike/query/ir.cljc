@@ -114,7 +114,8 @@
             idx-ident      ;; index identifier
             engine-meta    ;; engine metadata map
             estimated-card ;; cost model estimate
-            accepts-entity-filter?]) ;; whether engine accepts entity filter
+            accepts-entity-filter? ;; whether engine accepts entity filter
+            requires-entity-filter?]) ;; whether one must already be bound
 
 (defrecord LPassthrough
            [clause ;; original clause

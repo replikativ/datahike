@@ -5,10 +5,12 @@
    [datahike.config :as c]
    [datahike.db :as db]
    [datahike.api :as d]
+   [datahike.store :as store]
    [datahike.index :as di]
    [datahike.index.hitchhiker-tree :as dih]
    [datahike.migrate.fs :as fs]
-   [datahike.connector :as conn]))
+   [datahike.connector :as conn]
+   [konserve.protocols :as kp]))
 
 #?(:cljs (def Throwable js/Error))
 
@@ -153,6 +155,22 @@
       (is (not= mem-start mem-same))
       (is (nil? (conn/ensure-stored-config-consistency mem-named mem-same)))
       (is (not= mem-named mem-same)))))
+
+(deftest canonical-live-store-identity-test
+  (testing "the connected backend is authoritative for write/GC coordination"
+    (let [live-id (random-uuid)
+          stale-config-id (random-uuid)
+          live-store (reify kp/PStoreConfig
+                       (-store-config [_] {:id live-id}))]
+      (is (= live-id
+             (store/canonical-store-id live-store {:id stale-config-id})))
+      (is (= stale-config-id
+             (store/canonical-store-id nil {:id stale-config-id})))
+      (is (= :datahike/store-id-missing
+             (:type (ex-data
+                     (try
+                       (store/canonical-store-id nil {})
+                       (catch Throwable e e)))))))))
 
 (deftest store-identity-connection-test
   (testing "different connections with equal identities"

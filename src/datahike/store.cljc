@@ -8,6 +8,7 @@
    - store-identity: Returns store UUID from config
    - ready-store: Tiered-specific initialization (populate cache from backend)"
   (:require [konserve.tiered :as kt]
+            [konserve.protocols :as kp]
             [datahike.index :as di]
             [konserve.cache :as kc]
             #?(:clj [clojure.core.cache :as cache]
@@ -45,6 +46,19 @@
    distributed coordination, and store matching."
   [config]
   (:id config))
+
+(defn canonical-store-id
+  "The live Konserve store's identity for write/GC coordination.
+
+   Prefer the backend's attached/overridden `PStoreConfig` identity: a backend
+   may collapse two configs that open the same physical bytes, which is required
+   for a sound shared GC fence. `store-config` is only the compatibility fallback
+   for stores constructed directly rather than through `konserve.store`."
+  [store store-config]
+  (or (kp/store-id store)
+      (:id store-config)
+      (throw (ex-info "A store used for coordinated writes has no identity."
+                      {:type :datahike/store-id-missing}))))
 
 ;; =============================================================================
 ;; Ready Store (Tiered-Specific)

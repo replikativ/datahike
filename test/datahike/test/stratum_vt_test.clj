@@ -149,10 +149,10 @@
 ;; ============================================================================
 ;; Versioning — release/reconnect + branch round-trip preserve SCD2 layout
 ;;
-;; The adapter implements IVersionedSecondaryIndex (-sec-flush calls
-;; `stratum.dataset/sync!`, -sec-restore calls `stratum.dataset/load`).
+;; The adapter implements the immutable durable-generation lifecycle
+;; (`-sec-prepare` seals, `-sec-restore` opens the exact generation).
 ;; Stratum commit 1 (feature/valid-time) made `:metadata {:valid-time
-;; ...}` round-trip through sync!/load; these tests confirm the
+;; ...}` round-trip through seal/open; these tests confirm the
 ;; integration end-to-end through the datahike write/read path.
 
 (defn- file-cfg []

@@ -8,6 +8,13 @@
 (def class-dir "target/classes")
 (def basis (b/create-basis {:project "deps.edn"}))
 
+(defn- run-process!
+  [command-args]
+  (let [{:keys [exit]} (b/process {:command-args command-args})]
+    (when-not (zero? exit)
+      (throw (ex-info "Build subprocess failed."
+                      {:exit exit :command command-args})))))
+
 (defn prep-lib
   "Prepare the JVM interfaces required by Clojure consumers of a git dep.
 
@@ -32,7 +39,22 @@
 
 (defn compile-java
   [_]
-  (b/javac {:src-dirs ["java"]
+  ;; DatahikeGenerated.java is deliberately not checked in. Generating it loads
+  ;; the API specification, which refers to IEntity and Util, while compiling
+  ;; the public Java facade in turn requires DatahikeGenerated. Bootstrap those
+  ;; two leaf classes first, generate the source in-process, then compile the
+  ;; complete API. This exact ordering also makes `clojure -X:deps prep` work
+  ;; for a clean git dependency instead of relying on a developer's stale
+  ;; java/src-generated directory.
+  (.mkdirs (io/file class-dir))
+  (let [classpath (str/join java.io.File/pathSeparator
+                            (:classpath-roots basis))]
+    (run-process! ["javac" "--release" "8" "-cp" classpath "-d" class-dir
+                   "java/src/datahike/java/IEntity.java"
+                   "java/src/datahike/java/Util.java"]))
+  (run-process! ["clojure" "-M" "-m" "datahike.codegen.java"
+                 "java/src-generated"])
+  (b/javac {:src-dirs ["java/src" "java/src-generated"]
             :class-dir class-dir
             :basis basis
             :javac-opts ["--release" "8"

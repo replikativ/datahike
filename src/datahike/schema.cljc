@@ -463,6 +463,15 @@
         ;; under it. Transition rules and data checks apply only when the
         ;; entry existed before the transaction.
         transition? (some? old-entry)
+        ;; A secondary declaration names an optional derived generation, not a
+        ;; primary datom attribute. Removing the complete declaration is the
+        ;; supported DROP operation: the new Datahike root omits its generation
+        ;; address while historical roots retain theirs. Partial removal
+        ;; remains invalid below.
+        secondary-removal? (and transition?
+                                (nil? new-entry)
+                                (:db.secondary/type old)
+                                (:db.secondary/attrs old))
         invalid
         (cond-> {}
           ;; Completeness (:write): an attribute-defining entry must carry
@@ -497,7 +506,8 @@
           (assoc :db/unique [(:db/unique old) (:db/unique new)])
 
           ;; secondary-index status: monotonic transitions only
-          (and (changed? :db.secondary/status)
+          (and (not secondary-removal?)
+               (changed? :db.secondary/status)
                (contains? old :db.secondary/status)
                (not (contains? (get {:building #{:ready :disabled}
                                      :ready    #{:disabled}}
@@ -508,7 +518,7 @@
 
           ;; any other db-namespaced key change is rejected (mirrors
           ;; find-invalid-schema-updates' strict default)
-          transition?
+          (and transition? (not secondary-removal?))
           (merge (into {}
                        (keep (fn [k]
                                (when (and (keyword? k)
@@ -522,7 +532,7 @@
         data-checks
         (cond-> #{}
           ;; entry removed while the attribute may still have datoms
-          (and transition? (nil? new-entry))
+          (and transition? (nil? new-entry) (not secondary-removal?))
           (conj :attr-used?)
 
           ;; valueType CHANGE poisons existing (incl. history) datoms with
