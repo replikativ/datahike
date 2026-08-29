@@ -309,6 +309,8 @@
                         store (:store db)
                         attempt-id (random-uuid)
                         preparations* (atom {})
+                        primary-commit-id* (atom nil)
+                        secondary-index-keys* (atom nil)
                         head-write-issued? (atom false)
                         registry-published? (atom false)
                         branch-was-registered? (atom nil)
@@ -333,6 +335,8 @@
                             [schema-meta-kv-to-write pre-cid-store]
                             (db->stored db-with-parents true key-maps)
                             cid (create-commit-id db-with-parents pre-cid-store)
+                            _ (reset! primary-commit-id* cid)
+                            _ (reset! secondary-index-keys* key-maps)
                             db-to-store (assoc-in pre-cid-store
                                                   [:meta :datahike/commit-id] cid)
                             pending-kvs (get-and-clear-pending-kvs! store)
@@ -390,6 +394,10 @@
                            (let [released (release-secondary-generations!
                                            @preparations*
                                            {:status :committed
+                                            :attempt-id attempt-id
+                                            :branch branch
+                                            :store store
+                                            :secondary-index-keys key-maps
                                             :primary-commit-id cid})]
                              (if sync?
                                (take-lifecycle!! released)
@@ -405,8 +413,18 @@
                                    (release-secondary-generations!
                                     @preparations*
                                     (if definitive-abort?
-                                      {:status :aborted :cause e}
-                                      {:status :unknown :cause e}))]
+                                      {:status :aborted
+                                       :attempt-id attempt-id
+                                       :branch branch
+                                       :cause e}
+                                      {:status :unknown
+                                       :attempt-id attempt-id
+                                       :branch branch
+                                       :store store
+                                       :primary-commit-id @primary-commit-id*
+                                       :secondary-index-keys
+                                       @secondary-index-keys*
+                                       :cause e}))]
                                (if sync?
                                  (take-lifecycle!! released)
                                  (<?- released))))
@@ -422,7 +440,12 @@
                                      (= @head-before-registration
                                         (<?- (k/get store branch nil opts))))
                             (<?- (update-branches! store #(disj % branch) opts))))
-                        (throw e))
+                        #?(:clj
+                           (throw (ex-info (.getMessage ^Throwable e)
+                                           (assoc (or (ex-data e) {})
+                                                  :datahike/attempt-id attempt-id)
+                                           e))
+                           :cljs (throw e)))
                       (finally (guard/done! gc-sid gc-token)))))))))
 
 (defn commit-id

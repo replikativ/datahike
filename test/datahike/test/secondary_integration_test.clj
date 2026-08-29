@@ -10,6 +10,7 @@
    [datahike.index.entity-set :as es]
    [datahike.query :as q]
    [datahike.query.execute :as execute]
+   [datahike.writing :as writing]
    [datahike.index.secondary.scriptum]
    [datahike.index.secondary.stratum]
    [datahike.migrate :as m]
@@ -233,17 +234,203 @@
             (is (= #{:person/embedding} (set (map :attribute candidates))))
             (is (every? :distance candidates)))
 
-        ;; Delete entity 2
-          (let [idx-del (sec/-transact idx {:datom d2 :added? false})
-                results (sec/-search idx-del {:vector (float-array [0.0 1.0 0.0 0.0]) :k 3} nil)]
-            (is (not (es/entity-bitset-contains? results 2)))
-            (is (= 2 (es/entity-bitset-cardinality results))))
-
         ;; Non-vector value is silently skipped
           (let [d-str (datahike.datom/datom 4 :person/embedding "not-a-vector")
                 idx2 (sec/-transact idx {:datom d-str :added? true})
                 results (sec/-search idx2 {:vector (float-array [1.0 0.0 0.0 0.0]) :k 10} nil)]
-            (is (= 3 (es/entity-bitset-cardinality results)))))))))
+            (is (= 3 (es/entity-bitset-cardinality results))))
+
+        ;; Delete entity 2. This is the one linear child of `idx`; deriving an
+        ;; additional dirty child from an unpublished generation is refused.
+          (let [idx-del (sec/-transact idx {:datom d2 :added? false})
+                results (sec/-search idx-del {:vector (float-array [0.0 1.0 0.0 0.0]) :k 3} nil)]
+            (is (not (es/entity-bitset-contains? results 2)))
+            (is (= 2 (es/entity-bitset-cardinality results)))))))))
+
+(deftest proximum-transient-batches-consecutive-inserts
+  (when-not proximum-available?
+    (is (not proximum-available?) "SKIP: proximum requires Java 22+"))
+  (when proximum-available?
+    (let [put-batch-var (requiring-resolve 'proximum.generations/put-batch!)
+          original-put-batch @put-batch-var
+          batch-sizes (atom [])
+          idx (sec/create-index
+               :proximum
+               {:attrs #{:person/embedding}
+                :dim 4 :distance :cosine
+                :ingest-batch-size 2
+                :ingest-parallelism 2
+                :store-config {:backend :memory :id (random-uuid)}}
+               nil)
+          persistent* (atom nil)]
+      (try
+        (with-redefs-fn
+          {put-batch-var
+           (fn [builder vectors ids opts]
+             (swap! batch-sizes conj [(count vectors) (:parallelism opts)])
+             (original-put-batch builder vectors ids opts))}
+          (fn []
+            (let [transient (sec/-as-transient idx)]
+              (doseq [eid (range 1 6)]
+                (sec/-transact!
+                 transient
+                 {:datom (datahike.datom/datom
+                          eid :person/embedding
+                          (float-array [(float eid) 0.0 0.0 0.0]))
+                  :added? true}))
+              (reset! persistent* (sec/-persistent! transient)))))
+        (is (= [[2 2] [2 2] [1 2]] @batch-sizes)
+            "bounded insertion runs use one Proximum fork per batch")
+        (is (= 5
+               (es/entity-bitset-cardinality
+                (sec/-search @persistent*
+                             {:vector (float-array [1.0 0.0 0.0 0.0]) :k 5}
+                             nil))))
+        (finally
+          (when @persistent*
+            (.close ^java.io.Closeable @persistent*))
+          (.close ^java.io.Closeable idx))))))
+
+(deftest proximum-batch-flush-preserves-delete-order
+  (when-not proximum-available?
+    (is (not proximum-available?) "SKIP: proximum requires Java 22+"))
+  (when proximum-available?
+    (let [idx (sec/create-index
+               :proximum
+               {:attrs #{:person/embedding}
+                :dim 4 :distance :cosine
+                :ingest-batch-size 16
+                :store-config {:backend :memory :id (random-uuid)}}
+               nil)
+          datom (datahike.datom/datom
+                 1 :person/embedding (float-array [1.0 0.0 0.0 0.0]))
+          transient (sec/-as-transient idx)
+          persistent* (atom nil)]
+      (try
+        (sec/-transact! transient {:datom datom :added? true})
+        (sec/-transact! transient {:datom datom :added? false})
+        (sec/-transact! transient {:datom datom :added? true})
+        (reset! persistent* (sec/-persistent! transient))
+        (is (= [1]
+               (vec
+                (es/entity-bitset-seq
+                 (sec/-search @persistent*
+                              {:vector (float-array [1.0 0.0 0.0 0.0]) :k 4}
+                              nil))))
+            "insert/delete/insert is not globally reordered by batching")
+        (finally
+          (when @persistent*
+            (.close ^java.io.Closeable @persistent*))
+          (.close ^java.io.Closeable idx))))))
+
+(deftest proximum-unpublished-generation-has-one-linear-owner
+  (when-not proximum-available?
+    (is (not proximum-available?) "SKIP: proximum requires Java 22+"))
+  (when proximum-available?
+    (let [idx (sec/create-index
+               :proximum
+               {:attrs #{:person/embedding}
+                :dim 4 :distance :cosine
+                :store-config {:backend :memory :id (random-uuid)}}
+               nil)
+          unpublished (sec/-transact
+                       idx
+                       {:datom (datahike.datom/datom
+                                1 :person/embedding
+                                (float-array [1.0 0.0 0.0 0.0]))
+                        :added? true})]
+      (try
+        (let [derivation (sec/-as-transient unpublished)]
+          (is (= :secondary/proximum-publication-owner-conflict
+                 (:type (thrown-data #(sec/-as-transient unpublished))))
+              "fan-out is refused as soon as one transient reserves the source")
+          (is (= :secondary/proximum-publication-owner-conflict
+                 (:type (thrown-data #(.close ^java.io.Closeable unpublished))))
+              "closing cannot invalidate a transient's reserved source")
+          (is (identical? unpublished (sec/-persistent! derivation))
+              "a clean transient releases its reservation back to its source"))
+        (let [retry-derivation (sec/-as-transient unpublished)]
+          (sec/-abort-transient! retry-derivation))
+        (let [preparation (async/<!! (sec/-sec-prepare unpublished {}))
+              second-preparation (async/<!! (sec/-sec-prepare unpublished {}))]
+          (is (instance? clojure.lang.ExceptionInfo second-preparation))
+          (is (= :secondary/proximum-publication-owner-conflict
+                 (:type (ex-data second-preparation))))
+          (async/<!! (sec/-sec-release preparation {:status :aborted})))
+        (finally
+          (.close ^java.io.Closeable unpublished)
+          (.close ^java.io.Closeable idx))))))
+
+(deftest proximum-close-retries-publication-cleanup
+  (when-not proximum-available?
+    (is (not proximum-available?) "SKIP: proximum requires Java 22+"))
+  (when proximum-available?
+    (let [store-id (random-uuid)
+          idx (sec/create-index
+               :proximum
+               {:attrs #{:person/embedding}
+                :dim 4 :distance :cosine
+                :store-config {:backend :memory :id store-id}}
+               nil)
+          unpublished (sec/-transact
+                       idx
+                       {:datom (datahike.datom/datom
+                                1 :person/embedding
+                                (float-array [1.0 0.0 0.0 0.0]))
+                        :added? true})
+          original-done! guard/done!
+          calls (atom 0)]
+      (try
+        (with-redefs [guard/done!
+                      (fn [sid token]
+                        (if (= 1 (swap! calls inc))
+                          (throw (ex-info "injected guard completion failure"
+                                          {:type :test/guard-completion-failure}))
+                          (original-done! sid token)))]
+          (is (= :secondary/proximum-publication-cleanup-failed
+                 (:type (thrown-data
+                         #(.close ^java.io.Closeable unpublished)))))
+          (is (guard/in-flight? store-id)
+              "the failed close retains its publication fence")
+          (.close ^java.io.Closeable unpublished)
+          (is (= 2 @calls))
+          (is (not (guard/in-flight? store-id))))
+        (finally
+          (when (guard/in-flight? store-id)
+            (.close ^java.io.Closeable unpublished))
+          (.close ^java.io.Closeable idx))))))
+
+(deftest chained-proximum-generations-retain-the-oldest-cutoff
+  (when-not proximum-available?
+    (is (not proximum-available?) "SKIP: proximum requires Java 22+"))
+  (when proximum-available?
+    (let [store-id (random-uuid)
+          idx (sec/create-index
+               :proximum
+               {:attrs #{:person/embedding}
+                :dim 4 :distance :cosine
+                :store-config {:backend :memory :id store-id}}
+               nil)
+          mutate (fn [source eid x]
+                   (sec/-transact
+                    source
+                    {:datom (datahike.datom/datom
+                             eid :person/embedding
+                             (float-array [x 0.0 0.0 0.0]))
+                     :added? true}))
+          first-generation (mutate idx 1 1.0)
+          oldest-safe-point (guard/safe-point store-id)
+          _ (Thread/sleep 5)
+          final-generation (mutate first-generation 2 2.0)]
+      (try
+        (is (= oldest-safe-point (guard/safe-point store-id)))
+        (let [preparation (async/<!! (sec/-sec-prepare final-generation {}))]
+          (async/<!! (sec/-sec-release preparation {:status :committed})))
+        (is (not (guard/in-flight? store-id)))
+        (finally
+          (.close ^java.io.Closeable first-generation)
+          (.close ^java.io.Closeable final-generation)
+          (.close ^java.io.Closeable idx))))))
 
 (deftest proximum-generation-key-maps-fail-closed
   (when-not proximum-available?
@@ -349,9 +536,33 @@
                    (:type (ex-data failure))))
             (is (= live-id (:store-id (ex-data failure)))))
           (finally
+            (.close ^java.io.Closeable idx)))))
+
+    (testing "the published external root names the connected store, not its alias"
+      (let [primary-id (random-uuid)
+            live-id (random-uuid)
+            alias-id (random-uuid)
+            live-store (k/create-store {:backend :memory :id live-id}
+                                       {:sync? true})
+            idx (sec/create-index
+                 :proximum
+                 {:attrs #{:person/embedding}
+                  :dim 4 :distance :cosine
+                  ::sec/store-id primary-id
+                  :store live-store
+                  :store-config {:backend :memory :id alias-id}}
+                 nil)
+            preparation (async/<!! (sec/-sec-prepare idx {}))
+            prepared (sec/-sec-generation-index preparation)]
+        (try
+          (is (= live-id
+                 (:external-store-id
+                  (sec/-sec-generation-key-map prepared))))
+          (async/<!! (sec/-sec-release preparation {:status :aborted}))
+          (finally
             (.close ^java.io.Closeable idx)))))))
 
-(deftest proximum-ambiguous-publication-releases-its-guard
+(deftest proximum-ambiguous-publication-retains-its-guard
   (when-not proximum-available?
     (is (not proximum-available?) "SKIP: proximum requires Java 22+"))
   (when proximum-available?
@@ -374,17 +585,73 @@
         (is (guard/in-flight? store-id)
             "the unpublished mmap generation initially holds the store fence")
         (async/<!! (sec/-sec-release preparation {:status :unknown}))
-        (is (not (guard/in-flight? store-id))
-            "an ambiguous but completed head call cannot pin external GC forever")
+        (is (guard/in-flight? store-id)
+            "the head may still land after an indeterminate response, so GC remains fenced")
         (let [restored (sec/-sec-restore idx nil key-map)]
           (try
             (is (= key-map (sec/-sec-generation-key-map restored))
                 "the immutable generation remains restorable if the head landed")
             (finally
               (.close ^java.io.Closeable restored))))
-        ;; A later authoritative read of the primary head may reconcile unknown
-        ;; to committed. Cleanup is already complete and remains idempotent.
+        ;; A later authoritative read of the primary head reconciles unknown to
+        ;; committed and is the point at which the publication hold can end.
         (async/<!! (sec/-sec-release preparation {:status :committed}))
+        (is (not (guard/in-flight? store-id))
+            "authoritative reconciliation releases the retained fence")
+        (finally
+          (.close ^java.io.Closeable prepared)
+          (.close ^java.io.Closeable idx))))))
+
+(deftest proximum-delayed-head-publication-reconciles-authoritatively
+  (when-not proximum-available?
+    (is (not proximum-available?) "SKIP: proximum requires Java 22+"))
+  (when proximum-available?
+    (let [external-store-id (random-uuid)
+          primary-store-id (random-uuid)
+          primary-store (k/create-store
+                         {:backend :memory :id primary-store-id} {:sync? true})
+          idx (sec/create-index
+               :proximum
+               {:attrs #{:person/embedding}
+                :dim 4 :distance :cosine
+                ::sec/store-id primary-store-id
+                :store-config {:backend :memory :id external-store-id}}
+               nil)
+          preparation (async/<!! (sec/-sec-prepare idx {}))
+          prepared (sec/-sec-generation-index preparation)
+          key-map (sec/-sec-generation-key-map prepared)
+          attempt-id (random-uuid)
+          cid (random-uuid)
+          outcome {:status :unknown
+                   :attempt-id attempt-id
+                   :store primary-store
+                   :branch :db
+                   :primary-commit-id cid
+                   :secondary-index-keys {:idx/vector key-map}}]
+      (try
+        (async/<!!
+         (writing/release-secondary-generations!
+          {:idx/vector preparation} outcome))
+        (is (guard/in-flight? external-store-id))
+        (is (false? (async/<!!
+                     (writing/reconcile-secondary-publication! attempt-id)))
+            "an error can arrive while the primary head is still absent")
+        (is (guard/in-flight? external-store-id))
+
+        ;; Model the storage operation landing after its caller already saw the
+        ;; indeterminate result. Only this authoritative root authorizes release.
+        (k/assoc primary-store :db
+                 {:meta {:datahike/commit-id cid}
+                  :secondary-index-keys {:idx/vector key-map}}
+                 {:sync? true})
+        (is (true? (async/<!!
+                    (writing/reconcile-secondary-publication! attempt-id))))
+        (is (not (guard/in-flight? external-store-id)))
+        (let [restored (sec/-sec-restore idx nil key-map)]
+          (try
+            (is (= key-map (sec/-sec-generation-key-map restored)))
+            (finally
+              (.close ^java.io.Closeable restored))))
         (finally
           (.close ^java.io.Closeable prepared)
           (.close ^java.io.Closeable idx))))))
@@ -1296,7 +1563,7 @@
           (d/delete-database cfg))))))
 
 (deftest chained-scriptum-generations-release-intermediate-guards
-  (testing "only the last unpublished generation owns the batch guard"
+  (testing "the final linear owner carries every predecessor guard"
     (let [store-id (random-uuid)
           store (new-mem-store (atom {}) {:sync? true})
           idx (sec/create-index :scriptum
@@ -1314,10 +1581,14 @@
                                       :added? true})
                      (sec/-persistent! transient)))
           first-generation (mutate idx 1 "first")
+          oldest-safe-point (guard/safe-point store-id)
+          _ (Thread/sleep 5)
           final-generation (mutate first-generation 2 "second")]
       (try
         (is (guard/in-flight? store-id)
             "the final unpublished generation still protects its objects")
+        (is (= oldest-safe-point (guard/safe-point store-id))
+            "the child retains its predecessor's older cutoff rather than replacing it")
         (let [preparation (async/<!! (sec/-sec-prepare final-generation {}))]
           (is (satisfies? sec/IPreparedSecondaryGeneration preparation))
           (async/<!! (sec/-sec-release preparation {:status :committed})))
@@ -1326,6 +1597,103 @@
         (finally
           (.close ^java.io.Closeable first-generation)
           (.close ^java.io.Closeable final-generation))))))
+
+(deftest scriptum-unpublished-generation-has-one-linear-owner
+  (let [store-id (random-uuid)
+        store (new-mem-store (atom {}) {:sync? true})
+        idx (sec/create-index :scriptum
+                              {:attrs #{:doc/body}
+                               ::sec/store store
+                               ::sec/store-id store-id
+                               ::sec/index-ident :idx/body
+                               :path (str "/tmp/dh-scriptum-owner-" (random-uuid))}
+                              nil)
+        transient (sec/-as-transient idx)
+        _ (sec/-transact! transient
+                          {:datom (datahike.datom/datom 1 :doc/body "one")
+                           :added? true})
+        unpublished (sec/-persistent! transient)]
+    (try
+      (let [derivation (sec/-as-transient unpublished)]
+        (is (= :secondary/scriptum-publication-owner-conflict
+               (:type (thrown-data #(sec/-as-transient unpublished)))))
+        (is (= :secondary/scriptum-publication-owner-conflict
+               (:type (thrown-data #(.close ^java.io.Closeable unpublished)))))
+        (is (identical? unpublished (sec/-persistent! derivation))))
+      (let [retry-derivation (sec/-as-transient unpublished)]
+        (sec/-abort-transient! retry-derivation))
+      (let [preparation (async/<!! (sec/-sec-prepare unpublished {}))
+            second-preparation (async/<!! (sec/-sec-prepare unpublished {}))]
+        (is (instance? clojure.lang.ExceptionInfo second-preparation))
+        (is (= :secondary/scriptum-publication-owner-conflict
+               (:type (ex-data second-preparation))))
+        (async/<!! (sec/-sec-release preparation {:status :aborted})))
+      (finally
+        (.close ^java.io.Closeable unpublished)
+        (.close ^java.io.Closeable idx)))))
+
+(deftest scriptum-close-retries-publication-cleanup
+  (let [store-id (random-uuid)
+        store (new-mem-store (atom {}) {:sync? true})
+        idx (sec/create-index :scriptum
+                              {:attrs #{:doc/body}
+                               ::sec/store store
+                               ::sec/store-id store-id
+                               ::sec/index-ident :idx/body
+                               :path (str "/tmp/dh-scriptum-close-retry-"
+                                          (random-uuid))}
+                              nil)
+        transient (sec/-as-transient idx)
+        _ (sec/-transact! transient
+                          {:datom (datahike.datom/datom 1 :doc/body "one")
+                           :added? true})
+        unpublished (sec/-persistent! transient)
+        original-done! guard/done!
+        calls (atom 0)]
+    (try
+      (with-redefs [guard/done!
+                    (fn [sid token]
+                      (if (= 1 (swap! calls inc))
+                        (throw (ex-info "injected guard completion failure"
+                                        {:type :test/guard-completion-failure}))
+                        (original-done! sid token)))]
+        (is (= :secondary/scriptum-publication-cleanup-failed
+               (:type (thrown-data
+                       #(.close ^java.io.Closeable unpublished)))))
+        (is (guard/in-flight? store-id))
+        (.close ^java.io.Closeable unpublished)
+        (is (= 2 @calls))
+        (is (not (guard/in-flight? store-id))))
+      (finally
+        (when (guard/in-flight? store-id)
+          (.close ^java.io.Closeable unpublished))
+        (.close ^java.io.Closeable idx)))))
+
+(deftest scriptum-ambiguous-publication-retains-every-guard
+  (let [store-id (random-uuid)
+        store (new-mem-store (atom {}) {:sync? true})
+        idx (sec/create-index :scriptum
+                              {:attrs #{:doc/body}
+                               ::sec/store store
+                               ::sec/store-id store-id
+                               ::sec/index-ident :idx/body
+                               :path (str "/tmp/dh-scriptum-unknown-" (random-uuid))}
+                              nil)
+        transient (sec/-as-transient idx)
+        _ (sec/-transact! transient
+                          {:datom (datahike.datom/datom 1 :doc/body "one")
+                           :added? true})
+        unpublished (sec/-persistent! transient)
+        preparation (async/<!! (sec/-sec-prepare unpublished {}))]
+    (try
+      (is (guard/in-flight? store-id))
+      (async/<!! (sec/-sec-release preparation {:status :unknown}))
+      (is (guard/in-flight? store-id))
+      (async/<!! (sec/-sec-release preparation {:status :committed}))
+      (is (not (guard/in-flight? store-id)))
+      (finally
+        (.close ^java.io.Closeable unpublished)
+        (.close ^java.io.Closeable idx)))))
 
 (deftest scriptum-preserves-keyword-namespaces-in-document-identity
   (testing "same-local-name attributes with equal values do not collide"

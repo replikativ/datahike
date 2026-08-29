@@ -626,7 +626,7 @@
 ;; secondary actually exists.
 
 (defn- entity-bitset? [x]
-  #?(:clj  (instance? org.roaringbitmap.RoaringBitmap x)
+  #?(:clj  (instance? org.roaringbitmap.longlong.Roaring64NavigableMap x)
      :cljs (set? x)))
 
 (defn- post-filter-vt

@@ -113,39 +113,154 @@
 
 (declare make-scriptum-index)
 
-(defprotocol ^:private IUnpublishedScriptumGeneration
-  (-release-unpublished-generation! [index]))
+(defprotocol ^:private IUnpublishedScriptumGenerations
+  (-take-publication-holds! [index next-state])
+  (-reserve-derivation! [index])
+  (-release-derivation! [index]))
 
-(defn- take-sealed-generation! [generation*]
-  (locking generation*
-    (let [generation @generation*]
-      (reset! generation* nil)
-      generation)))
+(defn- take-holds! [holds*]
+  (locking holds*
+    (let [holds @holds*]
+      (reset! holds* [])
+      holds)))
 
-(defrecord ScriptumPreparation [prepared-index generation owns-prepared?
-                                release-state]
+(defn- transfer-holds!
+  [holds* publication-state* next-state]
+  (locking publication-state*
+    (case @publication-state*
+      :published []
+      :unpublished
+      (let [holds (take-holds! holds*)]
+        (when-not (seq holds)
+          (throw (ex-info "An unpublished Scriptum generation has no publication hold."
+                          {:type :secondary/scriptum-missing-publication-hold})))
+        (reset! publication-state* next-state)
+        holds)
+      :deriving
+      (if (= :transferred next-state)
+        (let [holds (take-holds! holds*)]
+          (when-not (seq holds)
+            (throw (ex-info "A derived Scriptum generation has no publication hold."
+                            {:type :secondary/scriptum-missing-publication-hold})))
+          (reset! publication-state* next-state)
+          holds)
+        (throw (ex-info "A Scriptum derivation can only transfer its publication ownership."
+                        {:type :secondary/scriptum-publication-owner-conflict
+                         :state :deriving
+                         :requested-state next-state})))
+      (throw (ex-info "A Scriptum generation already has an exclusive publication owner."
+                      {:type :secondary/scriptum-publication-owner-conflict
+                       :state @publication-state*
+                       :requested-state next-state})))))
+
+(defn- complete-holds! [holds complete!]
+  (let [failures
+        (reduce (fn [errors hold]
+                  (try
+                    (complete! hold)
+                    errors
+                    (catch Throwable failure
+                      (conj errors failure))))
+                [] holds)]
+    (when (seq failures)
+      (throw (ex-info "One or more Scriptum publication holds failed to close"
+                      {:type :secondary/scriptum-publication-cleanup-failed
+                       :failure-count (count failures)}
+                      (first failures))))))
+
+(defn- reserve-derivation!
+  [publication-state*]
+  (locking publication-state*
+    (case @publication-state*
+      :published false
+      :unpublished (do (reset! publication-state* :deriving) true)
+      (throw (ex-info "This Scriptum generation already has an exclusive publication owner."
+                      {:type :secondary/scriptum-publication-owner-conflict
+                       :state @publication-state*})))))
+
+(defn- release-derivation!
+  [publication-state*]
+  (locking publication-state*
+    (when (= :deriving @publication-state*)
+      (reset! publication-state* :unpublished)
+      true)))
+
+(defn- seal-generation-view!
+  [generation store cache message]
+  (let [snapshot* (atom nil)
+        hold* (atom nil)]
+    (try
+      (let [address (sc/seal-generation! generation message)
+            snapshot (sc/open-store-snapshot store cache address)
+            _ (reset! snapshot* snapshot)
+            hold (sc/take-generation-publication-hold! generation)
+            _ (reset! hold* hold)]
+        [address snapshot hold])
+      (catch Throwable failure
+        (try
+          (if-let [hold @hold*]
+            (sc/abort-generation-publication! hold)
+            (sc/abort-generation! generation))
+          (finally
+            (when-let [snapshot @snapshot*]
+              (.close ^java.io.Closeable snapshot))))
+        (throw failure)))))
+
+(defrecord ScriptumPreparation [prepared-index publication-holds owns-prepared?
+                                publication-state* release-state]
   sec/IPreparedSecondaryGeneration
   (-sec-generation-index [_] prepared-index)
   (-sec-release [_ outcome]
     (try
       (locking release-state
-        (when-not @release-state
-          (try
-            (when generation
-              (case (:status outcome)
-                :committed (sc/release-generation! generation)
-                :aborted (sc/abort-generation! generation)
-                :unknown (sc/abort-generation! generation)))
-            (finally
-              ;; A release hook is one-shot even when cleanup itself fails.
-              ;; Re-entering Lucene cleanup after a partial close is not a safe
-              ;; retry protocol, and visibility was already decided by the
-              ;; Datahike head before this hook ran.
+        (let [previous @release-state
+              status (:status outcome)]
+          (cond
+            (#{:committed :aborted} previous) nil
+
+            (and (= :unknown previous) (= :committed status))
+            (do
+              (complete-holds! publication-holds
+                               sc/root-generation-publication!)
+              (reset! publication-state* :published)
+              (reset! release-state :committed))
+
+            (and (= :unknown previous) (= :unknown status)) nil
+
+            (= :committed status)
+            (do
+              (complete-holds! publication-holds
+                               sc/root-generation-publication!)
+              (reset! publication-state* :published)
+              (reset! release-state :committed))
+
+            (and (= :aborted status) (nil? previous))
+            (let [completed? (atom false)]
               (try
-                (when (and owns-prepared? (not= :committed (:status outcome)))
-                  (.close ^java.io.Closeable prepared-index))
+                (complete-holds! publication-holds
+                                 sc/abort-generation-publication!)
+                (reset! completed? true)
                 (finally
-                  (reset! release-state (:status outcome))))))))
+                  (when owns-prepared?
+                    (.close ^java.io.Closeable prepared-index))))
+              (when @completed?
+                (reset! publication-state* :aborted)
+                (reset! release-state :aborted)))
+
+            (= :unknown status)
+            (do
+              ;; The head may still land. Keep the lightweight holds for
+              ;; reconciliation but release the local snapshot cache.
+              (when owns-prepared?
+                (.close ^java.io.Closeable prepared-index))
+              (reset! publication-state* :unknown)
+              (reset! release-state :unknown))
+
+            :else
+            (throw (ex-info "An ambiguous secondary generation cannot later be aborted."
+                            {:type :secondary/ambiguous-generation-abort
+                             :previous previous
+                             :outcome outcome})))))
       (delivered true)
       (catch Throwable failure
         (delivered failure)))))
@@ -168,7 +283,8 @@
         generation)))
 
 (defrecord TransientScriptumIndex [generation* source-index attrs config store
-                                   cache store-id dirty? frozen?]
+                                   cache store-id dirty? frozen?
+                                   source-reserved?]
   sec/ISecondaryIndex
   (-search [_ query-spec entity-filter]
     (if-let [generation @generation*]
@@ -231,32 +347,38 @@
                              :type :text :store? true}})
         (sc/delete-docs generation "_key" key))))
   (-persistent! [_]
-    (if-not @dirty?
-      source-index
-      (let [generation @generation*]
-        (try
-          (let [address (sc/seal-generation! generation
-                                             "datahike-secondary-generation")]
+    (try
+      (if-not @dirty?
+        source-index
+        (let [generation @generation*]
+          (let [[address snapshot hold]
+                (seal-generation-view! generation store cache
+                                       "datahike-secondary-generation")
+                adopted-holds* (atom [hold])]
             (try
-              (let [snapshot (sc/open-store-snapshot store cache address)
-                    result (make-scriptum-index snapshot attrs config store cache
-                                                store-id address generation)]
-                ;; Writer batching may derive several sealed generations before
-                ;; publishing only the last one.  Once the child is complete it
-                ;; roots every shared Lucene object it needs, so the unpublished
-                ;; parent's guard can be released.  Keep its snapshot readable
-                ;; for an intermediate tx-report db-before; only ownership of
-                ;; the preparation handle moves forward.
-                (when (satisfies? IUnpublishedScriptumGeneration source-index)
-                  (-release-unpublished-generation! source-index))
+              (let [parent-holds
+                    (if (satisfies? IUnpublishedScriptumGenerations source-index)
+                      (-take-publication-holds! source-index :transferred)
+                      [])
+                    _ (reset! adopted-holds* (conj (vec parent-holds) hold))
+                    result (make-scriptum-index
+                            snapshot attrs config store cache store-id address
+                            @adopted-holds* nil)]
+                ;; A child can share immutable segments written under every
+                ;; ancestor's cutoff. Carry all lightweight holds to the one
+                ;; primary publication rather than releasing its parent early.
                 (reset! frozen? true)
                 result)
-              (catch Throwable open-failure
-                (sc/abort-generation! generation)
-                (throw open-failure))))
-          (catch Throwable seal-failure
-            (sc/abort-generation! generation)
-            (throw seal-failure))))))
+              (catch Throwable failure
+                (try
+                  (complete-holds! @adopted-holds*
+                                   sc/abort-generation-publication!)
+                  (finally
+                    (.close ^java.io.Closeable snapshot)))
+                (throw failure))))))
+      (finally
+        (when source-reserved?
+          (-release-derivation! source-index)))))
 
   sec/ISecondaryHashAddressable
   (-sec-value-by-hash [_ attr eid value-hash]
@@ -273,26 +395,44 @@
 
   sec/IAbortableSecondaryTransient
   (-abort-transient! [_]
-    (when (and (not @frozen?) @generation*)
-      (sc/abort-generation! @generation*))))
+    (try
+      (when (and (not @frozen?) @generation*)
+        (sc/abort-generation! @generation*))
+      (finally
+        (when source-reserved?
+          (-release-derivation! source-index))))))
 
 (defn- make-scriptum-index
-  [snapshot attrs config store cache store-id address sealed-generation]
+  [snapshot attrs config store cache store-id address publication-holds
+   supplied-publication-state*]
   (let [attrs (set attrs)
-        sealed-generation* (atom sealed-generation)]
+        publication-holds* (atom (vec publication-holds))
+        publication-state* (or supplied-publication-state*
+                               (atom (if (seq publication-holds)
+                                       :unpublished
+                                       :published)))]
     (reify
       java.io.Closeable
       (close [_]
-        (try
-          (when snapshot (.close ^java.io.Closeable snapshot))
-          (finally
-            (when-let [generation (take-sealed-generation! sealed-generation*)]
-              (sc/abort-generation! generation)))))
+        (locking publication-state*
+          (when (= :deriving @publication-state*)
+            (throw (ex-info "Cannot close a Scriptum generation while a transient derivation owns it."
+                            {:type :secondary/scriptum-publication-owner-conflict
+                             :state :deriving})))
+          (when (= :unpublished @publication-state*)
+            (complete-holds! @publication-holds*
+                             sc/abort-generation-publication!)
+            (reset! publication-holds* [])
+            (reset! publication-state* :aborted)))
+        (when snapshot (.close ^java.io.Closeable snapshot)))
 
-      IUnpublishedScriptumGeneration
-      (-release-unpublished-generation! [_]
-        (when-let [generation (take-sealed-generation! sealed-generation*)]
-          (sc/release-generation! generation)))
+      IUnpublishedScriptumGenerations
+      (-take-publication-holds! [_ next-state]
+        (transfer-holds! publication-holds* publication-state* next-state))
+      (-reserve-derivation! [_]
+        (reserve-derivation! publication-state*))
+      (-release-derivation! [_]
+        (release-derivation! publication-state*))
 
       sec/ISecondaryIndex
       (-search [_ query-spec entity-filter]
@@ -322,9 +462,14 @@
         (when-not (and store store-id)
           (throw (ex-info "Scriptum generation has no storage context."
                           {:type :secondary/scriptum-missing-store})))
-        (->TransientScriptumIndex
-         (atom nil) this attrs config store cache store-id (atom false)
-         (atom false)))
+        (let [reserved? (-reserve-derivation! this)]
+          (try
+            (->TransientScriptumIndex
+             (atom nil) this attrs config store cache store-id (atom false)
+             (atom false) reserved?)
+            (catch Throwable failure
+              (when reserved? (-release-derivation! this))
+              (throw failure)))))
       (-transact! [_ _]
         (throw (IllegalStateException.
                 "Call -as-transient before mutating a Scriptum generation.")))
@@ -396,33 +541,43 @@
          :snapshot-address address})
       (-sec-prepare [this _]
         (try
-          (let [[prepared generation owns?]
-                (if-let [generation
-                         (take-sealed-generation! sealed-generation*)]
-                  [(make-scriptum-index (sc/retain-store-snapshot snapshot)
-                                        attrs config store cache store-id address
-                                        nil)
-                   generation true]
-                  (if address
-                    [this nil false]
-                    (let [generation (sc/begin-generation
-                                      store cache nil
-                                      {:store-id store-id
-                                       :logical-name
-                                       (str (or (::sec/index-ident config)
-                                                :scriptum))})]
-                      (try
-                        (let [address (sc/seal-generation!
-                                       generation
-                                       "datahike-empty-secondary-generation")
-                              snapshot (sc/open-store-snapshot store cache address)]
-                          [(make-scriptum-index snapshot attrs config store cache
-                                                store-id address nil)
-                           generation true])
-                        (catch Throwable failure
-                          (sc/abort-generation! generation)
-                          (throw failure))))))]
-            (delivered (->ScriptumPreparation prepared generation owns?
+          (let [[prepared holds owns? prepared-state*]
+                (if (= :unpublished @publication-state*)
+                  (let [holds (-take-publication-holds! this :preparing)]
+                    (try
+                      [(make-scriptum-index
+                        (sc/retain-store-snapshot snapshot)
+                        attrs config store cache store-id address []
+                        publication-state*)
+                       holds true publication-state*]
+                      (catch Throwable failure
+                        (complete-holds! holds
+                                         sc/abort-generation-publication!)
+                        (reset! publication-state* :aborted)
+                        (throw failure))))
+                  (if (and address (= :published @publication-state*))
+                    [this [] false publication-state*]
+                    (if address
+                      (throw (ex-info "This Scriptum generation already has a publication owner."
+                                      {:type :secondary/scriptum-publication-owner-conflict
+                                       :state @publication-state*}))
+                      (let [generation (sc/begin-generation
+                                        store cache nil
+                                        {:store-id store-id
+                                         :logical-name
+                                         (str (or (::sec/index-ident config)
+                                                  :scriptum))})
+                            [address snapshot hold]
+                            (seal-generation-view!
+                             generation store cache
+                             "datahike-empty-secondary-generation")
+                            prepared-state* (atom :preparing)
+                            prepared (make-scriptum-index
+                                      snapshot attrs config store cache
+                                      store-id address [] prepared-state*)]
+                        [prepared [hold] true prepared-state*]))))]
+            (delivered (->ScriptumPreparation prepared holds owns?
+                                              prepared-state*
                                               (atom nil))))
           (catch Throwable failure
             (delivered failure))))
@@ -432,7 +587,7 @@
               restored (sc/open-store-snapshot restore-store cache
                                                restore-address)]
           (make-scriptum-index restored attrs config restore-store cache store-id
-                               restore-address nil)))
+                               restore-address [] nil)))
 
       audit/IAuditable
       (-merkle-root [_] (when (uuid? address) address))
@@ -453,7 +608,7 @@
           store (or provided-store (new-mem-store (atom {}) {:sync? true}))
           store-id (or (::sec/store-id config) (random-uuid))
           cache (or (:path config) (fs/temp-dir! "datahike-scriptum-"))]
-      (make-scriptum-index nil (:attrs config) config store cache store-id nil nil)))
+      (make-scriptum-index nil (:attrs config) config store cache store-id nil [] nil)))
   :storage-owner :datahike
   :validate-generation validate-scriptum-generation-key-map
   :mark-generation

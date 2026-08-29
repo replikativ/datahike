@@ -98,6 +98,31 @@
          (throw-if-lifecycle-failure failure)))))
 
 #?(:clj
+   (defonce ^:private unresolved-secondary-publications*
+     ;; An indeterminate mutable-head write may still land after its caller has
+     ;; received an error. Keep the preparation handles strongly reachable so
+     ;; their lightweight generation fences survive until an authoritative
+     ;; primary-head read reconciles the attempt. Durable/cross-process
+     ;; ownership is supplied by Konserve's publisher protocol; this registry
+     ;; is the exact in-process half of the same lifecycle.
+     (atom {})))
+
+#?(:clj
+   (defn ^:no-doc unresolved-secondary-publications
+     "Return diagnostics for primary publications whose outcomes still need
+      reconciliation. Preparation handles and causes stay private."
+     []
+     (into {}
+           (map (fn [[attempt-id {:keys [branch index-idents observed-at
+                                         head-proven? retry-status]}]]
+                  [attempt-id {:branch branch
+                               :index-idents index-idents
+                               :head-proven? head-proven?
+                               :retry-status retry-status
+                               :observed-at observed-at}]))
+           @unresolved-secondary-publications*)))
+
+#?(:clj
    (defn ^:no-doc prepare-secondary-generations
      "Prepare every durable secondary index and retain each preparation in
       `prepared*` as soon as it exists, so a later failure can abort a partial
@@ -153,19 +178,134 @@
    (defn ^:no-doc release-secondary-generations!
      [preparations outcome]
      (go-try-
-      (doseq [[idx-ident preparation] preparations]
-        (try
-          (throw-if-lifecycle-failure
-           (<?- (invoke-lifecycle
-                 #(sec/-sec-release preparation outcome))))
-          (catch Throwable release-error
-            ;; Cleanup never controls visibility. In particular, a committed or
-            ;; ambiguous head may already name this generation, so a release
-            ;; failure is logged and may not turn it into a retry or deletion.
-            (log/warn :datahike/secondary-generation-release-failed
-                      {:index idx-ident
-                       :outcome (dissoc outcome :cause)
-                       :error release-error})))))))
+      (let [attempt-id (:attempt-id outcome)]
+        (when (and (= :unknown (:status outcome)) attempt-id (seq preparations))
+          (swap! unresolved-secondary-publications*
+                 assoc attempt-id
+                 {:preparations preparations
+                  :store (:store outcome)
+                  :branch (:branch outcome)
+                  :primary-commit-id (:primary-commit-id outcome)
+                  :secondary-index-keys (:secondary-index-keys outcome)
+                  :head-proven? false
+                  :retry-status nil
+                  :index-idents (vec (keys preparations))
+                  :observed-at (java.time.Instant/now)}))
+        (let [failures (atom {})]
+          (doseq [[idx-ident preparation] preparations]
+            (try
+              (throw-if-lifecycle-failure
+               (<?- (invoke-lifecycle
+                     #(sec/-sec-release preparation outcome))))
+              (catch Throwable release-error
+                ;; Cleanup never controls visibility. In particular, a committed or
+                ;; ambiguous head may already name this generation, so a release
+                ;; failure is logged and may not turn it into a retry or deletion.
+                (swap! failures assoc idx-ident release-error)
+                (log/warn :datahike/secondary-generation-release-failed
+                          {:index idx-ident
+                           :outcome (dissoc outcome :cause :store)
+                           :error release-error}))))
+          (when (and attempt-id
+                     (#{:committed :aborted} (:status outcome)))
+            (if (empty? @failures)
+              (swap! unresolved-secondary-publications* dissoc attempt-id)
+              ;; A definitive visibility outcome does not make failed guard
+              ;; completion disposable. Retain the preparation handles for
+              ;; both root and abort retries; otherwise an abort failure can
+              ;; lose the only strong reference protecting its CAS objects.
+              (swap! unresolved-secondary-publications*
+                     assoc attempt-id
+                     {:preparations preparations
+                      :store (:store outcome)
+                      :branch (:branch outcome)
+                      :primary-commit-id (:primary-commit-id outcome)
+                      :secondary-index-keys (:secondary-index-keys outcome)
+                      :head-proven? (= :committed (:status outcome))
+                      :retry-status (:status outcome)
+                      :index-idents (vec (keys @failures))
+                      :observed-at (java.time.Instant/now)})))
+          {:failures @failures})))))
+
+#?(:clj
+   (defn- commit-descends-from?
+     "Conservatively prove that `head-cid` has `ancestor-cid` in its immutable
+      commit graph. A missing/disabled graph returns false; it never licenses
+      publication cleanup."
+     [store head-cid ancestor-cid]
+     (go-try-
+      (loop [frontier (if head-cid [head-cid] [])
+             visited #{}
+             remaining 10000]
+        (cond
+          (some #{ancestor-cid} frontier) true
+          (or (empty? frontier) (zero? remaining)) false
+          :else
+          (let [cid (peek frontier)
+                frontier (pop frontier)]
+            (if (contains? visited cid)
+              (recur frontier visited remaining)
+              (let [stored (<?- (k/get store cid nil {:sync? false}))
+                    parents (get-in stored [:meta :datahike/parents] #{})]
+                (recur (into frontier (remove visited parents))
+                       (conj visited cid)
+                       (dec remaining))))))))))
+
+#?(:clj
+   (defn ^:no-doc reconcile-secondary-publication!
+     "Resolve an indeterminate publication after an authoritative read proves
+      that its primary head landed. Returns an awaitable yielding true when an
+      attempt was found, false when it was already resolved. A missing head is
+      not by itself a definitive abort while its write can still arrive."
+     [attempt-id]
+     (go-try-
+      (if-let [{:keys [preparations store branch primary-commit-id
+                       secondary-index-keys head-proven? retry-status]}
+               (get @unresolved-secondary-publications* attempt-id)]
+        (if (= :aborted retry-status)
+          (let [result
+                (<?- (release-secondary-generations!
+                      preparations {:status :aborted
+                                    :attempt-id attempt-id
+                                    :branch branch}))]
+            (empty? (:failures result)))
+          (let [head (when-not head-proven?
+                       (<?- (k/get store branch nil {:sync? false})))
+                head-cid (get-in head [:meta :datahike/commit-id])
+                same-roots? (and (seq secondary-index-keys)
+                                 (= secondary-index-keys
+                                    (:secondary-index-keys head)))
+                expected (when (and (not head-proven?)
+                                    head-cid
+                                    (not= primary-commit-id head-cid)
+                                    (not same-roots?))
+                           (<?- (k/get store primary-commit-id nil
+                                       {:sync? false})))
+                descendant? (and expected
+                                 (= primary-commit-id
+                                    (get-in expected [:meta :datahike/commit-id]))
+                                 (= secondary-index-keys
+                                    (:secondary-index-keys expected))
+                                 (<?- (commit-descends-from?
+                                       store head-cid primary-commit-id)))
+                landed? (or head-proven?
+                            (and (= primary-commit-id head-cid)
+                                 (= secondary-index-keys
+                                    (:secondary-index-keys head)))
+                            same-roots?
+                            descendant?)]
+            (if landed?
+              (let [result
+                    (<?- (release-secondary-generations!
+                          preparations {:status :committed
+                                        :attempt-id attempt-id
+                                        :store store
+                                        :branch branch
+                                        :primary-commit-id primary-commit-id
+                                        :secondary-index-keys secondary-index-keys}))]
+                (empty? (:failures result)))
+              false)))
+        false))))
 
 (defn- db->stored*
   "Maps memory db to storage layout. Durable secondary key-maps must already
@@ -1002,6 +1142,8 @@
                         gc-token      (guard/writing! gc-store-id)
                         attempt-id    (random-uuid)
                         preparations* (atom {})
+                        primary-commit-id* (atom nil)
+                        secondary-index-keys* (atom nil)
                         head-write-issued? (atom false)
                         head-published? (atom false)]
                     (try
@@ -1059,6 +1201,8 @@
                             [schema-meta-kv-to-write db-to-store-pre]
                             (db->stored db true key-maps)
                             cid           (create-commit-id db db-to-store-pre)
+                            _             (reset! primary-commit-id* cid)
+                            _             (reset! secondary-index-keys* key-maps)
                             db            (assoc-in db [:meta :datahike/commit-id] cid)
                             db-to-store   (assoc-in db-to-store-pre
                                                     [:meta :datahike/commit-id] cid)
@@ -1191,6 +1335,10 @@
                            (let [released (release-secondary-generations!
                                            @preparations*
                                            {:status :committed
+                                            :attempt-id attempt-id
+                                            :branch (get-in db [:config :branch])
+                                            :store store
+                                            :secondary-index-keys key-maps
                                             :primary-commit-id cid})]
                              (if sync?
                                (take-result!! released)
@@ -1238,8 +1386,18 @@
                                  released (release-secondary-generations!
                                            @preparations*
                                            (if aborted?
-                                             {:status :aborted :cause e}
-                                             {:status :unknown :cause e}))]
+                                             {:status :aborted
+                                              :attempt-id attempt-id
+                                              :branch (get-in db [:config :branch])
+                                              :cause e}
+                                             {:status :unknown
+                                              :attempt-id attempt-id
+                                              :branch (get-in db [:config :branch])
+                                              :store (:store db)
+                                              :primary-commit-id @primary-commit-id*
+                                              :secondary-index-keys
+                                              @secondary-index-keys*
+                                              :cause e}))]
                              (if sync?
                                (take-result!! released)
                                (<?- released))))
@@ -1254,9 +1412,13 @@
                                      :error e}))
                         #?(:clj  (if (instance? Error e)
                                    (throw (ex-info "Fatal error during commit."
-                                                   {:type :fatal-commit-error}
+                                                   {:type :fatal-commit-error
+                                                    :datahike/attempt-id attempt-id}
                                                    e))
-                                   (throw e))
+                                   (throw (ex-info (.getMessage ^Throwable e)
+                                                   (assoc (or (ex-data e) {})
+                                                          :datahike/attempt-id attempt-id)
+                                                   e)))
                            :cljs (throw e)))
                       (finally
                         (guard/done! gc-store-id gc-token)))))))))

@@ -27,6 +27,18 @@
       (is (es/entity-bitset-contains? bs 1000))
       (is (not (es/entity-bitset-contains? bs 2)))))
 
+  (testing "the JVM representation preserves the full entity-id domain"
+    (let [low 1
+          high (inc (bit-shift-left 1 32))
+          negative -7
+          bs (es/entity-bitset-from-longs [low high negative])]
+      (is (= 3 (es/entity-bitset-cardinality bs)))
+      (is (every? #(es/entity-bitset-contains? bs %)
+                  [low high negative]))
+      (is (= #{low high negative} (set (es/entity-bitset-seq bs))))
+      (is (not= low high)
+          "ids separated by 2^32 must never alias through an int cast")))
+
   (testing "from-longs"
     (let [bs (es/entity-bitset-from-longs [10 20 30 40 50])]
       (is (= 5 (es/entity-bitset-cardinality bs)))

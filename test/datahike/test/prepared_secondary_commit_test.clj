@@ -42,8 +42,22 @@
       :committed (swap! events conj [:publish (:primary-commit-id outcome)])
       :aborted (swap! events conj [:abort (:type (ex-data (:cause outcome)))])
       :unknown (swap! events conj [:unknown]))
-    (delivered (or (when (= :committed (:status outcome)) publish-error)
-                   true))))
+    (let [publish-error (if (instance? clojure.lang.IAtom publish-error)
+                          (first (swap-vals! publish-error (constantly nil)))
+                          publish-error)]
+      (delivered (or (when (= :committed (:status outcome)) publish-error)
+                     true)))))
+
+(defrecord RetryingCleanupPreparation [attempts fail-status]
+  sec/IPreparedSecondaryGeneration
+  (-sec-generation-index [_] nil)
+  (-sec-release [_ outcome]
+    (delivered
+     (if (and (= fail-status (:status outcome))
+              (= 1 (swap! attempts inc)))
+       (ex-info "injected secondary cleanup failure"
+                {:type :test/secondary-cleanup-failure})
+       true))))
 
 (defrecord FakeIndex [events key-map prepared-index publish-error]
   sec/ISecondaryIndex
@@ -60,7 +74,8 @@
     (swap! events conj [:prepare (select-keys context
                                               [:branch :index-ident :attempt-id
                                                :base-primary-commit-id])])
-    (delivered (->FakePreparation events key-map prepared-index publish-error)))
+    (delivered (->FakePreparation events key-map prepared-index
+                                  (when publish-error (atom publish-error)))))
   (-sec-restore [this _ _] this))
 
 (defrecord FailingPrepareIndex [events failure]
@@ -247,7 +262,15 @@
         (is (= key-map (get-in stored-head
                                [:secondary-index-keys :idx/fake])))
         (is (identical? prepared-index
-                        (get-in committed [:secondary-indices :idx/fake]))))
+                        (get-in committed [:secondary-indices :idx/fake])))
+        (let [attempt-id (get-in (first @events) [1 :attempt-id])]
+          (is (= true
+                 (get-in (writing/unresolved-secondary-publications)
+                         [attempt-id :head-proven?])))
+          (is (true? (async/<!!
+                      (writing/reconcile-secondary-publication! attempt-id))))
+          (is (not (contains? (writing/unresolved-secondary-publications)
+                              attempt-id)))))
       (finally
         (cleanup f)))))
 
@@ -379,31 +402,44 @@
       (let [events (atom [])
             before (d/db connection)
             {:keys [db key-map]} (fake-db before events nil)
-            original-assoc k/assoc]
-        (is (thrown-with-msg?
-             clojure.lang.ExceptionInfo
-             #"forced transport failure"
-             (with-redefs [k/assoc
-                           (fn [& args]
-                             (let [opts (last args)]
-                               (if (:expected-revision opts)
-                                 (let [[store key value _] args]
-                                   ;; Model an acknowledgement loss: the head
-                                   ;; lands, then the caller observes a transport
-                                   ;; error and cannot know the outcome.
-                                   (original-assoc store key value
-                                                   {:sync? (:sync? opts)})
-                                   (throw (ex-info "forced transport failure"
-                                                   {:type :test/transport-failure})))
-                                 (apply original-assoc args))))]
-               (writing/commit! db #{} true nil :current-revision))))
+            original-assoc k/assoc
+            failure
+            (try
+              (with-redefs [k/assoc
+                            (fn [& args]
+                              (let [opts (last args)]
+                                (if (:expected-revision opts)
+                                  (let [[store key value _] args]
+                                    ;; Model an acknowledgement loss: the head
+                                    ;; lands, then the caller observes a transport
+                                    ;; error and cannot know the outcome.
+                                    (original-assoc store key value
+                                                    {:sync? (:sync? opts)})
+                                    (throw (ex-info "forced transport failure"
+                                                    {:type :test/transport-failure})))
+                                  (apply original-assoc args))))]
+                (writing/commit! db #{} true nil :current-revision))
+              nil
+              (catch clojure.lang.ExceptionInfo e e))]
+        (is (re-find #"forced transport failure" (.getMessage failure)))
         (is (= [:prepare :unknown] (mapv first @events))
             "an ambiguous outcome is reported without authorizing deletion")
-        (is (= key-map
-               (get-in (k/get (:store before)
-                              (get-in before [:config :branch])
-                              nil {:sync? true})
-                       [:secondary-index-keys :idx/fake]))))
+        (let [stored-head (k/get (:store before)
+                                 (get-in before [:config :branch])
+                                 nil {:sync? true})
+              attempt-id (get-in (first @events) [1 :attempt-id])]
+          (is (= attempt-id (:datahike/attempt-id (ex-data failure)))
+              "the caller can correlate the failed operation with diagnostics")
+          (is (= key-map
+                 (get-in stored-head [:secondary-index-keys :idx/fake])))
+          (is (= #{attempt-id}
+                 (set (keys (writing/unresolved-secondary-publications))))
+              "the preparation remains strongly reachable while its head is ambiguous")
+          (is (true?
+               (async/<!!
+                (writing/reconcile-secondary-publication! attempt-id))))
+          (is (= [:prepare :unknown :publish] (mapv first @events)))
+          (is (empty? (writing/unresolved-secondary-publications)))))
       (finally
         (cleanup f)))))
 
@@ -431,6 +467,94 @@
         (is (= :test/prepare-failure (second (last @events)))))
       (finally
         (cleanup f)))))
+
+(deftest ambiguous-reconciliation-verifies-the-head-and-retries-cleanup
+  (let [store-id (random-uuid)
+        store (k/create-store {:backend :memory :id store-id} {:sync? true})
+        attempt-id (random-uuid)
+        expected-cid (random-uuid)
+        wrong-cid (random-uuid)
+        later-cid (random-uuid)
+        key-maps {:idx/retry {:type :test/retry :generation (random-uuid)}}
+        later-key-maps {:idx/retry {:type :test/retry
+                                    :generation (random-uuid)}}
+        attempts (atom 0)
+        preparations {:idx/retry (->RetryingCleanupPreparation attempts
+                                                               :committed)}
+        outcome {:status :unknown
+                 :attempt-id attempt-id
+                 :store store
+                 :branch :db
+                 :primary-commit-id expected-cid
+                 :secondary-index-keys key-maps}]
+    (async/<!! (writing/release-secondary-generations! preparations outcome))
+    (try
+      (k/assoc store :db
+               {:meta {:datahike/commit-id wrong-cid}
+                :secondary-index-keys later-key-maps}
+               {:sync? true})
+      (is (false? (async/<!!
+                   (writing/reconcile-secondary-publication! attempt-id)))
+          "an unrelated primary head cannot authorize publication cleanup")
+      (is (contains? (writing/unresolved-secondary-publications) attempt-id))
+      (is (zero? @attempts))
+
+      ;; The delayed write landed and a later commit advanced the branch.
+      ;; Reconciliation proves the attempt through immutable ancestry rather
+      ;; than requiring it to remain the exact current head forever.
+      (k/assoc store expected-cid
+               {:meta {:datahike/commit-id expected-cid
+                       :datahike/parents #{wrong-cid}}
+                :secondary-index-keys key-maps}
+               {:sync? true})
+      (k/assoc store later-cid
+               {:meta {:datahike/commit-id later-cid
+                       :datahike/parents #{expected-cid}}
+                :secondary-index-keys later-key-maps}
+               {:sync? true})
+      (k/assoc store :db
+               {:meta {:datahike/commit-id later-cid
+                       :datahike/parents #{expected-cid}}
+                :secondary-index-keys later-key-maps}
+               {:sync? true})
+      (is (false? (async/<!!
+                   (writing/reconcile-secondary-publication! attempt-id)))
+          "a failed completion remains retryable even though the head landed")
+      (is (contains? (writing/unresolved-secondary-publications) attempt-id))
+      (is (= 1 @attempts))
+      (is (true? (async/<!!
+                  (writing/reconcile-secondary-publication! attempt-id))))
+      (is (= 2 @attempts))
+      (is (not (contains? (writing/unresolved-secondary-publications)
+                          attempt-id)))
+      (finally
+        ;; Keep the process-global diagnostics clean if an assertion throws.
+        (when (contains? (writing/unresolved-secondary-publications) attempt-id)
+          (async/<!!
+           (writing/reconcile-secondary-publication! attempt-id)))))))
+
+(deftest failed-abort-cleanup-remains-retryable
+  (let [attempt-id (random-uuid)
+        attempts (atom 0)
+        preparations {:idx/retry (->RetryingCleanupPreparation attempts
+                                                               :aborted)}
+        outcome {:status :aborted
+                 :attempt-id attempt-id
+                 :branch :db}]
+    (is (= #{:idx/retry}
+           (set (keys
+                 (:failures
+                  (async/<!!
+                   (writing/release-secondary-generations!
+                    preparations outcome)))))))
+    (is (= :aborted
+           (get-in (writing/unresolved-secondary-publications)
+                   [attempt-id :retry-status])))
+    (is (true? (async/<!!
+                (writing/reconcile-secondary-publication! attempt-id))))
+    (is (= 2 @attempts))
+    (is (not (contains? (writing/unresolved-secondary-publications)
+                        attempt-id)))))
 
 (deftest returned-db-retains-the-revision-created-by-a-fenced-head-write
   (let [{:keys [connection] :as f} (fixture)]

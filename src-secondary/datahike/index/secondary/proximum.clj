@@ -37,10 +37,82 @@
   (when generation
     (async/<!! (gen/close-view! generation))))
 
+(defprotocol ^:private IUnpublishedProximumGenerations
+  (-take-publication-holds! [index next-state])
+  (-reserve-derivation! [index])
+  (-release-derivation! [index]))
+
+(defn- take-holds! [holds*]
+  (locking holds*
+    (let [holds @holds*]
+      (reset! holds* [])
+      holds)))
+
+(defn- transfer-holds!
+  [holds* publication-state* next-state]
+  (locking publication-state*
+    (case @publication-state*
+      :published []
+      :unpublished
+      (let [holds (take-holds! holds*)]
+        (when-not (seq holds)
+          (throw (ex-info "An unpublished Proximum generation has no publication hold."
+                          {:type :secondary/proximum-missing-publication-hold})))
+        (reset! publication-state* next-state)
+        holds)
+      :deriving
+      (if (= :transferred next-state)
+        (let [holds (take-holds! holds*)]
+          (when-not (seq holds)
+            (throw (ex-info "A derived Proximum generation has no publication hold."
+                            {:type :secondary/proximum-missing-publication-hold})))
+          (reset! publication-state* next-state)
+          holds)
+        (throw (ex-info "A Proximum derivation can only transfer its publication ownership."
+                        {:type :secondary/proximum-publication-owner-conflict
+                         :state :deriving
+                         :requested-state next-state})))
+      (throw (ex-info "A Proximum generation already has an exclusive publication owner."
+                      {:type :secondary/proximum-publication-owner-conflict
+                       :state @publication-state*
+                       :requested-state next-state})))))
+
+(defn- complete-holds! [holds complete!]
+  (let [failures
+        (reduce (fn [errors hold]
+                  (try
+                    (complete! hold)
+                    errors
+                    (catch Throwable failure
+                      (conj errors failure))))
+                [] holds)]
+    (when (seq failures)
+      (throw (ex-info "One or more Proximum publication holds failed to close"
+                      {:type :secondary/proximum-publication-cleanup-failed
+                       :failure-count (count failures)}
+                      (first failures))))))
+
+(defn- reserve-derivation!
+  [publication-state*]
+  (locking publication-state*
+    (case @publication-state*
+      :published false
+      :unpublished (do (reset! publication-state* :deriving) true)
+      (throw (ex-info "This Proximum generation already has an exclusive publication owner."
+                      {:type :secondary/proximum-publication-owner-conflict
+                       :state @publication-state*})))))
+
+(defn- release-derivation!
+  [publication-state*]
+  (locking publication-state*
+    (when (= :deriving @publication-state*)
+      (reset! publication-state* :unpublished)
+      true)))
+
 (declare make-proximum-index)
 
-(defrecord ProximumPreparation [prepared-index sealed-generation owns-prepared?
-                                release-state]
+(defrecord ProximumPreparation [prepared-index publication-holds owns-prepared?
+                                publication-state* release-state]
   sec/IPreparedSecondaryGeneration
   (-sec-generation-index [_] prepared-index)
   (-sec-release [_ outcome]
@@ -54,37 +126,41 @@
               nil
 
               (and (= :unknown previous) (= :committed status))
-              (reset! release-state :committed)
+              (do
+                (complete-holds! publication-holds gen/root-publication!)
+                (reset! publication-state* :published)
+                (reset! release-state :committed))
+
+              (and (= :unknown previous) (= :unknown status))
+              nil
 
               (= :committed status)
               (do
-                (when sealed-generation
-                  (gen/rooted! sealed-generation)
-                  (async/<!! (gen/close-view! sealed-generation)))
+                (complete-holds! publication-holds gen/root-publication!)
+                (reset! publication-state* :published)
                 (reset! release-state :committed))
 
               (and (= :aborted status) (nil? previous))
-              (do
-                (when sealed-generation
-                  (async/<!! (gen/discard! sealed-generation)))
-                (when owns-prepared?
-                  (async/<!! (gen/close-view! (:generation prepared-index))))
-                (reset! release-state :aborted))
+              (let [completed? (atom false)]
+                (try
+                  (complete-holds! publication-holds gen/abort-publication!)
+                  (reset! completed? true)
+                  (finally
+                    (when owns-prepared?
+                      (async/<!! (gen/close-view! (:generation prepared-index))))))
+                (when @completed?
+                  (reset! publication-state* :aborted)
+                  (reset! release-state :aborted)))
 
               (= :unknown status)
               (do
-                ;; The head write has returned, but its response was ambiguous.
-                ;; There is no longer a values-then-pointer window to fence: if
-                ;; the head landed, Datahike's retained roots keep this exact id;
-                ;; if it did not, the generation is ordinary immutable garbage.
-                ;; Acknowledging the sealed generation releases the Konserve
-                ;; guard without moving any pointer. Close attempt-owned local
-                ;; mmaps; a landed root remains exactly restorable by id.
-                (when sealed-generation
-                  (gen/rooted! sealed-generation)
-                  (async/<!! (gen/close-view! sealed-generation)))
+                ;; The head write may still land after returning. Keep every
+                ;; publication hold until an authoritative reconciliation says
+                ;; committed or definitively aborted. The live mmap is only a
+                ;; cache and can be closed; a landed generation restores by id.
                 (when owns-prepared?
                   (async/<!! (gen/close-view! (:generation prepared-index))))
+                (reset! publication-state* :unknown)
                 (reset! release-state :unknown))
 
               :else
@@ -140,10 +216,57 @@
         (reset! builder* builder)
         builder)))
 
-(defrecord TransientProximumIndex [builder* source-index attrs config
-                                   generation-config dirty?]
+(defn- take-pending-inserts! [pending-inserts*]
+  (locking pending-inserts*
+    (let [pending @pending-inserts*]
+      (reset! pending-inserts* [])
+      pending)))
+
+(defn- flush-pending-inserts!
+  [builder* pending-inserts* source-index generation-config config]
+  (let [pending (take-pending-inserts! pending-inserts*)]
+    (when (seq pending)
+      (let [builder (ensure-builder! builder* source-index generation-config)
+            opts (cond-> {}
+                   (:ingest-parallelism config)
+                   (assoc :parallelism (:ingest-parallelism config)))]
+        (gen/put-batch! builder (mapv second pending) (mapv first pending) opts)))))
+
+(defn- seal-builder-view!
+  "Seal once and split its native query view from its lightweight publication
+   hold. Every partial transition cleans up both ownership domains."
+  [builder]
+  (let [sealed* (atom nil)
+        view* (atom nil)
+        hold* (atom nil)]
+    (try
+      (let [sealed (gen/seal! builder)
+            _ (reset! sealed* sealed)
+            view (gen/take-generation-view! sealed)
+            _ (reset! view* view)
+            hold (gen/take-publication-hold! sealed)
+            _ (reset! hold* hold)]
+        [view hold])
+      (catch Throwable failure
+        (try
+          (if-let [hold @hold*]
+            (gen/abort-publication! hold)
+            (if-let [sealed @sealed*]
+              (async/<!! (gen/discard! sealed))
+              (when (#{:open :failed} @(:status builder))
+                (async/<!! (gen/discard! builder)))))
+          (finally
+            (when-let [view @view*]
+              (async/<!! (gen/close-view! view)))))
+        (throw failure)))))
+
+(defrecord TransientProximumIndex [builder* pending-inserts* source-index attrs
+                                   config generation-config dirty?
+                                   source-reserved?]
   sec/ISecondaryIndex
   (-search [_ query-spec entity-filter]
+    (flush-pending-inserts! builder* pending-inserts* source-index
+                            generation-config config)
     (if-let [index (if-let [builder @builder*]
                      (gen/builder-index builder)
                      (proximum-view source-index))]
@@ -151,6 +274,8 @@
        (map :id (search-results index query-spec entity-filter)))
       (es/entity-bitset)))
   (-estimate [_ query-spec]
+    (flush-pending-inserts! builder* pending-inserts* source-index
+                            generation-config config)
     (if-let [index (if-let [builder @builder*]
                      (gen/builder-index builder)
                      (proximum-view source-index))]
@@ -158,6 +283,8 @@
       0))
   (-can-order? [_ _ direction] (= :asc direction))
   (-slice-ordered [_ query-spec entity-filter _ _ limit]
+    (flush-pending-inserts! builder* pending-inserts* source-index
+                            generation-config config)
     (let [query-spec (if limit
                        (update query-spec :k #(min % limit))
                        query-spec)]
@@ -180,56 +307,92 @@
           value (.-v datom)]
       (if added?
         (if (instance? (Class/forName "[F") value)
-          (let [builder (ensure-builder! builder* source-index generation-config)]
+          (do
+            ;; Open the guard before accepting the first buffered write. The
+            ;; vector itself remains in memory until the bounded batch flushes.
+            (ensure-builder! builder* source-index generation-config)
             (reset! dirty? true)
-            (gen/put! builder eid value))
+            (swap! pending-inserts* conj [eid value])
+            (when (>= (count @pending-inserts*)
+                      (long (or (:ingest-batch-size config) 256)))
+              (flush-pending-inserts! builder* pending-inserts* source-index
+                                      generation-config config)))
           (log/warn :datahike/non-float-array-vector
                     {:eid eid :type (type value)}))
-        (let [builder (ensure-builder! builder* source-index generation-config)]
+        (let [_ (flush-pending-inserts! builder* pending-inserts* source-index
+                                        generation-config config)
+              builder (ensure-builder! builder* source-index generation-config)]
           (reset! dirty? true)
           (gen/delete! builder eid)))))
   (-persistent! [_]
-    (if-not @dirty?
-      source-index
-      (let [builder @builder*]
-        (try
-          (let [sealed (gen/seal! builder)]
+    (try
+      (flush-pending-inserts! builder* pending-inserts* source-index
+                              generation-config config)
+      (if-not @dirty?
+        source-index
+        (let [builder @builder*]
+          (let [[view hold] (seal-builder-view! builder)
+                adopted-holds* (atom [hold])]
             (try
-              (let [generation-id (gen/generation-id sealed)
-                    view (gen/open-generation generation-config generation-id)
-                    result (make-proximum-index view attrs config generation-config
-                                                sealed)]
-                ;; A backfill result may itself be an unpublished sealed
-                ;; generation. Once its child is sealed, the child's complete
-                ;; roots retain every required object and the intermediate
-                ;; guard can be released.
-                (when-let [parent-sealed (:sealed-generation source-index)]
-                  (async/<!! (gen/discard! parent-sealed)))
+              (let [parent-holds
+                    (if (satisfies? IUnpublishedProximumGenerations source-index)
+                      (-take-publication-holds! source-index :transferred)
+                      [])
+                    _ (reset! adopted-holds* (conj (vec parent-holds) hold))
+                    result (make-proximum-index view attrs config
+                                                generation-config @adopted-holds*)]
+                ;; A child can share CAS objects written under every ancestor's
+                ;; cutoff. Carry those lightweight guards to the one primary
+                ;; publication instead of releasing the predecessor early.
                 result)
-              (catch Throwable open-failure
-                (async/<!! (gen/discard! sealed))
-                (throw open-failure))))
-          (catch Throwable seal-failure
-            (when (= :open @(:status builder))
-              (async/<!! (gen/discard! builder)))
-            (when (= :failed @(:status builder))
-              (async/<!! (gen/discard! builder)))
-            (throw seal-failure))))))
+              (catch Throwable failure
+                (try
+                  (complete-holds! @adopted-holds* gen/abort-publication!)
+                  (finally
+                    (async/<!! (gen/close-view! view))))
+                (throw failure))))))
+      (finally
+        (when source-reserved?
+          (-release-derivation! source-index)))))
 
   sec/IDurableSecondaryTransient
   (-durable-persistent-result? [_] true)
 
   sec/IAbortableSecondaryTransient
   (-abort-transient! [_]
-    (when-let [builder @builder*]
-      (when (#{:open :failed} @(:status builder))
-        (async/<!! (gen/discard! builder))))))
+    (reset! pending-inserts* [])
+    (try
+      (when-let [builder @builder*]
+        (when (#{:open :failed} @(:status builder))
+          (async/<!! (gen/discard! builder))))
+      (finally
+        (when source-reserved?
+          (-release-derivation! source-index))))))
 
-(defrecord ProximumIndex [generation attrs config generation-config sealed-generation]
+(defrecord ProximumIndex [generation attrs config generation-config
+                          publication-holds* publication-state*]
   java.io.Closeable
   (close [_]
-    (when sealed-generation (async/<!! (gen/discard! sealed-generation)))
+    (locking publication-state*
+      (when (= :deriving @publication-state*)
+        (throw (ex-info "Cannot close a Proximum generation while a transient derivation owns it."
+                        {:type :secondary/proximum-publication-owner-conflict
+                         :state :deriving})))
+      (when (= :unpublished @publication-state*)
+        ;; Do not drain the only strong references until every completion
+        ;; succeeds. A repeated close is then a genuine cleanup retry.
+        (complete-holds! @publication-holds* gen/abort-publication!)
+        (reset! publication-holds* [])
+        (reset! publication-state* :aborted)))
     (close-generation! generation))
+
+  IUnpublishedProximumGenerations
+  (-take-publication-holds! [_ next-state]
+    (transfer-holds! publication-holds* publication-state* next-state))
+  (-reserve-derivation! [_]
+    (reserve-derivation! publication-state*))
+  (-release-derivation! [_]
+    (release-derivation! publication-state*))
 
   sec/ISecondaryIndex
   (-search [_ query-spec entity-filter]
@@ -309,9 +472,15 @@
          :continuation (:continuation page)})))
 
   sec/ITransientSecondaryIndex
-  (-as-transient [_]
-    (->TransientProximumIndex
-     (atom nil) _ attrs config generation-config (atom false)))
+  (-as-transient [this]
+    (let [reserved? (-reserve-derivation! this)]
+      (try
+        (->TransientProximumIndex
+         (atom nil) (atom []) this attrs config generation-config (atom false)
+         reserved?)
+        (catch Throwable failure
+          (when reserved? (-release-derivation! this))
+          (throw failure)))))
   (-transact! [_ _]
     (throw (IllegalStateException.
             "Call -as-transient before mutating a Proximum generation.")))
@@ -334,44 +503,70 @@
      :format-version 2
      :storage-owner :external
      :generation-strategy :full-mmap-copy
-     :external-store-id (get-in config [:store-config :id])
+     ;; The connected store is authoritative. A supplied `:store` can differ
+     ;; from the advisory store-config, and publishing that alias would make an
+     ;; external collector mark the wrong store.
+     :external-store-id (or (some-> generation gen/generation-store-id)
+                            (get-in config [:store-config :id]))
      :generation-id (some-> generation gen/generation-id)})
   (-sec-prepare [this _]
     (let [ch (async/promise-chan)]
       (try
-        (let [[prepared sealed owns?]
+        (let [[prepared holds owns?]
               (cond
-                sealed-generation
-                [(->ProximumIndex (gen/retain-generation-view generation)
-                                  attrs config generation-config nil)
-                 sealed-generation true]
+                (= :unpublished @publication-state*)
+                (let [holds (-take-publication-holds! this :preparing)]
+                  (try
+                    [(->ProximumIndex (gen/retain-generation-view generation)
+                                      attrs config generation-config (atom [])
+                                      publication-state*)
+                     holds true]
+                    (catch Throwable failure
+                      (complete-holds! holds gen/abort-publication!)
+                      (reset! publication-state* :aborted)
+                      (throw failure))))
+
+                (and generation (= :published @publication-state*))
+                [this [] false]
 
                 generation
-                [this nil false]
+                (throw (ex-info "This Proximum generation already has a publication owner."
+                                {:type :secondary/proximum-publication-owner-conflict
+                                 :state @publication-state*}))
 
                 :else
                 (let [builder (gen/begin-generation-from-config
                                generation-config)]
                   (try
-                    (let [sealed (gen/seal! builder)
-                          generation-id (gen/generation-id sealed)
-                          view (gen/open-generation generation-config
-                                                    generation-id)]
-                      [(->ProximumIndex view attrs config generation-config nil)
-                       sealed true])
+                    (let [[view hold] (seal-builder-view! builder)]
+                      [(->ProximumIndex view attrs config generation-config
+                                        (atom []) (atom :preparing))
+                       [hold] true])
                     (catch Throwable failure
-                      (async/<!! (gen/discard! builder))
+                      (when (#{:open :failed} @(:status builder))
+                        (async/<!! (gen/discard! builder)))
                       (throw failure)))))]
-          (async/put! ch (->ProximumPreparation prepared sealed owns?
+          (async/put! ch (->ProximumPreparation prepared holds owns?
+                                                (:publication-state* prepared)
                                                 (atom nil))))
         (catch Throwable failure
           (async/put! ch failure)))
       ch))
   (-sec-restore [_ _ key-map]
-    (let [{:keys [generation-id]}
+    (let [{:keys [generation-id external-store-id]}
           (validate-proximum-generation-key-map key-map)
           restored (gen/open-generation generation-config generation-id)]
-      (->ProximumIndex restored attrs config generation-config nil)))
+      (if (= external-store-id (gen/generation-store-id restored))
+        (->ProximumIndex restored attrs config generation-config
+                         (atom []) (atom :published))
+        (do
+          (close-generation! restored)
+          (throw (ex-info
+                  "The Proximum generation belongs to a different live store."
+                  {:type :secondary/proximum-generation-store-mismatch
+                   :expected external-store-id
+                   :actual (gen/generation-store-id restored)
+                   :generation-id generation-id}))))))
 
   audit/IAuditable
   (-merkle-root [_]
@@ -387,9 +582,12 @@
       {:status :unsupported :reason :proximum-generation-verifier-unavailable})))
 
 (defn- make-proximum-index
-  [generation attrs config generation-config sealed-generation]
+  [generation attrs config generation-config publication-holds]
   (->ProximumIndex generation (set attrs) config generation-config
-                   sealed-generation))
+                   (atom (vec publication-holds))
+                   (atom (if (seq publication-holds)
+                           :unpublished
+                           :published))))
 
 (sec/register-index-type!
  :proximum
@@ -424,6 +622,10 @@
                             "attribute where it has one. Declare one index per vector attribute.")
                        {:error :secondary/proximum-multi-attr
                         :attrs (vec attrs)}))))
+   (when-not (pos? (long (or (:ingest-batch-size config) 256)))
+     (throw (ex-info ":ingest-batch-size must be a positive integer."
+                     {:error :secondary/proximum-invalid-ingest-batch-size
+                      :ingest-batch-size (:ingest-batch-size config)})))
    (when-not (get-in config [:store-config :id])
      (throw (ex-info "A durable :proximum secondary requires a stable :store-config :id."
                      {:error :secondary/proximum-store-id-required})))
