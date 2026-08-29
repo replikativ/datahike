@@ -234,6 +234,42 @@
             (is (= #{:person/embedding} (set (map :attribute candidates))))
             (is (every? :distance candidates)))
 
+          (let [query-spec {:vector (float-array [1.0 0.0 0.0 0.0])
+                            :scan-mode :iterative
+                            :strict-order? false
+                            :ef 2}
+                pages
+                (loop [request {:limit 1} pages []]
+                  (let [page (sec/-candidate-page idx query-spec nil request)
+                        pages (conj pages page)]
+                    (if (:exhausted? page)
+                      pages
+                      (recur {:limit 1 :continuation (:continuation page)}
+                             pages))))
+                pages (sec/validate-candidate-scan pages)
+                final-page (peek pages)]
+            (is (= :approximate (:ordering (first pages)))
+                "relaxed iterative HNSW does not claim global SQL order")
+            (is (= :frontier-empty (:stop-reason final-page)))
+            (is (pos? (get-in final-page [:stats :visited-count])))
+            (is (= (count (mapcat :candidates pages))
+                   (count (distinct (map :entity-id
+                                         (mapcat :candidates pages)))))))
+
+          (let [page (sec/-candidate-page
+                      idx
+                      {:vector (float-array [1.0 0.0 0.0 0.0])
+                       :scan-mode :iterative
+                       :strict-order? false
+                       :ef 2}
+                      nil
+                      {:limit 1})
+                continuation (:continuation page)]
+            (is (some? continuation))
+            (is (nil? (sec/close-candidate-scan! idx continuation)))
+            (is (nil? (sec/close-candidate-scan! idx continuation))
+                "early LIMIT/error cleanup is idempotent through the adapter"))
+
         ;; Non-vector value is silently skipped
           (let [d-str (datahike.datom/datom 4 :person/embedding "not-a-vector")
                 idx2 (sec/-transact idx {:datom d-str :added? true})

@@ -49,6 +49,19 @@
                      #(sec/candidate-page
                        (db/empty-db {}) :idx/legacy idx {} nil {:limit 10}))))))))
 
+(deftest candidate-scan-cancellation-is-optional-and-idempotent
+  (let [closed (atom [])
+        idx (reify
+              sec/ISecondaryCandidateScanLifecycle
+              (-close-candidate-scan [_ continuation]
+                (swap! closed conj continuation)))]
+    (is (nil? (sec/close-candidate-scan! idx :cursor)))
+    (is (nil? (sec/close-candidate-scan! idx :cursor)))
+    (is (= [:cursor :cursor] @closed)
+        "the adapter owns idempotence because it owns the resource")
+    (is (nil? (sec/close-candidate-scan! (legacy-index) :ignored)))
+    (is (nil? (sec/close-candidate-scan! idx nil)))))
+
 (deftest candidate-page-preserves-independent-correctness-axes
   (doseq [[precision recall ordering]
           [[:exact :complete :exact]
@@ -86,13 +99,17 @@
                :recall :complete
                :ordering :none
                :exhausted? true
-               :continuation nil}
+               :continuation nil
+               :stop-reason :source-exhausted}
         invalid-pages [(assoc valid :precision :lossy)
                        (assoc valid :recall :unknown)
                        (assoc valid :ordering :ranked)
                        (assoc valid :exhausted? :yes)
                        (assoc valid :continuation :after)
                        (assoc valid :exhausted? false :continuation nil)
+                       (dissoc valid :stop-reason)
+                       (assoc valid :stop-reason :made-up)
+                       (assoc valid :stats {:visited -1})
                        (assoc valid :candidates [{:entity-id 1}])
                        (assoc valid :candidates [{:attribute :doc/body}])]]
     (is (= valid (sec/validate-candidate-page valid)))
@@ -119,7 +136,8 @@
                     :recall :complete
                     :ordering :exact
                     :exhausted? true
-                    :continuation nil}]
+                    :continuation nil
+                    :stop-reason :source-exhausted}]
     (is (= [first-page final-page]
            (sec/validate-candidate-scan [first-page final-page])))
 
@@ -132,7 +150,8 @@
                     final-page]
                    [first-page (assoc final-page
                                       :exhausted? false
-                                      :continuation :more)]]]
+                                      :continuation :more
+                                      :stop-reason nil)]]]
       (is (= :invalid-secondary-candidate-scan
              (:type (error-data #(sec/validate-candidate-scan pages))))
           (pr-str pages)))))
@@ -144,7 +163,8 @@
                                     :recall :complete
                                     :ordering :none
                                     :exhausted? true
-                                    :continuation nil})]
+                                    :continuation nil
+                                    :stop-reason :source-exhausted})]
     (doseq [request [nil {} {:limit 0} {:limit -1} {:limit 1.5}]]
       (is (= :invalid-secondary-candidate-request
              (:type (error-data
@@ -161,7 +181,8 @@
               :recall :complete
               :ordering :none
               :exhausted? true
-              :continuation nil})]
+              :continuation nil
+              :stop-reason :source-exhausted})]
     (is (= :invalid-secondary-candidate-page
            (:type (error-data
                    #(sec/candidate-page
@@ -174,7 +195,8 @@
                 :recall :complete
                 :ordering :none
                 :exhausted? true
-                :continuation nil}
+                :continuation nil
+                :stop-reason :source-exhausted}
         idx (candidate-index calls result)
         base (db/empty-db {:idx/search {:db.secondary/status :ready}})]
     (doseq [status [:building :disabled :failed]]

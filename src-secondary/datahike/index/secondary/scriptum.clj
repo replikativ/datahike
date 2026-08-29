@@ -482,7 +482,8 @@
               ordering (or (:ordering query-spec) :exact)]
           (if-not snapshot
             {:candidates [] :precision precision :recall recall
-             :ordering ordering :exhausted? true :continuation nil}
+             :ordering ordering :exhausted? true :continuation nil
+             :stop-reason :source-exhausted}
             (let [page (sc/candidate-page
                       snapshot (query->lucene query-spec)
                       {:page-size (:limit page-request)
@@ -505,7 +506,8 @@
              :recall recall
              :ordering ordering
              :exhausted? (:exhausted? page)
-             :continuation (:continuation page)}))))
+             :continuation (:continuation page)
+             :stop-reason (when (:exhausted? page) :source-exhausted)}))))
 
       sec/ISecondaryScannable
       (-sec-value [_ attr eid]

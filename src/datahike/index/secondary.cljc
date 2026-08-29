@@ -81,6 +81,8 @@
      :ordering      :exact, :approximate, or :none
      :exhausted?    boolean
      :continuation  opaque token when more pages remain, nil when exhausted
+     :stop-reason   nil while resumable; a standard reason when exhausted
+     :stats         optional non-negative numeric scan counters
 
    A candidate map contains at least `:entity-id` and `:attribute`.  Those two
    fields identify the primary datoms that core must inspect for an exact
@@ -97,9 +99,22 @@
     "Return one candidate page. `page-request` contains a positive `:limit`
      and optionally the opaque `:continuation` returned by the previous page."))
 
+(defprotocol ISecondaryCandidateScanLifecycle
+  "Optional lifecycle hook for candidate continuations that pin resources."
+  (-close-candidate-scan [this continuation]
+    "Cancel an unfinished continuation. Must be idempotent."))
+
 (def ^:private candidate-precisions #{:exact :recheck})
 (def ^:private candidate-recalls #{:complete :approximate})
 (def ^:private candidate-orderings #{:exact :approximate :none})
+(def ^:private candidate-stop-reasons
+  #{:source-exhausted
+    :fixed-candidate-set
+    :frontier-empty
+    :visited-budget
+    :distance-computation-budget
+    :memory-budget
+    :timeout})
 
 (defn candidate-scannable?
   "Whether `index` implements the optional paged candidate contract."
@@ -135,7 +150,8 @@
   (when-not (map? page)
     (invalid-candidate-page! "A secondary candidate page must be a map."
                              {:page page}))
-  (let [{:keys [candidates precision recall ordering exhausted? continuation]}
+  (let [{:keys [candidates precision recall ordering exhausted? continuation
+                stop-reason stats]}
         page]
     (when-not (sequential? candidates)
       (invalid-candidate-page! "Secondary candidate :candidates must be sequential."
@@ -158,6 +174,20 @@
     (when (and (not exhausted?) (nil? continuation))
       (invalid-candidate-page! "A non-exhausted candidate page must have a continuation."
                                {:page page}))
+    (when-not (if exhausted?
+                (contains? candidate-stop-reasons stop-reason)
+                (nil? stop-reason))
+      (invalid-candidate-page!
+       "An exhausted candidate page requires a standard :stop-reason; a resumable page must not have one."
+       {:page page :stop-reason stop-reason}))
+    (when (and (some? stats)
+               (not (and (map? stats)
+                         (every? (fn [[_ value]]
+                                   (and (number? value) (not (neg? value))))
+                                 stats))))
+      (invalid-candidate-page!
+       "Secondary candidate :stats must contain only non-negative numeric counters."
+       {:page page :stats stats}))
     (doseq [candidate candidates]
       (when-not (and (map? candidate)
                      (integer? (:entity-id candidate))
@@ -245,6 +275,14 @@
        "A secondary candidate page cannot exceed the requested :limit."
        {:page page :request page-request}))
     page))
+
+(defn close-candidate-scan!
+  "Cancel an unfinished candidate continuation when its adapter owns resources."
+  [index continuation]
+  (when (and continuation
+             (satisfies? ISecondaryCandidateScanLifecycle index))
+    (-close-candidate-scan index continuation))
+  nil)
 
 (defprotocol ISecondaryScannable
   "Optional: enumerate what this index holds, so a BACKUP can carry it.

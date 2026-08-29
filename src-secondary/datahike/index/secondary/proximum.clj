@@ -423,19 +423,23 @@
 
   sec/ISecondaryCandidateScan
   (-candidate-page [_ query-spec entity-filter page-request]
-    ;; Freeze one ANN result set on the first page. A continuation owns that
-    ;; immutable set, so resuming never observes another Proximum generation.
-    ;; Exhaustion covers the discovered HNSW candidates, not the full corpus:
-    ;; exact primary recheck can validate returned rows, but cannot repair ANN
-    ;; false negatives, hence :recall remains :approximate.
+    ;; A continuation pins one immutable Proximum generation. Materialized mode
+    ;; pages a fixed ANN result set; iterative mode retains its HNSW frontier and
+    ;; resumes traversal without observing a newer generation. Exhaustion covers
+    ;; the discovered HNSW candidates, not the full corpus: exact primary recheck
+    ;; can validate returned rows, but cannot repair ANN false negatives, hence
+    ;; :recall remains :approximate.
     (if-not generation
       {:candidates []
        :precision :recheck
        :recall :approximate
        :ordering :exact
        :exhausted? true
-       :continuation nil}
-      (let [{:keys [vector candidate-limit ef query-id]} query-spec
+       :continuation nil
+       :stop-reason :source-exhausted}
+      (let [{:keys [vector candidate-limit ef query-id scan-mode strict-order?
+                    max-visited max-distance-computations timeout-ms
+                    max-frontier-nodes]} query-spec
             page-limit (:limit page-request)
             scan (or (:continuation page-request)
                      (prox/start-candidate-scan
@@ -447,8 +451,17 @@
                                ;; Proximum branch commit. Their immutable id is
                                ;; the owning snapshot identity for this cursor.
                                :primary-snapshot-id (gen/generation-id generation)}
+                        scan-mode (assoc :mode scan-mode)
+                        (some? strict-order?) (assoc :strict-order? strict-order?)
                         ef (assoc :ef ef)
-                        query-id (assoc :query-id query-id))))
+                        query-id (assoc :query-id query-id)
+                        max-visited (assoc :max-visited max-visited)
+                        max-distance-computations
+                        (assoc :max-distance-computations
+                               max-distance-computations)
+                        timeout-ms (assoc :timeout-ms timeout-ms)
+                        max-frontier-nodes
+                        (assoc :max-frontier-nodes max-frontier-nodes))))
             page (prox/candidate-page scan)
             attr (first attrs)
             candidates
@@ -465,9 +478,20 @@
         {:candidates candidates
          :precision :recheck
          :recall :approximate
-         :ordering :exact
+         :ordering (if (= :approximate (get-in page [:metadata :ordering]))
+                     :approximate
+                     :exact)
          :exhausted? (:exhausted? page)
-         :continuation (:continuation page)})))
+         :continuation (:continuation page)
+         :stop-reason (:stop-reason page)
+         :stats (select-keys (:metadata page)
+                             [:visited-count :distance-computations
+                              :emitted-count :strict-order-drops
+                              :search-nanos])})))
+
+  sec/ISecondaryCandidateScanLifecycle
+  (-close-candidate-scan [_ continuation]
+    (prox/close-candidate-scan! continuation))
 
   sec/ITransientSecondaryIndex
   (-as-transient [this]

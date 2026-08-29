@@ -577,7 +577,8 @@
          :recall :complete
          :ordering :exact
          :exhausted? true
-         :continuation nil}
+         :continuation nil
+         :stop-reason :source-exhausted}
         (let [col-key (attr-col-key attribute)
               ;; Fetch one look-ahead row so exhaustion is unambiguous. The
               ;; continuation is an offset into this immutable generation,
@@ -606,7 +607,8 @@
            :recall :complete
            :ordering :exact
            :exhausted? (not more?)
-           :continuation (when more? (+ offset limit))}))))
+           :continuation (when more? (+ offset limit))
+           :stop-reason (when-not more? :source-exhausted)}))))
 
   (-indexed-attrs [_] attrs)
 
