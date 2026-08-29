@@ -8,6 +8,37 @@ As a library, Datahike does not force any logging implementation on users. By de
 logs to stdout via its built-in console backend. Your application can replace this with any
 backend (Timbre, SLF4J, etc.) by calling `trove/set-log-fn!`.
 
+## Standalone HTTP server
+
+The standalone server artifact configures both Datahike and third-party logs. Its default is
+human-readable logs at `:info`, written only to stdout. Set `:level` in the server EDN file,
+`DATAHIKE_LEVEL`, or `--level`; normal server precedence applies. Set
+`DATAHIKE_LOG_FORMAT=json`, `:log-format :json`, or `--log-format json` for one JSON object per
+line. JSON Datahike events retain the event ID, source coordinates, message, structured data,
+and exception details.
+
+Container deployments should let the runtime collect stdout. The server never creates a log
+file by default. An operator who explicitly needs one can supply a Logback configuration with
+`-Dlogback.configurationFile=/etc/datahike/logback.xml`. An external configuration owns the
+appenders and layout; the resolved Datahike level still sets the root logger. Datahike events
+are routed through SLF4J in this mode so the custom appender receives the complete process log.
+For example:
+
+```xml
+<configuration>
+  <appender name="FILE" class="ch.qos.logback.core.FileAppender">
+    <file>/var/log/datahike/server.log</file>
+    <append>true</append>
+    <encoder>
+      <pattern>%date{ISO8601,UTC} %-5level [%thread] %logger %kvp - %msg%n%ex</pattern>
+    </encoder>
+  </appender>
+  <root level="INFO">
+    <appender-ref ref="FILE"/>
+  </root>
+</configuration>
+```
+
 ## Structured Logging
 
 Every log call in Datahike uses a **namespaced keyword ID** as its first argument, following

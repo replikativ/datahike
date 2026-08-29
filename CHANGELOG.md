@@ -6,6 +6,13 @@ When something is added, it's typically marked *Experimental*. When the API cont
 
 ## 0.8
 
+- **The standalone HTTP server owns production logging.** Its artifact now
+  configures Datahike and third-party SLF4J logs at one runtime level and sends
+  them to stdout. `:log-format :json`, `DATAHIKE_LOG_FORMAT=json`, or
+  `--log-format json` emits one structured JSON object per line; text remains
+  the default. Operators can explicitly take over appenders and destinations
+  with `-Dlogback.configurationFile=...`; the server never creates log files by
+  default.
 - **Runtime defaults no longer collect the entire process environment.**
   Datahike replaced Environ with a small reader for the database defaults it
   actually supports. Environment variables and JVM properties keep their

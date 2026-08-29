@@ -156,9 +156,11 @@
                                metosin/reitit                {:mvn/version "0.10.1"}
                                ring-cors/ring-cors           {:mvn/version "0.1.13"}
                                org.clojure/tools.cli         {:mvn/version "1.4.256"}
+                               ch.qos.logback/logback-classic {:mvn/version "1.5.32"}
 
                                ;; secondary index integrations (for testing)
-                               org.replikativ/proximum       {:mvn/version "0.1.36"}
+                               org.replikativ/proximum       {:mvn/version "0.1.36"
+                                                               :exclusions [org.slf4j/slf4j-simple]}
                                org.replikativ/scriptum       {:mvn/version "0.1.30"}
                                org.replikativ/stratum        {:mvn/version "0.3.82"}
 
@@ -218,7 +220,7 @@
                                       ring-cors/ring-cors     {:mvn/version "0.1.13"}
                                       nrepl/bencode           {:mvn/version "1.2.0"}
                                       org.clojure/tools.cli   {:mvn/version "1.4.256"}
-                                      org.slf4j/slf4j-simple  {:mvn/version "2.0.18"}
+                                      ch.qos.logback/logback-classic {:mvn/version "1.5.32"}
 
                                       ;; Batteries included for the standalone server. File,
                                       ;; memory and tiered ship with Konserve itself. GCS stays
@@ -237,7 +239,7 @@
                                       {:mvn/version "0.1.29"}
                                       org.postgresql/postgresql
                                       {:mvn/version "42.7.13"}}
-                         :main-opts ["-m" "datahike.http.server"]}
+                         :main-opts ["-m" "datahike.http.main"]}
 
            ;; konserve-s3 is here for the same reason it is in :native-cli, and it
            ;; is NOT optional: `datahike.cli` requires `konserve-s3.core`

@@ -308,22 +308,25 @@ The old positional `path/to/config.edn` form remains supported. Run with
 `--help` for all deployment overrides. Configuration precedence is explicit
 CLI flags, then `DATAHIKE_*` environment variables, then the EDN file. The
 supported environment variables are `DATAHIKE_PORT`, `DATAHIKE_HOST`,
-`DATAHIKE_TOKEN`, `DATAHIKE_DEV_MODE`, `DATAHIKE_LEVEL`, and
-`DATAHIKE_AUTH_DB_PATH`. `DATAHIKE_TOKEN_FILE` reads the token from a Docker or
+`DATAHIKE_TOKEN`, `DATAHIKE_DEV_MODE`, `DATAHIKE_LEVEL`,
+`DATAHIKE_LOG_FORMAT`, and `DATAHIKE_AUTH_DB_PATH`. Log format is `text` by
+default and accepts `json`. `DATAHIKE_TOKEN_FILE` reads the token from a Docker or
 Kubernetes secret mount without putting it in the process environment. CLI
 uses the corresponding `--port`, `--host`, `--token`, `--dev-mode`, `--level`,
-`--auth-db-path`, and `--token-file` options.
+`--log-format`, `--auth-db-path`, and `--token-file` options.
 
 The edn configuration file looks like:
 
 ```clojure
 {:port     4444
  :level    :debug
+ :log-format :json
  :dev-mode true
  :token    "securerandompassword"}
 ```
 
-Port sets the `port` to run the HTTP server under, `level` sets the log-level.
+Port sets the `port` to run the HTTP server under, `level` sets the log-level,
+and `log-format` selects human-readable `:text` or newline-delimited `:json`.
 `dev-mode` deactivates authentication during development and if `token` is
 provided then you need to send this token as the HTTP header "token" to
 authenticate.
