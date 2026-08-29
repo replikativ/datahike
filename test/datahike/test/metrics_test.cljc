@@ -118,7 +118,11 @@
            (vreset! @#'query/plan-cache (lru/lru query/lru-cache-size))
            (fresh-registry!)
 
-           (binding [dhm/*query-metrics-sample-every* 1]
+           ;; This assertion is specifically about the planner cache. CI also
+           ;; runs the whole suite with the planner disabled globally to cover
+           ;; the base engine, so pin the subject of this test explicitly.
+           (binding [query/*disable-planner* false
+                     dhm/*query-metrics-sample-every* 1]
              (is (= #{["Ada"]} (d/q qform @conn)))
              (is (= #{["Ada"]} (d/q qform @conn)))
 
