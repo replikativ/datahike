@@ -527,7 +527,8 @@
 (deftype StratumIndex [dataset    ;; StratumDataset or nil
                        attrs      ;; set of datahike attribute idents being indexed
                        attr-refs  ;; set of numeric refs (for attr-refs mode) or nil
-                       config]    ;; user config map
+                       config     ;; user config map
+                       scan-id]   ;; exact identity for unsealed in-memory generations
 
   sec/ISecondaryIndex
   (-search [_ query-spec entity-filter]
@@ -575,8 +576,35 @@
   sec/ISecondaryCandidateScan
   (-candidate-page [_ query-spec entity-filter page-request]
     (let [{:keys [attribute direction where]} query-spec
+          direction (or direction :asc)
           limit (long (:limit page-request))
-          offset (long (or (:continuation page-request) 0))]
+          entity-ids (when entity-filter
+                       (vec (es/entity-bitset-seq entity-filter)))
+          scan-identity
+          {:version 1
+           :generation (if-let [generation-id (some-> dataset sd/generation-id)]
+                         [:dataset generation-id]
+                         [:instance scan-id])
+           :attribute attribute
+           :direction direction
+           :where (vec where)
+           ;; Exact rather than hashed: a collision must never change which
+           ;; rows an OFFSET continuation denotes.
+           :entity-ids entity-ids}
+          continuation (:continuation page-request)
+          _ (when (and continuation
+                       (or (not (map? continuation))
+                           (not= 1 (:version continuation))
+                           (not= scan-identity (:scan-identity continuation))
+                           (not (and (integer? (:offset continuation))
+                                     (not (neg? (:offset continuation)))))))
+              (throw
+               (ex-info
+                "Stratum candidate continuation does not belong to this generation/query."
+                {:type :secondary/stratum-continuation-mismatch
+                 :expected scan-identity
+                 :continuation continuation})))
+          offset (long (or (:offset continuation) 0))]
       (if (or (nil? dataset) (not (contains? attrs attribute)))
         {:candidates []
          :precision :exact
@@ -596,7 +624,11 @@
               ;; hence stable for the lifetime of the scan.
               rows (st/q (cond-> {:from dataset
                                   :select [:eid col-key]
-                                  :order [[col-key (or direction :asc)]]
+                                  ;; OFFSET pagination needs one total order.
+                                  ;; SQL leaves equal primary keys unspecified;
+                                  ;; eid is the immutable, unique tie-break that
+                                  ;; makes every page a slice of the same stream.
+                                  :order [[col-key direction] [:eid :asc]]
                                   :limit (inc limit)
                                   :offset offset}
                            where (assoc :where where)))
@@ -612,7 +644,10 @@
            :recall :complete
            :ordering :exact
            :exhausted? (not more?)
-           :continuation (when more? (+ offset limit))
+           :continuation (when more?
+                           {:version 1
+                            :scan-identity scan-identity
+                            :offset (+ offset limit)})
            :stop-reason (when-not more? :source-exhausted)}))))
 
   (-indexed-attrs [_] attrs)
@@ -676,7 +711,7 @@
                        config)]
       (if (and (= new-attr-refs attr-refs) (= new-config config))
         this
-        (StratumIndex. dataset attrs new-attr-refs new-config))))
+        (StratumIndex. dataset attrs new-attr-refs new-config scan-id))))
 
   sec/ISecondaryWarmable
   (-sec-warm! [_ opts]
@@ -703,7 +738,7 @@
                       (and (sd/generation-id dataset)
                            (not (sd/dirty? dataset))) dataset
                       :else (sd/seal-generation! dataset store))
-          prepared-index (StratumIndex. sealed-ds attrs attr-refs config)]
+          prepared-index (StratumIndex. sealed-ds attrs attr-refs config scan-id)]
       (delivered (->StratumPreparation prepared-index))))
 
   (-sec-restore [_ store key-map]
@@ -713,7 +748,7 @@
     (let [{:keys [dataset-commit-id]}
           (validate-stratum-generation-key-map key-map)
           restored-ds (sd/open-generation store dataset-commit-id)]
-      (StratumIndex. restored-ds attrs attr-refs config)))
+      (StratumIndex. restored-ds attrs attr-refs config (random-uuid))))
 
   audit/IAuditable
   (-merkle-root [_]
@@ -973,7 +1008,7 @@
    ^java.util.HashMap pending-retracts tx-meta]
   (let [specs (pending->specs pending-adds pending-retracts)]
     (if (empty? specs)
-      (StratumIndex. dataset attrs attr-refs config)
+      (StratumIndex. dataset attrs attr-refs config (random-uuid))
       (let [;; An EMPTY dataset is built too, not upserted into. `build-initial-dataset`
             ;; makes one at index declaration whose columns are typed before any
             ;; value has been seen, so appending a string into a column guessed
@@ -986,7 +1021,8 @@
                  (-> dataset transient
                      (sd/upsert! {:by :eid :rows specs} (stratum-tx-meta config tx-meta))
                      persistent!))]
-        (StratumIndex. (prune-valueless-rows ds attrs config) attrs attr-refs config)))))
+        (StratumIndex. (prune-valueless-rows ds attrs config) attrs attr-refs config
+                       (random-uuid))))))
 
 ;; ---------------------------------------------------------------------------
 ;; Registration
@@ -1001,7 +1037,8 @@
            (StratumIndex. (build-initial-dataset db attrs config)
                           attrs
                           attr-refs
-                          config)))
+                          config
+                          (random-uuid))))
        :storage-owner :datahike
        :validate-generation validate-stratum-generation-key-map
        :mark-generation

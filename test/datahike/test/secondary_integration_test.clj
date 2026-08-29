@@ -828,6 +828,86 @@
                (mapv (juxt :entity-id :value) (:candidates filtered)))
             "Stratum applies entity filters before exact top-N")))))
 
+(deftest stratum-candidate-pages-have-one-total-order
+  (let [idx (sec/create-index :stratum
+                              {:attrs #{:item/price :item/other}
+                               :ident-ref-map {:item/price 42
+                                               :item/other 43}}
+                              nil)
+        transient (sec/-as-transient idx)]
+    ;; Four equal keys exercise the otherwise-unspecified primary-key ties. The
+    ;; fifth row carries Stratum's nullable-int64 sentinel so NULL itself crosses
+    ;; a one-row page boundary.
+    (doseq [eid (range 1 5)]
+      (sec/-transact! transient
+                      {:datom (datahike.datom/datom eid 42 7)
+                       :added? true}))
+    (sec/-transact! transient
+                    {:datom (datahike.datom/datom 5 42 Long/MIN_VALUE)
+                     :added? true})
+    (sec/-transact! transient
+                    {:datom (datahike.datom/datom 5 43 99)
+                     :added? true})
+    (let [persistent (sec/-persistent! transient)
+          scan (fn [spec]
+                 (loop [request {:limit 1}
+                        pages []]
+                   (let [page (sec/-candidate-page persistent spec nil request)
+                         pages (conj pages page)]
+                     (if (:exhausted? page)
+                       (sec/validate-candidate-scan pages)
+                       (recur {:limit 1
+                               :continuation (:continuation page)}
+                              pages)))))
+          asc-pages (scan {:attribute :item/price :direction :asc})
+          desc-pages (scan {:attribute :item/price :direction :desc})]
+      (is (= [[1 7] [2 7] [3 7] [4 7] [5 nil]]
+             (mapv (juxt :entity-id :value)
+                   (mapcat :candidates asc-pages)))
+          "equal primary keys use eid ASC and NULL remains last for ASC")
+      (is (= [[5 nil] [1 7] [2 7] [3 7] [4 7]]
+             (mapv (juxt :entity-id :value)
+                   (mapcat :candidates desc-pages)))
+          "NULL crosses the first DESC page boundary without skipping a row")
+      (let [page-1 (sec/-candidate-page
+                    persistent {:attribute :item/price :direction :asc}
+                    nil {:limit 1})
+            continuation (:continuation page-1)
+            failure-data
+            (fn [index spec entity-filter]
+              (try
+                (sec/-candidate-page index spec entity-filter
+                                     {:limit 1 :continuation continuation})
+                nil
+                (catch clojure.lang.ExceptionInfo e
+                  (ex-data e))))]
+        (is (= :secondary/stratum-continuation-mismatch
+               (:type (failure-data
+                       persistent
+                       {:attribute :item/price :direction :desc}
+                       nil)))
+            "a continuation cannot be spliced into a different query")
+        (is (= :secondary/stratum-continuation-mismatch
+               (:type (failure-data
+                       persistent
+                       {:attribute :item/price :direction :asc}
+                       (es/entity-bitset-from-longs [1 2 3 4 5]))))
+            "a continuation cannot be spliced into another candidate universe")
+        (let [next-transient (sec/-as-transient persistent)]
+          (sec/-transact! next-transient
+                          {:datom (datahike.datom/datom 6 42 7)
+                           :added? true})
+          (sec/-transact! next-transient
+                          {:datom (datahike.datom/datom 6 43 99)
+                           :added? true})
+          (let [next-generation (sec/-persistent! next-transient)]
+            (is (= :secondary/stratum-continuation-mismatch
+                   (:type (failure-data
+                           next-generation
+                           {:attribute :item/price :direction :asc}
+                           nil)))
+                "an offset continuation is bound to its immutable generation")))))))
+
 (deftest secondary-declaration-removal-is-an-atomic-root-transition
   (let [cfg {:store {:backend :memory :id (random-uuid)}
              :writer {:backend :self :writer-ownership :exclusive}
