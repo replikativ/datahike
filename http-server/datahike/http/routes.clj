@@ -206,9 +206,14 @@
    server's own."
   [{:keys [leases]} conn]
   (when-let [id (try (conn-id (:config @conn)) (catch Exception _ nil))]
-    (when (pos? (get-in @leases [id :api] 0))
-      (swap! leases update-in [id :api] dec)
-      (api/release conn))))
+    ;; Check and decrement in one swap: two releases racing on the last
+    ;; granted lease must not both succeed.
+    (let [[before after] (swap-vals! leases
+                                     (fn [m] (if (pos? (get-in m [id :api] 0))
+                                               (update-in m [id :api] dec)
+                                               m)))]
+      (when (not= before after)
+        (api/release conn)))))
 
 (defn release-all!
   "Release every connection in the registry — the routes' and, if the host
@@ -232,21 +237,26 @@
              :keys [headers params method]} request]
         (log/trace :datahike/http-handler-request {:handler f :op op})
         (or (authorize config request op body)
-            (let [ret-body
+            ;; The server IS the writer: a config's :writer names a client's
+            ;; way to reach one (possibly this very server, which would loop
+            ;; back over HTTP into a lock this route holds), never the
+            ;; server's own. :remote-peer likewise.
+            (let [local    (fn [cfg] (dissoc cfg :remote-peer :writer))
+                  ret-body
                   (cond (= f #'api/create-database)
                         ;; remove remote-peer and re-add
                         (assoc
-                         (apply f (dissoc (first body) :remote-peer) (rest body))
+                         (apply f (local (first body)) (rest body))
                          :remote-peer (:remote-peer (first body)))
 
                         (= f #'api/delete-database)
                         (with-exclusive state
                           (fn []
                             (swap! (:leases state) dissoc (conn-id (first body)))
-                            (apply f (dissoc (first body) :remote-peer) (rest body))))
+                            (apply f (local (first body)) (rest body))))
 
                         (= f #'api/connect)
-                        (granted! state (apply f body))
+                        (granted! state (apply f (cons (local (first body)) (rest body))))
 
                         ;; One caller releases one lease of its own.
                         ;; `release-all?` would close a connection the host

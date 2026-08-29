@@ -243,6 +243,22 @@
           (dotimes [_ 5] (client/q '[:find ?n :where [?e :name ?n]] @api-conn))
           (is (= before (get-in @connections [[store-id :db] :count])))
           (client/release api-conn)))
+      (testing "two releases racing on one granted lease give back one"
+        (let [api-conn (client/connect (assoc (dissoc cfg :writer) :remote-peer peer))]
+          (dotimes [_ 50]
+            (client/connect (assoc (dissoc cfg :writer) :remote-peer peer))
+            (let [fs (doall (repeatedly 2 #(future (client/release api-conn))))]
+              (run! deref fs))
+            (is (= 1 (get-in @connections [[store-id :db] :count]))))
+          (client/release api-conn)))
+      (testing "deleting a database whose config names this server as its writer does not deadlock"
+        (let [cfg2 (assoc (file-config (random-uuid))
+                          :writer {:backend :datahike-server :url url :token token}
+                          :remote-peer peer)]
+          (client/create-database cfg2)
+          (is (= true (client/database-exists? cfg2)))
+          (is (nil? (deref (future (client/delete-database cfg2)) 20000 ::timeout)))
+          (is (false? (client/database-exists? cfg2)))))
       (testing "a rejected writer operation leaves the writer usable"
         (is (instance? Throwable (try @(d/load-entities conn [[1 :name "x" 1 true]]) (catch Exception e e))))
         (is (some? (:db-after (d/transact conn [{:name "after"}])))))
