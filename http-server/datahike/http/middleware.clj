@@ -14,6 +14,10 @@
            (re-find #"(?i)^token\s+(\S+)\s*$")
            second))
 
+(defn- same-secret? [^String expected ^String given]
+  (and expected given
+       (java.security.MessageDigest/isEqual (.getBytes expected "UTF-8") (.getBytes given "UTF-8"))))
+
 (defn validators
   "The authentication chain `config` describes, each a
    `(fn [request] -> principal | nil)` — the shape kabel's
@@ -27,17 +31,25 @@
      the principal is `:token-subject`, \"root\" by default.
    - `:validator` — yours.
 
-   A principal is a map with `:sub`, the subject's id."
+   A principal is a map with `:sub`, the subject's id. Subjects share one
+   namespace, so the token's subject is reserved: a `:validator` principal
+   claiming it is refused rather than let an outside identity become the
+   break-glass one."
   [{:keys [dev-mode auth token token-subject validator]}]
-  (remove nil?
-          [(when dev-mode
-             (constantly {:sub "dev" :auth :dev-mode}))
-           (when (= :upstream auth)
-             (fn [request] (or (:datahike/principal request) {:sub "upstream" :auth :upstream})))
-           (when token
-             (fn [request] (when (= token (bearer request))
-                             {:sub (or token-subject "root") :auth :token})))
-           validator]))
+  (let [token-subject (or token-subject "root")]
+    (remove nil?
+            [(when dev-mode
+               (constantly {:sub "dev" :auth :dev-mode}))
+             (when (= :upstream auth)
+               (fn [request] (or (:datahike/principal request) {:sub "upstream" :auth :upstream})))
+             (when token
+               (fn [request] (when (same-secret? token (bearer request))
+                               {:sub token-subject :auth :token})))
+             (when validator
+               (fn [request]
+                 (when-let [principal (validator request)]
+                   (when-not (= token-subject (:sub principal))
+                     (assoc principal :auth :validator)))))])))
 
 (defn authenticate
   "The principal the first accepting validator returns, or nil."

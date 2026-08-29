@@ -107,7 +107,7 @@ the HTTP API and a kabel WebSocket peer.
 | config | who gets in |
 |---|---|
 | `:token "…"` | Whoever sends `authorization: token <token>`, as the principal `:token-subject` (`"root"` by default). The shared secret; keep it in an environment variable or a secrets manager. |
-| `:validator f` | Whoever `f` accepts. JWT, JWKS-backed OIDC (WorkOS, Clerk, Auth0), mTLS-derived identity — `kabel.auth.jwt` has the JWT ones ready. |
+| `:validator f` | Whoever `f` accepts. JWT, JWKS-backed OIDC (WorkOS, Clerk, Auth0), mTLS-derived identity — `kabel.auth.jwt` has the JWT ones ready. A principal claiming the token's subject is refused: subjects share one namespace and that one is reserved. |
 | `:auth :upstream` | Everyone, as the `:datahike/principal` your own middleware put on the request (or `{:sub "upstream"}`). For a host that authenticates before the request reaches Datahike. Only ever behind such middleware. |
 | `:dev-mode true` | Everyone, as `{:sub "dev"}`. Local development only; never deploy with it. |
 
@@ -247,7 +247,9 @@ Two rules that follow from sharing:
   first use, so the connection and its writer survive between requests; each
   request pins the connection for its duration and lets go. `connect` and
   `release` through the API count leases exactly as the API does for a local
-  caller; decoding a database handle takes none. Call
+  caller — one lease per call; a client's `release-all?` is ignored, since it
+  would close a connection the host and other callers share — and decoding a
+  database handle takes none. Call
   `(routes/release-all! handler)` (or with the atom) when your service shuts
   down.
 - **Deletion is process-wide.** `delete-database` through the API releases

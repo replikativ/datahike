@@ -221,6 +221,11 @@
       (testing "a rejected writer operation leaves the writer usable"
         (is (instance? Throwable (try @(d/load-entities conn [[1 :name "x" 1 true]]) (catch Exception e e))))
         (is (some? (:db-after (d/transact conn [{:name "after"}])))))
+      (testing "a client's release never closes the shared connection"
+        (let [api-conn (client/connect (assoc (dissoc cfg :writer) :remote-peer peer))]
+          (client/release api-conn true)
+          (is (some? (get-in @connections [[store-id :db] :conn]))
+              "release-all? from a client is ignored: the base lease stays")))
       (testing "release-all! empties the registry it is given, handler or atom"
         (routes/release-all! h)
         (is (empty? (filter (comp :conn val) @connections))))
@@ -253,6 +258,13 @@
             (is (= #{["Ada"]} (client/q '[:find ?n :where [?e :name ?n]] @bob)))
             (is (= :datahike.http/forbidden (:type (ex-data e))))
             (is (= :transact (:op (ex-data e))))))
+        (testing "a validator principal may not claim the token's subject"
+          (let [h2 (routes/handler {:token token :validator (fn [_] {:sub "root"})})]
+            (is (= 401 (:status (h2 {:request-method :post :uri "/transact" :headers {"authorization" "token whatever"}}))))
+            (is (not= 401 (:status (h2 {:request-method :post :uri "/transact"
+                                        :headers {"authorization" (str "token " token)}
+                                        :body (java.io.ByteArrayInputStream. (byte-array 0))})))
+                "the token itself still authenticates (and then fails coercion further in)")))
         (testing "a token no validator accepts is 401"
           (is (= 401 (:status (http/post (str url "/transact")
                                          {:throw false :headers {"authorization" "token nobody"} :body "x"}))))))

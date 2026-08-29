@@ -43,7 +43,7 @@
                   (update data :body #(edn/read-string {:readers remote/edn-readers} %))]
               (throw (ex-info msg new-data)))))
         response            (:body response)]
-    (log/trace :datahike/http-response {:response response})
+    (log/trace :datahike/http-response {:end-point end-point})
     (edn/read-string {:readers remote/edn-readers} response)))
 
 (defn request-transit
@@ -85,7 +85,7 @@
                (throw (ex-info msg new-data)))))
          response (:body response)
          response (transit/read (transit/reader response :json {:handlers read-handlers}))]
-     (log/trace :datahike/http-response {:response response})
+     (log/trace :datahike/http-response {:end-point end-point})
      response)))
 
 ;; One registry per process; immutable once built. Private: its server twin
@@ -150,7 +150,7 @@
          ;; writer's `:db-after` came back unable to make a remote call.
          response (binding [remote/*remote-peer* remote-peer]
                     (boring/decode (:body response) (rcbor/decode-opts registry)))]
-     (log/trace :datahike/http-response {:response response})
+     (log/trace :datahike/http-response {:end-point end-point})
      response)))
 
 (defn request-json
@@ -189,7 +189,7 @@
                                (or (:ex-data (:body new-data)) new-data))))))
          response (:body response)
          response (j/read-value response mapper)]
-     (log/trace :datahike/http-response {:response response})
+     (log/trace :datahike/http-response {:end-point end-point})
      response)))
 
 (defn request-json-raw [method end-point remote-peer data]
@@ -213,7 +213,7 @@
                        (when (= method :get)
                          {:query-params {"args-id" (uuid data)}})))
         response (slurp (:body response))]
-    (log/trace :datahike/http-response {:response response})
+    (log/trace :datahike/http-response {:end-point end-point})
     response))
 
 (defn get-remote [args]

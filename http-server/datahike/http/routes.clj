@@ -188,6 +188,11 @@
                         (= f #'api/delete-database)
                         (apply f (dissoc (first body) :remote-peer) (rest body))
 
+                        ;; One caller releases one lease. `release-all?` would
+                        ;; close a connection the host and other callers share.
+                        (= f #'api/release)
+                        (f (first body))
+
                         :else
                         (apply f body))]
               (merge
