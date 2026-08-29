@@ -4,6 +4,7 @@
    eacl-backed permissions. Embedding hosts want `datahike.http.routes`."
   (:require
    [datahike.http.backends]
+   [datahike.http.config :as server-config]
    [datahike.metrics :as metrics]
    [datahike.http.permissions :as permissions]
    [datahike.http.routes :as routes]
@@ -202,7 +203,8 @@
   "Start Jetty and acquire the standalone server's shared Konserve metric sink
    unless `:metrics` is false. `stop-server` releases both."
   [config]
-  (let [connections (atom {})
+  (let [config      (server-config/assert-safe-bind! config)
+        connections (atom {})
         app         (app config connections)
         config      (::config (meta app))
         metrics-lease (when-not (false? (:metrics config))

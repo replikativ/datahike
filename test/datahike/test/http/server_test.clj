@@ -100,6 +100,16 @@
       (finally
         (stop-server server)))))
 
+(deftest unsafe-bind-is-refused-before-jetty
+  ;; The invalid port makes this safe even if the guard regresses: Jetty cannot
+  ;; leave a listening server behind. The asserted error type proves the bind
+  ;; guard, rather than Jetty's validation, ran first.
+  (let [error (try
+                (start-server {:host "0.0.0.0" :port -1 :join? false})
+                nil
+                (catch clojure.lang.ExceptionInfo e e))]
+    (is (= :datahike.http/unsafe-bind (:type (ex-data error))))))
+
 (deftest test-server
   (testing "Test transit binding."
     (let [port 23189]
@@ -167,13 +177,14 @@
   (testing "Dev-mode overrides password authentication."
     (let [port   23195
           server (start-server {:port     port
+                                :host     "127.0.0.1"
                                 :join?    false
                                 :dev-mode true
                                 :token    "securerandompassword"})
           cfg {:store {:backend :memory :id #uuid "de110000-0000-0000-0000-000000000004"}
                :schema-flexibility :read
                :remote-peer        {:backend :datahike-server
-                                    :url    (str "http://localhost:" port)
+                                    :url    (str "http://127.0.0.1:" port)
                                     :token  "wrong"
                                     :format :edn}}]
       (try
@@ -187,11 +198,12 @@
   (testing "Direct JSON interaction"
     (let [port   23196
           server (start-server {:port     port
+                                :host     "127.0.0.1"
                                 :join?    false
                                 :dev-mode true
                                 :token    "securerandompassword"})
           remote {:backend :datahike-server
-                  :url     (str "http://localhost:" port)
+                  :url     (str "http://127.0.0.1:" port)
                   :token   "securerandompassword"
                   :format  :json}
           _ (try (api/request-json-raw :post "delete-database" remote

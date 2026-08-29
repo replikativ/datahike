@@ -292,6 +292,12 @@ Checklist: a token or validator set · `:dev-mode` false · secrets in
 env/secret store · TLS at the edge · `release-all!` on shutdown · `delete`
 granted only to owners who may.
 
+The standalone server enforces the first two items at bind time: without a
+nonblank token or a validator, every resolved bind address must be loopback.
+Missing and wildcard hosts count as public. `:auth :upstream` is valid only for
+an embedded handler behind authentication middleware and does not authorize a
+standalone public bind.
+
 ## Running the standalone server
 
 The server is the same routes with Swagger UI at `/`, `/swagger.json`, CORS
