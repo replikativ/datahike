@@ -13,6 +13,7 @@
    [reitit.swagger-ui :as swagger-ui]
    [ring.middleware.cors :refer [wrap-cors]]
    [datahike.tools :refer [datahike-version]]
+   [konserve.core :as k]
    [konserve.metrics :as konserve-metrics]
    [replikativ.metrics :as registry]
    [replikativ.metrics.jvm :as jvm-metrics]
@@ -23,6 +24,72 @@
 
 (def ^:private prometheus-content-type
   "text/plain; version=0.0.4; charset=utf-8")
+
+(def ^:private plain-text-content-type
+  "text/plain;charset=utf-8")
+
+(def ^:private readiness-probe-key ::readiness-probe)
+
+(defn- text-response [status body]
+  {:status  status
+   :headers {"content-type" plain-text-content-type}
+   ;; Keep format middleware from negotiating or encoding operational text.
+   :body    (java.io.ByteArrayInputStream.
+             (.getBytes ^String body "UTF-8"))})
+
+(defn- probe-connection!
+  "Touch one connection's logical Konserve store without relying on a cached
+   database key. A missing probe key is success: the read itself is the check."
+  [[store-id conn]]
+  (try
+    (let [;; Do not deref the Connection itself: shared writers refresh their
+          ;; branch on deref and may rebuild indices. Read its raw state so the
+          ;; health check performs exactly one cheap, non-mutating store read.
+          db    @(get conn :wrapped-atom)
+          store (:store db)]
+      (k/get store readiness-probe-key nil {:sync? true})
+      true)
+    (catch Throwable e
+      (log/warn :datahike/readiness-probe-failed
+                {:database (some-> store-id str)
+                 ;; Backend exceptions can carry URLs or credentials in their
+                 ;; message/ex-data. Health logs identify the target and error
+                 ;; class without copying those values.
+                 :error-type  (:type (ex-data e))
+                 :error-class (.getName (class e))})
+      false)))
+
+(defn- ready?
+  "Check every store the server currently owns: live API connections and the
+   configured auth database. Do not short-circuit, so one outage does not hide
+   another from the operator logs."
+  [config connections]
+  (let [targets (concat
+                 (for [[[store-id _branch] {:keys [conn]}] @connections
+                       :when conn]
+                   [store-id conn])
+                 (when-let [conn (get config ::permissions/conn)]
+                   [[:auth-db conn]]))]
+    (reduce (fn [ready target]
+              (let [target-ready? (probe-connection! target)]
+                (and ready target-ready?)))
+            true
+            targets)))
+
+(defn- health-routes [config connections]
+  [["/health/live"
+    {:public? true
+     :get {:no-doc    true
+           :metric-op :health
+           :handler   (fn [_] (text-response 200 "live\n"))}}]
+   ["/health/ready"
+    {:public? true
+     :get {:no-doc    true
+           :metric-op :health
+           :handler   (fn [_]
+                        (if (ready? config connections)
+                          (text-response 200 "ready\n")
+                          (text-response 503 "not ready\n")))}}]])
 
 (defn- metrics-route [config connections]
   (when-not (false? (:metrics config))
@@ -63,6 +130,7 @@
         handler (routes/handler config
                                 {:connections     connections
                                  :extra-routes    (concat [swagger-route]
+                                                          (health-routes config connections)
                                                           (keep identity [(metrics-route config connections)])
                                                           (permissions/routes config))
                                  :default-handler (ring/routes
