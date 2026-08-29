@@ -62,6 +62,37 @@
     (is (nil? (sec/close-candidate-scan! (legacy-index) :ignored)))
     (is (nil? (sec/close-candidate-scan! idx nil)))))
 
+(deftest candidate-page-validation-closes-unreturnable-continuations
+  (let [closed (atom [])
+        idx (reify
+              sec/ISecondaryIndex
+              (-search [_ _ _] nil)
+              (-estimate [_ _] 0)
+              (-can-order? [_ _ _] false)
+              (-slice-ordered [_ _ _ _ _ _] nil)
+              (-indexed-attrs [_] #{:doc/body})
+              (-transact [this _] this)
+
+              sec/ISecondaryCandidateScan
+              (-candidate-page [_ _ _ _]
+                {:candidates []
+                 :precision :invalid
+                 :recall :complete
+                 :ordering :none
+                 :exhausted? false
+                 :continuation :returned})
+
+              sec/ISecondaryCandidateScanLifecycle
+              (-close-candidate-scan [_ continuation]
+                (swap! closed conj continuation)))]
+    (is (= :invalid-secondary-candidate-page
+           (:type (error-data
+                   #(sec/candidate-page
+                     (db/empty-db {}) :idx/search idx {} nil
+                     {:limit 1 :continuation :request})))))
+    (is (= [:returned :request] @closed)
+        "core closes the advanced token and the caller's input token")))
+
 (deftest candidate-page-preserves-independent-correctness-axes
   (doseq [[precision recall ordering]
           [[:exact :complete :exact]

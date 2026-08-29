@@ -441,7 +441,8 @@
                     max-visited max-distance-computations timeout-ms
                     max-frontier-nodes]} query-spec
             page-limit (:limit page-request)
-            scan (or (:continuation page-request)
+            resumed-scan (:continuation page-request)
+            scan (or resumed-scan
                      (prox/start-candidate-scan
                       (gen/generation-index generation)
                       vector
@@ -461,33 +462,40 @@
                                max-distance-computations)
                         timeout-ms (assoc :timeout-ms timeout-ms)
                         max-frontier-nodes
-                        (assoc :max-frontier-nodes max-frontier-nodes))))
-            page (prox/candidate-page scan)
-            attr (first attrs)
-            candidates
-            (into []
-                  (keep (fn [{:keys [id] :as candidate}]
-                          (when (or (nil? entity-filter)
-                                    (es/entity-bitset-contains?
-                                     entity-filter (long id)))
-                            (-> candidate
-                                (dissoc :id)
-                                (assoc :entity-id (long id)
-                                       :attribute attr)))))
-                  (:candidates page))]
-        {:candidates candidates
-         :precision :recheck
-         :recall :approximate
-         :ordering (if (= :approximate (get-in page [:metadata :ordering]))
-                     :approximate
-                     :exact)
-         :exhausted? (:exhausted? page)
-         :continuation (:continuation page)
-         :stop-reason (:stop-reason page)
-         :stats (select-keys (:metadata page)
-                             [:visited-count :distance-computations
-                              :emitted-count :strict-order-drops
-                              :search-nanos])})))
+                        (assoc :max-frontier-nodes max-frontier-nodes))))]
+        (try
+          (let [page (prox/candidate-page scan)
+                attr (first attrs)
+                candidates
+                (into []
+                      (keep (fn [{:keys [id] :as candidate}]
+                              (when (or (nil? entity-filter)
+                                        (es/entity-bitset-contains?
+                                         entity-filter (long id)))
+                                (-> candidate
+                                    (dissoc :id)
+                                    (assoc :entity-id (long id)
+                                           :attribute attr)))))
+                      (:candidates page))]
+            {:candidates candidates
+             :precision :recheck
+             :recall :approximate
+             :ordering (if (= :approximate (get-in page [:metadata :ordering]))
+                         :approximate
+                         :exact)
+             :exhausted? (:exhausted? page)
+             :continuation (:continuation page)
+             :stop-reason (:stop-reason page)
+             :stats (select-keys (:metadata page)
+                                 [:visited-count :distance-computations
+                                  :emitted-count :strict-order-drops
+                                  :search-nanos])})
+          (catch Throwable failure
+            ;; On the first page no caller owns `scan` yet. A resumed scan is
+            ;; still owned by the caller and core's wrapper closes it on error.
+            (when-not resumed-scan
+              (prox/close-candidate-scan! scan))
+            (throw failure))))))
 
   sec/ISecondaryCandidateScanLifecycle
   (-close-candidate-scan [_ continuation]

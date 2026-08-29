@@ -246,7 +246,7 @@
                                {:pages pages :candidate-identities identities}))
     pages))
 
-(declare require-query-eligible!)
+(declare require-query-eligible! close-candidate-scan!)
 
 (defn candidate-page
   "Read and validate one candidate page from `index`.
@@ -268,13 +268,26 @@
                     {:type :invalid-secondary-candidate-request
                      :index-ident idx-ident
                      :request page-request})))
-  (let [page (validate-candidate-page
-              (-candidate-page index query-spec entity-filter page-request))]
-    (when (> (count (:candidates page)) (:limit page-request))
-      (invalid-candidate-page!
-       "A secondary candidate page cannot exceed the requested :limit."
-       {:page page :request page-request}))
-    page))
+  (let [raw-page* (atom nil)
+        request-continuation (:continuation page-request)]
+    (try
+      (let [raw-page (-candidate-page
+                      index query-spec entity-filter page-request)
+            _ (reset! raw-page* raw-page)
+            page (validate-candidate-page raw-page)]
+        (when (> (count (:candidates page)) (:limit page-request))
+          (invalid-candidate-page!
+           "A secondary candidate page cannot exceed the requested :limit."
+           {:page page :request page-request}))
+        page)
+      (catch #?(:clj Throwable :cljs :default) failure
+        ;; The adapter may have advanced an affine continuation before returning
+        ;; a malformed/oversized page. The caller cannot own a token it never
+        ;; received, so core closes both sides. Lifecycle hooks are required to
+        ;; be idempotent because they may share one underlying cursor.
+        (close-candidate-scan! index (:continuation @raw-page*))
+        (close-candidate-scan! index request-continuation)
+        (throw failure)))))
 
 (defn close-candidate-scan!
   "Cancel an unfinished candidate continuation when its adapter owns resources."
