@@ -128,10 +128,19 @@
   (try (.stop server)
        (finally
          (when-let [{:keys [connections config metrics-lease]} (get @owned server)]
-           (swap! owned dissoc server)
-           (routes/release-all! connections)
-           (permissions/close! config)
-           (release-metrics-sink! metrics-lease)))))
+           ;; Each cleanup owns an inner `finally`, so one failure cannot skip
+           ;; the remaining process-global cleanup. Forget ownership last: a
+           ;; failing permissions close must not strand the metrics lease.
+           (try
+             (routes/release-all! connections)
+             (finally
+               (try
+                 (permissions/close! config)
+                 (finally
+                   (try
+                     (release-metrics-sink! metrics-lease)
+                     (finally
+                       (swap! owned dissoc server)))))))))))
 
 (defn -main [& args]
   (let [{:keys [level] :as config} (edn/read-string (slurp (first args)))]
