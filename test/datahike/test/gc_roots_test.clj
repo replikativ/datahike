@@ -22,6 +22,8 @@
 (sec/register-index-type!
  :test/external-generation
  {:create (fn [_ _] nil)
+  :storage-owner :external
+  :validate-generation identity
   :mark-generation (fn [_ _] #{})
   :external-root
   (fn [key-map]

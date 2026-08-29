@@ -91,6 +91,7 @@
       (sec/register-index-type!
        :test/generation-descriptor
        {:create (fn [_ _] nil)
+        :storage-owner :external
         :validate-generation (fn [key-map]
                                (swap! validated inc)
                                key-map)
@@ -107,6 +108,20 @@
       (is (= 2 @validated))
       (is (= 1 @marked))
       (is (= 1 @exported))))
+
+  (testing "an incomplete durable descriptor is rejected at registration"
+    (is (= {:type :secondary/incomplete-durable-adapter
+            :missing-operation :mark-generation}
+           (select-keys
+            (ex-data
+             (try
+               (sec/register-index-type!
+                :test/incomplete-durable
+                {:create (fn [_ _] nil)
+                 :storage-owner :datahike
+                 :validate-generation identity})
+               (catch clojure.lang.ExceptionInfo failure failure)))
+            [:type :missing-operation]))))
 
   (testing "a registered durable type without a marker fails closed"
     (sec/register-index-type! :test/missing-marker (fn [_ _] nil))

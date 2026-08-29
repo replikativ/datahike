@@ -451,6 +451,7 @@
           store-id (or (::sec/store-id config) (random-uuid))
           cache (or (:path config) (fs/temp-dir! "datahike-scriptum-"))]
       (make-scriptum-index nil (:attrs config) config store cache store-id nil nil)))
+  :storage-owner :datahike
   :validate-generation validate-scriptum-generation-key-map
   :mark-generation
   (fn [key-map store]

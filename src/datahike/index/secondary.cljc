@@ -718,6 +718,7 @@
      :validate-generation  validate and return one stored generation key-map
      :mark-generation      return primary-Konserve keys reachable from it
      :external-root        return its external-store root descriptor
+     :storage-owner        `:datahike` or `:external`
 
    Keeping these operations beside creation makes storage ownership and GC
    participation properties of one adapter, rather than independent extension
@@ -732,6 +733,7 @@
    Example:
      (register-index-type! :my-geo-index
        {:create (fn [config db] (->MyGeoIndex config))
+        :storage-owner :datahike
         :validate-generation validate-geo-generation
         :mark-generation mark-geo-generation})"
   [type-keyword descriptor]
@@ -740,7 +742,12 @@
                     {:type :secondary/invalid-adapter-type
                      :index-type type-keyword})))
   (let [descriptor (if (fn? descriptor) {:create descriptor} descriptor)
-        operations [:create :validate-generation :mark-generation :external-root]]
+        operations [:create :validate-generation :mark-generation :external-root]
+        storage-owner (:storage-owner descriptor)
+        lifecycle-operations (select-keys descriptor
+                                          [:validate-generation
+                                           :mark-generation
+                                           :external-root])]
     (when-not (and (map? descriptor) (fn? (:create descriptor)))
       (throw (ex-info "A secondary adapter descriptor requires a :create function."
                       {:type :secondary/invalid-adapter-descriptor
@@ -753,6 +760,27 @@
                       {:type :secondary/invalid-adapter-operation
                        :index-type type-keyword
                        :operation operation})))
+    (when (and (seq lifecycle-operations)
+               (not (contains? #{:datahike :external} storage-owner)))
+      (throw (ex-info "A durable secondary adapter descriptor requires :storage-owner of :datahike or :external."
+                      {:type :secondary/invalid-adapter-storage-owner
+                       :index-type type-keyword
+                       :storage-owner storage-owner})))
+    (when storage-owner
+      (doseq [operation [:validate-generation :mark-generation]]
+        (when-not (fn? (get descriptor operation))
+          (throw (ex-info (str "A durable secondary adapter requires " operation ".")
+                          {:type :secondary/incomplete-durable-adapter
+                           :index-type type-keyword
+                           :storage-owner storage-owner
+                           :missing-operation operation}))))
+      (when (and (= :external storage-owner)
+                 (not (fn? (:external-root descriptor))))
+        (throw (ex-info "An externally owned secondary adapter requires :external-root."
+                        {:type :secondary/incomplete-durable-adapter
+                         :index-type type-keyword
+                         :storage-owner storage-owner
+                         :missing-operation :external-root}))))
     (swap! index-types assoc type-keyword descriptor)))
 
 (defn registered-types
@@ -770,10 +798,18 @@
 
 (defn- validated-adapter-generation
   [key-map adapter]
-  (validate-generation-key-map
-   (if-let [validate (:validate-generation adapter)]
-     (validate key-map)
-     key-map)))
+  (let [key-map (validate-generation-key-map
+                 (if-let [validate (:validate-generation adapter)]
+                   (validate key-map)
+                   key-map))
+        expected-owner (:storage-owner adapter)]
+    (when (and expected-owner (not= expected-owner (:storage-owner key-map)))
+      (throw (ex-info "A secondary generation's storage owner does not match its registered adapter."
+                      {:type :secondary/generation-storage-owner-mismatch
+                       :key-map-type (:type key-map)
+                       :expected-storage-owner expected-owner
+                       :actual-storage-owner (:storage-owner key-map)})))
+    key-map))
 
 (defn mark-from-key-map
   "Return the primary-Konserve keys reachable from one stored immutable

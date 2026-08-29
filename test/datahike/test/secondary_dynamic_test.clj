@@ -82,6 +82,8 @@
     (fn [config _db]
       (let [{:keys [flushes restores]} @versioned-recorder-control]
         (->VersionedRecorder (set (:attrs config)) flushes restores)))
+    :storage-owner :external
+    :validate-generation identity
     :mark-generation (fn [_ _] #{})
     :external-root (fn [_] {:secondary-type :test/versioned-recorder})}))
 

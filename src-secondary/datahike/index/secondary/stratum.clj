@@ -996,6 +996,7 @@
                           attrs
                           attr-refs
                           config)))
+       :storage-owner :datahike
        :validate-generation validate-stratum-generation-key-map
        :mark-generation
        (fn [key-map store]

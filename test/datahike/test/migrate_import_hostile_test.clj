@@ -565,6 +565,8 @@
    {:create
     (fn [config _db]
       (->HashAddressableIndex (set (:attrs config)) {}))
+    :storage-owner :external
+    :validate-generation identity
     :mark-generation (fn [_ _] #{})
     :external-root (fn [_] {:secondary-type :test/hash-addressable})}))
 

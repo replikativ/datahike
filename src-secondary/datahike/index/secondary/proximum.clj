@@ -451,6 +451,7 @@
                                              :crypto-hash?])
                   (:m config) (assoc :M (:m config))))]
      (make-proximum-index nil (:attrs config) config generation-config nil)))
+  :storage-owner :external
   :validate-generation validate-proximum-generation-key-map
   ;; Proximum generations live in their own Konserve store, so there are no
   ;; reachable objects to mark in Datahike's primary store.
