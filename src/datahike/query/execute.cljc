@@ -3,6 +3,7 @@
    Supports fused scan+merge for entity groups, hash-probe value joins,
    anti-merge NOT, and direct-to-HashSet output."
   (:require
+   [clojure.set :as set]
    [datahike.constants :refer [e0 tx0 emax txmax]]
    [datahike.array :as da]
    [datahike.datom :as datom :refer [datom]]
@@ -5684,34 +5685,43 @@
 
 #?(:clj
    (defn- filter-context-by-entity-set
-     "Apply an external engine's entity bitmap directly to every relation that
-      already binds `entity-var`.
+     "Apply an external engine's entity bitmap directly to the one relation
+      that already binds `entity-var`.
 
-      Returning nil means the variable is not present and the caller must
-      introduce a new one-column relation.  Keeping the existing relation
-      avoids materialising boxed `[eid]` tuples and immediately hash-joining
-      them back into the very relation from which the bitmap was derived."
+      Returning nil means either the variable is absent or its relation still
+      overlaps another context relation; the caller must then introduce the
+      unary bitmap relation and use `collapse-rels` to enforce those joins
+      transitively.  The fast path is safe for one disconnected relation and
+      avoids materialising boxed `[eid]` tuples only in that proven shape."
      [ctx entity-var entity-set]
-     (let [bound? (volatile! false)
-           rels
-           (mapv
-            (fn [relation]
-              (if-let [column (get (:attrs relation) entity-var)]
-                (do
-                  (vreset! bound? true)
-                  (assoc relation :tuples
-                         (into []
-                               (filter
-                                (fn [tuple]
-                                  (let [entity-id (relation-cell tuple column)]
-                                    (and (number? entity-id)
-                                         (es/entity-bitset-contains?
-                                          entity-set (long entity-id))))))
-                               (:tuples relation))))
-                relation))
-            (:rels ctx))]
-       (when @bound?
-         (assoc ctx :rels rels)))))
+     (let [relations (vec (:rels ctx))
+           entity-relations
+           (into [] (filter #(contains? (:attrs %) entity-var)) relations)
+           entity-attrs (some-> entity-relations first :attrs keys set)
+           safe?
+           (and (= 1 (count entity-relations))
+                (every? (fn [relation]
+                          (or (identical? relation (first entity-relations))
+                              (empty? (set/intersection
+                                       entity-attrs (set (keys (:attrs relation)))))))
+                        relations))]
+       (when safe?
+         (let [rels
+               (mapv
+                (fn [relation]
+                  (if-let [column (get (:attrs relation) entity-var)]
+                    (assoc relation :tuples
+                           (into []
+                                 (filter
+                                  (fn [tuple]
+                                    (let [entity-id (relation-cell tuple column)]
+                                      (and (number? entity-id)
+                                           (es/entity-bitset-contains?
+                                            entity-set (long entity-id))))))
+                                 (:tuples relation)))
+                    relation))
+                relations)]
+           (assoc ctx :rels rels))))))
 
 #?(:clj
    (defn- resolve-external-query-args
@@ -5783,7 +5793,6 @@
                  query-args (vec (drop 1 resolved-args))
                  entity-var (first binding-vars)
                  entity-filter (external-context-filter ctx op idx-ident entity-var)
-                 ;; Build query-spec — the engine function knows its own format
                  ;; For now, call the resolved function with args to get query-spec
                  resolved-fn (when (and (symbol? fn-sym) (namespace fn-sym))
                                (some-> (resolve fn-sym) deref))

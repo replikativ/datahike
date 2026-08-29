@@ -472,7 +472,14 @@
      ;;                 default — engines that need looser semantics must
      ;;                 declare them explicitly).
      :input-vars-spec (:input-vars engine-meta)
-     :estimated-card (or (:estimated-card cost) 100)}))
+     :estimated-card (or (:estimated-card cost) 100)
+     ;; Keep output cardinality and execution work as independent axes.  The
+     ;; former sizes joins; the latter orders runnable access paths.  Adapters
+     ;; have returned :cost-per-result for years, but dropping it here made a
+     ;; cheap selective index and an expensive one with the same cardinality
+     ;; indistinguishable to the planner.
+     :startup-cost (or (:startup-cost cost) 0)
+     :cost-per-result (:cost-per-result cost)}))
 
 (defn- function-binding-vars
   "Extract free vars from a function-clause :binding spec.
@@ -1629,6 +1636,14 @@
          :function                     (if-let [f (:exec-cost-fn op)]
                                          (max 1 (long (f (function-input-rows op var-cards))))
                                          1)
+         :external-engine              (if-let [per-result (:cost-per-result op)]
+                                         (max 1
+                                              (long
+                                               (#?(:clj Math/ceil :cljs js/Math.ceil)
+                                                (+ (double (:startup-cost op 0))
+                                                   (* (double per-result)
+                                                      (double (:estimated-card op 100)))))))
+                                         (or (:estimated-card op) 100))
          (or (:estimated-card op) 100))))))
 
 (defn- group-var-attr-clauses

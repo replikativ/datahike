@@ -410,6 +410,17 @@
           "function costs 1 when its inputs are bound")
       (is (= Long/MAX_VALUE (plan/op-cost op #{}))
           "no input bound → blocked"))
+    (testing "external engines separate output cardinality from execution cost"
+      (let [op {:op :external-engine
+                :args []
+                :input-vars-spec :all-bound
+                :estimated-card 100
+                :startup-cost 5
+                :cost-per-result 0.25}]
+        (is (= 30 (plan/op-cost op #{}))
+            "startup + per-result work orders the engine, while card still sizes joins")
+        (is (= 100 (plan/op-cost (dissoc op :cost-per-result) #{}))
+            "adapters without an execution cost retain cardinality costing")))
     ;; or-join — :all policy on join-vars NOT covered by every branch.
     ;; With no :branches, no var is covered → all join-vars required.
     (let [op {:op :or-join :vars #{'?e '?v} :join-vars #{'?e '?v}
