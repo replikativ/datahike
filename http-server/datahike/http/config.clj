@@ -16,6 +16,12 @@
       (throw (ex-info "must be an integer from 0 through 65535" {})))
     port))
 
+(defn- parse-nonnegative-long [value]
+  (let [number (parse-long value)]
+    (when-not (and number (<= 0 number))
+      (throw (ex-info "must be a nonnegative integer" {})))
+    number))
+
 (defn- parse-bool [value]
   (case (str/lower-case value)
     "true" true
@@ -46,6 +52,7 @@
    {:key :host         :parse non-blank}
    {:key :token        :parse non-blank}
    {:key :dev-mode     :parse parse-bool}
+   {:key :shutdown-timeout-ms :parse parse-nonnegative-long}
    {:key :level        :parse parse-level}
    {:key :log-format   :parse parse-log-format}
    ;; A deployment-friendly shorthand for the full
@@ -65,6 +72,7 @@
    [nil "--token TOKEN" "Shared authentication token" :parse-fn non-blank]
    [nil "--token-file FILE" "Read the shared token from FILE" :parse-fn non-blank]
    [nil "--dev-mode BOOLEAN" "Enable or disable development authentication" :parse-fn parse-bool]
+   [nil "--shutdown-timeout-ms MILLIS" "Grace period for in-flight requests" :parse-fn parse-nonnegative-long]
    ["-l" "--level LEVEL" "Log level" :parse-fn parse-level]
    [nil "--log-format FORMAT" "Log format: text or json" :parse-fn parse-log-format]
    [nil "--auth-db-path PATH" "File-backed permissions database path" :parse-fn non-blank]

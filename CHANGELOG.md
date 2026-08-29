@@ -6,6 +6,11 @@ When something is added, it's typically marked *Experimental*. When the API cont
 
 ## 0.8
 
+- **The standalone server drains work on shutdown.** SIGTERM stops new accepts,
+  waits up to 30 seconds for in-flight HTTP operations, then releases database
+  connections, permissions state, and metrics ownership exactly once. The
+  grace period is configurable with `:shutdown-timeout-ms`,
+  `DATAHIKE_SHUTDOWN_TIMEOUT_MS`, or `--shutdown-timeout-ms`.
 - **The standalone server refuses accidental public exposure.** An
   unauthenticated server may bind only to a host whose resolved addresses are
   all loopback. Wildcard, missing, and non-loopback hosts require a nonblank
