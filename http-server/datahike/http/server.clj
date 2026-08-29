@@ -7,6 +7,7 @@
    [datahike.http.config :as server-config]
    [datahike.metrics :as metrics]
    [datahike.http.permissions :as permissions]
+   [datahike.http.pg :as pg]
    [datahike.http.routes :as routes]
    [datahike.http.system :as system]
    [reitit.ring :as ring]
@@ -226,6 +227,18 @@
            (when configurator
              (configurator server)))))
 
+(defn- cleanup-owned! [connections config pg-listener metrics-lease]
+  (try
+    (pg/stop! pg-listener)
+    (finally
+      (try
+        (routes/release-all! connections)
+        (finally
+          (try
+            (system/close! config)
+            (finally
+              (release-metrics-sink! metrics-lease))))))))
+
 (defn start-server
   "Start Jetty and acquire the standalone server's shared Konserve metric sink
    unless `:metrics` is false. `stop-server` releases both."
@@ -236,16 +249,25 @@
         app         (app config connections)
         config      (::config (meta app))
         jetty-config (with-graceful-shutdown config timeout)
-        metrics-lease (when-not (false? (:metrics config))
-                        (acquire-metrics-sink!))
+        pg-listener (try
+                      (pg/start! config connections)
+                      (catch Throwable t
+                        (cleanup-owned! connections config nil nil)
+                        (throw t)))
+        metrics-lease (try
+                        (when-not (false? (:metrics config))
+                          (acquire-metrics-sink!))
+                        (catch Throwable t
+                          (cleanup-owned! connections config pg-listener nil)
+                          (throw t)))
         server      (try (run-jetty app jetty-config)
                          (catch Throwable t
                            ;; Nothing owns what `app` opened if Jetty never started.
-                           (release-metrics-sink! metrics-lease)
-                           (system/close! config)
+                           (cleanup-owned! connections config pg-listener metrics-lease)
                            (throw t)))]
     (swap! owned assoc server {:connections connections
                                :config config
+                               :pg-listener pg-listener
                                :metrics-lease metrics-lease})
     server))
 
@@ -256,19 +278,11 @@
    twice."
   [^org.eclipse.jetty.server.Server server]
   (let [[before _] (swap-vals! owned dissoc server)
-        {:keys [connections config metrics-lease]} (get before server)]
+        {:keys [connections config pg-listener metrics-lease]} (get before server)]
     (try (.stop server)
          (finally
            (when connections
-             ;; Each cleanup owns an inner `finally`, so one failure cannot skip
-             ;; the remaining process-global cleanup.
-             (try
-               (routes/release-all! connections)
-               (finally
-                 (try
-                   (system/close! config)
-                   (finally
-                     (release-metrics-sink! metrics-lease))))))))))
+             (cleanup-owned! connections config pg-listener metrics-lease))))))
 
 (defn- shutdown-hook [server config]
   (Thread.

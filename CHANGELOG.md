@@ -65,6 +65,13 @@ When something is added, it's typically marked *Experimental*. When the API cont
   lists authorized catalog entries at `GET /databases`. Token auth no longer
   uses buddy; the header is
   `authorization: token <token>` as before.
+- **The standalone server can expose its system catalog through pg-datahike.**
+  *Experimental.* Add `:pg-listener` to start a PostgreSQL wire listener whose
+  database names and live connections follow the same create/delete lifecycle
+  as the HTTP API. The initial beta is loopback-only while pg-datahike wire
+  authentication lands and PostgreSQL identities have defined EACL semantics.
+  Credential-redacted catalog entries can be restored with deployment-side
+  `:database-overrides`.
 
 - **Index warming is unified across the stack, and real on ClojureScript.**
   The breadth-first walk moved to persistent-sorted-set (>= 0.5.142), where

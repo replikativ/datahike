@@ -11,8 +11,34 @@
    [eacl.datahike.schema :as eschema]))
 
 (def register-key ::register!)
+(def prepare-register-key ::prepare-register!)
+(def prepare-delete-key ::prepare-delete!)
 (def delete-key ::delete!)
+(def cancel-delete-key ::cancel-delete!)
 (def conn-key ::conn)
+(def listeners-key ::listeners)
+
+(defn subscribe!
+  "Subscribe to catalog lifecycle events. Returns an opaque subscription id."
+  [config listener]
+  (let [subscription (random-uuid)]
+    (swap! (get config listeners-key) assoc subscription listener)
+    subscription))
+
+(defn unsubscribe! [config subscription]
+  (when-let [listeners (get config listeners-key)]
+    (swap! listeners dissoc subscription))
+  nil)
+
+(defn- notify! [listeners event config principal]
+  (doseq [listener (vals @listeners)]
+    (listener {:event event :config config :principal principal})))
+
+(defn prepare-register!
+  "Let catalog consumers reject a create before physical storage is changed."
+  [listeners config principal]
+  (notify! listeners :creating config principal)
+  config)
 
 (def catalog-schema
   [{:db/ident       :datahike.system.database/id
@@ -107,7 +133,7 @@
 
 (defn register!
   "Upsert an active catalog entry after a database was created successfully."
-  [conn config principal]
+  [conn listeners config principal]
   (let [id (or (store-id config)
                (throw (ex-info "A cataloged database needs a stable store id"
                                {:type :datahike.http/missing-database-id})))
@@ -129,11 +155,38 @@
                                  :datahike.system.database/deleted-by]))]
     (d/transact conn {:tx-data tx-data
                       :tx-meta {:datahike.system/principal who}})
+    (notify! listeners :created config principal)
     config))
+
+(defn prepare-delete!
+  "Mark a database as deleting and let listeners release live resources."
+  [conn listeners config principal]
+  (let [id (store-id config)
+        lookup [:datahike.system.database/id id]
+        who (principal-id principal)]
+    (when id
+      (when-not (d/entity @conn lookup)
+        (register! conn listeners config principal))
+      (d/transact conn
+                  {:tx-data [{:db/id lookup
+                              :datahike.system.database/state :deleting}]
+                   :tx-meta {:datahike.system/principal who}})
+      (try
+        (notify! listeners :deleting config principal)
+        (catch Throwable e
+          (d/transact conn
+                      {:tx-data [{:db/id lookup
+                                  :datahike.system.database/state :active}]
+                       :tx-meta {:datahike.system/principal who}})
+          (try
+            (notify! listeners :delete-cancelled config principal)
+            (catch Throwable _))
+          (throw e)))))
+  config)
 
 (defn mark-deleted!
   "Soft-delete a catalog entry after its physical database was deleted."
-  [conn config principal]
+  [conn listeners config principal]
   (let [id (store-id config)
         lookup [:datahike.system.database/id id]
         who (principal-id principal)]
@@ -141,13 +194,28 @@
       ;; A database created before the catalog may not have an entry. Register
       ;; enough identity/config to make its deletion visible before marking it.
       (when-not (d/entity @conn lookup)
-        (register! conn config principal))
+        (register! conn listeners config principal))
       (d/transact conn
                   {:tx-data [{:db/id lookup
                               :datahike.system.database/state :deleted
                               :datahike.system.database/deleted-at (java.util.Date.)
                               :datahike.system.database/deleted-by who}]
                    :tx-meta {:datahike.system/principal who}})))
+  (when (store-id config)
+    (notify! listeners :deleted config principal))
+  nil)
+
+(defn cancel-delete!
+  "Restore an active entry and its listeners when physical deletion failed."
+  [conn listeners config principal]
+  (let [id (store-id config)
+        who (principal-id principal)]
+    (when id
+      (d/transact conn
+                  {:tx-data [{:db/id [:datahike.system.database/id id]
+                              :datahike.system.database/state :active}]
+                   :tx-meta {:datahike.system/principal who}})
+      (notify! listeners :delete-cancelled config principal)))
   nil)
 
 (defn- parse-stored-config [value]
@@ -204,12 +272,17 @@
   "Open the configured system database and install catalog callbacks."
   [config]
   (if-let [configured (configured-system-db config)]
-    (let [conn (open! configured)]
+    (let [conn (open! configured)
+          listeners (atom {})]
       (-> config
           (assoc :system-db configured
                  conn-key conn
-                 register-key (partial register! conn)
-                 delete-key (partial mark-deleted! conn))))
+                 listeners-key listeners
+                 prepare-register-key (partial prepare-register! listeners)
+                 register-key (partial register! conn listeners)
+                 prepare-delete-key (partial prepare-delete! conn listeners)
+                 delete-key (partial mark-deleted! conn listeners)
+                 cancel-delete-key (partial cancel-delete! conn listeners))))
     config))
 
 (defn close! [config]
