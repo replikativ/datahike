@@ -23,14 +23,12 @@
 (defn- search-results [prox-idx {:keys [vector k ef]} entity-filter]
   (let [opts (cond-> {} ef (assoc :ef ef))]
     (if entity-filter
-      ;; Proximum can translate a set of external IDs through its persistent
-      ;; external-id map.  Passing a predicate forces it to visit every vector
-      ;; merely to construct its internal bitset, turning a selective SQL
-      ;; predicate into O(index-size) work before HNSW even starts.
+      ;; Proximum translates this lazy Roaring64 ID view directly into its
+      ;; native internal-id bitset. Do not materialize a second boxed HashSet;
+      ;; sparse SQL filters then cost O(matches), while the native bitset is the
+      ;; one dense representation HNSW actually consumes.
       (prox/search-filtered prox-idx vector k
-                            (into #{} (map long)
-                                  (es/entity-bitset-seq entity-filter))
-                            opts)
+                            (es/entity-bitset-seq entity-filter) opts)
       (prox/search prox-idx vector k opts))))
 
 (defn- close-generation! [generation]
