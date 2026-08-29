@@ -49,14 +49,22 @@
         db-obj   {:type :database :id (str store-id)}
         grant!   (fn [t updates] (client/request-cbor :post "permissions/relationships!" (peer t) updates))
         list!    (fn [t] (client/request-cbor :get "databases" (peer t) (random-uuid)))
+        status!  (fn [t] (client/request-cbor :get "admin/status" (peer t) (random-uuid)))
         s        (atom (start!))]
     (try
       (testing "root creates; nobody else may touch the database"
         (client/create-database (assoc cfg :remote-peer (peer root-token)))
         (is (= [{:store-id (str store-id) :state :active}]
                (mapv #(select-keys % [:store-id :state]) (list! root-token))))
+        (is (map? (:node (status! root-token)))
+            "server admins see process-wide query activity")
         (is (empty? (list! "alice-token"))
             "the catalog does not reveal databases the caller cannot read")
+        (is (= {:node nil
+                :page {:offset 0 :limit 24 :total 0 :has-more? false}
+                :databases []}
+               (status! "alice-token"))
+            "status reveals neither node activity nor unauthorized databases")
         (is (forbidden? #(client/connect (assoc cfg :remote-peer (peer "alice-token"))))))
 
       (testing "root grants alice writer and bob reader in one batch; alice may read and write, not delete or grant"
@@ -67,6 +75,9 @@
                                     :relationship {:subject {:type :user :id "bob"} :relation :reader :resource db-obj}}])))
         (is (= #{(str store-id)} (set (map :store-id (list! "alice-token")))))
         (is (= #{(str store-id)} (set (map :store-id (list! "bob-token")))))
+        (let [status (status! "bob-token")]
+          (is (nil? (:node status)))
+          (is (= #{(str store-id)} (set (map :store-id (:databases status))))))
         (let [alice (client/connect (assoc cfg :remote-peer (peer "alice-token")))]
           (client/transact alice [{:name "Ada"}])
           (is (= #{["Ada"]} (client/q '[:find ?n :where [?e :name ?n]] @alice)))

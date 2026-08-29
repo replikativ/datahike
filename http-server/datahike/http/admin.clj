@@ -1,6 +1,9 @@
 (ns datahike.http.admin
   "Static, dependency-free operator landing page for the standalone server."
-  (:require [clojure.java.io :as io]))
+  (:require [clojure.java.io :as io]
+            [datahike.http.routes :as routes]
+            [datahike.http.system :as system]
+            [datahike.metrics :as metrics]))
 
 (def ^:private security-headers
   {"content-security-policy" (str "default-src 'none'; "
@@ -50,11 +53,39 @@
      ;; Muuntaja deliberately leaves byte-array streams untouched.
      :body (java.io.ByteArrayInputStream. body)}))
 
+(defn- server-admin? [config principal]
+  (if-let [authorize (:authorize config)]
+    (authorize {:op :admin :principal principal :db nil :payload nil})
+    true))
+
+(defn- status-response [config connections principal page-options]
+  (try
+    (let [runtime (metrics/runtime-snapshot connections)
+          ;; Do not let viewing the dashboard alter its query statistics.
+          page    (binding [metrics/*query-metrics?* false]
+                    (system/visible-entry-page config principal page-options))]
+      {:status 200
+       :body {:node (when (server-admin? config principal) (:node runtime))
+              :page (:page page)
+              :databases
+              (mapv (fn [{:keys [store-id] :as database}]
+                      (assoc database :activity
+                             (get-in runtime [:databases store-id]
+                                     {:loaded? false
+                                      :leases 0
+                                      :transactions 0
+                                      :transacted-datoms 0
+                                      :commits 0
+                                      :head-conflicts 0})))
+                    (:databases page))}})
+    (catch Exception e
+      (routes/error-response e))))
+
 (defn routes
   "Public shell and assets. Data is fetched from the normally authenticated
-   `/version` and `/databases` APIs, so this introduces no authorization path."
-  []
-  [["/"
+   `/version` and `/admin/status` APIs, so this introduces no authorization path."
+  [config connections]
+  (cond-> [["/"
     {:public? true
      :get {:no-doc true
            :metric-op :admin
@@ -82,4 +113,15 @@
    ["/admin/datahike-logo.svg"
     {:public? true
      :get {:no-doc true
-           :handler (fn [_] (asset-response :logo))}}]])
+           :handler (fn [_] (asset-response :logo))}}]]
+    (get config system/conn-key)
+    (conj ["/admin/status"
+           {:get {:no-doc true
+                  :metric-op :read
+                  :parameters {:query [:map
+                                       [:q {:optional true} :string]
+                                       [:offset {:optional true :default 0} [:int {:min 0}]]
+                                       [:limit {:optional true :default 24} [:int {:min 1 :max 100}]]]}
+                  :handler (fn [{{query :query} :parameters
+                                 principal :datahike/principal}]
+                             (status-response config connections principal query))}}])))

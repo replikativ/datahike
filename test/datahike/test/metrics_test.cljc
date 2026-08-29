@@ -80,6 +80,53 @@
            (set samples)))))
 
 #?(:clj
+   (deftest runtime-snapshot-uses-only-live-state-and-the-metrics-snapshot
+     (let [connections (atom {[test-id :db]
+                              {:conn {:wrapped-atom (atom {:max-tx 42})}
+                               :count 2}})
+           snapshot {:datahike_query_sample_every
+                     {:series {{} 256}}
+                     :datahike_query_seconds
+                     {:series {{:outcome "success" :result_cache "hit"}
+                               {:count 3 :sum 0.03}
+                               {:outcome "success" :result_cache "miss"}
+                               {:count 1 :sum 0.02}}}
+                     :datahike_query_errors_total
+                     {:series {{:result_cache "miss"} 2}}
+                     :datahike_query_planning_seconds
+                     {:series {{:outcome "success" :plan_cache "hit"}
+                               {:count 2 :sum 0.004}}}
+                     :datahike_transactions_total
+                     {:series {labels 3}}
+                     :datahike_transacted_datoms_total
+                     {:series {labels 7}}
+                     :datahike_commit_seconds
+                     {:series {labels {:count 2 :sum 0.125}}}
+                     :datahike_head_conflicts_total
+                     {:series {(assoc labels :outcome "retried") 1}}}
+           status (dhm/runtime-snapshot connections snapshot)]
+       (is (= {:sampled-queries 4
+               :average-query-ms 12.5
+               :result-cache {:hit 3 :miss 1}
+               :query-errors 2
+               :sampled-plans 2
+               :average-planning-ms 2.0
+               :plan-cache {:hit 2}
+               :planning-errors 0
+               :query-sample-every 256}
+              (:node status)))
+       (is (= {:loaded? true
+               :leases 2
+               :branches ["db"]
+               :basis-t 42
+               :transactions 3
+               :transacted-datoms 7
+               :commits 2
+               :average-commit-ms 62.5
+               :head-conflicts 1}
+              (get-in status [:databases (str test-id)]))))))
+
+#?(:clj
    (deftest a-real-transaction-records-the-durable-result
      (let [config (assoc test-config :branch :db)]
        (when (d/database-exists? config)

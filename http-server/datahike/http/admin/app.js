@@ -6,6 +6,10 @@ const authStatus = byId("auth-status");
 const catalogStatus = byId("catalog-status");
 const databaseGrid = byId("databases");
 const databaseCount = byId("database-count");
+const databaseQuery = byId("database-query");
+const pageSize = 24;
+let pageOffset = 0;
+let searchQuery = "";
 
 tokenInput.value = sessionStorage.getItem("datahike.admin.token") || "";
 
@@ -58,9 +62,34 @@ function field(label, value) {
   return row;
 }
 
-function renderDatabases(databases) {
+function number(value) {
+  return Number(value || 0).toLocaleString();
+}
+
+function milliseconds(value) {
+  return value == null ? null : `${Number(value).toFixed(value < 10 ? 2 : 1)} ms`;
+}
+
+function hitRate(dispositions) {
+  const hits = Number(dispositions?.hit || 0);
+  const misses = Number(dispositions?.miss || 0);
+  return hits + misses === 0 ? null : `${((100 * hits) / (hits + misses)).toFixed(1)}%`;
+}
+
+function renderNodeActivity(node) {
+  const section = byId("node-activity");
+  section.hidden = !node;
+  if (!node) return;
+  setText("sampled-queries", number(node["sampled-queries"]));
+  setText("average-query", milliseconds(node["average-query-ms"]));
+  setText("result-cache-hit-rate", hitRate(node["result-cache"]));
+  setText("plan-cache-hit-rate", hitRate(node["plan-cache"]));
+  setText("query-errors", number(node["query-errors"]));
+}
+
+function renderDatabases(databases, total = databases.length) {
   databaseGrid.replaceChildren();
-  databaseCount.textContent = String(databases.length);
+  databaseCount.textContent = String(total);
   if (databases.length === 0) {
     const empty = document.createElement("p");
     empty.className = "empty";
@@ -78,15 +107,32 @@ function renderDatabases(databases) {
     backend.className = "backend";
     backend.textContent = taggedValue(database.config?.store?.backend) || "unknown backend";
     const details = document.createElement("dl");
+    const activity = database.activity || {};
     details.append(
       field("Store ID", database["store-id"]),
       field("State", String(taggedValue(database.state) || "active").replace(/^:/, "")),
+      field("Runtime", activity["loaded?"] ? `loaded · ${number(activity.leases)} lease${activity.leases === 1 ? "" : "s"}` : "idle"),
+      field("Basis t", activity["basis-t"]),
+      field("Transactions", number(activity.transactions)),
+      field("Datoms written", number(activity["transacted-datoms"])),
+      field("Average commit", milliseconds(activity["average-commit-ms"])),
+      field("Conflicts", number(activity["head-conflicts"])),
       field("Created", displayDate(database["created-at"])),
       field("Principal", database["created-by"])
     );
     card.append(title, backend, details);
     databaseGrid.append(card);
   }
+}
+
+function renderPage(page) {
+  const total = Number(page?.total || 0);
+  const offset = Number(page?.offset || 0);
+  const limit = Number(page?.limit || pageSize);
+  const end = Math.min(offset + limit, total);
+  byId("page-status").textContent = total === 0 ? "No results" : `${offset + 1}–${end} of ${total}`;
+  byId("previous-page").disabled = offset === 0;
+  byId("next-page").disabled = !page?.["has-more?"];
 }
 
 async function refreshReadiness() {
@@ -125,11 +171,20 @@ async function refresh() {
   }
 
   try {
-    const databases = await request("/databases");
-    renderDatabases(databases);
-    catalogStatus.textContent = `${databases.length} active database${databases.length === 1 ? "" : "s"} visible to this principal.`;
+    const params = new URLSearchParams({ offset: String(pageOffset), limit: String(pageSize) });
+    if (searchQuery) params.set("q", searchQuery);
+    const status = await request(`/admin/status?${params}`);
+    const databases = status.databases || [];
+    renderNodeActivity(status.node);
+    renderDatabases(databases, status.page?.total);
+    renderPage(status.page);
+    catalogStatus.textContent = searchQuery
+      ? `${status.page?.total || 0} matching database${status.page?.total === 1 ? "" : "s"}.`
+      : `${status.page?.total || 0} active database${status.page?.total === 1 ? "" : "s"} visible to this principal.`;
   } catch (error) {
+    renderNodeActivity(null);
     renderDatabases([]);
+    renderPage(null);
     catalogStatus.className = "status error";
     catalogStatus.textContent = error.status === 404
       ? "The system catalog is not configured on this server."
@@ -142,6 +197,7 @@ byId("auth-form").addEventListener("submit", (event) => {
   const token = tokenInput.value.trim();
   if (token) sessionStorage.setItem("datahike.admin.token", token);
   else sessionStorage.removeItem("datahike.admin.token");
+  pageOffset = 0;
   refresh();
 });
 
@@ -152,4 +208,24 @@ byId("clear-token").addEventListener("click", () => {
 });
 
 byId("refresh").addEventListener("click", refresh);
+byId("database-search").addEventListener("submit", (event) => {
+  event.preventDefault();
+  searchQuery = databaseQuery.value.trim();
+  pageOffset = 0;
+  refresh();
+});
+byId("clear-search").addEventListener("click", () => {
+  databaseQuery.value = "";
+  searchQuery = "";
+  pageOffset = 0;
+  refresh();
+});
+byId("previous-page").addEventListener("click", () => {
+  pageOffset = Math.max(0, pageOffset - pageSize);
+  refresh();
+});
+byId("next-page").addEventListener("click", () => {
+  pageOffset += pageSize;
+  refresh();
+});
 refresh();

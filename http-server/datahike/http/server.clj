@@ -165,7 +165,7 @@
         handler (routes/handler config
                                 {:connections     connections
                                  :extra-routes    (concat [swagger-route]
-                                                          (admin/routes)
+                                                          (admin/routes config connections)
                                                           (health-routes config connections)
                                                           [(version-route server-config)]
                                                           (keep identity [(metrics-route config connections)])
