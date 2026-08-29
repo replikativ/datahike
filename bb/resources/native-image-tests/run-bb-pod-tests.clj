@@ -104,10 +104,14 @@
                 {:db/id 3, :age 25, :name "Charlie"}]
                (d/pull-many (d/db conn) '[*] [1 2 3]))))
       (testing "metrics"
-        (is (= {:per-attr-counts {:age 5, :name 4, :db/txInstant 3}
-                :per-entity-counts {1 2, 2 2, 3 2, 4 1, 5 2, 536870913 1, 536870914 1, 536870915 1}
-                :count 12, :avet-count 0, :temporal-count 11, :temporal-avet-count 0}
-               (d/metrics (d/db conn)))))
+        (let [db (d/db conn)
+              expected {:per-attr-counts {:age 5, :name 4, :db/txInstant 3}
+                        :count 12, :avet-count 0, :temporal-count 11, :temporal-avet-count 0}]
+          (is (= expected (d/metrics db)))
+          (is (= (assoc expected
+                        :per-entity-counts
+                        {1 2, 2 2, 3 2, 4 1, 5 2, 536870913 1, 536870914 1, 536870915 1})
+                 (d/metrics db {:per-entity-counts? true})))))
       (testing "as-of tx-id"
         (is (= #{[3 "Charlie" 25] [2 "Bob" 30] [5 "FOO" "BAR"] [1 "Alice" 20]}
                (d/q '[:find ?e ?n ?a
