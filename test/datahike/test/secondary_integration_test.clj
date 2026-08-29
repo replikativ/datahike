@@ -2118,10 +2118,11 @@
 
 (deftest stratum-vt-mode-reads-the-current-row-and-stamps-a-real-window
   (testing "two fixes that delegation does not give for free. `-sec-value` had
-            no current-row filter, so it read a SUPERSEDED row; and both axis
-            filters are needed, because an SCD2-on-both-axes update closes the
-            old row's `_system_to` while leaving `_valid_to` open — that is the
-            audit chain. Separately, `tx-meta-for-secondary` found no
+            no current-row selection, so it read a SUPERSEDED row. Corrections
+            can leave several system-open belief rows, so the current primary
+            value is the newest `[system-from, valid-from]` row — simply
+            requiring an open valid interval would reject a finite current
+            value. Separately, `tx-meta-for-secondary` found no
             `:db/txInstant` (the in-progress tx entity is not in EAVT yet), so
             every row was stamped `_valid_from 0` AND `_valid_to 0` — a
             zero-width window, valid at no instant."

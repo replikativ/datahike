@@ -447,9 +447,9 @@
 
   dbi/ISecondaryView
   (-secondary-view [db]
-    {:indices (.-secondary-indices db)
-     :system {:mode :current}
-     :filtered-depth 0})
+                   {:indices (.-secondary-indices db)
+                    :system {:mode :current}
+                    :filtered-depth 0})
 
   dbi/ISearch
   (-search-context [db] dbi/base-context)
@@ -546,8 +546,8 @@
 
   dbi/ISecondaryView
   (-secondary-view [db]
-    (update (dbi/-secondary-view (.-unfiltered-db db))
-            :filtered-depth (fnil inc 0)))
+                   (update (dbi/-secondary-view (.-unfiltered-db db))
+                           :filtered-depth (fnil inc 0)))
 
   dbi/ISearch
   (-search-context [db] (dbi/context-with-xform-after
@@ -638,8 +638,8 @@
 
   dbi/ISecondaryView
   (-secondary-view [db]
-    (assoc (dbi/-secondary-view (.-origin-db db))
-           :system {:mode :history}))
+                   (assoc (dbi/-secondary-view (.-origin-db db))
+                          :system {:mode :history}))
 
   dbi/ISearch
   (-search-context [db]
@@ -722,9 +722,9 @@
 
   dbi/ISecondaryView
   (-secondary-view [db]
-    (assoc (dbi/-secondary-view (.-origin-db db))
-           :system {:mode :as-of
-                    :time-point (.-time-point db)}))
+                   (assoc (dbi/-secondary-view (.-origin-db db))
+                          :system {:mode :as-of
+                                   :time-point (.-time-point db)}))
 
   dbi/ISearch
   (-search-context [db] (dbi/context-with-temporal-timepred
@@ -808,9 +808,9 @@
 
   dbi/ISecondaryView
   (-secondary-view [db]
-    (assoc (dbi/-secondary-view (.-origin-db db))
-           :system {:mode :since
-                    :time-point (.-time-point db)}))
+                   (assoc (dbi/-secondary-view (.-origin-db db))
+                          :system {:mode :since
+                                   :time-point (.-time-point db)}))
 
   dbi/ISearch
   (-search-context [db] (dbi/context-with-temporal-timepred

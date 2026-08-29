@@ -379,11 +379,10 @@
    Scans AEVT per attribute to collect entity+value pairs, then joins by entity.
    When db is nil (during empty-db creation), returns an empty dataset.
 
-   In vt-mode, pre-existing rows are seeded with `_valid_from = MIN_VALUE`
-   and `_valid_to = MAX_VALUE` — they're treated as valid for any
-   `valid-at` query. Retroactive vt accuracy for pre-existing data is
-   not reconstructed here; that requires walking history and is a
-   future enhancement."
+   Valid-time mode refuses a populated current AEVT snapshot. Inventing
+   `[MIN, MAX)` windows makes the generation look complete while discarding
+   real valid/system history; a future online builder must reconstruct rows
+   from tx history under the normal GC fence."
   [db attrs config]
   (if (nil? db)
     ;; No DB yet — return empty dataset with typed columns
@@ -406,7 +405,16 @@
           _ (doseq [[_a ^java.util.LinkedHashMap pairs] attr->eid-vals]
               (.addAll all-eids (.keySet pairs)))
           n (.size all-eids)]
-      (if (zero? n)
+      (cond
+        (and (vt-mode? config) (pos? n))
+        (throw
+         (ex-info
+          "A valid-time Stratum index cannot be seeded from a current AEVT snapshot. Build it while empty or reconstruct it from transaction history."
+          {:type :secondary/stratum-valid-time-backfill-required
+           :row-count n
+           :attrs attrs}))
+
+        (zero? n)
       ;; Empty dataset — use long-array 0 for all columns since we don't know
       ;; actual value types yet. persist-transient-stratum-index will determine
       ;; real types from values via col-types pre-scan on first insert.
@@ -415,6 +423,8 @@
                                 attrs)
                           (with-vt-cols config 0))]
           (sd/ensure-indexed (make-vt-dataset col-map config)))
+
+        :else
       ;; Build column arrays
         (let [entity-ids (long-array n)
               _ (let [i (volatile! 0)]
@@ -486,6 +496,154 @@
 (declare make-transient-stratum-index)
 (declare persist-transient-stratum-index)
 
+(defn- unsupported-vt-view!
+  [operation temporal-request reason]
+  (throw (ex-info
+          "This Stratum generation cannot preserve the requested temporal view."
+          {:type :secondary/stratum-temporal-view-unsupported
+           :operation operation
+           :temporal-request temporal-request
+           :reason reason})))
+
+(defn- temporal-where
+  [operation temporal-request]
+  (when-not (= :current (get-in temporal-request [:system :mode]))
+    (unsupported-vt-view! operation temporal-request :system-time-view))
+  (let [{:keys [mode at from to]} (:valid temporal-request)]
+    (case mode
+      :at [[:= sys-to-col vt-open-sentinel]
+           [:<= vt-from-col (date->micros at)]
+           [:> vt-to-col (date->micros at)]]
+      :between [[:= sys-to-col vt-open-sentinel]
+                [:< vt-from-col (date->micros to)]
+                [:> vt-to-col (date->micros from)]]
+      :during [[:= sys-to-col vt-open-sentinel]
+               [:>= vt-from-col (date->micros from)]
+               [:<= vt-to-col (date->micros to)]]
+      (unsupported-vt-view! operation temporal-request
+                            :missing-valid-time-selector))))
+
+(defn- require-ordinary-view!
+  [config operation]
+  (when (vt-mode? config)
+    ;; System-open SCD rows include the current belief ABOUT historical valid
+    ;; intervals. They are not necessarily the current Datahike value. Until
+    ;; the representation carries an explicit primary-current marker, using
+    ;; this generation for an unqualified query can return a retracted value.
+    (unsupported-vt-view! operation nil :primary-current-row-not-represented)))
+
+(defn- search-dataset
+  [dataset query-spec entity-filter extra-where]
+  (if (nil? dataset)
+    (es/entity-bitset)
+    (let [eid-pred (when entity-filter
+                     (fn [^long eid]
+                       (es/entity-bitset-contains? entity-filter eid)))
+          where (cond-> (into (vec (:where query-spec)) extra-where)
+                  eid-pred (conj [:fn :eid eid-pred]))
+          result-maps (st/q (cond-> {:from dataset :select [:eid]}
+                              (seq where) (assoc :where where)))
+          bs (es/entity-bitset)]
+      (doseq [m result-maps]
+        (es/entity-bitset-add! bs (long (:eid m))))
+      bs)))
+
+(defn- slice-dataset
+  [dataset query-spec entity-filter attr direction limit extra-where]
+  (if (nil? dataset)
+    []
+    (let [col-key (attr-col-key attr)
+          eid-pred (when entity-filter
+                     (fn [^long eid]
+                       (es/entity-bitset-contains? entity-filter eid)))
+          where (cond-> (into (vec (:where query-spec)) extra-where)
+                  eid-pred (conj [:fn :eid eid-pred]))
+          result-maps (st/q (cond-> {:from dataset
+                                     :select [:eid col-key]
+                                     :order [[col-key direction] [:eid :asc]]}
+                              limit (assoc :limit limit)
+                              (seq where) (assoc :where where)))]
+      (mapv (fn [m] {:entity-id (long (:eid m)) :value (get m col-key)})
+            result-maps))))
+
+(defn- candidate-page*
+  [dataset attrs scan-id query-spec entity-filter page-request temporal-request]
+  (let [{:keys [attribute direction where]} query-spec
+        direction (or direction :asc)
+        limit (long (:limit page-request))
+        entity-ids (when entity-filter
+                     (vec (es/entity-bitset-seq entity-filter)))
+        extra-where (if temporal-request
+                      (do
+                        (when-not (= :at (get-in temporal-request [:valid :mode]))
+                          (unsupported-vt-view! :candidate-page temporal-request
+                                                :interval-candidate-identity))
+                        (temporal-where :candidate-page temporal-request))
+                      [])
+        scan-identity
+        {:version 2
+         :generation (if-let [generation-id (some-> dataset sd/generation-id)]
+                       [:dataset generation-id]
+                       [:instance scan-id])
+         :attribute attribute
+         :direction direction
+         :where (vec where)
+         :temporal-request temporal-request
+         ;; Exact rather than hashed: a collision must never change which
+         ;; rows an OFFSET continuation denotes.
+         :entity-ids entity-ids}
+        continuation (:continuation page-request)
+        _ (when (and continuation
+                     (or (not (map? continuation))
+                         (not= 2 (:version continuation))
+                         (not= scan-identity (:scan-identity continuation))
+                         (not (and (integer? (:offset continuation))
+                                   (not (neg? (:offset continuation)))))))
+            (throw
+             (ex-info
+              "Stratum candidate continuation does not belong to this generation/query."
+              {:type :secondary/stratum-continuation-mismatch
+               :expected scan-identity
+               :continuation continuation})))
+        offset (long (or (:offset continuation) 0))]
+    (if (or (nil? dataset) (not (contains? attrs attribute)))
+      {:candidates []
+       :precision :exact
+       :recall :complete
+       :ordering :exact
+       :exhausted? true
+       :continuation nil
+       :stop-reason :source-exhausted}
+      (let [col-key (attr-col-key attribute)
+            eid-pred (when entity-filter
+                       (fn [^long eid]
+                         (es/entity-bitset-contains? entity-filter eid)))
+            where (cond-> (into (vec where) extra-where)
+                    eid-pred (conj [:fn :eid eid-pred]))
+            rows (st/q (cond-> {:from dataset
+                                :select [:eid col-key]
+                                :order [[col-key direction] [:eid :asc]]
+                                :limit (inc limit)
+                                :offset offset}
+                         (seq where) (assoc :where where)))
+            more? (> (count rows) limit)
+            page-rows (take limit rows)
+            candidates (mapv (fn [row]
+                               {:entity-id (long (:eid row))
+                                :attribute attribute
+                                :value (get row col-key)})
+                             page-rows)]
+        {:candidates candidates
+         :precision :exact
+         :recall :complete
+         :ordering :exact
+         :exhausted? (not more?)
+         :continuation (when more?
+                         {:version 2
+                          :scan-identity scan-identity
+                          :offset (+ offset limit)})
+         :stop-reason (when-not more? :source-exhausted)}))))
+
 (defn- delivered [value]
   (let [ch (async/promise-chan)]
     (async/put! ch value)
@@ -534,19 +692,8 @@
   (-search [_ query-spec entity-filter]
     ;; query-spec: {:where [[op col val] ...]}
     ;; Returns EntityBitSet of matching entity IDs
-    (if (nil? dataset)
-      (es/entity-bitset)
-      (let [eid-pred (when entity-filter
-                       (fn [^long eid]
-                         (es/entity-bitset-contains? entity-filter eid)))
-            where (cond-> (vec (:where query-spec))
-                    eid-pred (conj [:fn :eid eid-pred]))
-            result-maps (st/q (cond-> {:from dataset :select [:eid]}
-                                (seq where) (assoc :where where)))
-            bs (es/entity-bitset)]
-        (doseq [m result-maps]
-          (es/entity-bitset-add! bs (long (:eid m))))
-        bs)))
+    (require-ordinary-view! config :search)
+    (search-dataset dataset query-spec entity-filter []))
 
   (-estimate [_ query-spec]
     (if (nil? dataset)
@@ -557,98 +704,22 @@
     true)
 
   (-slice-ordered [_ query-spec entity-filter attr direction limit]
-    (if (nil? dataset)
-      []
-      (let [col-key (attr-col-key attr)
-            eid-pred (when entity-filter
-                       (fn [^long eid]
-                         (es/entity-bitset-contains? entity-filter eid)))
-            where (cond-> (vec (:where query-spec))
-                    eid-pred (conj [:fn :eid eid-pred]))
-            result-maps (st/q (cond-> {:from dataset
-                                       :select [:eid col-key]
-                                       :order [[col-key direction]]}
-                                limit (assoc :limit limit)
-                                (seq where) (assoc :where where)))]
-        (mapv (fn [m] {:entity-id (long (:eid m)) :value (get m col-key)})
-              result-maps))))
+    (require-ordinary-view! config :slice-ordered)
+    (slice-dataset dataset query-spec entity-filter attr direction limit []))
 
   sec/ISecondaryCandidateScan
   (-candidate-page [_ query-spec entity-filter page-request]
-    (let [{:keys [attribute direction where]} query-spec
-          direction (or direction :asc)
-          limit (long (:limit page-request))
-          entity-ids (when entity-filter
-                       (vec (es/entity-bitset-seq entity-filter)))
-          scan-identity
-          {:version 1
-           :generation (if-let [generation-id (some-> dataset sd/generation-id)]
-                         [:dataset generation-id]
-                         [:instance scan-id])
-           :attribute attribute
-           :direction direction
-           :where (vec where)
-           ;; Exact rather than hashed: a collision must never change which
-           ;; rows an OFFSET continuation denotes.
-           :entity-ids entity-ids}
-          continuation (:continuation page-request)
-          _ (when (and continuation
-                       (or (not (map? continuation))
-                           (not= 1 (:version continuation))
-                           (not= scan-identity (:scan-identity continuation))
-                           (not (and (integer? (:offset continuation))
-                                     (not (neg? (:offset continuation)))))))
-              (throw
-               (ex-info
-                "Stratum candidate continuation does not belong to this generation/query."
-                {:type :secondary/stratum-continuation-mismatch
-                 :expected scan-identity
-                 :continuation continuation})))
-          offset (long (or (:offset continuation) 0))]
-      (if (or (nil? dataset) (not (contains? attrs attribute)))
-        {:candidates []
-         :precision :exact
-         :recall :complete
-         :ordering :exact
-         :exhausted? true
-         :continuation nil
-         :stop-reason :source-exhausted}
-        (let [col-key (attr-col-key attribute)
-              eid-pred (when entity-filter
-                         (fn [^long eid]
-                           (es/entity-bitset-contains? entity-filter eid)))
-              where (cond-> (vec where)
-                      eid-pred (conj [:fn :eid eid-pred]))
-              ;; Fetch one look-ahead row so exhaustion is unambiguous. The
-              ;; continuation is an offset into this immutable generation,
-              ;; hence stable for the lifetime of the scan.
-              rows (st/q (cond-> {:from dataset
-                                  :select [:eid col-key]
-                                  ;; OFFSET pagination needs one total order.
-                                  ;; SQL leaves equal primary keys unspecified;
-                                  ;; eid is the immutable, unique tie-break that
-                                  ;; makes every page a slice of the same stream.
-                                  :order [[col-key direction] [:eid :asc]]
-                                  :limit (inc limit)
-                                  :offset offset}
-                           where (assoc :where where)))
-              more? (> (count rows) limit)
-              page-rows (take limit rows)
-              candidates (mapv (fn [row]
-                                 {:entity-id (long (:eid row))
-                                  :attribute attribute
-                                  :value (get row col-key)})
-                               page-rows)]
-          {:candidates candidates
-           :precision :exact
-           :recall :complete
-           :ordering :exact
-           :exhausted? (not more?)
-           :continuation (when more?
-                           {:version 1
-                            :scan-identity scan-identity
-                            :offset (+ offset limit)})
-           :stop-reason (when-not more? :source-exhausted)}))))
+    (require-ordinary-view! config :candidate-page)
+    (candidate-page* dataset attrs scan-id query-spec entity-filter
+                     page-request nil))
+
+  sec/IValidTimeCandidateScan
+  (-candidate-page-at-vt [_ query-spec entity-filter page-request temporal-request]
+    (when-not (vt-mode? config)
+      (unsupported-vt-view! :candidate-page temporal-request
+                            :valid-time-mode-disabled))
+    (candidate-page* dataset attrs scan-id query-spec entity-filter
+                     page-request temporal-request))
 
   (-indexed-attrs [_] attrs)
 
@@ -661,28 +732,34 @@
     ;;
     ;; A point query, not a column scan: the caller streams a dump and must stay
     ;; bounded. `:where` takes `[[op col val] ...]` — see `-slice-ordered`.
-    ;; `:_valid_to = MAX` in vt-mode, or this reads a SUPERSEDED row. The query
-    ;; took `:limit 1` off an unordered scan, so after an update it returned
-    ;; whichever generation came first — measured: 50000 after the value had
-    ;; been changed to 60000. Backups read through here, so a stale answer is a
-    ;; wrong backup; the export's hash check now refuses it, which is how it
-    ;; surfaced.
     (when dataset
-      (let [col-key (attr-col-key attr)]
-        (-> (st/q {:from dataset :select [:eid col-key]
-                   ;; BOTH axes. vt-mode configures valid AND system, and an
-                   ;; SCD2-on-both-axes update closes the superseded row's
-                   ;; `_system_to` while leaving `_valid_to` open — that is the
-                   ;; audit chain, so `FOR SYSTEM_TIME AS OF <before>` still
-                   ;; sees the pre-correction state. Filtering on the valid axis
-                   ;; alone therefore still matched it, and still answered 50000
-                   ;; after the value became 60000.
-                   :where (cond-> [[:= :eid (long eid)]]
-                            (vt-mode? config) (conj [:= vt-to-col vt-open-sentinel]
-                                                    [:= sys-to-col vt-open-sentinel]))
-                   :limit 1})
-            first
-            (get col-key)))))
+      (let [col-key (attr-col-key attr)
+            rows (st/q (cond-> {:from dataset
+                                :select (cond-> [:eid col-key]
+                                          (vt-mode? config)
+                                          (into [sys-from-col vt-from-col]))
+                                :where (cond-> [[:= :eid (long eid)]]
+                                         (vt-mode? config)
+                                         (conj [:= sys-to-col vt-open-sentinel]))}
+                         (not (vt-mode? config)) (assoc :limit 1)))
+            row (if (vt-mode? config)
+                  ;; A correction can leave several current-system-belief rows
+                  ;; for one eid: bounded corrected history plus the latest
+                  ;; primary value. Pick the newest system version, then the
+                  ;; latest valid start within that correction transaction.
+                  ;; Requiring `_valid_to = MAX` is wrong for a current primary
+                  ;; value that was asserted with a finite valid window.
+                  (reduce (fn [best candidate]
+                            (if (or (nil? best)
+                                    (pos? (compare [(get candidate sys-from-col)
+                                                    (get candidate vt-from-col)]
+                                                   [(get best sys-from-col)
+                                                    (get best vt-from-col)])))
+                              candidate
+                              best))
+                          nil rows)
+                  (first rows))]
+        (get row col-key))))
 
   (-transact [this tx-report]
     (let [t (sec/-as-transient this)]
@@ -766,6 +843,7 @@
   (-columnar-aggregate [this query-spec]
     (sec/-columnar-aggregate this query-spec nil))
   (-columnar-aggregate [_ query-spec entity-filter]
+    (require-ordinary-view! config :columnar-aggregate)
     (when dataset
       (if entity-filter
         ;; Push entity-filter as a :fn predicate on the :eid column.
@@ -787,25 +865,26 @@
   ;; generation uses the generic post-hoc fallback and must never route here.
   (-native-valid-time? [_]
     (boolean (vt-mode? config)))
-  (-search-at-vt [this query-spec entity-filter valid-at-window]
+  (-search-at-vt [_ query-spec entity-filter temporal-request]
     (if (and (vt-mode? config) dataset)
-      (let [at-micros (cond
-                        (vector? valid-at-window)
-                        (date->micros (first valid-at-window))
-                        :else
-                        (date->micros valid-at-window))
-            window-end (when (vector? valid-at-window)
-                         (date->micros (second valid-at-window)))
-            extra (if window-end
-                    ;; valid-between (interval overlap)
-                    [[:< vt-from-col window-end]
-                     [:> vt-to-col   at-micros]]
-                    ;; valid-at (point membership)
-                    [[:<= vt-from-col at-micros]
-                     [:> vt-to-col   at-micros]])
-            augmented (update query-spec :where (fnil into []) extra)]
-        (sec/-search this augmented entity-filter))
-      (sec/-search this query-spec entity-filter))))
+      (search-dataset dataset query-spec entity-filter
+                      (temporal-where :search temporal-request))
+      (if (vt-mode? config)
+        (es/entity-bitset)
+        (unsupported-vt-view! :search temporal-request
+                              :valid-time-mode-disabled))))
+
+  sec/IValidTimeOrdered
+  (-slice-ordered-at-vt [_ query-spec entity-filter attr direction limit
+                         temporal-request]
+    (when-not (vt-mode? config)
+      (unsupported-vt-view! :slice-ordered temporal-request
+                            :valid-time-mode-disabled))
+    (when-not (= :at (get-in temporal-request [:valid :mode]))
+      (unsupported-vt-view! :slice-ordered temporal-request
+                            :interval-candidate-identity))
+    (slice-dataset dataset query-spec entity-filter attr direction limit
+                   (temporal-where :slice-ordered temporal-request))))
 
 ;; ---------------------------------------------------------------------------
 ;; Transient stratum index — mutable batch mode

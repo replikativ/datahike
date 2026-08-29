@@ -101,7 +101,7 @@
 (defprotocol ISecondaryCandidateScanLifecycle
   "Optional lifecycle hook for candidate continuations that pin resources."
   (-close-candidate-scan [this continuation]
-     "Cancel an unfinished continuation. Must be idempotent."))
+    "Cancel an unfinished continuation. Must be idempotent."))
 
 (defprotocol IValidTimeCandidateScan
   "Optional candidate API for indices that retain historical value versions."
