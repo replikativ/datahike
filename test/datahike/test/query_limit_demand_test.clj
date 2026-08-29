@@ -53,7 +53,8 @@
 
     (testing "prepared direct execution receives the same demand"
       (let [[derefs cancel] (counting-cancel)
-            result (binding [execute/*prepared-execution* true
+            result (binding [q/*disable-planner* false
+                             execute/*prepared-execution* true
                              q/*fold-scalar-ins* false
                              q/*query-result-cache?* false]
                      (d/q {:query '[:find ?e
