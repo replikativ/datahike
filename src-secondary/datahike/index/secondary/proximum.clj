@@ -20,8 +20,11 @@
    [replikativ.logging :as log]
    [clojure.core.async :as async]))
 
-(defn- search-results [prox-idx {:keys [vector k ef]} entity-filter]
-  (let [opts (cond-> {} ef (assoc :ef ef))]
+(defn- search-results
+  [prox-idx {:keys [vector k ef filter-strategy]} entity-filter]
+  (let [opts (cond-> {}
+               ef (assoc :ef ef)
+               filter-strategy (assoc :filter-strategy filter-strategy))]
     (if entity-filter
       ;; Proximum translates this lazy Roaring64 ID view directly into its
       ;; native internal-id bitset. Do not materialize a second boxed HashSet;

@@ -29,6 +29,28 @@
     true
     (catch Throwable _ false)))
 
+(deftest proximum-exact-filter-strategy-reaches-native-search
+  (when proximum-available?
+    (let [search-results (ns-resolve 'datahike.index.secondary.proximum
+                                     'search-results)
+          prox-search (requiring-resolve 'proximum.core/search-filtered)
+          call* (atom nil)]
+      (with-redefs-fn
+        {prox-search (fn [& args]
+                       (reset! call* args)
+                       [])}
+        #(search-results ::index
+                         {:vector (float-array [1.0])
+                          :k 3
+                          :ef 40
+                          :filter-strategy :exact}
+                         (es/entity-bitset-from-longs [10 20])))
+      (is (= ::index (nth @call* 0)))
+      (is (= 3 (nth @call* 2)))
+      (is (= [10 20] (vec (nth @call* 3))))
+      (is (= {:ef 40 :filter-strategy :exact}
+             (nth @call* 4))))))
+
 (defn lifecycle-search
   "Test-only external engine used to exercise the central lifecycle gate."
   {:datahike/external-engine
