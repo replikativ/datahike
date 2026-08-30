@@ -535,12 +535,28 @@
     (fn [^Datom d]
       (let [dv (case (int datom-field-idx) 0 (.-e d) 1 (.-a d) 2 (.-v d) 3 (.-tx d))]
         (every? (fn [{:keys [op const-val] :as pred}]
-                  (case op
-                    > (> (compare dv const-val) 0)
-                    < (< (compare dv const-val) 0)
-                    not= (not= dv const-val)
-                    (throw (ex-info "Unhandled op in build-strict-filter — every op pushdown-to-bounds writes into :strict-preds must have a case arm here"
-                                    {:op op :pred pred}))))
+                  (if (nil? const-val)
+                    ;; Preserve the ordinary predicate's nil behavior. Numeric
+                    ;; comparisons throw; Clojure equality is false and not=
+                    ;; true for every stored (non-nil) datom value.
+                    (case op
+                      > (> dv const-val)
+                      >= (>= dv const-val)
+                      < (< dv const-val)
+                      <= (<= dv const-val)
+                      = (= dv const-val)
+                      == (== dv const-val)
+                      not= (not= dv const-val))
+                    (case op
+                      > (> (compare dv const-val) 0)
+                      >= (not (neg? (compare dv const-val)))
+                      < (< (compare dv const-val) 0)
+                      <= (not (pos? (compare dv const-val)))
+                      = (zero? (compare dv const-val))
+                      == (zero? (compare dv const-val))
+                      not= (not= dv const-val)
+                      (throw (ex-info "Unhandled op in build-strict-filter — every op pushdown-to-bounds writes into :strict-preds must have a case arm here"
+                                      {:op op :pred pred})))))
                 strict-preds)))))
 
 (defn- compute-slice-bounds
@@ -3248,7 +3264,18 @@
       op)))
 
 (defn- bind-pattern-op [consts op scan?]
-  (let [op (if (:clause op) (assoc op :clause (subst-clause consts (:clause op))) op)]
+  (let [bind-pushdown
+        (fn [pred]
+          (cond-> (update pred :const-val #(subst-slot consts %))
+            (:pred-clause pred)
+            (update :pred-clause #(subst-clause consts %))))
+        op (cond-> op
+             (:clause op)
+             (assoc :clause (subst-clause consts (:clause op)))
+
+             (seq (:pushdown-preds op))
+             (update :pushdown-preds
+                     #(mapv bind-pushdown %)))]
     (if scan? (upgrade-scan-index op) op)))
 
 (defn bind-plan-consts
@@ -3279,9 +3306,9 @@
                   pipeline (:pipeline op)
                   steps' (when pipeline
                            (mapv (fn [step]
-                                   (cond-> step
-                                     (:clause step) (assoc :clause (subst-clause consts (:clause step)))
-                                     (:index step)  (assoc :index (:index scan-op'))))
+                                   (cond-> (bind-pattern-op consts step false)
+                                     (:index step)
+                                     (assoc :index (:index scan-op'))))
                                  (:steps pipeline)))]
               (when-not (and (pattern-ok? (:clause scan-op'))
                              (every? #(pattern-ok? (:clause %)) merge-ops'))
@@ -3345,6 +3372,50 @@
            (if (some (fn [[_ v]] (nil? v)) entries)
              (reduced nil)
              (into m entries))))))
+   {}
+   rels))
+
+(defn singleton-rel-consts
+  "Return bindings supplied by singleton input relations, independently of
+   any collection/relation inputs that contain multiple tuples.
+
+   Unlike `single-tuple-rel-consts`, this is not an eligibility test for
+   absorbing *all* input relations into the direct executor. It exists for
+   prepared relation fallback: scalar/tuple parameters still have to rebind
+   value-free scan bounds when a separate candidate collection remains in the
+   context. Nil is retained here: dynamic pushdowns represent it as an
+   unbounded slice plus a nil-aware strict predicate."
+  [rels]
+  (reduce
+   (fn [m rel]
+     (let [tuples (:tuples rel)
+           n #?(:clj (if (instance? java.util.Collection tuples)
+                       (.size ^java.util.Collection tuples)
+                       (count tuples))
+                :cljs (count tuples))]
+       (if (not= 1 n)
+         m
+         (let [t #?(:clj (if (instance? java.util.List tuples)
+                           (.get ^java.util.List tuples 0)
+                           (first tuples))
+                    :cljs (first tuples))
+               entries
+               (map (fn [[var idx]]
+                      [var #?(:clj (cond
+                                     (instance? clojure.lang.Indexed t)
+                                     (.nth ^clojure.lang.Indexed t (int idx))
+
+                                     (.isArray (class t))
+                                     (aget ^objects t (int idx))
+
+                                     (sequential? t) (nth t idx)
+                                     :else (get t idx))
+                              :cljs (cond
+                                      (array? t) (aget t idx)
+                                      (sequential? t) (nth t idx)
+                                      :else (get t idx)))])
+                    (:attrs rel))]
+           (into m entries)))))
    {}
    rels))
 

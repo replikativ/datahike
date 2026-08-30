@@ -4995,7 +4995,25 @@
   [plan db qfind find-elements context-in query all-vars
    result-arity lookup-ref-reverse-map order-spec offset limit
    stats? qreturnmaps]
-  (let [exec-direct-rel #?(:clj (requiring-resolve 'datahike.query.execute/execute-plan-direct-rel)
+  (let [;; Prepared scalar/tuple inputs remain one-tuple relations so the
+        ;; cached plan is value-free. The direct prepared executor rebinds its
+        ;; copy before opening an index slice; do the same when a predicate,
+        ;; aggregate, pull, or another unsupported shape routes that plan to
+        ;; the relation executor. Keep the input relation in the context — it
+        ;; still supplies ordinary joins and projected input variables.
+        rel-consts (when (and (prepared-execution?) (seq (:rels context-in)))
+                     (#?(:clj (requiring-resolve
+                               'datahike.query.execute/singleton-rel-consts)
+                         :cljs execute/singleton-rel-consts)
+                      (:rels context-in)))
+        plan (if (seq rel-consts)
+               (or (#?(:clj (requiring-resolve
+                             'datahike.query.execute/bind-plan-consts)
+                       :cljs execute/bind-plan-consts)
+                    plan rel-consts)
+                   plan)
+               plan)
+        exec-direct-rel #?(:clj (requiring-resolve 'datahike.query.execute/execute-plan-direct-rel)
                            :cljs execute/execute-plan-direct-rel)
         ;; Only take the direct-rel fast path when there are NO input relations.
         ;; That path executes the plan from scratch and `collapse-rels`-joins the

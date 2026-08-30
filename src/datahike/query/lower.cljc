@@ -1073,6 +1073,13 @@
         bound-vars (.-bound_vars ^datahike.query.ir.LogicalPlan logical-plan)
         classified (.-classified ^datahike.query.ir.LogicalPlan logical-plan)
         all-clause-vars (into bound-vars (mapcat :vars) classified)
+        ;; :in vars seed at card 1 (placeholder), overridden by `in-cards` for
+        ;; collection/relation bindings. Besides join costing, the scalar card
+        ;; lets pushdown analysis retain a value-free prepared parameter as a
+        ;; per-call index bound without mistaking a collection for one value.
+        initial-bvc (cond (map? bound-vars) bound-vars
+                          :else (merge (zipmap (or bound-vars #{}) (repeat 1))
+                                       (or in-cards {})))
 
         ;; Pre-compute SCC info for rules
         scc-info (when rules (plan/compute-rule-sccs rules))
@@ -1088,7 +1095,7 @@
         {:keys [pushdowns consumed]}
         (analyze/detect-pushdown
          (into scan-classifieds filter-classifieds)
-         bound-vars)
+         bound-vars initial-bvc)
 
         ;; ---------------------------------------------------------------
         ;; Step 2: Lower each node to physical op(s)
@@ -1149,12 +1156,6 @@
         max-src-idx #?(:clj Long/MAX_VALUE :cljs (.-MAX_SAFE_INTEGER js/Number))
         node->src-idx (into {} (map (fn [n] [n (or (:source-idx (meta n))
                                                    max-src-idx)])) nodes)
-        ;; :in vars seed at card 1 (placeholder), overridden by `in-cards` for
-        ;; collection/relation bindings (plan/source-cards :input) so a passed
-        ;; collection is ordered as a real multi-row source, not a singleton.
-        initial-bvc (cond (map? bound-vars) bound-vars
-                          :else (merge (zipmap (or bound-vars #{}) (repeat 1))
-                                       (or in-cards {})))
         merge-cards (fn [acc-map outs]
                       (reduce-kv
                        (fn [m v c]

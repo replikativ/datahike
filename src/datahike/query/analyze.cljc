@@ -175,7 +175,7 @@
    - op is a range operator
    - ?var appears as the value variable of a pattern with an indexed attribute
    Returns nil if not pushable."
-  [pred-info pattern-infos bound-vars]
+  [pred-info pattern-infos bound-vars bound-var-cards]
   (let [args (:args pred-info)
         op (:fn-sym pred-info)]
     (when (and (contains? range-ops op)
@@ -190,6 +190,21 @@
 
               (and (free-var? arg2)
                    (not (free-var? arg1)))
+              [arg2 arg1 true]
+
+              ;; Prepared execution deliberately keeps scalar :in values out
+              ;; of the query form so one plan can serve every value.  Such a
+              ;; value is still a sound per-call index bound: input-shape
+              ;; cardinalities distinguish scalar/tuple bindings (one value)
+              ;; from collection/relation bindings (many values).  Retain the
+              ;; bound variable in :const-val; execute/bind-plan-consts replaces
+              ;; it before the index slice is opened.
+              (and (free-var? arg1) (free-var? arg2)
+                   (= 1 (get bound-var-cards arg2)))
+              [arg1 arg2 false]
+
+              (and (free-var? arg1) (free-var? arg2)
+                   (= 1 (get bound-var-cards arg1)))
               [arg2 arg1 true]
 
               ;; A var-vs-var comparison is NOT pushable. These two cases used
@@ -231,20 +246,23 @@
    pattern scans. Returns a map:
    {:pushdowns {pattern-clause → [{:op :const-val :var}...]}
     :consumed #{consumed-predicate-clauses}}"
-  [classified-clauses bound-vars]
-  (let [patterns (filterv #(= :pattern (:type %)) classified-clauses)
-        predicates (filterv #(= :predicate (:type %)) classified-clauses)]
-    (reduce
-     (fn [acc pred-info]
-       (if-let [push (pushable-pred? pred-info patterns bound-vars)]
-         (-> acc
-             (update-in [:pushdowns (:pattern-clause push)]
-                        (fnil conj [])
-                        (select-keys push [:op :const-val :var :pred-clause]))
-             (update :consumed (fnil conj #{}) (:pred-clause push)))
-         acc))
-     {:pushdowns {} :consumed #{}}
-     predicates)))
+  ([classified-clauses bound-vars]
+   (detect-pushdown classified-clauses bound-vars nil))
+  ([classified-clauses bound-vars bound-var-cards]
+   (let [patterns (filterv #(= :pattern (:type %)) classified-clauses)
+         predicates (filterv #(= :predicate (:type %)) classified-clauses)]
+     (reduce
+      (fn [acc pred-info]
+        (if-let [push (pushable-pred? pred-info patterns bound-vars
+                                      bound-var-cards)]
+          (-> acc
+              (update-in [:pushdowns (:pattern-clause push)]
+                         (fnil conj [])
+                         (select-keys push [:op :const-val :var :pred-clause]))
+              (update :consumed (fnil conj #{}) (:pred-clause push)))
+          acc))
+      {:pushdowns {} :consumed #{}}
+      predicates))))
 
 ;; ---------------------------------------------------------------------------
 ;; Schema introspection helpers

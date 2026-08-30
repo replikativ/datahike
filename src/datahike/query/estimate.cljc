@@ -437,7 +437,8 @@
            pushdown-preds))
   ([base-estimate pushdown-preds db scan-op]
    (reduce (fn [est pred]
-             (let [sel (if (and db scan-op (:var pred) (:const-val pred))
+             (let [sel (if (and db scan-op (:var pred) (:const-val pred)
+                                (not (symbol? (:const-val pred))))
                          (sample-predicate-selectivity db scan-op (:op pred)
                                                        (:var pred) (:const-val pred))
                          (estimate-predicate-selectivity-heuristic (:op pred)))]

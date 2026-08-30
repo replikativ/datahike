@@ -58,22 +58,28 @@
   [pushdown-preds]
   (reduce
    (fn [bounds {:keys [op const-val] :as pred}]
-     (case op
-       >  (-> (update-bound bounds :from-v max const-val)
-              (update :strict-preds (fnil conj []) pred))
-       >= (update-bound bounds :from-v max const-val)
-       <  (-> (update-bound bounds :to-v min const-val)
-              (update :strict-preds (fnil conj []) pred))
-       <= (update-bound bounds :to-v min const-val)
-       =  (-> bounds
-              (assoc :from-v const-val)
-              (assoc :to-v const-val))
-       == (-> bounds
-              (assoc :from-v const-val)
-              (assoc :to-v const-val))
-       not= (update bounds :strict-preds (fnil conj []) pred)
-       (throw (ex-info "Unhandled op in pushdown-to-bounds — every op in analyze/range-ops must have a case arm here"
-                       {:op op :pred pred}))))
+     (if (nil? const-val)
+       ;; A value-free prepared scalar can be nil on an individual call. Nil
+       ;; cannot delimit a datom slice (`nil` means "unbounded" there), so keep
+       ;; the predicate as a post-scan check. Stored datom values are non-nil:
+       ;; all comparisons/equality fail, while not= succeeds.
+       (update bounds :strict-preds (fnil conj []) pred)
+       (case op
+         >  (-> (update-bound bounds :from-v max const-val)
+                (update :strict-preds (fnil conj []) pred))
+         >= (update-bound bounds :from-v max const-val)
+         <  (-> (update-bound bounds :to-v min const-val)
+                (update :strict-preds (fnil conj []) pred))
+         <= (update-bound bounds :to-v min const-val)
+         =  (-> bounds
+                (assoc :from-v const-val)
+                (assoc :to-v const-val))
+         == (-> bounds
+                (assoc :from-v const-val)
+                (assoc :to-v const-val))
+         not= (update bounds :strict-preds (fnil conj []) pred)
+         (throw (ex-info "Unhandled op in pushdown-to-bounds — every op in analyze/range-ops must have a case arm here"
+                         {:op op :pred pred})))))
    {:from-v nil :to-v nil}
    pushdown-preds))
 
