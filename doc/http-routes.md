@@ -63,7 +63,7 @@ config map — authentication (`:token`, `:validator`, `:dev-mode`,
 | `:prefix` | none (mount at `/`) | Path every route is nested under. `"/datahike"`, `"datahike/"` and `"/datahike/"` all mean `/datahike`. |
 | `:connections` | a fresh atom | The connection registry the routes use. Pass your own to share databases with the host (below). |
 | `:extra-routes` | none | Your own reitit routes on the same router, under the same prefix and behind the gate; the server adds `/swagger.json` and the permission routes this way. Mark a route `:public? true` to exempt it from authentication (not from the body cap). |
-| `:default-handler` | reitit's 404 | What answers a request the router does not match (the server puts swagger-ui here). |
+| `:default-handler` | reitit's 404 | What answers a request the router does not match (the standalone server puts Swagger UI at `/swagger` here). |
 
 The handler adds no middleware beyond what the API itself needs — CORS,
 static files, TLS and the rest of your application are yours. It carries
@@ -350,8 +350,9 @@ standalone public bind.
 
 ## Running the standalone server
 
-The server is the same routes with Swagger UI at `/`, `/swagger.json`, CORS
-and Jetty around them:
+The server is the same routes with a lightweight operator page at `/` (also
+`/admin`), Swagger UI at `/swagger`, `/swagger.json`, CORS and Jetty around
+them:
 
 ```bash
 clojure -M:http-server --config config.edn
@@ -366,6 +367,31 @@ clojure -M:http-server --config config.edn
  :level    :info
  :log-format :text}
 ```
+
+### Operator landing page
+
+Open the server root (or `/admin`) for a read-only overview of readiness, build
+identity, useful operational endpoints, and the active databases visible to
+your principal. Swagger UI remains available at `/swagger` for development and
+API exploration.
+
+The Datahike logo links to [datahike.io](https://datahike.io), and the page's
+documentation link opens the repository's canonical
+[`doc/README.md`](https://github.com/replikativ/datahike/blob/main/doc/README.md)
+index.
+
+The HTML, CSS, and JavaScript shell is public just like Swagger UI, but it
+contains no server data. Entering a token makes the page call the existing
+authenticated `/version` and `/databases` endpoints with the normal
+`Authorization: token …` header. The token is kept only in the browser tab's
+session storage; it is never placed in a URL, cookie, HTML response, or
+persistent local storage.
+
+The database list is permission-filtered by `/databases`, so the page cannot
+discover catalog entries its principal may not read. In `:dev-mode` or behind
+`:auth :upstream`, leave the token field blank. The page is intentionally
+read-only: Swagger remains the API explorer and permission or database changes
+go through the normal API.
 
 ### Prometheus metrics
 

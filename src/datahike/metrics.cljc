@@ -218,3 +218,95 @@
        :labels {:database (str store-id)
                 :branch   (keyword-label (or branch :db))}
        :value  (or count 1)})))
+
+#?(:clj
+   (do
+     (defn- sum-series [series]
+       (reduce + 0 (vals (or series {}))))
+
+     (defn- histogram-summary [series]
+       (reduce (fn [{:keys [count sum]} value]
+                 {:count (+ count (or (:count value) 0))
+                  :sum   (+ sum (or (:sum value) 0))})
+               {:count 0 :sum 0.0}
+               (vals (or series {}))))
+
+     (defn- disposition-counts [series label]
+       (reduce-kv (fn [counts labels value]
+                    (update counts (keyword (get labels label "unknown"))
+                            (fnil + 0) (or (:count value) 0)))
+                  {}
+                  (or series {})))
+
+     (defn- database-metric [snapshot metric value-fn]
+       (reduce-kv (fn [by-database labels value]
+                    (if-let [database (:database labels)]
+                      (update by-database database (fnil + 0) (value-fn value))
+                      by-database))
+                  {}
+                  (get-in snapshot [metric :series])))
+
+     (defn runtime-snapshot
+       "Cheap process-local status for the standalone operator page.
+
+        This reads only the metrics registry and raw state of connections the
+        process already owns. It never opens a database, refreshes a branch,
+        probes a store, or walks an index."
+       ([connections] (runtime-snapshot connections (metrics/snapshot)))
+       ([connections snapshot]
+        (let [query-series    (get-in snapshot [:datahike_query_seconds :series])
+              query-summary   (histogram-summary query-series)
+              planning-series (get-in snapshot [:datahike_query_planning_seconds :series])
+              planning-summary (histogram-summary planning-series)
+              transactions    (database-metric snapshot :datahike_transactions_total identity)
+              datoms          (database-metric snapshot :datahike_transacted_datoms_total identity)
+              commits         (database-metric snapshot :datahike_commit_seconds #(or (:count %) 0))
+              commit-seconds  (database-metric snapshot :datahike_commit_seconds #(or (:sum %) 0.0))
+              conflicts       (database-metric snapshot :datahike_head_conflicts_total identity)
+              live (reduce-kv
+                    (fn [by-database [store-id branch] {:keys [conn count]}]
+                      (if-not conn
+                        by-database
+                        (let [database (str store-id)
+                              state    @(get conn :wrapped-atom)
+                              basis-t  (when (map? state) (:max-tx state))]
+                          (-> by-database
+                              (update-in [database :leases] (fnil + 0) (or count 1))
+                              (update-in [database :branches] (fnil conj #{})
+                                         (keyword-label (or branch :db)))
+                              (cond-> basis-t
+                                (update-in [database :basis-t] #(max (or % basis-t) basis-t)))))))
+                    {}
+                    @connections)
+              database-ids (into (set (keys live))
+                                 (mapcat keys)
+                                 [transactions datoms commits commit-seconds conflicts])]
+          {:node
+           {:sampled-queries       (:count query-summary)
+            :average-query-ms      (when (pos? (:count query-summary))
+                                     (* 1000.0 (/ (:sum query-summary) (:count query-summary))))
+            :result-cache          (disposition-counts query-series :result_cache)
+            :query-errors          (sum-series (get-in snapshot [:datahike_query_errors_total :series]))
+            :sampled-plans         (:count planning-summary)
+            :average-planning-ms   (when (pos? (:count planning-summary))
+                                     (* 1000.0 (/ (:sum planning-summary) (:count planning-summary))))
+            :plan-cache            (disposition-counts planning-series :plan_cache)
+            :planning-errors       (sum-series (get-in snapshot [:datahike_query_planning_errors_total :series]))
+            :query-sample-every    (get-in snapshot [:datahike_query_sample_every :series {}])}
+           :databases
+           (into {}
+                 (for [database database-ids
+                       :let [commit-count (get commits database 0)
+                             seconds      (get commit-seconds database 0.0)
+                             connection   (get live database)]]
+                   [database
+                    {:loaded?           (boolean connection)
+                     :leases            (get connection :leases 0)
+                     :branches          (-> connection :branches sort vec)
+                     :basis-t           (:basis-t connection)
+                     :transactions      (get transactions database 0)
+                     :transacted-datoms (get datoms database 0)
+                     :commits           commit-count
+                     :average-commit-ms (when (pos? commit-count)
+                                          (* 1000.0 (/ seconds commit-count)))
+                     :head-conflicts     (get conflicts database 0)}]))})))))

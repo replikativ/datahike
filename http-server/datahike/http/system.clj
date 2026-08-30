@@ -4,6 +4,7 @@
    Catalog configs are deliberately redacted before storage: credentials stay
    in deployment configuration, not in the database they protect."
   (:require
+   [clojure.string :as str]
    [clojure.edn :as edn]
    [datahike.api :as d]
    [datahike.http.routes :as routes]
@@ -223,24 +224,36 @@
     (edn/read-string value)
     (catch Exception _ nil)))
 
+(defn- entry-ref [{:keys [e store-id name state]}]
+  {:e e :store-id store-id :name name :state state})
+
+(defn- entry-refs [conn]
+  (->> (d/q '[:find ?e ?id ?name ?state
+              :where
+              [?e :datahike.system.database/id ?id]
+              [?e :datahike.system.database/name ?name]
+              [?e :datahike.system.database/state ?state]]
+            @conn)
+       (map (fn [[e store-id name state]]
+              (entry-ref {:e e :store-id store-id :name name :state state})))
+       (sort-by (juxt :name :store-id))
+       vec))
+
+(defn- pull-entry [conn {:keys [e]}]
+  (let [entry (d/pull @conn catalog-pull e)]
+    {:store-id   (:datahike.system.database/id entry)
+     :name       (:datahike.system.database/name entry)
+     :config     (parse-stored-config (:datahike.system.database/config entry))
+     :state      (:datahike.system.database/state entry)
+     :created-at (:datahike.system.database/created-at entry)
+     :created-by (:datahike.system.database/created-by entry)
+     :deleted-at (:datahike.system.database/deleted-at entry)
+     :deleted-by (:datahike.system.database/deleted-by entry)}))
+
 (defn entries
   "Catalog entries as API data, newest state included."
   [conn]
-  (->> (d/q '[:find [?e ...]
-              :where [?e :datahike.system.database/id]]
-            @conn)
-       (map #(d/pull @conn catalog-pull %))
-       (map (fn [entry]
-              {:store-id   (:datahike.system.database/id entry)
-               :name       (:datahike.system.database/name entry)
-               :config     (parse-stored-config (:datahike.system.database/config entry))
-               :state      (:datahike.system.database/state entry)
-               :created-at (:datahike.system.database/created-at entry)
-               :created-by (:datahike.system.database/created-by entry)
-               :deleted-at (:datahike.system.database/deleted-at entry)
-               :deleted-by (:datahike.system.database/deleted-by entry)}))
-       (sort-by (juxt :name :store-id))
-       vec))
+  (mapv #(pull-entry conn %) (entry-refs conn)))
 
 (defn- visible? [config principal {:keys [store-id]}]
   (if-let [authorize (:authorize config)]
@@ -249,6 +262,44 @@
                 :db {:store-id (parse-uuid store-id) :branch :db}
                 :payload nil})
     true))
+
+(defn visible-entries
+  "Active catalog entries the principal may read."
+  [{::keys [conn] :as config} principal]
+  (when conn
+    (->> (entry-refs conn)
+         (filter #(= :active (:state %)))
+         (filter #(visible? config principal %))
+         (map #(pull-entry conn %))
+         vec)))
+
+(defn visible-entry-page
+  "One bounded page of active catalog entries visible to `principal`.
+
+   Authorization and search happen on lightweight identity tuples before the
+   selected page's full configs are pulled. No cataloged database is opened."
+  [{::keys [conn] :as config} principal {:keys [q offset limit]
+                                         :or {offset 0 limit 24}}]
+  (when conn
+    (let [needle     (some-> q str/trim str/lower-case not-empty)
+          matches?   (fn [{:keys [name store-id]}]
+                       (or (nil? needle)
+                           (str/includes? (str/lower-case name) needle)
+                           (str/includes? (str/lower-case store-id) needle)))
+          authorized (->> (entry-refs conn)
+                          (filter #(= :active (:state %)))
+                          (filter matches?)
+                          (filter #(visible? config principal %))
+                          vec)
+          total      (count authorized)
+          offset     (min (max 0 offset) total)
+          limit      (min 100 (max 1 limit))
+          selected   (->> authorized (drop offset) (take limit))]
+      {:databases (mapv #(pull-entry conn %) selected)
+       :page {:offset offset
+              :limit limit
+              :total total
+              :has-more? (< (+ offset limit) total)}})))
 
 (defn routes
   "GET /databases for active entries the caller may read."
@@ -261,10 +312,7 @@
              (fn [{principal :datahike/principal}]
                (try
                  {:status 200
-                  :body (->> (entries conn)
-                             (filter #(= :active (:state %)))
-                             (filter #(visible? config principal %))
-                             vec)}
+                  :body (visible-entries config principal)}
                  (catch Exception e
                    (routes/error-response e))))}}]]))
 

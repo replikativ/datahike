@@ -1,8 +1,10 @@
 (ns datahike.http.server
   "HTTP server implementation for Datahike: `datahike.http.routes/handler`
-   behind Jetty, with swagger-ui at `/`, CORS, and — given a `:system-db` —
-   eacl-backed permissions. Embedding hosts want `datahike.http.routes`."
+   behind Jetty, with the operator page at `/`, Swagger UI at `/swagger`,
+   CORS, and — given a `:system-db` — eacl-backed permissions. Embedding hosts
+   want `datahike.http.routes`."
   (:require
+   [datahike.http.admin :as admin]
    [datahike.http.backends]
    [datahike.http.config :as server-config]
    [datahike.metrics :as metrics]
@@ -163,6 +165,7 @@
         handler (routes/handler config
                                 {:connections     connections
                                  :extra-routes    (concat [swagger-route]
+                                                          (admin/routes config connections)
                                                           (health-routes config connections)
                                                           [(version-route server-config)]
                                                           (keep identity [(metrics-route config connections)])
@@ -170,7 +173,7 @@
                                                           (permissions/routes config))
                                  :default-handler (ring/routes
                                                    (swagger-ui/create-swagger-ui-handler
-                                                    {:path   "/"
+                                                    {:path   "/swagger"
                                                      :config {:validatorUrl     nil
                                                               :operationsSorter "alpha"}})
                                                    (ring/create-default-handler))})]

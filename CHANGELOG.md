@@ -72,6 +72,12 @@ When something is added, it's typically marked *Experimental*. When the API cont
   authentication lands and PostgreSQL identities have defined EACL semantics.
   Credential-redacted catalog entries can be restored with deployment-side
   `:database-overrides`.
+- **The standalone server has a lightweight operator landing page.**
+  `/` and `/admin` show readiness, build identity, useful endpoints, and the
+  catalog entries visible to the supplied token; Swagger UI moves to
+  `/swagger`. The public static shell stores the token only in tab-scoped
+  session storage; all data still comes through the normally authenticated
+  `/version` and `/databases` APIs.
 
 - **Index warming is unified across the stack, and real on ClojureScript.**
   The breadth-first walk moved to persistent-sorted-set (>= 0.5.142), where

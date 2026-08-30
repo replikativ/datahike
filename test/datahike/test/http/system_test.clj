@@ -64,6 +64,37 @@
        #"replaced by :system-db"
        (system/configure {:auth-db {:store {:backend :memory}}}))))
 
+(deftest visible-catalog-pages-search-and-authorize-before-paging
+  (let [configured (system/configure {:system-db {:store {:backend :memory}}})
+        databases  (vec (for [n (range 30)]
+                          {:name (format "db-%02d" n)
+                           :store {:backend :memory :id (random-uuid)}}))]
+    (try
+      (doseq [database databases]
+        ((get configured system/register-key) database {:sub "root"}))
+      (let [page (system/visible-entry-page configured {:sub "root"}
+                                            {:offset 10 :limit 7})]
+        (is (= 30 (get-in page [:page :total])))
+        (is (= 7 (count (:databases page))))
+        (is (= "db-10" (get-in page [:databases 0 :name])))
+        (is (true? (get-in page [:page :has-more?]))))
+      (let [page (system/visible-entry-page configured {:sub "root"}
+                                            {:q "DB-2" :offset 0 :limit 24})]
+        (is (= 10 (get-in page [:page :total])))
+        (is (= (mapv #(format "db-%02d" %) (range 20 30))
+               (mapv :name (:databases page)))))
+      (let [allowed (set (map (comp str :id :store) (take 3 databases)))
+            restricted (assoc configured :authorize
+                              (fn [{:keys [db]}]
+                                (contains? allowed (str (:store-id db)))))
+            page (system/visible-entry-page restricted {:sub "reader"}
+                                            {:offset 0 :limit 2})]
+        (is (= 3 (get-in page [:page :total])))
+        (is (= 2 (count (:databases page))))
+        (is (true? (get-in page [:page :has-more?]))))
+      (finally
+        (system/close! configured)))))
+
 (deftest catalog-lifecycle-events-follow-durable-state
   (let [configured (system/configure
                     {:system-db {:store {:backend :memory}}})
