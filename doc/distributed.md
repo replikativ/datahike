@@ -357,6 +357,27 @@ without effective authentication. Configure a nonblank `:token` or a custom
 unauthenticated local development. `:dev-mode true` bypasses authentication and
 therefore never permits a public bind, even if a token is also present.
 
+### Kabel transport metrics
+
+Kabel can publish bounded transport metrics into the same
+`replikativ.metrics` registry used by Datahike. Put logical-message metrics
+inside Datahike's CBOR codec and wire-byte metrics outside it:
+
+```clojure
+(:require [kabel.metrics :as kabel-metrics])
+
+(peer/server-peer
+ S handler server-id
+ (comp application-middleware kabel-metrics/messages)
+ (comp datahike-cbor-middleware kabel-metrics/wire))
+```
+
+The counters cover message direction and type, application bytes, connection
+lifecycle, and pub/sub subscription lifecycle. Labels deliberately omit peer
+ids, URLs, and topics. When the peer shares a process with Datahike's HTTP
+routes, the counters appear automatically at `GET /prometheus`; another host
+can read the registry snapshot or choose its own exposition format.
+
 ### Developer nREPL
 
 nREPL is bundled but disabled by default. It evaluates arbitrary code in the
