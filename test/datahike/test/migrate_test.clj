@@ -56,8 +56,7 @@
                          :keep-history? true
                          :attribute-refs false}
           conn (utils/setup-db cfg)]
-      (let [report @(d/load-entities conn source-datoms)]
-        (is (= #{} (:tx-ops report))))
+      @(d/load-entities conn source-datoms)
       (is (= (into #{} source-datoms)
              (d/q '[:find ?e ?a ?v ?t ?op :where [?e ?a ?v ?t ?op]] @conn)))
       (teardown conn))))

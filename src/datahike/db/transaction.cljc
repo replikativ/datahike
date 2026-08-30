@@ -1396,7 +1396,7 @@
         ;; delta-local write from one that requires a wider snapshot audit.
         ;; Recording happens here (rather than at API input) so operations
         ;; returned by transaction functions are included as well.
-        report (update report :tx-ops (fnil conj #{}) op)]
+        report (update report :datahike/tx-ops (fnil conj #{}) op)]
     (case op
 
       :db/add [(transact-add report op-vec) []]
@@ -1809,7 +1809,7 @@
                       (interleave initial-es (repeat ::flush-tuples))
                       initial-es)
         initial-report (-> initial-report
-                           (update :tx-ops #(or % #{}))
+                           (update :datahike/tx-ops #(or % #{}))
                            (update :tx-meta
                                    #(merge {:db/txInstant (next-tx-instant db-before)} %)))
         ;; Reject zero-width or reverse valid-time windows. A tx
@@ -1946,7 +1946,7 @@
    the map goes out of scope when the import ends."
   [initial-report initial-es]
   (loop [report (-> initial-report
-                    (update :tx-ops #(or % #{}))
+                    (update :datahike/tx-ops #(or % #{}))
                     (update :db-after transient))
          es initial-es
          migration-state (or (:migration initial-report) {})]

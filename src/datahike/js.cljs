@@ -57,7 +57,6 @@
   #js {:db_before (:db-before report)
        :db_after  (:db-after report)
        :tx_data   (->> (:tx-data report) into-array)
-       :tx_ops    (->> (:tx-ops report) (map str) into-array)
        :tempids   (tempids->js (:tempids report))
        :tx_meta   (:tx-meta report)})
 
@@ -134,7 +133,6 @@
                                 (concat
                                  (map #(assoc % :added false) (d/datoms @conn :eavt))
                                  (d/datoms db :eavt)))
-                    :tx_ops    (array)
                     :tx_meta   tx-meta}]
     (reset! conn db)
     (doseq [[_ callback] @(:listeners (meta conn))]

@@ -166,9 +166,6 @@ async function testSchemaAndTransactions() {
   if (!schemaTx['tx-data'] || schemaTx['tx-data'].length === 0) {
     throw new Error('Schema transaction should have datoms');
   }
-  if (!schemaTx['tx-ops'] || !schemaTx['tx-ops'].includes(':db/add')) {
-    throw new Error('Transaction report should expose interpreted operation kinds');
-  }
   console.log(`  ✓ Schema transacted (${schemaTx['tx-data'].length} datoms)`);
   
   console.log('  Transacting data...');

@@ -8,28 +8,6 @@
 (def class-dir "target/classes")
 (def basis (b/create-basis {:project "deps.edn"}))
 
-(defn prep-lib
-  "Prepare the JVM interface required by Clojure consumers of a git dep.
-
-   The full Java API extends generated `DatahikeGenerated` and is built by the
-   release pipeline. A fresh git checkout has no generated source yet, so using
-   the full Java compilation as `:deps/prep-lib` made git dependencies
-   impossible to prepare."
-  [_]
-  (.mkdirs (io/file class-dir))
-  (let [classpath (str/join java.io.File/pathSeparator (:classpath-roots basis))
-        {:keys [exit]} (b/process
-                        {:command-args
-                         ["javac" "--release" "8"
-                          "-classpath" classpath
-                          "-d" class-dir
-                          "java/src/datahike/java/IEntity.java"
-                          "java/src/datahike/java/QueryResult.java"]})]
-    (when-not (zero? exit)
-      (throw (ex-info "Datahike git-dependency preparation failed"
-                      {:exit exit}))))
-  nil)
-
 (defn compile-java
   [_]
   (b/javac {:src-dirs ["java"]

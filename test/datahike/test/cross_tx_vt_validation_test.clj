@@ -222,7 +222,7 @@
     (let [conn (fresh-conn)
           _ (install-schema! conn)
           r (d/transact conn [{:p/k "y" :p/n 42}])]
-      (is (= #{:db-before :db-after :tx-data :tempids :tx-meta :tx-ops}
+      (is (= #{:db-before :db-after :tx-data :tempids :tx-meta}
              (set (keys r)))
           "TxReport carries only the canonical keys"))))
 
@@ -238,7 +238,7 @@
           r (d/transact conn {:tx-data [{:p/k "z" :p/n 7}]
                               :tx-meta {:db.valid/from #inst "2026-01-01"
                                         :db.valid/to #inst "2026-02-01"}})]
-      (is (= #{:db-before :db-after :tx-data :tempids :tx-meta :tx-ops}
+      (is (= #{:db-before :db-after :tx-data :tempids :tx-meta}
              (set (keys r)))))))
 
 ;; ============================================================================

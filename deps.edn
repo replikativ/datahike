@@ -85,7 +85,7 @@
 
  :deps/prep-lib {:ensure "target/classes"
                  :alias :build
-                 :fn prep-lib}
+                 :fn compile-java}
 
  :aliases {;; Development
 

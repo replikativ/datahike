@@ -127,12 +127,11 @@
     (fn [datoms] (map seq datoms))
 
     :tx-report->summary
-    (fn [{:keys [db-before db-after tx-meta tx-data tx-ops tempids]}]
+    (fn [{:keys [db-before db-after tx-meta tx-data tempids]}]
       {:tempids tempids
        :db-before (select-keys db-before [:max-tx :max-eid])
        :db-after (select-keys db-after [:max-tx :max-eid])
        :tx-meta tx-meta
-       :tx-ops tx-ops
        :tx-data (map seq tx-data)})})
 
 ;; =============================================================================
