@@ -138,7 +138,7 @@
                       (let [vc (get bound-var-cards v)] (number? vc)))
         bound-aware (when (seq bound-var-cards)
                       (estimate/estimate-pattern-with-bindings
-                       db pattern-info schema-info bound-var-cards))
+                       db pattern-info schema-info bound-var-cards est))
         output-est (long (or bound-aware est))
         scan-est (cond
                    (empty? bound-var-cards) est

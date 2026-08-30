@@ -1075,6 +1075,28 @@
       (assert-engines-agree db query [2500])
       (is (= #{["v2500"]} (d/q query db 2500))))))
 
+(deftest unrelated-scalar-input-preserves-range-scan-cardinality
+  ;; SQL queries commonly carry scalar parameters that do not occur in every
+  ;; pattern. Merely having one used to make plan-pattern-op recompute each
+  ;; pattern's bound-aware estimate from its unfiltered base, erasing an AVET
+  ;; range estimate. The presence marker then won the scan slot and the indexed
+  ;; range was demoted to an EAVT merge, turning a small range into a full scan.
+  (let [db (d/db-with
+            (db/empty-db {:item/id      {:db/unique :db.unique/identity}
+                          :item/present {:db/index true}})
+            (mapv (fn [i] {:item/id i :item/present true}) (range 1000)))
+        query '[:find ?e :in $ ?unused :where
+                [?e :item/present true]
+                [?e :item/id ?id]
+                [(< ?id 10)]]
+        explanation (q/explain query db :unrelated)]
+    (testing "the AVET range remains the driving scan"
+      (is (re-find #"scan: \[\?e :item/id \?id\] \[avet\]"
+                   explanation)))
+    (testing "the optimization preserves query semantics"
+      (assert-engines-agree db query [:unrelated])
+      (is (= 10 (count (d/q query db :unrelated)))))))
+
 (deftest bound-unindexed-filter-separates-scan-work-from-output-cardinality
   ;; Every candidate scan reads 5k datoms, but :item/category emits only 50
   ;; matches. Driving from it avoids category lookups for the other 4,950
