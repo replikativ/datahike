@@ -65,11 +65,24 @@ input, button { min-height: 2.75rem; border: 1px solid var(--line); border-radiu
 input { flex: 1; min-width: 8rem; padding: .65rem .8rem; color: var(--ink); background: rgba(255, 255, 255, .72); }
 button { padding: .6rem 1rem; color: white; background: var(--green); border-color: var(--green); cursor: pointer; font-weight: 700; }
 button:hover { filter: brightness(.94); }
+button:disabled { cursor: not-allowed; opacity: .45; filter: none; }
 button.secondary { color: var(--ink); background: transparent; border-color: var(--line); }
 .status { min-height: 1.4em; color: var(--muted); }
 .status.error { color: var(--red); }
 
+.activity { margin: 0 0 4rem; }
+.activity-note { margin: 0; color: var(--muted); font-size: .78rem; text-align: right; }
+.activity-grid { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 1px; margin: 1.2rem 0 0; overflow: hidden; border: 1px solid var(--line); border-radius: .8rem; background: var(--line); }
+.activity-grid div { min-width: 0; padding: 1rem; background: var(--panel); }
+.activity-grid dt { margin-bottom: .45rem; color: var(--muted); font-size: .72rem; }
+.activity-grid dd { margin: 0; font: 700 1rem ui-monospace, SFMono-Regular, Menlo, monospace; overflow-wrap: anywhere; }
+
 .catalog { margin-bottom: 4rem; }
+.catalog-tools { display: flex; align-items: center; justify-content: space-between; gap: 1rem; margin-top: 1rem; }
+.search, .pagination { display: flex; align-items: center; gap: .55rem; }
+.search input { width: min(22rem, 45vw); }
+.pagination span { min-width: 6rem; color: var(--muted); font: .78rem ui-monospace, SFMono-Regular, Menlo, monospace; text-align: center; }
+.sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
 .section-heading { display: flex; align-items: end; justify-content: space-between; gap: 1rem; padding-bottom: 1rem; border-bottom: 1px solid var(--line); }
 .count { display: inline-grid; place-items: center; min-width: 1.8rem; height: 1.8rem; margin-left: .4rem; padding: 0 .45rem; border-radius: 999px; color: var(--green); background: var(--green-soft); font: 700 .8rem ui-monospace, monospace; vertical-align: .15rem; }
 .database-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(270px, 1fr)); gap: 1rem; margin-top: 1.2rem; }
@@ -98,6 +111,12 @@ footer { max-width: 1180px; margin: 0 auto; padding: 0 2rem 2.5rem; color: var(-
   .token-row { flex-wrap: wrap; }
   .token-row input { flex-basis: 100%; }
   .endpoint-grid { grid-template-columns: 1fr; }
+  .activity-grid { grid-template-columns: 1fr 1fr; }
+  .activity-note { text-align: left; }
+  .catalog-tools { align-items: stretch; flex-direction: column; }
+  .search { flex-wrap: wrap; }
+  .search input { flex-basis: 100%; width: 100%; }
+  .pagination { justify-content: space-between; }
 }
 
 @media (prefers-color-scheme: dark) {

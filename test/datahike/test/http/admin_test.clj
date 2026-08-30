@@ -1,5 +1,6 @@
 (ns datahike.test.http.admin-test
   (:require
+   [clojure.edn :as edn]
    [clojure.string :as str]
    [clojure.test :refer [deftest is testing]]
    [datahike.http.server :as server]
@@ -48,13 +49,23 @@
           (is (str/includes? body "sessionStorage"))
           (is (str/includes? body "Authorization"))
           (is (str/includes? body "taggedValue"))
-          (is (str/includes? body "request(\"/databases\")"))
+          (is (str/includes? body "request(`/admin/status?${params}`)"))
           (is (not (str/includes? body "innerHTML")))))
 
       (testing "static visibility does not bypass API authentication"
         (is (= 401 (:status (request handler "/version"))))
         (is (= 401 (:status (request handler "/databases"))))
+        (is (= 401 (:status (request handler "/admin/status"))))
         (is (= 200 (:status (request handler "/version"
                                      {"authorization" (str "token " token)})))))
+
+      (testing "status is authenticated and does not require opening a catalog database"
+        (let [response (request handler "/admin/status"
+                                {"authorization" (str "token " token)
+                                 "accept" "application/edn"})
+              body     (edn/read-string (slurp (:body response)))]
+          (is (= 200 (:status response)))
+          (is (map? (:node body)))
+          (is (= [] (:databases body)))))
       (finally
         (system/close! (:datahike.http.server/config (meta handler)))))))
