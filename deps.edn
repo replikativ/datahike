@@ -171,7 +171,7 @@
                                ;; longer duplicated here: it is a main dep now,
                                ;; because declaring it twice is precisely how the
                                ;; tested and shipped versions came apart.
-                               org.replikativ/kabel          {:mvn/version "0.3.108"}
+                               org.replikativ/kabel          {:mvn/version "0.3.109"}
                                is.simm/distributed-scope     {:mvn/version "0.1.9"}
                                org.replikativ/konserve-sync  {:mvn/version "0.1.40"}
 
