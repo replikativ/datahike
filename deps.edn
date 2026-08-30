@@ -241,6 +241,7 @@
                                       metosin/reitit          {:mvn/version "0.10.1"}
                                       ring-cors/ring-cors     {:mvn/version "0.1.13"}
                                       nrepl/bencode           {:mvn/version "1.2.0"}
+                                      nrepl/nrepl             {:mvn/version "1.7.0"}
                                       org.clojure/tools.cli   {:mvn/version "1.4.256"}
                                       ch.qos.logback/logback-classic {:mvn/version "1.5.32"}
 

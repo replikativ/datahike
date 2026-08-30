@@ -141,7 +141,7 @@
         configured-timeout (promise)
         instance      (atom nil)]
     (with-redefs [server/app
-                  (fn [config _connections]
+                  (fn [config _connections _nrepl-status]
                     (with-meta
                       (fn [request]
                         (if (= "/slow" (:uri request))

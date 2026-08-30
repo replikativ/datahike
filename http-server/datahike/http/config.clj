@@ -55,6 +55,9 @@
    {:key :shutdown-timeout-ms :parse parse-nonnegative-long}
    {:key :level        :parse parse-level}
    {:key :log-format   :parse parse-log-format}
+   {:key :nrepl-port   :parse parse-port}
+   {:key :nrepl-bind   :parse non-blank}
+   {:key :nrepl-socket :parse non-blank}
    ;; A deployment-friendly shorthand for the full
    ;; {:system-db {:store {:backend :file :path ...}}} EDN shape.
    {:key :system-db-path :parse non-blank}])
@@ -75,6 +78,9 @@
    [nil "--shutdown-timeout-ms MILLIS" "Grace period for in-flight requests" :parse-fn parse-nonnegative-long]
    ["-l" "--level LEVEL" "Log level" :parse-fn parse-level]
    [nil "--log-format FORMAT" "Log format: text or json" :parse-fn parse-log-format]
+   [nil "--nrepl-port PORT" "Enable nREPL on a loopback TCP port" :parse-fn parse-port]
+   [nil "--nrepl-bind ADDRESS" "nREPL loopback bind address (default 127.0.0.1)" :parse-fn non-blank]
+   [nil "--nrepl-socket PATH" "Enable nREPL on an absolute Unix socket path" :parse-fn non-blank]
    [nil "--system-db-path PATH" "File-backed catalog and permissions database path" :parse-fn non-blank]
    ["-h" "--help" "Show this help"]
    [nil "--version" "Show the Datahike version"]])
@@ -140,7 +146,7 @@
                          :cause-class (.getName (class e))}
                         e))))))
 
-(defn- normalize-shorthands [config]
+(defn- normalize-system-db-path [config]
   (if (contains? config :system-db-path)
     (let [path (non-blank (:system-db-path config))]
       (-> config
@@ -148,6 +154,38 @@
           (assoc-in [:system-db :store :backend] :file)
           (assoc-in [:system-db :store :path] path)))
     config))
+
+(defn- normalize-nrepl-shorthands [config]
+  (let [nrepl-keys (select-keys config [:nrepl-port :nrepl-bind :nrepl-socket])]
+    (cond-> (apply dissoc config (keys nrepl-keys))
+      (seq nrepl-keys)
+      (assoc :nrepl (cond-> {}
+                      (contains? nrepl-keys :nrepl-port)
+                      (assoc :port (:nrepl-port nrepl-keys))
+                      (contains? nrepl-keys :nrepl-bind)
+                      (assoc :bind (:nrepl-bind nrepl-keys))
+                      (contains? nrepl-keys :nrepl-socket)
+                      (assoc :socket (:nrepl-socket nrepl-keys)))))))
+
+(defn- merge-nrepl [lower higher]
+  (cond
+    (not (contains? higher :nrepl)) (:nrepl lower)
+    (nil? (:nrepl higher)) nil
+    (not (map? (:nrepl higher))) (:nrepl higher)
+    :else
+    (let [override (:nrepl higher)
+          base (cond
+                 (contains? override :socket) (dissoc (:nrepl lower) :port :bind)
+                 (contains? override :port) (dissoc (:nrepl lower) :socket)
+                 :else (:nrepl lower))]
+      (merge base override))))
+
+(defn- merge-layers [lower higher]
+  (let [nrepl (merge-nrepl lower higher)
+        merged (merge lower higher)]
+    (if (or (contains? lower :nrepl) (contains? higher :nrepl))
+      (assoc merged :nrepl nrepl)
+      merged)))
 
 (defn- loopback-addresses [host]
   (when (and (string? host) (not (str/blank? host)))
@@ -165,6 +203,42 @@
    unauthenticated standalone server."
   [host]
   (boolean (loopback-addresses host)))
+
+(defn assert-safe-nrepl!
+  "Validate and normalize optional nREPL configuration. TCP nREPL is always
+   restricted to loopback because nREPL evaluates arbitrary JVM code and has
+   no authentication layer of its own."
+  [config]
+  (if-not (contains? config :nrepl)
+    config
+    (let [nrepl (:nrepl config)
+          fail (fn [message data]
+                 (throw (ex-info message
+                                 (assoc data :type :datahike.http/invalid-nrepl))))]
+      (cond
+        (nil? nrepl) (dissoc config :nrepl)
+        (not (map? nrepl)) (fail ":nrepl must be a map" {:nrepl nrepl})
+        (seq (remove #{:port :bind :socket} (keys nrepl)))
+        (fail ":nrepl contains unsupported keys" {:keys (keys nrepl)})
+        (= (contains? nrepl :port) (contains? nrepl :socket))
+        (fail ":nrepl must contain exactly one of :port or :socket" {})
+        (contains? nrepl :socket)
+        (cond
+          (contains? nrepl :bind)
+          (fail ":nrepl :bind cannot be used with :socket" {})
+          (or (not (string? (:socket nrepl))) (str/blank? (:socket nrepl)))
+          (fail ":nrepl :socket must be a nonblank string" {})
+          (not (.isAbsolute (io/file (:socket nrepl))))
+          (fail ":nrepl :socket must be an absolute path" {:socket (:socket nrepl)})
+          :else config)
+        :else
+        (let [port (:port nrepl)
+              bind (get nrepl :bind "127.0.0.1")]
+          (when-not (and (integer? port) (<= 0 port 65535))
+            (fail ":nrepl :port must be an integer from 0 through 65535" {:port port}))
+          (if-let [addresses (loopback-addresses bind)]
+            (assoc config :nrepl (assoc nrepl :bind (.getHostAddress ^InetAddress (first addresses))))
+            (fail ":nrepl :bind must resolve only to loopback addresses" {:bind bind})))))))
 
 (defn- configured-authentication?
   [{:keys [dev-mode auth token validator]}]
@@ -225,8 +299,9 @@
 
        :else
        (let [path   (or (:config options) positional-file)
-             config (-> (merge (file-config path)
-                               (env-config env)
-                               (cli-config options))
-                        normalize-shorthands)]
+             layers (map normalize-nrepl-shorthands
+                         [(file-config path) (env-config env) (cli-config options)])
+             config (-> (reduce merge-layers {} layers)
+                        normalize-system-db-path
+                        assert-safe-nrepl!)]
          {:action :run :config config})))))

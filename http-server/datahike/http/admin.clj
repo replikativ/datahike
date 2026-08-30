@@ -58,14 +58,15 @@
     (authorize {:op :admin :principal principal :db nil :payload nil})
     true))
 
-(defn- status-response [config connections principal page-options]
+(defn- status-response [config connections nrepl-status principal page-options]
   (try
     (let [runtime (metrics/runtime-snapshot connections)
           ;; Do not let viewing the dashboard alter its query statistics.
           page    (binding [metrics/*query-metrics?* false]
                     (system/visible-entry-page config principal page-options))]
       {:status 200
-       :body {:node (when (server-admin? config principal) (:node runtime))
+       :body {:node (when (server-admin? config principal)
+                      (assoc (:node runtime) :nrepl @nrepl-status))
               :page (:page page)
               :databases
               (mapv (fn [{:keys [store-id] :as database}]
@@ -84,8 +85,9 @@
 (defn routes
   "Public shell and assets. Data is fetched from the normally authenticated
    `/version` and `/admin/status` APIs, so this introduces no authorization path."
-  [config connections]
-  (cond-> [["/"
+  ([config connections] (routes config connections (atom {:enabled false})))
+  ([config connections nrepl-status]
+   [["/"
     {:public? true
      :get {:no-doc true
            :metric-op :admin
@@ -113,15 +115,14 @@
    ["/admin/datahike-logo.svg"
     {:public? true
      :get {:no-doc true
-           :handler (fn [_] (asset-response :logo))}}]]
-    (get config system/conn-key)
-    (conj ["/admin/status"
-           {:get {:no-doc true
-                  :metric-op :read
-                  :parameters {:query [:map
-                                       [:q {:optional true} :string]
-                                       [:offset {:optional true :default 0} [:int {:min 0}]]
-                                       [:limit {:optional true :default 24} [:int {:min 1 :max 100}]]]}
-                  :handler (fn [{{query :query} :parameters
-                                 principal :datahike/principal}]
-                             (status-response config connections principal query))}}])))
+           :handler (fn [_] (asset-response :logo))}}]
+    ["/admin/status"
+     {:get {:no-doc true
+            :metric-op :read
+            :parameters {:query [:map
+                                 [:q {:optional true} :string]
+                                 [:offset {:optional true :default 0} [:int {:min 0}]]
+                                 [:limit {:optional true :default 24} [:int {:min 1 :max 100}]]]}
+            :handler (fn [{{query :query} :parameters
+                           principal :datahike/principal}]
+                       (status-response config connections nrepl-status principal query))}}]]))

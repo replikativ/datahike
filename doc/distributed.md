@@ -321,11 +321,14 @@ CLI flags, then `DATAHIKE_*` environment variables, then the EDN file. The
 supported environment variables are `DATAHIKE_PORT`, `DATAHIKE_HOST`,
 `DATAHIKE_TOKEN`, `DATAHIKE_DEV_MODE`, `DATAHIKE_LEVEL`,
 `DATAHIKE_LOG_FORMAT`, `DATAHIKE_SHUTDOWN_TIMEOUT_MS`, and
-`DATAHIKE_SYSTEM_DB_PATH`. Log format is `text` by default and accepts `json`.
+`DATAHIKE_SYSTEM_DB_PATH`. Optional nREPL overrides are
+`DATAHIKE_NREPL_PORT`, `DATAHIKE_NREPL_BIND`, and `DATAHIKE_NREPL_SOCKET`.
+Log format is `text` by default and accepts `json`.
 `DATAHIKE_TOKEN_FILE` reads the token from a Docker or Kubernetes secret mount
 without putting it in the process environment. CLI uses the corresponding
 `--port`, `--host`, `--token`, `--dev-mode`, `--level`, `--log-format`,
 `--shutdown-timeout-ms`, `--system-db-path`, and `--token-file` options.
+The nREPL flags are `--nrepl-port`, `--nrepl-bind`, and `--nrepl-socket`.
 
 The edn configuration file looks like:
 
@@ -350,6 +353,41 @@ without effective authentication. Configure a nonblank `:token` or a custom
 `:validator`, or use an explicit loopback host such as `:host "127.0.0.1"` for
 unauthenticated local development. `:dev-mode true` bypasses authentication and
 therefore never permits a public bind, even if a token is also present.
+
+### Developer nREPL
+
+nREPL is bundled but disabled by default. It evaluates arbitrary code in the
+server JVM and does not inherit HTTP authentication. Enable either a TCP
+loopback endpoint:
+
+```clojure
+{:nrepl {:port 7888 :bind "127.0.0.1"}}
+```
+
+or, on JDK 17 and newer, an absolute Unix-domain socket:
+
+```clojure
+{:nrepl {:socket "/run/datahike-nrepl/nrepl.sock"}}
+```
+
+TCP binds are always restricted to addresses that resolve only to loopback;
+configuring an HTTP token does not relax this guard. The Unix socket's parent
+directory and filesystem permissions are deployment-owned. `:port` and
+`:socket` are mutually exclusive. A requested nREPL that cannot start aborts
+server startup, and its endpoint is stopped and its socket removed during the
+normal server shutdown lifecycle.
+
+For remote development, forward rather than expose nREPL. OpenSSH can map a
+local TCP port directly to the server's Unix socket:
+
+```bash
+ssh -N -L 7888:/run/datahike-nrepl/nrepl.sock datahike-host
+```
+
+The authenticated `GET /admin/status` response reports whether nREPL is
+enabled and its resolved transport endpoint. Inside an nREPL session,
+`datahike.http.repl/config`, `catalog`, `runtime`, and `loaded-connections`
+provide read-only conveniences for inspecting the owning server instance.
 
 On SIGTERM or normal JVM shutdown, the standalone launcher first stops
 accepting requests, waits up to `:shutdown-timeout-ms` (30 seconds by default)

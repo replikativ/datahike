@@ -7,6 +7,7 @@
    [datahike.http.admin :as admin]
    [datahike.http.backends]
    [datahike.http.config :as server-config]
+   [datahike.http.nrepl :as server-nrepl]
    [datahike.metrics :as metrics]
    [datahike.http.permissions :as permissions]
    [datahike.http.pg :as pg]
@@ -156,33 +157,35 @@
    This handler exposes process metrics but does not install a global Konserve
    sink: an embedding host owns that lifecycle. `start-server` installs and
    reference-counts the standalone server's sink."
-  [config connections]
-  (let [server-config config
-        config  (system/configure config)
-        config  (if (get config system/conn-key)
-                  (permissions/configure config)
-                  config)
-        handler (routes/handler config
-                                {:connections     connections
-                                 :extra-routes    (concat [swagger-route]
-                                                          (admin/routes config connections)
-                                                          (health-routes config connections)
-                                                          [(version-route server-config)]
-                                                          (keep identity [(metrics-route config connections)])
-                                                          (system/routes config)
-                                                          (permissions/routes config))
-                                 :default-handler (ring/routes
-                                                   (swagger-ui/create-swagger-ui-handler
-                                                    {:path   "/swagger"
-                                                     :config {:validatorUrl     nil
-                                                              :operationsSorter "alpha"}})
-                                                   (ring/create-default-handler))})]
-    ;; CORS outermost, so the gate's own 401/413 carry the headers too.
-    (with-meta (wrap-cors handler
-                          :access-control-allow-origin (or (:access-control-allow-origin config)
-                                                           [#"http://localhost" #"http://localhost:8080"])
-                          :access-control-allow-methods [:get :put :post :delete])
-      (assoc (meta handler) ::config config))))
+  ([config connections]
+   (app config connections (server-nrepl/status-atom)))
+  ([config connections nrepl-status]
+   (let [server-config config
+         config  (system/configure config)
+         config  (if (get config system/conn-key)
+                   (permissions/configure config)
+                   config)
+         handler (routes/handler config
+                                 {:connections     connections
+                                  :extra-routes    (concat [swagger-route]
+                                                           (admin/routes config connections nrepl-status)
+                                                           (health-routes config connections)
+                                                           [(version-route server-config)]
+                                                           (keep identity [(metrics-route config connections)])
+                                                           (system/routes config)
+                                                           (permissions/routes config))
+                                  :default-handler (ring/routes
+                                                    (swagger-ui/create-swagger-ui-handler
+                                                     {:path   "/swagger"
+                                                      :config {:validatorUrl     nil
+                                                               :operationsSorter "alpha"}})
+                                                    (ring/create-default-handler))})]
+     ;; CORS outermost, so the gate's own 401/413 carry the headers too.
+     (with-meta (wrap-cors handler
+                           :access-control-allow-origin (or (:access-control-allow-origin config)
+                                                            [#"http://localhost" #"http://localhost:8080"])
+                           :access-control-allow-methods [:get :put :post :delete])
+       (assoc (meta handler) ::config config)))))
 
 (defonce ^:private owned
   ;; server -> what it opened, so `stop-server` can close it without a
@@ -230,46 +233,60 @@
            (when configurator
              (configurator server)))))
 
-(defn- cleanup-owned! [connections config pg-listener metrics-lease]
+(defn- cleanup-owned! [connections config nrepl-resource pg-listener metrics-lease]
   (try
-    (pg/stop! pg-listener)
+    (server-nrepl/stop! nrepl-resource)
     (finally
       (try
-        (routes/release-all! connections)
+        (pg/stop! pg-listener)
         (finally
           (try
-            (system/close! config)
+            (routes/release-all! connections)
             (finally
-              (release-metrics-sink! metrics-lease))))))))
+              (try
+                (system/close! config)
+                (finally
+                  (release-metrics-sink! metrics-lease))))))))))
 
 (defn start-server
   "Start Jetty and acquire the standalone server's shared Konserve metric sink
    unless `:metrics` is false. `stop-server` releases both."
   [config]
-  (let [config      (server-config/assert-safe-bind! config)
+  (let [requested-config (-> config
+                             server-config/assert-safe-nrepl!
+                             server-config/assert-safe-bind!)
+        config      requested-config
         timeout     (shutdown-timeout config)
         connections (atom {})
-        app         (app config connections)
+        nrepl-status (server-nrepl/status-atom)
+        app         (app config connections nrepl-status)
         config      (::config (meta app))
         jetty-config (with-graceful-shutdown config timeout)
         pg-listener (try
                       (pg/start! config connections)
                       (catch Throwable t
-                        (cleanup-owned! connections config nil nil)
+                        (cleanup-owned! connections config nil nil nil)
                         (throw t)))
         metrics-lease (try
                         (when-not (false? (:metrics config))
                           (acquire-metrics-sink!))
                         (catch Throwable t
-                          (cleanup-owned! connections config pg-listener nil)
+                          (cleanup-owned! connections config nil pg-listener nil)
                           (throw t)))
+        nrepl-resource (try
+                         (server-nrepl/start! config (routes/redact requested-config)
+                                              connections nrepl-status)
+                         (catch Throwable t
+                           (cleanup-owned! connections config nil pg-listener metrics-lease)
+                           (throw t)))
         server      (try (run-jetty app jetty-config)
                          (catch Throwable t
                            ;; Nothing owns what `app` opened if Jetty never started.
-                           (cleanup-owned! connections config pg-listener metrics-lease)
+                           (cleanup-owned! connections config nrepl-resource pg-listener metrics-lease)
                            (throw t)))]
     (swap! owned assoc server {:connections connections
                                :config config
+                               :nrepl-resource nrepl-resource
                                :pg-listener pg-listener
                                :metrics-lease metrics-lease})
     server))
@@ -281,11 +298,11 @@
    twice."
   [^org.eclipse.jetty.server.Server server]
   (let [[before _] (swap-vals! owned dissoc server)
-        {:keys [connections config pg-listener metrics-lease]} (get before server)]
+        {:keys [connections config nrepl-resource pg-listener metrics-lease]} (get before server)]
     (try (.stop server)
          (finally
            (when connections
-             (cleanup-owned! connections config pg-listener metrics-lease))))))
+             (cleanup-owned! connections config nrepl-resource pg-listener metrics-lease))))))
 
 (defn- shutdown-hook [server config]
   (Thread.
