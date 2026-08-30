@@ -4309,10 +4309,80 @@
 ;; ---------------------------------------------------------------------------
 ;; Relation-based execution (fallback path for predicates, functions, etc.)
 
+(defn- bound-probe-score
+  "Return the number of distinct upstream keys with which `op` can drive an
+   index seek, or nil when executing it as a scan would still walk/filter its
+   full extent.
+
+   This deliberately uses the same eligibility and cost threshold as
+   `scan-datoms`: choosing a different entity-group driver must not turn a
+   selective merge into thousands of point seeks that are dearer than the
+   existing sequential scan."
+  [db op rels]
+  (let [[_ a _] (:clause op)
+        resolved-a (when (and (some? a) (not (symbol? a))) (resolve-attr db a))
+        scan-n (long (or (:estimated-card op) 0))]
+    (when (and (pos? scan-n) (some? resolved-a))
+      (when-let [probe (pattern-probe-set db (:clause op) resolved-a rels scan-n)]
+        (let [k (long (probe-set-size (:values probe)))
+              field (int (:field probe))
+              seek-index (if (== field 2) (:avet db) (:eavt db))]
+          (when (and (:seekable? probe)
+                     (pss-instance? seek-index)
+                     (< (* k (long probe-driven-threshold)) scan-n))
+            k))))))
+
+(defn- parameterize-entity-group
+  "Choose an entity-group's driving pattern again from ACTUAL upstream
+   bindings.
+
+   Group assembly chooses a driver before an earlier group has produced its
+   join values.  Consequently a broad existence pattern can become the scan
+   while an indexed `[?child :parent/id ?parent-id]` is frozen as a per-entity
+   merge.  Once `?parent-id` is bound, that shape is structurally backwards:
+   it scans every child and only then checks the parent id.
+
+   When one of the ordinary merge patterns can perform a selective EAVT/AVET
+   point seek from the live relation, rotate it into the scan slot.  The old
+   scan remains an ordinary same-entity merge, so cardinality, repeated-value
+   equality, and duplicate/fan-out semantics are still handled by the existing
+   fused relation + `collapse-rels` machinery.  We intentionally decline:
+
+   * optional and anti merges (they cannot drive without changing semantics),
+   * a scan whose predicate pushdown would be lost after rotation, and
+   * a variable-attribute old scan (not executable as an EAVT merge).
+
+   LIMIT demand is likewise unaffected: multi-group relation execution remains
+   materialized and the final distinct/order/offset/limit stage owns demand."
+  [db scan-op merge-ops rels]
+  (if (or (empty? rels)
+          (seq (:pushdown-preds scan-op))
+          (not (plan/can-be-merge? scan-op)))
+    [scan-op merge-ops]
+    (let [current-score (long (or (bound-probe-score db scan-op rels)
+                                  (:estimated-card scan-op)
+                                  #?(:clj Long/MAX_VALUE :cljs js/Number.MAX_SAFE_INTEGER)))
+          candidates
+          (keep-indexed
+           (fn [i op]
+             (when (and (not (:optional? op))
+                        (not (:anti? op))
+                        (plan/can-be-merge? op))
+               (when-let [score (bound-probe-score db op rels)]
+                 (when (< (long score) current-score)
+                   [score i op]))))
+           merge-ops)]
+      (if-let [[_ i new-scan] (when (seq candidates)
+                                (apply min-key first candidates))]
+        [(assoc new-scan :join-method :scan)
+         (assoc merge-ops i (assoc scan-op :join-method :lookup))]
+        [scan-op merge-ops]))))
+
 (defn- execute-fused-scan-rel
   "Execute an entity-group as a fused scan, returning a Relation."
   [db scan-op merge-ops context]
-  (let [cancel (:cancel context)
+  (let [[scan-op merge-ops] (parameterize-entity-group db scan-op merge-ops (:rels context))
+        cancel (:cancel context)
         {:keys [clause index pushdown-preds]} scan-op
         [e a v tx] clause
         resolved-a (when (and (some? a) (not (symbol? a))) (resolve-attr db a))

@@ -135,6 +135,65 @@
                             [?e :name "Ivan"] [?e :age ?a]
                             [?e1 :age ?a] [?e1 :last-name ?l]])))
 
+(deftest indexed-cross-group-value-binding-drives-avet
+  ;; Model the SQL shape:
+  ;;   parent p JOIN fact f ON f.parent_id = p.id
+  ;;   WHERE p.selected ORDER BY f.id LIMIT 10
+  ;;
+  ;; The fact group deliberately contains a broad existence pattern. Static
+  ;; entity-group assembly picks that as its scan and places the indexed
+  ;; parent-id clause in the merge slot. Once the parent group has produced
+  ;; ?join, execution must rotate the indexed clause into the scan slot rather
+  ;; than walk every fact.
+  (let [n 6000
+        schema {:parent/selected {}
+                :parent/id       {}
+                :parent/label    {}
+                :fact/exists     {}
+                :fact/parent     {:db/index true}
+                :fact/id         {}}
+        parents [{:db/id 1 :parent/selected true :parent/id 42 :parent/label "a"}
+                 ;; Same join key, distinct projected row: verifies that
+                 ;; deduplicating AVET seek keys does not lose upstream fan-out.
+                 {:db/id 2 :parent/selected true :parent/id 42 :parent/label "b"}]
+        facts (mapv (fn [i]
+                      {:db/id (+ 100 i)
+                       :fact/exists true
+                       :fact/parent (mod i 100)
+                       :fact/id i})
+                    (range n))
+        db (d/db-with (db/empty-db schema) (into parents facts))
+        query '[:find ?fid ?label
+                :where
+                [?p :parent/selected true]
+                [?p :parent/id ?join]
+                [?p :parent/label ?label]
+                [?f :fact/exists true]
+                [?f :fact/parent ?join]
+                [?f :fact/id ?fid]]
+        expected (into #{} (for [i (range 42 n 100), label ["a" "b"]]
+                             [i label]))
+        seeks (atom 0)
+        orig-seek @#'ex/probe-driven-iterable]
+    ;; Force the relation executor: that is the production path used when SQL
+    ;; ORDER BY/LIMIT and other non-direct post-processing are present.
+    (with-redefs [ex/can-direct-fuse? (constantly false)
+                  ex/probe-driven-iterable
+                  (fn [& args]
+                    (swap! seeks inc)
+                    (apply orig-seek args))]
+      (binding [q/*disable-planner* false q/*query-result-cache?* false]
+        (testing "the indexed child value is parameterized from the parent relation"
+          (is (= expected (d/q query db)))
+          (is (pos? @seeks)
+              "the fact group must use AVET seeks, not scan :fact/exists"))
+        (testing "ordered demand remains a final-stage concern and stays correct"
+          (is (= (take 10 (sort expected))
+                 (d/q {:query query
+                       :args [db]
+                       :order-by '[?fid :asc ?label :asc]
+                       :limit 10}))))))))
+
 ;; ---------------------------------------------------------------------------
 ;; Phase 3: OR support
 
