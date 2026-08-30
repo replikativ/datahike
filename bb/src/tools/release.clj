@@ -96,6 +96,8 @@
     (case cmd
       "jar" (->> (build/jar-path config (-> config :build :clj))
                  (gh-release config))
+      "http-server" (->> (build/jar-path config (-> config :build :http-server-standalone))
+                         (gh-release config))
       "native-image" (->> (zip-cli config :native-cli)
                           (gh-release config))
       "libdatahike" (->> (zip-lib config :libdatahike)

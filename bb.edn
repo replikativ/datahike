@@ -12,6 +12,7 @@
                     [tools.clj-kondo :as clj-kondo-tools]
                     [tools.deploy :as deploy]
                     [tools.examples :as examples]
+                    [tools.http-server :as http-server]
                     [tools.npm :as npm]
                     [tools.python :as python]
                     [tools.reflection :as reflection]
@@ -164,23 +165,36 @@
                                :depends [http-server-clean jcompile]
                                :task    (build/compile-java (-> config :build :http-server-clj))}
 
-         http-server-ccompile {:doc  "Compile clojure namespaces for http-server"
+         http-server-ccompile {:doc  "Compile clojure namespaces for the standalone http-server"
+                               :depends [http-server-jar]
                                :task (build/compile-clojure (-> config :build :http-server-clj))}
 
          http-server-pom {:doc  "Create pom file"
                           :task (build/pom config (-> config :build :http-server-clj))}
 
-         http-server-uber {:doc     "Build jar"
-                           :depends [http-server-jcompile http-server-pom http-server-ccompile version-resource]
-                           :task    (build/uber config (-> config :build :http-server-clj))}
+         http-server-jar {:doc     "Build the thin server jar"
+                           :depends [http-server-jcompile http-server-pom version-resource]
+                           :task    (build/jar config (-> config :build :http-server-clj))}
 
-         http-server-install {:doc  "Install uber jar locally"
+         http-server-uber {:doc     "Build the executable standalone server jar"
+                           :depends [http-server-ccompile]
+                           :task    (build/uber config (-> config :build :http-server-standalone))}
+
+         http-server-smoke {:doc "Smoke-test the packaged standalone server jar"
+                            :task (http-server/smoke! config)}
+
+         http-server-install {:doc  "Install the thin server jar locally"
+                              :depends [http-server-jar]
                               :task (deploy/local config (-> config :build :http-server-clj))}
 
-         http-server-release {:doc     "Build and release jar to GitHub"
+         http-server-clojars {:doc "Deploy the thin server jar to Clojars"
+                              :depends [http-server-jar]
+                              :task (deploy/remote config (-> config :build :http-server-clj))}
+
+         http-server-release {:doc     "Build and release the standalone jar to GitHub"
                               :depends [http-server-uber]
-                              :task    (let [jar (build/jar-path config (-> config :build :http-server-clj))]
-                                         (release/gh-release jar config))}
+                              :task    (let [jar (build/jar-path config (-> config :build :http-server-standalone))]
+                                         (release/gh-release config jar))}
 
          ;; native image
 

@@ -18,6 +18,13 @@
   (b/create-basis (cond-> {:project deps-file}
                     aliases (assoc :aliases aliases))))
 
+(defn artifact-basis
+  "The resolved basis after removing dependencies deliberately omitted from a
+   published artifact. Compilation still uses the full basis."
+  [{:keys [basis-exclusions] :as project-config}]
+  (cond-> (basis project-config)
+    (seq basis-exclusions) (update :libs #(apply dissoc % basis-exclusions))))
+
 (defn write-version-resource
   "Writes version and commit resources for embedding in builds."
   [repo-config]
@@ -59,7 +66,7 @@
                 :class-dir class-dir
                 :lib lib
                 :version (version/string repo-config)
-                :basis (basis project-config)
+                :basis (artifact-basis project-config)
                 :scm (assoc scm :tag (version/sha))})
   (println "Done." "Saved to" (pom-path project-config)))
 
@@ -75,8 +82,18 @@
 
 (defn jar
   "Builds jar file"
-  [repo-config {:keys [class-dir target-dir src-dirs resource-dir] :as project-config}]
+  [repo-config {:keys [class-dir target-dir src-dirs resource-dir class-exclusions vendored-deps]
+                :as project-config}]
   (print (str "Packaging jar at '" target-dir "'..."))
+  (doseq [path class-exclusions]
+    (fs/delete-if-exists (fs/path class-dir path)))
+  (let [resolved (basis project-config)]
+    (doseq [coordinate vendored-deps
+            :let [paths (get-in resolved [:libs coordinate :paths])]]
+      (when-not (seq paths)
+        (throw (ex-info (str "Vendored dependency has no resolved paths: " coordinate)
+                        {:coordinate coordinate})))
+      (b/copy-dir {:src-dirs paths :target-dir class-dir})))
   (b/copy-dir {:src-dirs (filter identity (conj src-dirs resource-dir))
                :target-dir class-dir})
   (b/jar {:class-dir class-dir
@@ -91,7 +108,7 @@
                :target-dir class-dir})
   (b/uber {:class-dir class-dir
            :uber-file (jar-path repo-config project-config)
-           :basis (basis project-config)
+           :basis (artifact-basis project-config)
            :main main})
   (println "Done."))
 

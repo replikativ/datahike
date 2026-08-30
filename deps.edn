@@ -144,7 +144,7 @@
                                                                            io.replikativ/konserve]}
 
                                ;; http server
-                               io.github.whilo/eacl {:git/url "https://github.com/whilo/eacl.git"
+                                      io.github.whilo/eacl {:git/url "https://github.com/whilo/eacl.git"
                                                      :git/sha "c11c3f855a5f795a2b66a0293a64dde7fe82d898"
                                                      :deps/root "modules/eacl-datahike"
                                                      ;; The fork's source-only datahike backend, until
@@ -209,6 +209,18 @@
            :deploy {:extra-deps {slipset/deps-deploy {:mvn/version "0.2.5"}}}
 
            :http-server {:extra-paths ["http-server"]
+                         ;; These libraries are cross-platform, but the standalone
+                         ;; server is JVM-only. Their ClojureScript compiler edges
+                         ;; are needed to build CLJS consumers, not to run the JVM
+                         ;; namespaces packaged below. Keep the exclusions scoped
+                         ;; to this artifact so Datahike's browser builds retain
+                         ;; their normal dependency graph.
+                         :override-deps {org.replikativ/konserve
+                                         {:mvn/version "0.9.391"
+                                          :exclusions [org.clojure/clojurescript]}
+                                         com.github.pkpkpk/cljs-cache
+                                         {:mvn/version "1.0.21"
+                                          :exclusions [org.clojure/clojurescript]}}
                          :extra-deps {io.github.whilo/eacl {:git/url "https://github.com/whilo/eacl.git"
                                                      :git/sha "c11c3f855a5f795a2b66a0293a64dde7fe82d898"
                                                      :deps/root "modules/eacl-datahike"
@@ -216,6 +228,14 @@
                                                      ;; upstream dev.eacl/eacl-datahike ships a jar that
                                                      ;; is not AOT-compiled for a newer JDK.
                                                      :exclusions [org.replikativ/datahike]}
+                                      ;; Direct declarations make the vendored
+                                      ;; source-only eacl modules' runtime graph
+                                      ;; representable in datahike-http-server's
+                                      ;; generated Maven POM.
+                                      com.rpl/specter          {:mvn/version "1.1.4"}
+                                      org.clojure/core.cache   {:mvn/version "1.1.234"}
+                                      instaparse/instaparse    {:mvn/version "1.5.0"}
+                                      org.clojure/tools.logging {:mvn/version "1.3.0"}
                                       ring/ring-core          {:mvn/version "1.15.5"}
                                       ring/ring-jetty-adapter {:mvn/version "1.15.5"}
                                       metosin/reitit          {:mvn/version "0.10.1"}
