@@ -313,7 +313,10 @@ backends through ordinary dependency configuration. To build both artifacts
 locally, clone this repository and run `bb http-server-uber`; the results are
 written to `target-http-server/`. `bb http-server-smoke` runs the packaged
 executable against its public shell, authenticated catalog, backend inventory,
-and Prometheus endpoint.
+and Prometheus endpoint. The executable uses a small Java launcher and loads
+its Clojure sources on the target JVM. This keeps it portable across ordinary
+OpenJDK and GraalVM builds instead of freezing build-JVM probes into AOT
+bytecode.
 
 The old positional `path/to/config.edn` form remains supported. Run with
 `--help` for all deployment overrides. Configuration precedence is explicit
@@ -388,6 +391,60 @@ The authenticated `GET /admin/status` response reports whether nREPL is
 enabled and its resolved transport endpoint. Inside an nREPL session,
 `datahike.http.repl/config`, `catalog`, `runtime`, and `loaded-connections`
 provide read-only conveniences for inspecting the owning server instance.
+
+### Docker and Podman
+
+Each GitHub release publishes the same standalone JAR as a non-root,
+multi-platform image for `linux/amd64` and `linux/arm64`:
+
+```bash
+docker pull ghcr.io/replikativ/datahike-server:latest
+docker volume create datahike-data
+docker run --name datahike --detach \
+  --publish 4444:4444 \
+  --stop-timeout 40 \
+  --mount type=volume,source=datahike-data,target=/var/lib/datahike \
+  --env DATAHIKE_TOKEN='replace-with-a-long-random-token' \
+  ghcr.io/replikativ/datahike-server:latest
+```
+
+Podman accepts the same image and equivalent arguments. For reproducible
+deployments, replace `latest` with the full Datahike version tag, for example
+`0.8.1856`. Stable minor tags such as `0.8` are also published. The container
+listens on port 4444, stores its system catalog under `/var/lib/datahike`, and
+runs as UID/GID `10001:10001`. A bind-mounted data directory must be writable
+by that identity. Database file paths should also live below a persistent
+mount; persisting the catalog does not implicitly persist arbitrary database
+paths from client configuration.
+
+The public container bind still requires effective authentication, so startup
+fails unless a token, token file, or custom configuration provides it. Mount a
+complete EDN file and append `--config /path/config.edn` to the image command
+when environment shorthands are insufficient. `JAVA_TOOL_OPTIONS` remains
+available for JVM sizing. The inline token above is concise for a first local
+run but remains visible in container metadata; production deployments should
+mount a secret readable by UID 10001 and set `DATAHIKE_TOKEN_FILE` to its
+in-container path.
+
+The image has a built-in health check against `/health/live`. Its Java process is
+PID 1 and receives SIGTERM directly. Docker's default ten-second stop timeout
+is shorter than Datahike's 30-second graceful drain, hence the explicit
+`--stop-timeout 40` above; use `stop_grace_period: 40s` in Compose or an
+equivalent Kubernetes termination grace period.
+
+TCP nREPL deliberately binds only inside the container's loopback namespace,
+so publishing that TCP port does not expose it. For remote development, enable
+the Unix socket, mount `/run/datahike-nrepl` into a host directory owned by
+UID/GID 10001, and forward that socket over SSH.
+
+To build and smoke-test the image locally after cloning the repository, run:
+
+```bash
+bb http-server-container-smoke
+```
+
+Docker is used when available, with Podman as a fallback. Set
+`DATAHIKE_CONTAINER_ENGINE=podman` (or `docker`) to choose explicitly.
 
 On SIGTERM or normal JVM shutdown, the standalone launcher first stops
 accepting requests, waits up to `:shutdown-timeout-ms` (30 seconds by default)

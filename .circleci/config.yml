@@ -428,8 +428,11 @@ jobs:
       - run:
           name: Release jar on GitHub
           command: |
-            bb release jar
+            # The release event starts the GHCR workflow. Upload its required
+            # standalone JAR first; the workflow also retries while the asset
+            # becomes visible.
             bb release http-server
+            bb release jar
 
 workflows:
   build-test-and-deploy:

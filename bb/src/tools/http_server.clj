@@ -5,7 +5,8 @@
    [babashka.process :as p]
    [cheshire.core :as json]
    [clojure.string :as str]
-   [tools.build :as build])
+   [tools.build :as build]
+   [tools.version :as version])
   (:import
    [java.net ServerSocket]
    [java.util UUID]
@@ -35,14 +36,15 @@
                       (catch Exception _ nil))]
       (cond
         (= 200 (:status result)) result
-        (< attempt 119) (do (Thread/sleep 250) (recur (inc attempt)))
-        :else (throw (ex-info "Standalone server did not become live within 30 seconds" {}))))))
+        (< attempt 479) (do (Thread/sleep 250) (recur (inc attempt)))
+        :else (throw (ex-info "Standalone server did not become live within 120 seconds" {}))))))
 
 (defn- assert-slim! [jar max-bytes]
   (let [bytes (fs/size jar)]
     (expect! (str "jar exceeds " max-bytes " bytes") #(<= % max-bytes) bytes)
     (with-open [zip (ZipFile. (str jar))]
       (let [names (mapv #(.getName %) (enumeration-seq (.entries zip)))
+            name-set (set names)
             compiler-content
             (filterv #(or (str/starts-with? % "com/google/javascript/jscomp/")
                           (str/starts-with? % "cljs/analyzer")
@@ -53,12 +55,19 @@
                      names)]
         (expect! "ClojureScript compiler content is absent"
                  empty?
-                 compiler-content)))))
+                 compiler-content)
+        (expect! "portable Java launcher is present"
+                 #(contains? % "datahike/http/Launcher.class")
+                 name-set)
+        (expect! "build-JVM-dependent superv.async AOT classes are absent"
+                 #(not (contains? % "superv/async__init.class"))
+                 name-set)))))
 
 (defn- assert-thin! [jar]
   (with-open [zip (ZipFile. (str jar))]
     (let [names (into #{} (map #(.getName %)) (enumeration-seq (.entries zip)))]
       (doseq [path ["datahike/http/main.clj"
+                    "datahike/http/Launcher.class"
                     "eacl/core.cljc"
                     "eacl/datahike/core.clj"
                     "META-INF/maven/org.replikativ/datahike-http-server/pom.xml"]]
@@ -138,3 +147,86 @@
         (finally
           (p/destroy-tree process)
           (fs/delete-tree temp-dir))))))
+
+(def ^:private local-image "datahike-server:dev")
+(def ^:private container-context "docker/server")
+
+(defn- container-engine []
+  (let [requested (System/getenv "DATAHIKE_CONTAINER_ENGINE")
+        candidates (if requested [requested] ["docker" "podman"])]
+    (or (some #(when (fs/which %) %) candidates)
+        (throw (ex-info
+                "No container engine found; install Docker or Podman, or set DATAHIKE_CONTAINER_ENGINE"
+                {:type :datahike.tools/no-container-engine
+                 :candidates candidates})))))
+
+(defn image!
+  "Build the local server image from the already-built standalone JAR."
+  [config]
+  (let [project (get-in config [:build :http-server-standalone])
+        jar (build/jar-path config project)
+        staged (str (fs/file container-context "datahike-http-server.jar"))
+        engine (container-engine)]
+    (expect! "standalone jar exists before container build" fs/exists? jar)
+    (fs/copy jar staged {:replace-existing true})
+    (try
+      (apply p/shell
+             (concat [engine "build"]
+                     ;; Podman's default OCI manifest omits Docker health
+                     ;; checks. Its Docker format preserves the same image
+                     ;; contract Buildx publishes in CI.
+                     (when (str/ends-with? engine "podman") ["--format" "docker"])
+                     ["--tag" local-image
+                      "--build-arg" (str "VERSION=" (version/string config))
+                      "--build-arg" (str "REVISION=" (version/current-commit))
+                      container-context]))
+      (println "Built local server image" local-image "with" engine)
+      (finally
+        (fs/delete-if-exists staged)))))
+
+(defn- wait-until-container-live! [base-url]
+  (loop [attempt 0]
+    (let [result (try (response :get (str base-url "/health/live") {})
+                      (catch Exception _ nil))]
+      (cond
+        (= 200 (:status result)) result
+        (< attempt 479) (do (Thread/sleep 250) (recur (inc attempt)))
+        :else (throw (ex-info "Container did not become live within 120 seconds" {}))))))
+
+(defn container-smoke!
+  "Run the local image as its non-root user and exercise its HTTP lifecycle."
+  [_config]
+  (let [engine (container-engine)
+        port (free-port)
+        name (str "datahike-server-smoke-" (UUID/randomUUID))
+        base-url (str "http://127.0.0.1:" port)
+        token "container-smoke-token"
+        image-user (-> (p/shell {:out :string}
+                                engine "image" "inspect" "--format" "{{.Config.User}}" local-image)
+                       :out str/trim)]
+    (expect! "container image runs as the stable non-root user"
+             #(= "10001:10001" %) image-user)
+    (p/shell engine "run" "--detach" "--name" name
+             "--publish" (str "127.0.0.1:" port ":4444")
+             "--env" (str "DATAHIKE_TOKEN=" token)
+             local-image)
+    (try
+      (wait-until-container-live! base-url)
+      (expect! "container landing page returns 200"
+               #(= 200 %)
+               (:status (response :get base-url {})))
+      (expect! "container operational API accepts its configured token"
+               #(= 200 %)
+               (:status (response :get (str base-url "/version")
+                                  {:headers {"authorization" (str "token " token)}})))
+      ;; Longer than the server's default 30-second graceful drain. A failed
+      ;; stop is a smoke failure; the finally block still force-cleans it.
+      (p/shell engine "stop" "--time" "40" name)
+      (println "Local server container smoke test passed:" local-image)
+      (catch Throwable t
+        (try (p/shell engine "logs" name)
+             (catch Exception _))
+        (throw t))
+      (finally
+        (try (p/shell engine "rm" "--force" "--volumes" name)
+             (catch Exception _))))))

@@ -165,10 +165,6 @@
                                :depends [http-server-clean jcompile]
                                :task    (build/compile-java (-> config :build :http-server-clj))}
 
-         http-server-ccompile {:doc  "Compile clojure namespaces for the standalone http-server"
-                               :depends [http-server-jar]
-                               :task (build/compile-clojure (-> config :build :http-server-clj))}
-
          http-server-pom {:doc  "Create pom file"
                           :task (build/pom config (-> config :build :http-server-clj))}
 
@@ -177,11 +173,19 @@
                            :task    (build/jar config (-> config :build :http-server-clj))}
 
          http-server-uber {:doc     "Build the executable standalone server jar"
-                           :depends [http-server-ccompile]
+                           :depends [http-server-jar]
                            :task    (build/uber config (-> config :build :http-server-standalone))}
 
          http-server-smoke {:doc "Smoke-test the packaged standalone server jar"
                             :task (http-server/smoke! config)}
+
+         http-server-image {:doc "Build the non-root Datahike server image with Docker or Podman"
+                            :depends [http-server-uber]
+                            :task (http-server/image! config)}
+
+         http-server-container-smoke {:doc "Smoke-test the local Datahike server container"
+                                      :depends [http-server-image]
+                                      :task (http-server/container-smoke! config)}
 
          http-server-install {:doc  "Install the thin server jar locally"
                               :depends [http-server-jar]
