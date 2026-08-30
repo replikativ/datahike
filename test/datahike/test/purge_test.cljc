@@ -46,7 +46,8 @@
           25 (find-age (d/history @conn) name))))
     (testing "purge datom from current index and from history"
       (let [name "Bob"]
-        (d/transact conn [[:db/purge [:name name] :age 35]])
+        (let [report (d/transact conn [[:db/purge [:name name] :age 35]])]
+          (is (contains? (:tx-ops report) :db/purge)))
         (are [x y] (= x y)
           true (nil? (find-age @conn name))
           true (nil? (find-age (d/history @conn) name)))))
@@ -57,6 +58,23 @@
           nil (find-age @conn name)
           nil (find-age (d/history @conn) name))))
     (d/release conn)))
+
+#?(:clj
+   (deftest transaction-report-includes-expanded-operation-kinds
+     (let [conn (tu/setup-db
+                 (assoc-in cfg-template [:store :id]
+                           #uuid "09000000-0000-0000-0000-000000000006"))
+           report (d/transact
+                   conn
+                   [[:db.fn/call
+                     (fn [_]
+                       [[:db/add [:name "Alice"] :age 26]
+                        [:db.purge/entity [:name "Bob"]]])]])]
+       (is (= #{:db.fn/call :db/add :db.purge/entity}
+              (:tx-ops report)))
+       (is (= 26 (find-age @conn "Alice")))
+       (is (empty? (find-entity (d/history @conn) "Bob")))
+       (d/release conn))))
 
 (deftest test-purge-attribute
   (let [conn (tu/setup-db (assoc-in cfg-template [:store :id] #uuid "09000000-0000-0000-0000-000000000002"))]

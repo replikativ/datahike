@@ -1388,7 +1388,15 @@
      datoms)))
 
 (defn apply-db-op [db report op-vec]
-  (let [[op e a v] op-vec]
+  (let [[op e a v] op-vec
+        ;; The resolved datom delta intentionally cannot represent operations
+        ;; such as purge, which remove history without asserting retractions.
+        ;; Preserve the operation kinds actually interpreted by the transactor
+        ;; so writer-side transaction predicates can distinguish an ordinary
+        ;; delta-local write from one that requires a wider snapshot audit.
+        ;; Recording happens here (rather than at API input) so operations
+        ;; returned by transaction functions are included as well.
+        report (update report :tx-ops (fnil conj #{}) op)]
     (case op
 
       :db/add [(transact-add report op-vec) []]
