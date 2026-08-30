@@ -4050,16 +4050,79 @@
                 (recur (inc i))
                 c))))))))
 
+#?(:clj
+   (defn- bounded-order-by
+     "Return the first `bound` rows under `row-cmp`, retaining only O(bound)
+      entries while reading the complete input.
+
+      The ordinal is part of the private heap key so comparator-equal rows keep
+      the stable input order of the full-sort path. PriorityQueue is a min-heap;
+      `worst-cmp` reverses both row order and ordinal so `.peek` is always the
+      row to evict."
+     [results ^java.util.Comparator row-cmp ^long bound]
+     (let [worst-cmp
+           (reify java.util.Comparator
+             (compare [_ a b]
+               (let [^objects a a
+                     ^objects b b
+                     c (.compare row-cmp (aget b 0) (aget a 0))]
+                 (if (zero? c)
+                   (Long/compare (long (aget b 1)) (long (aget a 1)))
+                   c))))
+           final-cmp
+           (reify java.util.Comparator
+             (compare [_ a b]
+               (let [^objects a a
+                     ^objects b b
+                     c (.compare row-cmp (aget a 0) (aget b 0))]
+                 (if (zero? c)
+                   (Long/compare (long (aget a 1)) (long (aget b 1)))
+                   c))))
+           ^java.util.PriorityQueue heap
+           (java.util.PriorityQueue. (int (max 1 bound)) worst-cmp)]
+       (reduce (fn [^long ordinal row]
+                 (let [^objects entry (object-array 2)
+                       _ (aset entry 0 row)
+                       _ (aset entry 1 (Long/valueOf ordinal))]
+                   (if (< (.size heap) bound)
+                     (.add heap entry)
+                     (let [^objects worst (.peek heap)]
+                       ;; A later comparator-equal row cannot improve stable
+                       ;; input order, so only a strictly better row replaces.
+                       (when (neg? (.compare row-cmp row (aget worst 0)))
+                         (.poll heap)
+                         (.add heap entry))))
+                   (unchecked-inc ordinal)))
+               0
+               results)
+       (mapv (fn [entry] (aget ^objects entry 0))
+             (sort final-cmp (seq (.toArray heap)))))))
+
 (defn- apply-order-by
   "Sort a result set by the given order spec. Returns a vector (not a set)
    since ordering is meaningful. Applies offset/limit after sorting.
    Datalog results are already deduplicated, so no set conversion needed."
   [results order-spec offset limit]
-  (let [sorted (sort (order-comparator order-spec) results)]
-    (cond->> sorted
-      offset (drop offset)
-      (and limit (pos? limit)) (take limit)
-      true vec)))
+  (let [cmp (order-comparator order-spec)
+        positive-limit? (and limit (pos? limit))
+        bound (when positive-limit?
+                (+' (long (max 0 (or offset 0))) (long limit)))]
+    #?(:clj
+       (if (and bound
+                (<= bound Integer/MAX_VALUE)
+                (< bound (count results)))
+         (cond->> (bounded-order-by results cmp (long bound))
+           offset (drop offset)
+           true vec)
+         (cond->> (sort cmp results)
+           offset (drop offset)
+           positive-limit? (take limit)
+           true vec))
+       :cljs
+       (cond->> (sort cmp results)
+         offset (drop offset)
+         positive-limit? (take limit)
+         true vec))))
 
 (declare planner-eligible-db? planner-origin-db connected-components)
 

@@ -316,6 +316,26 @@
     (let [result (d/q '[:find ?e ?a :where [?e :age ?a]] @test-db)]
       (is (set? result) "Without ORDER BY should return a set"))))
 
+(deftest bounded-order-by-retains-only-the-requested-prefix
+  (let [apply-order-by (var-get (ns-resolve 'datahike.query 'apply-order-by))
+        original-sort clojure.core/sort
+        sorted-size (atom nil)
+        rows (mapv vector (range 1000 0 -1))
+        result (with-redefs [clojure.core/sort
+                             (fn [cmp xs]
+                               (reset! sorted-size (count xs))
+                               (original-sort cmp xs))]
+                 (apply-order-by rows [[0 :asc]] 5 10))]
+    (is (= (mapv vector (range 6 16)) result))
+    (is (= 15 @sorted-size)
+        "the final sort sees LIMIT + OFFSET retained rows, not the full input")))
+
+(deftest bounded-order-by-preserves-stable-ties
+  (let [apply-order-by (var-get (ns-resolve 'datahike.query 'apply-order-by))
+        rows [[:a 1] [:b 1] [:c 1] [:d 2] [:e 3]]]
+    (is (= [[:b 1] [:c 1]]
+           (apply-order-by rows [[1 :asc]] 1 2)))))
+
 ;; ---------------------------------------------------------------------------
 ;; Aggregates — compiled engine must route through relation path correctly
 
