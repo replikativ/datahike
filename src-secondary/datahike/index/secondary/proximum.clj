@@ -20,9 +20,28 @@
    [replikativ.logging :as log]
    [clojure.core.async :as async]))
 
+(defn- exact-filter-cheaper?
+  "Estimate the distance-computation break-even for a filtered top-k.
+
+   An exact filtered scan computes `allowed` distances.  An ANN traversal must
+   discover roughly `k / selectivity`, or `k * total / allowed`, nodes before
+   it can admit k uniformly distributed matches.  Prefer exact when the former
+   is no larger.  This decision uses the runtime EntityBitSet cardinality, so a
+   prepared plan adapts to each execution rather than baking in selectivity."
+  [prox-idx k entity-filter]
+  (let [allowed (long (es/entity-bitset-cardinality entity-filter))
+        total (long (prox/count-vectors prox-idx))
+        k (long (max 1 (or k 1)))]
+    (and (pos? total)
+         (<= (* allowed allowed) (* k total)))))
+
 (defn- search-results
   [prox-idx {:keys [vector k ef filter-strategy]} entity-filter]
-  (let [opts (cond-> {}
+  (let [filter-strategy (or filter-strategy
+                            (when (and entity-filter
+                                       (exact-filter-cheaper? prox-idx k entity-filter))
+                              :exact))
+        opts (cond-> {}
                ef (assoc :ef ef)
                filter-strategy (assoc :filter-strategy filter-strategy))]
     (if entity-filter
