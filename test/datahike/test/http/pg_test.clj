@@ -8,7 +8,8 @@
    [datahike.pg.server :as pg])
   (:import
    [datahike.pg PgWireServer]
-   [java.sql DriverManager]))
+   [java.sql DriverManager SQLException]
+   [javax.net.ssl SSLContext]))
 
 (defn- memory-config [name]
   {:name name
@@ -153,24 +154,51 @@
            #"shared system catalog"
            (listener/start! config (atom {}))))
       (finally
-        (system/close! config))))
-  (let [config (system/configure
-                {:system-db {:store {:backend :memory}}
-                 :pg-listener {:host "0.0.0.0" :port 5432}})]
-    (try
-      (is (thrown-with-msg?
-           clojure.lang.ExceptionInfo
-           #"restricted to a loopback bind"
-           (listener/start! config (atom {}))))
-      (finally
         (system/close! config)))))
+
+(deftest listener-delegates-wire-security-to-pg-datahike
+  (testing "an unsafe public listener is rejected by pg-datahike"
+    (let [config (system/configure
+                  {:system-db {:store {:backend :memory}}
+                   :pg-listener {:host "0.0.0.0" :port 0}})]
+      (try
+        (is (thrown-with-msg?
+             clojure.lang.ExceptionInfo
+             #"require password authentication and TLS"
+             (listener/start! config (atom {}))))
+        (finally
+          (system/close! config)))))
+  (testing "authentication and TLS options reach pg-datahike unchanged"
+    (let [ssl-context (SSLContext/getDefault)
+          options-seen (atom nil)
+          config (system/configure
+                  {:system-db {:store {:backend :memory}}
+                   :pg-listener {:host "0.0.0.0"
+                                 :port 0
+                                 :users {"app" "secret"}
+                                 :ssl-context ssl-context}})]
+      (try
+        (with-redefs [pg/start-server (fn [_ options]
+                                        (reset! options-seen options)
+                                        ::server)
+                      pg/stop-server (constantly nil)]
+          (listener/stop! (listener/start! config (atom {}))))
+        (is (= {:host "0.0.0.0"
+                :port 0
+                :users {"app" "secret"}
+                :ssl-context ssl-context}
+               @options-seen))
+        (finally
+          (system/close! config))))))
 
 (deftest catalog-name-routes-a-real-postgresql-session
   (let [database      (memory-config "analytics")
         registry      (atom {})
         system-config (system/configure
                        {:system-db {:store {:backend :memory}}
-                        :pg-listener {:host "127.0.0.1" :port 0}})]
+                        :pg-listener {:host "127.0.0.1"
+                                      :port 0
+                                      :users {"datahike" "secret"}}})]
     (binding [connections/*connections* registry]
       (try
         (d/create-database database)
@@ -178,13 +206,20 @@
         (let [runtime (listener/start! system-config registry)
               wire    ^PgWireServer (:server (:server runtime))
               url     (str "jdbc:postgresql://127.0.0.1:" (.getPort wire)
-                           "/analytics?sslmode=disable")]
+                           "/analytics?sslmode=disable&user=datahike&password=secret")]
           (try
-            (with-open [sql-conn (DriverManager/getConnection url "datahike" "")
+            (with-open [sql-conn (DriverManager/getConnection url)
                         statement (.createStatement sql-conn)
                         result    (.executeQuery statement "SELECT current_database()")]
               (is (.next result))
               (is (= "analytics" (.getString result 1))))
+            (let [error (try
+                          (DriverManager/getConnection
+                           (str "jdbc:postgresql://127.0.0.1:" (.getPort wire)
+                                "/analytics?sslmode=disable&user=datahike&password=wrong"))
+                          nil
+                          (catch SQLException e e))]
+              (is (= "28P01" (.getSQLState ^SQLException error))))
             (finally
               (listener/stop! runtime))))
         (finally

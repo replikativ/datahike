@@ -190,7 +190,7 @@
                                org.replikativ/konserve-azure-blob
                                {:mvn/version "0.1.5"}
                                org.postgresql/postgresql     {:mvn/version "42.7.13"}
-                               org.replikativ/pg-datahike    {:mvn/version "0.1.159"
+                               org.replikativ/pg-datahike    {:mvn/version "0.1.160"
                                                                :exclusions [org.replikativ/datahike]}
                                http-kit/http-kit             {:mvn/version "2.8.1"}}}
 
@@ -270,7 +270,7 @@
                                       org.postgresql/postgresql
                                       {:mvn/version "42.7.13"}
                                       org.replikativ/pg-datahike
-                                      {:mvn/version "0.1.159"
+                                      {:mvn/version "0.1.160"
                                        :exclusions [org.replikativ/datahike]}}
                          :main-opts ["-m" "datahike.http.main"]}
 
