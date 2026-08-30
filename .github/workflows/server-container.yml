@@ -1,0 +1,136 @@
+name: Publish server container
+
+on:
+  release:
+    types: [published]
+
+concurrency:
+  group: server-container-${{ github.event.release.tag_name }}
+  cancel-in-progress: false
+
+env:
+  IMAGE: ghcr.io/replikativ/datahike-server
+  RELEASE_TAG: ${{ github.event.release.tag_name }}
+
+jobs:
+  publish:
+    name: Test and publish multi-platform image
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: write
+      attestations: write
+      id-token: write
+
+    steps:
+      - name: Check out the released source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+
+      # CircleCI creates the release while uploading its assets. The release
+      # event can therefore arrive just before the standalone JAR is visible.
+      - name: Download the released standalone server
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p docker/server/release
+          for attempt in $(seq 1 30); do
+            if gh release download "$RELEASE_TAG" \
+                 --repo "$GITHUB_REPOSITORY" \
+                 --pattern 'datahike-http-server-*-standalone.jar' \
+                 --dir docker/server/release; then
+              break
+            fi
+            if [ "$attempt" -eq 30 ]; then
+              echo "Standalone server JAR did not appear on release $RELEASE_TAG" >&2
+              exit 1
+            fi
+            sleep 10
+          done
+          mapfile -t jars < <(find docker/server/release -maxdepth 1 -type f \
+            -name 'datahike-http-server-*-standalone.jar')
+          test "${#jars[@]}" -eq 1
+          mv "${jars[0]}" docker/server/datahike-http-server.jar
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@96fe6ef7f33517b61c61be40b68a1882f3264fb8 # v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4
+
+      - name: Extract image tags and labels
+        id: metadata
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6
+        with:
+          images: ${{ env.IMAGE }}
+          flavor: latest=false
+          tags: |
+            type=semver,pattern={{version}},value=${{ env.RELEASE_TAG }}
+            type=semver,pattern={{major}}.{{minor}},value=${{ env.RELEASE_TAG }}
+            type=raw,value=latest,enable=${{ !github.event.release.prerelease }}
+
+      - name: Build local image for smoke testing
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7
+        with:
+          context: docker/server
+          load: true
+          tags: datahike-server:smoke
+          build-args: |
+            VERSION=${{ env.RELEASE_TAG }}
+            REVISION=${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Smoke-test the image as its non-root user
+        run: |
+          test "$(docker image inspect --format '{{.Config.User}}' datahike-server:smoke)" = "10001:10001"
+          docker run --detach --name datahike-server-smoke --publish 127.0.0.1::4444 \
+            --env DATAHIKE_TOKEN=container-smoke-token datahike-server:smoke
+          trap 'docker rm --force --volumes datahike-server-smoke >/dev/null 2>&1 || true' EXIT
+          for attempt in $(seq 1 120); do
+            status=$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{end}}' \
+              datahike-server-smoke)
+            if [ "$status" = healthy ]; then
+              break
+            fi
+            if [ "$status" = unhealthy ] || [ "$attempt" -eq 120 ]; then
+              docker logs datahike-server-smoke
+              exit 1
+            fi
+            sleep 1
+          done
+          port=$(docker port datahike-server-smoke 4444/tcp | sed 's/.*://')
+          curl --fail --silent --show-error "http://127.0.0.1:${port}/" | grep -q 'Datahike server'
+          docker stop --time 40 datahike-server-smoke
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and publish linux/amd64 and linux/arm64
+        id: publish
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7
+        with:
+          context: docker/server
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.metadata.outputs.tags }}
+          labels: ${{ steps.metadata.outputs.labels }}
+          build-args: |
+            VERSION=${{ env.RELEASE_TAG }}
+            REVISION=${{ github.sha }}
+          cache-from: type=gha
+          provenance: mode=max
+          sbom: true
+
+      - name: Attest the published image index
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4
+        with:
+          subject-name: ${{ env.IMAGE }}
+          subject-digest: ${{ steps.publish.outputs.digest }}
+          push-to-registry: true

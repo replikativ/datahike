@@ -18,7 +18,7 @@
                :jar-pattern "{{repo.lib}}-{{version-str}}.jar"
                :lib org.replikativ/datahike}
          :http-server-clj {:src-dirs      ["src" "http-server" "resources"]
-                           :java-src-dirs ["java"]
+                           :java-src-dirs ["java" "http-server-java"]
                            :target-dir    "target-http-server"
                            :class-dir     "target-http-server/classes"
                            :deps-file     "deps.edn"
@@ -39,11 +39,13 @@
                                   :jar-pattern "{{repo.lib}}-http-server-{{version-str}}-standalone.jar"
                                   :aliases     [:http-server]
                                   :basis-exclusions [junit/junit org.hamcrest/hamcrest-core]
-                                  :main        datahike.http.main
+                                  ;; A tiny Java launcher avoids AOT-freezing
+                                  ;; build-JVM probes into the portable JAR.
+                                  :main        datahike.http.Launcher
                                   ;; CI treats this as a regression budget, not a
                                   ;; product promise. Raise it deliberately when a
                                   ;; new bundled backend justifies the increase.
-                                  :max-bytes   99614720}
+                                  :max-bytes   62914560}
          ;; Used only on Windows, where native-image cannot take the classpath
          ;; on the command line (8191-char limit). Same shape as :native, but
          ;; carrying the CLI's own aliases rather than libdatahike's.

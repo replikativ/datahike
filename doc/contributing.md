@@ -100,6 +100,14 @@ two variables `GITHUB_TOKEN` and `GITHUB_USER` need to be set in a context calle
 Each merge to `main` creates a draft release on GitHub and a git tag to point to the merge commit
 made when merging a branch into `main`. The jar is appended to the Github-release.
 
+The published release event also builds `ghcr.io/replikativ/datahike-server`
+from that release's standalone server JAR. GitHub Actions authenticates to GHCR
+with its repository-scoped `GITHUB_TOKEN`; no Docker Hub account or additional
+registry secret is required. The workflow requests `packages: write` itself.
+After the package is created for the first time, an organization owner should
+verify that it is linked to this repository and set its package visibility to
+public. Subsequent version, minor, and `latest` tags are automatic.
+
 ### The release process step by step
 - Set a new version in build.clj if you want to release a new minor or major version.
   For the ordinary patch release you can let the CI automatically increment the patch
