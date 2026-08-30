@@ -3,6 +3,7 @@
    #?(:cljs [cljs.test :as t :refer-macros [is are deftest testing]]
       :clj  [clojure.test :as t :refer [is are deftest testing]])
    [datahike.api :as d]
+   [datahike.datom :as dd]
    [datahike.test.utils :as tu]))
 
 #?(:cljs (def Throwable js/Error))
@@ -75,6 +76,20 @@
        (is (= 26 (find-age @conn "Alice")))
        (is (empty? (find-entity (d/history @conn) "Bob")))
        (d/release conn))))
+
+(deftest operation-provenance-is-present-on-empty-and-raw-datom-reports
+  (let [conn (tu/setup-db
+              (-> cfg-template
+                  (assoc-in [:store :id]
+                            #uuid "09000000-0000-0000-0000-000000000007")
+                  (assoc :keep-history? false)))
+        bob-eid (d/q '[:find ?e . :where [?e :name "Bob"]] @conn)
+        age (first (d/datoms @conn :eavt bob-eid :age))
+        raw-retraction (dd/datom (:e age) (:a age) (:v age)
+                                 (inc (:max-tx @conn)) false)]
+    (is (= #{} (:tx-ops (d/with @conn []))))
+    (is (= #{} (:tx-ops (d/with @conn [raw-retraction]))))
+    (d/release conn)))
 
 (deftest test-purge-attribute
   (let [conn (tu/setup-db (assoc-in cfg-template [:store :id] #uuid "09000000-0000-0000-0000-000000000002"))]

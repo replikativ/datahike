@@ -1808,8 +1808,10 @@
         initial-es' (if has-tuples?
                       (interleave initial-es (repeat ::flush-tuples))
                       initial-es)
-        initial-report (update initial-report :tx-meta
-                               #(merge {:db/txInstant (next-tx-instant db-before)} %))
+        initial-report (-> initial-report
+                           (update :tx-ops #(or % #{}))
+                           (update :tx-meta
+                                   #(merge {:db/txInstant (next-tx-instant db-before)} %)))
         ;; Reject zero-width or reverse valid-time windows. A tx
         ;; with `:db.valid/from >= :db.valid/to` would produce a
         ;; tx-entity that no `d/valid-at` query can ever match
@@ -1943,7 +1945,9 @@
    Now the caller owns it: pass the previous call's `:migration` back in, and
    the map goes out of scope when the import ends."
   [initial-report initial-es]
-  (loop [report (update initial-report :db-after transient)
+  (loop [report (-> initial-report
+                    (update :tx-ops #(or % #{}))
+                    (update :db-after transient))
          es initial-es
          migration-state (or (:migration initial-report) {})]
     (if (empty? es)

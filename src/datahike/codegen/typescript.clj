@@ -312,6 +312,7 @@ export interface TransactionReport {
   'db-before': Database;
   'db-after': Database;
   'tx-data': Datom[];
+  'tx-ops': string[];
   tempids: { [key: string]: number };
   'tx-meta'?: any;
 }
