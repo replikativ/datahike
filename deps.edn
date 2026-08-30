@@ -162,11 +162,12 @@
 
                                ;; secondary index integrations (for testing)
                                org.replikativ/proximum       {:git/url "https://github.com/replikativ/proximum.git"
-                                                              :git/sha "b53974666662665e54b8482815cdf41ece2fcafa"
+                                                              :git/sha "010947901fbf3acbc521a68d3339275bde8542dd"
                                                               :exclusions [org.slf4j/slf4j-simple]}
                                org.replikativ/scriptum       {:git/url "https://github.com/replikativ/scriptum.git"
-                                                              :git/sha "84b847f85ac366a5d5d777cf73dbec02a68aac6b"}
-                               org.replikativ/stratum        {:mvn/version "0.3.83"}
+                                                              :git/sha "112a0bf82423af9f34f94dd6922db4a2d0dcff49"}
+                               org.replikativ/stratum        {:git/url "https://github.com/replikativ/stratum.git"
+                                                              :git/sha "8762ce96bfbb4a0ea4ae134a7c6cd7609f18170d"}
 
                                ;; kabel integration for distributed datahike.
                                ;; src-kabel's connector requires datahike.cbor,
