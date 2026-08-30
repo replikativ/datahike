@@ -8,11 +8,13 @@ Datahike provides pluggable storage through [konserve](https://github.com/replik
 |---------|----------|--------------|------------|------------------|
 | **File** | Unix tools, rsync, git-like workflows | Single machine | High | Good |
 | **LMDB** | High-performance single machine | Single filesystem | High | Excellent |
+| **RocksDB** | Embedded high-write workloads | Single machine | High | Excellent |
 | **Memory** | Testing, ephemeral data | Single process | None | Excellent |
 | **JDBC** | Existing SQL infrastructure | Multi-machine | High | Good |
 | **Redis** | High write throughput | Multi-machine | Medium | Excellent |
 | **S3** | Distributed scale-out, cost-effective | Multi-region | Very high | Good |
 | **GCS** | Google Cloud scale-out | Multi-region | Very high | Good |
+| **Azure Blob** | Azure-native object storage | Multi-region | Very high | Good |
 | **DynamoDB** | Low latency, AWS-native | Multi-region | Very high | Excellent (expensive) |
 | **IndexedDB** | Browser persistence | Browser | Medium | Good |
 
@@ -44,7 +46,7 @@ Datahike provides pluggable storage through [konserve](https://github.com/replik
 **Key advantage**: Lightning-fast memory-mapped database with ACID transactions, optimized for read-heavy workloads.
 
 ```clojure
-;; Requires: org.replikativ/datahike-lmdb
+;; Requires: org.replikativ/konserve-lmdb
 {:store {:backend :lmdb
          :path "/var/lib/myapp/db"}}
 ```
@@ -58,7 +60,29 @@ Datahike provides pluggable storage through [konserve](https://github.com/replik
 - Very low latency
 - Large file blob that cannot be as efficiently synched a the file store
 
-**Note**: The LMDB backend is available as a separate library: [datahike-lmdb](https://github.com/replikativ/datahike-lmdb), extending [konserve-lmdb](https://github.com/replikativ/konserve-lmdb).
+**Note**: The LMDB backend is available as the separate
+[konserve-lmdb](https://github.com/replikativ/konserve-lmdb) library. It is not
+part of the portable server artifact: it requires Java 22+, native access, and
+a platform `liblmdb` installation.
+
+### RocksDB Backend
+
+RocksDB is available through
+[konserve-rocksdb](https://github.com/replikativ/konserve-rocksdb). It remains a
+separate server deployment dependency: its `rocksdbjni` artifact is about 68
+MiB because it carries native libraries for several operating systems and CPU
+architectures. Bundling it would nearly double the portable server JAR.
+
+Native-store server variants therefore have different contracts from the
+portable artifact:
+
+- a RocksDB distribution must select and test its target platforms instead of
+  hiding a multi-platform JNI payload in the standard JAR;
+- an LMDB distribution must select Java 22+ and supply `liblmdb` plus native
+  access at launch.
+
+Until those distributions are published, use the thin server artifact from a
+Clojure project that adds and requires the corresponding Konserve backend.
 
 ### Memory Backend
 
@@ -88,7 +112,7 @@ All distributed backends support **Distributed Index Space (DIS)**: multiple rea
 **Key advantage**: Leverage existing SQL database skills, backup procedures, and monitoring tools.
 
 ```clojure
-;; Requires: org.replikativ/datahike-jdbc
+;; Requires: org.replikativ/konserve-jdbc
 {:store {:backend :jdbc
          :dbtype "postgresql"
          :host "db.example.com"
@@ -105,7 +129,9 @@ All distributed backends support **Distributed Index Space (DIS)**: multiple rea
 - Good for teams already operating PostgreSQL
 - Available for: PostgreSQL, MySQL, H2, and others
 
-**Note**: Available as separate library: [datahike-jdbc](https://github.com/replikativ/datahike-jdbc)
+**Note**: The standalone server includes
+[konserve-jdbc](https://github.com/replikativ/konserve-jdbc) and the PostgreSQL
+driver. Embedding applications add the driver for the SQL database they use.
 
 ### Redis Backend
 
@@ -169,6 +195,24 @@ All distributed backends support **Distributed Index Space (DIS)**: multiple rea
 - Native GCP integration
 - Good latency within GCP regions
 - Cost-effective for large datasets
+
+The standalone server carries the Google SDK's default HTTP/JSON client. GCS
+production endpoints are still HTTPS with the normal Google authentication and
+integrity checks; only the optional gRPC implementation is omitted.
+
+### Azure Blob Storage Backend
+
+**Use when**: You're on Azure and want distributed object storage.
+
+```clojure
+;; Requires: org.replikativ/konserve-azure-blob
+{:store {:backend :azure-blob
+         :container "datahike"
+         :account-name "my-storage-account"}}
+```
+
+The standalone server uses Azure's portable JDK HTTP provider. It does not
+bundle the alternative Netty provider or its platform-native TLS binaries.
 
 ### DynamoDB Backend
 

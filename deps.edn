@@ -185,6 +185,10 @@
                                {:mvn/version "0.1.33"
                                 :exclusions [com.amazonaws/aws-xray-recorder-sdk-aws-sdk-v2]}
                                org.replikativ/konserve-redis {:mvn/version "0.1.29"}
+                               org.replikativ/konserve-gcs
+                               {:mvn/version "0.1.19"}
+                               org.replikativ/konserve-azure-blob
+                               {:mvn/version "0.1.5"}
                                org.postgresql/postgresql     {:mvn/version "42.7.13"}
                                org.replikativ/pg-datahike    {:mvn/version "0.1.159"
                                                                :exclusions [org.replikativ/datahike]}
@@ -246,10 +250,9 @@
                                       ch.qos.logback/logback-classic {:mvn/version "1.5.32"}
 
                                       ;; Batteries included for the standalone server. File,
-                                      ;; memory and tiered ship with Konserve itself. GCS stays
-                                      ;; optional because its SDK graph is exceptionally large;
-                                      ;; RocksDB/LMDB stay optional because they add native and
-                                      ;; platform constraints to an otherwise portable jar.
+                                      ;; memory and tiered ship with Konserve itself. Cloud SDK
+                                      ;; backends remain portable JVM bytecode; RocksDB/LMDB stay
+                                      ;; separate because they add native and platform constraints.
                                       org.replikativ/konserve-s3
                                       {:mvn/version "0.1.42"
                                        :exclusions [com.amazonaws/aws-xray-recorder-sdk-aws-sdk-v2]}
@@ -260,6 +263,10 @@
                                        :exclusions [com.amazonaws/aws-xray-recorder-sdk-aws-sdk-v2]}
                                       org.replikativ/konserve-redis
                                       {:mvn/version "0.1.29"}
+                                      org.replikativ/konserve-gcs
+                                      {:mvn/version "0.1.19"}
+                                      org.replikativ/konserve-azure-blob
+                                      {:mvn/version "0.1.5"}
                                       org.postgresql/postgresql
                                       {:mvn/version "42.7.13"}
                                       org.replikativ/pg-datahike

@@ -5,7 +5,9 @@
    classpath is not enough: its namespace must be loaded. Keeping those
    requires in one namespace makes the artifact's supported surface explicit
    and leaves the Datahike library jar free of optional backend dependencies."
-  (:require [konserve-dynamodb.core]
+  (:require [konserve-azure-blob.core]
+            [konserve-dynamodb.core]
+            [konserve-gcs.core]
             [konserve-jdbc.core]
             [konserve-redis.core]
             [konserve-s3.core]))

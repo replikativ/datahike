@@ -45,7 +45,10 @@
                                   ;; CI treats this as a regression budget, not a
                                   ;; product promise. Raise it deliberately when a
                                   ;; new bundled backend justifies the increase.
-                                  :max-bytes   62914560}
+                                  ;; Audited GCS and Azure HTTP transports bring
+                                  ;; the current artifact to ~71.7 MiB. Keep a
+                                  ;; bounded 8.3 MiB allowance for SDK patch drift.
+                                  :max-bytes   83886080}
          ;; Used only on Windows, where native-image cannot take the classpath
          ;; on the command line (8191-char limit). Same shape as :native, but
          ;; carrying the CLI's own aliases rather than libdatahike's.

@@ -134,7 +134,8 @@
                    (get-in status [:node :nrepl])))
         (let [version-body (:body (response :get (str base-url "/version")
                                              {:headers (assoc auth "accept" "application/json")}))]
-          (doseq [backend ["memory" "file" "s3" "jdbc" "dynamodb" "redis"]]
+          (doseq [backend ["memory" "file" "s3" "jdbc" "dynamodb" "redis"
+                           "gcs" "azure-blob"]]
             (expect! (str "backend inventory contains " backend)
                      #(str/includes? % backend)
                      version-body)))
