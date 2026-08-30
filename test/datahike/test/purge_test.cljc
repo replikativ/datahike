@@ -3,6 +3,8 @@
    #?(:cljs [cljs.test :as t :refer-macros [is are deftest testing]]
       :clj  [clojure.test :as t :refer [is are deftest testing]])
    [datahike.api :as d]
+   [datahike.datom :as dd]
+   #?(:clj [datahike.tx-preds :as txp])
    [datahike.test.utils :as tu]))
 
 #?(:cljs (def Throwable js/Error))
@@ -46,7 +48,9 @@
           25 (find-age (d/history @conn) name))))
     (testing "purge datom from current index and from history"
       (let [name "Bob"]
-        (d/transact conn [[:db/purge [:name name] :age 35]])
+        (let [report (d/transact conn [[:db/purge [:name name] :age 35]])]
+          (is (not (contains? report :datahike/tx-ops)))
+          (is (not (contains? report :tx-ops))))
         (are [x y] (= x y)
           true (nil? (find-age @conn name))
           true (nil? (find-age (d/history @conn) name)))))
@@ -56,6 +60,44 @@
         (are [x y] (= x y)
           nil (find-age @conn name)
           nil (find-age (d/history @conn) name))))
+    (d/release conn)))
+
+#?(:clj
+   (deftest transaction-predicate-sees-expanded-operation-kinds
+     (let [store-id #uuid "09000000-0000-0000-0000-000000000006"
+           conn (tu/setup-db (assoc-in cfg-template [:store :id] store-id))
+           observed (atom nil)]
+       (txp/register-tx-pred!
+        store-id
+        #(reset! observed (:datahike/tx-ops %)))
+       (try
+         (let [report (d/transact
+                       conn
+                       [[:db.fn/call
+                         (fn [_]
+                           [[:db/add [:name "Alice"] :age 26]
+                            [:db.purge/entity [:name "Bob"]]])]])]
+           (is (= #{:db.fn/call :db/add :db.purge/entity} @observed))
+           (is (not (contains? report :datahike/tx-ops)))
+           (is (not (contains? report :tx-ops)))
+           (is (= 26 (find-age @conn "Alice")))
+           (is (empty? (find-entity (d/history @conn) "Bob"))))
+         (finally
+           (txp/unregister-tx-pred! store-id)
+           (d/release conn))))))
+
+(deftest operation-provenance-is-internal-on-empty-and-raw-datom-reports
+  (let [conn (tu/setup-db
+              (-> cfg-template
+                  (assoc-in [:store :id]
+                            #uuid "09000000-0000-0000-0000-000000000007")
+                  (assoc :keep-history? false)))
+        bob-eid (d/q '[:find ?e . :where [?e :name "Bob"]] @conn)
+        age (first (d/datoms @conn :eavt bob-eid :age))
+        raw-retraction (dd/datom (:e age) (:a age) (:v age)
+                                 (inc (:max-tx @conn)) false)]
+    (is (not (contains? (d/with @conn []) :datahike/tx-ops)))
+    (is (not (contains? (d/with @conn [raw-retraction]) :datahike/tx-ops)))
     (d/release conn)))
 
 (deftest test-purge-attribute

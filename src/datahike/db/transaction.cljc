@@ -1388,7 +1388,15 @@
      datoms)))
 
 (defn apply-db-op [db report op-vec]
-  (let [[op e a v] op-vec]
+  (let [[op e a v] op-vec
+        ;; The resolved datom delta intentionally cannot represent operations
+        ;; such as purge, which remove history without asserting retractions.
+        ;; Preserve the operation kinds actually interpreted by the transactor
+        ;; so writer-side transaction predicates can distinguish an ordinary
+        ;; delta-local write from one that requires a wider snapshot audit.
+        ;; Recording happens here (rather than at API input) so operations
+        ;; returned by transaction functions are included as well.
+        report (update report :datahike/tx-ops (fnil conj #{}) op)]
     (case op
 
       :db/add [(transact-add report op-vec) []]
@@ -1800,8 +1808,10 @@
         initial-es' (if has-tuples?
                       (interleave initial-es (repeat ::flush-tuples))
                       initial-es)
-        initial-report (update initial-report :tx-meta
-                               #(merge {:db/txInstant (next-tx-instant db-before)} %))
+        initial-report (-> initial-report
+                           (update :datahike/tx-ops #(or % #{}))
+                           (update :tx-meta
+                                   #(merge {:db/txInstant (next-tx-instant db-before)} %)))
         ;; Reject zero-width or reverse valid-time windows. A tx
         ;; with `:db.valid/from >= :db.valid/to` would produce a
         ;; tx-entity that no `d/valid-at` query can ever match
@@ -1935,7 +1945,9 @@
    Now the caller owns it: pass the previous call's `:migration` back in, and
    the map goes out of scope when the import ends."
   [initial-report initial-es]
-  (loop [report (update initial-report :db-after transient)
+  (loop [report (-> initial-report
+                    (update :datahike/tx-ops #(or % #{}))
+                    (update :db-after transient))
          es initial-es
          migration-state (or (:migration initial-report) {})]
     (if (empty? es)
