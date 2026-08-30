@@ -7,7 +7,6 @@
   (:require
    [datahike.api :as d]
    [datahike.connections :as connections]
-   [datahike.http.config :as server-config]
    [datahike.http.system :as system]
    [datahike.pg.server :as pg]
    [datahike.store :as store]
@@ -89,12 +88,6 @@
       (throw (ex-info ":pg-listener requires :system-db"
                       {:type :datahike.http/missing-system-database})))
     (reject-independent-provisioning! listener-config)
-    (let [host (get listener-config :host "127.0.0.1")]
-      (when-not (server-config/loopback-host? host)
-        (throw (ex-info
-                "The beta pg-datahike listener is restricted to a loopback bind until wire authentication is available"
-                {:type :datahike.http/unsafe-pg-bind
-                 :host host}))))
     (log/warn :datahike/pg-listener-beta
               "The pg-datahike listener is beta and does not yet provide the full PostgreSQL surface")
     (let [opened   (atom {})

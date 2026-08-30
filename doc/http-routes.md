@@ -184,8 +184,11 @@ store UUID when unnamed):
 ```clojure
 {:system-db {:store {:backend :file :path "/var/lib/datahike/system"}}
  :pg-listener
- {:host "127.0.0.1"
+ {:host "0.0.0.0"
   :port 5432
+  :users {"app" "secret-from-deployment"}
+  :tls {:keystore "/run/secrets/datahike-pg.p12"
+        :keystore-password "keystore-secret-from-deployment"}
   :database-overrides
   {"accounts" {:store {:password "secret-from-deployment"}}}}}
 ```
@@ -205,17 +208,27 @@ connection; a failed delete restores it. pg-datahike's independent
 Catalog names exposed through PostgreSQL must be unique; the server rejects a
 conflicting HTTP create before it changes physical storage.
 
-This listener is beta and currently restricted to loopback because released
-pg-datahike versions do not authenticate the wire connection. Once password
-authentication is available, the server will accept an authenticated public
-bind. Use the HTTP API for provisioning and permission administration in the
-meantime.
+The default listener remains unauthenticated and restricted to loopback. A
+wildcard or non-loopback bind is accepted only when both password
+authentication and TLS are configured; TLS is then mandatory. `:users` is a
+small deployment-owned `{username password}` map. Embedded servers can use an
+`:authenticator` callback and a preconfigured `:ssl-context` instead. The TLS
+shorthand loads a PKCS#12 keystore. On loopback, set `:require-tls? true` when
+plaintext connections should also be rejected.
 
-The PostgreSQL listener is currently a trusted local data surface: PostgreSQL
-users are not mapped to Datahike EACL principals, so a client that can reach
-the listener can access every database it exposes. The loopback restriction is
-a security boundary, not merely a beta convenience. Do not publish or proxy
-this port to untrusted clients.
+PostgreSQL password authentication is a node-level access gate. PostgreSQL
+users are not yet mapped to Datahike EACL principals, so every authenticated
+user can access every database exposed by this listener. HTTP tokens and EACL
+permissions do not authenticate the PostgreSQL protocol. Use the HTTP API for
+provisioning and permission administration, and give PostgreSQL credentials
+only to principals trusted for the whole node.
+
+Clients use standard PostgreSQL TLS settings. For example:
+
+```bash
+PGPASSWORD="$DATAHIKE_PG_PASSWORD" psql \
+  "host=datahike.example port=5432 dbname=accounts user=app sslmode=verify-full sslrootcert=/path/to/ca.crt"
+```
 
 The graph (`datahike.http.permissions/schema`):
 

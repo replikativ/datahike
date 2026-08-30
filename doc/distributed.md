@@ -447,6 +447,38 @@ run but remains visible in container metadata; production deployments should
 mount a secret readable by UID 10001 and set `DATAHIKE_TOKEN_FILE` to its
 in-container path.
 
+To expose the beta PostgreSQL listener, mount a complete server configuration
+and a PKCS#12 server keystore, then publish port 5432 as well:
+
+```clojure
+{:host "0.0.0.0"
+ :port 4444
+ :token "replace-with-a-long-random-token"
+ :system-db {:store {:backend :file :path "/var/lib/datahike/system"}}
+ :pg-listener
+ {:host "0.0.0.0"
+  :port 5432
+  :users {"app" "replace-with-a-separate-postgresql-password"}
+  :tls {:keystore "/run/secrets/datahike-pg.p12"
+        :keystore-password "replace-with-the-keystore-password"}}}
+```
+
+```bash
+docker run --name datahike --detach \
+  --publish 4444:4444 --publish 5432:5432 \
+  --mount type=volume,source=datahike-data,target=/var/lib/datahike \
+  --mount type=bind,source="$PWD/server.edn",target=/run/secrets/server.edn,readonly \
+  --mount type=bind,source="$PWD/datahike-pg.p12",target=/run/secrets/datahike-pg.p12,readonly \
+  ghcr.io/replikativ/datahike-server:latest \
+  --config /run/secrets/server.edn
+```
+
+Keep the configuration readable only by the deployment identity because its
+`:users` map and keystore password are secrets. PostgreSQL authentication is
+separate from the HTTP token and currently grants node-wide access to all
+catalog databases exposed by the listener. Clients should use
+`sslmode=verify-full` with the issuing CA certificate.
+
 The image has a built-in health check against `/health/live`. Its Java process is
 PID 1 and receives SIGTERM directly. Docker's default ten-second stop timeout
 is shorter than Datahike's 30-second graceful drain, hence the explicit
