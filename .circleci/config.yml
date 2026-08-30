@@ -369,6 +369,23 @@ jobs:
             - .m2
             - .npm
             - replikativ
+  build-http-server:
+    executor: tools/clojurecli
+    steps:
+      - attach_workspace:
+          at: /home/circleci
+      - run:
+          name: Build thin and standalone server jars
+          command: bb http-server-uber
+          no_output_timeout: 10m
+      - run:
+          name: Smoke-test packaged standalone server
+          command: bb http-server-smoke
+          no_output_timeout: 3m
+      - persist_to_workspace:
+          root: /home/circleci/
+          paths:
+            - replikativ/target-http-server
   deploy:
     executor: tools/clojurecli
     steps:
@@ -377,6 +394,9 @@ jobs:
       - run:
           name: Deploy to clojars
           command: bb clojars
+      - run:
+          name: Deploy dedicated HTTP server artifact to Clojars
+          command: bb http-server-clojars
   npm-publish:
     docker:
       - image: cimg/node:22.14
@@ -407,7 +427,9 @@ jobs:
           at: /home/circleci
       - run:
           name: Release jar on GitHub
-          command: bb release jar
+          command: |
+            bb release jar
+            bb release http-server
 
 workflows:
   build-test-and-deploy:
@@ -416,6 +438,10 @@ workflows:
           context: ghcr-read-package
           setup_cljs: true
       - build:
+          context: ghcr-read-package
+          requires:
+            - setup
+      - build-http-server:
           context: ghcr-read-package
           requires:
             - setup
@@ -512,6 +538,7 @@ workflows:
             - npm-test
             - java-examples-test
             - native-image
+            - build-http-server
       - release-jar:
           context:
             - ghcr-read-package

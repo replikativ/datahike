@@ -24,8 +24,26 @@
                            :deps-file     "deps.edn"
                            :jar-pattern   "{{repo.lib}}-http-server-{{version-str}}.jar"
                            :aliases       [:http-server]
-                           :main          datahike.http.main
+                           :basis-exclusions [junit/junit org.hamcrest/hamcrest-core]
+                           ;; tools.build cannot put the pinned source-only eacl
+                           ;; git/local coordinates in a Maven POM. Package those
+                           ;; two source modules; their ordinary Maven deps are
+                           ;; declared directly in the :http-server alias.
+                           :vendored-deps [io.github.whilo/eacl cloudafrica/eacl]
+                           :class-exclusions ["datahike/java/DatahikeGeneratedTest.class"
+                                              "datahike/java/DatahikeTest.class"]
                            :lib           org.replikativ/datahike-http-server}
+         :http-server-standalone {:target-dir  "target-http-server"
+                                  :class-dir   "target-http-server/classes"
+                                  :deps-file   "deps.edn"
+                                  :jar-pattern "{{repo.lib}}-http-server-{{version-str}}-standalone.jar"
+                                  :aliases     [:http-server]
+                                  :basis-exclusions [junit/junit org.hamcrest/hamcrest-core]
+                                  :main        datahike.http.main
+                                  ;; CI treats this as a regression budget, not a
+                                  ;; product promise. Raise it deliberately when a
+                                  ;; new bundled backend justifies the increase.
+                                  :max-bytes   99614720}
          ;; Used only on Windows, where native-image cannot take the classpath
          ;; on the command line (8191-char limit). Same shape as :native, but
          ;; carrying the CLI's own aliases rather than libdatahike's.

@@ -298,11 +298,22 @@ This pattern is common in production systems where internal services need high-p
 
 The HTTP server provides a **REST/RPC interface** for conventional integrations with any language or tool that speaks HTTP. Use this when you need request/response semantics rather than reactive updates (for reactive updates, see Kabel above).
 
-To build locally, clone the repository and run `bb http-server-uber` to create the jar. Run the server with:
+The batteries-included executable is attached to each GitHub release as
+`datahike-http-server-VERSION-standalone.jar`. It includes the portable
+Konserve backends (memory, file, tiered, S3, JDBC, DynamoDB, and Redis), the
+PostgreSQL driver, and the beta pg-datahike listener. Run it with:
 
 ```bash
-java -jar datahike-http-server-VERSION.jar --config path/to/config.edn
+java -jar datahike-http-server-VERSION-standalone.jar --config path/to/config.edn
 ```
+
+The thin `org.replikativ/datahike-http-server` artifact is also published to
+Clojars for JVM applications that want to embed the server or exclude/replace
+backends through ordinary dependency configuration. To build both artifacts
+locally, clone this repository and run `bb http-server-uber`; the results are
+written to `target-http-server/`. `bb http-server-smoke` runs the packaged
+executable against its public shell, authenticated catalog, backend inventory,
+and Prometheus endpoint.
 
 The old positional `path/to/config.edn` form remains supported. Run with
 `--help` for all deployment overrides. Configuration precedence is explicit
