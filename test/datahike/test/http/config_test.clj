@@ -12,7 +12,33 @@
   (is (= "DATAHIKE_DEV_MODE" (config/env-name :dev-mode)))
   (is (= "DATAHIKE_SHUTDOWN_TIMEOUT_MS" (config/env-name :shutdown-timeout-ms)))
   (is (= "DATAHIKE_LOG_FORMAT" (config/env-name :log-format)))
+  (is (= "DATAHIKE_NREPL_PORT" (config/env-name :nrepl-port)))
+  (is (= "DATAHIKE_NREPL_BIND" (config/env-name :nrepl-bind)))
+  (is (= "DATAHIKE_NREPL_SOCKET" (config/env-name :nrepl-socket)))
   (is (= "DATAHIKE_SYSTEM_DB_PATH" (config/env-name :system-db-path))))
+
+(deftest nrepl-configuration-is-opt-in-layered-and-local
+  (is (not (contains? (:config (config/resolve-config [] {})) :nrepl)))
+  (let [file (temp-file "{:nrepl {:socket \"/file/nrepl.sock\"}}")
+        resolved (:config (config/resolve-config
+                           ["--config" (.getPath file) "--nrepl-bind" "localhost"]
+                           {"DATAHIKE_NREPL_PORT" "7000"}))]
+    (is (= 7000 (get-in resolved [:nrepl :port])))
+    (is (config/loopback-host? (get-in resolved [:nrepl :bind])))
+    (is (nil? (get-in resolved [:nrepl :socket])))
+    (is (= "/run/datahike/nrepl.sock"
+           (get-in (config/resolve-config ["--nrepl-socket" "/run/datahike/nrepl.sock"] {})
+                   [:config :nrepl :socket]))))
+  (doseq [invalid [{:port 7888 :bind "0.0.0.0"}
+                   {:port 7888 :socket "/tmp/nrepl.sock"}
+                   {:socket "relative.sock"}
+                   {:bind "127.0.0.1"}
+                   {:port -1}]]
+    (let [error (try
+                  (config/assert-safe-nrepl! {:nrepl invalid})
+                  nil
+                  (catch clojure.lang.ExceptionInfo e e))]
+      (is (= :datahike.http/invalid-nrepl (:type (ex-data error))) (pr-str invalid)))))
 
 (deftest standalone-bind-safety
   (testing "literal and named loopback hosts need no authentication"
@@ -54,7 +80,8 @@
                                  :shutdown-timeout-ms 10000
                                  :level :info
                                  :metrics false
-                                 :system-db {:store {:backend :memory}}}))
+                                 :system-db {:store {:backend :memory}
+                                             :keep-history? true}}))
         env  {"DATAHIKE_PORT" "2002"
               "DATAHIKE_HOST" "env-host"
               "DATAHIKE_TOKEN" "env-token"
@@ -82,7 +109,9 @@
     (is (= :json (:log-format resolved)))
     (is (false? (:metrics resolved)) "unoverridden EDN remains the full surface")
     (is (= {:backend :file :path "/cli/system"}
-           (get-in resolved [:system-db :store])))))
+           (get-in resolved [:system-db :store])))
+    (is (true? (get-in resolved [:system-db :keep-history?]))
+        "the deployment path shorthand preserves other EDN system settings")))
 
 (deftest positional-config-remains-backward-compatible
   (let [file (temp-file "{:port 4444}")]

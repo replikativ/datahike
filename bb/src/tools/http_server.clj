@@ -90,6 +90,7 @@
                    :port port
                    :token token
                    :metrics true
+                   :nrepl {:port 0}
                    :system-db {:store {:backend :memory}}}))
     (let [process (p/process ["java" "-jar" jar config-file]
                              {:out :inherit :err :inherit})
@@ -116,7 +117,12 @@
                          (json/parse-string true))]
           (expect! "catalog contains the smoke database"
                    #(= ["smoke"] %)
-                   (mapv :name (:databases status))))
+                   (mapv :name (:databases status)))
+          (expect! "packaged nREPL starts on loopback"
+                   #(and (true? (:enabled %))
+                         (= ["!kw" "tcp"] (:transport %))
+                         (pos-int? (:port %)))
+                   (get-in status [:node :nrepl])))
         (let [version-body (:body (response :get (str base-url "/version")
                                              {:headers (assoc auth "accept" "application/json")}))]
           (doseq [backend ["memory" "file" "s3" "jdbc" "dynamodb" "redis"]]

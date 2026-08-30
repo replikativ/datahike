@@ -66,6 +66,7 @@
               body     (edn/read-string (slurp (:body response)))]
           (is (= 200 (:status response)))
           (is (map? (:node body)))
+          (is (= {:enabled false} (get-in body [:node :nrepl])))
           (is (= [] (:databases body)))))
       (finally
         (system/close! (:datahike.http.server/config (meta handler)))))))
