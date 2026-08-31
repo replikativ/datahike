@@ -37,6 +37,30 @@
     (= (count (select-keys obj keys-to-check))
        (count keys-to-check))))
 
+(def ^:private stored-head-identity-keys
+  "Persisted fields that determine the database materialized by `stored->db`.
+
+   Current branch heads carry a commit-id and never need this.  Legacy heads do
+   not, however, and a shared writer re-reads them before every transaction and
+   deref.  Keeping this identity on the in-memory db lets an unchanged legacy
+   head retain its live secondary-index instances (notably Scriptum's
+   lock-holding Lucene writer) without making the writer blind to a foreign
+   update.
+
+   Fused roots are represented by their content-derived keys; the root values
+   themselves are deliberately excluded because they are materialized index
+   objects rather than branch-head identity."
+  [:eavt-key :aevt-key :avet-key
+   :temporal-eavt-key :temporal-aevt-key :temporal-avet-key
+   :schema-meta-key :secondary-index-keys
+   ;; Pre schema-meta layouts kept these values inline.
+   :schema :rschema :system-entities :ref-ident-map :ident-ref-map
+   :max-tx :max-eid :op-count :hash :meta])
+
+(defn- stored-head-identity [stored]
+  (-> (select-keys stored stored-head-identity-keys)
+      (update :meta dissoc :datahike/commit-id)))
+
 (defn get-and-clear-pending-kvs!
   "Retrieves and clears pending key-value pairs from the store's pending-writes atom.
   Assumes :pending-writes in store's storage holds an atom of a collection of [key value] pairs."
@@ -389,6 +413,12 @@
        {:secondary-index-keys secondary-index-keys})
      (when (seq sec-indices)
        {:secondary-indices sec-indices})
+     ;; New heads use their durable commit-id.  A legacy head needs a stable,
+     ;; in-memory comparison token so a shared writer does not reopen the same
+     ;; lock-holding secondary index on every deref.  This field is intentionally
+     ;; top-level/internal and db->stored does not persist it.
+     (when-not (get-in stored-db [:meta :datahike/commit-id])
+       {::stored-head-identity (stored-head-identity stored-db)})
      schema-meta)))
 
 (defn stored->db-read-only
@@ -419,12 +449,11 @@
   "`old` itself when `stored` is the very commit `old` already is, otherwise a
    fresh in-memory db built from `stored`.
 
-   A record with NO cid is never treated as unmoved, even against an `old` that
-   also has none: neither side knowing its identity is not evidence that the two
-   match, and reading it as a match would make the writer blind to every other
-   process's commits — precisely the failure shared writer ownership exists to
-   prevent. Unreachable for databases this version creates (`create-database`
-   stamps a cid); the guard is for foreign or legacy records.
+   A record with NO cid (a foreign or legacy head) uses the complete persisted
+   head identity cached by `stored->db`.  This keeps an unchanged legacy head's
+   live secondary indices open while still rebuilding when any primary root,
+   schema pointer, secondary-index key-map, transaction boundary, hash, or
+   metadata changes.
 
    Identity is the commit-id: the same cid means the same stored record, hence
    the same primary index roots AND the same secondary-index key-maps, so there
@@ -439,6 +468,10 @@
   ([old stored store head-revision] (reload-head old stored store head-revision nil))
   ([old stored store head-revision materialized]
    (let [stored-cid (get-in stored [:meta :datahike/commit-id])
+         same-head? (if stored-cid
+                      (= stored-cid (get-in old [:meta :datahike/commit-id]))
+                      (= (stored-head-identity stored)
+                         (::stored-head-identity old)))
          ;; The konserve revision the head blob was AT when we read it, carried on
          ;; the db so a later commit can fence its head write against it. Distinct
          ;; from the commit-id: the cid identifies datahike's state, the revision
@@ -448,7 +481,7 @@
          ;; public database metadata, or the content-derived commit id.
          stamp (fn [db] (cond-> db head-revision
                                 (assoc ::head-revision head-revision)))]
-     (if (and stored-cid (= stored-cid (get-in old [:meta :datahike/commit-id])))
+     (if same-head?
        ;; Unmoved head: the db is unchanged, but the revision may not be — the blob
        ;; can have been rewritten with identical content. Take the fresh one.
        (stamp old)

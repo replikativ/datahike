@@ -16,7 +16,9 @@
             [datahike.connections :as conns]
             [datahike.connector :as dcon]
             [datahike.db.transaction :as dbtx]
+            [datahike.index.entity-set :as es]
             [datahike.index.secondary :as sec]
+            [datahike.index.secondary.scriptum]
             [datahike.index.secondary.stratum]
             [datahike.metrics :as dhm]
             [datahike.writer :as w]
@@ -724,6 +726,49 @@
 
 (defn- head-strat-key [db]
   (get-in (head-record db) [:secondary-index-keys :idx/strat]))
+
+(deftest unchanged-legacy-head-keeps-live-scriptum-writer
+  (testing "a cid-less legacy head is identified without reopening the same
+            Scriptum branch and contending with its live Lucene write lock"
+    (let [tag  (str "legacy-scriptum-" (random-uuid))
+          c    (assoc (cfg tag :shared) :schema-flexibility :write)
+          path (str (System/getProperty "java.io.tmpdir") "/" tag)]
+      (fresh-db! c)
+      ;; Write a normal modern head with a durable Scriptum key-map, then strip
+      ;; only its cid to model an upgraded pre-commit-id database.
+      (let [{:keys [conn] :as p} (connect-as-separate-process c)]
+        (try
+          (d/transact conn [{:db/ident :p/name :db/valueType :db.type/string
+                             :db/cardinality :db.cardinality/one}])
+          (d/transact conn [{:db/ident :idx/scriptum
+                             :db.secondary/type :scriptum
+                             :db.secondary/attrs [:p/name]
+                             :db.secondary/config {:path path}}])
+          (d/transact conn [{:p/name "alice"}])
+          (let [db     @(:wrapped-atom conn)
+                branch (get-in db [:config :branch])
+                stored (k/get (:store db) branch nil {:sync? true})]
+            (is (some? (get-in stored [:secondary-index-keys :idx/scriptum])))
+            (k/assoc (:store db) branch
+                     (update stored :meta dissoc :datahike/commit-id)
+                     {:sync? true}))
+          (finally (release-separate-process p))))
+      (let [{:keys [conn] :as p} (connect-as-separate-process c)]
+        (try
+          (let [opened @(:wrapped-atom conn)]
+            (is (nil? (get-in opened [:meta :datahike/commit-id])))
+            (let [idx       (get-in opened [:secondary-indices :idx/scriptum])
+                  refreshed @conn
+                  refreshed-again @conn]
+              ;; reload-head may stamp a fresh konserve revision onto the db
+              ;; value, but it must preserve the live index object itself.
+              (is (identical? idx
+                              (get-in refreshed [:secondary-indices :idx/scriptum])))
+              (is (identical? idx
+                              (get-in refreshed-again [:secondary-indices :idx/scriptum])))
+              (is (= 1 (es/entity-bitset-cardinality
+                        (sec/-search idx {:query "alice" :field :value} nil))))))
+          (finally (release-separate-process p)))))))
 
 (deftest secondary-index-survives-alternating-processes
   (testing "a secondary index is named by the commit, so the head re-read has to
