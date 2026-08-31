@@ -1748,7 +1748,13 @@
                                                 :message (.getMessage ^Throwable e)
                                                 :error e}))))]
           (try
-            (let [populated-idx
+            (let [;; AEVT groups an entity's current values, and bulk imports
+                  ;; commonly assert long runs in one transaction. Preserve the
+                  ;; complete tx-meta contract without seeking the same tx
+                  ;; entity once per datom. A one-entry cache is bounded and
+                  ;; cannot retain transaction history during a large build.
+                  last-tx-meta (volatile! [nil nil])
+                  populated-idx
                   (reduce
                    (fn [current-idx attr]
                      (let [datoms (dbi/datoms snapshot :aevt [attr])
@@ -1760,8 +1766,19 @@
                                          idx
                                          (do (swap! n inc)
                                              (let [tx-id (.-tx ^datahike.datom.Datom d)
+                                                   [cached-tx-id cached-tx-meta]
+                                                   @last-tx-meta
+                                                   tx-meta
+                                                   (if (= tx-id cached-tx-id)
+                                                     cached-tx-meta
+                                                     (let [tx-meta
+                                                           (dbtx/meta-for-tx-id
+                                                            snapshot tx-id)]
+                                                       (vreset! last-tx-meta
+                                                                [tx-id tx-meta])
+                                                       tx-meta))
                                                    tx-report {:datom d :added? true
-                                                              :tx-meta (dbtx/meta-for-tx-id snapshot tx-id)}]
+                                                              :tx-meta tx-meta}]
                                                (if use-transient?
                                                  (do (sec/-transact! idx tx-report) idx)
                                                  (sec/-transact idx tx-report))))))
