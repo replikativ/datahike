@@ -33,7 +33,7 @@
   (-slice-ordered [_ _ _ _ _ _] nil)
   (-indexed-attrs [_] #{:emp/salary})
   (-transact [this tx-report]
-    (swap! seen conj (select-keys tx-report [:tx-meta :added?]))
+    (swap! seen conj (select-keys tx-report [:tx-meta :added? :value-hash]))
     this))
 
 (deftest tx-meta-flows-into-secondary-transact
@@ -66,6 +66,8 @@
           vt-froms (set (map #(get-in % [:tx-meta :db.valid/from]) vt-events))]
       (testing "the adapter saw at least one :transact call per user write"
         (is (>= (count seen) 2)))
+      (testing "ordinary secondary values do not pay the secondary-only hash cost"
+        (is (every? (comp nil? :value-hash) seen)))
       (testing "vt-bearing :transact calls covered both txes' tx-meta"
         (is (contains? vt-froms #inst "2024-01-01"))
         (is (contains? vt-froms #inst "2024-07-01"))))))

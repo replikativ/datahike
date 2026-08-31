@@ -432,9 +432,15 @@
    (let [sec-idx-map (get-in db [:rschema :db.secondary/index a-ident])]
      (if (seq sec-idx-map)
        (let [secondary-only? (dbu/secondary-only? db a-ident)
-             value-hash (if (and secondary-only? (not added?))
-                          (.-v datom)
-                          (sec/secondary-only-hash (.-v datom)))
+             ;; The hash is part of the primary/secondary identity contract
+             ;; only for :db.secondary/only. Ordinary adapters that choose a
+             ;; hash-addressed payload can derive it themselves; hashing every
+             ;; ordinary indexed value here imposed the generic hasch walk on
+             ;; all secondary writes even when no consumer used the result.
+             value-hash (when secondary-only?
+                          (if (not added?)
+                            (.-v datom)
+                            (sec/secondary-only-hash (.-v datom))))
              tx-report {:datom datom
                         :added? added?
                         :value-hash value-hash
