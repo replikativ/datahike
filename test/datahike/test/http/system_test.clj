@@ -68,7 +68,11 @@
   (let [configured (system/configure {:system-db {:store {:backend :memory}}})
         databases  (vec (for [n (range 30)]
                           {:name (format "db-%02d" n)
-                           :store {:backend :memory :id (random-uuid)}}))]
+                           ;; Search covers both names and store IDs. Random
+                           ;; UUIDs occasionally contain `db-2`, adding an
+                           ;; unrelated row and making this assertion flaky.
+                           :store {:backend :memory
+                                   :id (java.util.UUID. 0 (long n))}}))]
     (try
       (doseq [database databases]
         ((get configured system/register-key) database {:sub "root"}))
