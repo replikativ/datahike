@@ -379,11 +379,11 @@
              (assoc m attr-def [old-value new-value]))
 
            :db/index
-           ;; Enabling is supported via the end-of-transaction AVET backfill.
-           ;; DISABLING stays invalid: retractions gate AVET removal on
-           ;; indexing?, so a disable would strand stale entries the index
-           ;; could never clean up.
-           (when-not (true? new-value)
+           ;; Both directions are handled by the end-of-transaction AVET
+           ;; migration. Enabling backfills existing values; disabling first
+           ;; removes the attribute's complete current AVET slice, so later
+           ;; retractions cannot strand stale entries.
+           (when-not (or (true? new-value) (false? new-value))
              (assoc m attr-def [old-value new-value]))
 
            ;; Always allow these attributes to be updated.

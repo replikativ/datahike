@@ -1745,6 +1745,52 @@
                              db))))
                      db enabled))))))))
 
+(defn- remove-disabled-indices
+  "Remove current AVET entries when an attribute stops being indexed.
+
+   This is the inverse of `backfill-enabled-indices` and runs at the same
+   end-of-transaction chokepoint. Doing the complete AEVT→AVET sweep after all
+   datoms and schema changes have settled makes the result independent of
+   transaction order: no stale entry can survive merely because `with-datom`
+   observed the new, non-indexing schema before a later retraction.
+
+   Temporal AVET is deliberately retained. Historical database roots already
+   name their immutable trees, while a history-enabled current root may still
+   need the old entries to answer an as-of view whose schema had the index.
+   Re-enabling performs the existing full current+history backfill."
+  [{:keys [db-before db-after] :as report}]
+  (let [old-schema (dbi/-schema db-before)
+        new-schema (dbi/-schema db-after)]
+    (if (identical? old-schema new-schema)
+      report
+      (let [indexed-entry?
+            (fn [entry]
+              (and (map? entry)
+                   (or (:db/index entry)
+                       (:db/unique entry)
+                       (= :db.type/ref (:db/valueType entry)))))
+            disabled
+            (into []
+                  (comp (filter keyword?)
+                        (filter (fn [ident]
+                                  (and (indexed-entry? (get old-schema ident))
+                                       (not (indexed-entry? (get new-schema ident)))))))
+                  (keys old-schema))]
+        (if (empty? disabled)
+          report
+          (update report :db-after
+                  (fn [db]
+                    (reduce
+                     (fn [db ident]
+                       (reduce (fn [db ^Datom datom]
+                                 (let [op-count (:op-count db)]
+                                   (-> db
+                                       (update :avet #(di/-remove % datom :avet op-count))
+                                       (update :op-count inc))))
+                               db
+                               (schema-attr-current-datoms db ident)))
+                     db disabled))))))))
+
 (defn- validate-ident-renames!
   "Refuse an attribute RENAME that would silently split the attribute in two.
 
@@ -1951,6 +1997,9 @@
                 ;; enabled on existing attributes — must run while
                 ;; :db-after is still transient.
                 backfill-enabled-indices
+                ;; The inverse transition is equally atomic: remove the full
+                ;; current AVET slice before this database value is published.
+                remove-disabled-indices
                 (dissoc ::pending-vt-validation)
                 (assoc-in [:tempids :db/current-tx] (current-tx report))
                 (update-in [:db-after :max-tx] inc)
