@@ -661,18 +661,26 @@
 (defn- stratum-key-map-failure-reason [key-map]
   (cond
     (not= :stratum (:type key-map)) :wrong-type
-    ;; The first detached-generation bridge wrote a UUID without a versioned
-    ;; ownership envelope. Its object may be immutable, but the stored map does
-    ;; not establish the format or who must retain it.
-    (not (contains? key-map :format-version))
-    :legacy-stratum-generation-envelope
     (not= 1 (:format-version key-map)) :unsupported-format-version
     (not= :datahike (:storage-owner key-map)) :wrong-storage-owner
     (not (uuid? (:dataset-commit-id key-map))) :invalid-dataset-commit-id
     :else nil))
 
 (defn- validate-stratum-generation-key-map [key-map]
-  (when-let [reason (stratum-key-map-failure-reason key-map)]
+  (let [;; The released adapter already stored an exact immutable dataset UUID
+        ;; in Datahike's own Konserve store. Its type therefore determines both
+        ;; format and ownership without consulting a mutable native pointer.
+        ;; Normalize that safe legacy envelope in memory; the next successful
+        ;; transaction republishes it in the explicit v1 shape.
+        key-map (if (and (= :stratum (:type key-map))
+                         (not (contains? key-map :format-version))
+                         (uuid? (:dataset-commit-id key-map)))
+                  (-> key-map
+                      (assoc :format-version 1
+                             :storage-owner :datahike)
+                      (dissoc :branch :merkle-root))
+                  key-map)]
+    (when-let [reason (stratum-key-map-failure-reason key-map)]
     (throw (ex-info
             "Invalid Stratum generation key-map."
             {:type :secondary/invalid-stratum-generation
@@ -682,7 +690,7 @@
                         :format-version 1
                         :storage-owner :datahike
                         :dataset-commit-id :uuid}})))
-  key-map)
+    key-map))
 
 (deftype StratumIndex [dataset    ;; StratumDataset or nil
                        attrs      ;; set of datahike attribute idents being indexed

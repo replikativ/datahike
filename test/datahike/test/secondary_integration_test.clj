@@ -1950,10 +1950,7 @@
 
 (deftest stratum-generation-key-maps-fail-closed
   (let [idx (sec/create-index :stratum {:attrs #{:doc/body}} nil)
-        cases [[{:type :stratum
-                 :dataset-commit-id (random-uuid)}
-                :legacy-stratum-generation-envelope]
-               [{:type :not-stratum
+        cases [[{:type :not-stratum
                  :format-version 1
                  :storage-owner :datahike
                  :dataset-commit-id (random-uuid)}
@@ -1979,6 +1976,36 @@
     (doseq [[key-map reason] (remove #(= :wrong-type (second %)) cases)]
       (is (= reason
              (:reason (thrown-data #(sec/mark-from-key-map key-map nil))))))))
+
+(deftest legacy-stratum-generation-envelope-restores-exactly
+  (let [store (new-mem-store (atom {}) {:sync? true})
+        skeleton (sec/create-index :stratum {:attrs #{:item/price}}
+                                   nil)
+        transient (sec/-as-transient skeleton)]
+    (sec/-transact! transient
+                    {:datom (datahike.datom/datom 7 :item/price 42)
+                     :added? true})
+    (let [index (sec/-persistent! transient)
+          preparation (async/<!! (sec/-sec-prepare index {:store store}))
+          prepared (sec/-sec-generation-index preparation)
+          key-map (sec/-sec-generation-key-map prepared)
+          legacy-key-map (-> key-map
+                             (dissoc :format-version :storage-owner)
+                             (assoc :branch "db"
+                                    :merkle-root (:dataset-commit-id key-map)))
+          restored (sec/-sec-restore skeleton store legacy-key-map)]
+      (is (= [[7 42]]
+             (mapv (juxt :entity-id :value)
+                   (:candidates
+                    (sec/-candidate-page
+                     restored {:attribute :item/price :direction :asc}
+                     nil {:limit 10})))))
+      (is (= (select-keys key-map
+                          [:type :format-version :storage-owner
+                           :dataset-commit-id])
+             (sec/-sec-generation-key-map restored)))
+      (is (true? (async/<!! (sec/-sec-release
+                             preparation {:status :committed})))))))
 
 (deftest scriptum-retraction-keeps-the-entitys-other-attributes
   (testing "the retract branch deleted by `_entity_id` alone, which removed
