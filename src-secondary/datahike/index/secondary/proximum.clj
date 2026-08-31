@@ -13,6 +13,7 @@
    [proximum.warm :as prox-warm]
    [datahike.index.audit :as audit]
    [datahike.index.secondary :as sec]
+   [datahike.index.secondary.publication :as publication]
    [datahike.index.entity-set :as es]
    [proximum.core :as prox]
    [proximum.generations :as gen]
@@ -57,139 +58,7 @@
   (when generation
     (async/<!! (gen/close-view! generation))))
 
-(defprotocol ^:private IUnpublishedProximumGenerations
-  (-take-publication-holds! [index next-state])
-  (-reserve-derivation! [index])
-  (-release-derivation! [index]))
-
-(defn- take-holds! [holds*]
-  (locking holds*
-    (let [holds @holds*]
-      (reset! holds* [])
-      holds)))
-
-(defn- transfer-holds!
-  [holds* publication-state* next-state]
-  (locking publication-state*
-    (case @publication-state*
-      :published []
-      :unpublished
-      (let [holds (take-holds! holds*)]
-        (when-not (seq holds)
-          (throw (ex-info "An unpublished Proximum generation has no publication hold."
-                          {:type :secondary/proximum-missing-publication-hold})))
-        (reset! publication-state* next-state)
-        holds)
-      :deriving
-      (if (= :transferred next-state)
-        (let [holds (take-holds! holds*)]
-          (when-not (seq holds)
-            (throw (ex-info "A derived Proximum generation has no publication hold."
-                            {:type :secondary/proximum-missing-publication-hold})))
-          (reset! publication-state* next-state)
-          holds)
-        (throw (ex-info "A Proximum derivation can only transfer its publication ownership."
-                        {:type :secondary/proximum-publication-owner-conflict
-                         :state :deriving
-                         :requested-state next-state})))
-      (throw (ex-info "A Proximum generation already has an exclusive publication owner."
-                      {:type :secondary/proximum-publication-owner-conflict
-                       :state @publication-state*
-                       :requested-state next-state})))))
-
-(defn- complete-holds! [holds complete!]
-  (let [failures
-        (reduce (fn [errors hold]
-                  (try
-                    (complete! hold)
-                    errors
-                    (catch Throwable failure
-                      (conj errors failure))))
-                [] holds)]
-    (when (seq failures)
-      (throw (ex-info "One or more Proximum publication holds failed to close"
-                      {:type :secondary/proximum-publication-cleanup-failed
-                       :failure-count (count failures)}
-                      (first failures))))))
-
-(defn- reserve-derivation!
-  [publication-state*]
-  (locking publication-state*
-    (case @publication-state*
-      :published false
-      :unpublished (do (reset! publication-state* :deriving) true)
-      (throw (ex-info "This Proximum generation already has an exclusive publication owner."
-                      {:type :secondary/proximum-publication-owner-conflict
-                       :state @publication-state*})))))
-
-(defn- release-derivation!
-  [publication-state*]
-  (locking publication-state*
-    (when (= :deriving @publication-state*)
-      (reset! publication-state* :unpublished)
-      true)))
-
 (declare make-proximum-index)
-
-(defrecord ProximumPreparation [prepared-index publication-holds owns-prepared?
-                                publication-state* release-state]
-  sec/IPreparedSecondaryGeneration
-  (-sec-generation-index [_] prepared-index)
-  (-sec-release [_ outcome]
-    (async/thread
-      (try
-        (locking release-state
-          (let [previous @release-state
-                status (:status outcome)]
-            (cond
-              (#{:committed :aborted} previous)
-              nil
-
-              (and (= :unknown previous) (= :committed status))
-              (do
-                (complete-holds! publication-holds gen/root-publication!)
-                (reset! publication-state* :published)
-                (reset! release-state :committed))
-
-              (and (= :unknown previous) (= :unknown status))
-              nil
-
-              (= :committed status)
-              (do
-                (complete-holds! publication-holds gen/root-publication!)
-                (reset! publication-state* :published)
-                (reset! release-state :committed))
-
-              (and (= :aborted status) (nil? previous))
-              (let [completed? (atom false)]
-                (try
-                  (complete-holds! publication-holds gen/abort-publication!)
-                  (reset! completed? true)
-                  (finally
-                    (when owns-prepared?
-                      (async/<!! (gen/close-view! (:generation prepared-index))))))
-                (when @completed?
-                  (reset! publication-state* :aborted)
-                  (reset! release-state :aborted)))
-
-              (= :unknown status)
-              (do
-                ;; The head write may still land after returning. Keep every
-                ;; publication hold until an authoritative reconciliation says
-                ;; committed or definitively aborted. The live mmap is only a
-                ;; cache and can be closed; a landed generation restores by id.
-                (when owns-prepared?
-                  (async/<!! (gen/close-view! (:generation prepared-index))))
-                (reset! publication-state* :unknown)
-                (reset! release-state :unknown))
-
-              :else
-              (throw (ex-info "An ambiguous secondary generation cannot later be aborted."
-                              {:type :secondary/ambiguous-generation-abort
-                               :previous previous
-                               :outcome outcome})))))
-        true
-        (catch Throwable failure failure)))))
 
 (defn- proximum-view [index]
   (some-> (:generation index) gen/generation-index))
@@ -352,8 +221,10 @@
                 adopted-holds* (atom [hold])]
             (try
               (let [parent-holds
-                    (if (satisfies? IUnpublishedProximumGenerations source-index)
-                      (-take-publication-holds! source-index :transferred)
+                    (if (satisfies? publication/IUnpublishedGeneration
+                                    source-index)
+                      (publication/-take-publication-holds!
+                       source-index :transferred)
                       [])
                     _ (reset! adopted-holds* (conj (vec parent-holds) hold))
                     result (make-proximum-index view attrs config
@@ -364,13 +235,15 @@
                 result)
               (catch Throwable failure
                 (try
-                  (complete-holds! @adopted-holds* gen/abort-publication!)
+                  (publication/complete-holds!
+                   (publication/publication-owner :proximum [])
+                   @adopted-holds* gen/abort-publication!)
                   (finally
                     (async/<!! (gen/close-view! view))))
                 (throw failure))))))
       (finally
         (when source-reserved?
-          (-release-derivation! source-index)))))
+          (publication/-release-derivation! source-index)))))
 
   sec/IDurableSecondaryTransient
   (-durable-persistent-result? [_] true)
@@ -384,32 +257,23 @@
           (async/<!! (gen/discard! builder))))
       (finally
         (when source-reserved?
-          (-release-derivation! source-index))))))
+          (publication/-release-derivation! source-index))))))
 
 (defrecord ProximumIndex [generation attrs config generation-config
-                          publication-holds* publication-state*]
+                          publication-owner]
   java.io.Closeable
   (close [_]
-    (locking publication-state*
-      (when (= :deriving @publication-state*)
-        (throw (ex-info "Cannot close a Proximum generation while a transient derivation owns it."
-                        {:type :secondary/proximum-publication-owner-conflict
-                         :state :deriving})))
-      (when (= :unpublished @publication-state*)
-        ;; Do not drain the only strong references until every completion
-        ;; succeeds. A repeated close is then a genuine cleanup retry.
-        (complete-holds! @publication-holds* gen/abort-publication!)
-        (reset! publication-holds* [])
-        (reset! publication-state* :aborted)))
+    (publication/abort-unpublished! publication-owner
+                                    gen/abort-publication!)
     (close-generation! generation))
 
-  IUnpublishedProximumGenerations
+  publication/IUnpublishedGeneration
   (-take-publication-holds! [_ next-state]
-    (transfer-holds! publication-holds* publication-state* next-state))
+    (publication/take-publication-holds! publication-owner next-state))
   (-reserve-derivation! [_]
-    (reserve-derivation! publication-state*))
+    (publication/reserve-derivation! publication-owner))
   (-release-derivation! [_]
-    (release-derivation! publication-state*))
+    (publication/release-derivation! publication-owner))
 
   sec/ISecondaryIndex
   (-search [_ query-spec entity-filter]
@@ -520,13 +384,13 @@
 
   sec/ITransientSecondaryIndex
   (-as-transient [this]
-    (let [reserved? (-reserve-derivation! this)]
+    (let [reserved? (publication/-reserve-derivation! this)]
       (try
         (->TransientProximumIndex
          (atom nil) (atom []) this attrs config generation-config (atom false)
          reserved?)
         (catch Throwable failure
-          (when reserved? (-release-derivation! this))
+          (when reserved? (publication/-release-derivation! this))
           (throw failure)))))
   (-transact! [_ _]
     (throw (IllegalStateException.
@@ -560,41 +424,56 @@
       (try
         (let [[prepared holds owns?]
               (cond
-                (= :unpublished @publication-state*)
-                (let [holds (-take-publication-holds! this :preparing)]
+                (= :unpublished
+                   (publication/publication-state publication-owner))
+                (let [holds (publication/-take-publication-holds!
+                             this :preparing)]
                   (try
                     [(->ProximumIndex (gen/retain-generation-view generation)
-                                      attrs config generation-config (atom [])
-                                      publication-state*)
+                                      attrs config generation-config
+                                      publication-owner)
                      holds true]
                     (catch Throwable failure
-                      (complete-holds! holds gen/abort-publication!)
-                      (reset! publication-state* :aborted)
+                      (publication/complete-holds!
+                       publication-owner holds gen/abort-publication!)
+                      (publication/set-publication-state!
+                       publication-owner :aborted)
                       (throw failure))))
 
-                (and generation (= :published @publication-state*))
+                (and generation
+                     (= :published
+                        (publication/publication-state publication-owner)))
                 [this [] false]
 
                 generation
                 (throw (ex-info "This Proximum generation already has a publication owner."
                                 {:type :secondary/proximum-publication-owner-conflict
-                                 :state @publication-state*}))
+                                 :state (publication/publication-state
+                                         publication-owner)}))
 
                 :else
                 (let [builder (gen/begin-generation-from-config
                                generation-config)]
                   (try
-                    (let [[view hold] (seal-builder-view! builder)]
-                      [(->ProximumIndex view attrs config generation-config
-                                        (atom []) (atom :preparing))
+                    (let [[view hold] (seal-builder-view! builder)
+                          owner (publication/publication-owner :proximum [])
+                          _ (publication/set-publication-state!
+                             owner :preparing)]
+                      [(->ProximumIndex
+                        view attrs config generation-config owner)
                        [hold] true])
                     (catch Throwable failure
                       (when (#{:open :failed} @(:status builder))
                         (async/<!! (gen/discard! builder)))
                       (throw failure)))))]
-          (async/put! ch (->ProximumPreparation prepared holds owns?
-                                                (:publication-state* prepared)
-                                                (atom nil))))
+          (async/put!
+           ch
+           (publication/prepared-generation
+            prepared holds owns? (:publication-owner prepared)
+            {:root! gen/root-publication!
+             :abort! gen/abort-publication!
+             :close-prepared!
+             #(async/<!! (gen/close-view! (:generation %)))})))
         (catch Throwable failure
           (async/put! ch failure)))
       ch))
@@ -604,7 +483,7 @@
           restored (gen/open-generation generation-config generation-id)]
       (if (= external-store-id (gen/generation-store-id restored))
         (->ProximumIndex restored attrs config generation-config
-                         (atom []) (atom :published))
+                         (publication/publication-owner :proximum []))
         (do
           (close-generation! restored)
           (throw (ex-info
@@ -630,10 +509,8 @@
 (defn- make-proximum-index
   [generation attrs config generation-config publication-holds]
   (->ProximumIndex generation (set attrs) config generation-config
-                   (atom (vec publication-holds))
-                   (atom (if (seq publication-holds)
-                           :unpublished
-                           :published))))
+                   (publication/publication-owner
+                    :proximum publication-holds)))
 
 (sec/register-index-type!
  :proximum
