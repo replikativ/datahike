@@ -312,9 +312,10 @@ The adapters realize those immutable generations differently:
   local `:path` is only a disposable cache/workspace.
 - **Stratum** seals its column trees into Datahike's konserve.
 - **Proximum** seals a generation in its configured external store. Its current
-  implementation copies the mmap for every changed transaction; reflinks can
-  make that cheap, but high-frequency vector writes need an overlay/delta design
-  before this should be a production default.
+  implementation shares the append-only mmap cache along one linear generation
+  chain and keeps independent historical/divergent views isolated. Immutable
+  Konserve generations remain the authoritative roots; the mmap is a local
+  acceleration structure rather than the publication point.
 
 ### Stored generation compatibility
 
@@ -330,7 +331,8 @@ experimental formats:
 
 - Proximum maps containing native `:commit-id` / `:branch` pointers. Current
   format 2 requires an external `:generation-id`, a stable
-  `:external-store-id`, and `:generation-strategy :full-mmap-copy`.
+  `:external-store-id`, and immutable-generation publication through the owning
+  Datahike root.
 - Scriptum format 1 maps. Current format 2 names a sealed Lucene manifest with
   `:snapshot-address` in Datahike's store.
 - Unversioned Stratum maps containing only `:dataset-commit-id`. Current format
