@@ -3,6 +3,7 @@
   (:require [babashka.fs :as fs]
             [babashka.process :as p]
             [clojure.java.io :as io]
+            [clojure.string :as str]
             [tools.build :as build]))
 
 (defn clj [opts & args] (apply p/shell opts "clojure" args))
@@ -15,12 +16,26 @@
 (defn back-compat [config]
   (println "Testing backwards compatibility")
   (let [old-version-dir "datahike-old"
+        release-tag (str/trim (:out (git {:out :string}
+                                         "describe" "--tags" "--abbrev=0" "HEAD")))
+        secondary-root (str (fs/create-temp-dir {:prefix "datahike-secondary-back-compat-"}))
+        secondary-fixture (str (fs/absolutize
+                                "test/datahike/backward_compatibility_test/src"))
+        old-secondary-fixture "backward-secondary-src"
+        secondary-env {"BACK_COMPAT_ROOT" secondary-root
+                       "LOG_LEVEL" ":fatal"
+                       "JAVA_OPTS" (str "--enable-native-access=ALL-UNNAMED "
+                                        "-XX:+UnlockExperimentalVMOptions "
+                                        "-XX:-UseJVMCICompiler "
+                                        "-Dorg.slf4j.simpleLogger.defaultLogLevel=warn")}
         ssh-dir (fs/expand-home "~/.ssh")
         known-hosts-file (fs/expand-home "~/.ssh/known_hosts")]
+    (println "Using released fixture writer" release-tag)
     (println "WRITING TEST DATA TO TEST-DB")
     (when-not (fs/exists? ssh-dir)
       (fs/create-dirs ssh-dir))
     (fs/delete-on-exit old-version-dir)
+    (fs/delete-on-exit secondary-root)
     (let [output (:out (p/shell {:out :string}
                                 "ssh-keyscan" "github.com"))]
       (when-not (fs/exists? known-hosts-file)
@@ -28,7 +43,8 @@
       (fs/write-lines known-hosts-file [output] {:append true}))
     (fs/delete-tree old-version-dir)
     (git {:dir "."}
-         "clone" "--depth" "1" (:git-url config) old-version-dir)
+         "clone" "--depth" "1" "--branch" release-tag
+         (:git-url config) old-version-dir)
 
     ;; Generate Java API bindings before compiling
     (println "Generating Java API for old version...")
@@ -50,18 +66,58 @@
                          :java-src-dirs [(str old-version-dir "/java")
                                          (str old-version-dir "/java/src-generated")]
                          :deps-file (str old-version-dir "/deps.edn")})
+    (fs/create-dirs (str old-version-dir "/" old-secondary-fixture))
+    (fs/copy (str secondary-fixture "/backward_secondary_test.clj")
+             (str old-version-dir "/" old-secondary-fixture
+                  "/backward_secondary_test.clj"))
 
     (clj {:dir old-version-dir}
          "-Sdeps" (str "{:deps {io.replikativ/datahike {:local/root \".\"}}"
                        " :paths [\"test/datahike/backward_compatibility_test/src\"]}")
          "-X" "backward-test/write")
-    (fs/delete-tree old-version-dir)
+
+    (println "WRITING RELEASED SECONDARY-INDEX FIXTURES")
+    (clj {:dir old-version-dir
+          :extra-env secondary-env}
+         "-Sdeps" (str "{:deps {io.replikativ/datahike {:local/root \".\"}}"
+                       " :paths [\"" old-secondary-fixture "\"]}")
+         "-X:test" "backward-secondary-test/write")
 
     (println "READING TEST DATA FROM TEST-DB")
     (clj {:dir "."}
          "-Sdeps" (str "{:deps {io.replikativ/datahike {:local/root \".\"}}"
                        " :paths [\"test/datahike/backward_compatibility_test/src\"]}")
-         "-X" "backward-test/read")))
+         "-X" "backward-test/read")
+
+    (println "VERIFYING RELEASED SECONDARY-INDEX ROOTS WITH CURRENT CODE")
+    (clj {:dir "."
+          :extra-env secondary-env}
+         "-Sdeps" (str "{:deps {io.replikativ/datahike {:local/root \".\"}}"
+                       " :paths [\"test/datahike/backward_compatibility_test/src\"]}")
+         "-X:test" "backward-secondary-test/verify-current")
+
+    (println "WRITING CURRENT SECONDARY-INDEX ROOTS")
+    (clj {:dir "."
+          :extra-env secondary-env}
+         "-Sdeps" (str "{:deps {io.replikativ/datahike {:local/root \".\"}}"
+                       " :paths [\"test/datahike/backward_compatibility_test/src\"]}")
+         "-X:test" "backward-secondary-test/write-current")
+
+    (println "REOPENING CURRENT SECONDARY-INDEX ROOTS IN A FRESH PROCESS")
+    (clj {:dir "."
+          :extra-env secondary-env}
+         "-Sdeps" (str "{:deps {io.replikativ/datahike {:local/root \".\"}}"
+                       " :paths [\"test/datahike/backward_compatibility_test/src\"]}")
+         "-X:test" "backward-secondary-test/verify-current-formats")
+
+    (println "VERIFYING REFUSED ROOTS REMAIN READABLE BY THE RELEASE")
+    (clj {:dir old-version-dir
+          :extra-env secondary-env}
+         "-Sdeps" (str "{:deps {io.replikativ/datahike {:local/root \".\"}}"
+                       " :paths [\"" old-secondary-fixture "\"]}")
+         "-X:test" "backward-secondary-test/verify-old")
+    (fs/delete-tree old-version-dir)
+    (fs/delete-tree secondary-root)))
 
 (defn- cli-binary
   "native-image appends .exe on Windows; the rest of the tree spells it dthk."
