@@ -1644,7 +1644,7 @@
 
 (defn- resolve-sym [#?(:clj sym :cljs _)]
   #?(:cljs nil
-     :clj (when (namespace sym)
+     :clj (when (and (symbol? sym) (namespace sym))
             (when-some [v (resolve sym)] @v))))
 
 #?(:clj (def ^:private find-method
@@ -1670,12 +1670,13 @@
 
 (defn- resolve-method [#?(:clj method-sym :cljs _)]
   #?(:cljs nil
-     :clj (let [method-str (name method-sym)]
-            (when (= \. (.charAt method-str 0))
-              (let [method-name (subs method-str 1)]
-                (fn [this & args]
-                  (let [^Method method (find-method (class this) method-name (mapv class args))]
-                    (Reflector/prepRet (.getReturnType method) (.invoke method this (into-array Object args))))))))))
+     :clj (when (symbol? method-sym)
+            (let [method-str (name method-sym)]
+              (when (= \. (.charAt method-str 0))
+                (let [method-name (subs method-str 1)]
+                  (fn [this & args]
+                    (let [^Method method (find-method (class this) method-name (mapv class args))]
+                      (Reflector/prepRet (.getReturnType method) (.invoke method this (into-array Object args)))))))))))
 
 (defn filter-by-pred [context clause]
   (let [[[f & args]] clause
@@ -1683,6 +1684,7 @@
         pred (or (get built-ins f)
                  (get clj-core-built-ins f)
                  (context-resolve-val context f)
+                 (when (or (fn? f) (var? f)) f)
                  (resolve-sym f)
                  (resolve-method f)
                  (when (nil? (rel-with-attr context f))
@@ -1707,6 +1709,7 @@
         fun (or (get built-ins f)
                 (get clj-core-built-ins f)
                 (context-resolve-val context f)
+                (when (or (fn? f) (var? f)) f)
                 (resolve-sym f)
                 (resolve-method f)
                 (when (nil? (rel-with-attr context f))

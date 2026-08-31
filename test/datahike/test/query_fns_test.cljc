@@ -274,6 +274,14 @@
                   #(when (even? %) %))
              #{[2] [4]})))
 
+    #?(:clj
+       (testing "A Var supplied as a function input remains callable"
+         (is (= (d/q '[:find ?x
+                       :in ?in ?f
+                       :where [(?f ?in) ?x]]
+                     41 #'inc)
+                #{[42]}))))
+
     (testing "Result bindings"
       (is (= (d/q '[:find ?a ?c
                     :in ?in
