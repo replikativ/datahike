@@ -162,7 +162,7 @@
 
                                ;; secondary index integrations (for testing)
                                org.replikativ/proximum       {:git/url "https://github.com/replikativ/proximum.git"
-                                                              :git/sha "010947901fbf3acbc521a68d3339275bde8542dd"
+                                                              :git/sha "579ae44166e98e6d0cb244c5ef645988a2b8f6e7"
                                                               :exclusions [org.slf4j/slf4j-simple]}
                                org.replikativ/scriptum       {:git/url "https://github.com/replikativ/scriptum.git"
                                                               :git/sha "112a0bf82423af9f34f94dd6922db4a2d0dcff49"}
