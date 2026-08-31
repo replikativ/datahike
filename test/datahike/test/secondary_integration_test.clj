@@ -862,6 +862,17 @@
             "the sole attribute is inferred without storing it per document")
         (is (nil? (sec/-sec-value persistent :doc/body 1))
             "the primary index remains the authoritative value source")
+        (is (= #{1}
+               (set (es/entity-bitset-seq
+                     (sec/-search persistent
+                                  {:query "needle" :field :value}
+                                  (es/entity-bitset-from-longs [1 2])))))
+            "numeric candidate ids support exact upstream entity filters")
+        (is (zero? (es/entity-bitset-cardinality
+                    (sec/-search persistent
+                                 {:query "needle" :field :value}
+                                 (es/entity-bitset-from-longs [2]))))
+            "the numeric set query does not admit a nonmatching entity")
         (let [replacement (datahike.datom/datom 1 :doc/body "replacement")
               update (sec/-as-transient persistent)
               _ (sec/-transact! update {:datom needle :added? false})

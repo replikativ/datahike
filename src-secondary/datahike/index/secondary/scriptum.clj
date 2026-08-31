@@ -14,7 +14,7 @@
    [replikativ.logging :as log]
    [scriptum.core :as sc])
   (:import [datahike.datom Datom]
-           [org.apache.lucene.document Document Field$Store StringField
+           [org.apache.lucene.document Document Field$Store LongField StringField
             TextField]))
 
 (defn- scriptum-key-map-failure-reason [key-map]
@@ -61,9 +61,12 @@
    field through Scriptum's flexible map decoder. This is the bulk-backfill
    hot path; the Lucene objects themselves are still owned by Scriptum's
    generation writer."
-  [generation ^String entity-id value]
+  [generation entity-id value]
   (let [doc (Document.)]
-    (.add doc (StringField. "_entity_id" entity-id Field$Store/YES))
+    ;; Datahike entity ids are signed 64-bit integers. Lucene's numeric field
+    ;; avoids encoding every distinct decimal id into the term dictionary while
+    ;; still supporting exact/set filters, deletion, and stored candidate ids.
+    (.add doc (LongField. "_entity_id" (long entity-id) Field$Store/YES))
     (.add doc (TextField. "value" (if (string? value) value (str value))
                           Field$Store/NO))
     (sc/add-document generation doc)))
@@ -77,13 +80,15 @@
     (sc/multi-field-query (map attr-name fields) query)
     :else (throw (ex-info "Invalid scriptum query-spec" {:spec query-spec}))))
 
-(defn- filtered-lucene-query [query-spec entity-filter]
+(defn- filtered-lucene-query [query-spec entity-filter config]
   (let [query (query->lucene query-spec)]
     (if entity-filter
       (let [eids (vec (es/entity-bitset-seq entity-filter))]
         {:query (sc/bool-query
                  [[query :must]
-                  [(sc/terms-query :_entity_id (map str eids)) :filter]])
+                  [(if (= :candidate-only (:payload-mode config))
+                     (LongField/newSetQuery "_entity_id" (long-array eids))
+                     (sc/terms-query :_entity_id (map str eids))) :filter]])
          ;; Scriptum validates this value on every resume. Retaining the exact
          ;; immutable filter avoids hash-collision or mutable-filter ambiguity.
          :query-id [(:query-id query-spec) eids]})
@@ -121,11 +126,11 @@
 
 (defn- reduce-matching-results
   "Reduce one logical, pre-filtered candidate stream without materializing it."
-  [snapshot attrs query-spec entity-filter limit rf init]
+  [snapshot attrs config query-spec entity-filter limit rf init]
   (if-not snapshot
     init
     (let [{:keys [query query-id]}
-          (filtered-lucene-query query-spec entity-filter)]
+          (filtered-lucene-query query-spec entity-filter config)]
       (if-let [limit (or limit (:limit query-spec))]
         (reduce-result-candidates
          attrs rf init
@@ -146,9 +151,9 @@
               acc
               (recur (:continuation page) acc))))))))
 
-(defn- matching-results [snapshot attrs query-spec entity-filter limit]
+(defn- matching-results [snapshot attrs config query-spec entity-filter limit]
   (persistent!
-   (reduce-matching-results snapshot attrs query-spec entity-filter limit
+   (reduce-matching-results snapshot attrs config query-spec entity-filter limit
                             conj! (transient []))))
 
 (declare make-scriptum-index)
@@ -197,7 +202,7 @@
   sec/ISecondaryIndex
   (-search [_ query-spec entity-filter]
     (if-let [generation @generation*]
-      (let [{:keys [query]} (filtered-lucene-query query-spec entity-filter)
+      (let [{:keys [query]} (filtered-lucene-query query-spec entity-filter config)
             results (sc/search generation query
                                {:limit (or (:limit query-spec) 1000)})
             bitset (es/entity-bitset)]
@@ -213,7 +218,7 @@
   (-can-order? [_ _ direction] (= :desc direction))
   (-slice-ordered [_ query-spec entity-filter _ _ limit]
     (if-let [generation @generation*]
-      (let [{:keys [query]} (filtered-lucene-query query-spec entity-filter)
+      (let [{:keys [query]} (filtered-lucene-query query-spec entity-filter config)
             results (sc/search generation query
                                {:limit (or limit 1000)})]
         (into []
@@ -262,7 +267,7 @@
       (reset! dirty? true)
       (if added?
         (if candidate-only?
-          (add-candidate-doc! generation entity-id value)
+          (add-candidate-doc! generation eid value)
           (sc/add-doc generation
                       {:_entity_id {:value entity-id :type :string :store? true}
                        :value {:value (if (string? value) value (str value))
@@ -277,7 +282,8 @@
         ;; The sole cardinality-one attribute has at most one document per
         ;; entity, so its already-indexed entity ID is also the update key.
         (if candidate-only?
-          (sc/delete-docs generation "_entity_id" entity-id)
+          (sc/delete-query generation
+                           (LongField/newExactQuery "_entity_id" (long eid)))
           (sc/delete-docs generation "_key" key)))))
   (-persistent! [_]
     (try
@@ -363,7 +369,7 @@
       sec/ISecondaryIndex
       (-search [_ query-spec entity-filter]
         (reduce-matching-results
-         snapshot attrs query-spec entity-filter nil
+         snapshot attrs config query-spec entity-filter nil
          (fn [bitset {:keys [entity-id]}]
            (es/entity-bitset-add! bitset entity-id)
            bitset)
@@ -375,7 +381,7 @@
       (-can-order? [_ _ direction] (= :desc direction))
       (-slice-ordered [_ query-spec entity-filter _ _ limit]
         (mapv #(select-keys % [:entity-id :score])
-              (matching-results snapshot attrs query-spec entity-filter
+              (matching-results snapshot attrs config query-spec entity-filter
                                 (or limit 1000))))
       (-indexed-attrs [_] attrs)
       (-transact [this tx-report]
@@ -411,7 +417,7 @@
              :ordering ordering :exhausted? true :continuation nil
              :stop-reason :source-exhausted}
             (let [{:keys [query query-id]}
-                  (filtered-lucene-query query-spec entity-filter)
+                  (filtered-lucene-query query-spec entity-filter config)
                   page (sc/candidate-page
                         snapshot query
                         {:page-size (:limit page-request)

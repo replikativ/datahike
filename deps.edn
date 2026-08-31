@@ -165,7 +165,7 @@
                                                               :git/sha "579ae44166e98e6d0cb244c5ef645988a2b8f6e7"
                                                               :exclusions [org.slf4j/slf4j-simple]}
                                org.replikativ/scriptum       {:git/url "https://github.com/replikativ/scriptum.git"
-                                                              :git/sha "a443f5f5dd36acb7b1c86786f9dfba4e1370dd9f"}
+                                                              :git/sha "a79cff46b63d014f584dfbc090cd5ca9edca120a"}
                                org.replikativ/stratum        {:git/url "https://github.com/replikativ/stratum.git"
                                                               :git/sha "8762ce96bfbb4a0ea4ae134a7c6cd7609f18170d"}
 
