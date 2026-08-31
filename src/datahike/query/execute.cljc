@@ -4319,18 +4319,22 @@
    selective merge into thousands of point seeks that are dearer than the
    existing sequential scan."
   [db op rels]
-  (let [[_ a _] (:clause op)
-        resolved-a (when (and (some? a) (not (symbol? a))) (resolve-attr db a))
-        scan-n (long (or (:estimated-card op) 0))]
-    (when (and (pos? scan-n) (some? resolved-a))
-      (when-let [probe (pattern-probe-set db (:clause op) resolved-a rels scan-n)]
-        (let [k (long (probe-set-size (:values probe)))
-              field (int (:field probe))
-              seek-index (if (== field 2) (:avet db) (:eavt db))]
-          (when (and (:seekable? probe)
-                     (pss-instance? seek-index)
-                     (< (* k (long probe-driven-threshold)) scan-n))
-            k))))))
+  #?(:clj
+     (let [[_ a _] (:clause op)
+           resolved-a (when (and (some? a) (not (symbol? a))) (resolve-attr db a))
+           scan-n (long (or (:estimated-card op) 0))]
+       (when (and (pos? scan-n) (some? resolved-a))
+         (when-let [probe (pattern-probe-set db (:clause op) resolved-a rels scan-n)]
+           (let [k (long (probe-set-size (:values probe)))
+                 field (int (:field probe))
+                 seek-index (if (== field 2) (:avet db) (:eavt db))]
+             (when (and (:seekable? probe)
+                        (pss-instance? seek-index)
+                        (< (* k (long probe-driven-threshold)) scan-n))
+               k)))))
+     ;; Probe sets and persistent-set forward cursors are JVM-only. CLJS keeps
+     ;; the existing scan driver, matching scan-datoms' full-scan fallback.
+     :cljs nil))
 
 (defn- parameterize-entity-group
   "Choose an entity-group's driving pattern again from ACTUAL upstream

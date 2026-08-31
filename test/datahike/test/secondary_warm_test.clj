@@ -41,7 +41,8 @@
                 :salary (sidx/index-from-seq :int64 (map #(* % 1000) (range n)) {:chunk-size 4})}
                {:name "warm-fixture"})]
     (sd/sync! ds store "main")
-    (dstratum/->StratumIndex (sd/load store "main") #{:person/salary} nil {})))
+    (dstratum/->StratumIndex
+     (sd/load store "main") #{:person/salary} nil {} (random-uuid))))
 
 (deftest sec-warm-answers-the-envelope
   (let [idx (restored-stratum-index 2000)

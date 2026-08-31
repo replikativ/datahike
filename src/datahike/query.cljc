@@ -4100,24 +4100,24 @@
 
 (defn- apply-order-by
   "Sort a result set by the given order spec. Returns a vector (not a set)
-   since ordering is meaningful. Applies offset/limit after sorting.
-   Datalog results are already deduplicated, so no set conversion needed."
+  since ordering is meaningful. Applies offset/limit after sorting.
+  Datalog results are already deduplicated, so no set conversion needed."
   [results order-spec offset limit]
   (let [cmp (order-comparator order-spec)
-        positive-limit? (and limit (pos? limit))
-        bound (when positive-limit?
-                (+' (long (max 0 (or offset 0))) (long limit)))]
+        positive-limit? (and limit (pos? limit))]
     #?(:clj
-       (if (and bound
-                (<= bound Integer/MAX_VALUE)
-                (< bound (count results)))
-         (cond->> (bounded-order-by results cmp (long bound))
-           offset (drop offset)
-           true vec)
-         (cond->> (sort cmp results)
-           offset (drop offset)
-           positive-limit? (take limit)
-           true vec))
+       (let [bound (when positive-limit?
+                     (+' (long (max 0 (or offset 0))) (long limit)))]
+         (if (and bound
+                  (<= bound Integer/MAX_VALUE)
+                  (< bound (count results)))
+           (cond->> (bounded-order-by results cmp (long bound))
+             offset (drop offset)
+             true vec)
+           (cond->> (sort cmp results)
+             offset (drop offset)
+             positive-limit? (take limit)
+             true vec)))
        :cljs
        (cond->> (sort cmp results)
          offset (drop offset)

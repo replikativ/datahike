@@ -15,7 +15,7 @@
    (defn entity-bitset?
      "Whether x is the CLJS EntityBitSet representation."
      [x]
-     (sorted-set? x)))
+     (instance? cljs.core/PersistentTreeSet x)))
 
 #?(:clj
    (defn entity-bitset
