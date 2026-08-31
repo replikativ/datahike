@@ -2,10 +2,13 @@
   (:require
    [clojure.test :refer [deftest is testing]]
    [datahike.api :as d]
+   [datahike.gc-guard :as guard]
    [datahike.index.secondary :as sec]
    [datahike.index.secondary.stratum]
+   [datahike.store :as ds]
    [datahike.versioning :as dv]
    [konserve.core :as k]
+   [stratum.dataset :as sd]
    [stratum.storage :as ss]
    [superv.async :refer [<?? S]])
   (:import [java.util Date]))
@@ -45,7 +48,17 @@
                            :db.secondary/type :stratum
                            :db.secondary/attrs [:p/name]}])
         (is (= :ready (await-ready main :idx/columns)))
-        (d/transact main [{:p/name "Alice"}])
+        (let [sealed-under-datahike-guard? (atom nil)
+              seal-generation! sd/seal-generation!]
+          (with-redefs [sd/seal-generation!
+                        (fn [dataset store]
+                          (reset! sealed-under-datahike-guard?
+                                  (guard/in-flight?
+                                   (ds/canonical-store-id store nil)))
+                          (seal-generation! dataset store))]
+            (d/transact main [{:p/name "Alice"}]))
+          (testing "same-store generations seal inside Datahike's publication guard"
+            (is (true? @sealed-under-datahike-guard?))))
 
         (let [main-db (d/db main)
               store (:store main-db)
