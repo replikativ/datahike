@@ -840,6 +840,80 @@
                          (sec/-search idx {:query "Alice" :field :value} nil))))
                 "deriving a generation does not mutate its source")))))))
 
+(deftest scriptum-candidate-only-layout-omits-authoritative-payload
+  (testing "one-attribute retrieval index retains candidates and retractions"
+    (let [idx (sec/create-index :scriptum
+                                {:attrs #{:doc/body}
+                                 :payload-mode :candidate-only
+                                 :cardinality :one
+                                 :path (fs/temp-dir! "scriptum-candidate-only-")}
+                                nil)
+          needle (datahike.datom/datom 1 :doc/body "needle database")
+          ordinary (datahike.datom/datom 2 :doc/body "ordinary")
+          transient (sec/-as-transient idx)]
+      (sec/-transact! transient {:datom needle :added? true})
+      (sec/-transact! transient {:datom ordinary :added? true})
+      (let [persistent (sec/-persistent! transient)
+            page (sec/-candidate-page
+                  persistent {:query "needle" :field :value} nil {:limit 10})]
+        (is (= [{:entity-id 1 :attribute :doc/body :value-hash nil
+                 :score (:score (first (:candidates page)))}]
+               (:candidates page))
+            "the sole attribute is inferred without storing it per document")
+        (is (nil? (sec/-sec-value persistent :doc/body 1))
+            "the primary index remains the authoritative value source")
+        (let [replacement (datahike.datom/datom 1 :doc/body "replacement")
+              update (sec/-as-transient persistent)
+              _ (sec/-transact! update {:datom needle :added? false})
+              _ (sec/-transact! update {:datom replacement :added? true})
+              without-needle (sec/-persistent! update)]
+          (is (zero? (es/entity-bitset-cardinality
+                      (sec/-search without-needle
+                                   {:query "needle" :field :value} nil))))
+          (is (= 1 (es/entity-bitset-cardinality
+                    (sec/-search without-needle
+                                 {:query "replacement" :field :value}
+                                 nil)))
+              "a retract/add update replaces the entity's sole document")))))
+  (testing "layouts that need an authoritative payload fail before data loss"
+    (is (= :secondary/scriptum-candidate-only-requires-one-attribute
+           (try
+             (sec/create-index :scriptum
+                               {:attrs #{:doc/body :doc/title}
+                                :payload-mode :candidate-only
+                                :cardinality :one}
+                               nil)
+             nil
+             (catch clojure.lang.ExceptionInfo failure
+               (:type (ex-data failure))))))
+    (is (= :secondary/scriptum-candidate-only-requires-cardinality-one
+           (try
+             (sec/create-index :scriptum
+                               {:attrs #{:doc/body}
+                                :payload-mode :candidate-only}
+                               nil)
+             nil
+             (catch clojure.lang.ExceptionInfo failure
+               (:type (ex-data failure))))))
+    (let [idx (sec/create-index :scriptum
+                                {:attrs #{:doc/body}
+                                 :payload-mode :candidate-only
+                                 :cardinality :one}
+                                nil)
+          transient (sec/-as-transient idx)]
+      (try
+        (is (= :secondary/scriptum-candidate-only-cannot-own-values
+               (try
+                 (sec/-transact! transient
+                                 {:datom (datahike.datom/datom 1 :doc/body "secret")
+                                  :added? true
+                                  :secondary-only? true})
+                 nil
+                 (catch clojure.lang.ExceptionInfo failure
+                   (:type (ex-data failure))))))
+        (finally
+          (sec/-abort-transient! transient))))))
+
 (deftest scriptum-complete-search-pages-past-lucene-top-n
   (testing "set-valued search does not silently truncate at 1000 matches"
     (let [idx (sec/create-index :scriptum

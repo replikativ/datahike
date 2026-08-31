@@ -12,7 +12,10 @@
    [datahike.migrate.fs :as fs]
    [konserve.memory :refer [new-mem-store]]
    [replikativ.logging :as log]
-   [scriptum.core :as sc]))
+   [scriptum.core :as sc])
+  (:import [datahike.datom Datom]
+           [org.apache.lucene.document Document Field$Store StringField
+            TextField]))
 
 (defn- scriptum-key-map-failure-reason [key-map]
   (cond
@@ -47,10 +50,23 @@
   ;; Preserve the namespace. `(name :foo/body)` and `(name :bar/body)` both
   ;; produced "body", so equal values collided in `_key` and retracting one
   ;; attribute deleted the other.
-  (if (keyword? a) (pr-str a) (str a)))
+  (str a))
 
 (defn- doc-key [eid a value-hash]
-  (str eid "|" (attr-name a) "|" value-hash))
+  (cond-> (str eid "|" (attr-name a))
+    value-hash (str "|" value-hash)))
+
+(defn- add-candidate-doc!
+  "Add the fixed, non-authoritative full-text layout without routing every
+   field through Scriptum's flexible map decoder. This is the bulk-backfill
+   hot path; the Lucene objects themselves are still owned by Scriptum's
+   generation writer."
+  [generation ^String entity-id value]
+  (let [doc (Document.)]
+    (.add doc (StringField. "_entity_id" entity-id Field$Store/YES))
+    (.add doc (TextField. "value" (if (string? value) value (str value))
+                          Field$Store/NO))
+    (sc/add-document generation doc)))
 
 (defn- query->lucene [{:keys [query field fields] :as query-spec}]
   (cond
@@ -84,6 +100,9 @@
 (defn- result-attr [attrs result]
   (let [stored (get result "_attr")]
     (or (some #(when (= stored (attr-name %)) %) attrs)
+        ;; A candidate-only generation deliberately omits stored payload and
+        ;; can infer its attribute only when the index covers exactly one.
+        (when (and (nil? stored) (= 1 (count attrs))) (first attrs))
         stored)))
 
 (defn- result-candidate [attrs result]
@@ -210,30 +229,56 @@
 
   sec/ITransientSecondaryIndex
   (-as-transient [this] this)
-  (-transact! [_ {:keys [datom added? value-hash secondary-only?]}]
+  (-transact! [_ {:keys [^Datom datom added? value-hash secondary-only?]}]
     (let [eid (.-e datom)
           attr (.-a datom)
           value (.-v datom)
-          value-hash (or value-hash (sec/secondary-only-hash value))
-          key (doc-key eid attr value-hash)
+          candidate-only? (= :candidate-only (:payload-mode config))
           _ (when (and added? secondary-only? (not (string? value)))
               (throw (ex-info
                       "Scriptum can be authoritative for :db.secondary/only only for string values."
                       {:type :secondary/scriptum-secondary-only-requires-string
                        :attribute attr
                        :value-type (type value)})))
+          _ (when (and added? secondary-only? candidate-only?)
+              (throw (ex-info
+                      "A candidate-only Scriptum index cannot own secondary-only values."
+                      {:type :secondary/scriptum-candidate-only-cannot-own-values
+                       :attribute attr})))
+          ;; Candidate-only/cardinality-one documents are replaced by the
+          ;; stable entity+attribute key. Their value remains authoritative in
+          ;; Datahike, so computing a cryptographic secondary-only hash per row
+          ;; is pure allocation and CPU. Stored/cardinality-many layouts retain
+          ;; the value hash needed to distinguish and recover individual
+          ;; values.
+          value-hash (or value-hash
+                         (when-not candidate-only?
+                           (sec/secondary-only-hash value)))
+          entity-id (str eid)
+          key (when-not candidate-only?
+                (doc-key eid attr value-hash))
           generation (ensure-generation! generation* source-index config store
                                          cache store-id)]
       (reset! dirty? true)
       (if added?
-        (sc/add-doc generation
-                    {:_entity_id {:value (str eid) :type :string :store? true}
-                     :_attr {:value (attr-name attr) :type :string :store? true}
-                     :_key {:value key :type :string :store? true}
-                     :_vhash {:value value-hash :type :string :store? true}
-                     :value {:value (if (string? value) value (str value))
-                             :type :text :store? true}})
-        (sc/delete-docs generation "_key" key))))
+        (if candidate-only?
+          (add-candidate-doc! generation entity-id value)
+          (sc/add-doc generation
+                      {:_entity_id {:value entity-id :type :string :store? true}
+                       :value {:value (if (string? value) value (str value))
+                               :type :text :store? true}
+                       ;; `_key` is queried for replacement/retraction but
+                       ;; never returned. Lucene postings suffice.
+                       :_key {:value key :type :string :store? false}
+                       :_attr {:value (attr-name attr)
+                               :type :string :store? true}
+                       :_vhash {:value value-hash
+                                :type :string :store? true}}))
+        ;; The sole cardinality-one attribute has at most one document per
+        ;; entity, so its already-indexed entity ID is also the update key.
+        (if candidate-only?
+          (sc/delete-docs generation "_entity_id" entity-id)
+          (sc/delete-docs generation "_key" key)))))
   (-persistent! [_]
     (try
       (if-not @dirty?
@@ -497,11 +542,24 @@
  :scriptum
  {:create
   (fn [config _db]
-    (let [provided-store (::sec/store config)
+    (let [attrs (set (:attrs config))
+          _ (when (and (= :candidate-only (:payload-mode config))
+                       (not= 1 (count attrs)))
+              (throw (ex-info
+                      "A candidate-only Scriptum index must cover exactly one attribute."
+                      {:type :secondary/scriptum-candidate-only-requires-one-attribute
+                       :attributes attrs})))
+          _ (when (and (= :candidate-only (:payload-mode config))
+                       (not= :one (:cardinality config)))
+              (throw (ex-info
+                      "A candidate-only Scriptum index requires cardinality-one values."
+                      {:type :secondary/scriptum-candidate-only-requires-cardinality-one
+                       :cardinality (:cardinality config)})))
+          provided-store (::sec/store config)
           store (or provided-store (new-mem-store (atom {}) {:sync? true}))
           store-id (or (::sec/store-id config) (random-uuid))
           cache (or (:path config) (fs/temp-dir! "datahike-scriptum-"))]
-      (make-scriptum-index nil (:attrs config) config store cache store-id nil [] nil)))
+      (make-scriptum-index nil attrs config store cache store-id nil [] nil)))
   :storage-owner :datahike
   :validate-generation validate-scriptum-generation-key-map
   :mark-generation
