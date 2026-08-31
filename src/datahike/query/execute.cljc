@@ -667,6 +667,21 @@
                            ps)))))))
              rels))))
 
+(defn- entity-domain-contains?
+  "Whether eid is inside a validated, sorted half-open entity-interval domain."
+  [entity-domain eid]
+  (or (nil? entity-domain)
+      (let [intervals (:intervals entity-domain)]
+        (loop [low 0 high (count intervals)]
+          (if (< low high)
+            (let [middle (quot (+ low high) 2)
+                  [from to] (nth intervals middle)]
+              (cond
+                (< eid from) (recur low middle)
+                (>= eid to) (recur (inc middle) high)
+                :else true))
+            false)))))
+
 (defn- scan-datoms
   "Datoms for a scan clause, driven by the currently-bound `rels` (sideways
    information passing) when beneficial — the single retrieval seam shared by
@@ -681,53 +696,79 @@
    entity/value set, which the downstream join enforces anyway — so this never
    changes results, only how many datoms (and downstream merge lookups) are
    touched."
-  [db clause index pushdown-preds rels scan-n]
-  (let [[e a v] clause
-        resolved-a (when (and (some? a) (not (symbol? a))) (resolve-attr db a))
-        resolved-e (when (and (some? e) (not (symbol? e)) (number? e)) #?(:clj (long e) :cljs e))
-        pushdown-bounds (when (seq pushdown-preds) (plan/pushdown-to-bounds pushdown-preds))
-        [from to] (compute-slice-bounds clause index pushdown-bounds resolved-a resolved-e)
-        db-index (get db index)
-        scan-n (long (or scan-n (di/-count db-index)))
-        full (fn [] (di/-slice db-index from to index))]
-    #?(:clj
-       (if-let [avet-pairs (when (and (:avet db)
-                                      (nil? resolved-a)
-                                      (symbol? a) (analyze/free-var? a)
-                                      (symbol? v) (analyze/free-var? v))
-                             (var-attr-avet-pairs db clause rels scan-n))]
-         ;; Variable-attribute pattern [?e ?a ?v] with ?a and ?v both bound
-         ;; upstream (e.g. a reference-driven join whose attribute comes from the
-         ;; data): AVET point-seek per (attr, value) pair instead of full-scanning
-         ;; EAVT and filtering. O(pairs * log n) vs O(all datoms).
-         (mapcat (fn [[pa pv]]
-                   (di/-slice (:avet db) (datom e0 pa pv tx0) (datom emax pa pv txmax) :avet))
-                 avet-pairs)
-         (if-let [probe (pattern-probe-set db clause resolved-a rels scan-n)]
-           (let [k     (probe-set-size (:values probe))
-                 field (int (:field probe))
-                 seek-index (if (== field 2) (:avet db) (:eavt db))]
+  ([db clause index pushdown-preds rels scan-n]
+   (scan-datoms db clause index pushdown-preds rels scan-n nil))
+  ([db clause index pushdown-preds rels scan-n entity-domain]
+   (let [[e a v] clause
+         resolved-a (when (and (some? a) (not (symbol? a))) (resolve-attr db a))
+         resolved-e (when (and (some? e) (not (symbol? e)) (number? e)) #?(:clj (long e) :cljs e))
+         pushdown-bounds (when (seq pushdown-preds) (plan/pushdown-to-bounds pushdown-preds))
+         [from to] (compute-slice-bounds clause index pushdown-bounds resolved-a resolved-e)
+         db-index (get db index)
+         scan-n (long (or scan-n (di/-count db-index)))
+         raw-full (fn [] (di/-slice db-index from to index))
+        ;; A summarizing domain is useful only if it changes the physical read.
+        ;; A fixed-attribute EAVT scan can seek each half-open entity range
+        ;; directly. Do not silently replace AVET/AEVT here: their chosen order
+        ;; can encode value bounds or an ordering obligation. Those shapes retain
+        ;; their original slice plus the correctness-preserving membership filter
+        ;; below.
+         full (fn []
+                (if (and entity-domain resolved-a (= :eavt index) (:eavt db))
+                  (mapcat (fn [[from-eid to-eid]]
+                            (di/-slice (:eavt db)
+                                       (datom from-eid resolved-a nil tx0)
+                                      ;; At the same entity/attribute, nil/tx0
+                                      ;; sorts before every stored value. This
+                                      ;; makes the upper entity bound exclusive.
+                                       (datom to-eid resolved-a nil tx0)
+                                       :eavt))
+                          (:intervals entity-domain))
+                  (raw-full)))]
+     #?(:clj
+        (let [datoms
+              (if-let [avet-pairs (when (and (:avet db)
+                                             (nil? resolved-a)
+                                             (symbol? a) (analyze/free-var? a)
+                                             (symbol? v) (analyze/free-var? v))
+                                    (var-attr-avet-pairs db clause rels scan-n))]
+               ;; Variable-attribute pattern [?e ?a ?v] with ?a and ?v both bound
+               ;; upstream (e.g. a reference-driven join whose attribute comes from the
+               ;; data): AVET point-seek per (attr, value) pair instead of full-scanning
+               ;; EAVT and filtering. O(pairs * log n) vs O(all datoms).
+                (mapcat (fn [[pa pv]]
+                          (di/-slice (:avet db) (datom e0 pa pv tx0) (datom emax pa pv txmax) :avet))
+                        avet-pairs)
+                (if-let [probe (pattern-probe-set db clause resolved-a rels scan-n)]
+                  (let [k     (probe-set-size (:values probe))
+                        field (int (:field probe))
+                        seek-index (if (== field 2) (:avet db) (:eavt db))]
            ;; Seeks build (entity attr nil)/(e0 attr value) probe datoms and use
            ;; a PersistentSortedSet ForwardCursor, so they need (a) a PSS index
            ;; and (b) a RESOLVED, non-nil attribute — a variable-attribute
            ;; pattern [?e ?a ?v] has resolved-a=nil, which would feed nil into
            ;; the no-nil-check attr comparator (cmp-attr-quick → NPE). In both
            ;; cases the index-agnostic filter regime below is correct instead.
-             (if (and (:seekable? probe)
-                      (some? resolved-a)
-                      (pss-instance? seek-index)
-                      (< (* (long k) (long probe-driven-threshold)) scan-n))
-               (probe-driven-iterable seek-index resolved-a (:values probe) field)
-               ;; `probe-set-contains?`, not a raw `.contains`: this bypassed
-               ;; the key function entirely, which was correct only while arrays
-               ;; were declined above. With the decline gone it would filter by
-               ;; identity and silently drop every array-valued row.
-               (let [ps (:values probe)]
-                 (filter (fn [^Datom d]
-                           (probe-set-contains? ps (if (== field 0) (.-e d) (.-v d))))
-                         (full)))))
-           (full)))
-       :cljs (full))))
+                    (if (and (:seekable? probe)
+                             (some? resolved-a)
+                             (pss-instance? seek-index)
+                             (< (* (long k) (long probe-driven-threshold)) scan-n))
+                      (probe-driven-iterable seek-index resolved-a (:values probe) field)
+                     ;; `probe-set-contains?`, not a raw `.contains`: this bypassed
+                     ;; the key function entirely, which was correct only while arrays
+                     ;; were declined above. With the decline gone it would filter by
+                     ;; identity and silently drop every array-valued row.
+                      (let [ps (:values probe)]
+                        (filter (fn [^Datom d]
+                                  (probe-set-contains? ps (if (== field 0) (.-e d) (.-v d))))
+                                (full)))))
+                  (full)))]
+          (if entity-domain
+            (filter (fn [^Datom d]
+                      (entity-domain-contains? entity-domain (.-e d)))
+                    datoms)
+            datoms))
+        :cljs (full)))))
 
 (defn- execute-pattern-scan [db op cancel rels]
   (let [{:keys [clause index pushdown-preds]} op

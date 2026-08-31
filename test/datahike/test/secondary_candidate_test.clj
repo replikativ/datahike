@@ -2,6 +2,7 @@
   "Focused tests for the optional paged secondary candidate contract."
   (:require
    [clojure.test :refer [deftest is testing]]
+   [datahike.api :as d]
    [datahike.core :as dcore]
    [datahike.db :as db]
    [datahike.index.secondary :as sec]))
@@ -32,6 +33,22 @@
     (-indexed-attrs [_] #{:doc/body})
     (-transact [this _] this)))
 
+(defn- domain-index
+  [calls result]
+  (reify
+    sec/ISecondaryIndex
+    (-search [_ _ _] nil)
+    (-estimate [_ _] 0)
+    (-can-order? [_ _ _] false)
+    (-slice-ordered [_ _ _ _ _ _] nil)
+    (-indexed-attrs [_] #{:doc/body})
+    (-transact [this _] this)
+
+    sec/ISecondaryCandidateDomain
+    (-candidate-domain [_ query-spec entity-filter]
+      (swap! calls conj [query-spec entity-filter])
+      result)))
+
 (defn- error-data
   [f]
   (try
@@ -49,6 +66,60 @@
              (:type (error-data
                      #(sec/candidate-page
                        (db/empty-db {}) :idx/legacy idx {} nil {:limit 10}))))))))
+
+(deftest compact-domain-contract-is-additive-and-strict
+  (let [valid {:domain :entity-intervals
+               :intervals [[1 4] [8 10]]
+               :precision :recheck
+               :recall :complete}
+        invalid [(assoc valid :domain :tree-pages)
+                 (assoc valid :precision :lossy)
+                 (assoc valid :recall :unknown)
+                 (assoc valid :intervals [[1 1]])
+                 (assoc valid :intervals [[1 4] [4 8]])
+                 (assoc valid :intervals [[8 10] [1 4]])
+                 (assoc valid :intervals '([1 4 7]))]]
+    (is (= valid (sec/validate-candidate-domain valid)))
+    (doseq [candidate-domain invalid]
+      (is (= :invalid-secondary-candidate-domain
+             (:type
+              (error-data
+               #(sec/validate-candidate-domain candidate-domain))))
+          (pr-str candidate-domain)))
+    (is (false? (sec/candidate-domain-scannable? (legacy-index))))
+    (is (= :invalid-secondary-candidate-domain
+           (:type
+            (error-data
+             #(sec/candidate-domain
+               (db/empty-db {}) :idx/legacy (legacy-index) {} nil)))))))
+
+(deftest candidate-domain-honours-readiness-and-view-semantics
+  (let [calls (atom [])
+        result {:domain :entity-intervals
+                :intervals [[1 4]]
+                :precision :recheck
+                :recall :complete}
+        idx (domain-index calls result)
+        ready (db/empty-db {:idx/summary {:db.secondary/status :ready}}
+                           {:keep-history? true})]
+    (is (= result
+           (sec/candidate-domain ready :idx/summary idx {:minimum 10} nil)))
+    (is (= [[{:minimum 10} nil]] @calls))
+    (let [unavailable (assoc-in ready [:schema :idx/summary :db.secondary/status]
+                                :building)]
+      (is (= :secondary-index-unavailable
+             (:type
+              (error-data
+               #(sec/candidate-domain
+                 unavailable :idx/summary idx {:minimum 10} nil))))))
+    (let [historical (d/history ready)]
+      (is (= :secondary/temporal-view-unsupported
+             (:type
+              (error-data
+               #(sec/candidate-domain
+                 historical :idx/summary idx {:minimum 10} nil))))))
+    (is (= 1 (count @calls))
+        "unavailable and historical views fail before adapter dispatch")))
 
 (deftest current-value-candidate-scan-fails-closed-at-valid-time
   (let [calls (atom [])

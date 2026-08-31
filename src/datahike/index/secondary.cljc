@@ -103,6 +103,29 @@
   (-close-candidate-scan [this continuation]
     "Cancel an unfinished continuation. Must be idempotent."))
 
+(defprotocol ISecondaryCandidateDomain
+  "Optional compact candidate-domain API for summarizing indexes.
+
+   Tuple-producing access methods belong in `ISecondaryCandidateScan`.  A
+   summarizing index such as BRIN instead identifies coarse ranges of the
+   primary scan which may contain matches.  Expanding those ranges into entity
+   IDs inside the adapter would discard the representation and I/O advantage,
+   so this protocol returns the domain without pretending it is an exact
+   result relation.
+
+   Core currently accepts one domain representation:
+
+     {:domain     :entity-intervals
+      :intervals  [[from-eid to-eid] ...] ; sorted, disjoint, half-open
+      :precision  :exact | :recheck
+      :recall     :complete | :approximate}
+
+   Exact query execution requires `:complete` recall.  `:recheck` means the
+   ordinary primary-index clause and predicate remain authoritative."
+  (-candidate-domain [this query-spec entity-filter]
+    "Return a compact primary-scan domain for query-spec. entity-filter is an
+     optional exact upstream EntityBitSet an adapter may use to tighten it."))
+
 (defprotocol IValidTimeCandidateScan
   "Optional candidate API for indices that retain historical value versions."
   (-candidate-page-at-vt [this query-spec entity-filter page-request temporal-request]
@@ -124,6 +147,76 @@
   "Whether `index` implements the optional paged candidate contract."
   [index]
   (satisfies? ISecondaryCandidateScan index))
+
+(defn candidate-domain-scannable?
+  "Whether `index` implements the optional compact candidate-domain contract."
+  [index]
+  (satisfies? ISecondaryCandidateDomain index))
+
+(declare require-query-eligible! temporal-request vt-stable? unsupported-temporal!)
+
+(defn- invalid-candidate-domain!
+  [message data]
+  (throw (ex-info message (assoc data :type :invalid-secondary-candidate-domain))))
+
+(defn validate-candidate-domain
+  "Validate a compact domain returned by `ISecondaryCandidateDomain`.
+
+   Entity intervals are signed-long entity IDs in sorted, disjoint, half-open
+   form. Adjacent intervals are rejected too: adapters must merge them so the
+   primary executor cannot accidentally pay for redundant EAVT seeks."
+  [candidate-domain]
+  (when-not (map? candidate-domain)
+    (invalid-candidate-domain! "A secondary candidate domain must be a map."
+                               {:candidate-domain candidate-domain}))
+  (let [{:keys [domain intervals precision recall]} candidate-domain]
+    (when-not (= :entity-intervals domain)
+      (invalid-candidate-domain! "Secondary candidate :domain must be :entity-intervals."
+                                 {:candidate-domain candidate-domain :domain domain}))
+    (when-not (sequential? intervals)
+      (invalid-candidate-domain! "Secondary candidate :intervals must be sequential."
+                                 {:candidate-domain candidate-domain}))
+    (when-not (contains? candidate-precisions precision)
+      (invalid-candidate-domain! "Secondary candidate domain :precision must be :exact or :recheck."
+                                 {:candidate-domain candidate-domain :precision precision}))
+    (when-not (contains? candidate-recalls recall)
+      (invalid-candidate-domain! "Secondary candidate domain :recall must be :complete or :approximate."
+                                 {:candidate-domain candidate-domain :recall recall}))
+    (let [intervals (mapv (fn [interval]
+                            (when-not (and (vector? interval)
+                                           (= 2 (count interval))
+                                           (integer? (nth interval 0))
+                                           (integer? (nth interval 1))
+                                           (< (nth interval 0) (nth interval 1)))
+                              (invalid-candidate-domain!
+                               "Each entity interval must be a non-empty [from-eid to-eid) integer vector."
+                               {:candidate-domain candidate-domain :interval interval}))
+                            interval)
+                          intervals)]
+      (doseq [[[previous-from previous-to] [from to]] (partition 2 1 intervals)]
+        (when (<= from previous-to)
+          (invalid-candidate-domain!
+           "Entity intervals must be sorted, disjoint, and have adjacent ranges merged."
+           {:candidate-domain candidate-domain
+            :previous-interval [previous-from previous-to]
+            :interval [from to]})))
+      (assoc candidate-domain :intervals intervals))))
+
+(defn candidate-domain
+  "Invoke and validate an index's compact candidate-domain contract through
+   the same readiness and temporal-view gates as tuple candidate scans."
+  [db idx-ident index query-spec entity-filter]
+  (require-query-eligible! db idx-ident)
+  (when-not (candidate-domain-scannable? index)
+    (invalid-candidate-domain! "Secondary index does not implement compact candidate domains."
+                               {:index-ident idx-ident
+                                :index-type (some-> index type)}))
+  (when-let [request (temporal-request :candidate-domain db index)]
+    (when-not (vt-stable? index)
+      (unsupported-temporal! :candidate-domain index request
+                             :valid-time-candidate-domain)))
+  (validate-candidate-domain
+   (-candidate-domain index query-spec entity-filter)))
 
 (defn candidate-recheck-required?
   "Whether candidates must be checked against canonical primary datoms."

@@ -29,6 +29,8 @@
     true
     (catch Throwable _ false)))
 
+(declare thrown-data)
+
 (deftest proximum-exact-filter-strategy-reaches-native-search
   (when proximum-available?
     (let [search-results (ns-resolve 'datahike.index.secondary.proximum
@@ -104,6 +106,64 @@
                   {:estimated-card 100 :cost-per-result 0.02})}}
   [_idx-ident query-spec]
   query-spec)
+
+(deftest summarizing-domain-bounds-primary-recheck
+  (testing "a complete lossy interval domain drives bounded EAVT reads"
+    (let [domain-calls (atom [])
+          idx (reify
+                sec/ISecondaryIndex
+                (-search [_ _ _] (es/entity-bitset))
+                (-estimate [_ _] 4)
+                (-can-order? [_ _ _] false)
+                (-slice-ordered [_ _ _ _ _ _] [])
+                (-indexed-attrs [_] #{:person/age})
+                (-transact [this _] this)
+
+                sec/ISecondaryCandidateDomain
+                (-candidate-domain [_ query-spec entity-filter]
+                  (swap! domain-calls conj [query-spec entity-filter])
+                  ;; False positives 2 and 7 are intentional. The ranges still
+                  ;; cover every true match and omit three irrelevant entities.
+                  {:domain :entity-intervals
+                   :intervals [[2 5] [7 9]]
+                   :precision :recheck
+                   :recall :complete}))
+          base (-> (db/empty-db {:person/age {:db/index true}
+                                 :idx/age-summary {:db.secondary/status :ready}})
+                   (d/db-with (mapv (fn [[eid age]]
+                                      {:db/id eid :person/age age})
+                                    [[1 10] [2 20] [3 50] [4 80]
+                                     [5 25] [6 30] [7 40] [8 60]])))
+          domain (sec/candidate-domain
+                  base :idx/age-summary idx {:minimum 50} nil)
+          scan-datoms @#'execute/scan-datoms
+          candidates (vec (scan-datoms base
+                                       '[?e :person/age ?age]
+                                       :eavt [] [] 8 domain))
+          avet-candidates (vec (scan-datoms base
+                                            '[?e :person/age ?age]
+                                            :avet [{:op '>=
+                                                    :const-val 50
+                                                    :var '?age}]
+                                            [] 8 domain))
+          rechecked (into #{}
+                          (comp (filter #(>= (long (.-v ^datahike.datom.Datom %)) 50))
+                                (map #(.-e ^datahike.datom.Datom %)))
+                          candidates)
+          exact (set (d/q '[:find [?e ...]
+                            :where
+                            [?e :person/age ?age]
+                            [(>= ?age 50)]]
+                          base))]
+      (is (= #{2 3 4 7 8}
+             (set (map #(.-e ^datahike.datom.Datom %) candidates)))
+          "the physical read touches only the two candidate intervals")
+      (is (= #{3 4 8}
+             (set (map #(.-e ^datahike.datom.Datom %) avet-candidates)))
+          "an entity domain filters, but never replaces value-bounded AVET")
+      (is (= exact rechecked #{3 4 8})
+          "ordinary primary-value recheck removes every false positive")
+      (is (= [[{:minimum 50} nil]] @domain-calls)))))
 
 (deftest external-engine-consumes-upstream-entity-filter
   (testing "a filter-requiring secondary runs after and receives primary candidates"
