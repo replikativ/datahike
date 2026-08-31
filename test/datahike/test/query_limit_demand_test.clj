@@ -126,7 +126,23 @@
                     :args [db 10 candidates]
                     :cancel mixed-cancel}))]
         (is (= result mixed-result))
-        (is (< @mixed-derefs 20))))))
+        (is (< @mixed-derefs 20))))
+    (testing "a nested plan keeps the scalar as a relational obligation"
+      (let [nested-result
+            (binding [q/*disable-planner* false
+                      execute/*prepared-execution* true
+                      q/*fold-scalar-ins* false
+                      q/*query-result-cache?* false]
+              (d/q {:query '[:find ?e
+                             :in $ ?upper
+                             :where
+                             [?e :probe/n _]
+                             (not-join [?e ?upper]
+                                       [?e :probe/n ?inside]
+                                       [(>= ?inside ?upper)])]
+                    :args [db 10]}))]
+        (is (= result nested-result)
+            "nested pushdown is declined until prepared rebinding reaches sub-plans")))))
 
 (deftest unsafe-demand-remains-unbounded
   (let [db (fixture-db)]

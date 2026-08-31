@@ -3854,9 +3854,15 @@
   "Build a plan using the IR pipeline: logical IR → lowering.
    `in-cards` is the value-independent :in cardinality seed (see in-card-seed)."
   [db clauses bound-vars rules in-cards]
-  (let [logical (logical/build-logical-plan db clauses bound-vars rules)
-        plan (lower/lower logical db rules in-cards)]
-    plan))
+  (let [bound-set (if (map? bound-vars) (set (keys bound-vars)) (set bound-vars))
+        scalar-input-vars (set/difference bound-set (set (keys in-cards)))
+        logical (logical/build-logical-plan db clauses bound-vars rules)]
+    ;; Cardinality cannot distinguish a root scalar from a correlated outer var
+    ;; estimated at one row. Lowering consumes this provenance at top level;
+    ;; recursive sub-plan factories deliberately clear it until prepared-plan
+    ;; rebinding can rewrite nested plans soundly.
+    (binding [lower/*scalar-input-vars* scalar-input-vars]
+      (lower/lower logical db rules in-cards))))
 
 #?(:clj
    (defn- key-has-bigdec?

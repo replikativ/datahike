@@ -26,6 +26,12 @@
 
 #?(:clj (set! *warn-on-reflection* true))
 
+(def ^:dynamic *scalar-input-vars*
+  "The root query's scalar/tuple :in vars while lowering its top-level plan.
+   Cardinality alone cannot identify these: a correlated outer variable can
+   also have estimated cardinality one, but it must remain relational."
+  #{})
+
 ;; ---------------------------------------------------------------------------
 ;; IR node → classified clause-info reconstruction
 ;;
@@ -161,7 +167,11 @@
                          :else (set bound-vars))
          logical-plan (logical/build-logical-plan db (vec clauses) bound-set
                                                   rules guarded-rules)]
-     (lower logical-plan db rules))))
+     ;; Prepared-plan rebinding currently rewrites top-level ops only. Do not
+     ;; advertise a root scalar as a nested scan constant until rebinding can
+     ;; recursively and soundly rewrite OR/NOT/rule sub-plans as well.
+     (binding [*scalar-input-vars* #{}]
+       (lower logical-plan db rules)))))
 
 (defn- normalize-and-plan-branches
   "Normalize branch clauses and create sub-plans for each branch.
@@ -1095,7 +1105,7 @@
         {:keys [pushdowns consumed]}
         (analyze/detect-pushdown
          (into scan-classifieds filter-classifieds)
-         bound-vars initial-bvc)
+         bound-vars *scalar-input-vars*)
 
         ;; ---------------------------------------------------------------
         ;; Step 2: Lower each node to physical op(s)
