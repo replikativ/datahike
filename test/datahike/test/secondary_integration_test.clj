@@ -856,6 +856,8 @@
       (let [persistent (sec/-persistent! transient)
             page (sec/-candidate-page
                   persistent {:query "needle" :field :value} nil {:limit 10})]
+        (is (= 3 (:format-version (sec/-sec-generation-key-map persistent)))
+            "numeric entity IDs use a format old string-layout adapters reject")
         (is (= [{:entity-id 1 :attribute :doc/body :value-hash nil
                  :score (:score (first (:candidates page)))}]
                (:candidates page))
@@ -2084,7 +2086,12 @@
                  :format-version 2
                  :storage-owner :external
                  :snapshot-address (random-uuid)}
-                :wrong-storage-owner]]]
+                :wrong-storage-owner]
+               [{:type :scriptum
+                 :format-version 4
+                 :storage-owner :datahike
+                 :snapshot-address (random-uuid)}
+                :unsupported-format-version]]]
     (doseq [[key-map reason] cases]
       (let [restore-data (thrown-data #(sec/-sec-restore idx nil key-map))
             mark-data (thrown-data #(sec/mark-from-key-map key-map nil))]
@@ -2092,6 +2099,31 @@
         (is (= reason (:reason restore-data)))
         (is (= :secondary/invalid-scriptum-generation (:type mark-data)))
         (is (= reason (:reason mark-data)))))))
+
+(deftest scriptum-generation-layout-must-match-schema-config
+  (let [candidate (sec/create-index :scriptum
+                                    {:attrs #{:doc/body}
+                                     :payload-mode :candidate-only
+                                     :cardinality :one}
+                                    nil)
+        generic (sec/create-index :scriptum {:attrs #{:doc/body}} nil)
+        address (random-uuid)]
+    (is (= :layout-format-mismatch
+           (:reason
+            (thrown-data
+             #(sec/-sec-restore candidate nil
+                                {:type :scriptum
+                                 :format-version 2
+                                 :storage-owner :datahike
+                                 :snapshot-address address})))))
+    (is (= :layout-format-mismatch
+           (:reason
+            (thrown-data
+             #(sec/-sec-restore generic nil
+                                {:type :scriptum
+                                 :format-version 3
+                                 :storage-owner :datahike
+                                 :snapshot-address address})))))))
 
 (deftest stratum-generation-key-maps-fail-closed
   (let [idx (sec/create-index :stratum {:attrs #{:doc/body}} nil)

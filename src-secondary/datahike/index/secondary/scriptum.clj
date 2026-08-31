@@ -28,7 +28,7 @@
              (or (contains? key-map :path)
                  (contains? key-map :branch))))
     :legacy-scriptum-v1-generation
-    (not= 2 (:format-version key-map)) :unsupported-format-version
+    (not (#{2 3} (:format-version key-map))) :unsupported-format-version
     (not= :datahike (:storage-owner key-map)) :wrong-storage-owner
     (not (uuid? (:snapshot-address key-map))) :invalid-snapshot-address
     :else nil))
@@ -41,10 +41,29 @@
              :reason reason
              :key-map key-map
              :expected {:type :scriptum
-                        :format-version 2
+                        :format-version #{2 3}
                         :storage-owner :datahike
                         :snapshot-address :uuid}})))
   key-map)
+
+(defn- generation-format-version [config]
+  ;; Format 3 changes `_entity_id` from a decimal StringField to LongField.
+  ;; Keeping it distinct makes every format-2 adapter fail closed rather than
+  ;; silently issuing string filters and deletes against numeric postings.
+  (if (= :candidate-only (:payload-mode config)) 3 2))
+
+(defn- validate-scriptum-layout-key-map [key-map config]
+  (let [key-map (validate-scriptum-generation-key-map key-map)
+        expected (generation-format-version config)]
+    (when-not (= expected (:format-version key-map))
+      (throw (ex-info
+              "Scriptum generation layout does not match its schema configuration."
+              {:type :secondary/invalid-scriptum-generation
+               :reason :layout-format-mismatch
+               :key-map key-map
+               :expected-format-version expected
+               :payload-mode (:payload-mode config)})))
+    key-map))
 
 (defn- attr-name [a]
   ;; Preserve the namespace. `(name :foo/body)` and `(name :bar/body)` both
@@ -466,7 +485,7 @@
       sec/IDurableSecondaryIndex
       (-sec-generation-key-map [_]
         {:type :scriptum
-         :format-version 2
+         :format-version (generation-format-version config)
          :storage-owner :datahike
          :snapshot-address address})
       (-sec-prepare [this _]
@@ -527,7 +546,7 @@
              failure))))
       (-sec-restore [_ restore-store key-map]
         (let [restore-address (:snapshot-address
-                               (validate-scriptum-generation-key-map key-map))
+                               (validate-scriptum-layout-key-map key-map config))
               restored (sc/open-store-snapshot restore-store cache
                                                restore-address)]
           (make-scriptum-index restored attrs config restore-store cache store-id

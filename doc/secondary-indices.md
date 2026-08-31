@@ -333,8 +333,10 @@ experimental formats:
   format 2 requires an external `:generation-id`, a stable
   `:external-store-id`, and immutable-generation publication through the owning
   Datahike root.
-- Scriptum format 1 maps. Current format 2 names a sealed Lucene manifest with
-  `:snapshot-address` in Datahike's store.
+- Scriptum format 1 maps. Current generic format 2 names a sealed Lucene
+  manifest with `:snapshot-address` in Datahike's store. The cardinality-one,
+  candidate-only numeric entity-ID layout uses format 3, so a format-2 adapter
+  rejects it instead of silently issuing string filters against numeric fields.
 - Unversioned Stratum maps containing only `:dataset-commit-id`. Current format
   1 also records Datahike as the storage owner.
 
