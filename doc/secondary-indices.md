@@ -333,8 +333,13 @@ experimental formats:
   `:external-store-id`, and `:generation-strategy :full-mmap-copy`.
 - Scriptum format 1 maps. Current format 2 names a sealed Lucene manifest with
   `:snapshot-address` in Datahike's store.
-- Unversioned Stratum maps containing only `:dataset-commit-id`. Current format
-  1 also records Datahike as the storage owner.
+
+Stratum is the safe exception. Its older unversioned map already names an exact
+immutable generation by UUID `:dataset-commit-id`; when the type and UUID are
+valid, the adapter normalizes that map in memory to format 1 with
+`:storage-owner :datahike`. The next successful commit writes the current
+envelope. Missing, non-UUID, or otherwise malformed Stratum roots still fail
+closed.
 
 Do not change the version field to make one of those maps look current: the old
 address names a different persistence protocol. If all canonical values remain
