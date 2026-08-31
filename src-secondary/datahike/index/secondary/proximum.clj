@@ -207,8 +207,6 @@
     (not= :proximum (:type key-map)) :wrong-type
     (not= 2 (:format-version key-map)) :unsupported-format-version
     (not= :external (:storage-owner key-map)) :wrong-storage-owner
-    (not= :full-mmap-copy (:generation-strategy key-map))
-    :unsupported-generation-strategy
     (nil? (:external-store-id key-map)) :invalid-external-store-id
     (not (uuid? (:generation-id key-map))) :invalid-generation-id
     :else nil))
@@ -223,7 +221,6 @@
              :expected {:type :proximum
                         :format-version 2
                         :storage-owner :external
-                        :generation-strategy :full-mmap-copy
                         :external-store-id :stable-konserve-store-id
                         :generation-id :uuid}})))
   key-map)
@@ -552,7 +549,6 @@
     {:type :proximum
      :format-version 2
      :storage-owner :external
-     :generation-strategy :full-mmap-copy
      ;; The connected store is authoritative. A supplied `:store` can differ
      ;; from the advisory store-config, and publishing that alias would make an
      ;; external collector mark the wrong store.

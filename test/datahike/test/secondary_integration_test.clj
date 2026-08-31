@@ -518,41 +518,29 @@
                  [{:type :not-proximum
                    :format-version 2
                    :storage-owner :external
-                   :generation-strategy :full-mmap-copy
                    :external-store-id store-id
                    :generation-id (random-uuid)}
                   :wrong-type]
                  [{:type :proximum
                    :format-version 1
                    :storage-owner :external
-                   :generation-strategy :full-mmap-copy
                    :external-store-id store-id
                    :generation-id (random-uuid)}
                   :unsupported-format-version]
                  [{:type :proximum
                    :format-version 2
                    :storage-owner :datahike
-                   :generation-strategy :full-mmap-copy
                    :external-store-id store-id
                    :generation-id (random-uuid)}
                   :wrong-storage-owner]
                  [{:type :proximum
                    :format-version 2
                    :storage-owner :external
-                   :generation-strategy :delta-overlay
-                   :external-store-id store-id
-                   :generation-id (random-uuid)}
-                  :unsupported-generation-strategy]
-                 [{:type :proximum
-                   :format-version 2
-                   :storage-owner :external
-                   :generation-strategy :full-mmap-copy
                    :generation-id (random-uuid)}
                   :invalid-external-store-id]
                  [{:type :proximum
                    :format-version 2
                    :storage-owner :external
-                   :generation-strategy :full-mmap-copy
                    :external-store-id store-id}
                   :invalid-generation-id]]]
       (try
@@ -563,6 +551,17 @@
         (doseq [[key-map reason] (remove #(= :wrong-type (second %)) cases)]
           (is (= reason
                  (:reason (thrown-data #(sec/mark-from-key-map key-map nil))))))
+        (testing "the obsolete cache-strategy annotation remains harmless"
+          (let [legacy-key-map {:type :proximum
+                                :format-version 2
+                                :storage-owner :external
+                                :generation-strategy :full-mmap-copy
+                                :external-store-id store-id
+                                :generation-id (random-uuid)}]
+            (is (= legacy-key-map
+                   ((ns-resolve 'datahike.index.secondary.proximum
+                                'validate-proximum-generation-key-map)
+                    legacy-key-map)))))
         (finally
           (.close ^java.io.Closeable idx))))))
 
@@ -1055,7 +1054,7 @@
   (when-not proximum-available?
     (is (not proximum-available?) "SKIP: proximum requires Java 22+"))
   (when proximum-available?
-    (testing "pure d/db-with refuses a durable vector builder before copying its mmap"
+    (testing "pure d/db-with refuses a durable vector builder before opening native writer state"
       (let [schema {:person/embedding {}
                     :idx/vectors {:db.secondary/type :proximum
                                   :db.secondary/attrs [:person/embedding]
