@@ -1825,6 +1825,51 @@
          (assoc db :secondary-index-build-deltas remaining)))))
 
 #?(:clj
+   (defn- drop-build-failure [db idx-ident]
+     (let [remaining (dissoc (:secondary-index-build-failures db) idx-ident)]
+       (if (empty? remaining)
+         (dissoc db :secondary-index-build-failures)
+         (assoc db :secondary-index-build-failures remaining)))))
+
+#?(:clj
+   (defn cancel-secondary-index-build!
+     "Atomically remove the exact secondary build generation named by
+      `building-since-tx` and discard its buffered deltas.
+
+      The generation check is the cancellation fence: a delayed timeout or
+      operator request cannot remove a replacement build that reused the same
+      index ident. The detached background scan may finish, but install's
+      equivalent generation check prevents it from publishing into the new
+      root and releases its resources."
+     ([old idx-ident building-since-tx]
+      (cancel-secondary-index-build! old idx-ident building-since-tx nil))
+     ([old idx-ident building-since-tx failure]
+      (let [status (get-in old [:schema idx-ident :db.secondary/status])
+            current-boundary (get-in old [:schema idx-ident
+                                          :db.secondary/building-since-tx])]
+        (when-not (and (= :building status)
+                       (= building-since-tx current-boundary))
+          (log/raise "Secondary-index build generation is no longer current"
+                     {:type :secondary-index-build-generation-mismatch
+                      :idx-ident idx-ident
+                      :expected-building-since-tx building-since-tx
+                      :actual-building-since-tx current-boundary
+                      :status status}))
+        (let [entity-id (dbu/entid-strict old [:db/ident idx-ident])
+              tx-report
+              (binding [sec/*durable-secondary-write-context* :commit]
+                (core/with old [[:db/retractEntity entity-id]] nil))]
+          (-> tx-report
+              (update :db-after drop-build-deltas idx-ident)
+              (cond-> failure
+                (assoc-in [:db-after :secondary-index-build-failures idx-ident]
+                          (assoc failure :building-since-tx building-since-tx)))
+              (assoc :secondary-index-build-canceled
+                     {:idx-ident idx-ident
+                      :building-since-tx building-since-tx})
+              (as-> report (complete-db-update old report))))))))
+
+#?(:clj
    (defn install-secondary-index!
      "Replay changes accumulated during an asynchronous backfill and publish
      the resulting index. This operation is serialized by the writer, which
@@ -1864,7 +1909,8 @@
                               (assoc-in [:schema idx-ident :db.secondary/status] :ready)
                               (update-in [:schema idx-ident] dissoc
                                          :db.secondary/building-since-tx)
-                              (drop-build-deltas idx-ident))]
+                              (drop-build-deltas idx-ident)
+                              (drop-build-failure idx-ident))]
              (complete-db-update
               old {:db-before old
                    :db-after db-after

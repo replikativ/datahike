@@ -304,6 +304,12 @@
    :cljs
    (defn- instantiate-secondary [db _idx-ident _idx-schema] db))
 
+(defn- drop-secondary-build-failure [db idx-ident]
+  (let [remaining (dissoc (:secondary-index-build-failures db) idx-ident)]
+    (if (empty? remaining)
+      (dissoc db :secondary-index-build-failures)
+      (assoc db :secondary-index-build-failures remaining))))
+
 #?(:clj
    (defn finalize-secondary-indices
      "Reconcile the runtime secondary-index map with the post-tx schema, then
@@ -343,7 +349,8 @@
         (fn [d k]
           (if (get-in d [:secondary-indices k])
             d
-            (instantiate-secondary d k (get-in d [:schema k]))))
+            (-> (instantiate-secondary d k (get-in d [:schema k]))
+                (drop-secondary-build-failure k))))
         db declared)))
    :cljs
    (defn finalize-secondary-indices [db] db))
