@@ -311,10 +311,15 @@ The adapters realize those immutable generations differently:
 - **Scriptum** seals Lucene segments and manifests into Datahike's konserve;
   local `:path` is only a disposable cache/workspace.
 - **Stratum** seals its column trees into Datahike's konserve.
-- **Proximum** seals a generation in its configured external store. Its current
-  implementation copies the mmap for every changed transaction; reflinks can
-  make that cheap, but high-frequency vector writes need an overlay/delta design
-  before this should be a production default.
+- **Proximum** seals a generation in its configured external store. Linear
+  Datahike generations use distinct logical vector-store handles over one
+  reference-counted append-only mmap, so an ordinary changed transaction does
+  not copy that file or depend on filesystem reflinks. Native Proximum branch
+  divergence and unrelated historical opens still require independent mmap
+  caches. Small transactions can nevertheless amplify immutable partial-vector
+  and dirty-edge chunk writes; batching, smaller tail chunks, or a later
+  append-overlay are performance refinements rather than publication-correctness
+  requirements.
 
 ### Stored generation compatibility
 
