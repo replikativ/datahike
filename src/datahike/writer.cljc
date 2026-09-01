@@ -787,6 +787,8 @@
                            ;; a short serialized report-producing operation.
                            #?@(:clj ['build-secondary-index! w/build-secondary-index!
                                      'install-secondary-index! w/install-secondary-index!
+                                     'cancel-secondary-index-build!
+                                     w/cancel-secondary-index-build!
                                      ;; Recovery re-anchors the snapshot boundary
                                      ;; before rebuilding (see connector).
                                      'reset-secondary-index-build-boundary!
@@ -1041,31 +1043,78 @@
         (when (map? tx-report) ;; not error
           #?(:clj
              (doseq [idx-ident (detect-new-building-indices tx-report)]
-               (log/trace :datahike/dispatch-backfill {:idx-ident idx-ident})
-               (go
-                 (let [build-result (<! (dispatch! writer
-                                                   {:op 'build-secondary-index!
-                                                    :args [idx-ident]}))]
-                   (when-not (map? build-result)
-                     (log/warn :datahike/secondary-index-build-failed
-                               {:idx-ident idx-ident :error build-result}))
-                   (when (map? build-result)
-                     ;; Awaiting here does not block the writer. The install is
-                     ;; merely queued behind transactions that may have arrived
-                     ;; during the scan; it replays their journaled deltas.
-                     (let [install-result
-                           (<! (dispatch! writer
-                                          {:op 'install-secondary-index!
-                                           :args [build-result]}))]
-                       ;; If release shut the local queue between scan and
-                       ;; install, no commit report exists to release the guard.
-                       ;; The build ran in this JVM, so clean it up here.
-                       (when (and local-writer? (not (map? install-result)))
-                         (w/finish-secondary-index-build! build-result))))))))
+               (let [building-since-tx
+                     (get-in tx-report
+                             [:db-after :schema idx-ident
+                              :db.secondary/building-since-tx])]
+                 (log/trace :datahike/dispatch-backfill {:idx-ident idx-ident})
+                 (go
+                   (let [build-result (<! (dispatch! writer
+                                                     {:op 'build-secondary-index!
+                                                      :args [idx-ident]}))]
+                     (if-not (map? build-result)
+                       (do
+                         (log/warn :datahike/secondary-index-build-failed
+                                   {:idx-ident idx-ident :error build-result})
+                         ;; A failed scan is a failed declaration, not a
+                         ;; permanently :building one. The generation token
+                         ;; prevents this cleanup from touching a replacement.
+                         (let [cancel-result
+                               (<! (dispatch!
+                                    writer
+                                    {:op 'cancel-secondary-index-build!
+                                     :args
+                                     [idx-ident building-since-tx
+                                      {:type (or (some-> build-result ex-data :type)
+                                                 :secondary-index-build-failed)
+                                       :message (if (instance? Throwable build-result)
+                                                  (ex-message build-result)
+                                                  (str build-result))}]}))]
+                           (when-not (map? cancel-result)
+                             (log/warn
+                              :datahike/secondary-index-build-failure-cleanup-failed
+                              {:idx-ident idx-ident
+                               :building-since-tx building-since-tx
+                               :error cancel-result}))))
+                       ;; Awaiting here does not block the writer. The install is
+                       ;; merely queued behind transactions that may have arrived
+                       ;; during the scan; it replays their journaled deltas.
+                       (let [install-result
+                             (<! (dispatch! writer
+                                            {:op 'install-secondary-index!
+                                             :args [build-result]}))]
+                         ;; If release shut the local queue between scan and
+                         ;; install, no commit report exists to release the guard.
+                         ;; The build ran in this JVM, so clean it up here.
+                         (when (and local-writer? (not (map? install-result)))
+                           (w/finish-secondary-index-build! build-result)))))))))
           (doseq [[_ callback] (some-> (:listeners (meta connection)) (deref))]
             (callback tx-report)))
         (#?(:clj deliver :cljs put!) p tx-report)))
     p))
+
+#?(:clj
+   (defn cancel-secondary-index-build!
+     "Cancel one exact asynchronous secondary-index build generation.
+
+      Returns a throwable promise containing the committed transaction report.
+      A generation mismatch is delivered as an ExceptionInfo and leaves the
+      current declaration untouched."
+     [connection idx-ident building-since-tx]
+     (let [p (throwable-promise)
+           db @(:wrapped-atom connection)
+           writer (:writer db)]
+       (go
+         (let [tx-report
+               (<! (dispatch! writer
+                              {:op 'cancel-secondary-index-build!
+                               :args [idx-ident building-since-tx]}))]
+           (when (map? tx-report)
+             (doseq [[_ callback]
+                     (some-> (:listeners (meta connection)) deref)]
+               (callback tx-report)))
+           (deliver p tx-report)))
+       p)))
 
 (defn- dispatch-load!
   "`args` is the argument vector as the write-fn will receive it AFTER `old` —

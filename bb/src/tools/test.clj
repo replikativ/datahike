@@ -110,7 +110,7 @@
                        " :paths [\"test/datahike/backward_compatibility_test/src\"]}")
          "-X:test" "backward-secondary-test/verify-current-formats")
 
-    (println "VERIFYING REFUSED ROOTS REMAIN READABLE BY THE RELEASE")
+    (println "VERIFYING RELEASED ROOTS REMAIN READABLE BY THE RELEASE")
     (clj {:dir old-version-dir
           :extra-env secondary-env}
          "-Sdeps" (str "{:deps {io.replikativ/datahike {:local/root \".\"}}"

@@ -6,9 +6,7 @@
             [datahike.index.secondary.scriptum]
             [datahike.index.secondary.stratum]
             [konserve.core :as konserve]
-            [taoensso.trove :as trove])
-  (:import [java.io File FileInputStream]
-           [java.security MessageDigest]))
+            [taoensso.trove :as trove]))
 
 (def ^:private primary-ids
   {:stratum #uuid "e31a77d5-ae9b-4743-a35a-cd2b7c05a54d"
@@ -129,7 +127,7 @@
              (d/q '[:find (count ?v) . :in $ ?a :where [_ ?a ?v]]
                   (d/db conn) attr))))
 
-(defn- verify-old-scriptum! []
+(defn- verify-released-scriptum! []
   (let [conn (d/connect (config :scriptum))]
     (try
       (verify-primary-count conn :doc/body 1)
@@ -140,14 +138,23 @@
       (finally
         (d/release conn)))))
 
+(defn- verify-released-proximum! []
+  (let [conn (d/connect (config :proximum))]
+    (try
+      (verify-primary-count conn :doc/embedding 1)
+      (let [matches (secondary/-search
+                     (secondary-index conn :idx/vector)
+                     {:vector (float-array [1.0 0.0 0.0 0.0]) :k 1} nil)]
+        (assert (= 1 (entity-set/entity-bitset-cardinality matches))))
+      (finally
+        (d/release conn)))))
+
 (defn verify-old [_]
-  ;; Run after current code deliberately refuses these roots. Successful old
-  ;; Scriptum open proves that refusal did not rewrite its Datahike head or
-  ;; native index. The released Proximum adapter itself cannot reopen a durable
-  ;; file store (its restore path calls create-store on the existing path), so
-  ;; current code checks its exact files before and after the refusal instead.
+  ;; The released Proximum adapter itself cannot reopen a durable file store
+  ;; (its restore path calls create-store on the existing path), so this final
+  ;; released-code check remains Scriptum-only. Current code verifies both.
   (trove/set-log-fn! (fn [& _]))
-  (verify-old-scriptum!))
+  (verify-released-scriptum!))
 
 (defn write-current [_]
   (trove/set-log-fn! (fn [& _]))
@@ -174,65 +181,6 @@
       (finally
         (d/release proximum-conn)
         (d/release scriptum-conn)))))
-
-(defn- throwable-data [failure]
-  (loop [pending [failure]
-         result []]
-    (if-let [current (peek pending)]
-      (let [data (ex-data current)
-            nested-error (when (map? data) (:error data))]
-        (recur (cond-> (pop pending)
-                 (.getCause ^Throwable current)
-                 (conj (.getCause ^Throwable current))
-                 (instance? Throwable nested-error)
-                 (conj nested-error))
-               (cond-> result data (conj data))))
-      result)))
-
-(defn- digest-file [^File file]
-  (let [digest (MessageDigest/getInstance "SHA-256")
-        buffer (byte-array 8192)]
-    (with-open [input (FileInputStream. file)]
-      (loop []
-        (let [n (.read input buffer)]
-          (when (pos? n)
-            (.update digest buffer 0 n)
-            (recur)))))
-    (vec (.digest digest))))
-
-(defn- file-fingerprint [root-path]
-  (let [root-file (File. root-path)
-        root-uri (.toURI root-file)]
-    (into (sorted-map)
-          (for [^File file (file-seq root-file)
-                :when (.isFile file)]
-            [(str (.relativize root-uri (.toURI file)))
-             [(.length file) (digest-file file)]]))))
-
-(defn- legacy-paths [kind]
-  (case kind
-    :scriptum [(path "primary-scriptum") (path "scriptum-index")]
-    :proximum [(path "primary-proximum")
-               (path "proximum-store")
-               (path "proximum-release-mmap")]))
-
-(defn- expect-legacy-refusal! [kind expected-type expected-reason]
-  (let [paths (legacy-paths kind)
-        before (mapv file-fingerprint paths)
-        failure (try
-                  (let [conn (d/connect (config kind))]
-                    (d/release conn)
-                    nil)
-                  (catch Throwable failure failure))
-        after (mapv file-fingerprint paths)]
-    (assert failure (str "Current Datahike unexpectedly opened legacy " kind " root."))
-    (assert (= before after)
-            (str "Refusing legacy " kind " changed persisted files."))
-    (let [data-chain (throwable-data failure)]
-      (assert (some #(and (= expected-type (:type %))
-                          (= expected-reason (:reason %)))
-                    data-chain)
-              (str "Unexpected failure chain: " (pr-str data-chain))))))
 
 (defn- current-stratum! []
   (let [cfg (config :stratum)
@@ -263,9 +211,8 @@
 (defn verify-current [_]
   (trove/set-log-fn! (fn [& _]))
   (current-stratum!)
-  (expect-legacy-refusal! :scriptum
-                          :secondary/invalid-scriptum-generation
-                          :legacy-scriptum-v1-generation)
-  (expect-legacy-refusal! :proximum
-                          :secondary/invalid-proximum-generation
-                          :legacy-proximum-commit-root))
+  ;; 0.8.1863 is the first release with the immutable generation envelopes.
+  ;; They are now the compatibility baseline, rather than the legacy roots
+  ;; that the transition test deliberately rejected before that release.
+  (verify-released-scriptum!)
+  (verify-released-proximum!))

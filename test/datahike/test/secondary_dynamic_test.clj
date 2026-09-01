@@ -9,6 +9,7 @@
    [konserve.core :as k]
    [datahike.index.secondary :as sec]
    [datahike.migrate.fs :as fs]
+   [datahike.writer :as writer]
    [datahike.writing :as writing]
    [superv.async :refer [<?? S]]))
 
@@ -44,6 +45,23 @@
    :test/slow-immutable
    (fn [config _db]
      (->SlowImmutableIndex (set (:attrs config)) [] #{}))))
+
+(defrecord FailingBackfillIndex [attrs]
+  sec/ISecondaryIndex
+  (-search [_ _ _] nil)
+  (-estimate [_ _] 0)
+  (-can-order? [_ _ _] false)
+  (-slice-ordered [_ _ _ _ _ _] nil)
+  (-indexed-attrs [_] attrs)
+  (-transact [_ _]
+    (throw (ex-info "deterministic backfill failure"
+                    {:type :test/backfill-failure}))))
+
+(defonce _register-failing-backfill
+  (sec/register-index-type!
+   :test/failing-backfill
+   (fn [config _db]
+     (->FailingBackfillIndex (set (:attrs config))))))
 
 (defrecord RecorderPreparation [index]
   sec/IPreparedSecondaryGeneration
@@ -233,6 +251,121 @@
         (finally
           (d/release conn)
           (d/delete-database cfg))))))
+
+(deftest secondary-build-cancellation-is-generation-bound
+  (testing "cancellation retracts only the named build and clears its journal"
+    (let [cfg {:store {:backend :memory :id (random-uuid)}
+               :writer {:backend :self :writer-ownership :exclusive}
+               :keep-history? false
+               :schema-flexibility :write}
+          entered (promise)
+          release (promise)
+          control {:entered entered :release release :blocked? (atom false)}]
+      (d/create-database cfg)
+      (let [conn (d/connect cfg)]
+        (try
+          (d/transact conn [{:db/ident :person/cancel-name
+                             :db/valueType :db.type/string
+                             :db/cardinality :db.cardinality/one}])
+          (d/transact conn [{:person/cancel-name "Alice"}])
+          (reset! slow-build-control control)
+          (d/transact conn [{:db/ident :idx/cancel-slow
+                             :db.secondary/type :test/slow-immutable
+                             :db.secondary/attrs [:person/cancel-name]}])
+          (is (= true (deref entered 5000 ::timeout)))
+          (d/transact conn [{:person/cancel-name "Bob"}])
+          (let [boundary (get-in (d/db conn)
+                                 [:schema :idx/cancel-slow
+                                  :db.secondary/building-since-tx])]
+            (is (integer? boundary))
+            (is (= :secondary-index-build-generation-mismatch
+                   (try
+                     @(writer/cancel-secondary-index-build!
+                       conn :idx/cancel-slow (dec boundary))
+                     nil
+                     (catch Exception e (throwable-type e)))))
+            (is (= :building
+                   (get-in (d/db conn)
+                           [:schema :idx/cancel-slow :db.secondary/status])))
+            (is (= 1 (count (get-in (d/db conn)
+                                    [:secondary-index-build-deltas
+                                     :idx/cancel-slow]))))
+            (let [report @(writer/cancel-secondary-index-build!
+                           conn :idx/cancel-slow boundary)]
+              (is (= {:idx-ident :idx/cancel-slow
+                      :building-since-tx boundary}
+                     (:secondary-index-build-canceled report))))
+            (is (nil? (get-in (d/db conn) [:schema :idx/cancel-slow])))
+            (is (nil? (get-in (d/db conn)
+                              [:secondary-indices :idx/cancel-slow])))
+            (is (nil? (:secondary-index-build-deltas (d/db conn))))
+            (deliver release true)
+            (let [deadline (+ (System/currentTimeMillis) 5000)]
+              (loop []
+                (when (and (guard/in-flight? (get-in cfg [:store :id]))
+                           (< (System/currentTimeMillis) deadline))
+                  (Thread/sleep 10)
+                  (recur))))
+            (is (not (guard/in-flight? (get-in cfg [:store :id]))))
+            (is (nil? (get-in (d/db conn) [:schema :idx/cancel-slow]))
+                "the detached worker cannot publish after cancellation"))
+          (finally
+            (deliver release true)
+            (reset! slow-build-control nil)
+            (d/release conn)
+            (d/delete-database cfg)))))))
+
+(deftest failed-secondary-build-retracts-its-declaration
+  (testing "a scan failure cannot strand a declaration or delta journal"
+    (let [cfg {:store {:backend :memory :id (random-uuid)}
+               :writer {:backend :self :writer-ownership :exclusive}
+               :keep-history? false
+               :schema-flexibility :write}]
+      (d/create-database cfg)
+      (let [conn (d/connect cfg)]
+        (try
+          (d/transact conn [{:db/ident :person/failing-name
+                             :db/valueType :db.type/string
+                             :db/cardinality :db.cardinality/one}])
+          (d/transact conn [{:person/failing-name "Alice"}])
+          (d/transact conn [{:db/ident :idx/failing-build
+                             :db.secondary/type :test/failing-backfill
+                             :db.secondary/attrs [:person/failing-name]}])
+          (let [deadline (+ (System/currentTimeMillis) 5000)]
+            (loop []
+              (when (and (get-in (d/db conn) [:schema :idx/failing-build])
+                         (< (System/currentTimeMillis) deadline))
+                (Thread/sleep 10)
+                (recur))))
+          (is (nil? (get-in (d/db conn) [:schema :idx/failing-build])))
+          (is (nil? (get-in (d/db conn)
+                            [:secondary-indices :idx/failing-build])))
+          (is (nil? (:secondary-index-build-deltas (d/db conn))))
+          (is (= {:type :test/backfill-failure
+                  :message "deterministic backfill failure"}
+                 (select-keys
+                  (get-in (d/db conn)
+                          [:secondary-index-build-failures :idx/failing-build])
+                  [:type :message])))
+          (is (integer?
+               (get-in (d/db conn)
+                       [:secondary-index-build-failures :idx/failing-build
+                        :building-since-tx])))
+          (d/transact conn [{:db/ident :person/empty-replacement
+                             :db/valueType :db.type/string
+                             :db/cardinality :db.cardinality/one}])
+          (d/transact conn [{:db/ident :idx/failing-build
+                             :db.secondary/type :test/failing-backfill
+                             :db.secondary/attrs [:person/empty-replacement]}])
+          (is (= :ready
+                 (get-in (d/db conn)
+                         [:schema :idx/failing-build :db.secondary/status])))
+          (is (nil? (get-in (d/db conn)
+                            [:secondary-index-build-failures
+                             :idx/failing-build])))
+          (finally
+            (d/release conn)
+            (d/delete-database cfg)))))))
 
 (deftest asynchronous-backfill-replays-concurrent-deltas
   (testing "the writer remains available and immutable index updates are not lost"

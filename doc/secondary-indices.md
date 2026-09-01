@@ -283,6 +283,33 @@ Secondary indices are managed through schema transactions:
 
 The `:db.secondary/type` and `:db.secondary/attrs` are immutable after creation. To change indexed attributes, create a new index with a different ident.
 
+A caller that gives up waiting for a build can cancel the exact generation it
+observed. Capture the build boundary with the status, then pass both to the
+writer operation:
+
+```clojure
+(require '[datahike.writer :as writer])
+
+(def boundary
+  (get-in (d/db conn)
+          [:schema :idx/my-index :db.secondary/building-since-tx]))
+
+@(writer/cancel-secondary-index-build!
+  conn :idx/my-index boundary)
+```
+
+Cancellation is serialized with transactions. It retracts that declaration and
+clears its in-memory delta journal in one commit. If the ident now names a
+different generation—or has already become ready—the operation fails with
+`:secondary-index-build-generation-mismatch` and changes nothing. The detached
+scan may finish, but it is fenced from publication and releases its resources.
+Datahike applies the same cancellation transition automatically when a
+background scan fails, so a failed adapter cannot strand a permanently
+`:building` declaration. The connection keeps a generation-keyed diagnostic at
+`[:secondary-index-build-failures index-ident]` until a successful replacement
+generation clears it or the connection is released. This diagnostic is runtime
+state for the waiting caller; it is deliberately not a durable index root.
+
 ## Branching and Versioning
 
 Secondary indices are first-class versioned state. A committed Datahike root
