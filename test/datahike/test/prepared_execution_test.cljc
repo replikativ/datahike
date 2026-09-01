@@ -34,7 +34,8 @@
                       {:db/ident :t/rx :db/valueType :db.type/boolean
                        :db/cardinality :db.cardinality/one}
                       {:db/ident :t/v :db/valueType :db.type/long
-                       :db/cardinality :db.cardinality/one}
+                       :db/cardinality :db.cardinality/one
+                       :db/index true}
                       {:db/ident :t/name :db/valueType :db.type/string
                        :db/cardinality :db.cardinality/one}])
     (d/transact conn {:tx-data (mapv (fn [i] {:t/id i :t/rx true :t/v (* 2 i)
@@ -81,6 +82,12 @@
    ['{:find [?w] :in [$ ?id]
       :where [[?e :t/id ?id] [(get-else $ ?e :t/missing :none) ?w]]}
     [40]]
+   ['{:find [?e] :in [$ ?bound]
+      :where [[?e :t/v ?v] [(= ?v ?bound)]]}
+    [nil] [20]]
+   ['{:find [?e] :in [$ ?bound]
+      :where [[?e :t/v ?v] [(not= ?v ?bound)]]}
+    [nil] [20]]
    ;; lookup-ref binding: the projected value must be the ORIGINAL ref
    ['{:find [?e ?n] :in [$ ?e] :where [[?e :t/name ?n]]}
     [[:t/id 3]]]])

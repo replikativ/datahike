@@ -1,10 +1,12 @@
 (ns datahike.test.nodejs-test
-  (:require [cljs.test :refer [deftest is async] :as t]
+  (:require [cljs.test :refer [deftest is async testing] :as t]
             [cljs.reader]
             [datahike.api :as d]
             [datahike.index.audit :as ia]
             [datahike.audit :as audit]
             [datahike.online-gc :as online-gc]
+            [datahike.writing :as dw]
+            [taoensso.trove :as trove]
             [konserve.core :as k]
             [fress.impl.bigdec :as fbd] ;; cljs BigDecimal — :db.type/bigdec value type
             [konserve.node-filestore :as nfs] ;; Register :file backend for Node.js
@@ -362,6 +364,57 @@
                  (is false (str "Error: " (.-message e))))
                (finally
                  (done)))))))
+
+(deftest opaque-secondary-generation-roots-survive-cljs-test
+  (testing "CLJS preserves JVM-owned immutable secondary addresses without loading their adapters"
+    (async done
+           (go
+             (let [dir (tmp-dir)
+                   cfg {:store {:backend :file :path dir :id (random-uuid)}
+                        :keep-history? false
+                        :schema-flexibility :write}
+                   key-map {:type :scriptum
+                            :format-version 2
+                            :storage-owner :datahike
+                            :snapshot-address (random-uuid)}
+                   roots {:idx/opaque key-map}]
+               (try
+                 (<! (d/create-database cfg))
+                 (let [conn (d/connect cfg)
+                       db-with-opaque-root
+                       (-> @conn
+                           (assoc-in [:schema :idx/opaque]
+                                     {:db.secondary/type :scriptum
+                                      :db.secondary/attrs [:doc/body]
+                                      :db.secondary/status :ready})
+                           (assoc :secondary-index-keys roots))
+                       write-error (try
+                                     (dw/db->stored db-with-opaque-root true {})
+                                     nil
+                                     (catch js/Error failure failure))
+                       store (:store @conn)
+                       source-head (<! (k/get store :db nil {:sync? false}))]
+                   (is (= :secondary/unavailable-durable-generations
+                          (:type (ex-data write-error)))
+                       "a runtime without the adapter cannot publish stale ready state")
+
+                   ;; Model a JVM-written head. Branch creation reads the stored
+                   ;; record and must copy its immutable addresses even though
+                   ;; this CLJS process cannot instantiate Scriptum.
+                   (<! (k/assoc store :db
+                                (assoc source-head :secondary-index-keys roots)
+                                {:sync? false}))
+                   (<! (d/branch! conn :db :opaque-copy))
+                   (is (= roots
+                          (:secondary-index-keys
+                           (<! (k/get store :opaque-copy nil {:sync? false}))))
+                       "branching copies opaque generation addresses exactly")
+                   (d/release conn))
+                 (catch js/Error e
+                   (is false (str "opaque secondary root error: " (.-message e))))
+                 (finally
+                   (<! (d/delete-database cfg))
+                   (done))))))))
 
 (deftest online-gc-basic-test
   (async done
@@ -777,6 +830,11 @@
                (done))))))
 
 (defn -main []
+  ;; Most test namespaces use the Clojure API directly, so the npm wrapper's
+  ;; normal logging initializer is not loaded. Trove otherwise defaults to
+  ;; TRACE on ClojureScript and a single property test emits megabytes. The
+  ;; test reporter already surfaces thrown failures, so product logs add noise.
+  (trove/set-log-fn! nil)
   (t/run-tests 'datahike.test.migrate-digest-test
                'datahike.test.migrate-store-test
                'datahike.test.migrate-fs-test

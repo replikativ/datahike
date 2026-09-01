@@ -135,6 +135,65 @@
                             [?e :name "Ivan"] [?e :age ?a]
                             [?e1 :age ?a] [?e1 :last-name ?l]])))
 
+(deftest indexed-cross-group-value-binding-drives-avet
+  ;; Model the SQL shape:
+  ;;   parent p JOIN fact f ON f.parent_id = p.id
+  ;;   WHERE p.selected ORDER BY f.id LIMIT 10
+  ;;
+  ;; The fact group deliberately contains a broad existence pattern. Static
+  ;; entity-group assembly picks that as its scan and places the indexed
+  ;; parent-id clause in the merge slot. Once the parent group has produced
+  ;; ?join, execution must rotate the indexed clause into the scan slot rather
+  ;; than walk every fact.
+  (let [n 6000
+        schema {:parent/selected {}
+                :parent/id       {}
+                :parent/label    {}
+                :fact/exists     {}
+                :fact/parent     {:db/index true}
+                :fact/id         {}}
+        parents [{:db/id 1 :parent/selected true :parent/id 42 :parent/label "a"}
+                 ;; Same join key, distinct projected row: verifies that
+                 ;; deduplicating AVET seek keys does not lose upstream fan-out.
+                 {:db/id 2 :parent/selected true :parent/id 42 :parent/label "b"}]
+        facts (mapv (fn [i]
+                      {:db/id (+ 100 i)
+                       :fact/exists true
+                       :fact/parent (mod i 100)
+                       :fact/id i})
+                    (range n))
+        db (d/db-with (db/empty-db schema) (into parents facts))
+        query '[:find ?fid ?label
+                :where
+                [?p :parent/selected true]
+                [?p :parent/id ?join]
+                [?p :parent/label ?label]
+                [?f :fact/exists true]
+                [?f :fact/parent ?join]
+                [?f :fact/id ?fid]]
+        expected (into #{} (for [i (range 42 n 100), label ["a" "b"]]
+                             [i label]))
+        seeks (atom 0)
+        orig-seek @#'ex/probe-driven-iterable]
+    ;; Force the relation executor: that is the production path used when SQL
+    ;; ORDER BY/LIMIT and other non-direct post-processing are present.
+    (with-redefs [ex/can-direct-fuse? (constantly false)
+                  ex/probe-driven-iterable
+                  (fn [& args]
+                    (swap! seeks inc)
+                    (apply orig-seek args))]
+      (binding [q/*disable-planner* false q/*query-result-cache?* false]
+        (testing "the indexed child value is parameterized from the parent relation"
+          (is (= expected (d/q query db)))
+          (is (pos? @seeks)
+              "the fact group must use AVET seeks, not scan :fact/exists"))
+        (testing "ordered demand remains a final-stage concern and stays correct"
+          (is (= (take 10 (sort expected))
+                 (d/q {:query query
+                       :args [db]
+                       :order-by '[?fid :asc ?label :asc]
+                       :limit 10}))))))))
+
 ;; ---------------------------------------------------------------------------
 ;; Phase 3: OR support
 
@@ -315,6 +374,26 @@
   (testing "No ORDER BY returns set"
     (let [result (d/q '[:find ?e ?a :where [?e :age ?a]] @test-db)]
       (is (set? result) "Without ORDER BY should return a set"))))
+
+(deftest bounded-order-by-retains-only-the-requested-prefix
+  (let [apply-order-by (var-get (ns-resolve 'datahike.query 'apply-order-by))
+        original-sort clojure.core/sort
+        sorted-size (atom nil)
+        rows (mapv vector (range 1000 0 -1))
+        result (with-redefs [clojure.core/sort
+                             (fn [cmp xs]
+                               (reset! sorted-size (count xs))
+                               (original-sort cmp xs))]
+                 (apply-order-by rows [[0 :asc]] 5 10))]
+    (is (= (mapv vector (range 6 16)) result))
+    (is (= 15 @sorted-size)
+        "the final sort sees LIMIT + OFFSET retained rows, not the full input")))
+
+(deftest bounded-order-by-preserves-stable-ties
+  (let [apply-order-by (var-get (ns-resolve 'datahike.query 'apply-order-by))
+        rows [[:a 1] [:b 1] [:c 1] [:d 2] [:e 3]]]
+    (is (= [[:b 1] [:c 1]]
+           (apply-order-by rows [[1 :asc]] 1 2)))))
 
 ;; ---------------------------------------------------------------------------
 ;; Aggregates — compiled engine must route through relation path correctly
@@ -1074,6 +1153,28 @@
     (testing "both engines return the same point result"
       (assert-engines-agree db query [2500])
       (is (= #{["v2500"]} (d/q query db 2500))))))
+
+(deftest unrelated-scalar-input-preserves-range-scan-cardinality
+  ;; SQL queries commonly carry scalar parameters that do not occur in every
+  ;; pattern. Merely having one used to make plan-pattern-op recompute each
+  ;; pattern's bound-aware estimate from its unfiltered base, erasing an AVET
+  ;; range estimate. The presence marker then won the scan slot and the indexed
+  ;; range was demoted to an EAVT merge, turning a small range into a full scan.
+  (let [db (d/db-with
+            (db/empty-db {:item/id      {:db/unique :db.unique/identity}
+                          :item/present {:db/index true}})
+            (mapv (fn [i] {:item/id i :item/present true}) (range 1000)))
+        query '[:find ?e :in $ ?unused :where
+                [?e :item/present true]
+                [?e :item/id ?id]
+                [(< ?id 10)]]
+        explanation (q/explain query db :unrelated)]
+    (testing "the AVET range remains the driving scan"
+      (is (re-find #"scan: \[\?e :item/id \?id\] \[avet\]"
+                   explanation)))
+    (testing "the optimization preserves query semantics"
+      (assert-engines-agree db query [:unrelated])
+      (is (= 10 (count (d/q query db :unrelated)))))))
 
 (deftest bound-unindexed-filter-separates-scan-work-from-output-cardinality
   ;; Every candidate scan reads 5k datoms, but :item/category emits only 50

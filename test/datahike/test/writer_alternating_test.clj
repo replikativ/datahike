@@ -725,6 +725,35 @@
 (defn- head-strat-key [db]
   (get-in (head-record db) [:secondary-index-keys :idx/strat]))
 
+(deftest unchanged-legacy-head-retains-live-generation
+  (testing "a cid-less legacy head has a complete runtime identity, so repeated
+            shared-writer reads neither reopen native resources nor miss changes"
+    (let [c (stratum-cfg "legacy-secondary-head")]
+      (fresh-db! c)
+      (let [p (connect-as-separate-process c)]
+        (try
+          (with-stratum-index! (:conn p))
+          (d/transact (:conn p) [{:p/name "alice"}])
+          (let [db @(:wrapped-atom (:conn p))
+                branch (get-in db [:config :branch])
+                stored (k/get (:store db) branch nil {:sync? true})]
+            (k/assoc (:store db) branch
+                     (update stored :meta dissoc :datahike/commit-id)
+                     {:sync? true}))
+          (finally (release-separate-process p))))
+      (let [p (connect-as-separate-process c)]
+        (try
+          (let [opened @(:wrapped-atom (:conn p))
+                idx (get-in opened [:secondary-indices :idx/strat])
+                refreshed @(:conn p)
+                refreshed-again @(:conn p)]
+            (is (nil? (get-in opened [:meta :datahike/commit-id])))
+            (is (identical? idx
+                            (get-in refreshed [:secondary-indices :idx/strat])))
+            (is (identical? idx
+                            (get-in refreshed-again [:secondary-indices :idx/strat]))))
+          (finally (release-separate-process p)))))))
+
 (deftest secondary-index-survives-alternating-processes
   (testing "a secondary index is named by the commit, so the head re-read has to
             pick up the OTHER process's index writes with it — keeping the
@@ -891,29 +920,55 @@
                                   :db.secondary/attrs [:p/tag]}])
           (d/transact (:conn p) [{:p/name "alice" :p/tag "x"}])
           (finally (release-separate-process p))))
-      ;; Fail the SECOND index whichever ident that turns out to be — schema is a
-      ;; map, so the order is not ours to choose. The stub is Closeable but not
-      ;; IVersionedSecondaryIndex, so it lands in the accumulator as-is, which is
-      ;; the state this is about.
+      ;; Fail the SECOND restore attempt whichever ident that turns out to be —
+      ;; schema is a map, so the order is not ours to choose.  The first factory
+      ;; result must be a real durable skeleton: restore-secondary-indices closes
+      ;; that skeleton, restores a distinct durable live index, and puts the live
+      ;; value in its accumulator before the second attempt fails.
       (let [attempts (atom 0)
-            closed   (atom 0)]
+            skeleton-closed (atom 0)
+            restored-closed (atom 0)
+            index
+            (fn index [own-close-count restored-close-count]
+              (reify
+                java.io.Closeable
+                (close [_] (swap! own-close-count inc))
+
+                sec/ISecondaryIndex
+                (-search [_ _ _] nil)
+                (-estimate [_ _] 0)
+                (-can-order? [_ _ _] false)
+                (-slice-ordered [_ _ _ _ _ _] nil)
+                (-indexed-attrs [_] #{})
+                (-transact [this _] this)
+
+                sec/IDurableSecondaryIndex
+                (-sec-generation-key-map [_]
+                  {:type :test/restore-cleanup
+                   :format-version 1
+                   :storage-owner :external})
+                (-sec-prepare [_ _]
+                  (throw (ex-info "not used by this restore test" {})))
+                (-sec-restore [_ _ _]
+                  (index restored-close-count restored-close-count))))]
         (with-redefs [sec/create-index
                       (fn [& _]
                         (if (= 1 (swap! attempts inc))
-                          (reify java.io.Closeable (close [_] (swap! closed inc)))
+                          (index skeleton-closed restored-closed)
                           (throw (ex-info "restore boom" {}))))]
           (is (thrown-with-msg? clojure.lang.ExceptionInfo
                                 #"Could not restore a secondary index"
                                 (connect-as-separate-process c))))
         (is (= 2 @attempts) "both indices were attempted")
-        (is (= 1 @closed)
-            "and the one that succeeded was closed on the way out")))))
+        (is (= 1 @skeleton-closed)
+            "the successful attempt closed its factory skeleton")
+        (is (= 1 @restored-closed)
+            "its distinct durable restored index was closed with the failed accumulator")))))
 
-(deftest dropped-restore-keeps-the-stored-index-pointer
-  (testing "under :drop, a restore that fails is transient; DELETING the index
-            pointer is not. The next commit must carry the stored key-map
-            forward, or a reconnect gets an empty skeleton marked :ready that
-            nothing backfills."
+(deftest dropped-restore-is-read-only-and-keeps-the-stored-index-pointer
+  (testing "under :drop, a restore failure permits degraded reads only. A write
+            cannot carry a stale generation forward; it must fail before the
+            head moves, leaving the stored pointer available for a healthy process."
     (let [c (stratum-cfg "sec-restore-failure")]
       (fresh-db! c)
       (let [p (connect-as-separate-process c)]
@@ -937,9 +992,14 @@
             (try
               (is (nil? (strat-rows @(:wrapped-atom (:conn p))))
                   "the failed restore dropped the ident, as it does today")
-              (d/transact (:conn p) [{:p/name "carol"}])
+              (let [failure (try
+                              (d/transact (:conn p) [{:p/name "carol"}])
+                              nil
+                              (catch clojure.lang.ExceptionInfo e e))]
+                (is (= :secondary/unavailable-durable-generations
+                       (:type (ex-data failure)))))
               (is (= before (head-strat-key @(:wrapped-atom (:conn p))))
-                  "and the commit carried the stored pointer forward untouched")
+                  "the rejected write did not replace the stored pointer")
               (finally (release-separate-process p)))))
         (let [p (connect-as-separate-process c)]
           (try
@@ -963,9 +1023,13 @@
                 dropped (-> db
                             (assoc :secondary-index-keys {:idx/strat key-map})
                             (update :secondary-indices dissoc :idx/strat))]
-            (is (= {:idx/strat key-map}
-                   (:secondary-index-keys (second (dw/db->stored dropped true))))
-                "the pointer of a declared-but-missing index is kept")
+            (let [failure (try
+                            (dw/db->stored dropped true)
+                            nil
+                            (catch clojure.lang.ExceptionInfo e e))]
+              (is (= :secondary/unavailable-durable-generations
+                     (:type (ex-data failure)))
+                  "a declared pointer cannot be carried through a write without its adapter"))
             (is (nil? (:secondary-index-keys
                        (second (dw/db->stored (update dropped :schema dissoc :idx/strat)
                                               true))))

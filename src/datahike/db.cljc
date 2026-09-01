@@ -287,7 +287,13 @@
                                              (sec/-with-db-context idx ctx)
                                              idx)]
                                    [k (if (satisfies? sec/ITransientSecondaryIndex idx)
-                                        (sec/-as-transient idx)
+                                        (if (and (sec/durable-secondary? idx)
+                                                 (= :pure
+                                                    sec/*durable-secondary-write-context*)
+                                                 (not (sec/pure-secondary-mutation? idx)))
+                                          idx
+                                          (sec/track-secondary-transient!
+                                           (sec/-as-transient idx)))
                                         idx)])))
                           indices)))))))
 
@@ -439,6 +445,12 @@
                 (get (.-ref-ident-map db) a-ref)
                 a-ref))
 
+  dbi/ISecondaryView
+  (-secondary-view [db]
+                   {:indices (.-secondary-indices db)
+                    :system {:mode :current}
+                    :filtered-depth 0})
+
   dbi/ISearch
   (-search-context [db] dbi/base-context)
   (-search [db pattern context]
@@ -532,6 +544,11 @@
   (-ref-for [db a-ident] (dbi/-ref-for (.-unfiltered-db db) a-ident))
   (-ident-for [db a-ref] (dbi/-ident-for (.-unfiltered-db db) a-ref))
 
+  dbi/ISecondaryView
+  (-secondary-view [db]
+                   (update (dbi/-secondary-view (.-unfiltered-db db))
+                           :filtered-depth (fnil inc 0)))
+
   dbi/ISearch
   (-search-context [db] (dbi/context-with-xform-after
                          (dbi/-search-context (.-unfiltered-db db))
@@ -619,6 +636,17 @@
   (-time-point [db] nil)
   (-origin [db] (.-origin-db db))
 
+  dbi/ISecondaryView
+  (-secondary-view [db]
+                   (let [view (dbi/-secondary-view (.-origin-db db))]
+                     ;; History widens only an unbounded current view. A nested
+                     ;; as-of/since bound remains authoritative; replacing it
+                     ;; with :history would let valid-time pushdown read future
+                     ;; secondary state.
+                     (if (= :current (get-in view [:system :mode]))
+                       (assoc view :system {:mode :history})
+                       (assoc view :history? true))))
+
   dbi/ISearch
   (-search-context [db]
                    (-> (.-origin-db db)
@@ -697,6 +725,12 @@
   dbi/IHistory
   (-time-point [db] (.-time-point db))
   (-origin [db] (.-origin-db db))
+
+  dbi/ISecondaryView
+  (-secondary-view [db]
+                   (assoc (dbi/-secondary-view (.-origin-db db))
+                          :system {:mode :as-of
+                                   :time-point (.-time-point db)}))
 
   dbi/ISearch
   (-search-context [db] (dbi/context-with-temporal-timepred
@@ -777,6 +811,12 @@
   dbi/IHistory
   (-time-point [db] (.-time-point db))
   (-origin [db] (.-origin-db db))
+
+  dbi/ISecondaryView
+  (-secondary-view [db]
+                   (assoc (dbi/-secondary-view (.-origin-db db))
+                          :system {:mode :since
+                                   :time-point (.-time-point db)}))
 
   dbi/ISearch
   (-search-context [db] (dbi/context-with-temporal-timepred
@@ -1193,4 +1233,3 @@
        (merge (let [temporal (attr-counts db (.-temporal-aevt db) (.-temporal-eavt db) true)]
                 {:temporal-count      (di/-count (.-temporal-eavt db))
                  :temporal-avet-count (indexed temporal)}))))))
-

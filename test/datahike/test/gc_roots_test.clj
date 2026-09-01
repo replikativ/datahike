@@ -13,10 +13,21 @@
             [datahike.gc :as gc]
             [datahike.gc-guard :refer [with-unreferenced-writes]]
             [datahike.gc-roots :as roots]
+            [datahike.index.secondary :as sec]
             [datahike.online-gc :as online-gc]
             [konserve.core :as k]
             [superv.async :refer [<?? S]])
   (:import [java.util Date]))
+
+(sec/register-index-type!
+ :test/external-generation
+ {:create (fn [_ _] nil)
+  :storage-owner :external
+  :validate-generation identity
+  :mark-generation (fn [_ _] #{})
+  :external-root
+  (fn [key-map]
+    (select-keys key-map [:secondary-type :external-store-id :generation-id]))})
 
 (def ^:private schema
   [{:db/ident :name :db/valueType :db.type/string :db/cardinality :db.cardinality/one}
@@ -91,6 +102,31 @@
                 "the pinned commit's garbage was real — it goes as soon as the root does")
             (is (not (contains? (store-keys conn) (roots/record-key id)))
                 "the released root's record is garbage too"))))
+      (finally (d/release conn) (d/delete-database c)))))
+
+(deftest retained-roots-report-external-secondary-generations
+  (let [[conn c] (fresh-conn "external-secondary")]
+    (try
+      (d/transact conn [{:name "rooted" :n 1}])
+      (let [db (d/db conn)
+            generation-id (random-uuid)
+            external-store-id (random-uuid)
+            key-map {:type :test/external-generation
+                     :format-version 1
+                     :storage-owner :external
+                     :secondary-type :test/vector
+                     :external-store-id external-store-id
+                     :generation-id generation-id}
+            record (assoc (<?? S (roots/commit-record db {:sync? false}))
+                          :secondary-index-keys {:idx/external key-map})
+            id (<?? S (roots/root! db {:kind :pin :record record}))]
+        (is (= #{{:secondary-type :test/vector
+                  :external-store-id external-store-id
+                  :generation-id generation-id}}
+               (<?? S (gc/reachable-external-secondary-roots db))))
+        (<?? S (roots/release! db id))
+        (is (empty? (<?? S (gc/reachable-external-secondary-roots db)))
+            "a released root no longer contributes an external generation"))
       (finally (d/release conn) (d/delete-database c)))))
 
 (deftest an-expired-root-is-reaped-before-the-mark
@@ -336,15 +372,28 @@
     (try
       (d/transact conn [{:name "x" :n 1}])
       (let [db (d/db conn)
-            id (<?? S (roots/pin! db {:ttl-ms 60}))
+            id (<?? S (roots/pin! db {:ttl-ms 600}))
+            initial-renewed-at (:renewed-at
+                                (get (<?? S (roots/roots (:store db))) id))
             lost (promise)
             stop! (roots/start-renewal! db id {:on-lost #(deliver lost %)})]
-        ;; Three TTLs later a loop pacing itself by the default hour would have
-        ;; let this root be reaped long ago.
-        (Thread/sleep 200)
+        ;; Observe an actual renewal instead of assuming a 60 ms scheduler
+        ;; deadline. Under the full parallel matrix a stop-the-world pause can
+        ;; exceed that and make the test measure host load rather than cadence.
+        (let [deadline (+ (System/currentTimeMillis) 5000)]
+          (loop []
+            (let [renewed-at (:renewed-at
+                              (get (<?? S (roots/roots (:store db))) id))]
+              (when (and (= initial-renewed-at renewed-at)
+                         (< (System/currentTimeMillis) deadline))
+                (Thread/sleep 10)
+                (recur)))))
         (is (not (realized? lost)))
+        (is (not= initial-renewed-at
+                  (:renewed-at (get (<?? S (roots/roots (:store db))) id)))
+            "the renewal happened on the root's own cadence, not the default hour")
         (is (not (roots/expired? (get (<?? S (roots/roots (:store db))) id)))
-            "renewed on a cadence derived from the 60 ms lease, not the default")
+            "the observed renewal extended the lease")
         (stop!)
         (<?? S (roots/release! db id)))
       (finally (d/release conn) (d/delete-database c)))))

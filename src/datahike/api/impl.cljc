@@ -246,9 +246,15 @@
    through a vt-aware secondary index."
   [db time-point]
   (if (nil? time-point)
-    (vary-meta db dissoc :datahike/valid-at)
-    (-> (dcore/filter db (bp.pred/mk-vt-pred time-point))
-        (vary-meta assoc :datahike/valid-at time-point))))
+    (cond-> (vary-meta db dissoc :datahike/valid-at)
+      (dcore/is-filtered db)
+      (vary-meta assoc :datahike/secondary-filter-provenance :opaque))
+    (let [composed? (dcore/is-filtered db)]
+      (-> (dcore/filter db (bp.pred/mk-vt-pred time-point))
+          (vary-meta assoc
+                     :datahike/valid-at time-point
+                     :datahike/secondary-filter-provenance
+                     (if composed? :composed :valid-only))))))
 
 (defn valid-between
   "Filter `db` to datoms whose asserting tx's vt-window *overlaps*
@@ -263,9 +269,15 @@
    filter start from the unwrapped db."
   [db from to]
   (if (or (nil? from) (nil? to))
-    (vary-meta db dissoc :datahike/valid-between)
-    (-> (dcore/filter db (bp.pred/mk-vt-overlap-pred from to))
-        (vary-meta assoc :datahike/valid-between [from to]))))
+    (cond-> (vary-meta db dissoc :datahike/valid-between)
+      (dcore/is-filtered db)
+      (vary-meta assoc :datahike/secondary-filter-provenance :opaque))
+    (let [composed? (dcore/is-filtered db)]
+      (-> (dcore/filter db (bp.pred/mk-vt-overlap-pred from to))
+          (vary-meta assoc
+                     :datahike/valid-between [from to]
+                     :datahike/secondary-filter-provenance
+                     (if composed? :composed :valid-only))))))
 
 (defn valid-during
   "Filter `db` to datoms whose asserting tx's vt-window is *fully
@@ -277,9 +289,15 @@
    Carries `:datahike/valid-during [from to]` on the returned db."
   [db from to]
   (if (or (nil? from) (nil? to))
-    (vary-meta db dissoc :datahike/valid-during)
-    (-> (dcore/filter db (bp.pred/mk-vt-during-pred from to))
-        (vary-meta assoc :datahike/valid-during [from to]))))
+    (cond-> (vary-meta db dissoc :datahike/valid-during)
+      (dcore/is-filtered db)
+      (vary-meta assoc :datahike/secondary-filter-provenance :opaque))
+    (let [composed? (dcore/is-filtered db)]
+      (-> (dcore/filter db (bp.pred/mk-vt-during-pred from to))
+          (vary-meta assoc
+                     :datahike/valid-during [from to]
+                     :datahike/secondary-filter-provenance
+                     (if composed? :composed :valid-only))))))
 
 (defn valid-all
   "Clear any active valid-time marker so the db sees its full
@@ -288,10 +306,12 @@
    vt-aware secondary indices stop routing, but does not unwrap a
    FilteredDB if one is already in place. Idempotent."
   [db]
-  (vary-meta db dissoc
-             :datahike/valid-at
-             :datahike/valid-between
-             :datahike/valid-during))
+  (cond-> (vary-meta db dissoc
+                     :datahike/valid-at
+                     :datahike/valid-between
+                     :datahike/valid-during)
+    (dcore/is-filtered db)
+    (vary-meta assoc :datahike/secondary-filter-provenance :opaque)))
 
 (defn index-range [db {:keys [attrid start end]}]
   (dbi/index-range db attrid start end))

@@ -30,7 +30,7 @@ jobs:
             - deps-
       - run:
           name: resolve deps
-          command: clojure -A:dev:test:build -P
+          command: clojure -X:deps prep :aliases '[:dev :test :build]'
       - save_cache:
           key: deps-{{ checksum "deps.edn" }}
           paths:
@@ -51,6 +51,7 @@ jobs:
           root: /home/circleci/
           paths:
             - .m2
+            - .gitlibs
             - .npm
             - replikativ
   format:

@@ -183,7 +183,7 @@
      (di/warm-result (di/zero-warm-report opts) opts))))
 
 (defn- warm-secondaries!
-  "The `:secondary` pass: each versioned secondary index warmed with ITS OWN
+  "The `:secondary` pass: each secondary index warmed with ITS OWN
    budget in ITS OWN units — one number spanning tree nodes, Lucene segment
    files and HNSW blobs would mean nothing, so nothing here pretends
    otherwise. What is shared is the report envelope (at least

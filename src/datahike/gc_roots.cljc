@@ -7,7 +7,7 @@
    milliseconds elsewhere but no sane floor covers hours. Two things last
    hours: a long READER of an old record (a secondary-index backfill scanning
    its base snapshot) and a long BUILDER whose partial trees are reachable from
-   nothing until they are published (a bulk import, a versioned adapter's
+   nothing until they are published (a bulk import, a durable adapter's
    build generation). Both are protected here by naming what they need in a
    record the mark can walk.
 
@@ -61,6 +61,7 @@
    same fate the objects they protect already had under such a collector — and
    the loss is detected at the holder's next renewal."
   (:require [datahike.gc-guard :as guard]
+            [datahike.store :as ds]
             [konserve.core :as k]
             [replikativ.logging :as log]
             #?(:clj  [konserve.utils :as ku :refer [async+sync *default-sync-translation*]]
@@ -194,7 +195,8 @@
 ;; ---------------------------------------------------------------------------
 ;; Records
 
-(defn- store-id [db] (:id (:store (:config db))))
+(defn- store-id [db]
+  (ds/canonical-store-id (:store db) (get-in db [:config :store])))
 
 (defn commit-record
   "The stored record for `db`'s own commit: the commit-graph record when the
@@ -357,7 +359,15 @@
   [db id {:keys [interval-ms on-lost]}]
   (let [stop (chan)
         fail! (fn [e]
-                (log/warn :datahike/gc-root-renewal-failed {:id id :error e})
+                ;; The caller receives the original exception through `on-lost`.
+                ;; Logging the Throwable itself makes expected lease-loss tests
+                ;; print a full async state-machine trace and hides the useful
+                ;; root id/type in routine operational output.
+                (log/warn :datahike/gc-root-renewal-failed
+                          {:id id
+                           :error #?(:clj (.getMessage ^Throwable e)
+                                     :cljs (.-message e))
+                           :error-type (:type (ex-data e))})
                 (when on-lost (on-lost e)))]
     (go-loop [interval interval-ms]
       (if (nil? interval)

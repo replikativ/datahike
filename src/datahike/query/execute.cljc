@@ -3,6 +3,7 @@
    Supports fused scan+merge for entity groups, hash-probe value joins,
    anti-merge NOT, and direct-to-HashSet output."
   (:require
+   [clojure.set :as set]
    [datahike.constants :refer [e0 tx0 emax txmax]]
    [datahike.array :as da]
    [datahike.datom :as datom :refer [datom]]
@@ -534,12 +535,28 @@
     (fn [^Datom d]
       (let [dv (case (int datom-field-idx) 0 (.-e d) 1 (.-a d) 2 (.-v d) 3 (.-tx d))]
         (every? (fn [{:keys [op const-val] :as pred}]
-                  (case op
-                    > (> (compare dv const-val) 0)
-                    < (< (compare dv const-val) 0)
-                    not= (not= dv const-val)
-                    (throw (ex-info "Unhandled op in build-strict-filter — every op pushdown-to-bounds writes into :strict-preds must have a case arm here"
-                                    {:op op :pred pred}))))
+                  (if (nil? const-val)
+                    ;; Preserve the ordinary predicate's nil behavior. Numeric
+                    ;; comparisons throw; Clojure equality is false and not=
+                    ;; true for every stored (non-nil) datom value.
+                    (case op
+                      > (> dv const-val)
+                      >= (>= dv const-val)
+                      < (< dv const-val)
+                      <= (<= dv const-val)
+                      = (= dv const-val)
+                      == (== dv const-val)
+                      not= (not= dv const-val))
+                    (case op
+                      > (> (compare dv const-val) 0)
+                      >= (not (neg? (compare dv const-val)))
+                      < (< (compare dv const-val) 0)
+                      <= (not (pos? (compare dv const-val)))
+                      = (zero? (compare dv const-val))
+                      == (zero? (compare dv const-val))
+                      not= (not= dv const-val)
+                      (throw (ex-info "Unhandled op in build-strict-filter — every op pushdown-to-bounds writes into :strict-preds must have a case arm here"
+                                      {:op op :pred pred})))))
                 strict-preds)))))
 
 (defn- compute-slice-bounds
@@ -3247,7 +3264,18 @@
       op)))
 
 (defn- bind-pattern-op [consts op scan?]
-  (let [op (if (:clause op) (assoc op :clause (subst-clause consts (:clause op))) op)]
+  (let [bind-pushdown
+        (fn [pred]
+          (cond-> (update pred :const-val #(subst-slot consts %))
+            (:pred-clause pred)
+            (update :pred-clause #(subst-clause consts %))))
+        op (cond-> op
+             (:clause op)
+             (assoc :clause (subst-clause consts (:clause op)))
+
+             (seq (:pushdown-preds op))
+             (update :pushdown-preds
+                     #(mapv bind-pushdown %)))]
     (if scan? (upgrade-scan-index op) op)))
 
 (defn bind-plan-consts
@@ -3278,9 +3306,9 @@
                   pipeline (:pipeline op)
                   steps' (when pipeline
                            (mapv (fn [step]
-                                   (cond-> step
-                                     (:clause step) (assoc :clause (subst-clause consts (:clause step)))
-                                     (:index step)  (assoc :index (:index scan-op'))))
+                                   (cond-> (bind-pattern-op consts step false)
+                                     (:index step)
+                                     (assoc :index (:index scan-op'))))
                                  (:steps pipeline)))]
               (when-not (and (pattern-ok? (:clause scan-op'))
                              (every? #(pattern-ok? (:clause %)) merge-ops'))
@@ -3344,6 +3372,50 @@
            (if (some (fn [[_ v]] (nil? v)) entries)
              (reduced nil)
              (into m entries))))))
+   {}
+   rels))
+
+(defn singleton-rel-consts
+  "Return bindings supplied by singleton input relations, independently of
+   any collection/relation inputs that contain multiple tuples.
+
+   Unlike `single-tuple-rel-consts`, this is not an eligibility test for
+   absorbing *all* input relations into the direct executor. It exists for
+   prepared relation fallback: scalar/tuple parameters still have to rebind
+   value-free scan bounds when a separate candidate collection remains in the
+   context. Nil is retained here: dynamic pushdowns represent it as an
+   unbounded slice plus a nil-aware strict predicate."
+  [rels]
+  (reduce
+   (fn [m rel]
+     (let [tuples (:tuples rel)
+           n #?(:clj (if (instance? java.util.Collection tuples)
+                       (.size ^java.util.Collection tuples)
+                       (count tuples))
+                :cljs (count tuples))]
+       (if (not= 1 n)
+         m
+         (let [t #?(:clj (if (instance? java.util.List tuples)
+                           (.get ^java.util.List tuples 0)
+                           (first tuples))
+                    :cljs (first tuples))
+               entries
+               (map (fn [[var idx]]
+                      [var #?(:clj (cond
+                                     (instance? clojure.lang.Indexed t)
+                                     (.nth ^clojure.lang.Indexed t (int idx))
+
+                                     (.isArray (class t))
+                                     (aget ^objects t (int idx))
+
+                                     (sequential? t) (nth t idx)
+                                     :else (get t idx))
+                              :cljs (cond
+                                      (array? t) (aget t idx)
+                                      (sequential? t) (nth t idx)
+                                      :else (get t idx)))])
+                    (:attrs rel))]
+           (into m entries)))))
    {}
    rels))
 
@@ -4237,10 +4309,84 @@
 ;; ---------------------------------------------------------------------------
 ;; Relation-based execution (fallback path for predicates, functions, etc.)
 
+(defn- bound-probe-score
+  "Return the number of distinct upstream keys with which `op` can drive an
+   index seek, or nil when executing it as a scan would still walk/filter its
+   full extent.
+
+   This deliberately uses the same eligibility and cost threshold as
+   `scan-datoms`: choosing a different entity-group driver must not turn a
+   selective merge into thousands of point seeks that are dearer than the
+   existing sequential scan."
+  [db op rels]
+  #?(:clj
+     (let [[_ a _] (:clause op)
+           resolved-a (when (and (some? a) (not (symbol? a))) (resolve-attr db a))
+           scan-n (long (or (:estimated-card op) 0))]
+       (when (and (pos? scan-n) (some? resolved-a))
+         (when-let [probe (pattern-probe-set db (:clause op) resolved-a rels scan-n)]
+           (let [k (long (probe-set-size (:values probe)))
+                 field (int (:field probe))
+                 seek-index (if (== field 2) (:avet db) (:eavt db))]
+             (when (and (:seekable? probe)
+                        (pss-instance? seek-index)
+                        (< (* k (long probe-driven-threshold)) scan-n))
+               k)))))
+     ;; Probe sets and persistent-set forward cursors are JVM-only. CLJS keeps
+     ;; the existing scan driver, matching scan-datoms' full-scan fallback.
+     :cljs nil))
+
+(defn- parameterize-entity-group
+  "Choose an entity-group's driving pattern again from ACTUAL upstream
+   bindings.
+
+   Group assembly chooses a driver before an earlier group has produced its
+   join values.  Consequently a broad existence pattern can become the scan
+   while an indexed `[?child :parent/id ?parent-id]` is frozen as a per-entity
+   merge.  Once `?parent-id` is bound, that shape is structurally backwards:
+   it scans every child and only then checks the parent id.
+
+   When one of the ordinary merge patterns can perform a selective EAVT/AVET
+   point seek from the live relation, rotate it into the scan slot.  The old
+   scan remains an ordinary same-entity merge, so cardinality, repeated-value
+   equality, and duplicate/fan-out semantics are still handled by the existing
+   fused relation + `collapse-rels` machinery.  We intentionally decline:
+
+   * optional and anti merges (they cannot drive without changing semantics),
+   * a scan whose predicate pushdown would be lost after rotation, and
+   * a variable-attribute old scan (not executable as an EAVT merge).
+
+   LIMIT demand is likewise unaffected: multi-group relation execution remains
+   materialized and the final distinct/order/offset/limit stage owns demand."
+  [db scan-op merge-ops rels]
+  (if (or (empty? rels)
+          (seq (:pushdown-preds scan-op))
+          (not (plan/can-be-merge? scan-op)))
+    [scan-op merge-ops]
+    (let [current-score (long (or (bound-probe-score db scan-op rels)
+                                  (:estimated-card scan-op)
+                                  #?(:clj Long/MAX_VALUE :cljs js/Number.MAX_SAFE_INTEGER)))
+          candidates
+          (keep-indexed
+           (fn [i op]
+             (when (and (not (:optional? op))
+                        (not (:anti? op))
+                        (plan/can-be-merge? op))
+               (when-let [score (bound-probe-score db op rels)]
+                 (when (< (long score) current-score)
+                   [score i op]))))
+           merge-ops)]
+      (if-let [[_ i new-scan] (when (seq candidates)
+                                (apply min-key first candidates))]
+        [(assoc new-scan :join-method :scan)
+         (assoc merge-ops i (assoc scan-op :join-method :lookup))]
+        [scan-op merge-ops]))))
+
 (defn- execute-fused-scan-rel
   "Execute an entity-group as a fused scan, returning a Relation."
   [db scan-op merge-ops context]
-  (let [cancel (:cancel context)
+  (let [[scan-op merge-ops] (parameterize-entity-group db scan-op merge-ops (:rels context))
+        cancel (:cancel context)
         {:keys [clause index pushdown-preds]} scan-op
         [e a v tx] clause
         resolved-a (when (and (some? a) (not (symbol? a))) (resolve-attr db a))
@@ -5598,20 +5744,183 @@
         :field (second query-args)})))
 
 #?(:clj
+   (defn- relation-cell
+     "Read one relation tuple column across the tuple representations used by
+      the fused and relation executors."
+     [tuple column]
+     (cond
+       (instance? clojure.lang.Indexed tuple)
+       (.nth ^clojure.lang.Indexed tuple (int column))
+       (.isArray (class tuple)) (aget ^objects tuple (int column))
+       (sequential? tuple) (nth tuple column)
+       :else (get tuple column))))
+
+#?(:clj
+   (defn- scalar-context-binding
+     "Return [true value] when `var` has one distinct value across every
+      context relation that binds it, otherwise [false nil]. Other relations
+      may contain arbitrarily many tuples; only the queried variable matters."
+     [ctx var]
+     (let [missing (Object.)
+           multiple (Object.)
+           found
+           (reduce
+            (fn [current relation]
+              (if-let [column (get (:attrs relation) var)]
+                (reduce
+                 (fn [value tuple]
+                   (let [candidate (relation-cell tuple column)]
+                     (cond
+                       (identical? value missing) candidate
+                       (= value candidate) value
+                       :else (reduced multiple))))
+                 current (:tuples relation))
+                current))
+            missing (:rels ctx))]
+       (if (or (identical? found missing) (identical? found multiple))
+         [false nil]
+         [true found]))))
+
+#?(:clj
+   (defn- context-entity-filter
+     "Project every current relation that binds `entity-var` to an
+      EntityBitSet and intersect those projections.  Returns nil when the
+      variable is not yet represented in the context; an empty relation
+      deliberately returns an empty bitset."
+     [ctx entity-var]
+     (let [relation-filters
+           (keep (fn [relation]
+                   (when-let [column (get (:attrs relation) entity-var)]
+                     (es/entity-bitset-from-longs
+                      (map (fn [tuple]
+                             (let [entity-id (relation-cell tuple column)]
+                               (when-not (number? entity-id)
+                                 (throw
+                                  (ex-info
+                                   "An external-engine entity filter must contain numeric entity ids."
+                                   {:type :query/external-engine-invalid-entity-filter
+                                    :entity-var entity-var
+                                    :value entity-id})))
+                               (long entity-id)))
+                           (:tuples relation)))))
+                 (:rels ctx))
+           filters (cond-> (vec relation-filters)
+                     (get (:entity-filters ctx) entity-var)
+                     (conj (get (:entity-filters ctx) entity-var)))]
+       (when (seq filters)
+         (reduce es/entity-bitset-and filters)))))
+
+#?(:clj
+   (defn- external-context-filter
+     "Resolve the optional upstream entity filter declared by an external op.
+      A required filter is a correctness contract and therefore fails closed
+      if planner/executor drift ever runs the op without its producer."
+     [ctx op index-ident entity-var]
+     (let [entity-filter (when (:accepts-entity-filter? op)
+                           (context-entity-filter ctx entity-var))]
+       (when (and (:requires-entity-filter? op)
+                  (nil? entity-filter))
+         (throw
+          (ex-info
+           "External engine requires a bound entity filter."
+           {:type :query/external-engine-missing-entity-filter
+            :index-ident index-ident
+            :entity-var entity-var})))
+       entity-filter)))
+
+#?(:clj
+   (defn- filter-context-by-entity-set
+     "Apply an external engine's entity bitmap directly to the one relation
+      that already binds `entity-var`.
+
+      Returning nil means either the variable is absent or its relation still
+      overlaps another context relation; the caller must then introduce the
+      unary bitmap relation and use `collapse-rels` to enforce those joins
+      transitively.  The fast path is safe for one disconnected relation and
+      avoids materialising boxed `[eid]` tuples only in that proven shape."
+     [ctx entity-var entity-set]
+     (let [relations (vec (:rels ctx))
+           entity-relations
+           (into [] (filter #(contains? (:attrs %) entity-var)) relations)
+           entity-attrs (some-> entity-relations first :attrs keys set)
+           safe?
+           (and (= 1 (count entity-relations))
+                (every? (fn [relation]
+                          (or (identical? relation (first entity-relations))
+                              (empty? (set/intersection
+                                       entity-attrs (set (keys (:attrs relation)))))))
+                        relations))]
+       (when safe?
+         (let [rels
+               (mapv
+                (fn [relation]
+                  (if-let [column (get (:attrs relation) entity-var)]
+                    (assoc relation :tuples
+                           (into []
+                                 (filter
+                                  (fn [tuple]
+                                    (let [entity-id (relation-cell tuple column)]
+                                      (and (number? entity-id)
+                                           (es/entity-bitset-contains?
+                                            entity-set (long entity-id))))))
+                                 (:tuples relation)))
+                    relation))
+                relations)]
+           (assoc ctx :rels rels))))))
+
+#?(:clj
+   (defn- resolve-external-query-args
+     "Resolve value-free plan arguments from scalar input relations.
+
+      Prepared query execution deliberately keeps scalar :in values out of the
+      cached plan. External-engine ops therefore see symbols in `:args`; passing
+      those symbols to an adapter makes the plan cache value-independent but
+      produces an invalid backend query. Resolve only unambiguous single-tuple
+      bindings here. A relation-valued argument needs per-row/union semantics
+      and must be represented by a solver engine rather than silently choosing
+      one value."
+     [args ctx]
+     (mapv (fn [arg]
+             (if (analyze/free-var? arg)
+               (let [[bound? value] (scalar-context-binding ctx arg)]
+                 (if bound?
+                   value
+                   (throw
+                    (ex-info
+                     "External-engine query arguments must be scalar-bound before execution."
+                     {:type :query/external-engine-argument-not-scalar
+                      :argument arg}))))
+               arg))
+           args)))
+
+#?(:clj
    (defn- execute-external-engine
      "Execute an external engine op and merge results into context.
       Dispatches on :mode — :filter, :retrieval, or :solver."
      [db op ctx]
      (let [mode (:mode op)
            idx-ident (:idx-ident op)
-           idx (when idx-ident (get-in db [:secondary-indices idx-ident]))
+           idx (when idx-ident (sec/secondary-index db idx-ident))
            fn-sym (:fn-sym op)
            args (:args op)
+           resolved-args (resolve-external-query-args args ctx)
            binding-form (:binding op)
-           binding-vars (if (and (sequential? binding-form)
-                                 (sequential? (first binding-form)))
+           binding-vars (cond
+                          ;; Collection binding: [?e ...] binds ?e, not the
+                          ;; collection form itself. Treating `[?e ...]` as an
+                          ;; attribute key made a late external filter an
+                          ;; unrelated relation, so collapse-rels could not
+                          ;; semijoin the already-scanned entity rows.
+                          (and (sequential? binding-form)
+                               (= '... (second binding-form)))
+                          [(first binding-form)]
+
+                          ;; Tuple/relation binding: [[?e ?score]].
+                          (and (sequential? binding-form)
+                               (sequential? (first binding-form)))
                           (first binding-form)
-                          [binding-form])
+
+                          :else [binding-form])
            engine-meta (:engine-meta op)
            build-query-spec (fn [query-args] (external-query-spec engine-meta query-args))]
        ;; External-engine marker functions return query specifications, not an
@@ -5626,9 +5935,9 @@
          :filter
          (if idx
            (let [;; Build query-spec from args (skip the index ident arg)
-                 query-args (vec (drop 1 args))
-                 resolved-args query-args
-                 ;; Build query-spec — the engine function knows its own format
+                 query-args (vec (drop 1 resolved-args))
+                 entity-var (first binding-vars)
+                 entity-filter (external-context-filter ctx op idx-ident entity-var)
                  ;; For now, call the resolved function with args to get query-spec
                  resolved-fn (when (and (symbol? fn-sym) (namespace fn-sym))
                                (some-> (resolve fn-sym) deref))
@@ -5637,22 +5946,22 @@
                              ;; marker (set by `d/valid-at`) and routes through
                              ;; `-search-at-vt` for vt-aware indices.
                              (sec/search-with-vt db idx
-                                                 (build-query-spec resolved-args)
-                                                 nil)
+                                                 (build-query-spec query-args)
+                                                 entity-filter)
                              (es/entity-bitset))
-                 ;; Create relation from entity IDs
-                 entity-var (first binding-vars)
-                 eids (es/entity-bitset-seq result-bs)
-                 ;; EntityBitSet (Roaring) yields 32-bit Ints; datom entity ids
-                 ;; are Longs. Coerce so the downstream hash-join on the entity
-                 ;; var matches (Java Integer != Long even when numerically equal,
-                 ;; which silently drops every joined row).
-                 tuples (mapv (fn [eid] [(long eid)]) eids)
-                 rel (rel/->Relation
-                      {entity-var 0}
-                      (set tuples))]
-             (-> ctx
-                 (update :rels rel/collapse-rels rel)
+                 filtered-ctx
+                 (filter-context-by-entity-set ctx entity-var result-bs)
+                 result-ctx
+                 (or filtered-ctx
+                     (let [;; Introduce a relation only when the entity var is
+                           ;; genuinely new. EntityBitSet IDs are Longs on JVM;
+                           ;; keep the explicit coercion for CLJS and third-party
+                           ;; implementations of the portable abstraction.
+                           tuples (mapv (fn [eid] [(long eid)])
+                                        (es/entity-bitset-seq result-bs))
+                           rel (rel/->Relation {entity-var 0} (set tuples))]
+                       (update ctx :rels rel/collapse-rels rel)))]
+             (-> result-ctx
                  ;; Store EntityBitSet for downstream entity-group scan optimization
                  (update :entity-filters (fnil assoc {}) entity-var result-bs)))
            ;; No index found — fall back to regular function execution
@@ -5661,10 +5970,12 @@
          ;; Retrieval: EntityBitSet + extra columns (score, distance)
          :retrieval
          (if idx
-           (let [query-args (vec (drop 1 args))
+           (let [query-args (vec (drop 1 resolved-args))
+                 entity-var (first binding-vars)
+                 entity-filter (external-context-filter ctx op idx-ident entity-var)
                  results (sec/slice-ordered-with-vt db idx
                                                     (build-query-spec query-args)
-                                                    nil nil nil nil)
+                                                    entity-filter nil nil nil)
                  ;; Map binding vars to column indices
                  attrs (into {} (map-indexed (fn [i v] [v i]) binding-vars))
                  ;; The engine declares which result key each binding position

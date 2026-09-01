@@ -58,22 +58,28 @@
   [pushdown-preds]
   (reduce
    (fn [bounds {:keys [op const-val] :as pred}]
-     (case op
-       >  (-> (update-bound bounds :from-v max const-val)
-              (update :strict-preds (fnil conj []) pred))
-       >= (update-bound bounds :from-v max const-val)
-       <  (-> (update-bound bounds :to-v min const-val)
-              (update :strict-preds (fnil conj []) pred))
-       <= (update-bound bounds :to-v min const-val)
-       =  (-> bounds
-              (assoc :from-v const-val)
-              (assoc :to-v const-val))
-       == (-> bounds
-              (assoc :from-v const-val)
-              (assoc :to-v const-val))
-       not= (update bounds :strict-preds (fnil conj []) pred)
-       (throw (ex-info "Unhandled op in pushdown-to-bounds — every op in analyze/range-ops must have a case arm here"
-                       {:op op :pred pred}))))
+     (if (nil? const-val)
+       ;; A value-free prepared scalar can be nil on an individual call. Nil
+       ;; cannot delimit a datom slice (`nil` means "unbounded" there), so keep
+       ;; the predicate as a post-scan check. Stored datom values are non-nil:
+       ;; all comparisons/equality fail, while not= succeeds.
+       (update bounds :strict-preds (fnil conj []) pred)
+       (case op
+         >  (-> (update-bound bounds :from-v max const-val)
+                (update :strict-preds (fnil conj []) pred))
+         >= (update-bound bounds :from-v max const-val)
+         <  (-> (update-bound bounds :to-v min const-val)
+                (update :strict-preds (fnil conj []) pred))
+         <= (update-bound bounds :to-v min const-val)
+         =  (-> bounds
+                (assoc :from-v const-val)
+                (assoc :to-v const-val))
+         == (-> bounds
+                (assoc :from-v const-val)
+                (assoc :to-v const-val))
+         not= (update bounds :strict-preds (fnil conj []) pred)
+         (throw (ex-info "Unhandled op in pushdown-to-bounds — every op in analyze/range-ops must have a case arm here"
+                         {:op op :pred pred})))))
    {:from-v nil :to-v nil}
    pushdown-preds))
 
@@ -138,7 +144,7 @@
                       (let [vc (get bound-var-cards v)] (number? vc)))
         bound-aware (when (seq bound-var-cards)
                       (estimate/estimate-pattern-with-bindings
-                       db pattern-info schema-info bound-var-cards))
+                       db pattern-info schema-info bound-var-cards est))
         output-est (long (or bound-aware est))
         scan-est (cond
                    (empty? bound-var-cards) est
@@ -459,6 +465,7 @@
      :idx-ident idx-ident
      :engine-meta engine-meta
      :accepts-entity-filter? (:accepts-entity-filter? engine-meta false)
+     :requires-entity-filter? (:requires-entity-filter? engine-meta false)
      ;; The engine declares its binding requirements via the :input-vars
      ;; key in its var metadata. Recognised values:
      ;;   :all-bound  → every input arg must be bound (the safe default;
@@ -471,7 +478,14 @@
      ;;                 default — engines that need looser semantics must
      ;;                 declare them explicitly).
      :input-vars-spec (:input-vars engine-meta)
-     :estimated-card (or (:estimated-card cost) 100)}))
+     :estimated-card (or (:estimated-card cost) 100)
+     ;; Keep output cardinality and execution work as independent axes.  The
+     ;; former sizes joins; the latter orders runnable access paths.  Adapters
+     ;; have returned :cost-per-result for years, but dropping it here made a
+     ;; cheap selective index and an expensive one with the same cardinality
+     ;; indistinguishable to the planner.
+     :startup-cost (or (:startup-cost cost) 0)
+     :cost-per-result (:cost-per-result cost)}))
 
 (defn- function-binding-vars
   "Extract free vars from a function-clause :binding spec.
@@ -1528,6 +1542,20 @@
           ;; engine before its producers and runs it on an empty ctx.
           spec-args (external-engine-spec-vars (:args op))
           input-args (into direct-args spec-args)
+          ;; A filtering external engine may deliberately consume the entity
+          ;; relation that it also constrains.  This is different from an
+          ;; ordinary producer: filtered ANN, for example, must not run until
+          ;; the primary predicates have produced a candidate entity set.
+          ;; The first declared binding column is the portable way an adapter
+          ;; identifies that entity output.
+          entity-filter-var
+          (when (:requires-entity-filter? op)
+            (let [binding-vars (into []
+                                     (filter analyze/free-var?)
+                                     (analyze/extract-vars (:binding op)))]
+              (first binding-vars)))
+          input-args (cond-> input-args
+                       entity-filter-var (conj entity-filter-var))
           spec (:input-vars-spec op)]
       (case spec
         :any-bound [input-args :any]
@@ -1614,6 +1642,14 @@
          :function                     (if-let [f (:exec-cost-fn op)]
                                          (max 1 (long (f (function-input-rows op var-cards))))
                                          1)
+         :external-engine              (if-let [per-result (:cost-per-result op)]
+                                         (max 1
+                                              (long
+                                               (#?(:clj Math/ceil :cljs js/Math.ceil)
+                                                (+ (double (:startup-cost op 0))
+                                                   (* (double per-result)
+                                                      (double (:estimated-card op 100)))))))
+                                         (or (:estimated-card op) 100))
          (or (:estimated-card op) 100))))))
 
 (defn- group-var-attr-clauses

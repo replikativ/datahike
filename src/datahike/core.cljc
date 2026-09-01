@@ -7,6 +7,7 @@
    [datahike.db.interface :as dbi]
    [datahike.db.transaction :as dbt]
    [datahike.db.utils :as dbu]
+   [datahike.index.secondary :as sec]
    [datahike.impl.entity :as de]
    [datahike.pull-api :as dp]
    [datahike.query :as dq])
@@ -114,12 +115,14 @@
 (defn filter
   [db pred]
   {:pre [(dbu/db? db)]}
-  (if (is-filtered db)
-    (let [^FilteredDB fdb db
-          orig-pred (.-pred fdb)
-          orig-db (.-unfiltered-db fdb)]
-      (FilteredDB. orig-db #(and (orig-pred %) (pred orig-db %))))
-    (FilteredDB. db #(pred db %))))
+  (vary-meta
+   (if (is-filtered db)
+     (let [^FilteredDB fdb db
+           orig-pred (.-pred fdb)
+           orig-db (.-unfiltered-db fdb)]
+       (FilteredDB. orig-db #(and (orig-pred %) (pred orig-db %))))
+     (FilteredDB. db #(pred db %)))
+   assoc :datahike/secondary-filter-provenance :opaque))
 
 ; Changing DB
 
@@ -130,12 +133,20 @@
    {:pre [(dbu/db? db)]}
    (if (is-filtered db)
      (throw (ex-info "Filtered DB cannot be modified" {:error :transaction/filtered}))
-     (let [report (dbt/transact-tx-data (db/map->TxReport
-                                         {:db-before db
-                                          :db-after  db
-                                          :tx-data   []
-                                          :tempids   {}
-                                          :tx-meta   tx-meta}) tx-data)
+     (let [tracker (atom [])
+           report (binding [sec/*secondary-transient-tracker* tracker]
+                    (try
+                      (dbt/transact-tx-data
+                       (db/map->TxReport
+                        {:db-before db
+                         :db-after  db
+                         :tx-data   []
+                         :tempids   {}
+                         :tx-meta   tx-meta})
+                       tx-data)
+                      (catch #?(:clj Throwable :cljs js/Error) failure
+                        (sec/abort-tracked-secondary-transients!)
+                        (throw failure))))
            ;; Propagate query result cache with selective invalidation
            rim (:ref-ident-map (:db-after report))
            modified-attrs (into #{}
@@ -149,17 +160,21 @@
 (defn load-entities-with
   ([db entities tx-meta] (load-entities-with db entities tx-meta nil))
   ([db entities tx-meta migration]
-   (dbt/transact-entities-directly
-    (db/map->TxReport {:db-before db
-                       :db-after  db
-                       :tx-data   []
-                       :tempids   {}
-                       :tx-meta   tx-meta
-                       ;; The import id mapping, threaded by the CALLER. It is
-                       ;; deliberately not on the db value — see
-                       ;; `transact-entities-directly` for what that cost.
-                       :migration migration})
-    entities)))
+   (let [tracker (atom [])]
+     (binding [sec/*secondary-transient-tracker* tracker]
+       (try
+         (dbt/transact-entities-directly
+          (db/map->TxReport {:db-before db
+                             :db-after  db
+                             :tx-data   []
+                             :tempids   {}
+                             :tx-meta   tx-meta
+                             ;; The import id mapping, threaded by the CALLER.
+                             :migration migration})
+          entities)
+         (catch #?(:clj Throwable :cljs js/Error) failure
+           (sec/abort-tracked-secondary-transients!)
+           (throw failure)))))))
 
 (defn db-with
   "Applies transaction to an immutable db value, returning new immutable db value. Same as `(:db-after (with db tx-data))`."

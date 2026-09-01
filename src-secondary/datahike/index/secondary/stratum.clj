@@ -19,10 +19,12 @@
    The secondary index path is preferred when available — it avoids the
    PSS scan + column extraction overhead entirely."
   (:require
+   [clojure.core.async :as async]
    [datahike.index.audit :as audit]
    [datahike.index.secondary :as sec]
    [datahike.index.entity-set :as es]
    [datahike.db.interface :as dbi]
+   [datalog.parser.type]
    [stratum.api :as st]
    [stratum.dataset :as sd]
    [stratum.warm :as stratum-warm]
@@ -377,11 +379,10 @@
    Scans AEVT per attribute to collect entity+value pairs, then joins by entity.
    When db is nil (during empty-db creation), returns an empty dataset.
 
-   In vt-mode, pre-existing rows are seeded with `_valid_from = MIN_VALUE`
-   and `_valid_to = MAX_VALUE` — they're treated as valid for any
-   `valid-at` query. Retroactive vt accuracy for pre-existing data is
-   not reconstructed here; that requires walking history and is a
-   future enhancement."
+   Valid-time mode refuses a populated current AEVT snapshot. Inventing
+   `[MIN, MAX)` windows makes the generation look complete while discarding
+   real valid/system history; a future online builder must reconstruct rows
+   from tx history under the normal GC fence."
   [db attrs config]
   (if (nil? db)
     ;; No DB yet — return empty dataset with typed columns
@@ -404,7 +405,16 @@
           _ (doseq [[_a ^java.util.LinkedHashMap pairs] attr->eid-vals]
               (.addAll all-eids (.keySet pairs)))
           n (.size all-eids)]
-      (if (zero? n)
+      (cond
+        (and (vt-mode? config) (pos? n))
+        (throw
+         (ex-info
+          "A valid-time Stratum index cannot be seeded from a current AEVT snapshot. Build it while empty or reconstruct it from transaction history."
+          {:type :secondary/stratum-valid-time-backfill-required
+           :row-count n
+           :attrs attrs}))
+
+        (zero? n)
       ;; Empty dataset — use long-array 0 for all columns since we don't know
       ;; actual value types yet. persist-transient-stratum-index will determine
       ;; real types from values via col-types pre-scan on first insert.
@@ -413,6 +423,8 @@
                                 attrs)
                           (with-vt-cols config 0))]
           (sd/ensure-indexed (make-vt-dataset col-map config)))
+
+        :else
       ;; Build column arrays
         (let [entity-ids (long-array n)
               _ (let [i (volatile! 0)]
@@ -484,25 +496,214 @@
 (declare make-transient-stratum-index)
 (declare persist-transient-stratum-index)
 
+(defn- unsupported-vt-view!
+  [operation temporal-request reason]
+  (throw (ex-info
+          "This Stratum generation cannot preserve the requested temporal view."
+          {:type :secondary/stratum-temporal-view-unsupported
+           :operation operation
+           :temporal-request temporal-request
+           :reason reason})))
+
+(defn- temporal-where
+  [operation temporal-request]
+  (when-not (= :current (get-in temporal-request [:system :mode]))
+    (unsupported-vt-view! operation temporal-request :system-time-view))
+  (let [{:keys [mode at from to]} (:valid temporal-request)]
+    (case mode
+      :at [[:= sys-to-col vt-open-sentinel]
+           [:<= vt-from-col (date->micros at)]
+           [:> vt-to-col (date->micros at)]]
+      :between [[:= sys-to-col vt-open-sentinel]
+                [:< vt-from-col (date->micros to)]
+                [:> vt-to-col (date->micros from)]]
+      :during [[:= sys-to-col vt-open-sentinel]
+               [:>= vt-from-col (date->micros from)]
+               [:<= vt-to-col (date->micros to)]]
+      (unsupported-vt-view! operation temporal-request
+                            :missing-valid-time-selector))))
+
+(defn- require-ordinary-view!
+  [config operation]
+  (when (vt-mode? config)
+    ;; System-open SCD rows include the current belief ABOUT historical valid
+    ;; intervals. They are not necessarily the current Datahike value. Until
+    ;; the representation carries an explicit primary-current marker, using
+    ;; this generation for an unqualified query can return a retracted value.
+    (unsupported-vt-view! operation nil :primary-current-row-not-represented)))
+
+(defn- search-dataset
+  [dataset query-spec entity-filter extra-where]
+  (if (nil? dataset)
+    (es/entity-bitset)
+    (let [eid-pred (when entity-filter
+                     (fn [^long eid]
+                       (es/entity-bitset-contains? entity-filter eid)))
+          where (cond-> (into (vec (:where query-spec)) extra-where)
+                  eid-pred (conj [:fn :eid eid-pred]))
+          result-maps (st/q (cond-> {:from dataset :select [:eid]}
+                              (seq where) (assoc :where where)))
+          bs (es/entity-bitset)]
+      (doseq [m result-maps]
+        (es/entity-bitset-add! bs (long (:eid m))))
+      bs)))
+
+(defn- slice-dataset
+  [dataset query-spec entity-filter attr direction limit extra-where]
+  (if (nil? dataset)
+    []
+    (let [col-key (attr-col-key attr)
+          eid-pred (when entity-filter
+                     (fn [^long eid]
+                       (es/entity-bitset-contains? entity-filter eid)))
+          where (cond-> (into (vec (:where query-spec)) extra-where)
+                  eid-pred (conj [:fn :eid eid-pred]))
+          result-maps (st/q (cond-> {:from dataset
+                                     :select [:eid col-key]
+                                     :order [[col-key direction] [:eid :asc]]}
+                              limit (assoc :limit limit)
+                              (seq where) (assoc :where where)))]
+      (mapv (fn [m] {:entity-id (long (:eid m)) :value (get m col-key)})
+            result-maps))))
+
+(defn- candidate-page*
+  [dataset attrs scan-id query-spec entity-filter page-request temporal-request]
+  (let [{:keys [attribute direction where]} query-spec
+        direction (or direction :asc)
+        limit (long (:limit page-request))
+        entity-ids (when entity-filter
+                     (vec (es/entity-bitset-seq entity-filter)))
+        extra-where (if temporal-request
+                      (do
+                        (when-not (= :at (get-in temporal-request [:valid :mode]))
+                          (unsupported-vt-view! :candidate-page temporal-request
+                                                :interval-candidate-identity))
+                        (temporal-where :candidate-page temporal-request))
+                      [])
+        scan-identity
+        {:version 2
+         :generation (if-let [generation-id (and dataset
+                                                 (not (sd/dirty? dataset))
+                                                 (sd/generation-id dataset))]
+                       [:dataset generation-id]
+                       [:instance scan-id])
+         :attribute attribute
+         :direction direction
+         :where (vec where)
+         :temporal-request temporal-request
+         ;; Exact rather than hashed: a collision must never change which
+         ;; rows an OFFSET continuation denotes.
+         :entity-ids entity-ids}
+        continuation (:continuation page-request)
+        _ (when (and continuation
+                     (or (not (map? continuation))
+                         (not= 2 (:version continuation))
+                         (not= scan-identity (:scan-identity continuation))
+                         (not (and (integer? (:offset continuation))
+                                   (not (neg? (:offset continuation)))))))
+            (throw
+             (ex-info
+              "Stratum candidate continuation does not belong to this generation/query."
+              {:type :secondary/stratum-continuation-mismatch
+               :expected scan-identity
+               :continuation continuation})))
+        offset (long (or (:offset continuation) 0))]
+    (if (or (nil? dataset) (not (contains? attrs attribute)))
+      {:candidates []
+       :precision :exact
+       :recall :complete
+       :ordering :exact
+       :exhausted? true
+       :continuation nil
+       :stop-reason :source-exhausted}
+      (let [col-key (attr-col-key attribute)
+            eid-pred (when entity-filter
+                       (fn [^long eid]
+                         (es/entity-bitset-contains? entity-filter eid)))
+            where (cond-> (into (vec where) extra-where)
+                    eid-pred (conj [:fn :eid eid-pred]))
+            rows (st/q (cond-> {:from dataset
+                                :select [:eid col-key]
+                                :order [[col-key direction] [:eid :asc]]
+                                :limit (inc limit)
+                                :offset offset}
+                         (seq where) (assoc :where where)))
+            more? (> (count rows) limit)
+            page-rows (take limit rows)
+            candidates (mapv (fn [row]
+                               {:entity-id (long (:eid row))
+                                :attribute attribute
+                                :value (get row col-key)})
+                             page-rows)]
+        {:candidates candidates
+         :precision :exact
+         :recall :complete
+         :ordering :exact
+         :exhausted? (not more?)
+         :continuation (when more?
+                         {:version 2
+                          :scan-identity scan-identity
+                          :offset (+ offset limit)})
+         :stop-reason (when-not more? :source-exhausted)}))))
+
+(defn- delivered [value]
+  (let [ch (async/promise-chan)]
+    (async/put! ch value)
+    ch))
+
+(defrecord StratumPreparation [prepared-index]
+  sec/IPreparedSecondaryGeneration
+  (-sec-generation-index [_] prepared-index)
+  ;; Datahike's root is the only publication point. Stratum generations need
+  ;; no post-head native ref movement; unreachable attempts are ordinary GC.
+  (-sec-release [_ _outcome] (delivered true)))
+
+(defn- stratum-key-map-failure-reason [key-map]
+  (cond
+    (not= :stratum (:type key-map)) :wrong-type
+    (not= 1 (:format-version key-map)) :unsupported-format-version
+    (not= :datahike (:storage-owner key-map)) :wrong-storage-owner
+    (not (uuid? (:dataset-commit-id key-map))) :invalid-dataset-commit-id
+    :else nil))
+
+(defn- validate-stratum-generation-key-map [key-map]
+  (let [;; The released adapter already stored an exact immutable dataset UUID
+        ;; in Datahike's own Konserve store. Its type therefore determines both
+        ;; format and ownership without consulting a mutable native pointer.
+        ;; Normalize that safe legacy envelope in memory; the next successful
+        ;; transaction republishes it in the explicit v1 shape.
+        key-map (if (and (= :stratum (:type key-map))
+                         (not (contains? key-map :format-version))
+                         (uuid? (:dataset-commit-id key-map)))
+                  (-> key-map
+                      (assoc :format-version 1
+                             :storage-owner :datahike)
+                      (dissoc :branch :merkle-root))
+                  key-map)]
+    (when-let [reason (stratum-key-map-failure-reason key-map)]
+    (throw (ex-info
+            "Invalid Stratum generation key-map."
+            {:type :secondary/invalid-stratum-generation
+             :reason reason
+             :key-map key-map
+             :expected {:type :stratum
+                        :format-version 1
+                        :storage-owner :datahike
+                        :dataset-commit-id :uuid}})))
+    key-map))
+
 (deftype StratumIndex [dataset    ;; StratumDataset or nil
                        attrs      ;; set of datahike attribute idents being indexed
                        attr-refs  ;; set of numeric refs (for attr-refs mode) or nil
-                       config]    ;; user config map
+                       config     ;; user config map
+                       scan-id]   ;; exact identity for unsealed in-memory generations
 
   sec/ISecondaryIndex
   (-search [_ query-spec entity-filter]
     ;; query-spec: {:where [[op col val] ...]}
     ;; Returns EntityBitSet of matching entity IDs
-    (if (nil? dataset)
-      (es/entity-bitset)
-      (let [result-maps (st/q (cond-> {:from dataset :select [:eid]}
-                                (:where query-spec) (assoc :where (:where query-spec))))
-            bs (es/entity-bitset)]
-        (doseq [m result-maps]
-          (es/entity-bitset-add! bs (long (:eid m))))
-        (if entity-filter
-          (es/entity-bitset-and bs entity-filter)
-          bs))))
+    (require-ordinary-view! config :search)
+    (search-dataset dataset query-spec entity-filter []))
 
   (-estimate [_ query-spec]
     (if (nil? dataset)
@@ -513,18 +714,22 @@
     true)
 
   (-slice-ordered [_ query-spec entity-filter attr direction limit]
-    (if (nil? dataset)
-      []
-      (let [col-key (attr-col-key attr)
-            result-maps (st/q (cond-> {:from dataset
-                                       :select [:eid col-key]
-                                       :order [[col-key direction]]}
-                                limit (assoc :limit limit)
-                                (:where query-spec) (assoc :where (:where query-spec))))]
-        (cond->> (mapv (fn [m] {:entity-id (long (:eid m)) :value (get m col-key)})
-                       result-maps)
-          entity-filter (filterv (fn [{:keys [entity-id]}]
-                                   (es/entity-bitset-contains? entity-filter entity-id)))))))
+    (require-ordinary-view! config :slice-ordered)
+    (slice-dataset dataset query-spec entity-filter attr direction limit []))
+
+  sec/ISecondaryCandidateScan
+  (-candidate-page [_ query-spec entity-filter page-request]
+    (require-ordinary-view! config :candidate-page)
+    (candidate-page* dataset attrs scan-id query-spec entity-filter
+                     page-request nil))
+
+  sec/IValidTimeCandidateScan
+  (-candidate-page-at-vt [_ query-spec entity-filter page-request temporal-request]
+    (when-not (vt-mode? config)
+      (unsupported-vt-view! :candidate-page temporal-request
+                            :valid-time-mode-disabled))
+    (candidate-page* dataset attrs scan-id query-spec entity-filter
+                     page-request temporal-request))
 
   (-indexed-attrs [_] attrs)
 
@@ -537,28 +742,38 @@
     ;;
     ;; A point query, not a column scan: the caller streams a dump and must stay
     ;; bounded. `:where` takes `[[op col val] ...]` — see `-slice-ordered`.
-    ;; `:_valid_to = MAX` in vt-mode, or this reads a SUPERSEDED row. The query
-    ;; took `:limit 1` off an unordered scan, so after an update it returned
-    ;; whichever generation came first — measured: 50000 after the value had
-    ;; been changed to 60000. Backups read through here, so a stale answer is a
-    ;; wrong backup; the export's hash check now refuses it, which is how it
-    ;; surfaced.
     (when dataset
-      (let [col-key (attr-col-key attr)]
-        (-> (st/q {:from dataset :select [:eid col-key]
-                   ;; BOTH axes. vt-mode configures valid AND system, and an
-                   ;; SCD2-on-both-axes update closes the superseded row's
-                   ;; `_system_to` while leaving `_valid_to` open — that is the
-                   ;; audit chain, so `FOR SYSTEM_TIME AS OF <before>` still
-                   ;; sees the pre-correction state. Filtering on the valid axis
-                   ;; alone therefore still matched it, and still answered 50000
-                   ;; after the value became 60000.
-                   :where (cond-> [[:= :eid (long eid)]]
-                            (vt-mode? config) (conj [:= vt-to-col vt-open-sentinel]
-                                                    [:= sys-to-col vt-open-sentinel]))
-                   :limit 1})
-            first
-            (get col-key)))))
+      (let [col-key (attr-col-key attr)
+            rows (st/q (cond-> {:from dataset
+                                :select (cond-> [:eid col-key]
+                                          (vt-mode? config)
+                                          (into [sys-from-col vt-from-col]))
+                                :where (cond-> [[:= :eid (long eid)]]
+                                         (vt-mode? config)
+                                         (conj [:= sys-to-col vt-open-sentinel]))}
+                         (not (vt-mode? config)) (assoc :limit 1)))
+            row (if (vt-mode? config)
+                  ;; A correction can leave several current-system-belief rows
+                  ;; for one eid: bounded corrected history plus the latest
+                  ;; primary value. Pick the newest system version, then the
+                  ;; latest valid start within that correction transaction.
+                  ;; Requiring `_valid_to = MAX` is wrong for a current primary
+                  ;; value that was asserted with a finite valid window.
+                  (reduce (fn [best candidate]
+                            (if (or (nil? best)
+                                    (pos? (compare [(get candidate sys-from-col)
+                                                    (get candidate vt-from-col)]
+                                                   [(get best sys-from-col)
+                                                    (get best vt-from-col)])))
+                              candidate
+                              best))
+                          nil rows)
+                  (first rows))]
+        (get row col-key))))
+
+  sec/ISecondaryBackfillPolicy
+  (-backfill-policy [_]
+    (if (vt-mode? config) :transaction-history :current-values))
 
   (-transact [this tx-report]
     (let [t (sec/-as-transient this)]
@@ -574,6 +789,9 @@
 
   (-persistent! [this] this)
 
+  sec/IPureSecondaryMutation
+  (-pure-secondary-mutation? [_] true)
+
   sec/IDbContextAware
   (-with-db-context [this context]
     (let [irm (:ident-ref-map context)
@@ -584,7 +802,7 @@
                        config)]
       (if (and (= new-attr-refs attr-refs) (= new-config config))
         this
-        (StratumIndex. dataset attrs new-attr-refs new-config))))
+        (StratumIndex. dataset attrs new-attr-refs new-config scan-id))))
 
   sec/ISecondaryWarmable
   (-sec-warm! [_ opts]
@@ -595,71 +813,51 @@
       (stratum-warm/warm! dataset opts)
       {:fetched 0 :ms 0.0 :budget-exhausted? false}))
 
-  sec/IVersionedSecondaryIndex
-  (-sec-flush [_ store branch]
-    ;; Persist dataset to konserve via stratum's sync!. The dataset
-    ;; commit-id IS a content-addressed hash of the persisted state,
-    ;; so we surface it under both :dataset-commit-id (existing)
-    ;; and the standardized :merkle-root that datahike's audit-chain
-    ;; folds into the commit-id.
-    (if dataset
-      (let [synced-ds (sd/sync! dataset store (name branch))
-            commit-id (get-in synced-ds [:commit-info :id])]
-        {:type :stratum
-         :branch (name branch)
-         :dataset-commit-id commit-id
-         :merkle-root commit-id})
-      {:type :stratum :branch (name branch) :dataset-commit-id nil}))
+  sec/IDurableSecondaryIndex
+  (-sec-generation-key-map [_]
+    {:type :stratum
+     :format-version 1
+     :storage-owner :datahike
+     :dataset-commit-id (some-> dataset sd/generation-id)})
+
+  (-sec-prepare [_ {:keys [store]}]
+    (let [;; Reuse an already sealed clean generation. Besides avoiding one
+          ;; metadata commit per unrelated Datahike transaction, this is what
+          ;; makes Datahike branch creation a genuine O(1) root copy.
+          sealed-ds (cond
+                      (nil? dataset) nil
+                      (and (sd/generation-id dataset)
+                           (not (sd/dirty? dataset))) dataset
+                      :else (sd/seal-generation! dataset store))
+          prepared-index (StratumIndex. sealed-ds attrs attr-refs config scan-id)]
+      (delivered (->StratumPreparation prepared-index))))
 
   (-sec-restore [_ store key-map]
-    ;; Restore dataset from konserve
-    (if-let [commit-id (:dataset-commit-id key-map)]
-      (let [restored-ds (sd/load store commit-id)]
-        (StratumIndex. restored-ds attrs attr-refs config))
-      (StratumIndex. nil attrs attr-refs config)))
-
-  (-sec-branch [_ store _from-branch new-branch]
-    ;; Fork dataset (O(1) structural sharing) and sync to new branch
-    (if dataset
-      (let [forked-ds (sd/fork dataset)
-            synced-ds (sd/sync! forked-ds store (name new-branch))]
-        (StratumIndex. synced-ds attrs attr-refs config))
-      (StratumIndex. nil attrs attr-refs config)))
-
-  (-sec-mark [_]
-    ;; Stratum shares datahike's store but -sec-mark on a live instance
-    ;; doesn't have access to the store. GC uses mark-from-key-map instead,
-    ;; which gets the key-map + store from the stored commit.
-    #{})
+    ;; A stored ready index always names an exact generation. Absence is not an
+    ;; empty dataset: treating it that way loses the only authoritative value
+    ;; for :db.secondary/only attributes.
+    (let [{:keys [dataset-commit-id]}
+          (validate-stratum-generation-key-map key-map)
+          restored-ds (sd/open-generation store dataset-commit-id)]
+      (StratumIndex. restored-ds attrs attr-refs config (random-uuid))))
 
   audit/IAuditable
-  ;; The live instance's `dataset` field is immutable; the synced
-  ;; commit-id is only available locally inside -sec-flush. The
-  ;; flush-time merkle-root is captured via the :merkle-root key in
-  ;; -sec-flush's return map, and writing.cljc folds it into the cid.
   (-merkle-root [_]
-    ;; Returns nil when unsynced; never throws.
-    (some-> dataset :commit-info :id))
+    ;; A Stratum generation ID is immutable, but its default UUID is opaque,
+    ;; not a content hash. Advertising it as a Merkle root would make an
+    ;; audit-grade Datahike commit claim more than it can verify.
+    nil)
   (-recompute-merkle-root [_]
-    ;; Stratum's audit ns ships the same IAuditable shape, so when it's
-    ;; on the classpath we delegate the deep walk to it. Older stratum
-    ;; versions (pre-audit) make this resolve nil and we degrade to
-    ;; :unsupported. Resolved lazily so this bridge keeps loading
-    ;; against any stratum version.
-    (cond
-      (nil? dataset)
-      {:status :unsupported :reason :unsynced}
-
-      :else
-      (if-let [recompute (try (requiring-resolve 'stratum.audit/-recompute-merkle-root)
-                              (catch Throwable _ nil))]
-        (recompute dataset)
-        {:status :unsupported :reason :stratum-audit-unavailable})))
+    {:status :unsupported
+     :reason (if dataset
+               :stratum-generation-id-not-content-addressed
+               :unsynced)})
 
   sec/IColumnarAggregate
   (-columnar-aggregate [this query-spec]
     (sec/-columnar-aggregate this query-spec nil))
   (-columnar-aggregate [_ query-spec entity-filter]
+    (require-ordinary-view! config :columnar-aggregate)
     (when dataset
       (if entity-filter
         ;; Push entity-filter as a :fn predicate on the :eid column.
@@ -677,30 +875,34 @@
   ;; (`_valid_to = Long/MAX_VALUE`) participate normally because the
   ;; predicate uses strict-greater.
   ;;
-  ;; Index NOT in vt-mode falls back to plain `-search` — i.e. ignores
-  ;; the valid-at argument. Such indices stay correct via the post-hoc
-  ;; AVET filter described in `secondary.cljc`'s IValidTimeAware
-  ;; docstring; this `-search-at-vt` just returns the unfiltered set,
-  ;; which the call site composes with its own filter.
-  (-search-at-vt [this query-spec entity-filter valid-at-window]
+  ;; `-native-valid-time?` is deliberately per instance: an ordinary Stratum
+  ;; generation uses the generic post-hoc fallback and must never route here.
+  (-native-valid-time? [_]
+    (boolean (vt-mode? config)))
+  (-search-at-vt [_ query-spec entity-filter temporal-request]
     (if (and (vt-mode? config) dataset)
-      (let [at-micros (cond
-                        (vector? valid-at-window)
-                        (date->micros (first valid-at-window))
-                        :else
-                        (date->micros valid-at-window))
-            window-end (when (vector? valid-at-window)
-                         (date->micros (second valid-at-window)))
-            extra (if window-end
-                    ;; valid-between (interval overlap)
-                    [[:< vt-from-col window-end]
-                     [:> vt-to-col   at-micros]]
-                    ;; valid-at (point membership)
-                    [[:<= vt-from-col at-micros]
-                     [:> vt-to-col   at-micros]])
-            augmented (update query-spec :where (fnil into []) extra)]
-        (sec/-search this augmented entity-filter))
-      (sec/-search this query-spec entity-filter))))
+      (do
+        (when-not (= :at (get-in temporal-request [:valid :mode]))
+          (unsupported-vt-view! :search temporal-request
+                                :transaction-event-interval-semantics))
+        (search-dataset dataset query-spec entity-filter
+                        (temporal-where :search temporal-request)))
+      (if (vt-mode? config)
+        (es/entity-bitset)
+        (unsupported-vt-view! :search temporal-request
+                              :valid-time-mode-disabled))))
+
+  sec/IValidTimeOrdered
+  (-slice-ordered-at-vt [_ query-spec entity-filter attr direction limit
+                         temporal-request]
+    (when-not (vt-mode? config)
+      (unsupported-vt-view! :slice-ordered temporal-request
+                            :valid-time-mode-disabled))
+    (when-not (= :at (get-in temporal-request [:valid :mode]))
+      (unsupported-vt-view! :slice-ordered temporal-request
+                            :interval-candidate-identity))
+    (slice-dataset dataset query-spec entity-filter attr direction limit
+                   (temporal-where :slice-ordered temporal-request))))
 
 ;; ---------------------------------------------------------------------------
 ;; Transient stratum index — mutable batch mode
@@ -752,7 +954,10 @@
   (-persistent! [this]
     (persist-transient-stratum-index dataset attrs attr-refs config
                                      pending-adds pending-retracts
-                                     (aget tx-meta-ref 0))))
+                                     (aget tx-meta-ref 0)))
+
+  sec/IDurableSecondaryTransient
+  (-durable-persistent-result? [_] true))
 
 (defn- make-transient-stratum-index [dataset attrs attr-refs config]
   (let [;; Build ref→col-key map from ident-ref-map in config
@@ -900,7 +1105,7 @@
    ^java.util.HashMap pending-retracts tx-meta]
   (let [specs (pending->specs pending-adds pending-retracts)]
     (if (empty? specs)
-      (StratumIndex. dataset attrs attr-refs config)
+      (StratumIndex. dataset attrs attr-refs config (random-uuid))
       (let [;; An EMPTY dataset is built too, not upserted into. `build-initial-dataset`
             ;; makes one at index declaration whose columns are typed before any
             ;; value has been seen, so appending a string into a column guessed
@@ -913,68 +1118,32 @@
                  (-> dataset transient
                      (sd/upsert! {:by :eid :rows specs} (stratum-tx-meta config tx-meta))
                      persistent!))]
-        (StratumIndex. (prune-valueless-rows ds attrs config) attrs attr-refs config)))))
+        (StratumIndex. (prune-valueless-rows ds attrs config) attrs attr-refs config
+                       (random-uuid))))))
 
 ;; ---------------------------------------------------------------------------
 ;; Registration
 
-(let [factory (fn [config db]
-                (let [attrs (set (:attrs config))
-                      ident-ref-map (:ident-ref-map config)
-                      attr-refs (when ident-ref-map
-                                  (not-empty (set (keep ident-ref-map attrs))))]
-                  (StratumIndex. (build-initial-dataset db attrs config)
-                                 attrs
-                                 attr-refs
-                                 config)))]
-  (sec/register-index-type! :stratum factory)
-  (sec/register-index-type! :datahike.index.secondary/stratum factory))
+(let [descriptor
+      {:create
+       (fn [config db]
+         (let [attrs (set (:attrs config))
+               ident-ref-map (:ident-ref-map config)
+               attr-refs (when ident-ref-map
+                           (not-empty (set (keep ident-ref-map attrs))))]
+           (StratumIndex. (build-initial-dataset db attrs config)
+                          attrs
+                          attr-refs
+                          config
+                          (random-uuid))))
+       :storage-owner :datahike
+       :validate-generation validate-stratum-generation-key-map
+       :mark-generation
+       (fn [key-map store]
+         (ss/generation-reachable-keys store (:dataset-commit-id key-map)))}]
+  (sec/register-index-type! :stratum descriptor)
+  (sec/register-index-type! :datahike.index.secondary/stratum descriptor))
 
-;; GC: stratum writes to datahike's konserve store, so datahike's GC must
-;; preserve stratum's keys. Walk the dataset commit chain to collect all
-;; reachable keys: dataset commits, index commits, PSS node addresses,
-;; plus branch metadata keys.
-(defmethod sec/mark-from-key-map :stratum [key-map store]
-  (if-let [commit-id (:dataset-commit-id key-map)]
-    (let [;; Walk parent chain from this commit to collect all reachable dataset commits
-          reachable-ds-commits
-          (loop [queue [commit-id]
-                 visited #{}]
-            (if (empty? queue)
-              visited
-              (let [[current & rest] queue]
-                (if (or (nil? current) (visited current))
-                  (recur (vec rest) visited)
-                  (let [snapshot (ss/load-dataset-commit store current)
-                        parents (when snapshot (seq (:parents snapshot)))]
-                    (recur (into (vec rest) parents)
-                           (conj visited current)))))))
-          ;; Collect reachable index commits from dataset snapshots
-          reachable-idx-commits (ss/collect-live-index-commits store reachable-ds-commits)
-          ;; Collect reachable PSS node addresses from index snapshots
-          reachable-pss-addrs (ss/collect-live-pss-addresses store reachable-idx-commits)]
-      ;; Return the union of all reachable keys in datahike's store format
-      (into #{}
-            (concat
-             ;; PSS node addresses (flat UUIDs)
-             reachable-pss-addrs
-             ;; Index commit keys
-             (map (fn [id] [:indices :commits id]) reachable-idx-commits)
-             ;; Dataset commit keys
-             (map (fn [id] [:datasets :commits id]) reachable-ds-commits)
-             ;; Branch metadata keys
-             (when-let [branch (:branch key-map)]
-               [[:datasets :heads branch]
-                [:datasets :branches]]))))
-    #{}))
-
-;; Branch: fork dataset and sync to new branch
-(defmethod sec/branch-from-key-map :stratum [key-map store _from-branch new-branch]
-  (if-let [commit-id (:dataset-commit-id key-map)]
-    (let [ds (sd/load store commit-id)
-          forked (sd/fork ds)
-          synced (sd/sync! forked store (name new-branch))]
-      (assoc key-map
-             :branch (name new-branch)
-             :dataset-commit-id (get-in synced [:commit-info :id])))
-    (assoc key-map :branch (name new-branch))))
+;; Stratum writes into Datahike's konserve store. The owning Datahike commit
+;; marks exactly the immutable generation it names; Stratum parent history and
+;; mutable standalone branch refs are separate retention policies.

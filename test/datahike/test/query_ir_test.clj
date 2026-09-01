@@ -365,6 +365,16 @@
           [_ policy] (plan/op-required-vars op)]
       (is (= :any policy))))
 
+  (testing ":external-engine can require its entity binding as an input filter"
+    (is (= [#{'?e} :all]
+           (plan/op-required-vars
+            {:op :external-engine
+             :args [:idx/test :query]
+             :binding '[?e ...]
+             :vars #{'?e}
+             :input-vars-spec :all-bound
+             :requires-entity-filter? true}))))
+
   (testing ":rule-lookup is a producer (accumulator-driven, no pre-bound deps)"
     (is (= [#{} :none] (plan/op-required-vars
                         {:op :rule-lookup :rule-name 'some-rule
@@ -400,6 +410,17 @@
           "function costs 1 when its inputs are bound")
       (is (= Long/MAX_VALUE (plan/op-cost op #{}))
           "no input bound → blocked"))
+    (testing "external engines separate output cardinality from execution cost"
+      (let [op {:op :external-engine
+                :args []
+                :input-vars-spec :all-bound
+                :estimated-card 100
+                :startup-cost 5
+                :cost-per-result 0.25}]
+        (is (= 30 (plan/op-cost op #{}))
+            "startup + per-result work orders the engine, while card still sizes joins")
+        (is (= 100 (plan/op-cost (dissoc op :cost-per-result) #{}))
+            "adapters without an execution cost retain cardinality costing")))
     ;; or-join — :all policy on join-vars NOT covered by every branch.
     ;; With no :branches, no var is covered → all join-vars required.
     (let [op {:op :or-join :vars #{'?e '?v} :join-vars #{'?e '?v}
@@ -461,4 +482,3 @@
       (is (= '{?a 100 ?b 100} rel-seed) "relation binds many rows → non-empty seed")
       (is (not= tuple-seed rel-seed)
           "distinct seeds keep the two queries on distinct plan-cache keys"))))
-

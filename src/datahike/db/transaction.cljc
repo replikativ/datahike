@@ -15,6 +15,7 @@
    [datahike.tools :refer [get-date date->epoch-ms]]
    [replikativ.logging :as log]
    [datahike.schema :as ds]
+   [datahike.store :as store]
    [datahike.index.secondary :as sec]
    ;; The id-mapping vocabulary. `migrated-eid`/`remember-eid` below serve
    ;; `transact-entities-directly` and nothing else — they are import helpers
@@ -254,14 +255,44 @@
      (let [idx-type (:db.secondary/type idx-schema)
            idx-attrs (set (:db.secondary/attrs idx-schema))
            needs-backfill? (attrs-have-datoms? db idx-attrs)
+           secondary-only-attrs (set (filter #(dbu/secondary-only? db %) idx-attrs))
+           _ (when (and needs-backfill? (seq secondary-only-attrs))
+               (throw (ex-info
+                       (str "Secondary index " (pr-str idx-ident)
+                            " cannot be backfilled from the primary index because "
+                            "it covers :db.secondary/only attributes whose primary "
+                            "values are content hashes. Migrate from an existing "
+                            "authoritative secondary generation explicitly.")
+                       {:type :secondary/secondary-only-backfill-requires-source-generation
+                        :index-ident idx-ident
+                        :attributes secondary-only-attrs})))
+           primary-store (:store db)
+           primary-store-config (get-in db [:config :store])
+           primary-store-id (when (or primary-store (:id primary-store-config))
+                              (store/canonical-store-id primary-store
+                                                        primary-store-config))
            idx-config (cond-> (merge (:db.secondary/config idx-schema)
                                      {:attrs idx-attrs
-                                      ::sec/index-ident idx-ident})
+                                      ::sec/index-ident idx-ident
+                                      ::sec/store primary-store})
+                        primary-store-id
+                        (assoc ::sec/store-id primary-store-id)
                         (seq (:ident-ref-map db))
                         (assoc :ident-ref-map (:ident-ref-map db))
                         needs-backfill?
                         (assoc ::sec/build-attempt (random-uuid)))
            idx (sec/create-index idx-type idx-config nil)
+           _ (when (and needs-backfill?
+                        (not (sec/current-value-backfill? idx)))
+               (throw
+                (ex-info
+                 (str "Secondary index " (pr-str idx-ident)
+                      " requires transaction-history reconstruction; generic "
+                      "current AEVT backfill would be incomplete.")
+                 {:type :secondary/transaction-history-backfill-required
+                  :index-ident idx-ident
+                  :index-type idx-type
+                  :backfill-policy (sec/-backfill-policy idx)})))
            base (-> db
                     (assoc-in [:secondary-indices idx-ident] idx)
                     (assoc-in [:schema idx-ident :db.secondary/status]
@@ -275,9 +306,13 @@
 
 #?(:clj
    (defn finalize-secondary-indices
-     "Walk the post-tx schema for secondary-index entities that have
-      `:db.secondary/type` + `:db.secondary/attrs` but no instance yet,
-      and create them with their full config.
+     "Reconcile the runtime secondary-index map with the post-tx schema, then
+      create instances for declarations that do not have one yet.
+
+      A removed declaration is dissociated from the new db value without
+      closing the old instance: historical db values may still reference that
+      immutable generation.  Storage reclamation therefore remains the job of
+      commit-root-aware secondary GC.
 
       Called at the end of `transact-tx-data` so the factory sees a
       complete schema entry — fixes the race where instantiating per-
@@ -286,16 +321,30 @@
       `build-secondary-index!`) populates the new index from AEVT, so
       data datoms applied in the same tx are picked up asynchronously."
      [db]
-     (reduce-kv
-      (fn [d k entry]
-        (if (and (keyword? k)
-                 (map? entry)
-                 (:db.secondary/type entry)
-                 (:db.secondary/attrs entry)
-                 (not (get-in d [:secondary-indices k])))
-          (instantiate-secondary d k entry)
-          d))
-      db (:schema db)))
+     (let [declared (into #{}
+                          (keep (fn [[k entry]]
+                                  (when (and (keyword? k)
+                                             (map? entry)
+                                             (:db.secondary/type entry)
+                                             (:db.secondary/attrs entry))
+                                    k)))
+                          (:schema db))
+           db (update db :secondary-indices
+                      (fn [indices]
+                        ;; Keep the canonical no-secondary representation nil.
+                        ;; Unconditionally reducing into {} made every ordinary
+                        ;; transaction differ from an otherwise identical bulk
+                        ;; import even when neither database declared an index.
+                        (when (or (seq indices) (seq declared))
+                          (into {}
+                                (filter (comp declared key))
+                                indices))))]
+       (reduce
+        (fn [d k]
+          (if (get-in d [:secondary-indices k])
+            d
+            (instantiate-secondary d k (get-in d [:schema k]))))
+        db declared)))
    :cljs
    (defn finalize-secondary-indices [db] db))
 
@@ -361,30 +410,6 @@
            (dbi/-datoms db :eavt [tx-id] (dbi/-search-context db)))]
     (not-empty m)))
 
-(defn- tx-meta-for-secondary
-  "Tx-meta for the *current* in-progress tx. We use `(inc max-tx)` —
-   incrementing matches the final bump in the transact loop's exit
-   branch — rather than `(dd/datom-tx datom)`. Retract datoms carry
-   the original asserting tx's id, but vt-aware adapters need the
-   writing tx's meta to close `_valid_to` correctly."
-  [db ^Datom _datom]
-  (let [m (meta-for-tx-id db (inc (long (:max-tx db))))]
-    ;; `:db/txInstant` is a datom ON the tx entity, and the in-progress tx's
-    ;; entity is not in EAVT yet when a data datom is being applied — so the
-    ;; seek above finds nothing and a vt-aware adapter received no instant at
-    ;; all. Measured downstream in the stratum index: every row stamped
-    ;; `_valid_from 0` AND `_valid_to 0`, a zero-width window, so a superseded
-    ;; generation was valid at no instant and `FOR VALID_TIME AS OF t` could
-    ;; never see it. The system axis was unaffected because it reads a clock.
-    ;;
-    ;; The fallback is that same clock — the one `:db/txInstant` is itself
-    ;; derived from — so the stamp is the writing moment rather than the
-    ;; instant the tx entity will record. They differ by the transaction's own
-    ;; duration, which is the accuracy a secondary index can have while the tx
-    ;; that would tell it exactly is still running.
-    (cond-> m
-      (nil? (:db/txInstant m)) (assoc :db/txInstant (get-date)))))
-
 (defn- update-secondary-indices
   "Update all secondary indices that cover the given attribute.
    When the index supports ITransientSecondaryIndex (batch mode), uses
@@ -399,12 +424,27 @@
 
    `idx-pred`, when given, restricts delivery to the covering indices it
    accepts — see `notify-vt-aware-indices`."
-  ([db a-ident ^Datom datom added?] (update-secondary-indices db a-ident datom added? any?))
-  ([db a-ident ^Datom datom added? idx-pred]
+  ([db a-ident ^Datom datom added?]
+   (update-secondary-indices db a-ident datom added? nil any?))
+  ([db a-ident ^Datom datom added? tx-meta]
+   (update-secondary-indices db a-ident datom added? tx-meta any?))
+  ([db a-ident ^Datom datom added? tx-meta idx-pred]
    (let [sec-idx-map (get-in db [:rschema :db.secondary/index a-ident])]
      (if (seq sec-idx-map)
-       (let [tx-report (cond-> {:datom datom :added? added?}
-                         true (assoc :tx-meta (tx-meta-for-secondary db datom)))]
+       (let [secondary-only? (dbu/secondary-only? db a-ident)
+             value-hash (if (and secondary-only? (not added?))
+                          (.-v datom)
+                          (sec/secondary-only-hash (.-v datom)))
+             tx-report {:datom datom
+                        :added? added?
+                        :value-hash value-hash
+                        :secondary-only? secondary-only?
+                        ;; The transactor allocated this exact monotonic value
+                        ;; before processing any datoms. Reading the in-progress
+                        ;; tx entity cannot work (its datoms are not searchable
+                        ;; yet), and a second wall-clock read can collide or
+                        ;; disagree with the primary commit timestamp.
+                        :tx-meta tx-meta}]
          (reduce (fn [db' idx-ident]
                    (let [status (get-in db' [:schema idx-ident :db.secondary/status])]
                      (cond
@@ -423,6 +463,14 @@
                        (if-let [idx (get-in db' [:secondary-indices idx-ident])]
                          (cond
                            (not (idx-pred idx)) db'
+                           (and (sec/durable-secondary? idx)
+                                (= :pure sec/*durable-secondary-write-context*))
+                           (throw
+                            (ex-info
+                             "Pure d/db-with cannot mutate a durable external secondary index until that adapter provides an immutable in-memory delta overlay. Use a connection transaction."
+                             {:type :secondary/durable-db-with-unsupported
+                              :index-ident idx-ident
+                              :attribute a-ident}))
                            (satisfies? sec/ITransientSecondaryIndex idx)
                            (do (sec/-transact! idx tx-report) db')
                            :else (assoc-in db' [:secondary-indices idx-ident]
@@ -451,7 +499,7 @@
    values, and the loss surfaced later as a backup that could not name which
    value a datom meant.
 
-   So cardinality-many is allowed only where an index declares
+   So cardinality-many is allowed only when every covering index declares
    `ISecondaryHashAddressable`, which is the claim that it stores values one per
    datom and can find one by its content hash. Refused at the first such write,
    next to the uncovered check, because that is the moment a value would be
@@ -463,15 +511,53 @@
   [db a-ident datom sec-idx-idents]
   (when (dbu/multival? db a-ident)
     (let [idxs (keep #(get (:secondary-indices db) %) sec-idx-idents)]
-      (when-not (some sec/hash-addressable? idxs)
-        (log/raise "Attribute " a-ident " is :db.secondary/only AND :db.cardinality/many, but no "
-                   "index covering it can store more than one value per entity — the second value "
-                   "would overwrite the first and be lost silently. An index that stores values "
-                   "per datom can declare this by implementing ISecondaryHashAddressable."
+      (when-not (and (= (count idxs) (count sec-idx-idents))
+                     (every? sec/hash-addressable? idxs))
+        (log/raise "Attribute " a-ident " is :db.secondary/only AND :db.cardinality/many, but every "
+                   "covering index must store values per datom and resolve them by content hash — "
+                   "otherwise one covering index would silently lose the second value."
                    {:error :transact/secondary-only-multival-unstorable
                     :attribute a-ident
                     :datom datom
-                    :index-idents (vec sec-idx-idents)})))))
+                    :index-idents (vec sec-idx-idents)
+                    :incapable-index-idents
+                    (into []
+                          (remove (fn [ident]
+                                    (some-> (get (:secondary-indices db) ident)
+                                            sec/hash-addressable?)))
+                          sec-idx-idents)})))))
+
+(defn- assert-secondary-only-transactional!
+  "Require every covering index to be a ready durable generation.
+
+   The primary keeps only a hash, so a transient, missing, disabled, or building
+   adapter cannot be repaired after a crash. Requiring every covering index also
+   prevents a declared index from silently becoming empty on reconnect."
+  [db a-ident datom sec-idx-idents]
+  (let [invalid
+        (keep (fn [idx-ident]
+                (let [idx (get-in db [:secondary-indices idx-ident])
+                      status (get-in db [:schema idx-ident :db.secondary/status])]
+                  (when-not (and (= :ready status)
+                                 idx
+                                 (sec/transactionally-durable-secondary? idx))
+                    {:index-ident idx-ident
+                     :status status
+                     :present? (some? idx)
+                     :durable? (boolean
+                                (and idx
+                                     (sec/transactionally-durable-secondary?
+                                      idx)))})))
+              sec-idx-idents)]
+    (when (seq invalid)
+      (log/raise
+       (str "Attribute " a-ident " is :db.secondary/only, but every covering "
+            "secondary must be ready and transactionally durable before its "
+            "value can be removed from the primary index.")
+       {:error :transact/secondary-only-requires-durable-index
+        :attribute a-ident
+        :datom datom
+        :invalid-indices (vec invalid)}))))
 
 (defn- project-primary
   "For an *added* `:db.secondary/only` datom, a copy with its value replaced by
@@ -484,7 +570,7 @@
     (dd/datom (.-e datom) (.-a datom) (secondary-only-hash (.-v datom)) (.-tx datom) (datom-added datom))
     datom))
 
-(defn- with-datom [db ^Datom datom]
+(defn- with-datom [db ^Datom datom tx-meta]
   (validate-datom db datom)
   (let [{a-ident :ident} (dbu/attr-info db (.-a datom) :error-on-missing)
         indexing? (dbu/indexing? db a-ident)
@@ -501,13 +587,15 @@
       (log/raise "Attribute " a-ident " is :db.secondary/only but no secondary index covers it — its value would be lost"
                  {:error :transact/secondary-only-uncovered :attribute a-ident :datom datom}))
     (when (and secondary-only? (datom-added datom) has-secondary?)
-      (assert-secondary-only-storable! db a-ident datom (get-in db [:rschema :db.secondary/index a-ident])))
+      (let [sec-idx-idents (get-in db [:rschema :db.secondary/index a-ident])]
+        (assert-secondary-only-transactional! db a-ident datom sec-idx-idents)
+        (assert-secondary-only-storable! db a-ident datom sec-idx-idents)))
     (if (datom-added datom)
       (cond-> db
         true (update-in [:eavt] #(di/-insert % prim :eavt op-count))
         true (update-in [:aevt] #(di/-insert % prim :aevt op-count))
         indexing? (update-in [:avet] #(di/-insert % prim :avet op-count))
-        has-secondary? (update-secondary-indices a-ident datom true)
+        has-secondary? (update-secondary-indices a-ident datom true tx-meta)
         true (advance-max-eid (.-e datom))
         true (update :hash + (hash prim))
         schema? (-> (update-schema datom)
@@ -519,7 +607,7 @@
           true (update-in [:eavt] #(di/-remove % removing :eavt op-count))
           true (update-in [:aevt] #(di/-remove % removing :aevt op-count))
           indexing? (update-in [:avet] #(di/-remove % removing :avet op-count))
-          has-secondary? (update-secondary-indices a-ident datom false)
+          has-secondary? (update-secondary-indices a-ident datom false tx-meta)
           true (update :hash - (hash removing))
           schema? (-> (remove-schema datom) update-rschema)
           keep-history? (update-in [:temporal-eavt] #(di/-temporal-insert % removing :eavt op-count))
@@ -598,8 +686,10 @@
    passed in rather than found again — the same lookup used to happen up to three
    times per cardinality-one write."
   ([db ^Datom datom]
-   (with-datom-upsert db datom (current-datom-for-ea db (.-e datom) (.-a datom))))
-  ([db ^Datom datom old-datom]
+   (with-datom-upsert db datom
+     (current-datom-for-ea db (.-e datom) (.-a datom))
+     nil))
+  ([db ^Datom datom old-datom tx-meta]
    (validate-datom-upsert db datom)
    (let [indexing?     (dbu/indexing? db (.-a datom))
          {a-ident :ident} (dbu/attr-info db (.-a datom) :error-on-missing)
@@ -617,7 +707,9 @@
        (log/raise "Attribute " a-ident " is :db.secondary/only but no secondary index covers it — its value would be lost"
                   {:error :transact/secondary-only-uncovered :attribute a-ident :datom datom}))
      (when (and secondary-only? has-secondary?)
-       (assert-secondary-only-storable! db a-ident datom (get-in db [:rschema :db.secondary/index a-ident])))
+       (let [sec-idx-idents (get-in db [:rschema :db.secondary/index a-ident])]
+         (assert-secondary-only-transactional! db a-ident datom sec-idx-idents)
+         (assert-secondary-only-storable! db a-ident datom sec-idx-idents)))
      (cond-> db
             ;; Optimistic removal of the schema entry (because we don't know whether it is already present or not)
        schema? (try
@@ -635,8 +727,8 @@
        indexing?                     (update-in [:avet] #(di/-upsert % prim :avet op-count old-datom))
 
       ;; Secondary indices: retract old, assert new (full value)
-       (and has-secondary? old-datom) (update-secondary-indices a-ident old-datom false)
-       has-secondary? (update-secondary-indices a-ident datom true)
+       (and has-secondary? old-datom) (update-secondary-indices a-ident old-datom false tx-meta)
+       has-secondary? (update-secondary-indices a-ident datom true tx-meta)
 
        true    (update :op-count inc)
        true    (advance-max-eid (.-e datom))
@@ -685,15 +777,11 @@
    The question is about how the index STORES, so it is answered from the
    schema. `IValidTimeAware` is a different property — a query capability, and
    an optional one: `secondary.cljc` says non-implementers stay correct via a
-   generic post-hoc filter, the protocol just lets an adapter push `valid-at`
-   into its own plan. `sec/vt-aware?` would be wrong here in both directions.
-   `StratumIndex` implements the protocol unconditionally and tests
-   `(vt-mode? config)` inside `-search-at-vt`, so every stratum index satisfies
-   it whether or not it keeps windows — excluding attributes whose rows are
-   plain current state and whose re-assertions really are redundant. And
-   mid-transaction `:secondary-indices` holds a `TransientStratumIndex`, which
-   does not implement the protocol at all, so the probe would answer false
-   exactly when it is asked."
+   generic post-hoc filter, while `-native-valid-time?` lets a persistent
+   adapter instance opt into native query pushdown. Mid-transaction
+   `:secondary-indices` holds a `TransientStratumIndex`, which does not expose
+   that query protocol, so `sec/vt-aware?` would answer false exactly when this
+   storage-layout question is asked."
   [db a-ident]
   (boolean
    (some #(get-in db [:schema % :db.secondary/config :valid-time])
@@ -768,11 +856,16 @@
   ([report datom upsert? old]
    (let [db      (:db-after report)
          a       (:a datom)
+         tx-meta (:tx-meta report)
          write   (fn [db]
                    (cond
-                     (not upsert?)            (with-datom db datom)
-                     (= ::not-looked-up old)  (with-datom-upsert db datom)
-                     :else                    (with-datom-upsert db datom old)))
+                     (not upsert?)            (with-datom db datom tx-meta)
+                     (= ::not-looked-up old)  (with-datom-upsert
+                                                db datom
+                                                (current-datom-for-ea db (.-e ^Datom datom)
+                                                                      (.-a ^Datom datom))
+                                                tx-meta)
+                     :else                    (with-datom-upsert db datom old tx-meta)))
          report' (-> report
                      (update-in [:db-after] write)
                      (update-in [:tx-data] conj datom))]
@@ -1141,6 +1234,7 @@
     (let [tempids' (-> (:tempids report)
                        (assoc tempid upserted-eid))
           report' (assoc initial-report :tempids tempids')]
+      (sec/abort-tracked-secondary-transients!)
       (transact-tx-data report' es))))
 
 (defn assert-preds [db [_ e _ preds]]
@@ -1651,6 +1745,52 @@
                              db))))
                      db enabled))))))))
 
+(defn- remove-disabled-indices
+  "Remove current AVET entries when an attribute stops being indexed.
+
+   This is the inverse of `backfill-enabled-indices` and runs at the same
+   end-of-transaction chokepoint. Doing the complete AEVT→AVET sweep after all
+   datoms and schema changes have settled makes the result independent of
+   transaction order: no stale entry can survive merely because `with-datom`
+   observed the new, non-indexing schema before a later retraction.
+
+   Temporal AVET is deliberately retained. Historical database roots already
+   name their immutable trees, while a history-enabled current root may still
+   need the old entries to answer an as-of view whose schema had the index.
+   Re-enabling performs the existing full current+history backfill."
+  [{:keys [db-before db-after] :as report}]
+  (let [old-schema (dbi/-schema db-before)
+        new-schema (dbi/-schema db-after)]
+    (if (identical? old-schema new-schema)
+      report
+      (let [indexed-entry?
+            (fn [entry]
+              (and (map? entry)
+                   (or (:db/index entry)
+                       (:db/unique entry)
+                       (= :db.type/ref (:db/valueType entry)))))
+            disabled
+            (into []
+                  (comp (filter keyword?)
+                        (filter (fn [ident]
+                                  (and (indexed-entry? (get old-schema ident))
+                                       (not (indexed-entry? (get new-schema ident)))))))
+                  (keys old-schema))]
+        (if (empty? disabled)
+          report
+          (update report :db-after
+                  (fn [db]
+                    (reduce
+                     (fn [db ident]
+                       (reduce (fn [db ^Datom datom]
+                                 (let [op-count (:op-count db)]
+                                   (-> db
+                                       (update :avet #(di/-remove % datom :avet op-count))
+                                       (update :op-count inc))))
+                               db
+                               (schema-attr-current-datoms db ident)))
+                     db disabled))))))))
+
 (defn- validate-ident-renames!
   "Refuse an attribute RENAME that would silently split the attribute in two.
 
@@ -1857,6 +1997,9 @@
                 ;; enabled on existing attributes — must run while
                 ;; :db-after is still transient.
                 backfill-enabled-indices
+                ;; The inverse transition is equally atomic: remove the full
+                ;; current AVET slice before this database value is published.
+                remove-disabled-indices
                 (dissoc ::pending-vt-validation)
                 (assoc-in [:tempids :db/current-tx] (current-tx report))
                 (update-in [:db-after :max-tx] inc)

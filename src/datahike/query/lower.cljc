@@ -26,6 +26,12 @@
 
 #?(:clj (set! *warn-on-reflection* true))
 
+(def ^:dynamic *scalar-input-vars*
+  "The root query's scalar/tuple :in vars while lowering its top-level plan.
+   Cardinality alone cannot identify these: a correlated outer variable can
+   also have estimated cardinality one, but it must remain relational."
+  #{})
+
 ;; ---------------------------------------------------------------------------
 ;; IR node → classified clause-info reconstruction
 ;;
@@ -161,7 +167,11 @@
                          :else (set bound-vars))
          logical-plan (logical/build-logical-plan db (vec clauses) bound-set
                                                   rules guarded-rules)]
-     (lower logical-plan db rules))))
+     ;; Prepared-plan rebinding currently rewrites top-level ops only. Do not
+     ;; advertise a root scalar as a nested scan constant until rebinding can
+     ;; recursively and soundly rewrite OR/NOT/rule sub-plans as well.
+     (binding [*scalar-input-vars* #{}]
+       (lower logical-plan db rules)))))
 
 (defn- normalize-and-plan-branches
   "Normalize branch clauses and create sub-plans for each branch.
@@ -1073,6 +1083,13 @@
         bound-vars (.-bound_vars ^datahike.query.ir.LogicalPlan logical-plan)
         classified (.-classified ^datahike.query.ir.LogicalPlan logical-plan)
         all-clause-vars (into bound-vars (mapcat :vars) classified)
+        ;; :in vars seed at card 1 (placeholder), overridden by `in-cards` for
+        ;; collection/relation bindings. Besides join costing, the scalar card
+        ;; lets pushdown analysis retain a value-free prepared parameter as a
+        ;; per-call index bound without mistaking a collection for one value.
+        initial-bvc (cond (map? bound-vars) bound-vars
+                          :else (merge (zipmap (or bound-vars #{}) (repeat 1))
+                                       (or in-cards {})))
 
         ;; Pre-compute SCC info for rules
         scc-info (when rules (plan/compute-rule-sccs rules))
@@ -1088,7 +1105,7 @@
         {:keys [pushdowns consumed]}
         (analyze/detect-pushdown
          (into scan-classifieds filter-classifieds)
-         bound-vars)
+         bound-vars *scalar-input-vars*)
 
         ;; ---------------------------------------------------------------
         ;; Step 2: Lower each node to physical op(s)
@@ -1149,12 +1166,6 @@
         max-src-idx #?(:clj Long/MAX_VALUE :cljs (.-MAX_SAFE_INTEGER js/Number))
         node->src-idx (into {} (map (fn [n] [n (or (:source-idx (meta n))
                                                    max-src-idx)])) nodes)
-        ;; :in vars seed at card 1 (placeholder), overridden by `in-cards` for
-        ;; collection/relation bindings (plan/source-cards :input) so a passed
-        ;; collection is ordered as a real multi-row source, not a singleton.
-        initial-bvc (cond (map? bound-vars) bound-vars
-                          :else (merge (zipmap (or bound-vars #{}) (repeat 1))
-                                       (or in-cards {})))
         merge-cards (fn [acc-map outs]
                       (reduce-kv
                        (fn [m v c]

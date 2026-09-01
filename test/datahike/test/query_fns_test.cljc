@@ -274,6 +274,14 @@
                   #(when (even? %) %))
              #{[2] [4]})))
 
+    #?(:clj
+       (testing "A Var supplied as a function input remains callable"
+         (is (= (d/q '[:find ?x
+                       :in ?in ?f
+                       :where [(?f ?in) ?x]]
+                     41 #'inc)
+                #{[42]}))))
+
     (testing "Result bindings"
       (is (= (d/q '[:find ?a ?c
                     :in ?in
@@ -691,11 +699,10 @@
   ;; hand the SYMBOL to the index: an AVET slice from '?y to '?y matches nothing,
   ;; and a range operator casts it to Number and throws.
   ;;
-  ;; Nothing is lost by declining — a variable bound to a SINGLE value is
-  ;; const-folded into the clause before planning, so `[(> ?s ?min)]` with a
-  ;; scalar `:in` still pushes down (asserted at the end). A variable that
-  ;; survives to the pushdown analysis holds a different value per row, which is
-  ;; exactly what an index bound cannot express.
+  ;; Nothing is lost by declining — one-off scalar inputs are const-folded and
+  ;; value-free prepared scalar inputs carry explicit root-input provenance. A
+  ;; variable that survives without that provenance holds a different value per
+  ;; row, which is exactly what one index bound cannot express.
   (let [db (d/db-with (db/empty-db {:e {:db/valueType :db.type/ref
                                         :db/cardinality :db.cardinality/many}})
                       [{:db/id 100 :e [101]}

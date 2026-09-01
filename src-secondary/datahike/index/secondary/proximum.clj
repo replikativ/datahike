@@ -13,164 +13,509 @@
    [proximum.warm :as prox-warm]
    [datahike.index.audit :as audit]
    [datahike.index.secondary :as sec]
+   [datahike.index.secondary.publication :as publication]
    [datahike.index.entity-set :as es]
    [proximum.core :as prox]
-   [proximum.crypto :as pcrypto]
-   [proximum.protocols :as pproto]
-   [proximum.writing :as pwr]
-   [proximum.versioning :as pver]
+   [proximum.generations :as gen]
    [proximum.hnsw.internal :as phi]
    [replikativ.logging :as log]
    [clojure.core.async :as async]))
 
+(defn- exact-filter-cheaper?
+  "Estimate the distance-computation break-even for a filtered top-k.
+
+   An exact filtered scan computes `allowed` distances.  An ANN traversal must
+   discover roughly `k / selectivity`, or `k * total / allowed`, nodes before
+   it can admit k uniformly distributed matches.  Prefer exact when the former
+   is no larger.  This decision uses the runtime EntityBitSet cardinality, so a
+   prepared plan adapts to each execution rather than baking in selectivity."
+  [prox-idx k entity-filter]
+  (let [allowed (long (es/entity-bitset-cardinality entity-filter))
+        total (long (prox/count-vectors prox-idx))
+        k (long (max 1 (or k 1)))]
+    (and (pos? total)
+         (<= (* allowed allowed) (* k total)))))
+
+(defn- search-results
+  [prox-idx {:keys [vector k ef filter-strategy]} entity-filter]
+  (let [filter-strategy (or filter-strategy
+                            (when (and entity-filter
+                                       (exact-filter-cheaper? prox-idx k entity-filter))
+                              :exact))
+        opts (cond-> {}
+               ef (assoc :ef ef)
+               filter-strategy (assoc :filter-strategy filter-strategy))]
+    (if entity-filter
+      ;; Proximum translates this lazy Roaring64 ID view directly into its
+      ;; native internal-id bitset. Do not materialize a second boxed HashSet;
+      ;; sparse SQL filters then cost O(matches), while the native bitset is the
+      ;; one dense representation HNSW actually consumes.
+      (prox/search-filtered prox-idx vector k
+                            (es/entity-bitset-seq entity-filter) opts)
+      (prox/search prox-idx vector k opts))))
+
+(defn- close-generation! [generation]
+  (when generation
+    (async/<!! (gen/close-view! generation))))
+
+(declare make-proximum-index)
+
+(defn- proximum-view [index]
+  (some-> (:generation index) gen/generation-index))
+
+(defn- proximum-key-map-failure-reason [key-map]
+  (cond
+    ;; The pre-generation adapter stored a native commit/branch pointer. It is
+    ;; not the private mmap generation introduced by format 1, even though
+    ;; both identifiers happen to be UUIDs.
+    (and (= :proximum (:type key-map))
+         (contains? key-map :commit-id)
+         (not (contains? key-map :generation-id)))
+    :legacy-proximum-commit-root
+
+    (not= :proximum (:type key-map)) :wrong-type
+    (not= 2 (:format-version key-map)) :unsupported-format-version
+    (not= :external (:storage-owner key-map)) :wrong-storage-owner
+    (nil? (:external-store-id key-map)) :invalid-external-store-id
+    (not (uuid? (:generation-id key-map))) :invalid-generation-id
+    :else nil))
+
+(defn- validate-proximum-generation-key-map [key-map]
+  (when-let [reason (proximum-key-map-failure-reason key-map)]
+    (throw (ex-info
+            "Invalid Proximum generation key-map."
+            {:type :secondary/invalid-proximum-generation
+             :reason reason
+             :key-map key-map
+             :expected {:type :proximum
+                        :format-version 2
+                        :storage-owner :external
+                        :external-store-id :stable-konserve-store-id
+                        :generation-id :uuid}})))
+  key-map)
+
+(defn- ensure-builder! [builder* source-index generation-config]
+  (or @builder*
+      (let [builder (if-let [source (proximum-view source-index)]
+                      (gen/begin-generation source)
+                      (gen/begin-generation-from-config generation-config))]
+        (reset! builder* builder)
+        builder)))
+
+(defn- take-pending-inserts! [pending-inserts*]
+  (locking pending-inserts*
+    (let [pending @pending-inserts*]
+      (reset! pending-inserts* [])
+      pending)))
+
+(defn- flush-pending-inserts!
+  [builder* pending-inserts* source-index generation-config config]
+  (let [pending (take-pending-inserts! pending-inserts*)]
+    (when (seq pending)
+      (let [builder (ensure-builder! builder* source-index generation-config)
+            opts (cond-> {}
+                   (:ingest-parallelism config)
+                   (assoc :parallelism (:ingest-parallelism config)))]
+        (gen/put-batch! builder (mapv second pending) (mapv first pending) opts)))))
+
+(defn- seal-builder-view!
+  "Seal once and split its native query view from its lightweight publication
+   hold. Every partial transition cleans up both ownership domains."
+  [builder]
+  (let [sealed* (atom nil)
+        view* (atom nil)
+        hold* (atom nil)]
+    (try
+      (let [sealed (gen/seal! builder)
+            _ (reset! sealed* sealed)
+            view (gen/take-generation-view! sealed)
+            _ (reset! view* view)
+            hold (gen/take-publication-hold! sealed)
+            _ (reset! hold* hold)]
+        [view hold])
+      (catch Throwable failure
+        (try
+          (if-let [hold @hold*]
+            (gen/abort-publication! hold)
+            (if-let [sealed @sealed*]
+              (async/<!! (gen/discard! sealed))
+              (when (#{:open :failed} @(:status builder))
+                (async/<!! (gen/discard! builder)))))
+          (finally
+            (when-let [view @view*]
+              (async/<!! (gen/close-view! view)))))
+        (throw failure)))))
+
+(defrecord TransientProximumIndex [builder* pending-inserts* source-index attrs
+                                   config generation-config dirty?
+                                   source-reserved?]
+  sec/ISecondaryIndex
+  (-search [_ query-spec entity-filter]
+    (flush-pending-inserts! builder* pending-inserts* source-index
+                            generation-config config)
+    (if-let [index (if-let [builder @builder*]
+                     (gen/builder-index builder)
+                     (proximum-view source-index))]
+      (es/entity-bitset-from-longs
+       (map :id (search-results index query-spec entity-filter)))
+      (es/entity-bitset)))
+  (-estimate [_ query-spec]
+    (flush-pending-inserts! builder* pending-inserts* source-index
+                            generation-config config)
+    (if-let [index (if-let [builder @builder*]
+                     (gen/builder-index builder)
+                     (proximum-view source-index))]
+      (min (:k query-spec 10) (prox/count-vectors index))
+      0))
+  (-can-order? [_ _ direction] (= :asc direction))
+  (-slice-ordered [_ query-spec entity-filter _ _ limit]
+    (flush-pending-inserts! builder* pending-inserts* source-index
+                            generation-config config)
+    (let [query-spec (if limit
+                       (update query-spec :k #(min % limit))
+                       query-spec)]
+      (mapv (fn [{:keys [id distance]}]
+              {:entity-id id :distance distance})
+            (if-let [index (if-let [builder @builder*]
+                             (gen/builder-index builder)
+                             (proximum-view source-index))]
+              (search-results index query-spec entity-filter)
+              []))))
+  (-indexed-attrs [_] attrs)
+  (-transact [this tx-report]
+    (sec/-transact! this tx-report)
+    this)
+
+  sec/ITransientSecondaryIndex
+  (-as-transient [this] this)
+  (-transact! [_ {:keys [datom added?]}]
+    (let [eid (.-e datom)
+          value (.-v datom)]
+      (if added?
+        (if (instance? (Class/forName "[F") value)
+          (do
+            ;; Open the guard before accepting the first buffered write. The
+            ;; vector itself remains in memory until the bounded batch flushes.
+            (ensure-builder! builder* source-index generation-config)
+            (reset! dirty? true)
+            (swap! pending-inserts* conj [eid value])
+            (when (>= (count @pending-inserts*)
+                      (long (or (:ingest-batch-size config) 256)))
+              (flush-pending-inserts! builder* pending-inserts* source-index
+                                      generation-config config)))
+          (log/warn :datahike/non-float-array-vector
+                    {:eid eid :type (type value)}))
+        (let [_ (flush-pending-inserts! builder* pending-inserts* source-index
+                                        generation-config config)
+              builder (ensure-builder! builder* source-index generation-config)]
+          (reset! dirty? true)
+          (gen/delete! builder eid)))))
+  (-persistent! [_]
+    (try
+      (flush-pending-inserts! builder* pending-inserts* source-index
+                              generation-config config)
+      (if-not @dirty?
+        source-index
+        (let [builder @builder*]
+          (let [[view hold] (seal-builder-view! builder)
+                adopted-holds* (atom [hold])]
+            (try
+              (let [parent-holds
+                    (if (satisfies? publication/IUnpublishedGeneration
+                                    source-index)
+                      (publication/-take-publication-holds!
+                       source-index :transferred)
+                      [])
+                    _ (reset! adopted-holds* (conj (vec parent-holds) hold))
+                    result (make-proximum-index view attrs config
+                                                generation-config @adopted-holds*)]
+                ;; A child can share CAS objects written under every ancestor's
+                ;; cutoff. Carry those lightweight guards to the one primary
+                ;; publication instead of releasing the predecessor early.
+                result)
+              (catch Throwable failure
+                (try
+                  (publication/complete-holds!
+                   (publication/publication-owner :proximum [])
+                   @adopted-holds* gen/abort-publication!)
+                  (finally
+                    (async/<!! (gen/close-view! view))))
+                (throw failure))))))
+      (finally
+        (when source-reserved?
+          (publication/-release-derivation! source-index)))))
+
+  sec/IDurableSecondaryTransient
+  (-durable-persistent-result? [_] true)
+
+  sec/IAbortableSecondaryTransient
+  (-abort-transient! [_]
+    (reset! pending-inserts* [])
+    (try
+      (when-let [builder @builder*]
+        (when (#{:open :failed} @(:status builder))
+          (async/<!! (gen/discard! builder))))
+      (finally
+        (when source-reserved?
+          (publication/-release-derivation! source-index))))))
+
+(defrecord ProximumIndex [generation attrs config generation-config
+                          publication-owner]
+  java.io.Closeable
+  (close [_]
+    (publication/abort-unpublished! publication-owner
+                                    gen/abort-publication!)
+    (close-generation! generation))
+
+  publication/IUnpublishedGeneration
+  (-take-publication-holds! [_ next-state]
+    (publication/take-publication-holds! publication-owner next-state))
+  (-reserve-derivation! [_]
+    (publication/reserve-derivation! publication-owner))
+  (-release-derivation! [_]
+    (publication/release-derivation! publication-owner))
+
+  sec/ISecondaryIndex
+  (-search [_ query-spec entity-filter]
+    (if generation
+      (es/entity-bitset-from-longs
+       (map :id (search-results (gen/generation-index generation)
+                                query-spec entity-filter)))
+      (es/entity-bitset)))
+  (-estimate [_ query-spec]
+    (if generation
+      (min (:k query-spec 10)
+           (prox/count-vectors (gen/generation-index generation)))
+      0))
+  (-can-order? [_ _ direction] (= :asc direction))
+  (-slice-ordered [_ query-spec entity-filter _ _ limit]
+    (if-not generation
+      []
+      (let [query-spec (if limit
+                         (update query-spec :k #(min % limit))
+                         query-spec)]
+        (mapv (fn [{:keys [id distance]}]
+                {:entity-id id :distance distance})
+              (search-results (gen/generation-index generation)
+                              query-spec entity-filter)))))
+  (-indexed-attrs [_] attrs)
+  (-transact [this tx-report]
+    (let [transient-index (sec/-as-transient this)]
+      (sec/-transact! transient-index tx-report)
+      (sec/-persistent! transient-index)))
+
+  sec/ISecondaryCandidateScan
+  (-candidate-page [_ query-spec entity-filter page-request]
+    ;; A continuation pins one immutable Proximum generation. Materialized mode
+    ;; pages a fixed ANN result set; iterative mode retains its HNSW frontier and
+    ;; resumes traversal without observing a newer generation. Exhaustion covers
+    ;; the discovered HNSW candidates, not the full corpus: exact primary recheck
+    ;; can validate returned rows, but cannot repair ANN false negatives, hence
+    ;; :recall remains :approximate.
+    (if-not generation
+      {:candidates []
+       :precision :recheck
+       :recall :approximate
+       :ordering :exact
+       :exhausted? true
+       :continuation nil
+       :stop-reason :source-exhausted}
+      (let [{:keys [vector candidate-limit ef query-id scan-mode strict-order?
+                    max-visited max-distance-computations timeout-ms
+                    max-frontier-nodes]} query-spec
+            page-limit (:limit page-request)
+            resumed-scan (:continuation page-request)
+            scan (or resumed-scan
+                     (prox/start-candidate-scan
+                      (gen/generation-index generation)
+                      vector
+                      (cond-> {:candidate-limit (or candidate-limit page-limit)
+                               :page-size page-limit
+                               ;; Detached generations do not publish a mutable
+                               ;; Proximum branch commit. Their immutable id is
+                               ;; the owning snapshot identity for this cursor.
+                               :primary-snapshot-id (gen/generation-id generation)}
+                        scan-mode (assoc :mode scan-mode)
+                        entity-filter
+                        (assoc :entity-filter
+                               (es/entity-bitset-seq entity-filter))
+                        (some? strict-order?) (assoc :strict-order? strict-order?)
+                        ef (assoc :ef ef)
+                        query-id (assoc :query-id query-id)
+                        max-visited (assoc :max-visited max-visited)
+                        max-distance-computations
+                        (assoc :max-distance-computations
+                               max-distance-computations)
+                        timeout-ms (assoc :timeout-ms timeout-ms)
+                        max-frontier-nodes
+                        (assoc :max-frontier-nodes max-frontier-nodes))))]
+        (try
+          (let [page (prox/candidate-page scan)
+                attr (first attrs)
+                candidates (mapv (fn [{:keys [id] :as candidate}]
+                                   (-> candidate
+                                       (dissoc :id)
+                                       (assoc :entity-id (long id)
+                                              :attribute attr)))
+                                 (:candidates page))]
+            {:candidates candidates
+             :precision :recheck
+             :recall :approximate
+             :ordering (if (= :approximate (get-in page [:metadata :ordering]))
+                         :approximate
+                         :exact)
+             :exhausted? (:exhausted? page)
+             :continuation (:continuation page)
+             :stop-reason (:stop-reason page)
+             :stats (select-keys (:metadata page)
+                                 [:visited-count :distance-computations
+                                  :emitted-count :strict-order-drops
+                                  :search-nanos])})
+          (catch Throwable failure
+            ;; On the first page no caller owns `scan` yet. A resumed scan is
+            ;; still owned by the caller and core's wrapper closes it on error.
+            (when-not resumed-scan
+              (prox/close-candidate-scan! scan))
+            (throw failure))))))
+
+  sec/ISecondaryCandidateScanLifecycle
+  (-close-candidate-scan [_ continuation]
+    (prox/close-candidate-scan! continuation))
+
+  sec/ITransientSecondaryIndex
+  (-as-transient [this]
+    (let [reserved? (publication/-reserve-derivation! this)]
+      (try
+        (->TransientProximumIndex
+         (atom nil) (atom []) this attrs config generation-config (atom false)
+         reserved?)
+        (catch Throwable failure
+          (when reserved? (publication/-release-derivation! this))
+          (throw failure)))))
+  (-transact! [_ _]
+    (throw (IllegalStateException.
+            "Call -as-transient before mutating a Proximum generation.")))
+  (-persistent! [this] this)
+
+  sec/ISecondaryWarmable
+  (-sec-warm! [_ opts]
+    (if generation
+      (prox-warm/warm! (gen/generation-index generation) opts)
+      {:fetched 0 :ms 0.0 :budget-exhausted? false}))
+
+  sec/ISecondaryScannable
+  (-sec-value [_ _ eid]
+    (when generation
+      (prox/get-vector (gen/generation-index generation) eid)))
+
+  sec/IDurableSecondaryIndex
+  (-sec-generation-key-map [_]
+    {:type :proximum
+     :format-version 2
+     :storage-owner :external
+     ;; The connected store is authoritative. A supplied `:store` can differ
+     ;; from the advisory store-config, and publishing that alias would make an
+     ;; external collector mark the wrong store.
+     :external-store-id (or (some-> generation gen/generation-store-id)
+                            (get-in config [:store-config :id]))
+     :generation-id (some-> generation gen/generation-id)})
+  (-sec-prepare [this _]
+    (let [ch (async/promise-chan)]
+      (try
+        (let [[prepared holds owns?]
+              (cond
+                (= :unpublished
+                   (publication/publication-state publication-owner))
+                (let [holds (publication/-take-publication-holds!
+                             this :preparing)]
+                  (try
+                    [(->ProximumIndex (gen/retain-generation-view generation)
+                                      attrs config generation-config
+                                      publication-owner)
+                     holds true]
+                    (catch Throwable failure
+                      (publication/complete-holds!
+                       publication-owner holds gen/abort-publication!)
+                      (publication/set-publication-state!
+                       publication-owner :aborted)
+                      (throw failure))))
+
+                (and generation
+                     (= :published
+                        (publication/publication-state publication-owner)))
+                [this [] false]
+
+                generation
+                (throw (ex-info "This Proximum generation already has a publication owner."
+                                {:type :secondary/proximum-publication-owner-conflict
+                                 :state (publication/publication-state
+                                         publication-owner)}))
+
+                :else
+                (let [builder (gen/begin-generation-from-config
+                               generation-config)]
+                  (try
+                    (let [[view hold] (seal-builder-view! builder)
+                          owner (publication/publication-owner :proximum [])
+                          _ (publication/set-publication-state!
+                             owner :preparing)]
+                      [(->ProximumIndex
+                        view attrs config generation-config owner)
+                       [hold] true])
+                    (catch Throwable failure
+                      (when (#{:open :failed} @(:status builder))
+                        (async/<!! (gen/discard! builder)))
+                      (throw failure)))))]
+          (async/put!
+           ch
+           (publication/prepared-generation
+            prepared holds owns? (:publication-owner prepared)
+            {:root! gen/root-publication!
+             :abort! gen/abort-publication!
+             :close-prepared!
+             #(async/<!! (gen/close-view! (:generation %)))})))
+        (catch Throwable failure
+          (async/put! ch failure)))
+      ch))
+  (-sec-restore [_ _ key-map]
+    (let [{:keys [generation-id external-store-id]}
+          (validate-proximum-generation-key-map key-map)
+          restored (gen/open-generation generation-config generation-id)]
+      (if (= external-store-id (gen/generation-store-id restored))
+        (->ProximumIndex restored attrs config generation-config
+                         (publication/publication-owner :proximum []))
+        (do
+          (close-generation! restored)
+          (throw (ex-info
+                  "The Proximum generation belongs to a different live store."
+                  {:type :secondary/proximum-generation-store-mismatch
+                   :expected external-store-id
+                   :actual (gen/generation-store-id restored)
+                   :generation-id generation-id}))))))
+
+  audit/IAuditable
+  (-merkle-root [_]
+    (when (:crypto-hash? config)
+      (some-> generation gen/generation-index phi/commit-id)))
+  (-recompute-merkle-root [_]
+    (if-let [recompute (and generation
+                            (try
+                              (requiring-resolve
+                               'proximum.audit/-recompute-merkle-root)
+                              (catch Throwable _ nil)))]
+      (recompute (gen/generation-index generation))
+      {:status :unsupported :reason :proximum-generation-verifier-unavailable})))
+
 (defn- make-proximum-index
-  "Create an ISecondaryIndex backed by Proximum.
-   Entity IDs are used as external keys in the Proximum index."
-  [prox-idx config]
-  (let [attrs (set (:attrs config))]
-    (reify sec/ISecondaryIndex
-      (-search [_ query-spec entity-filter]
-        ;; query-spec: {:vector float-array, :k int}
-        ;; Returns EntityBitSet of matching entity IDs
-        (let [{:keys [vector k]} query-spec
-              results (if entity-filter
-                        (prox/search-filtered prox-idx vector k
-                                              (fn [ext-id _meta]
-                                                (es/entity-bitset-contains? entity-filter (long ext-id))))
-                        (prox/search prox-idx vector k))]
-          (es/entity-bitset-from-longs (map :id results))))
-
-      (-estimate [_ query-spec]
-        ;; For KNN, the result count is exactly k (or less if fewer vectors exist)
-        (min (:k query-spec 10) (prox/count-vectors prox-idx)))
-
-      (-can-order? [_ _attr direction]
-        ;; Proximum results are naturally ordered by distance (ascending)
-        (= direction :asc))
-
-      (-slice-ordered [_ query-spec entity-filter _attr _direction limit]
-        ;; KNN results are already distance-ordered; limit is just k
-        (let [{:keys [vector k]} query-spec
-              effective-k (if limit (min k limit) k)
-              results (if entity-filter
-                        (prox/search-filtered prox-idx vector effective-k
-                                              (fn [ext-id _meta]
-                                                (es/entity-bitset-contains? entity-filter (long ext-id))))
-                        (prox/search prox-idx vector effective-k))]
-          ;; Return as seq of {:entity-id :distance} for the caller to project
-          (mapv (fn [{:keys [id distance]}]
-                  {:entity-id id :distance distance})
-                results)))
-
-      (-indexed-attrs [_] attrs)
-
-      sec/ISecondaryWarmable
-      (-sec-warm! [_ opts]
-        ;; Proximum's restore is eager for edges and vectors (parallel since
-        ;; proximum 0.1.36 — :fetch-width on load is that phase's knob); what
-        ;; stays lazy are the external-id and metadata trees, and this warms
-        ;; those. Units are tree NODES.
-        (prox-warm/warm! prox-idx opts))
-
-      sec/IVersionedSecondaryIndex
-      (-sec-flush [_ _store branch]
-        ;; Proximum manages its own konserve store internally. The
-        ;; protocol method `proximum.protocols/sync!` returns a chan
-        ;; that yields a NEW immutable index value carrying the post-
-        ;; sync commit-id; the live `prox-idx` field is the pre-sync
-        ;; value and stays that way (the bridge has nowhere to put the
-        ;; new one). So we wait, read commit-id off `synced`, and
-        ;; surface it under both :commit-id (for restore) and
-        ;; :merkle-root (for audit's key-map fallback path b in
-        ;; writing.cljc) — IAuditable below can't see the post-sync
-        ;; state on the live record.
-        ;;
-        ;; NOTE on the <!!: writing.cljc invokes -sec-flush from inside
-        ;; commit!'s go-try-, so blocking from here parks a core.async
-        ;; pool thread. Under load this can deadlock the writer. The
-        ;; correct fix is making -sec-flush async in the protocol;
-        ;; tracked separately. This call is the minimal fix to stop
-        ;; throwing NPE (which was caused by previously calling the
-        ;; wrong, VectorStore-shaped sync! against an HnswIndex).
-        (let [synced (async/<!! (pproto/sync! prox-idx))
-              cid    (phi/commit-id synced)]
-          {:type :proximum
-           :branch (name branch)
-           :commit-id cid
-           :merkle-root cid
-           :store-config (:store-config config)}))
-
-      (-sec-restore [_ _store key-map]
-        ;; Restore from proximum's own store using commit ID
-        (let [restored (pwr/load-commit (:store-config key-map) (:commit-id key-map)
-                                        {:branch (keyword (:branch key-map))})]
-          (make-proximum-index restored config)))
-
-      (-sec-branch [_ _store _from-branch new-branch]
-        ;; Fork via proximum's native branching (reflink mmap + konserve COW)
-        (let [branched (pver/branch! prox-idx (keyword new-branch))]
-          (make-proximum-index branched config)))
-
-      (-sec-mark [_]
-        ;; Proximum uses its own konserve store, not datahike's
-        #{})
-
-      audit/IAuditable
-      (-merkle-root [_]
-        ;; Proximum's commit-id is a content hash of the HNSW graph
-        ;; + vectors state. Returns nil pre-commit; never throws.
-        (phi/commit-id prox-idx))
-      (-recompute-merkle-root [this]
-        ;; When proximum.audit (>= the audit-chain release) is on the
-        ;; classpath, delegate the live-index walk to it — that gives
-        ;; us actual chunk-level tamper detection (the older
-        ;; verify-from-cold only checked existence). Older proximum
-        ;; versions fall back to the local translation.
-        (or (when-let [recompute (try (requiring-resolve 'proximum.audit/-recompute-merkle-root)
-                                      (catch Throwable _ nil))]
-              (recompute prox-idx))
-            (let [store-config (:store-config config)
-                  branch (or (:branch config) :main)
-                  result (pcrypto/verify-from-cold store-config branch)
-                  root (audit/-merkle-root this)]
-              (if (:valid? result)
-                {:status :ok :root root}
-                {:status :mismatch :root nil
-                 :errors [{:type :audit/merkle-mismatch
-                           :address root
-                           :expected root
-                           :details result}]}))))
-
-      sec/ISecondaryScannable
-      (-sec-value [_ _attr eid]
-        ;; `prox/get-vector` takes the EXTERNAL id — exactly the eid `-transact`
-        ;; inserted under — so this needs nothing from proximum that is not
-        ;; already public. It is also the only shape this backend can serve: it
-        ;; fetches by id and cannot enumerate its ids, which is one reason the
-        ;; protocol is a point lookup rather than a scan.
-        (prox/get-vector prox-idx eid))
-
-      (-transact [_ tx-report]
-        ;; tx-report: {:datom datom :added? bool}
-        (let [{:keys [datom added?]} tx-report
-              eid (.-e datom)
-              val (.-v datom)]
-          (if added?
-            ;; Insert: val should be a float-array vector, eid is external key
-            (if (instance? (Class/forName "[F") val)
-              (make-proximum-index
-               (prox/insert prox-idx val eid)
-               config)
-              (do (log/warn :datahike/non-float-array-vector {:eid eid :type (type val)})
-                  (make-proximum-index prox-idx config)))
-            ;; Retract: delete by external entity ID
-            (make-proximum-index
-             (prox/delete prox-idx eid)
-             config)))))))
+  [generation attrs config generation-config publication-holds]
+  (->ProximumIndex generation (set attrs) config generation-config
+                   (publication/publication-owner
+                    :proximum publication-holds)))
 
 (sec/register-index-type!
  :proximum
- (fn [config _db]
+ {:create
+  (fn [config _db]
    ;; ONE attribute per index, refused rather than silently mixed.
    ;;
    ;; proximum is keyed by an EXTERNAL ID, and this adapter uses the entity id
@@ -200,26 +545,51 @@
                             "attribute where it has one. Declare one index per vector attribute.")
                        {:error :secondary/proximum-multi-attr
                         :attrs (vec attrs)}))))
-   (let [prox-config (merge {:type :hnsw}
-                            (select-keys config [:dim :distance :store-config :mmap-dir
-                                                 :capacity :m :ef-construction :ef-search]))
-         prox-idx (prox/create-index prox-config)]
-     (make-proximum-index prox-idx config))))
+   (when-not (pos? (long (or (:ingest-batch-size config) 256)))
+     (throw (ex-info ":ingest-batch-size must be a positive integer."
+                     {:error :secondary/proximum-invalid-ingest-batch-size
+                      :ingest-batch-size (:ingest-batch-size config)})))
+   (when-not (get-in config [:store-config :id])
+     (throw (ex-info "A durable :proximum secondary requires a stable :store-config :id."
+                     {:error :secondary/proximum-store-id-required})))
+   (when (= (::sec/store-id config) (get-in config [:store-config :id]))
+     (throw
+      (ex-info
+       (str "A :proximum secondary must not use Datahike's primary Konserve store. "
+            "Its generation is externally owned and Datahike's collector marks no "
+            "objects in that store; sharing it would make live vector data collectable.")
+       {:type :secondary/proximum-primary-store
+        :store-id (::sec/store-id config)})))
+   (let [mmap-dir (or (:mmap-dir config)
+                      (str (System/getProperty "java.io.tmpdir")
+                           "/datahike-proximum-" (random-uuid)))
+         generation-config
+         (merge {:type :hnsw
+                 :mmap-dir mmap-dir
+                 ;; Proximum validates this against `kp/store-id` on the live
+                 ;; external Konserve store before it writes or restores a
+                 ;; generation. The config-id equality check above is only an
+                 ;; early diagnostic; aliases cannot bypass the live check.
+                 :forbidden-store-id (::sec/store-id config)}
+                (cond-> (select-keys config [:dim :distance :store :store-config :capacity
+                                             :ef-construction :ef-search
+                                             :crypto-hash?])
+                  (:m config) (assoc :M (:m config))))]
+     (make-proximum-index nil (:attrs config) config generation-config nil)))
+  :storage-owner :external
+  :validate-generation validate-proximum-generation-key-map
+  ;; Proximum generations live in their own Konserve store, so there are no
+  ;; reachable objects to mark in Datahike's primary store.
+  :mark-generation (fn [_ _] #{})
+  :external-root
+  (fn [key-map]
+    {:secondary-type :proximum
+     :external-store-id (:external-store-id key-map)
+     :generation-id (:generation-id key-map)})})
 
-;; GC: proximum uses its own store, not datahike's konserve
-(defmethod sec/mark-from-key-map :proximum [_ _] #{})
-
-;; Branch: load from stored commit, branch via proximum native
-(defmethod sec/branch-from-key-map :proximum [key-map _store _from-branch new-branch]
-  (let [idx (pwr/load-commit (:store-config key-map) (:commit-id key-map)
-                             {:branch (keyword (:branch key-map))})
-        branched (pver/branch! idx (keyword new-branch))
-        synced (async/<!! (pproto/sync! branched))
-        new-commit-id (phi/commit-id synced)]
-    (pproto/close! synced)
-    (assoc key-map
-           :branch (name new-branch)
-           :commit-id new-commit-id)))
+;; Proximum generations currently live in the adapter's own Konserve store.
+;; Datahike therefore marks no keys in its store; the external store must retain
+;; the generation ids named by Datahike roots when its own collector is enabled.
 
 ;; ---------------------------------------------------------------------------
 ;; KNN as a Datalog clause (external-engine)

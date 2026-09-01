@@ -13,7 +13,8 @@
    (into
     [{:db/ident :probe/n
       :db/valueType :db.type/long
-      :db/cardinality :db.cardinality/one}
+      :db/cardinality :db.cardinality/one
+      :db/index true}
      {:db/ident :probe/group
       :db/valueType :db.type/keyword
       :db/cardinality :db.cardinality/one
@@ -36,6 +37,10 @@
   (binding [q/*disable-planner* false
             q/*query-result-cache?* false]
     (d/q query-map)))
+
+(defn strict-less-than?
+  [left right]
+  (< left right))
 
 (deftest direct-limit-demand
   (let [db (fixture-db)]
@@ -66,6 +71,78 @@
                            :cancel cancel}))]
         (is (= 5 (count result)))
         (is (= 12 @derefs))))))
+
+(deftest prepared-scalar-range-remains-an-index-bound
+  (let [db (fixture-db)
+        [derefs cancel] (counting-cancel)
+        result (binding [q/*disable-planner* false
+                         execute/*prepared-execution* true
+                         q/*fold-scalar-ins* false
+                         q/*query-result-cache?* false]
+                 (d/q {:query '[:find ?e
+                                :in $ ?upper
+                                :where
+                                [?e :probe/n ?n]
+                                [(< ?n ?upper)]]
+                       :args [db 10]
+                       :cancel cancel}))]
+    (is (= 10 (count result)))
+    (is (< @derefs 20)
+        "the value-free scalar parameter must bound AVET before scanning")
+    (testing "the rebound survives a namespaced-predicate relation fallback"
+      (let [[fallback-derefs fallback-cancel] (counting-cancel)
+            fallback-result
+            (binding [q/*disable-planner* false
+                      execute/*prepared-execution* true
+                      q/*fold-scalar-ins* false
+                      q/*query-result-cache?* false]
+              (d/q {:query '[:find ?e
+                             :in $ ?upper
+                             :where
+                             [?e :probe/n ?n]
+                             [(datahike.test.query-limit-demand-test/strict-less-than?
+                               ?n ?upper)]
+                             [(< ?n ?upper)]]
+                    :args [db 10]
+                    :cancel fallback-cancel}))]
+        (is (= result fallback-result))
+        (is (< @fallback-derefs 20))))
+    (testing "a separate candidate collection does not hide the scalar bound"
+      (let [candidates (mapv first
+                             (d/q '[:find ?e :where [?e :probe/n ?n]] db))
+            [mixed-derefs mixed-cancel] (counting-cancel)
+            mixed-result
+            (binding [q/*disable-planner* false
+                      execute/*prepared-execution* true
+                      q/*fold-scalar-ins* false
+                      q/*query-result-cache?* false]
+              (d/q {:query '[:find ?candidate
+                             :in $ ?upper [?candidate ...]
+                             :where
+                             [?candidate :probe/n ?n]
+                             [(datahike.test.query-limit-demand-test/strict-less-than?
+                               ?n ?upper)]
+                             [(< ?n ?upper)]]
+                    :args [db 10 candidates]
+                    :cancel mixed-cancel}))]
+        (is (= result mixed-result))
+        (is (< @mixed-derefs 20))))
+    (testing "a nested plan keeps the scalar as a relational obligation"
+      (let [nested-result
+            (binding [q/*disable-planner* false
+                      execute/*prepared-execution* true
+                      q/*fold-scalar-ins* false
+                      q/*query-result-cache?* false]
+              (d/q {:query '[:find ?e
+                             :in $ ?upper
+                             :where
+                             [?e :probe/n _]
+                             (not-join [?e ?upper]
+                                       [?e :probe/n ?inside]
+                                       [(>= ?inside ?upper)])]
+                    :args [db 10]}))]
+        (is (= result nested-result)
+            "nested pushdown is declined until prepared rebinding reaches sub-plans")))))
 
 (deftest unsafe-demand-remains-unbounded
   (let [db (fixture-db)]

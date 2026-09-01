@@ -14,7 +14,8 @@
    over both paths and any datom order, with data-backed checks."
   (:require
    [clojure.test :refer [deftest is testing]]
-   [datahike.api :as d]))
+   [datahike.api :as d]
+   [datahike.index.interface :as di]))
 
 (defn- fresh-conn
   ([] (fresh-conn {}))
@@ -38,6 +39,65 @@
                       (= :transact/schema (:error (ex-data ex))) true
                       :else (recur (ex-cause ex))))
               (re-find #":transact/schema" (str (.getMessage e))))))))
+
+(defn- avet-values [db attr]
+  (->> (di/-seq (:avet db))
+       (keep (fn [^datahike.datom.Datom datom]
+               (when (= attr (.-a datom)) (.-v datom))))
+       sort
+       vec))
+
+(deftest db-index-can-be-disabled-without-stranding-avet
+  (let [conn (fresh-conn)
+        _ (d/transact conn [{:db/ident :age
+                             :db/valueType :db.type/long
+                             :db/cardinality :db.cardinality/one}])
+        _ (d/transact conn [{:db/id 1 :age 10} {:db/id 2 :age 20}])
+        _ (d/transact conn [[:db/add :age :db/index true]])
+        indexed-db (d/db conn)]
+    (is (= [10 20] (avet-values indexed-db :age)))
+
+    (d/transact conn [[:db/retract :age :db/index true]])
+    (let [disabled-db (d/db conn)]
+      (is (false? (boolean (get-in disabled-db [:schema :age :db/index]))))
+      (is (empty? (avet-values disabled-db :age))
+          "the disabling root contains no stale current AVET entries")
+      (is (= [10 20] (avet-values indexed-db :age))
+          "the immutable database value from before the transition is unchanged"))
+
+    (d/transact conn [[:db/retract 1 :age 10]
+                      [:db/add 1 :age 30]
+                      [:db/add 3 :age 40]])
+    (is (empty? (avet-values (d/db conn) :age))
+        "later writes do not repopulate a disabled index")
+
+    (d/transact conn [[:db/add :age :db/index true]])
+    (is (= [20 30 40] (avet-values (d/db conn) :age))
+        "re-enabling uses the existing backfill and sees every current value")))
+
+(deftest disabling-explicit-index-preserves-intrinsic-avet-indices
+  (let [conn (fresh-conn)
+        _ (d/transact
+           conn
+           [{:db/ident :email
+             :db/valueType :db.type/string
+             :db/cardinality :db.cardinality/one
+             :db/unique :db.unique/identity
+             :db/index true}
+            {:db/ident :friend
+             :db/valueType :db.type/ref
+             :db/cardinality :db.cardinality/one
+             :db/index true}])
+        _ (d/transact conn [{:db/id 1 :email "one@example.com" :friend 2}
+                            {:db/id 2 :email "two@example.com"}])]
+    (d/transact conn [[:db/retract :email :db/index true]
+                      [:db/retract :friend :db/index true]])
+    (let [db (d/db conn)]
+      (is (= ["one@example.com" "two@example.com"]
+             (avet-values db :email))
+          "unique attributes remain indexed after their redundant flag is removed")
+      (is (= [2] (avet-values db :friend))
+          "reference attributes retain the AVET required by ref semantics"))))
 
 (deftest raw-vector-unique-over-duplicates-rejected
   (let [conn (fresh-conn)]

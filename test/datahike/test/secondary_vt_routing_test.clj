@@ -4,7 +4,7 @@
 
      - vt-aware index (IValidTimeAware)         → -search-at-vt (native)
      - vt-stable index (IValidTimeStable)       → -search (no filter)
-     - plain index                              → -search + post-filter
+     - plain/current-value index                → explicit fail-closed error
 
    Uses mock indices to isolate the routing logic from any specific
    secondary's behavior."
@@ -50,9 +50,33 @@
   (-transact [this _] this)
 
   sec/IValidTimeAware
-  (-search-at-vt [_ _qs _ef _at]
-    (swap! call-log conj :-search-at-vt)
+  (-native-valid-time? [_] true)
+  (-search-at-vt [_ _qs _ef temporal-request]
+    (swap! call-log conj [:-search-at-vt temporal-request])
     ;; Native fast path — pretend we filtered correctly
+    bitset)
+
+  sec/IValidTimeOrdered
+  (-slice-ordered-at-vt [_ _qs _ef _attr _dir _limit temporal-request]
+    (swap! call-log conj [:-slice-ordered-at-vt temporal-request])
+    (mapv (fn [eid] {:entity-id eid :score 0.99})
+          (es/entity-bitset-seq bitset))))
+
+(defrecord MockDisabledVtIndex [bitset call-log]
+  sec/ISecondaryIndex
+  (-search [_ _query-spec _entity-filter]
+    (swap! call-log conj :-search)
+    bitset)
+  (-estimate [_ _] (es/entity-bitset-cardinality bitset))
+  (-can-order? [_ _ _] false)
+  (-slice-ordered [_ _qs _ef _attr _dir _limit] nil)
+  (-indexed-attrs [_] #{})
+  (-transact [this _] this)
+
+  sec/IValidTimeAware
+  (-native-valid-time? [_] false)
+  (-search-at-vt [_ _qs _ef temporal-request]
+    (swap! call-log conj [:-search-at-vt temporal-request])
     bitset))
 
 (defrecord MockVtStableIndex [bitset call-log]
@@ -98,7 +122,28 @@
         vt-db (d/valid-at @conn #inst "2024-02-15")]
     (testing "marker present + vt-aware → -search-at-vt"
       (sec/search-with-vt vt-db idx {} nil)
-      (is (= [:-search-at-vt] @log)))))
+      (is (= [[:-search-at-vt
+               {:system {:mode :current}
+                :valid {:mode :at :at #inst "2024-02-15"}}]]
+             @log)))))
+
+(defn- error-type [f]
+  (try (f) nil
+       (catch clojure.lang.ExceptionInfo e (:type (ex-data e)))))
+
+(deftest disabled-native-valid-time-fails-closed
+  (let [conn (setup-data)
+        bob (d/q '[:find ?e . :where [?e :emp/name "Bob"]] @conn)
+        alice (d/q '[:find ?e . :where [?e :emp/name "Alice"]] @conn)
+        bitset (es/entity-bitset-from-longs [bob alice])
+        log (atom [])
+        idx (->MockDisabledVtIndex bitset log)
+        vt-db (d/valid-at (d/history @conn) #inst "2024-02-15")]
+    (is (not (sec/vt-aware? idx)))
+    (is (= :secondary/temporal-view-unsupported
+           (error-type #(sec/search-with-vt vt-db idx {} nil))))
+    (is (= [] @log)
+        "a current-value generation is not queried before rejection")))
 
 (deftest vt-stable-index-bypasses-post-filter
   (let [conn (setup-data)
@@ -114,7 +159,7 @@
           ;; sanity: caller passed Bob's eid, vt-stable means we trust the index
           (is (= [bob] (vec (es/entity-bitset-seq result)))))))))
 
-(deftest plain-index-applies-post-hoc-filter
+(deftest plain-index-fails-closed-for-historical-values
   (let [conn (setup-data)
         bob  (d/q '[:find ?e . :where [?e :emp/name "Bob"]] @conn)
         alice (d/q '[:find ?e . :where [?e :emp/name "Alice"]] @conn)
@@ -122,33 +167,94 @@
         bitset (es/entity-bitset-from-longs [bob alice])
         log (atom [])
         idx (->MockBitsetIndex bitset log)]
-    (testing "history view + valid-at Feb-15 → only Bob (in his vt-window)"
-      (let [vt-db   (d/valid-at (d/history @conn) #inst "2024-02-15")
-            result  (sec/search-with-vt vt-db idx {} nil)]
-        (is (= [:-search] @log))
-        (testing "post-filter drops Alice (her vt is [Apr, Jul))"
-          (is (= [bob] (vec (es/entity-bitset-seq result)))))))
+    (testing "history requires actual value versions, not visible entity IDs"
+      (let [vt-db (d/valid-at (d/history @conn) #inst "2024-02-15")]
+        (is (= :secondary/temporal-view-unsupported
+               (error-type #(sec/search-with-vt vt-db idx {} nil))))
+        (is (= [] @log))))
     (testing "no marker → -search, full bitset returned"
       (reset! log [])
       (let [result (sec/search-with-vt @conn idx {} nil)]
         (is (= [:-search] @log))
         (is (= #{bob alice} (set (es/entity-bitset-seq result))))))))
 
-(deftest post-hoc-filter-works-on-vec-of-maps
-  ;; slice-ordered returns vec of {:entity-id ... :score ...}; the
-  ;; post-filter must preserve the :score column for survivors.
+(deftest native-valid-time-ordering-runs-before-limit
   (let [conn (setup-data)
         bob  (d/q '[:find ?e . :where [?e :emp/name "Bob"]] @conn)
         alice (d/q '[:find ?e . :where [?e :emp/name "Alice"]] @conn)
         bitset (es/entity-bitset-from-longs [bob alice])
         log (atom [])
-        idx (->MockBitsetIndex bitset log)
+        idx (->MockVtAwareIndex bitset log)
         vt-db (d/valid-at (d/history @conn) #inst "2024-02-15")
         result (sec/slice-ordered-with-vt vt-db idx {} nil nil nil nil)]
-    (testing "slice-ordered + post-filter keeps survivors with their score"
-      (is (= [:-slice-ordered] @log))
-      (is (= 1 (count result)))
-      (is (= bob (:entity-id (first result))))
-      (is (= 0.99 (:score (first result))))
-      (testing "Alice was dropped"
-        (is (not-any? #(= alice (:entity-id %)) result))))))
+    (is (= [[:-slice-ordered-at-vt
+             {:system {:mode :current}
+              :valid {:mode :at :at #inst "2024-02-15"}}]]
+           @log))
+    (is (= #{bob alice} (set (map :entity-id result))))
+    (is (every? #(= 0.99 (:score %)) result))))
+
+(deftest plain-ordered-index-fails-before-limit
+  (let [conn (setup-data)
+        bitset (es/entity-bitset-from-longs [1 2])
+        log (atom [])
+        idx (->MockBitsetIndex bitset log)
+        vt-db (d/valid-at (d/history @conn) #inst "2024-02-15")]
+    (is (= :secondary/temporal-view-unsupported
+           (error-type #(sec/slice-ordered-with-vt
+                         vt-db idx {} nil nil :asc 1))))
+    (is (= [] @log))))
+
+(deftest historical-valid-intervals-fail-closed
+  (let [conn (setup-data)
+        bitset (es/entity-bitset-from-longs [1])
+        log (atom [])
+        idx (->MockVtAwareIndex bitset log)
+        between (d/valid-between (d/history @conn)
+                                 #inst "2024-01-01" #inst "2024-07-01")]
+    ;; Primary history applies interval predicates to transaction events.
+    ;; An SCD secondary may instead contain split current-belief fragments, so
+    ;; only point valid-at has a generally sound history -> current rewrite.
+    (is (= :secondary/temporal-view-unsupported
+           (error-type #(sec/search-with-vt between idx {} nil))))
+    (is (= :secondary/temporal-view-unsupported
+           (error-type #(sec/slice-ordered-with-vt
+                         between idx {} nil nil :asc 1))))
+    (is (= [] @log))))
+
+(deftest composed-filter-provenance-fails-closed
+  (let [conn (setup-data)
+        log (atom [])
+        idx (->MockVtAwareIndex (es/entity-bitset-from-longs [1]) log)
+        at #inst "2024-02-15"
+        arbitrary-then-valid (d/valid-at
+                              (d/filter @conn (fn [_ _] true)) at)
+        chained-valid (d/valid-at (d/valid-at @conn at) at)]
+    (doseq [view [arbitrary-then-valid chained-valid]]
+      (is (= :secondary/temporal-view-unsupported
+             (error-type #(sec/search-with-vt view idx {} nil)))))
+    (is (= [] @log)
+        "flattening FilteredDBs cannot erase an unrepresented predicate")))
+
+(deftest history-preserves-a-nested-system-bound
+  (let [conn (setup-data)
+        log (atom [])
+        idx (->MockVtAwareIndex (es/entity-bitset-from-longs [1]) log)
+        bounded-history (-> @conn
+                            (d/as-of (:max-tx @conn))
+                            d/history
+                            (d/valid-at #inst "2024-02-15"))]
+    (is (= :secondary/temporal-view-unsupported
+           (error-type #(sec/search-with-vt bounded-history idx {} nil))))
+    (is (= [] @log)
+        "an as-of history view never reads the current secondary generation")))
+
+(deftest system-time-and-arbitrary-filter-views-fail-closed
+  (let [conn (setup-data)
+        idx (->MockVtStableIndex (es/entity-bitset-from-longs [1]) (atom []))]
+    (doseq [view [(d/history @conn)
+                  (d/as-of @conn (:max-tx @conn))
+                  (d/since @conn (:max-tx @conn))
+                  (d/filter @conn (constantly true))]]
+      (is (= :secondary/temporal-view-unsupported
+             (error-type #(sec/search-with-vt view idx {} nil)))))))

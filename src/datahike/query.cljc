@@ -1378,6 +1378,24 @@
     (if (or *fold-scalar-ins* (fn? value))
       (assoc-in context [:consts (get-in binding [:variable :symbol])] value)
       (update context :rels conj (in->rel binding value)))
+
+    ;; Preserve the ordinary collection relation for complete Datalog binding
+    ;; semantics, but also expose a native entity bitmap to planned primary
+    ;; scans. Candidate rechecks can then seek/semijoin the requested entities
+    ;; instead of scanning the full AVET/EAVT relation and joining boxed ids
+    ;; afterward. This is an additive JVM fast path; ordinary collections and
+    ;; the CLJS sorted-set representation keep the established behavior.
+    #?(:clj (and (instance? BindColl binding)
+                 (es/entity-bitset? value))
+       :cljs false)
+    #?(:clj
+       (let [entity-var (get-in binding [:binding :variable :symbol])]
+         (-> context
+             (update :rels conj
+                     (in->rel binding (es/entity-bitset-seq value)))
+             (update :entity-filters (fnil assoc {}) entity-var value)))
+       :cljs context)
+
     #_(instance? BindColl binding)                          ;; TODO: later
     :else
     (update context :rels conj (in->rel binding value))))
@@ -1626,7 +1644,7 @@
 
 (defn- resolve-sym [#?(:clj sym :cljs _)]
   #?(:cljs nil
-     :clj (when (namespace sym)
+     :clj (when (and (symbol? sym) (namespace sym))
             (when-some [v (resolve sym)] @v))))
 
 #?(:clj (def ^:private find-method
@@ -1652,12 +1670,13 @@
 
 (defn- resolve-method [#?(:clj method-sym :cljs _)]
   #?(:cljs nil
-     :clj (let [method-str (name method-sym)]
-            (when (= \. (.charAt method-str 0))
-              (let [method-name (subs method-str 1)]
-                (fn [this & args]
-                  (let [^Method method (find-method (class this) method-name (mapv class args))]
-                    (Reflector/prepRet (.getReturnType method) (.invoke method this (into-array Object args))))))))))
+     :clj (when (symbol? method-sym)
+            (let [method-str (name method-sym)]
+              (when (= \. (.charAt method-str 0))
+                (let [method-name (subs method-str 1)]
+                  (fn [this & args]
+                    (let [^Method method (find-method (class this) method-name (mapv class args))]
+                      (Reflector/prepRet (.getReturnType method) (.invoke method this (into-array Object args)))))))))))
 
 (defn filter-by-pred [context clause]
   (let [[[f & args]] clause
@@ -1665,6 +1684,7 @@
         pred (or (get built-ins f)
                  (get clj-core-built-ins f)
                  (context-resolve-val context f)
+                 (when (or (fn? f) (var? f)) f)
                  (resolve-sym f)
                  (resolve-method f)
                  (when (nil? (rel-with-attr context f))
@@ -1689,6 +1709,7 @@
         fun (or (get built-ins f)
                 (get clj-core-built-ins f)
                 (context-resolve-val context f)
+                (when (or (fn? f) (var? f)) f)
                 (resolve-sym f)
                 (resolve-method f)
                 (when (nil? (rel-with-attr context f))
@@ -3833,9 +3854,15 @@
   "Build a plan using the IR pipeline: logical IR → lowering.
    `in-cards` is the value-independent :in cardinality seed (see in-card-seed)."
   [db clauses bound-vars rules in-cards]
-  (let [logical (logical/build-logical-plan db clauses bound-vars rules)
-        plan (lower/lower logical db rules in-cards)]
-    plan))
+  (let [bound-set (if (map? bound-vars) (set (keys bound-vars)) (set bound-vars))
+        scalar-input-vars (set/difference bound-set (set (keys in-cards)))
+        logical (logical/build-logical-plan db clauses bound-vars rules)]
+    ;; Cardinality cannot distinguish a root scalar from a correlated outer var
+    ;; estimated at one row. Lowering consumes this provenance at top level;
+    ;; recursive sub-plan factories deliberately clear it until prepared-plan
+    ;; rebinding can rewrite nested plans soundly.
+    (binding [lower/*scalar-input-vars* scalar-input-vars]
+      (lower/lower logical db rules in-cards))))
 
 #?(:clj
    (defn- key-has-bigdec?
@@ -4032,16 +4059,79 @@
                 (recur (inc i))
                 c))))))))
 
+#?(:clj
+   (defn- bounded-order-by
+     "Return the first `bound` rows under `row-cmp`, retaining only O(bound)
+      entries while reading the complete input.
+
+      The ordinal is part of the private heap key so comparator-equal rows keep
+      the stable input order of the full-sort path. PriorityQueue is a min-heap;
+      `worst-cmp` reverses both row order and ordinal so `.peek` is always the
+      row to evict."
+     [results ^java.util.Comparator row-cmp ^long bound]
+     (let [worst-cmp
+           (reify java.util.Comparator
+             (compare [_ a b]
+               (let [^objects a a
+                     ^objects b b
+                     c (.compare row-cmp (aget b 0) (aget a 0))]
+                 (if (zero? c)
+                   (Long/compare (long (aget b 1)) (long (aget a 1)))
+                   c))))
+           final-cmp
+           (reify java.util.Comparator
+             (compare [_ a b]
+               (let [^objects a a
+                     ^objects b b
+                     c (.compare row-cmp (aget a 0) (aget b 0))]
+                 (if (zero? c)
+                   (Long/compare (long (aget a 1)) (long (aget b 1)))
+                   c))))
+           ^java.util.PriorityQueue heap
+           (java.util.PriorityQueue. (int (max 1 bound)) worst-cmp)]
+       (reduce (fn [^long ordinal row]
+                 (let [^objects entry (object-array 2)
+                       _ (aset entry 0 row)
+                       _ (aset entry 1 (Long/valueOf ordinal))]
+                   (if (< (.size heap) bound)
+                     (.add heap entry)
+                     (let [^objects worst (.peek heap)]
+                       ;; A later comparator-equal row cannot improve stable
+                       ;; input order, so only a strictly better row replaces.
+                       (when (neg? (.compare row-cmp row (aget worst 0)))
+                         (.poll heap)
+                         (.add heap entry))))
+                   (unchecked-inc ordinal)))
+               0
+               results)
+       (mapv (fn [entry] (aget ^objects entry 0))
+             (sort final-cmp (seq (.toArray heap)))))))
+
 (defn- apply-order-by
   "Sort a result set by the given order spec. Returns a vector (not a set)
-   since ordering is meaningful. Applies offset/limit after sorting.
-   Datalog results are already deduplicated, so no set conversion needed."
+  since ordering is meaningful. Applies offset/limit after sorting.
+  Datalog results are already deduplicated, so no set conversion needed."
   [results order-spec offset limit]
-  (let [sorted (sort (order-comparator order-spec) results)]
-    (cond->> sorted
-      offset (drop offset)
-      (and limit (pos? limit)) (take limit)
-      true vec)))
+  (let [cmp (order-comparator order-spec)
+        positive-limit? (and limit (pos? limit))]
+    #?(:clj
+       (let [bound (when positive-limit?
+                     (+' (long (max 0 (or offset 0))) (long limit)))]
+         (if (and bound
+                  (<= bound Integer/MAX_VALUE)
+                  (< bound (count results)))
+           (cond->> (bounded-order-by results cmp (long bound))
+             offset (drop offset)
+             true vec)
+           (cond->> (sort cmp results)
+             offset (drop offset)
+             positive-limit? (take limit)
+             true vec)))
+       :cljs
+       (cond->> (sort cmp results)
+         offset (drop offset)
+         positive-limit? (take limit)
+         true vec))))
 
 (declare planner-eligible-db? planner-origin-db connected-components)
 
@@ -4977,7 +5067,25 @@
   [plan db qfind find-elements context-in query all-vars
    result-arity lookup-ref-reverse-map order-spec offset limit
    stats? qreturnmaps]
-  (let [exec-direct-rel #?(:clj (requiring-resolve 'datahike.query.execute/execute-plan-direct-rel)
+  (let [;; Prepared scalar/tuple inputs remain one-tuple relations so the
+        ;; cached plan is value-free. The direct prepared executor rebinds its
+        ;; copy before opening an index slice; do the same when a predicate,
+        ;; aggregate, pull, or another unsupported shape routes that plan to
+        ;; the relation executor. Keep the input relation in the context — it
+        ;; still supplies ordinary joins and projected input variables.
+        rel-consts (when (and (prepared-execution?) (seq (:rels context-in)))
+                     (#?(:clj (requiring-resolve
+                               'datahike.query.execute/singleton-rel-consts)
+                         :cljs execute/singleton-rel-consts)
+                      (:rels context-in)))
+        plan (if (seq rel-consts)
+               (or (#?(:clj (requiring-resolve
+                             'datahike.query.execute/bind-plan-consts)
+                       :cljs execute/bind-plan-consts)
+                    plan rel-consts)
+                   plan)
+               plan)
+        exec-direct-rel #?(:clj (requiring-resolve 'datahike.query.execute/execute-plan-direct-rel)
                            :cljs execute/execute-plan-direct-rel)
         ;; Only take the direct-rel fast path when there are NO input relations.
         ;; That path executes the plan from scratch and `collapse-rels`-joins the

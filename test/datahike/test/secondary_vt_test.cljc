@@ -116,9 +116,10 @@
                (fnil conj []) {:e (.-e datom) :vf vf :vt vt})))
     this)
   sec/IValidTimeAware
-  (-search-at-vt [_ query _entity-filter valid-at-window]
+  (-native-valid-time? [_] true)
+  (-search-at-vt [_ query _entity-filter temporal-request]
     (let [windows (get-in @content-map [query :windows] [])
-          at (if (vector? valid-at-window) (first valid-at-window) valid-at-window)]
+          at (get-in temporal-request [:valid :at])]
       (into #{}
             (keep (fn [{:keys [e vf vt]}]
                     (when (and (not (.before ^Date at ^Date vf))
@@ -142,5 +143,11 @@
                             :tx-meta {:db.valid/from #inst "2024-07-01"
                                       :db.valid/to   #inst "9999-12-31"}})
         (is (= #{1 2} (sec/-search idx "Bob" nil)))
-        (is (= #{1} (sec/-search-at-vt idx "Bob" nil #inst "2024-04-15")))
-        (is (= #{2} (sec/-search-at-vt idx "Bob" nil #inst "2024-09-15")))))))
+        (is (= #{1} (sec/-search-at-vt
+                     idx "Bob" nil
+                     {:system {:mode :current}
+                      :valid {:mode :at :at #inst "2024-04-15"}})))
+        (is (= #{2} (sec/-search-at-vt
+                     idx "Bob" nil
+                     {:system {:mode :current}
+                      :valid {:mode :at :at #inst "2024-09-15"}})))))))

@@ -1,6 +1,7 @@
 (ns datahike.test.secondary-dynamic-test
   "Tests for dynamic secondary index creation via schema transactions."
   (:require
+   [clojure.core.async :as async]
    [clojure.test :refer [deftest testing is use-fixtures]]
    [datahike.api :as d]
    [datahike.gc-guard :as guard]
@@ -12,6 +13,11 @@
    [superv.async :refer [<?? S]]))
 
 (defonce slow-build-control (atom nil))
+
+(defn- delivered [value]
+  (let [ch (async/promise-chan)]
+    (async/put! ch value)
+    ch))
 
 (defrecord SlowImmutableIndex [attrs events values]
   sec/ISecondaryIndex
@@ -39,6 +45,11 @@
    (fn [config _db]
      (->SlowImmutableIndex (set (:attrs config)) [] #{}))))
 
+(defrecord RecorderPreparation [index]
+  sec/IPreparedSecondaryGeneration
+  (-sec-generation-index [_] index)
+  (-sec-release [_ _] (delivered true)))
+
 (defrecord VersionedRecorder [attrs flushes restores]
   sec/ISecondaryIndex
   (-search [_ _ _] nil)
@@ -48,15 +59,18 @@
   (-indexed-attrs [_] attrs)
   (-transact [this _] this)
 
-  sec/IVersionedSecondaryIndex
-  (-sec-flush [_ _ _]
+  sec/IDurableSecondaryIndex
+  (-sec-generation-key-map [_]
+    {:type :test/versioned-recorder
+     :format-version 1
+     :storage-owner :external
+     :root :complete})
+  (-sec-prepare [this _]
     (swap! flushes inc)
-    {:type :test/versioned-recorder :root :complete})
+    (delivered (->RecorderPreparation this)))
   (-sec-restore [this _ _]
     (swap! restores inc)
-    this)
-  (-sec-branch [this _ _ _] this)
-  (-sec-mark [_] #{}))
+    this))
 
 (defonce versioned-recorder-control
   (atom {:flushes (atom 0) :restores (atom 0)}))
@@ -64,9 +78,14 @@
 (defonce _register-versioned-recorder
   (sec/register-index-type!
    :test/versioned-recorder
-   (fn [config _db]
-     (let [{:keys [flushes restores]} @versioned-recorder-control]
-       (->VersionedRecorder (set (:attrs config)) flushes restores)))))
+   {:create
+    (fn [config _db]
+      (let [{:keys [flushes restores]} @versioned-recorder-control]
+        (->VersionedRecorder (set (:attrs config)) flushes restores)))
+    :storage-owner :external
+    :validate-generation identity
+    :mark-generation (fn [_ _] #{})
+    :external-root (fn [_] {:secondary-type :test/versioned-recorder})}))
 
 (defn- await-status [conn idx-ident status]
   (let [deadline (+ (System/currentTimeMillis) 5000)]
@@ -261,11 +280,13 @@
               (is (= (select-keys head [:eavt-key :aevt-key :avet-key])
                      (select-keys pinned [:eavt-key :aevt-key :avet-key]))
                   "and the root names the very trees the scan is reading")
-              ;; Offline GC no longer refuses; it collects around the pin. The
-              ;; scan then completes against the pinned snapshot below, which
-              ;; is the proof the pin held.
-              (is (set? (<?? S (d/gc-storage conn (java.util.Date.))))
-                  "offline GC runs during the scan instead of raising"))
+              ;; The snapshot pin protects the READ side. The adapter's private
+              ;; Konserve writes are not yet named by a durable checkpoint, so
+              ;; a collector in another process must defer its SWEEP while the
+              ;; durable head says :building. Writes remain fully available.
+              (is (empty? (<?? S (d/gc-storage conn (java.util.Date.)
+                                               {:min-age-ms 0})))
+                  "offline GC defers rather than sweeping an unpublished build"))
 
             ;; Both transactions complete while the backfill is paused. The
             ;; card-one replacement contributes a retract and an assertion.
@@ -278,8 +299,9 @@
             ;; `(Date.)` as remove-before that snapshot's own nodes are garbage
             ;; to everything but the pin. A collector that ignored the registry
             ;; would sweep them here and the scan below could not finish.
-            (is (set? (<?? S (d/gc-storage conn (java.util.Date.))))
-                "a full-range collection with the head advanced still succeeds")
+            (is (empty? (<?? S (d/gc-storage conn (java.util.Date.)
+                                             {:min-age-ms 0})))
+                "the durable :building state remains a cross-process GC fence")
 
             (deliver release true)
             (is (= :ready (await-status conn :idx/slow :ready)))
@@ -292,15 +314,18 @@
               (is (not (guard/in-flight? (get-in cfg [:store :id])))
                   "the ready commit releases the build's GC guard")
               (is (empty? (<?? S (roots/roots (:store @conn))))
-                  "the ready commit releases the snapshot's durable root")))
+                  "the ready commit releases the snapshot's durable root")
+              (is (seq (<?? S (d/gc-storage conn (java.util.Date.)
+                                            {:min-age-ms 0})))
+                  "sweeping resumes once the durable head is :ready")))
           (finally
             (reset! slow-build-control nil)
             (deliver release true)
             (d/release conn)
             (d/delete-database cfg)))))))
 
-(deftest building-versioned-index-is-not-published
-  (testing "partial building state is neither flushed nor carried as durable authority"
+(deftest building-durable-index-is-not-published
+  (testing "partial building state is neither prepared nor carried as durable authority"
     (let [cfg {:store {:backend :memory :id (random-uuid)}
                :keep-history? false
                :schema-flexibility :write}
@@ -477,7 +502,7 @@
         (d/release conn)
 
         ;; Reconnect — recovery should detect :building (no stored key-map
-        ;; since the recorder type doesn't implement IVersionedSecondaryIndex)
+        ;; since the recorder is a transient/rebuildable adapter)
         ;; and run build + install to transition to :ready.
         (let [conn2 (d/connect cfg)]
           (try
@@ -488,4 +513,45 @@
             (finally
               (d/release conn2))))
         (finally
+          (d/delete-database cfg))))))
+
+(deftest ready-transient-index-materializes-as-building
+  (testing "a committed :ready schema cannot make a newly restored empty
+            transient index queryable before AEVT recovery"
+    (let [cfg {:store {:backend :memory :id (random-uuid)}
+               :writer {:backend :self :writer-ownership :exclusive}
+               :schema-flexibility :write}
+          _ (d/create-database cfg)
+          conn (d/connect cfg)]
+      (try
+        (d/transact conn [{:db/ident :person/name
+                           :db/valueType :db.type/string
+                           :db/cardinality :db.cardinality/one}
+                          {:db/ident :idx/transient
+                           :db.secondary/type :test/dynamic-recorder
+                           :db.secondary/attrs [:person/name]}])
+        (d/transact conn [{:person/name "Alice"}])
+        (loop [deadline (+ (System/currentTimeMillis) 5000)]
+          (when (and (not= :ready
+                           (get-in (d/db conn)
+                                   [:schema :idx/transient :db.secondary/status]))
+                     (< (System/currentTimeMillis) deadline))
+            (Thread/sleep 10)
+            (recur deadline)))
+        (let [store (:store @conn)
+              stored (k/get store :db nil {:sync? true})
+              stored-schema (:schema
+                             (k/get store (:schema-meta-key stored) nil
+                                    {:sync? true}))
+              restored (writing/stored->db stored store)]
+          (is (= :ready
+                 (get-in stored-schema
+                         [:idx/transient :db.secondary/status]))
+              "the durable schema records completion of the previous process")
+          (is (= :building
+                 (get-in restored [:schema :idx/transient :db.secondary/status]))
+              "the process-local empty skeleton is fail-closed")
+          (is (false? (sec/query-eligible? restored :idx/transient))))
+        (finally
+          (d/release conn)
           (d/delete-database cfg))))))

@@ -175,7 +175,7 @@
    - op is a range operator
    - ?var appears as the value variable of a pattern with an indexed attribute
    Returns nil if not pushable."
-  [pred-info pattern-infos bound-vars]
+  [pred-info pattern-infos bound-vars scalar-input-vars]
   (let [args (:args pred-info)
         op (:fn-sym pred-info)]
     (when (and (contains? range-ops op)
@@ -192,6 +192,23 @@
                    (not (free-var? arg1)))
               [arg2 arg1 true]
 
+              ;; Prepared execution deliberately keeps scalar :in values out
+              ;; of the query form so one plan can serve every value. Such a
+              ;; value is still a sound per-call index bound, but CARDINALITY
+              ;; cannot identify it: a correlated outer variable may also have
+              ;; one estimated value. The root lowering scope therefore carries
+              ;; scalar/tuple input provenance explicitly. Nested plans decline
+              ;; this optimization until prepared-plan rebinding reaches them.
+              ;; execute/bind-plan-consts replaces this symbol before opening
+              ;; the top-level index slice.
+              (and (free-var? arg1) (free-var? arg2)
+                   (contains? scalar-input-vars arg2))
+              [arg1 arg2 false]
+
+              (and (free-var? arg1) (free-var? arg2)
+                   (contains? scalar-input-vars arg1))
+              [arg2 arg1 true]
+
               ;; A var-vs-var comparison is NOT pushable. These two cases used
               ;; to treat a "bound" var as a constant and hand the SYMBOL to
               ;; `pushdown-to-bounds`, which wrote it straight into the index
@@ -202,13 +219,12 @@
               ;;   [:find ?x :in $ [?y ...] :where [?x :e ?v] [(= ?y ?v)]]  -> #{}
               ;;   (not-join [?a] [?a :e ?b] [(= ?a ?b)])   -> negation ignored
               ;;   (not-join [?a] [?a :e ?b] [(> ?b ?a)])   -> ClassCastException
-              ;; Nothing is lost by declining: a var bound to a single value is
-              ;; const-FOLDED into the clause before planning, so the ordinary
-              ;; `(op ?var const)` branch above already covers `[(> ?s ?min)]`
-              ;; with a scalar `:in`. A var that survives to here is bound to a
+              ;; Nothing is lost by declining: a root scalar/tuple input took
+              ;; the explicit-provenance branch above (or was const-folded in a
+              ;; one-off query). A var that survives to here is bound to a
               ;; DIFFERENT value per row — a collection binding, an earlier
               ;; pattern's variable, an enclosing scope's — which is precisely
-              ;; what an index bound cannot express.
+              ;; what one index bound cannot express.
               :else nil)]
         (when var-sym
           ;; Find pattern clauses where var-sym is the value variable
@@ -231,20 +247,23 @@
    pattern scans. Returns a map:
    {:pushdowns {pattern-clause → [{:op :const-val :var}...]}
     :consumed #{consumed-predicate-clauses}}"
-  [classified-clauses bound-vars]
-  (let [patterns (filterv #(= :pattern (:type %)) classified-clauses)
-        predicates (filterv #(= :predicate (:type %)) classified-clauses)]
-    (reduce
-     (fn [acc pred-info]
-       (if-let [push (pushable-pred? pred-info patterns bound-vars)]
-         (-> acc
-             (update-in [:pushdowns (:pattern-clause push)]
-                        (fnil conj [])
-                        (select-keys push [:op :const-val :var :pred-clause]))
-             (update :consumed (fnil conj #{}) (:pred-clause push)))
-         acc))
-     {:pushdowns {} :consumed #{}}
-     predicates)))
+  ([classified-clauses bound-vars]
+   (detect-pushdown classified-clauses bound-vars nil))
+  ([classified-clauses bound-vars scalar-input-vars]
+   (let [patterns (filterv #(= :pattern (:type %)) classified-clauses)
+         predicates (filterv #(= :predicate (:type %)) classified-clauses)]
+     (reduce
+      (fn [acc pred-info]
+        (if-let [push (pushable-pred? pred-info patterns bound-vars
+                                      scalar-input-vars)]
+          (-> acc
+              (update-in [:pushdowns (:pattern-clause push)]
+                         (fnil conj [])
+                         (select-keys push [:op :const-val :var :pred-clause]))
+              (update :consumed (fnil conj #{}) (:pred-clause push)))
+          acc))
+      {:pushdowns {} :consumed #{}}
+      predicates))))
 
 ;; ---------------------------------------------------------------------------
 ;; Schema introspection helpers

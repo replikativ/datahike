@@ -2,6 +2,7 @@
   "Focused tests for the optional paged secondary candidate contract."
   (:require
    [clojure.test :refer [deftest is testing]]
+   [datahike.core :as dcore]
    [datahike.db :as db]
    [datahike.index.secondary :as sec]))
 
@@ -49,6 +50,103 @@
                      #(sec/candidate-page
                        (db/empty-db {}) :idx/legacy idx {} nil {:limit 10}))))))))
 
+(deftest current-value-candidate-scan-fails-closed-at-valid-time
+  (let [calls (atom [])
+        page {:candidates []
+              :precision :exact
+              :recall :complete
+              :ordering :none
+              :exhausted? true
+              :continuation nil
+              :stop-reason :source-exhausted}
+        idx (candidate-index calls page)
+        vt-db (vary-meta (db/empty-db {}) assoc
+                         :datahike/valid-at #inst "2024-02-15")]
+    (is (= :secondary/temporal-view-unsupported
+           (:type (error-data
+                   #(sec/candidate-page vt-db :idx/search idx {} nil
+                                        {:limit 10})))))
+    (is (= [] @calls)
+        "the current generation is not queried before rejection")))
+
+(deftest candidate-scan-cancellation-is-optional-and-idempotent
+  (let [closed (atom [])
+        idx (reify
+              sec/ISecondaryCandidateScanLifecycle
+              (-close-candidate-scan [_ continuation]
+                (swap! closed conj continuation)))]
+    (is (nil? (sec/close-candidate-scan! idx :cursor)))
+    (is (nil? (sec/close-candidate-scan! idx :cursor)))
+    (is (nil? (sec/close-candidate-scan! idx false)))
+    (is (= [:cursor :cursor false] @closed)
+        "the adapter owns idempotence because it owns the resource")
+    (is (nil? (sec/close-candidate-scan! (legacy-index) :ignored)))
+    (is (nil? (sec/close-candidate-scan! idx nil)))))
+
+(deftest candidate-page-validation-closes-unreturnable-continuations
+  (let [closed (atom [])
+        idx (reify
+              sec/ISecondaryIndex
+              (-search [_ _ _] nil)
+              (-estimate [_ _] 0)
+              (-can-order? [_ _ _] false)
+              (-slice-ordered [_ _ _ _ _ _] nil)
+              (-indexed-attrs [_] #{:doc/body})
+              (-transact [this _] this)
+
+              sec/ISecondaryCandidateScan
+              (-candidate-page [_ _ _ _]
+                {:candidates []
+                 :precision :invalid
+                 :recall :complete
+                 :ordering :none
+                 :exhausted? false
+                 :continuation :returned})
+
+              sec/ISecondaryCandidateScanLifecycle
+              (-close-candidate-scan [_ continuation]
+                (swap! closed conj continuation)))]
+    (is (= :invalid-secondary-candidate-page
+           (:type (error-data
+                   #(sec/candidate-page
+                     (db/empty-db {}) :idx/search idx {} nil
+                     {:limit 1 :continuation :request})))))
+    (is (= [:returned :request] @closed)
+        "core closes the advanced token and the caller's input token")))
+
+(deftest temporal-normalization-closes-the-request-continuation
+  (let [closed (atom [])
+        calls (atom 0)
+        idx (reify
+              sec/ISecondaryIndex
+              (-search [_ _ _] nil)
+              (-estimate [_ _] 0)
+              (-can-order? [_ _ _] false)
+              (-slice-ordered [_ _ _ _ _ _] nil)
+              (-indexed-attrs [_] #{:doc/body})
+              (-transact [this _] this)
+
+              sec/ISecondaryCandidateScan
+              (-candidate-page [_ _ _ _]
+                (swap! calls inc))
+
+              sec/ISecondaryCandidateScanLifecycle
+              (-close-candidate-scan [_ continuation]
+                (swap! closed conj continuation)))
+        ;; A valid marker cannot make an arbitrary FilteredDB predicate
+        ;; representable. Normalization rejects before adapter dispatch.
+        invalid-view (-> (dcore/filter (db/empty-db {}) (fn [_ _] true))
+                         (vary-meta assoc
+                                    :datahike/valid-at #inst "2024-02-15"))]
+    (is (= :secondary/temporal-view-unsupported
+           (:type (error-data
+                   #(sec/candidate-page
+                     invalid-view :idx/search idx {} nil
+                     {:limit 1 :continuation :request})))))
+    (is (= 0 @calls))
+    (is (= [:request] @closed)
+        "core owns and closes an input token even when view dispatch fails")))
+
 (deftest candidate-page-preserves-independent-correctness-axes
   (doseq [[precision recall ordering]
           [[:exact :complete :exact]
@@ -86,13 +184,17 @@
                :recall :complete
                :ordering :none
                :exhausted? true
-               :continuation nil}
+               :continuation nil
+               :stop-reason :source-exhausted}
         invalid-pages [(assoc valid :precision :lossy)
                        (assoc valid :recall :unknown)
                        (assoc valid :ordering :ranked)
                        (assoc valid :exhausted? :yes)
                        (assoc valid :continuation :after)
                        (assoc valid :exhausted? false :continuation nil)
+                       (dissoc valid :stop-reason)
+                       (assoc valid :stop-reason :made-up)
+                       (assoc valid :stats {:visited -1})
                        (assoc valid :candidates [{:entity-id 1}])
                        (assoc valid :candidates [{:attribute :doc/body}])]]
     (is (= valid (sec/validate-candidate-page valid)))
@@ -119,7 +221,8 @@
                     :recall :complete
                     :ordering :exact
                     :exhausted? true
-                    :continuation nil}]
+                    :continuation nil
+                    :stop-reason :source-exhausted}]
     (is (= [first-page final-page]
            (sec/validate-candidate-scan [first-page final-page])))
 
@@ -132,7 +235,8 @@
                     final-page]
                    [first-page (assoc final-page
                                       :exhausted? false
-                                      :continuation :more)]]]
+                                      :continuation :more
+                                      :stop-reason nil)]]]
       (is (= :invalid-secondary-candidate-scan
              (:type (error-data #(sec/validate-candidate-scan pages))))
           (pr-str pages)))))
@@ -144,7 +248,8 @@
                                     :recall :complete
                                     :ordering :none
                                     :exhausted? true
-                                    :continuation nil})]
+                                    :continuation nil
+                                    :stop-reason :source-exhausted})]
     (doseq [request [nil {} {:limit 0} {:limit -1} {:limit 1.5}]]
       (is (= :invalid-secondary-candidate-request
              (:type (error-data
@@ -161,7 +266,8 @@
               :recall :complete
               :ordering :none
               :exhausted? true
-              :continuation nil})]
+              :continuation nil
+              :stop-reason :source-exhausted})]
     (is (= :invalid-secondary-candidate-page
            (:type (error-data
                    #(sec/candidate-page
@@ -174,7 +280,8 @@
                 :recall :complete
                 :ordering :none
                 :exhausted? true
-                :continuation nil}
+                :continuation nil
+                :stop-reason :source-exhausted}
         idx (candidate-index calls result)
         base (db/empty-db {:idx/search {:db.secondary/status :ready}})]
     (doseq [status [:building :disabled :failed]]

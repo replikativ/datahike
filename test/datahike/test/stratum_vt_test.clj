@@ -39,7 +39,18 @@
 
 (defn- vt-rows [conn idx-ident]
   (vec (st/q {:from (index-dataset conn idx-ident)
-              :select [:eid :_valid_from :_valid_to :name :salary]})))
+              :select [:eid
+                       :_valid_from :_valid_to
+                       :_system_from :_system_to
+                       :name :salary]})))
+
+(defn- error-data [f]
+  (try (f) nil
+       (catch clojure.lang.ExceptionInfo e (ex-data e))))
+
+(defn- at-request [at]
+  {:system {:mode :current}
+   :valid {:mode :at :at at}})
 
 (defn- register-vt-index! [conn]
   (d/transact conn [{:db/ident :emp/name
@@ -117,14 +128,104 @@
         (let [bs (sec/-search-at-vt idx
                                     {:where [[:= :salary 100000]]}
                                     nil
-                                    #inst "2024-04-15")]
+                                    (at-request #inst "2024-04-15"))]
           (is (not (.isEmpty bs)))))
       (testing "valid-at #inst 2024-09-15 → only tx2's row matches"
         (let [bs (sec/-search-at-vt idx
                                     {:where [[:= :salary 110000]]}
                                     nil
-                                    #inst "2024-09-15")]
+                                    (at-request #inst "2024-09-15"))]
           (is (not (.isEmpty bs))))))))
+
+(deftest point-valid-time-order-and-candidate-page-filter-before-limit
+  (let [conn (fresh-conn)]
+    (register-vt-index! conn)
+    (d/transact conn {:tx-data [{:emp/name "Bob" :emp/salary 100000}]
+                      :tx-meta {:db.valid/from #inst "2024-01-01"
+                                :db.valid/to #inst "2024-07-01"}})
+    (d/transact conn {:tx-data [{:emp/name "Bob" :emp/salary 110000}]
+                      :tx-meta {:db.valid/from #inst "2024-07-01"}})
+    (let [db (d/valid-at (d/db conn) #inst "2024-04-15")
+          idx (-> (d/db conn) :secondary-indices :idx/employees)
+          query-spec {:attribute :emp/salary
+                      :direction :asc
+                      :where []}
+          ordered (sec/slice-ordered-with-vt
+                   db idx query-spec nil :emp/salary :asc 1)
+          page (sec/candidate-page
+                db :idx/employees idx query-spec nil {:limit 1})]
+      (is (= [100000] (mapv :value ordered)))
+      (is (= [100000] (mapv :value (:candidates page))))
+      (is (:exhausted? page)))))
+
+(deftest secondary-value-keeps-a-finite-current-valid-window
+  (let [conn (fresh-conn)]
+    (register-vt-index! conn)
+    (let [eid (get-in
+               (d/transact conn
+                           {:tx-data [{:db/id -1
+                                       :emp/name "Bob"
+                                       :emp/salary 100000}]
+                            :tx-meta {:db.valid/from #inst "2024-01-01"
+                                      :db.valid/to #inst "2024-07-01"}})
+               [:tempids -1])
+          idx (-> (d/db conn) :secondary-indices :idx/employees)]
+      (is (= 100000 (sec/-sec-value idx :emp/salary eid))))))
+
+(deftest populated-valid-time-build-refuses-invented-history
+  (let [conn (fresh-conn)]
+    (d/transact conn [{:db/ident :emp/salary
+                       :db/valueType :db.type/long
+                       :db/cardinality :db.cardinality/one}])
+    (d/transact conn [{:emp/salary 100000}])
+    (let [failure (error-data
+                   #(sec/create-index :stratum
+                                      {:attrs #{:emp/salary}
+                                       :valid-time true}
+                                      (d/db conn)))]
+      (is (= :secondary/stratum-valid-time-backfill-required
+             (:type failure)))
+      (is (= 1 (:row-count failure))))))
+
+(deftest schema-registration-refuses-current-value-vt-backfill
+  (let [conn (fresh-conn)]
+    (d/transact conn [{:db/ident :emp/salary
+                       :db/valueType :db.type/long
+                       :db/cardinality :db.cardinality/one}])
+    (d/transact conn [{:emp/salary 100000}])
+    (let [failure (error-data
+                   #(d/transact
+                     conn
+                     [{:db/ident :idx/employees
+                       :db.secondary/type :stratum
+                       :db.secondary/attrs [:emp/salary]
+                       :db.secondary/config {:valid-time true}}]))]
+      (is (= :secondary/transaction-history-backfill-required
+             (:type failure)))
+      (is (nil? (get-in (d/schema (d/db conn))
+                        [:idx/employees :db.secondary/status])))
+      (is (nil? (get-in (d/db conn)
+                        [:secondary-indices :idx/employees]))
+          "the failed transaction publishes neither :building nor an index"))))
+
+(deftest secondary-system-axis-uses-the-primary-transaction-instants
+  (let [conn (fresh-conn)
+        first-instant #inst "2030-01-01T00:00:00.100Z"
+        second-instant #inst "2030-01-01T00:00:00.101Z"]
+    (register-vt-index! conn)
+    (d/transact conn {:tx-data [{:emp/name "Bob" :emp/salary 100000}]
+                      :tx-meta {:db/txInstant first-instant
+                                :db.valid/from #inst "2024-01-01"}})
+    (d/transact conn {:tx-data [{:emp/name "Bob" :emp/salary 110000}]
+                      :tx-meta {:db/txInstant second-instant
+                                :db.valid/from #inst "2024-07-01"}})
+    (let [rows (vt-rows conn :idx/employees)
+          old-row (first (filter #(= 100000 (:salary %)) rows))
+          new-row (first (filter #(= 110000 (:salary %)) rows))]
+      (is (= 1893456000100000 (:_system_from old-row)))
+      (is (= 1893456000101000 (:_system_to old-row)))
+      (is (= 1893456000101000 (:_system_from new-row)))
+      (is (= Long/MAX_VALUE (:_system_to new-row))))))
 
 ;; ============================================================================
 ;; vt-mode off — adapter still works (regression / parity check)
@@ -140,6 +241,9 @@
                              :db.secondary/config {}
                              :db.secondary/status :ready}])
         ds (index-dataset conn :idx/employees-plain)]
+    (testing "an ordinary Stratum generation declines native valid-time search"
+      (is (not (sec/vt-aware?
+                (-> (d/db conn) :secondary-indices :idx/employees-plain)))))
     (testing "no :bitemporal in metadata → no vt-config exposed"
       (is (nil? (:bitemporal (:metadata ds)))))
     (testing "no _valid_from / _valid_to columns"
@@ -149,10 +253,10 @@
 ;; ============================================================================
 ;; Versioning — release/reconnect + branch round-trip preserve SCD2 layout
 ;;
-;; The adapter implements IVersionedSecondaryIndex (-sec-flush calls
-;; `stratum.dataset/sync!`, -sec-restore calls `stratum.dataset/load`).
+;; The adapter implements the immutable durable-generation lifecycle
+;; (`-sec-prepare` seals, `-sec-restore` opens the exact generation).
 ;; Stratum commit 1 (feature/valid-time) made `:metadata {:valid-time
-;; ...}` round-trip through sync!/load; these tests confirm the
+;; ...}` round-trip through seal/open; these tests confirm the
 ;; integration end-to-end through the datahike write/read path.
 
 (defn- file-cfg []
@@ -221,20 +325,20 @@
                                      {:where [[:= :salary 100000]]}
                                      nil)]
           (is (not (.isEmpty bs)))))
-      (testing "search-with-vt without marker → plain -search (no vt filter applied)"
-        (let [bs-no-marker (sec/search-with-vt db idx
-                                               {:where [[:= :salary 100000]]}
-                                               nil)
+      (testing "an unqualified query declines the audit representation"
+        (let [plain-error (error-data
+                           #(sec/search-with-vt db idx
+                                                {:where [[:= :salary 100000]]}
+                                                nil))
               bs-marker (sec/search-with-vt
                          (d/valid-at db #inst "2024-09-15")  ;; after the closed window
                          idx
                          {:where [[:= :salary 100000]]}
                          nil)]
-          ;; Both queries ask for salary=100000. Without marker → returns
-          ;; entity 4 (the row with salary 100k exists in the dataset).
-          ;; With marker at 2024-09-15 → that row's window is [2024-01-01,
-          ;; 2024-07-01), which doesn't contain 2024-09-15 → no match.
-          (is (not (.isEmpty bs-no-marker)) "without marker, plain search finds salary=100k")
+          (is (= :secondary/stratum-temporal-view-unsupported
+                 (:type plain-error)))
+          (is (= :primary-current-row-not-represented
+                 (:reason plain-error)))
           (is (.isEmpty bs-marker) "with valid-at after the window, vt-pushdown filters the row out"))))))
 
 (deftest vt-mode-survives-branch
@@ -292,7 +396,8 @@
     (d/transact conn {:tx-meta {:db/txInstant #inst "2024-08-01T00:00:00Z"
                                 :db.valid/from #inst "2024-07-01"}
                       :tx-data [{:emp/name "Bob" :emp/salary 110000}]})
-    (let [ds (index-dataset conn :idx/employees)
+    (let [idx (-> (d/db conn) :secondary-indices :idx/employees)
+          ds (index-dataset conn :idx/employees)
           rows (vec (st/q {:from ds
                            :select [:eid :salary :_valid_from :_valid_to
                                     :_system_from :_system_to]}))]
@@ -336,4 +441,14 @@
           (is (some? current))
           (is (= 110000 (:salary current)))
           (is (= tx2-instant (:_system_from current)))
-          (is (= Long/MAX_VALUE (:_system_to current))))))))
+          (is (= Long/MAX_VALUE (:_system_to current)))))
+      (testing "native valid-at selects the current system belief before matching"
+        (is (.isEmpty
+             (sec/search-with-vt
+              (d/valid-at (d/db conn) #inst "2024-09-01")
+              idx {:where [[:= :salary 100000]]} nil))
+            "the preserved pre-correction row is system-closed")
+        (is (not (.isEmpty
+                  (sec/search-with-vt
+                   (d/valid-at (d/db conn) #inst "2024-09-01")
+                   idx {:where [[:= :salary 110000]]} nil))))))))

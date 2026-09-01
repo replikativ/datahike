@@ -27,6 +27,18 @@
       (is (es/entity-bitset-contains? bs 1000))
       (is (not (es/entity-bitset-contains? bs 2)))))
 
+  (testing "the JVM representation preserves the full entity-id domain"
+    (let [low 1
+          high (inc (bit-shift-left 1 32))
+          negative -7
+          bs (es/entity-bitset-from-longs [low high negative])]
+      (is (= 3 (es/entity-bitset-cardinality bs)))
+      (is (every? #(es/entity-bitset-contains? bs %)
+                  [low high negative]))
+      (is (= #{low high negative} (set (es/entity-bitset-seq bs))))
+      (is (not= low high)
+          "ids separated by 2^32 must never alias through an int cast")))
+
   (testing "from-longs"
     (let [bs (es/entity-bitset-from-longs [10 20 30 40 50])]
       (is (= 5 (es/entity-bitset-cardinality bs)))
@@ -78,7 +90,62 @@
 
   (testing "unknown type throws"
     (is (thrown-with-msg? clojure.lang.ExceptionInfo #"Unknown secondary index type"
-                          (sec/create-index :nonexistent/type {} nil)))))
+                          (sec/create-index :nonexistent/type {} nil))))
+
+  (testing "durable generation operations share the adapter registration"
+    (let [validated (atom 0)
+          marked (atom 0)
+          exported (atom 0)
+          generation {:type :test/generation-descriptor
+                      :format-version 1
+                      :storage-owner :external
+                      :generation-id :g1}]
+      (sec/register-index-type!
+       :test/generation-descriptor
+       {:create (fn [_ _] nil)
+        :storage-owner :external
+        :validate-generation (fn [key-map]
+                               (swap! validated inc)
+                               key-map)
+        :mark-generation (fn [key-map store]
+                           (swap! marked inc)
+                           #{[store (:generation-id key-map)]})
+        :external-root (fn [key-map]
+                         (swap! exported inc)
+                         (select-keys key-map [:generation-id]))})
+      (is (= #{[:primary :g1]}
+             (sec/mark-from-key-map generation :primary)))
+      (is (= {:generation-id :g1}
+             (sec/external-root-from-key-map generation)))
+      (is (= 2 @validated))
+      (is (= 1 @marked))
+      (is (= 1 @exported))))
+
+  (testing "an incomplete durable descriptor is rejected at registration"
+    (is (= {:type :secondary/incomplete-durable-adapter
+            :missing-operation :mark-generation}
+           (select-keys
+            (ex-data
+             (try
+               (sec/register-index-type!
+                :test/incomplete-durable
+                {:create (fn [_ _] nil)
+                 :storage-owner :datahike
+                 :validate-generation identity})
+               (catch clojure.lang.ExceptionInfo failure failure)))
+            [:type :missing-operation]))))
+
+  (testing "a registered durable type without a marker fails closed"
+    (sec/register-index-type! :test/missing-marker (fn [_ _] nil))
+    (is (= :secondary/missing-generation-marker
+           (:type
+            (ex-data
+             (try
+               (sec/mark-from-key-map {:type :test/missing-marker
+                                       :format-version 1
+                                       :storage-owner :datahike}
+                                      nil)
+               (catch clojure.lang.ExceptionInfo failure failure))))))))
 
 ;; ---------------------------------------------------------------------------
 ;; Schema rschema mapping tests

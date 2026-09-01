@@ -119,6 +119,29 @@
   (-time-point [db])
   (-origin [db]))
 
+(defprotocol ISecondaryView
+  "Expose secondary generations through database views without treating those
+   views as maps.
+
+   `FilteredDB` deliberately rejects map lookup, while history/as-of/since
+   wrappers do not own a `:secondary-indices` field.  Query execution must
+   nevertheless preserve the wrapper's semantics instead of silently losing
+   the index or reading the current generation as if it represented history.
+
+   The returned map contains:
+
+     :indices         the committed secondary generation map
+     :system          {:mode :current|:history|:as-of|:since, ...}
+     :filtered-depth  number of FilteredDB predicates around the source
+
+   Filter provenance is carried in database metadata rather than inferred from
+   `:filtered-depth`, because `datahike.core/filter` deliberately flattens
+   nested FilteredDBs into one wrapper.
+
+   This protocol describes the database view only.  Whether an adapter can
+   execute that view is decided by `datahike.index.secondary`."
+  (-secondary-view [db]))
+
 (defn ident-for [db a-ref missing-strategy]
   (or (-ident-for db a-ref)
       (case missing-strategy

@@ -24,6 +24,7 @@
    runs each namespace a second time under `:clj-hht` with `*default-index*`
    rebound, and `:build-indexes?` is refused for anything else."
   (:require [clojure.test :refer [deftest testing is]]
+            [clojure.core.async :as async]
             [clojure.edn :as edn]
             [clojure.java.io :as io]
             [datahike.api :as d]
@@ -514,52 +515,65 @@
 ;; carries in full. Note it does NOT drop the entity's other rows on a
 ;; retraction, which is where scriptum (`delete-docs` on `_entity_id`) and
 ;; stratum (`pending-retracts` per eid) both differ.
+(defn- delivered [value]
+  (let [ch (async/promise-chan)]
+    (async/put! ch value)
+    ch))
+
+(defrecord HashAddressablePreparation [index]
+  sec/IPreparedSecondaryGeneration
+  (-sec-generation-index [_] index)
+  (-sec-release [_ _] (delivered true)))
+
+(defrecord HashAddressableIndex [attrs rows]
+  sec/ISecondaryIndex
+  (-search [_ _ _] nil)
+  (-estimate [_ _] 0)
+  (-can-order? [_ _ _] false)
+  (-slice-ordered [_ _ _ _ _ _] nil)
+  (-indexed-attrs [_] attrs)
+  (-transact [this tx-report]
+    (let [{:keys [datom added?]} tx-report
+          e (nth datom 0) a (nth datom 1) v (nth datom 2)]
+      ;; Retractions are intentionally retained: this fixture models a durable
+      ;; per-datom history store, not merely a current-state index.
+      (if added?
+        (assoc this :rows (assoc rows [e a (sec/secondary-only-hash v)] v))
+        this)))
+
+  sec/ISecondaryScannable
+  (-sec-value [_ attr eid]
+    (some (fn [[[e a _h] v]] (when (and (= e eid) (= a attr)) v)) rows))
+
+  sec/ISecondaryHashAddressable
+  (-sec-value-by-hash [_ attr eid hash] (get rows [eid attr hash]))
+
+  sec/IDurableSecondaryIndex
+  (-sec-generation-key-map [_]
+    {:type :test/hash-addressable
+     :format-version 1
+     :storage-owner :external
+     :rows rows})
+  (-sec-prepare [this _]
+    (delivered (->HashAddressablePreparation this)))
+  (-sec-restore [this _ key-map]
+    (assoc this :rows (:rows key-map))))
+
 (defn- register-hash-addressable-index! []
   (sec/register-index-type!
    :test/hash-addressable
-   (fn [config _db]
-     (let [rows (atom {})
-           attrs (set (:attrs config))]
-       (reify
-         sec/ISecondaryIndex
-         (-search [_ _ _] nil)
-         (-estimate [_ _] 0)
-         (-can-order? [_ _ _] false)
-         (-slice-ordered [_ _ _ _ _ _] nil)
-         (-indexed-attrs [_] attrs)
-         (-transact [this tx-report]
-           (let [{:keys [datom added?]} tx-report
-                 e (nth datom 0) a (nth datom 1) v (nth datom 2)]
-             ;; Added rows are recorded; RETRACTED ones are kept. Retaining
-             ;; superseded values is precisely the property that makes a history
-             ;; export possible, and the one the shipped indices lack — scriptum
-             ;; deletes and stratum overwrites. A retraction carries the stored
-             ;; hash rather than the value, so it names its row exactly and
-             ;; could delete it; not deleting is the point.
-             (when added?
-               (swap! rows assoc [e a (sec/secondary-only-hash v)] v))
-             this))
+   {:create
+    (fn [config _db]
+      (->HashAddressableIndex (set (:attrs config)) {}))
+    :storage-owner :external
+    :validate-generation identity
+    :mark-generation (fn [_ _] #{})
+    :external-root (fn [_] {:secondary-type :test/hash-addressable})}))
 
-         sec/ISecondaryScannable
-         ;; Deliberately as weak as the shipped indices: one arbitrary value for
-         ;; the entity. Everything exact comes from the hash lookup below, so
-         ;; this also proves the export does not lean on -sec-value being right.
-         (-sec-value [_ attr eid]
-           (some (fn [[[e a _h] v]] (when (and (= e eid) (= a attr)) v)) @rows))
-
-         sec/ISecondaryHashAddressable
-         (-sec-value-by-hash [_ attr eid hash] (get @rows [eid attr hash])))))))
-
-(deftest secondary-only-cardinality-many-is-refused-where-it-cannot-be-stored
-  (testing "the primary indexes keep only a content hash, so the secondary index
-            IS the storage — and most of them store one value per ENTITY.
-            stratum is columnar with one cell per [eid column]; proximum is keyed
-            by external id. A second value under the same [eid attr] overwrote
-            the first at WRITE time and nothing said so.
-
-            Measured before this refusal: tags \"alpha\" and \"beta\" on one
-            entity produced a dump holding [[\"alpha\" true] [\"alpha\" true]] —
-            one value repeated, the other absent from the backup entirely."
+(deftest scriptum-stores-secondary-only-cardinality-many-per-datom
+  (testing "Scriptum keys each document by [entity, attribute, value hash], so
+            it can make the stronger hash-addressable claim and preserve every
+            cardinality-many value while the primary stores only hashes."
     (require 'datahike.index.secondary.scriptum)
     (let [conn (conn! (cfg true))
           p (fs/temp-dir! "dh-hostile-cm-")]
@@ -570,18 +584,22 @@
                            :db.secondary/attrs [:doc/tag]
                            :db.secondary/config {:path p}}])
         (Thread/sleep 600)
-        ;; The writer preserves the original ExceptionInfo, including its
-        ;; structured error data, rather than replacing it with a message-only
-        ;; wrapper. Assert the contract directly so wording changes cannot hide
-        ;; or manufacture the refusal.
-        (let [error (try (d/transact conn [{:db/id -1 :doc/tag "alpha"}]) nil
-                         (catch clojure.lang.ExceptionInfo e e))]
-          (is (some? error) "the write must be refused, not accepted")
-          (is (= :transact/secondary-only-multival-unstorable
-                 (:error (ex-data error)))
-              "refused at the first write, which is the last moment the caller
-               can still choose a different schema")
-          (is (= :doc/tag (:attribute (ex-data error))) "and it names the attribute"))
+        (let [eid (get-in (d/transact conn [{:db/id -1 :doc/tag "alpha"}])
+                          [:tempids -1])
+              _ (d/transact conn [{:db/id eid :doc/tag "beta"}])
+              hashes (set (map first
+                               (d/q '[:find ?hash
+                                      :in $ ?e
+                                      :where [?e :doc/tag ?hash]]
+                                    @conn eid)))
+              index (get-in @conn [:secondary-indices :idx/ft])
+              values (set (keep #(sec/-sec-value-by-hash
+                                  index :doc/tag eid %)
+                                hashes))]
+          (is (= 2 (count hashes)))
+          (is (= #{"alpha" "beta"} values))
+          (is (map? (m/export-db @conn (tmp-dir!) {}))
+              "the ordinary export resolves both hashes without ambiguity"))
         (finally (release! conn))))))
 
 (deftest secondary-only-history-export-is-refused-rather-than-falsified
@@ -616,8 +634,9 @@
             (let [err (try (m/export-db @conn (tmp-dir!) {:history? true}) nil
                            (catch clojure.lang.ExceptionInfo e (ex-data e)))]
               (is (= :export/secondary-only-unresolvable (:error err)))
-              (is (= :not-addressable (:reason err))
-                  "the index answers per entity — a property of its type, not of this value")
+              (is (= :not-held (:reason err))
+                  "Scriptum is hash-addressable, but a current-state generation
+                   deliberately no longer holds the superseded value")
               (is (= :doc/body (:attribute err)))))
 
           (testing "while the CURRENT-state export is unaffected and correct —

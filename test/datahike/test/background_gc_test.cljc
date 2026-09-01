@@ -11,8 +11,11 @@
                      [clojure.set]
                      [datahike.api :as d]
                      [datahike.gc :as gc]
-                     [datahike.gc-guard :as guard]
                      [datahike.migrate.fs :as fs]
+                     ;; Observe the canonical store-level registry directly.
+                     ;; Datahike commits go through its compatibility facade;
+                     ;; out-of-band/index writes use this Konserve namespace.
+                     [konserve.gc-guard :as guard]
                      [datahike.versioning :as v]
                      [datahike.writing :as dw]
                      [datahike.test.async :refer [deftest-async]]
@@ -22,8 +25,8 @@
      :cljs (:require [cljs.test :refer [is testing] :include-macros true]
                      [datahike.api :as d]
                      [datahike.gc :as gc]
-                     [datahike.gc-guard :as guard]
                      [datahike.migrate.fs :as fs]
+                     [konserve.gc-guard :as guard]
                      [datahike.test.async :refer-macros [deftest-async]]
                      ;; register the :file backend on Node (the smoke test needs a
                      ;; FLUSHING store — GC's mark walk requires stored index nodes,

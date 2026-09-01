@@ -47,10 +47,11 @@
       {:status :advisory :reason :memory-backend}
       (not (audit-grade-stored? stored))
       {:status :advisory :reason :primary-not-audit-grade}
+      (not= cid recomputed)
+      {:status :mismatch}
       (and (seq sec-roots) (not (every? some? (vals sec-roots))))
       {:status :advisory :reason :secondary-not-audit-grade}
-      (= cid recomputed) {:status :ok}
-      :else              {:status :mismatch})))
+      :else {:status :ok})))
 
 (defn- step
   "Load `cid` from `store`, recompute, return a verification entry."
@@ -84,9 +85,8 @@
    so this function only dispatches on :status."
   [db stored-head]
   (let [stored-roots (:merkle-roots stored-head)
-        check (fn [idx-key live]
-                (let [stored (get stored-roots idx-key)
-                      result (idx-audit/-recompute-merkle-root live)]
+        check (fn [idx-key stored live]
+                (let [result (idx-audit/-recompute-merkle-root live)]
                   (case (:status result)
                     :ok          (when (not= stored (:root result))
                                    {:kind :diff :index idx-key
@@ -97,20 +97,33 @@
                                   :stored stored :errors (:errors result)
                                   :recomputed (:root result)})))
         primary (keep identity
-                      [(check :eavt-key (:eavt db))
-                       (check :aevt-key (:aevt db))
-                       (check :avet-key (:avet db))
+                      [(check :eavt-key (:eavt-key stored-roots) (:eavt db))
+                       (check :aevt-key (:aevt-key stored-roots) (:aevt db))
+                       (check :avet-key (:avet-key stored-roots) (:avet db))
                        (when (:keep-history? (:config db))
-                         (check :temporal-eavt-key (:temporal-eavt db)))
+                         (check :temporal-eavt-key
+                                (:temporal-eavt-key stored-roots)
+                                (:temporal-eavt db)))
                        (when (:keep-history? (:config db))
-                         (check :temporal-aevt-key (:temporal-aevt db)))
+                         (check :temporal-aevt-key
+                                (:temporal-aevt-key stored-roots)
+                                (:temporal-aevt db)))
                        (when (:keep-history? (:config db))
-                         (check :temporal-avet-key (:temporal-avet db)))])
+                         (check :temporal-avet-key
+                                (:temporal-avet-key stored-roots)
+                                (:temporal-avet db)))])
         sec-stored (:secondary stored-roots)
         secondary (when (seq sec-stored)
-                    (keep (fn [[ident live]]
-                            (check ident live))
-                          (:secondary-indices db)))
+                    (let [live-indices (:secondary-indices db)
+                          idents (into (set (keys sec-stored))
+                                       (keys live-indices))]
+                      (keep (fn [ident]
+                              (if-let [live (get live-indices ident)]
+                                (check ident (get sec-stored ident) live)
+                                {:kind :unsupported
+                                 :index ident
+                                 :reason :secondary-index-unavailable}))
+                            idents)))
         all (concat primary secondary)
         diffs (filterv (comp #{:diff} :kind) all)
         unsupp (filterv (comp #{:unsupported} :kind) all)]
