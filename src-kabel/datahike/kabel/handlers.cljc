@@ -1,7 +1,7 @@
 (ns ^:no-doc datahike.kabel.handlers
   "Server-side handlers for remote datahike operations via kabel.
 
-   This namespace provides GLOBAL handlers that are registered with distributed-scope
+   This namespace provides GLOBAL handlers that are registered with kabel.remote
    to handle remote transaction requests. The handlers look up the local
    connection by store-id and branch and forward operations to its writer.
 
@@ -23,7 +23,7 @@
   (:require [datahike.api :as d]
             [datahike.writer :as writer]
             [datahike.writing :as w]
-            [is.simm.distributed-scope :as ds]
+            [kabel.remote :as remote]
             [datahike.kabel.tx-broadcast :as tx-broadcast]
             [konserve-sync.core :as sync]
             ;; datahike's own walker — follows :db.type/store-ref values so referenced
@@ -312,9 +312,9 @@
      (log/trace "Registering global datahike.kabel handlers" {:peer-id (some-> @peer :id)})
      #?(:clj (println "[SERVER] Registering handlers...")
         :cljs (.log js/console "[SERVER] Registering handlers..."))
-     (ds/register-remote-fn! 'datahike.kabel/dispatch global-dispatch-handler)
-     (ds/register-remote-fn! 'datahike.kabel/create-database (make-create-database-handler peer store-config-fn))
-     (ds/register-remote-fn! 'datahike.kabel/delete-database (make-delete-database-handler peer store-config-fn))
+     (remote/register! 'datahike.kabel/dispatch global-dispatch-handler)
+     (remote/register! 'datahike.kabel/create-database (make-create-database-handler peer store-config-fn))
+     (remote/register! 'datahike.kabel/delete-database (make-delete-database-handler peer store-config-fn))
      #?(:clj (println "[SERVER] Handlers registered: dispatch, create-database, delete-database")
         :cljs (.log js/console "[SERVER] Handlers registered: dispatch, create-database, delete-database")))))
 

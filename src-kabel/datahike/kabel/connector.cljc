@@ -242,6 +242,14 @@
                            ;; every reachable index node, then the :db head, applied.
                            (fn [] (put! handshake-complete-ch :handshake-done))}))
          _ (log/trace "subscribe-store! returned" {:subscribed? (some? sub-result)})
+         ;; A refused subscription (a duplicate on this topic, a closed peer)
+         ;; never completes a handshake, so waiting for one would hang forever.
+         _ (when-let [error (:error sub-result)]
+             (throw (if (instance? #?(:clj Throwable :cljs js/Error) error)
+                      error
+                      (ex-info "Store subscription refused"
+                               {:type :datahike.kabel/subscribe-failed
+                                :store-id store-id :error error}))))
 
           ;; 3. Gate db exposure on the FULL handshake drain (konserve-sync :on-complete):
           ;; every reachable index node applied, THEN the :db head. This is the guarantee we

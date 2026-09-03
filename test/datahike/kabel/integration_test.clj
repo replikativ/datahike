@@ -29,7 +29,7 @@
             [datahike.versioning :refer [branch! branch-as-db]]
             [konserve-sync.core :as sync]
             [datahike.kabel.walker :as dh-walker]
-            [is.simm.distributed-scope :as ds]
+            [kabel.remote :as remote]
             [superv.async :refer [<?? S]]
             [clojure.core.async :refer [alts!! timeout <!!]]))
 
@@ -97,7 +97,7 @@
           url (str "ws://localhost:" port)
           ;; Shared store ID for matching across client/server
           store-id #uuid "7e570000-0000-0000-0000-000000000001"  ; test-full-flow-store
-          store-topic (keyword (str store-id))
+          store-topic store-id  ; the connector subscribes under the store id itself
           server-path (create-temp-dir "full-flow-server")
           client-path (create-temp-dir "full-flow-client")
 
@@ -113,14 +113,14 @@
           server-conn (d/connect server-config)
           _ (d/transact server-conn test-schema)
 
-          ;; Server peer with konserve-sync + distributed-scope + Fressian
+          ;; Server peer with konserve-sync + kabel.remote + Fressian
           handler (create-http-kit-handler! S url server-id)
           server-peer (peer/server-peer S handler server-id
                                         (comp (sync/server-middleware)
-                                              ds/remote-middleware)
+                                              remote/middleware)
                                         datahike-serialization-middleware)
           _ (<?? S (peer/start server-peer))
-          _ (ds/invoke-on-peer server-peer)
+          _ (remote/serve server-peer)
 
           ;; Register global handlers (once per server)
           _ (handlers/register-global-handlers! server-peer)
@@ -132,12 +132,12 @@
           ;; CLIENT SETUP - d/connect handles sync automatically
           ;; =====================================================================
 
-          ;; Client peer with konserve-sync + distributed-scope + Fressian
+          ;; Client peer with konserve-sync + kabel.remote + Fressian
           client-peer (peer/client-peer S client-id
                                         (comp (sync/client-middleware)
-                                              ds/remote-middleware)
+                                              remote/middleware)
                                         datahike-serialization-middleware)
-          _ (ds/invoke-on-peer client-peer)
+          _ (remote/serve client-peer)
           _ (<?? S (peer/connect S client-peer url))
 
           ;; Connect with KabelWriter via d/connect
@@ -252,7 +252,7 @@
     (let [port (get-free-port)
           url (str "ws://localhost:" port)
           store-id #uuid "7e570000-0000-0000-0000-000000000002"  ; test-ordering-store
-          store-topic (keyword (str store-id))
+          store-topic store-id  ; the connector subscribes under the store id itself
           server-path (create-temp-dir "ordering-server")
           client-path (create-temp-dir "ordering-client")
 
@@ -267,19 +267,19 @@
           handler (create-http-kit-handler! S url server-id)
           server-peer (peer/server-peer S handler server-id
                                         (comp (sync/server-middleware)
-                                              ds/remote-middleware)
+                                              remote/middleware)
                                         datahike-serialization-middleware)
           _ (<?? S (peer/start server-peer))
-          _ (ds/invoke-on-peer server-peer)
+          _ (remote/serve server-peer)
           _ (handlers/register-global-handlers! server-peer)
           _ (handlers/register-store-for-remote-access! store-id server-conn server-peer)
 
           ;; Client setup - d/connect handles sync automatically
           client-peer (peer/client-peer S client-id
                                         (comp (sync/client-middleware)
-                                              ds/remote-middleware)
+                                              remote/middleware)
                                         datahike-serialization-middleware)
-          _ (ds/invoke-on-peer client-peer)
+          _ (remote/serve client-peer)
           _ (<?? S (peer/connect S client-peer url))
 
           client-config {:store {:backend :file :path client-path :id store-id}
@@ -329,7 +329,7 @@
     (let [port (get-free-port)
           url (str "ws://localhost:" port)
           store-id #uuid "7e570000-0000-0000-0000-000000000003"  ; test-listen-store
-          store-topic (keyword (str store-id))
+          store-topic store-id  ; the connector subscribes under the store id itself
           server-path (create-temp-dir "listen-server")
           client-path (create-temp-dir "listen-client")
 
@@ -344,19 +344,19 @@
           handler (create-http-kit-handler! S url server-id)
           server-peer (peer/server-peer S handler server-id
                                         (comp (sync/server-middleware)
-                                              ds/remote-middleware)
+                                              remote/middleware)
                                         datahike-serialization-middleware)
           _ (<?? S (peer/start server-peer))
-          _ (ds/invoke-on-peer server-peer)
+          _ (remote/serve server-peer)
           _ (handlers/register-global-handlers! server-peer)
           _ (handlers/register-store-for-remote-access! store-id server-conn server-peer)
 
           ;; Client setup - d/connect handles sync automatically
           client-peer (peer/client-peer S client-id
                                         (comp (sync/client-middleware)
-                                              ds/remote-middleware)
+                                              remote/middleware)
                                         datahike-serialization-middleware)
-          _ (ds/invoke-on-peer client-peer)
+          _ (remote/serve client-peer)
           _ (<?? S (peer/connect S client-peer url))
 
           client-config {:store {:backend :file :path client-path :id store-id}
@@ -407,7 +407,7 @@
     (let [port (get-free-port)
           url (str "ws://localhost:" port)
           store-id #uuid "7e570000-0000-0000-0000-000000000004"  ; test-tiered-store
-          store-topic (keyword (str store-id))
+          store-topic store-id  ; the connector subscribes under the store id itself
           server-path (create-temp-dir "tiered-server")
           client-backend-path (create-temp-dir "tiered-client-backend")
 
@@ -427,10 +427,10 @@
           handler (create-http-kit-handler! S url server-id)
           server-peer (peer/server-peer S handler server-id
                                         (comp (sync/server-middleware)
-                                              ds/remote-middleware)
+                                              remote/middleware)
                                         datahike-serialization-middleware)
           _ (<?? S (peer/start server-peer))
-          _ (ds/invoke-on-peer server-peer)
+          _ (remote/serve server-peer)
           _ (handlers/register-global-handlers! server-peer)
           _ (handlers/register-store-for-remote-access! store-id server-conn server-peer)
 
@@ -439,9 +439,9 @@
           ;; =====================================================================
           client-peer-1 (peer/client-peer S client-id
                                           (comp (sync/client-middleware)
-                                                ds/remote-middleware)
+                                                remote/middleware)
                                           datahike-serialization-middleware)
-          _ (ds/invoke-on-peer client-peer-1)
+          _ (remote/serve client-peer-1)
           _ (<?? S (peer/connect S client-peer-1 url))
 
           ;; Client uses tiered store: memory frontend + file backend
@@ -515,9 +515,9 @@
       ;; =====================================================================
       (let [client-peer-2 (peer/client-peer S #uuid "20000000-0000-0000-0000-000000000003"
                                             (comp (sync/client-middleware)
-                                                  ds/remote-middleware)
+                                                  remote/middleware)
                                             datahike-serialization-middleware)
-            _ (ds/invoke-on-peer client-peer-2)
+            _ (remote/serve client-peer-2)
             _ (<?? S (peer/connect S client-peer-2 url))
 
             ;; Same backend path - should have cached data from first connection
@@ -574,10 +574,10 @@
           handler (create-http-kit-handler! S url server-id)
           server-peer (peer/server-peer S handler server-id
                                         (comp (sync/server-middleware)
-                                              ds/remote-middleware)
+                                              remote/middleware)
                                         datahike-serialization-middleware)
           _ (<?? S (peer/start server-peer))
-          _ (ds/invoke-on-peer server-peer)
+          _ (remote/serve server-peer)
 
           ;; Register global handlers - no need for scope-specific handlers!
           ;; Global handlers can create databases for any store-id
@@ -586,9 +586,9 @@
           ;; Client peer setup
           client-peer (peer/client-peer S client-id
                                         (comp (sync/client-middleware)
-                                              ds/remote-middleware)
+                                              remote/middleware)
                                         datahike-serialization-middleware)
-          _ (ds/invoke-on-peer client-peer)
+          _ (remote/serve client-peer)
           _ (<?? S (peer/connect S client-peer url))]
 
       ;; Client creates database on server
@@ -650,7 +650,7 @@
     (let [port (get-free-port)
           url (str "ws://localhost:" port)
           store-id #uuid "7e570000-0000-0000-0000-000000000003"
-          store-topic (keyword (str store-id))
+          store-topic store-id  ; the connector subscribes under the store id itself
           server-path (create-temp-dir "fork-server")
           client-path (create-temp-dir "fork-client")
           base {:schema-flexibility :write :keep-history? true :branch-history? true}
@@ -667,17 +667,17 @@
 
           handler (create-http-kit-handler! S url server-id)
           server-peer (peer/server-peer S handler server-id
-                                        (comp (sync/server-middleware) ds/remote-middleware)
+                                        (comp (sync/server-middleware) remote/middleware)
                                         datahike-serialization-middleware)
           _ (<?? S (peer/start server-peer))
-          _ (ds/invoke-on-peer server-peer)
+          _ (remote/serve server-peer)
           _ (handlers/register-global-handlers! server-peer)
           _ (handlers/register-store-for-remote-access! store-id server-conn server-peer)
 
           client-peer (peer/client-peer S client-id
-                                        (comp (sync/client-middleware) ds/remote-middleware)
+                                        (comp (sync/client-middleware) remote/middleware)
                                         datahike-serialization-middleware)
-          _ (ds/invoke-on-peer client-peer)
+          _ (remote/serve client-peer)
           _ (<?? S (peer/connect S client-peer url))
           client-config (assoc base
                                :store {:backend :file :path client-path :id store-id}
@@ -717,7 +717,9 @@
         ;; A konserve-sync subscription is store-topic scoped, so hand it from
         ;; the trunk connection to the fork connection before reconnecting.
         (release client-conn)
-        (sync/unsubscribe-store! client-peer store-topic)
+        ;; Await the drain: a subscribe on the same topic before the old one has
+        ;; been released is refused as a duplicate.
+        (<!! (sync/unsubscribe-store! client-peer store-topic))
         (handlers/register-store-for-remote-access! store-id pre-conn server-peer)
         (let [fork-client (<!! (d/connect (assoc client-config :branch :pre-fork)
                                           {:sync? false}))]
@@ -765,7 +767,7 @@
     (let [port (get-free-port)
           url (str "ws://localhost:" port)
           store-id #uuid "7e570000-0000-0000-0000-00000000000a"
-          store-topic (keyword (str store-id))
+          store-topic store-id  ; the connector subscribes under the store id itself
           server-path (create-temp-dir "import-kabel-server")
           client-path (create-temp-dir "import-kabel-client")
           dump-dir (create-temp-dir "import-kabel-dump")
@@ -800,18 +802,18 @@
           handler (create-http-kit-handler! S url server-id)
           server-peer (peer/server-peer S handler server-id
                                         (comp (sync/server-middleware)
-                                              ds/remote-middleware)
+                                              remote/middleware)
                                         datahike-serialization-middleware)
           _ (<?? S (peer/start server-peer))
-          _ (ds/invoke-on-peer server-peer)
+          _ (remote/serve server-peer)
           _ (handlers/register-global-handlers! server-peer)
           _ (handlers/register-store-for-remote-access! store-id server-conn server-peer)
 
           client-peer (peer/client-peer S client-id
                                         (comp (sync/client-middleware)
-                                              ds/remote-middleware)
+                                              remote/middleware)
                                         datahike-serialization-middleware)
-          _ (ds/invoke-on-peer client-peer)
+          _ (remote/serve client-peer)
           _ (<?? S (peer/connect S client-peer url))
           client-config {:store {:backend :file :path client-path :id store-id}
                          :index :datahike.index/persistent-set

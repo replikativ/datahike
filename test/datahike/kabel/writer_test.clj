@@ -8,7 +8,7 @@
             [datahike.writing :as dw]
             [datahike.writer :as writer]
             [datahike.connections :as connections]
-            [is.simm.distributed-scope :as ds]
+            [kabel.remote :as remote]
             [clojure.core.async :refer [<!! go timeout alts!! promise-chan]]))
 
 (def test-peer-id #uuid "10000000-0000-0000-0000-000000000001")
@@ -268,7 +268,7 @@
                           [delete-store-id :feature] {:conn feature-branch :count 1}
                           [other-store-id :db]       {:conn other-store :count 1}})]
       (binding [connections/*connections* registry]
-        (with-redefs [ds/invoke-remote (fn [& _] (go {:success true}))]
+        (with-redefs [remote/invoke (fn [& _] (go {:success true}))]
           (is (= {:success true} @(writer/delete-database delete-config)))))
       (is (= :released @db-branch))
       (is (= :released @feature-branch))
@@ -281,7 +281,7 @@
       (binding [connections/*connections* registry]
         ;; `throwable-promise` RETHROWS on deref, so the failure surfaces as a
         ;; throw here rather than as a returned value.
-        (with-redefs [ds/invoke-remote (fn [& _] (go (ex-info "remote delete failed" {})))]
+        (with-redefs [remote/invoke (fn [& _] (go (ex-info "remote delete failed" {})))]
           (is (thrown-with-msg? Exception #"remote delete failed"
                                 @(writer/delete-database delete-config)))))
       (is (= :connected @conn))

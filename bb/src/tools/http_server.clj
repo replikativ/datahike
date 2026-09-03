@@ -42,10 +42,9 @@
 (defn- assert-slim! [jar max-bytes]
   (let [bytes (fs/size jar)]
     (expect! (str "jar exceeds " max-bytes " bytes") #(<= % max-bytes) bytes)
-    ;; distributed-scope 0.1.9 loads cljs.analyzer from its JVM namespace for
-    ;; macro free-variable analysis. The Kabel server therefore still needs
-    ;; ClojureScript at runtime; the byte budget keeps that temporary cost
-    ;; bounded until its runtime and analyzer namespaces are split.
+    ;; The remote-invocation runtime is kabel.remote; the server no longer
+    ;; depends on distributed-scope, which used to pull the ClojureScript
+    ;; analyzer in for macro free-variable analysis.
     (with-open [zip (ZipFile. (str jar))]
       (let [names (mapv #(.getName %) (enumeration-seq (.entries zip)))
             name-set (set names)]

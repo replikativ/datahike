@@ -60,7 +60,8 @@
    (println "ESM browser wrapper written to:" output-path)))
 
 (def ^:private kabel-js-exports
-  ["createKabelPeer" "connectKabelPeer" "stopKabelPeer"])
+  ["createKabelPeer" "connectKabelPeer" "maintainKabelPeer" "refreshKabelToken"
+   "invokeRemote" "registerRemoteFn" "unregisterRemoteFn" "stopKabelPeer"])
 
 (defn generate-kabel-esm-wrapper
   "Generate the ESM wrapper for the opt-in replicated browser client."

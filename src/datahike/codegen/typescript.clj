@@ -526,10 +526,38 @@ export interface KabelPeer {
   readonly __kabelPeerBrand: never;
 }
 
+/** A token, or a source read at every connection and for refreshes. */
+export type KabelToken = string | (() => string | Promise<string>);
+
 export interface KabelPeerOptions {
-  token?: string;
+  token?: KabelToken;
   onAuth?: (principal: Record<string, any>) => void;
   onError?: (error: any) => void;
+}
+
+export type KabelStatus =
+  | 'connecting' | 'connected' | 'authenticated' | 'disconnected' | 'failed' | 'stopped';
+
+export interface KabelStatusEvent {
+  status: KabelStatus;
+  attempt?: number;
+  error?: string;
+  reason?: string;
+  principal?: Record<string, any>;
+  [key: string]: unknown;
+}
+
+export interface KabelMaintainOptions {
+  onStatus?: (event: KabelStatusEvent) => void;
+  backoff?: { 'initial-ms'?: number; 'max-ms'?: number; factor?: number; jitter?: number };
+  maxAttempts?: number;
+}
+
+export interface KabelMaintainHandle {
+  /** Stop reconnecting and close the current connection. */
+  stop: () => void;
+  /** Resolves once the reconnection loop has ended. */
+  done: Promise<unknown>;
 }
 
 export interface KabelWriterConfig {
@@ -544,7 +572,25 @@ export function createKabelPeer(
   options?: KabelPeerOptions
 ): KabelPeer;
 
-export function connectKabelPeer(peer: KabelPeer, url: string): Promise<unknown>;
+/** Connect once; resolves with the server's peer id when remote calls work. */
+export function connectKabelPeer(peer: KabelPeer, url: string): Promise<import('./index').DatahikeUuid>;
+/** Keep the peer connected across drops, with backoff and status events. */
+export function maintainKabelPeer(peer: KabelPeer, url: string, options?: KabelMaintainOptions): KabelMaintainHandle;
+/** Replace the token on the live connection; resolves with the accepted principal. */
+export function refreshKabelToken(peer: KabelPeer, token?: string): Promise<Record<string, any>>;
+/** Invoke a function served by the peer remoteId, by its 'namespace/name'. */
+export function invokeRemote<T = unknown>(
+  peer: KabelPeer,
+  remoteId: import('./index').DatahikeUuid,
+  fnName: string,
+  args?: Record<string, unknown>
+): Promise<T>;
+/** Serve a function from this process; the server may call back into it. */
+export function registerRemoteFn(
+  fnName: string,
+  fn: (args: Record<string, any>) => unknown | Promise<unknown>
+): string;
+export function unregisterRemoteFn(fnName: string): void;
 export function stopKabelPeer(peer: KabelPeer): Promise<boolean>;
 ")
 

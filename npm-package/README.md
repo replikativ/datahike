@@ -137,17 +137,49 @@ The matching standalone-server configuration is:
 ```
 
 The application issues the JWT. Datahike validates it but does not provide a
-user database or login flow. Kabel authorization is authentication-only in the
-first server version: every authenticated subject can reach every Kabel
-database. Put the listener behind an application trust boundary until the
-server's per-database authorization is connected to this transport.
+user database or login flow. What an authenticated subject may do is decided
+by the same permissions the HTTP routes enforce (the server's `:system-db`
+relationships): a transaction is a `:transact` on its database, a store
+subscription a `:read`, database creation and deletion their own operations.
+A server without a permissions database admits every authenticated subject.
+
+`token` may be a function returning the current token, or a promise of one.
+It is read at every connection and again to refresh the token on the live
+connection before it expires, so a long-lived page keeps its session without
+reconnecting. `maintainKabelPeer` keeps the peer connected across drops with
+backoff and reports `connecting`, `connected`, `authenticated`,
+`disconnected`, `failed` and `stopped` to `onStatus`:
+
+```typescript
+const peer = d.createKabelPeer(d.randomUuid(), { token: () => getAccessToken() });
+const link = d.maintainKabelPeer(peer, 'wss://data.example.com', {
+  onStatus: (e) => console.log(e.status, e.attempt ?? '', e.error ?? '')
+});
+// ... link.stop() to disconnect for good
+```
+
+Remote functions served by the server are callable by name, and the page can
+serve functions the server calls back into:
+
+```typescript
+const total = await d.invokeRemote<number>(peer, serverId, 'my.app/add', { a: 1, b: 2 });
+d.registerRemoteFn('my.page/notify', async ({ message }) => { show(message); });
+```
+
+Every reconnection runs the peer's middleware afresh: the token is read again
+and remote functions are announced again. A store subscription made through
+`connect` has to be made again after a drop, and a write in flight when the
+connection drops fails with `kabel.remote/disconnected`; the server may or may
+not have applied it, so retry only with the same request id.
 
 This follows the ClojureScript API directly: asynchronous browser and remote
 stores use `{ 'sync?': false }`; an in-memory database can continue to use
 `{ 'sync?': true }`. Applications can put a domain API in front of Datahike
 instead when they do not need database queries in the browser.
 
-The current package does not automatically reconnect after a transport loss.
+Writes issued while disconnected wait for the connection in memory and are
+lost on a page reload; there is no durable offline write queue yet, and tabs
+do not coordinate.
 Recreate the peer and connection when the application decides to reconnect.
 Restoring a connection across a page reload and coordinating one replica among
 multiple tabs or Web Workers are not yet part of the supported lifecycle.

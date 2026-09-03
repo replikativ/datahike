@@ -1,5 +1,5 @@
 (ns ^:no-doc datahike.kabel.writer
-  "KabelWriter for remote transactions via kabel/distributed-scope.
+  "KabelWriter for remote transactions via kabel.remote.
 
    The KabelWriter sends transactions to a remote peer that owns the database,
    waits for the transaction to complete, and coordinates with konserve-sync
@@ -18,7 +18,7 @@
             [datahike.store :as dstore]
             [datahike.cbor :as dcbor]
             [datahike.tools :refer [throwable-promise]]
-            [is.simm.distributed-scope :as ds]
+            [kabel.remote :as remote]
             [superv.async :refer [<?-]]
             #?(:clj [clojure.core.async :refer [go put! promise-chan]]
                :cljs [clojure.core.async :refer [go put! promise-chan]])
@@ -67,8 +67,17 @@
 ;; KabelWriter Implementation
 ;; =============================================================================
 
+(defn- invoke
+  "Invoke `fn-name` on the peer `peer-id`, through `local-peer` when the
+   writer knows the connection it should use."
+  [local-peer peer-id fn-name arg-map]
+  (if local-peer
+    (remote/invoke local-peer peer-id fn-name arg-map)
+    (remote/invoke peer-id fn-name arg-map)))
+
 (defrecord KabelWriter
            [peer-id        ; UUID of the remote peer that owns the database
+            local-peer     ; the local kabel peer connected to it, or nil
             store-id       ; UUID identifying the store/database (from store :id)
             branch         ; branch whose head this writer advances
             store-config   ; Store config for index-registry cleanup on shutdown
@@ -86,8 +95,8 @@
           remote-fn 'datahike.kabel/dispatch]
       (go
         (try
-          ;; 1. Send to remote peer via distributed-scope
-          (let [remote-result (<?- (ds/invoke-remote peer-id
+          ;; 1. Send to remote peer
+          (let [remote-result (<?- (invoke local-peer peer-id
                                                      remote-fn
                                                      {:store-id store-id
                                                       :branch branch
@@ -270,7 +279,10 @@
   ([peer-id store-id store-config]
    (kabel-writer peer-id store-id :db store-config))
   ([peer-id store-id branch store-config]
+   (kabel-writer peer-id nil store-id branch store-config))
+  ([peer-id local-peer store-id branch store-config]
    (->KabelWriter peer-id
+                  local-peer
                   store-id
                   branch
                   store-config
@@ -284,13 +296,13 @@
 ;; =============================================================================
 
 (defmethod writer/create-writer :kabel
-  [{:keys [peer-id store-config branch]} connection]
+  [{:keys [peer-id local-peer store-config branch]} connection]
   ;; Extract store-id from store config :id
   (let [store-id (:id store-config)
         branch (or branch
                    (some-> connection :wrapped-atom deref :config :branch)
                    :db)]
-    (kabel-writer peer-id store-id branch store-config)))
+    (kabel-writer peer-id local-peer store-id branch store-config)))
 
 (defmethod writer/create-database :kabel
   [config & _args]
@@ -302,9 +314,9 @@
     (go
       (try
         ;; Global create-database handler - config contains store-id
-        (let [result (<?- (ds/invoke-remote peer-id
-                                            'datahike.kabel/create-database
-                                            {:config remote-config}))]
+        (let [result (<?- (invoke (get-in config [:writer :local-peer]) peer-id
+                                  'datahike.kabel/create-database
+                                  {:config remote-config}))]
           (#?(:clj deliver :cljs put!) p result))
         (catch #?(:clj Exception :cljs js/Error) e
           (log/error "Error in create-database :kabel" e)
@@ -320,9 +332,9 @@
     (go
       (try
         ;; Global delete-database handler - config contains store-id
-        (let [result (<?- (ds/invoke-remote peer-id
-                                            'datahike.kabel/delete-database
-                                            {:config remote-config}))]
+        (let [result (<?- (invoke (get-in config [:writer :local-peer]) peer-id
+                                  'datahike.kabel/delete-database
+                                  {:config remote-config}))]
           ;; Same reason as the :datahike-server backend: the delete happened on
           ;; the remote peer, so nothing here has touched THIS process's
           ;; connection registry. Left alone, a later `d/connect` with the same

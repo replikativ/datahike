@@ -2,16 +2,20 @@
   "Optional JWT-authenticated Kabel endpoint for the standalone server.
 
    This is a database transport, not an identity provider. The server validates
-   a JWT issued elsewhere, stamps its claims onto every Kabel message, and
-   admits authenticated callers. Database authorization remains a separate
-   layer; this first integration deliberately does not depend on EACL."
+   a JWT issued elsewhere and stamps its claims onto every Kabel message as the
+   principal. What a principal may do is the same question the HTTP routes ask,
+   answered by the same `:authorize` policy (see `datahike.http.permissions`):
+   a remote call to `datahike.kabel/dispatch` is a `:transact` on its store,
+   `create-database` a `:create`, `delete-database` a `:delete`, and a sync
+   subscription to a store's topic a `:read`. Without a policy every
+   authenticated caller may do everything, as over HTTP."
   (:require [clojure.core.async :refer [<!!]]
             [clojure.java.io :as io]
             [clojure.string :as str]
             [datahike.kabel.cbor-handlers :as cbor]
             [datahike.kabel.handlers :as handlers]
-            [is.simm.distributed-scope :as scope]
             [kabel.auth.websocket :as auth]
+            [kabel.remote :as remote]
             [kabel.http-kit :refer [create-http-kit-handler!]]
             [kabel.peer :as peer]
             [konserve-sync.core :as sync]
@@ -64,11 +68,52 @@
                :path (.getPath (io/file (:path store) (str store-id)))
                :id store-id})))
 
-(defn- authenticated? [principal _topic]
-  (some? (:sub principal)))
+(defn- remote-op
+  "What a remote function does, for authorization; nil for a name the server
+   does not serve, which is refused."
+  [fn-name arg-map]
+  (case (some-> fn-name name)
+    "dispatch"        (if (= 'gc-storage! (get-in arg-map [:arg-map :op])) :admin :transact)
+    "create-database" :create
+    "delete-database" :delete
+    nil))
 
-(defn- authorize-remote [principal _fn-name _arg-map]
-  (some? (:sub principal)))
+(defn- remote-store-id
+  "The store a remote call reaches."
+  [fn-name arg-map]
+  (case (some-> fn-name name)
+    "dispatch" (:store-id arg-map)
+    (get-in arg-map [:config :store :id])))
+
+(defn- allowed?
+  "Ask `config`'s `:authorize` as the HTTP routes do: once per database the
+   call reaches, with `:db nil` when it reaches none. Without a policy every
+   authenticated principal may proceed."
+  [config op principal store-id payload]
+  (boolean
+   (and principal
+        (if-let [policy (:authorize config)]
+          (policy {:op op :principal principal
+                   :db (when store-id {:store-id store-id})
+                   :payload payload})
+          true))))
+
+(defn authorize-remote
+  "The gate for `kabel.remote/serve`, in the `kabel.authorize` shape."
+  [config]
+  (fn [{:keys [principal fn-name arg-map]}]
+    (if-let [op (remote-op fn-name arg-map)]
+      (allowed? config op principal (remote-store-id fn-name arg-map) arg-map)
+      false)))
+
+(defn authorize-sync
+  "The gate for the sync middleware: subscribing to a store's topic reads the
+   store; nobody publishes into the server."
+  [config]
+  (fn [{:keys [op principal topic]}]
+    (case op
+      :subscribe (allowed? config :read principal topic nil)
+      false)))
 
 (defn start!
   "Start the configured Kabel listener. Returns an owned peer resource or nil."
@@ -80,22 +125,21 @@
                                             {:server-opts {:ip host}})
           server  (peer/server-peer
                    S handler peer-id
-                   (comp (sync/server-middleware
-                          {:authorize-fn authenticated?
-                           :authorize-publish-fn (constantly false)})
-                         scope/remote-middleware
+                   (comp (sync/server-middleware {:authorize (authorize-sync config)})
+                         remote/middleware
                          (auth/auth-middleware {:validate {:jwt jwt}}))
-                   cbor/datahike-cbor-middleware)]
-      (scope/invoke-on-peer server {:authorize-fn authorize-remote})
+                   cbor/datahike-cbor-middleware)
+          served  (remote/serve server {:authorize (authorize-remote config)})]
       (handlers/register-global-handlers!
        server {:store-config-fn (store-config-fn kabel)})
       (<!! (go-try S (<? S (peer/start server))))
       (log/info :datahike/kabel-server-started {:url url :peer-id peer-id})
-      {:peer server :url url :peer-id peer-id})))
+      {:peer server :url url :peer-id peer-id :served served})))
 
 (defn stop! [resource]
   (when-let [server (:peer resource)]
     (try
+      (when-let [stop! (get-in resource [:served :stop!])] (stop!))
       (<!! (go-try S (<? S (peer/stop server))))
       (finally
         (log/info :datahike/kabel-server-stopped {:peer-id (:peer-id resource)}))))
