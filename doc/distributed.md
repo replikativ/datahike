@@ -392,6 +392,56 @@ is a `:transact` on its store, `create-database` a `:create`,
 `delete-database` a `:delete`, and a store subscription a `:read`. Without a
 permissions database every authenticated JWT may do everything, as over HTTP.
 
+#### Controlling who may do what
+
+Authentication says who the caller is; the server's `:authorize` policy says
+what they may do, for the Kabel listener and the HTTP routes alike (see
+[Authorization](http-routes.md#authorization-what-they-may-do)). Three ways
+to use it, from least to most application-specific:
+
+1. **Per-database roles, built in.** With a `:system-db` the server keeps a
+   permission graph: server `admin`s, and per database `owner`, `writer` and
+   `reader`. A transaction from a browser is a `:transact` on its database, a
+   replica subscription a `:read`. Grant through the HTTP API as an admin:
+
+   ```clojure
+   (client/request-cbor :post "permissions/relationships!" admin-peer
+                        [{:operation :touch
+                          :relationship {:subject  {:type :user :id "alice"}
+                                         :relation :writer
+                                         :resource {:type :database :id (str store-id)}}}])
+   ```
+
+   For a multi-tenant application the natural unit is one database per
+   tenant, or per user: databases are cheap, the graph keeps them apart, and
+   a subject cannot even list the databases it cannot read.
+
+2. **Your own policy.** `:authorize` in the server config replaces the
+   built-in one and sees the full call, transaction data included, so it can
+   refuse a write by its content:
+
+   ```clojure
+   {:authorize (fn [{:keys [op principal db payload]}]
+                 (case op
+                   :transact (tenant-may-write? principal db (tx-data payload))
+                   :read     (tenant-may-read? principal db)
+                   false))}
+   ```
+
+3. **Your own remote functions.** The pattern Simmis uses: browsers do not
+   transact directly; they call domain operations the server registered with
+   `kabel.remote/register!`, and those run the transaction after checking the
+   caller (`:kabel/principal` in the argument map). The listener asks the
+   policy about such a function as `{:op :invoke :fn-name … :db nil}`: the
+   built-in permissions allow that to server admins only, a custom policy
+   decides per function, and Datahike's own `dispatch` stays gated as a
+   `:transact`, so a client that bypasses the domain API still cannot write
+   what the graph does not grant.
+
+What is not there yet is a declarative row- or attribute-level rule language
+in the style of InstantDB's permissions; the seam for it is the `:authorize`
+function above.
+
 RS256 can use `:public-key`; deployments with multiple issuers can supply the
 same trusted `:issuers` registry accepted by Kabel authentication. Terminate TLS
 in front of the listener and use `wss://` outside a loopback development setup.

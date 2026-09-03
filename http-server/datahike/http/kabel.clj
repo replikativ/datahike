@@ -99,12 +99,23 @@
           true))))
 
 (defn authorize-remote
-  "The gate for `kabel.remote/serve`, in the `kabel.authorize` shape."
+  "The gate for `kabel.remote/serve`, in the `kabel.authorize` shape.
+
+   Datahike's own remote functions are asked for as the database operation
+   they perform. Any other function the host registered on this process (its
+   own domain operations, guarded the way it sees fit) is asked for as
+   `{:op :invoke :fn-name … :db nil}`, so the built-in permissions allow it
+   to server admins only and a custom `:authorize` decides for everyone else."
   [config]
   (fn [{:keys [principal fn-name arg-map]}]
     (if-let [op (remote-op fn-name arg-map)]
       (allowed? config op principal (remote-store-id fn-name arg-map) arg-map)
-      false)))
+      (boolean
+       (and principal
+            (if-let [policy (:authorize config)]
+              (policy {:op :invoke :fn-name fn-name :principal principal
+                       :db nil :payload arg-map})
+              true))))))
 
 (defn authorize-sync
   "The gate for the sync middleware: subscribing to a store's topic reads the

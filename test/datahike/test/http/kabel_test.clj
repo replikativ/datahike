@@ -17,11 +17,14 @@
 (def ^:private store-b #uuid "bbbbbbbb-2222-2222-2222-222222222222")
 
 (defn- policy
-  "alice may transact and read store-a; nobody else anything."
-  [{:keys [op principal db]}]
+  "alice may transact and read store-a, and call the host's own `app/ping`;
+   nobody else anything."
+  [{:keys [op principal db fn-name]}]
   (and (= "alice" (:sub principal))
-       (= (str store-a) (str (:store-id db)))
-       (contains? #{:transact :read} op)))
+       (if (= op :invoke)
+         (= 'app/ping fn-name)
+         (and (= (str store-a) (str (:store-id db)))
+              (contains? #{:transact :read} op)))))
 
 (deftest gates-map-remote-calls-and-topics-onto-the-policy
   (let [config {:authorize policy}
@@ -42,8 +45,10 @@
                              :arg-map {:config {:store {:id store-a}}}})))
       (is (not (remote-gate {:principal alice :fn-name 'datahike.kabel/delete-database
                              :arg-map {:config {:store {:id store-a}}}}))))
-    (testing "an unknown remote name and a missing principal are refused"
+    (testing "a function the host registered is asked for as an :invoke; a missing principal is refused"
+      (is (remote-gate {:principal alice :fn-name 'app/ping :arg-map {}}))
       (is (not (remote-gate {:principal alice :fn-name 'other/fn :arg-map {}})))
+      (is (not (remote-gate {:principal bob :fn-name 'app/ping :arg-map {}})))
       (is (not (remote-gate {:principal nil :fn-name 'datahike.kabel/dispatch
                              :arg-map {:store-id store-a}}))))
     (testing "subscribing to a store's topic reads it; publishing into the server never passes"
