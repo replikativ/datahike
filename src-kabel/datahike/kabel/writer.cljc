@@ -78,26 +78,24 @@
     (remote/invoke peer-id fn-name arg-map)))
 
 (defn await-topic-release!
-  "Yield true once the subscription `peer` holds on `topic` right now is gone:
-   unsubscribe it while it is still active, and wait out a cancellation already
-   under way rather than issuing a second one, which kabel would never answer.
-   Pinned to that subscription's generation, so a newer subscription made
-   meanwhile on the same topic is left alone. Throws after `timeout-ms`."
+  "Yield true once the subscription `peer` holds on `topic` right now is gone.
+   Kabel's unsubscribe is idempotent (a cancellation already in flight is
+   joined, not repeated), so this only has to be pinned to the subscription's
+   generation: a newer subscription made meanwhile on the same topic is left
+   alone. Throws after `timeout-ms`."
   [peer topic timeout-ms]
   (go
-    (let [now-ms (fn [] #?(:clj (System/currentTimeMillis) :cljs (.now js/Date)))
-          deadline (+ timeout-ms (now-ms))
-          generation (:generation (pubsub/subscription peer topic))]
+    (let [generation (:generation (pubsub/subscription peer topic))]
       (if (nil? generation)
         true
-        (loop []
-          (let [sub (pubsub/subscription peer topic)]
-            (cond
-              (not= generation (:generation sub)) true
-              (> (now-ms) deadline) (ex-info "Store subscription did not release in time"
-                                             {:type :datahike.kabel/unsubscribe-timeout :topic topic})
-              (:cancelling? sub) (do (<?- (timeout 20)) (recur))
-              :else (do (<?- (kp/unsubscribe-store! peer topic)) (recur)))))))))
+        (let [[v port] (clojure.core.async/alts! [(kp/unsubscribe-store! peer topic)
+                                                  (timeout timeout-ms)])]
+          (cond
+            (not= generation (:generation (pubsub/subscription peer topic))) true
+            (and (map? v) (:error v)) (:error v)
+            (nil? port) true
+            :else (ex-info "Store subscription did not release in time"
+                           {:type :datahike.kabel/unsubscribe-timeout :topic topic})))))))
 
 (defrecord KabelWriter
            [peer-id        ; UUID of the remote peer that owns the database
