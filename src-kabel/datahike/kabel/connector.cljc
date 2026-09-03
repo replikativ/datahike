@@ -18,8 +18,8 @@
             [konserve.core :as k]
             [konserve.store :as ks]
             [konserve.tiered :as kt]
-            #?(:clj [clojure.core.async :refer [promise-chan put!]]
-               :cljs [clojure.core.async :refer [promise-chan put!] :include-macros true])
+            #?(:clj [clojure.core.async :refer [promise-chan put! alts! timeout]]
+               :cljs [clojure.core.async :refer [promise-chan put! alts! timeout] :include-macros true])
             #?(:clj [superv.async :refer [go-try- <?-]]
                :cljs [superv.async :refer [go-try- <?-] :include-macros true])
             #?(:clj [replikativ.logging :as log]
@@ -277,7 +277,15 @@
              (log/raise "KabelWriter store subscription failed — no handshake will arrive"
                         {:type :kabel-subscribe-failed :store-id store-id :branch branch}))
          _ (log/trace "Waiting for handshake to fully drain...")
-         _ (<?- handshake-complete-ch)
+         ;; Bounded: a handshake the server retired (kabel logs
+         ;; :pubsub/subscription-retired-before-ready) never completes, and a
+         ;; connect must fail then, not wait forever.
+         handshake-timeout-ms (or (:handshake-timeout-ms opts) 120000)
+         [_ port] (alts! [handshake-complete-ch (timeout handshake-timeout-ms)])
+         _ (when (not= port handshake-complete-ch)
+             (log/raise "KabelWriter store handshake did not complete in time"
+                        {:type :kabel-handshake-timeout :store-id store-id :branch branch
+                         :timeout-ms handshake-timeout-ms}))
          stored-db (or @stored-db-atom
                        (log/raise "Handshake drained but no :db head is present"
                                   {:type :kabel-no-head :store-id store-id :branch branch}))
