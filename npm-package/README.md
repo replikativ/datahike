@@ -143,6 +143,24 @@ relationships): a transaction is a `:transact` on its database, a store
 subscription a `:read`, database creation and deletion their own operations.
 A server without a permissions database admits every authenticated subject.
 
+Permissions are managed over the server's HTTP API, which takes JSON; the
+package has no client for it, a `fetch` is all it needs. The caller must be a
+server admin (the shared token, or a JWT subject granted `admin`) or an owner
+of the database:
+
+```typescript
+await fetch(`${httpUrl}/permissions/relationships!`, {
+  method: 'POST',
+  headers: { authorization: `Bearer ${adminToken}`, 'content-type': 'application/json' },
+  body: JSON.stringify([{ operation: 'touch',
+                          relationship: { subject: { type: 'user', id: 'alice' },
+                                          relation: 'writer',
+                                          resource: { type: 'database', id: storeId } } }])
+});
+// relations: owner | writer | reader; operations: touch | create | delete
+// POST /permissions/check {subject, permission, resource} answers {allowed}
+```
+
 `token` may be a function returning the current token, or a promise of one.
 It is read at every connection and again to refresh the token on the live
 connection before it expires, so a long-lived page keeps its session without
