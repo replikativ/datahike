@@ -148,3 +148,49 @@
       (is (true? ((:authorize a) {:op :create :principal {:sub "root"} :db nil})))
       (is (true? ((:authorize b) {:op :create :principal {:sub "root"} :db nil})))
       (finally (permissions/close! a) (permissions/close! b)))))
+
+(defn- json-post
+  "A JSON request the way a browser or a TypeScript client sends one."
+  [url path token body]
+  (let [client (java.net.http.HttpClient/newHttpClient)
+        request (-> (java.net.http.HttpRequest/newBuilder (java.net.URI. (str url "/" path)))
+                    (.header "authorization" (str "token " token))
+                    (.header "content-type" "application/json")
+                    (.header "accept" "application/json")
+                    (.POST (java.net.http.HttpRequest$BodyPublishers/ofString body))
+                    (.build))
+        response (.send client request (java.net.http.HttpResponse$BodyHandlers/ofString))]
+    [(.statusCode response) (.body response)]))
+
+(deftest permissions-over-json
+  (testing "the permission routes take JSON objects, as a TypeScript client sends them"
+    (let [port     23211
+          url      (str "http://localhost:" port)
+          config   {:token root-token
+                    :system-db {:store {:backend :memory :id (random-uuid)}}}
+          conns    (atom {})
+          app      (server/app config conns)
+          server   (run-jetty app {:port port :join? false})
+          db-id    (str (random-uuid))]
+      (try
+        (is (= [200 "{\"written\":1}"]
+               (json-post url "permissions/relationships!" root-token
+                          (str "[{\"operation\":\"touch\",\"relationship\":{\"subject\":{\"type\":\"user\",\"id\":\"alice\"},"
+                               "\"relation\":\"writer\",\"resource\":{\"type\":\"database\",\"id\":\"" db-id "\"}}}]"))))
+        (is (= [200 "{\"allowed\":true}"]
+               (json-post url "permissions/check" root-token
+                          (str "{\"subject\":{\"type\":\"user\",\"id\":\"alice\"},\"permission\":\"transact\","
+                               "\"resource\":{\"type\":\"database\",\"id\":\"" db-id "\"}}")))
+            "an object body reaches the route as a map, not as its entries")
+        (is (= [200 "{\"allowed\":false}"]
+               (json-post url "permissions/check" root-token
+                          (str "{\"subject\":{\"type\":\"user\",\"id\":\"bob\"},\"permission\":\"transact\","
+                               "\"resource\":{\"type\":\"database\",\"id\":\"" db-id "\"}}"))))
+        (let [[status body] (json-post url "permissions/relationships" root-token
+                                       (str "{\"resource\":{\"type\":\"database\",\"id\":\"" db-id "\"}}"))]
+          (is (= 200 status))
+          (is (re-find #"alice" body)))
+        (finally
+          (.stop server)
+          (routes/release-all! conns)
+          (permissions/close! (::server/config (meta app))))))))

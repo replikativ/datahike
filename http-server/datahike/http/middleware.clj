@@ -80,10 +80,15 @@
                      response)
         response))))
 
-(defn support-embedded-edn-in-json [handler]
+(defn support-embedded-edn-in-json
+  "The API routes take their arguments as a JSON array, whose first element
+   may be an EDN string. Routes that take a JSON object (permissions, admin)
+   are left alone: an object is never an argument vector, and splicing it
+   into one turns it into a vector of map entries."
+  [handler]
   (fn [request]
     (let [{:keys [content-type body-params uri]} request]
-      (if (= content-type "application/json")
+      (if (and (= content-type "application/json") (not (map? body-params)))
         (if (.endsWith ^String uri "transact")
           (let [[conn tx-data] body-params
                 new-body-params [conn (json/xf-data-for-tx tx-data @conn)]]
