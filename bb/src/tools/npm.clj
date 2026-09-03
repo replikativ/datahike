@@ -137,12 +137,17 @@
           _ (when (and (map? parsed) (:error parsed))
               (throw (ex-info "npm pack dry-run reported an error"
                               {:error (:error parsed) :stderr (:err result)})))
-          report (cond
-                   (vector? parsed) (first parsed)
-                   (:files parsed) parsed
-                   (map? parsed) (let [v (first (vals parsed))]
-                                   (if (vector? v) (first v) v)))
-          files (into #{} (map :path) (:files report))
+          ;; The report's nesting differs by npm version (a vector of tarball
+          ;; reports, an object keyed by package name, one report), so collect
+          ;; every :files vector wherever it sits rather than guessing the shape.
+          reports (->> (tree-seq coll? seq parsed)
+                       (filter #(and (map? %) (vector? (:files %)))))
+          report (or (first reports) {})
+          files (into #{} (comp (mapcat :files) (map :path)) reports)
+          _ (when (empty? files)
+              (throw (ex-info "npm pack dry-run reported no files"
+                              {:top-level (if (map? parsed) (keys parsed) (type parsed))
+                               :stdout (subs (:out result) 0 (min 2000 (count (:out result))))})))
           required #{"LICENSE" "THIRD_PARTY_LICENSES.md"
                      "README.md" "package.json" "index.d.ts"
                      "datahike.js.api.js" "browser/datahike.js"
