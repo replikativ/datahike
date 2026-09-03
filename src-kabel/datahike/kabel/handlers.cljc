@@ -193,6 +193,9 @@
   (fn [{:keys [config]}]
     (go-try S
             (let [store-id (-> config :store :id)  ;; Extract UUID from store config
+                  _ (when-not (uuid? store-id)
+                      (throw (ex-info "A browser database is identified by a UUID"
+                                      {:type :datahike.kabel/invalid-store-id :store-id store-id})))
                   _ (log/info "Global create-database request" {:store-id store-id})
 
             ;; Build server-side config using store-config-fn
@@ -248,6 +251,9 @@
   (fn [{:keys [config]}]
     (go-try S
             (let [store-id (-> config :store :id)  ;; Extract UUID from store config
+                  _ (when-not (uuid? store-id)
+                      (throw (ex-info "A browser database is identified by a UUID"
+                                      {:type :datahike.kabel/invalid-store-id :store-id store-id})))
                   _ (log/info "Global delete-database request" {:store-id store-id})
                   registrations (vec (store-registrations store-id))
                   peer (:peer (first registrations))

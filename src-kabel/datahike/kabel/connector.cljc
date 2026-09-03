@@ -114,7 +114,9 @@
   (go-try-
    (let [config (dissoc (dc/load-config raw-config) :initial-tx :remote-peer :name)
          conn-id [(ds/store-identity (:store config)) (or (:branch config) :db)]
-         lease (reserve-connection! conn-id)]
+         lease (reserve-connection! conn-id)
+         ;; What this connect has set up so far, for a failure to undo.
+         opened (atom {})]
      (try
       (let [;; Normalize config with defaults (cache sizes, etc.)
          config (dissoc (dc/load-config raw-config) :initial-tx :remote-peer :name)
@@ -157,6 +159,7 @@
                                                            :backend (:backend store-config)
                                                            :id (:id store-config)}))
          store (ds/add-cache-and-handlers raw-store config)
+         _ (swap! opened assoc :store store :store-config store-config)
          _ (log/trace "Store ready, adding handlers...")
 
           ;; The store konserve-sync applies pushed nodes to — and dedups against.
@@ -189,6 +192,7 @@
           ;; The registry belongs to persistent-sorted-set and is not tied to a
           ;; serialization format.
          _ (dcbor/register-store! store-config store)
+         _ (swap! opened assoc :registered store-config)
          _ (log/trace "Store registered for index reconstruction")
 
           ;; 1d. Check if we already have the branch key in cache (for tiered stores)
@@ -246,6 +250,8 @@
                            ;; every reachable index node, then the :db head, applied.
                            (fn [] (put! handshake-complete-ch :handshake-done))}))
          _ (log/trace "subscribe-store! returned" {:subscribed? (some? sub-result)})
+         _ (when-not (:error sub-result)
+             (swap! opened assoc :topic store-topic :peer local-peer))
          ;; A refused subscription (a duplicate on this topic, a closed peer)
          ;; never completes a handshake, so waiting for one would hang forever.
          _ (when-let [error (:error sub-result)]
@@ -308,7 +314,8 @@
              (do
                (log/warn (str "Stored index does not match configuration. Using stored: " stored-index))
                (let [config (assoc config :index stored-index)
-                     store (ds/add-cache-and-handlers raw-store config)]
+                     store (ds/add-cache-and-handlers raw-store config)
+         _ (swap! opened assoc :store store :store-config store-config)]
                  [config store processed]))
              [config store processed]))
 
@@ -355,6 +362,19 @@
        conn)
       (catch #?(:clj Exception :cljs :default) e
         (abandon-reservation! conn-id lease)
+        ;; Undo what was set up before the failure: the subscription (a later
+        ;; connect would otherwise be refused as a duplicate), the codec
+        ;; registration, and the open store (an IndexedDB handle in a browser).
+        (let [{:keys [store store-config registered topic peer]} @opened]
+          (when topic
+            (try (<?- (kw/await-topic-release! peer topic 5000))
+                 (catch #?(:clj Exception :cljs :default) _ nil)))
+          (when registered
+            (try (dcbor/unregister-store! registered)
+                 (catch #?(:clj Exception :cljs :default) _ nil)))
+          (when store
+            (try (<?- (ks/release-store store-config store opts))
+                 (catch #?(:clj Exception :cljs :default) _ nil))))
         (throw e))))))
 
 ;; =============================================================================

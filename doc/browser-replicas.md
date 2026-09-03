@@ -112,12 +112,15 @@ permission graph, the same one the HTTP API enforces. The graph knows
 | create a database | | | | ✓ |
 
 Grants go through the HTTP API, by an admin or by an owner of the database,
-typically from your backend when it provisions a tenant:
+typically from your backend when it provisions a tenant. The server's shared
+`:token` is the break-glass admin identity, sent as `authorization: token …`;
+a JWT is accepted there too once the server is given a `:validator` for the
+HTTP side (see [http-routes.md](http-routes.md#authentication-who-is-calling)):
 
 ```typescript
 await fetch('https://api.example.com/permissions/relationships!', {
   method: 'POST',
-  headers: { authorization: `Bearer ${adminToken}`, 'content-type': 'application/json' },
+  headers: { authorization: `token ${serverToken}`, 'content-type': 'application/json' },
   body: JSON.stringify([{
     operation: 'touch',                             // touch | create | delete
     relationship: { subject:  { type: 'user', id: 'alice' },
@@ -181,7 +184,7 @@ calls back into, with `d.registerRemoteFn(name, fn)`.
 
 | npm `datahike/kabel` | |
 |---|---|
-| `createKabelPeer(clientId, {token, onAuth, onError})` | the peer; `token` is a string or a function returning one, or a promise of one |
+| `createKabelPeer(clientId, {token, onAuth, onError})` | the peer; `token` is a string, or a function returning a string or a promise of one |
 | `connectKabelPeer(peer, url)` | connect once; resolves with the server's peer id |
 | `maintainKabelPeer(peer, url, {onStatus, backoff, maxAttempts})` | keep connected; returns `{stop, done}` |
 | `refreshKabelToken(peer, token?)` | replace the token on the live connection |

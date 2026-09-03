@@ -165,7 +165,6 @@ instead when they do not need database queries in the browser.
 Writes issued while disconnected wait for the connection in memory and are
 lost on a page reload; there is no durable offline write queue yet, and tabs
 do not coordinate.
-Recreate the peer and connection when the application decides to reconnect.
 Restoring a connection across a page reload and coordinating one replica among
 multiple tabs or Web Workers are not yet part of the supported lifecycle.
 

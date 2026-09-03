@@ -80,6 +80,10 @@
         (is (open-gate {:principal bob :fn-name 'datahike.kabel/dispatch :arg-map {:store-id store-b}}))
         (is (not (open-gate {:principal nil :fn-name 'datahike.kabel/dispatch :arg-map {:store-id store-b}})))))))
 
+(defn- free-port []
+  (with-open [socket (java.net.ServerSocket. 0)]
+    (.getLocalPort socket)))
+
 (defn- token-for [sub]
   (jwt/sign-hs256 secret {:sub sub :exp (+ (quot (System/currentTimeMillis) 1000) 300)}))
 
@@ -96,7 +100,7 @@
     (if (instance? Throwable v) (:type (ex-data v)) v)))
 
 (deftest listener-refuses-through-the-policy
-  (let [port 47391
+  (let [port (free-port)
         config {:host "127.0.0.1"
                 :authorize policy
                 :kabel {:port port :jwt {:alg :HS256 :secret secret} :store {:backend :memory}}}
@@ -156,7 +160,7 @@
 (deftest listener-reopens-its-databases-on-start
   (let [root (str (fs/temp-dir! "dh-kabel-reopen-") "/databases")
         store-id (random-uuid)
-        port 47392]
+        port (free-port)]
     (d/create-database {:store {:backend :file :path (str root "/" store-id) :id store-id}
                         :schema-flexibility :write :keep-history? false})
     (let [resource (kabel/start! {:host "127.0.0.1"

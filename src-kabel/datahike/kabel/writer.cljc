@@ -162,9 +162,17 @@
                   (finalize! remote-result)
                   ;; Bounded: the server applied the write, and a caller parked
                   ;; forever could never learn that.
-                  (let [[_ port] (clojure.core.async/alts! [wait-ch (timeout default-sync-timeout-ms)])]
-                    (if (= port wait-ch)
+                  (let [[v port] (clojure.core.async/alts! [wait-ch (timeout default-sync-timeout-ms)])]
+                    (cond
+                      ;; shutdown delivers its error on the wait channel
+                      (and (= port wait-ch) (instance? #?(:clj Throwable :cljs js/Error) v))
+                      (do (swap! pending-txs dissoc request-id)
+                          (put! result-ch v))
+
+                      (= port wait-ch)
                       (finalize! remote-result)
+
+                      :else
                       (do (swap! pending-txs dissoc request-id)
                           (put! result-ch
                                 (ex-info "Transaction applied on the server but its sync did not arrive in time"

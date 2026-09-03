@@ -13,8 +13,8 @@
             [kabel.remote :as remote]
             [konserve-sync.core :as sync]
             [konserve.indexeddb]
-            [clojure.core.async :as async :refer [promise-chan put!]]
-            [superv.async :refer [S]]))
+            [clojure.core.async :as async :refer [promise-chan put! close! go]]
+            [superv.async :refer [S] :refer-macros [<?]]))
 
 (defn- peer-middleware [options]
   (let [token (:token options)
@@ -81,25 +81,29 @@
      #js {:stop (:stop! handle)
           :done (api/maybe-chan->promise (:done handle))})))
 
+(defn- settle
+  "A promise of the JavaScript-facing outcome of `ch`: a rejection for an
+   exception, the converted value otherwise. Taken with `<?` inside a go
+   block, so nil never travels through a channel and a yielded exception is
+   released from the supervisor."
+  [ch]
+  (js/Promise.
+   (fn [resolve reject]
+     (go
+       (try
+         (resolve (api/clj->js-recursive (<? S ch)))
+         (catch :default e (reject e)))))))
+
 (defn ^:export refreshKabelToken
   "Send a new token on the peer's live connection. Without a token the
   configured token source is read again. Resolves with the accepted principal."
   ([peer-atom] (refreshKabelToken peer-atom nil))
   ([peer-atom token]
-   (api/maybe-chan->promise
-    (async/map api/clj->js-recursive [(auth/refresh-token! peer-atom token)]))))
-
-(defn- settle
-  "A channel with the JavaScript-facing outcome of `ch`: errors as they are,
-  values converted."
-  [ch]
-  (let [out (promise-chan)]
-    (async/take! ch
-                 (fn [v]
-                   (put! out (cond (nil? v) ::nil
-                                   (or (instance? js/Error v) (instance? ExceptionInfo v)) v
-                                   :else (api/clj->js-recursive v)))))
-    (async/map (fn [v] (if (= v ::nil) nil v)) [out])))
+   ;; refresh-token! needs a live authenticated connection; without one it
+   ;; throws right away, and a caller expects a rejection, not a throw
+   (try
+     (settle (auth/refresh-token! peer-atom token))
+     (catch :default e (js/Promise.reject e)))))
 
 (defn ^:export invokeRemote
   "Invoke the function fnName ('namespace/name') on the peer remoteId with an
@@ -119,7 +123,9 @@
   (remote/register! (symbol fn-name)
                     (fn [arg-map]
                       (let [ch (promise-chan)
-                            settle! (fn [v] (put! ch (if (nil? v) ::nil v)))
+                            ;; nil cannot travel through a channel: a closed
+                            ;; promise-chan yields nil to the taker instead
+                            settle! (fn [v] (if (nil? v) (close! ch) (put! ch v)))
                             result (try (f (api/clj->js-recursive arg-map))
                                         (catch :default e e))]
                         (if (instance? js/Promise result)
@@ -127,7 +133,7 @@
                                  (fn [v] (settle! (api/js->clj-recursive v)))
                                  (fn [e] (settle! (if (instance? js/Error e) e (ex-info (str e) {:error e})))))
                           (settle! (if (instance? js/Error result) result (api/js->clj-recursive result))))
-                        (async/map (fn [v] (if (= v ::nil) nil v)) [ch]))))
+                        ch)))
   fn-name)
 
 (defn ^:export unregisterRemoteFn

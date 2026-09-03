@@ -426,10 +426,10 @@ to use it, from least to most application-specific:
    `:default`, a thunk of the graph's decision, to fall back on.
 
    ```clojure
-   {:authorize (fn [{:keys [op principal db payload default]}]
+   {:authorize (fn [{:keys [op principal db payload fn-name default]}]
                  (case op
                    :transact (and (default) (tenant-may-write? principal db (tx-data payload)))
-                   :invoke   (app-function-allowed? principal (:fn-name payload))
+                   :invoke   (app-function-allowed? principal fn-name)
                    (default)))}
    ```
 
@@ -451,8 +451,10 @@ RS256 can use `:public-key`; deployments with multiple issuers can supply the
 same trusted `:issuers` registry accepted by Kabel authentication. Terminate TLS
 in front of the listener and use `wss://` outside a loopback development setup.
 
-The current client does not automatically reconnect after a transport loss.
-Recreate the peer and connection when the application decides to reconnect.
+The client reconnects with backoff through `kabel.peer/maintain` and
+authenticates again with a freshly read token; a store subscription made by
+`connect` is not remade after a reconnection, so reconnect the database when
+the peer reports `:connected`.
 Restoring a connection across a page reload and coordinating one replica among
 multiple tabs or Web Workers are not yet part of the supported lifecycle.
 
