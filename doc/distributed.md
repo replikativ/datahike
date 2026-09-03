@@ -359,6 +359,10 @@ therefore never permits a public bind, even if a token is also present.
 
 ### Browser replicas over Kabel
 
+The TypeScript view of this setup, server container to first query, is
+[browser-replicas.md](browser-replicas.md). This section is the reference for
+the server configuration and the Clojure side.
+
 The standalone server can expose an additional WebSocket listener for the
 optional `datahike/kabel` npm entry. The application or identity provider
 issues JWTs; Datahike validates them and does not manage user accounts.

@@ -143,52 +143,19 @@ relationships): a transaction is a `:transact` on its database, a store
 subscription a `:read`, database creation and deletion their own operations.
 A server without a permissions database admits every authenticated subject.
 
-Permissions are managed over the server's HTTP API, which takes JSON; the
-package has no client for it, a `fetch` is all it needs. The caller must be a
-server admin (the shared token, or a JWT subject granted `admin`) or an owner
-of the database:
+`token` may be a function returning the current token, or a promise of one;
+it is read at every connection and again to refresh the token before it
+expires. `maintainKabelPeer` keeps the peer connected across drops and reports
+`connecting`, `connected`, `authenticated`, `disconnected`, `failed` and
+`stopped` to `onStatus`. `invokeRemote` calls a function the server serves,
+`registerRemoteFn` serves one from the page.
 
-```typescript
-await fetch(`${httpUrl}/permissions/relationships!`, {
-  method: 'POST',
-  headers: { authorization: `Bearer ${adminToken}`, 'content-type': 'application/json' },
-  body: JSON.stringify([{ operation: 'touch',
-                          relationship: { subject: { type: 'user', id: 'alice' },
-                                          relation: 'writer',
-                                          resource: { type: 'database', id: storeId } } }])
-});
-// relations: owner | writer | reader; operations: touch | create | delete
-// POST /permissions/check {subject, permission, resource} answers {allowed}
-```
-
-`token` may be a function returning the current token, or a promise of one.
-It is read at every connection and again to refresh the token on the live
-connection before it expires, so a long-lived page keeps its session without
-reconnecting. `maintainKabelPeer` keeps the peer connected across drops with
-backoff and reports `connecting`, `connected`, `authenticated`,
-`disconnected`, `failed` and `stopped` to `onStatus`:
-
-```typescript
-const peer = d.createKabelPeer(d.randomUuid(), { token: () => getAccessToken() });
-const link = d.maintainKabelPeer(peer, 'wss://data.example.com', {
-  onStatus: (e) => console.log(e.status, e.attempt ?? '', e.error ?? '')
-});
-// ... link.stop() to disconnect for good
-```
-
-Remote functions served by the server are callable by name, and the page can
-serve functions the server calls back into:
-
-```typescript
-const total = await d.invokeRemote<number>(peer, serverId, 'my.app/add', { a: 1, b: 2 });
-d.registerRemoteFn('my.page/notify', async ({ message }) => { show(message); });
-```
-
-Every reconnection runs the peer's middleware afresh: the token is read again
-and remote functions are announced again. A store subscription made through
-`connect` has to be made again after a drop, and a write in flight when the
-connection drops fails with `kabel.remote/disconnected`; the server may or may
-not have applied it, so retry only with the same request id.
+Who may read, write, create or delete a database is decided by the server's
+permissions, managed over its HTTP API. The whole setup, server container to
+first query, permissions and your own server functions, is in
+[Browser replicas](https://github.com/replikativ/datahike/blob/main/doc/browser-replicas.md),
+including what is not there yet: no durable offline write queue, no multi-tab
+coordination, and a store subscription has to be remade after a reconnection.
 
 This follows the ClojureScript API directly: asynchronous browser and remote
 stores use `{ 'sync?': false }`; an in-memory database can continue to use
