@@ -32,7 +32,7 @@
             [kabel.peer :as peer]
             #?(:clj [superv.async :refer [go-try S <?]]
                :cljs [superv.async :refer [<?] :refer-macros [go-try]])
-            #?(:clj [clojure.core.async :refer [go <! put!]]
+            #?(:clj [clojure.core.async :as async :refer [go <! put!]]
                :cljs [clojure.core.async :refer [put!] :include-macros true])
             #?(:clj [replikativ.logging :as log]
                :cljs [replikativ.logging :as log :include-macros true]))
@@ -206,9 +206,10 @@
                   _ (<? S (w/create-database server-config))
                   _ (log/trace "Database created" {:store-id store-id})
 
-            ;; Connect and register for remote access
-            ;; Note: d/connect is synchronous in JVM Clojure
-                  conn (d/connect server-config)
+            ;; Connect and register for remote access. Asynchronously: this
+            ;; handler runs inside a go block on some servers, and a blocking
+            ;; connect there holds one of the dispatch pool's few threads.
+                  conn (<? S (d/connect server-config {:sync? false}))
                   _ (log/trace "Connected" {:store-id store-id})
 
             ;; Register connection in store registry (use UUID directly)
@@ -265,8 +266,10 @@
                 (unregister-connection-for-store! store-id)
 
           ;; Release every branch connection registered for this store.
-                (doseq [conn conns]
-                  (d/release conn))
+          ;; Releasing closes stores and index writers, blocking work that must
+          ;; not run on a go dispatch thread: on the JVM it runs on its own.
+                #?(:clj  (<? S (async/thread (doseq [conn conns] (d/release conn)) true))
+                   :cljs (doseq [conn conns] (d/release conn)))
                 (log/trace "Connection released" {:store-id store-id}))
 
         ;; Delete database using server-side config
