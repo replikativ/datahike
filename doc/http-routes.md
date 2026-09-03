@@ -141,7 +141,9 @@ which the clients raise as an exception.
 | `:admin` | `gc-storage` |
 
 `db` is `{:store-id uuid :branch keyword}`; `payload` is the call's argument
-vector. The arguments are searched in full, transaction data included: a
+vector. With a `:system-db` (below) your `:authorize` is composed over the
+built-in graph and receives `:default`, a thunk of the graph's decision, so
+it can rule on what the graph does not model and fall back for the rest. The arguments are searched in full, transaction data included: a
 transaction function can be handed a connection or database value for
 another database, and that database is then part of the call. Without `:authorize`, every authenticated caller may do everything —
 today's behaviour.

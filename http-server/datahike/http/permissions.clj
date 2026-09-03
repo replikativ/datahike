@@ -86,9 +86,20 @@ definition database {
               (and db (not= op :create)
                    (eacl/can? acl (user principal) op (database (:store-id db)))))))))
 
+(defn- compose
+  "A host's own `:authorize` on top of the built-in one. The host's function
+   sees the call plus `:default`, a thunk of the built-in decision, so it can
+   rule on what the graph does not model (`:invoke` of its own remote
+   functions, a write's content) and fall back for the rest."
+  [built-in host-policy]
+  (if host-policy
+    (fn [ctx] (boolean (host-policy (assoc ctx :default #(built-in ctx)))))
+    built-in))
+
 (defn configure
   "Use the configured system database for EACL, seed the token principal as
-   server admin, and return `config` with `:authorize` set."
+   server admin, and return `config` with `:authorize` set: the built-in
+   policy, or the host's own `:authorize` composed over it (see `compose`)."
   [{:keys [token-subject] :as input-config}]
   (let [config (if (get input-config system/conn-key)
                  input-config
@@ -101,7 +112,9 @@ definition database {
     (eacl/write-schema! acl schema)
     (ensure-objects! conn [root server])
     (eacl/write-relationship! acl :touch root :admin server)
-    (assoc config :authorize (policy acl) ::acl acl ::conn conn)))
+    (assoc config
+           :authorize (compose (policy acl) (:authorize input-config))
+           ::acl acl ::conn conn)))
 
 (defn close! [config]
   (system/close! config))

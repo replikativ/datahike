@@ -5,6 +5,7 @@
    [clojure.core.async :refer [<!! timeout alts!!]]
    [clojure.test :refer [deftest is testing]]
    [datahike.http.kabel :as kabel]
+   [datahike.http.permissions :as permissions]
    [datahike.kabel.cbor-handlers :as cbor]
    [kabel.auth.jwt :as jwt]
    [kabel.auth.websocket :as auth]
@@ -112,3 +113,24 @@
           (<?? S (peer/stop anon))))
       (finally
         (kabel/stop! resource)))))
+
+(deftest host-policy-composes-over-the-permission-graph
+  (let [config (permissions/configure
+                {:system-db {:store {:backend :memory :id (random-uuid)}}
+                 :authorize (fn [{:keys [op fn-name principal default]}]
+                              (if (= op :invoke)
+                                (and (= 'app/ping fn-name) (= "alice" (:sub principal)))
+                                (default)))})
+        gate (kabel/authorize-remote config)]
+    (try
+      (testing "the host rules on its own remote functions"
+        (is (gate {:principal {:sub "alice"} :fn-name 'app/ping :arg-map {}}))
+        (is (not (gate {:principal {:sub "bob"} :fn-name 'app/ping :arg-map {}})))
+        (is (not (gate {:principal {:sub "alice"} :fn-name 'app/other :arg-map {}}))))
+      (testing "everything else falls back to the graph: root is admin, alice holds nothing"
+        (is (gate {:principal {:sub "root"} :fn-name 'datahike.kabel/dispatch
+                   :arg-map {:store-id store-a :arg-map {:op 'transact}}}))
+        (is (not (gate {:principal {:sub "alice"} :fn-name 'datahike.kabel/dispatch
+                        :arg-map {:store-id store-a :arg-map {:op 'transact}}}))))
+      (finally
+        (permissions/close! config)))))

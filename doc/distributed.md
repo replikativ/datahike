@@ -416,16 +416,17 @@ to use it, from least to most application-specific:
    tenant, or per user: databases are cheap, the graph keeps them apart, and
    a subject cannot even list the databases it cannot read.
 
-2. **Your own policy.** `:authorize` in the server config replaces the
-   built-in one and sees the full call, transaction data included, so it can
-   refuse a write by its content:
+2. **Your own policy.** `:authorize` in the server config sees the full
+   call, transaction data included, so it can refuse a write by its content.
+   With a `:system-db` it is composed over the built-in graph: it receives
+   `:default`, a thunk of the graph's decision, to fall back on.
 
    ```clojure
-   {:authorize (fn [{:keys [op principal db payload]}]
+   {:authorize (fn [{:keys [op principal db payload default]}]
                  (case op
-                   :transact (tenant-may-write? principal db (tx-data payload))
-                   :read     (tenant-may-read? principal db)
-                   false))}
+                   :transact (and (default) (tenant-may-write? principal db (tx-data payload)))
+                   :invoke   (app-function-allowed? principal (:fn-name payload))
+                   (default)))}
    ```
 
 3. **Your own remote functions.** The pattern Simmis uses: browsers do not
