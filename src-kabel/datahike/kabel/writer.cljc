@@ -74,20 +74,28 @@
    Kabel's unsubscribe is idempotent (a cancellation already in flight is
    joined, not repeated), so this only has to be pinned to the subscription's
    generation: a newer subscription made meanwhile on the same topic is left
-   alone. Throws after `timeout-ms`."
+   alone. Yields an exception after `timeout-ms` or on a refused unsubscribe."
   [peer topic timeout-ms]
   (go
     (let [generation (:generation (pubsub/subscription peer topic))]
       (if (nil? generation)
         true
-        (let [[v port] (clojure.core.async/alts! [(kp/unsubscribe-store! peer topic)
-                                                  (timeout timeout-ms)])]
+        (let [[v _] (clojure.core.async/alts! [(kp/unsubscribe-store! peer topic)
+                                               (timeout timeout-ms)])]
           (cond
             (not= generation (:generation (pubsub/subscription peer topic))) true
-            (and (map? v) (:error v)) (:error v)
-            (nil? port) true
+            (and (map? v) (:error v)) (let [e (:error v)]
+                                        (if (instance? #?(:clj Throwable :cljs js/Error) e)
+                                          e
+                                          (ex-info "Store unsubscribe refused"
+                                                   {:type :datahike.kabel/unsubscribe-failed :topic topic :error e})))
             :else (ex-info "Store subscription did not release in time"
                            {:type :datahike.kabel/unsubscribe-timeout :topic topic})))))))
+
+(def default-sync-timeout-ms
+  "How long a write waits for its own effect to replicate back before it
+   fails; a lost sync must not park a caller forever."
+  120000)
 
 (defrecord KabelWriter
            [peer-id        ; UUID of the remote peer that owns the database
@@ -106,67 +114,69 @@
     (let [result-ch (promise-chan)
           request-id (random-uuid)
           ;; Global dispatch handler - store-id is passed in the request
-          remote-fn 'datahike.kabel/dispatch]
+          remote-fn 'datahike.kabel/dispatch
+          finalize! (fn [remote-result]
+                      (swap! pending-txs dissoc request-id)
+                      ;; Reconstruct tx-report with live DBs from connection's store
+                      (let [conn @conn-atom
+                            store (:store @(:wrapped-atom conn))
+                            final-tx-report (reconstruct-tx-report remote-result store)]
+                        ;; Fire listeners for this transaction
+                        (doseq [callback @listeners]
+                          (try
+                            (callback final-tx-report)
+                            (catch #?(:clj Exception :cljs js/Error) e
+                              (log/error "Error in listen! callback" e))))
+                        (put! result-ch final-tx-report)))]
       (go
         (try
           ;; 1. Send to remote peer
           ;; kabel resolves a nil local peer through its route registry
           (let [remote-result (<?- (remote/invoke local-peer peer-id
-                                                     remote-fn
-                                                     {:store-id store-id
-                                                      :branch branch
-                                                      :request-id request-id
-                                                      :arg-map arg-map}))]
-            (if (instance? #?(:clj Throwable :cljs js/Error) remote-result)
+                                                  remote-fn
+                                                  {:store-id store-id
+                                                   :branch branch
+                                                   :request-id request-id
+                                                   :arg-map arg-map}))
+                expected-max-tx (get-in remote-result [:db-after :max-tx])]
+            (cond
               ;; Remote error - return immediately
+              (instance? #?(:clj Throwable :cljs js/Error) remote-result)
               (put! result-ch remote-result)
 
-              ;; 2. Wait for sync to catch up before returning
-              ;; Keep full tx-report from remote, release when synced
-              (let [expected-max-tx (get-in remote-result [:db-after :max-tx])
-                    wait-ch (promise-chan)]
+              ;; Not a transaction report: gc-storage! returns a set, the
+              ;; secondary-index ops a status map. Nothing to wait for.
+              (not (number? expected-max-tx))
+              (put! result-ch remote-result)
 
-                (when-not (number? expected-max-tx)
-                  (throw (ex-info "Remote writer returned no commit watermark"
-                                  {:type :kabel/invalid-writer-report
-                                   :request-id request-id
-                                   :report remote-result})))
-
-                ;; Register waiter with full tx-report
+              ;; 2. Wait for sync to catch up before returning; keep the full
+              ;; tx-report from the remote and release it once synced.
+              :else
+              (let [wait-ch (promise-chan)]
                 (swap! pending-txs assoc request-id
                        {:expected-max-tx expected-max-tx
                         :tx-report remote-result
                         :ch wait-ch})
-
-                ;; Helper to finalize and return tx-report
-                (let [finalize-and-return!
-                      (fn []
-                        (swap! pending-txs dissoc request-id)
-                        ;; Reconstruct tx-report with live DBs from connection's store
-                        (let [conn @conn-atom
-                              store (:store @(:wrapped-atom conn))
-                              final-tx-report (reconstruct-tx-report remote-result store)]
-                          ;; Fire listeners for this transaction
-                          (doseq [callback @listeners]
-                            (try
-                              (callback final-tx-report)
-                              (catch #?(:clj Exception :cljs js/Error) e
-                                (log/error "Error in listen! callback" e))))
-                          ;; Return reconstructed tx-report
-                          (put! result-ch final-tx-report)))]
-
-                  ;; Check if already synced (sync may have arrived before RPC returned)
-                  (if (>= @current-max-tx expected-max-tx)
-                    (finalize-and-return!)
-
-                    ;; Wait indefinitely for sync (no timeout)
-                    ;; Cleanup happens on shutdown or connection close
-                    (do
-                      (<?- wait-ch)
-                      (finalize-and-return!)))))))
-          (catch #?(:clj Exception :cljs js/Error) e
+                (if (>= @current-max-tx expected-max-tx)
+                  ;; Already synced: the sync may have arrived before the RPC returned
+                  (finalize! remote-result)
+                  ;; Bounded: the server applied the write, and a caller parked
+                  ;; forever could never learn that.
+                  (let [[_ port] (clojure.core.async/alts! [wait-ch (timeout default-sync-timeout-ms)])]
+                    (if (= port wait-ch)
+                      (finalize! remote-result)
+                      (do (swap! pending-txs dissoc request-id)
+                          (put! result-ch
+                                (ex-info "Transaction applied on the server but its sync did not arrive in time"
+                                         {:type :kabel/sync-timeout
+                                          :request-id request-id
+                                          :expected-max-tx expected-max-tx
+                                          :timeout-ms default-sync-timeout-ms})))))))))
+          (catch #?(:clj Throwable :cljs :default) e
             (log/error "Error in KabelWriter dispatch" e)
-            (put! result-ch e))))
+            (put! result-ch (if (instance? #?(:clj Throwable :cljs js/Error) e)
+                              e
+                              (ex-info "KabelWriter dispatch failed" {:error e}))))))
       result-ch))
 
   (-streaming? [_]

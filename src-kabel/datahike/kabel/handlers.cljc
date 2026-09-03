@@ -118,6 +118,11 @@
   [{:keys [store-id branch arg-map request-id]
     :or {branch :db}}]
   (go-try S
+          ;; The request id is echoed to every tx-report subscriber; a client
+          ;; does not get to choose its shape. (Older callers omit it.)
+          (when (and (some? request-id) (not (uuid? request-id)))
+            (throw (ex-info "request-id must be a UUID"
+                            {:type :datahike.kabel/invalid-request-id})))
           (log/trace "Global dispatch handler" {:store-id store-id
                                                 :branch branch
                                                 :op (:op arg-map)})
@@ -187,13 +192,8 @@
   [peer store-config-fn]
   (fn [{:keys [config]}]
     (go-try S
-            #?(:clj (println "[SERVER] create-database handler invoked!" config)
-               :cljs (.log js/console "[SERVER] create-database handler invoked!" config))
             (let [store-id (-> config :store :id)  ;; Extract UUID from store config
-                  _ (do
-                      #?(:clj (println "[SERVER] Processing store-id:" store-id)
-                         :cljs (.log js/console "[SERVER] Processing store-id:" store-id))
-                      (log/info "Global create-database request" {:store-id store-id}))
+                  _ (log/info "Global create-database request" {:store-id store-id})
 
             ;; Build server-side config using store-config-fn
             ;; Client's store config is ignored - server controls the backend
@@ -310,13 +310,10 @@
   ([peer opts]
    (let [store-config-fn (or (:store-config-fn opts) default-store-config-fn)]
      (log/trace "Registering global datahike.kabel handlers" {:peer-id (some-> @peer :id)})
-     #?(:clj (println "[SERVER] Registering handlers...")
-        :cljs (.log js/console "[SERVER] Registering handlers..."))
      (remote/register! 'datahike.kabel/dispatch global-dispatch-handler)
      (remote/register! 'datahike.kabel/create-database (make-create-database-handler peer store-config-fn))
      (remote/register! 'datahike.kabel/delete-database (make-delete-database-handler peer store-config-fn))
-     #?(:clj (println "[SERVER] Handlers registered: dispatch, create-database, delete-database")
-        :cljs (.log js/console "[SERVER] Handlers registered: dispatch, create-database, delete-database")))))
+     (log/info "Registered global datahike.kabel handlers" {:peer-id (some-> @peer :id)}))))
 
 ;; =============================================================================
 ;; Legacy Scope-Specific Handler Registration (Deprecated)

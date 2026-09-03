@@ -9,9 +9,9 @@
    `create-database` a `:create`, `delete-database` a `:delete`, and a sync
    subscription to a store's topic a `:read`. Without a policy every
    authenticated caller may do everything, as over HTTP."
-  (:require [clojure.core.async :refer [<!!]]
-            [clojure.java.io :as io]
+  (:require [clojure.java.io :as io]
             [clojure.string :as str]
+            [datahike.api :as d]
             [datahike.kabel.cbor-handlers :as cbor]
             [datahike.kabel.handlers :as handlers]
             [kabel.auth.websocket :as auth]
@@ -19,8 +19,10 @@
             [kabel.http-kit :refer [create-http-kit-handler!]]
             [kabel.peer :as peer]
             [konserve-sync.core :as sync]
+            [konserve.core :as k]
+            [konserve.store :as ks]
             [replikativ.logging :as log]
-            [superv.async :refer [S go-try <?]]))
+            [superv.async :refer [S <??]]))
 
 (def default-peer-id
   "The stable peer id used when `:kabel :peer-id` is omitted. Browser writer
@@ -68,22 +70,42 @@
                :path (.getPath (io/file (:path store) (str store-id)))
                :id store-id})))
 
+(defn- remote-name
+  "The function a call names, as the symbol kabel resolves it to: kabel
+   accepts the string spelling too, so the gate must see both the same way."
+  [fn-name]
+  (cond (symbol? fn-name) fn-name
+        (string? fn-name) (symbol fn-name)
+        :else nil))
+
 (defn- remote-op
-  "What a remote function does, for authorization; nil for a name the server
-   does not serve, which is refused."
+  "What one of Datahike's own remote functions does, for authorization; nil
+   for any other name."
   [fn-name arg-map]
-  (case (some-> fn-name name)
-    "dispatch"        (if (= 'gc-storage! (get-in arg-map [:arg-map :op])) :admin :transact)
-    "create-database" :create
-    "delete-database" :delete
+  (case (remote-name fn-name)
+    datahike.kabel/dispatch        (if (= 'gc-storage! (get-in arg-map [:arg-map :op])) :admin :transact)
+    datahike.kabel/create-database :create
+    datahike.kabel/delete-database :delete
     nil))
 
 (defn- remote-store-id
-  "The store a remote call reaches."
+  "The store a remote call reaches; only a UUID counts as one."
   [fn-name arg-map]
-  (case (some-> fn-name name)
-    "dispatch" (:store-id arg-map)
-    (get-in arg-map [:config :store :id])))
+  (let [id (case (remote-name fn-name)
+             datahike.kabel/dispatch (:store-id arg-map)
+             (get-in arg-map [:config :store :id]))]
+    (when (uuid? id) id)))
+
+(defn- topic-store-id
+  "The store a sync topic belongs to: the store id itself, or the store
+   behind a `:tx-report/scope-<id>` broadcast topic."
+  [topic]
+  (cond
+    (uuid? topic) topic
+    (and (keyword? topic) (= "tx-report" (namespace topic))
+         (str/starts-with? (name topic) "scope-"))
+    (parse-uuid (subs (name topic) (count "scope-")))
+    :else nil))
 
 (defn- allowed?
   "Ask `config`'s `:authorize` as the HTTP routes do: once per database the
@@ -108,14 +130,23 @@
    to server admins only and a custom `:authorize` decides for everyone else."
   [config]
   (fn [{:keys [principal fn-name arg-map]}]
-    (if-let [op (remote-op fn-name arg-map)]
-      (allowed? config op principal (remote-store-id fn-name arg-map) arg-map)
-      (boolean
-       (and principal
-            (if-let [policy (:authorize config)]
-              (policy {:op :invoke :fn-name fn-name :principal principal
-                       :db nil :payload arg-map})
-              true))))))
+    (let [sym (remote-name fn-name)]
+      (cond
+        (remote-op sym arg-map)
+        (allowed? config (remote-op sym arg-map) principal (remote-store-id sym arg-map) arg-map)
+
+        ;; Nothing else under Datahike's own namespace is served; refuse any
+        ;; spelling of it rather than asking the host about it.
+        (= "datahike.kabel" (some-> sym namespace))
+        false
+
+        :else
+        (boolean
+         (and principal
+              (if-let [policy (:authorize config)]
+                (policy {:op :invoke :fn-name sym :principal principal
+                         :db nil :payload arg-map})
+                true)))))))
 
 (defn authorize-sync
   "The gate for the sync middleware: subscribing to a store's topic reads the
@@ -123,8 +154,34 @@
   [config]
   (fn [{:keys [op principal topic]}]
     (case op
-      :subscribe (allowed? config :read principal topic nil)
+      :subscribe (allowed? config :read principal (topic-store-id topic) nil)
       false)))
+
+(defn- reopen-databases!
+  "Serve again the databases an earlier run of this listener created: every
+   UUID-named directory below the file store's path is opened and registered
+   for dispatch and sync. Without this a restart leaves every existing
+   database unreachable until it is deleted."
+  [server {:keys [store] :as kabel}]
+  (when (= :file (:backend store))
+    (let [config-fn (store-config-fn kabel)]
+      (doseq [dir (some->> (io/file (:path store)) .listFiles (filter #(.isDirectory ^java.io.File %)))
+              :let [store-id (parse-uuid (.getName ^java.io.File dir))]
+              :when store-id]
+        (try
+          ;; Reopen with the configuration the database was created with:
+          ;; Datahike refuses a connect whose settings differ from the stored ones.
+          (let [store-config (config-fn store-id nil)
+                store (ks/connect-store store-config {:sync? true})
+                stored (try (k/get store :db nil {:sync? true})
+                            (finally (ks/release-store store-config store {:sync? true})))
+                config (-> (:config stored) (assoc :store store-config :writer {:backend :self}))
+                conn (d/connect config)]
+            (handlers/register-store-for-remote-access! store-id conn server)
+            (log/info :datahike/kabel-database-reopened {:store-id store-id}))
+          (catch Throwable t
+            (log/warn :datahike/kabel-database-reopen-failed
+                      {:store-id store-id :error (ex-message t)})))))))
 
 (defn start!
   "Start the configured Kabel listener. Returns an owned peer resource or nil."
@@ -143,7 +200,8 @@
           served  (remote/serve server {:authorize (authorize-remote config)})]
       (handlers/register-global-handlers!
        server {:store-config-fn (store-config-fn kabel)})
-      (<!! (go-try S (<? S (peer/start server))))
+      (reopen-databases! server kabel)
+      (<?? S (peer/start server))
       (log/info :datahike/kabel-server-started {:url url :peer-id peer-id})
       {:peer server :url url :peer-id peer-id :served served})))
 
@@ -151,7 +209,7 @@
   (when-let [server (:peer resource)]
     (try
       (when-let [stop! (get-in resource [:served :stop!])] (stop!))
-      (<!! (go-try S (<? S (peer/stop server))))
+      (<?? S (peer/stop server))
       (finally
         (log/info :datahike/kabel-server-stopped {:peer-id (:peer-id resource)}))))
   nil)

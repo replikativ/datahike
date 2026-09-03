@@ -6,6 +6,9 @@
    [clojure.test :refer [deftest is testing]]
    [datahike.http.kabel :as kabel]
    [datahike.http.permissions :as permissions]
+   [datahike.api :as d]
+   [datahike.kabel.handlers :as handlers]
+   [datahike.migrate.fs :as fs]
    [datahike.kabel.cbor-handlers :as cbor]
    [kabel.auth.jwt :as jwt]
    [kabel.auth.websocket :as auth]
@@ -46,6 +49,21 @@
                              :arg-map {:config {:store {:id store-a}}}})))
       (is (not (remote-gate {:principal alice :fn-name 'datahike.kabel/delete-database
                              :arg-map {:config {:store {:id store-a}}}}))))
+    (testing "the string spelling of a Datahike function is gated as that function, and no other name under it passes"
+      (is (not (remote-gate {:principal alice :fn-name "datahike.kabel/dispatch"
+                             :arg-map {:store-id store-b :arg-map {:op 'transact}}})))
+      (is (remote-gate {:principal alice :fn-name "datahike.kabel/dispatch"
+                        :arg-map {:store-id store-a :arg-map {:op 'transact}}}))
+      (is (not (remote-gate {:principal alice :fn-name 'datahike.kabel/anything :arg-map {}})))
+      (is (not (remote-gate {:principal alice :fn-name 'datahike.kabel/dispatch
+                             :arg-map {:store-id "not-a-uuid" :arg-map {:op 'transact}}}))
+          "a store id that is not a UUID reaches no database"))
+    (testing "a broadcast topic is a read of the store behind it"
+      (is (sync-gate {:op :subscribe :principal alice
+                      :topic (keyword "tx-report" (str "scope-" store-a))}))
+      (is (not (sync-gate {:op :subscribe :principal alice
+                           :topic (keyword "tx-report" (str "scope-" store-b))})))
+      (is (not (sync-gate {:op :subscribe :principal alice :topic :tx-report/scope-junk}))))
     (testing "a function the host registered is asked for as an :invoke; a missing principal is refused"
       (is (remote-gate {:principal alice :fn-name 'app/ping :arg-map {}}))
       (is (not (remote-gate {:principal alice :fn-name 'other/fn :arg-map {}})))
@@ -134,3 +152,18 @@
                         :arg-map {:store-id store-a :arg-map {:op 'transact}}}))))
       (finally
         (permissions/close! config)))))
+
+(deftest listener-reopens-its-databases-on-start
+  (let [root (str (fs/temp-dir! "dh-kabel-reopen-") "/databases")
+        store-id (random-uuid)
+        port 47392]
+    (d/create-database {:store {:backend :file :path (str root "/" store-id) :id store-id}
+                        :schema-flexibility :write :keep-history? false})
+    (let [resource (kabel/start! {:host "127.0.0.1"
+                                  :kabel {:port port :jwt {:alg :HS256 :secret secret}
+                                          :store {:backend :file :path root}}})]
+      (try
+        (is (some? (handlers/get-connection-for-store store-id :db))
+            "a database from an earlier run is served again")
+        (finally
+          (kabel/stop! resource))))))
