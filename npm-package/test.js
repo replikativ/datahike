@@ -10,6 +10,7 @@ function testPackageSubpathExports() {
   const packageJson = require.resolve('datahike/package.json');
   const browserBundle = require.resolve('datahike/browser/datahike.js');
   const s3Bundle = require.resolve('datahike/s3/datahike.js');
+  const kabelBundle = require.resolve('datahike/kabel/datahike.js');
 
   if (path.basename(packageJson) !== 'package.json') {
     throw new Error(`Unexpected package metadata path: ${packageJson}`);
@@ -19,6 +20,9 @@ function testPackageSubpathExports() {
   }
   if (!s3Bundle.endsWith(path.join('s3', 'datahike.js'))) {
     throw new Error(`Unexpected S3 bundle path: ${s3Bundle}`);
+  }
+  if (!kabelBundle.endsWith(path.join('kabel', 'datahike.js'))) {
+    throw new Error(`Unexpected Kabel bundle path: ${kabelBundle}`);
   }
 
   console.log('  ✓ Package metadata and raw browser bundles are resolvable');

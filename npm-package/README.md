@@ -89,6 +89,85 @@ initial level (for example, `DATAHIKE_LOG_LEVEL=off node app.js`).
 
 ## Documentation
 
+### Replicated browser client (Kabel + IndexedDB)
+
+Use the opt-in `datahike/kabel` entry when the browser should keep a local
+queryable replica and send writes to a Datahike server over Kabel. The store ID
+must identify the same database on the client and server.
+
+```typescript
+import * as d from 'datahike/kabel';
+
+const storeId = d.uuid('550e8400-e29b-41d4-a716-446655440000');
+const serverId = d.uuid('aaaaaaaa-0000-0000-0000-000000000001');
+const peer = d.createKabelPeer(d.randomUuid(), { token: accessToken });
+
+await d.connectKabelPeer(peer, 'wss://data.example.com');
+
+const conn = await d.connect({
+  store: {
+    backend: ':tiered',
+    id: storeId,
+    'frontend-config': { backend: ':memory', id: storeId },
+    'backend-config': {
+      backend: ':indexeddb',
+      id: storeId,
+      name: 'my-app'
+    },
+    'write-policy': ':write-through'
+  },
+  writer: {
+    backend: ':kabel',
+    'peer-id': serverId,
+    'local-peer': peer
+  }
+}, { 'sync?': false });
+```
+
+The matching standalone-server configuration is:
+
+```clojure
+{:kabel {:host "127.0.0.1"
+         :port 47296
+         :peer-id #uuid "aaaaaaaa-0000-0000-0000-000000000001"
+         :jwt {:alg :HS256
+               :secret "application-jwt-secret"
+               :required-claims {:iss "my-app" :aud "datahike"}}
+         :store {:backend :file :path "/var/lib/datahike/browser-databases"}}}
+```
+
+The application issues the JWT. Datahike validates it but does not provide a
+user database or login flow. What an authenticated subject may do is decided
+by the same permissions the HTTP routes enforce (the server's `:system-db`
+relationships): a transaction is a `:transact` on its database, a store
+subscription a `:read`, database creation and deletion their own operations.
+A server without a permissions database admits every authenticated subject.
+
+`token` may be a function returning the current token, or a promise of one;
+it is read at every connection and again to refresh the token before it
+expires. `maintainKabelPeer` keeps the peer connected across drops and reports
+`connecting`, `connected`, `authenticated`, `disconnected`, `failed` and
+`stopped` to `onStatus`. `invokeRemote` calls a function the server serves,
+`registerRemoteFn` serves one from the page.
+
+Who may read, write, create or delete a database is decided by the server's
+permissions, managed over its HTTP API. The whole setup, server container to
+first query, permissions and your own server functions, is in
+[Browser replicas](https://github.com/replikativ/datahike/blob/main/doc/browser-replicas.md),
+including what is not there yet: no durable offline write queue, no multi-tab
+coordination, and a store subscription has to be remade after a reconnection.
+
+This follows the ClojureScript API directly: asynchronous browser and remote
+stores use `{ 'sync?': false }`; an in-memory database can continue to use
+`{ 'sync?': true }`. Applications can put a domain API in front of Datahike
+instead when they do not need database queries in the browser.
+
+Writes issued while disconnected wait for the connection in memory and are
+lost on a page reload; there is no durable offline write queue yet, and tabs
+do not coordinate.
+Restoring a connection across a page reload and coordinating one replica among
+multiple tabs or Web Workers are not yet part of the supported lifecycle.
+
 ### S3-compatible storage in browsers
 
 Import the opt-in build when a browser should persist Datahike directly to

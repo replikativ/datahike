@@ -19,7 +19,7 @@
             [datahike.kabel.connector]  ;; registers -connect* :kabel multimethod
             [datahike.kabel.writer]     ;; registers create-database/delete-database :kabel multimethods
             [datahike.kabel.cbor-handlers :refer [datahike-cbor-middleware]]
-            [is.simm.distributed-scope :as ds]
+            [kabel.remote :as remote]
             [kabel.peer :as peer]
             [konserve-sync.core :as sync]
             [konserve.indexeddb :as idb]
@@ -48,14 +48,14 @@
                      S
                      test-client-id
                       ;; Middleware composition (innermost runs first):
-                      ;; 1. remote-middleware - distributed-scope function invocation
+                      ;; 1. remote-middleware - kabel.remote function invocation
                       ;; 2. sync/client-middleware - konserve-sync for store replication
-                     (comp ds/remote-middleware
+                     (comp remote/middleware
                            (sync/client-middleware))
                       ;; CBOR serialization with Datahike type handlers
                      datahike-cbor-middleware)
           ;; Start the invocation loop for handling remote calls
-          _ (ds/invoke-on-peer peer-atom)]
+          _ (remote/serve peer-atom)]
       (reset! client-peer peer-atom)
       (js/console.log "[SETUP] Client peer ready"))))
 
@@ -77,7 +77,7 @@
 (defonce connection-established (atom false))
 
 (defn ensure-peer-ready!
-  "Ensure client peer is ready and connected to server via distributed-scope.
+  "Ensure client peer is ready and connected to server via kabel.remote.
    Returns channel that yields true on success."
   []
   (go-try S
@@ -86,7 +86,7 @@
 
     ;; Establish connection if not already done
           (when-not @connection-established
-            (let [connect-ch (ds/connect-distributed-scope S @client-peer test-server-url)
+            (let [connect-ch (remote/connect S @client-peer test-server-url)
                   timeout-ch (timeout 10000)
                   [result ch] (alts! [connect-ch timeout-ch])]
               (if (= ch timeout-ch)

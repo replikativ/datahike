@@ -1,5 +1,5 @@
 (ns ^:no-doc datahike.kabel.writer
-  "KabelWriter for remote transactions via kabel/distributed-scope.
+  "KabelWriter for remote transactions via kabel.remote.
 
    The KabelWriter sends transactions to a remote peer that owns the database,
    waits for the transaction to complete, and coordinates with konserve-sync
@@ -18,10 +18,12 @@
             [datahike.store :as dstore]
             [datahike.cbor :as dcbor]
             [datahike.tools :refer [throwable-promise]]
-            [is.simm.distributed-scope :as ds]
+            [kabel.pubsub :as pubsub]
+            [kabel.remote :as remote]
+            [konserve-sync.transport.kabel-pubsub :as kp]
             [superv.async :refer [<?-]]
-            #?(:clj [clojure.core.async :refer [go put! promise-chan]]
-               :cljs [clojure.core.async :refer [go put! promise-chan]])
+            #?(:clj [clojure.core.async :refer [go put! promise-chan timeout]]
+               :cljs [clojure.core.async :refer [go put! promise-chan timeout]])
             #?(:clj [replikativ.logging :as log]
                :cljs [replikativ.logging :as log :include-macros true])))
 
@@ -67,8 +69,37 @@
 ;; KabelWriter Implementation
 ;; =============================================================================
 
+(defn await-topic-release!
+  "Yield true once the subscription `peer` holds on `topic` right now is gone.
+   Kabel's unsubscribe is idempotent (a cancellation already in flight is
+   joined, not repeated), so this only has to be pinned to the subscription's
+   generation: a newer subscription made meanwhile on the same topic is left
+   alone. Yields an exception after `timeout-ms` or on a refused unsubscribe."
+  [peer topic timeout-ms]
+  (go
+    (let [generation (:generation (pubsub/subscription peer topic))]
+      (if (nil? generation)
+        true
+        (let [[v _] (clojure.core.async/alts! [(kp/unsubscribe-store! peer topic)
+                                               (timeout timeout-ms)])]
+          (cond
+            (not= generation (:generation (pubsub/subscription peer topic))) true
+            (and (map? v) (:error v)) (let [e (:error v)]
+                                        (if (instance? #?(:clj Throwable :cljs js/Error) e)
+                                          e
+                                          (ex-info "Store unsubscribe refused"
+                                                   {:type :datahike.kabel/unsubscribe-failed :topic topic :error e})))
+            :else (ex-info "Store subscription did not release in time"
+                           {:type :datahike.kabel/unsubscribe-timeout :topic topic})))))))
+
+(def default-sync-timeout-ms
+  "How long a write waits for its own effect to replicate back before it
+   fails; a lost sync must not park a caller forever."
+  120000)
+
 (defrecord KabelWriter
            [peer-id        ; UUID of the remote peer that owns the database
+            local-peer     ; the local kabel peer connected to it, or nil
             store-id       ; UUID identifying the store/database (from store :id)
             branch         ; branch whose head this writer advances
             store-config   ; Store config for index-registry cleanup on shutdown
@@ -83,66 +114,77 @@
     (let [result-ch (promise-chan)
           request-id (random-uuid)
           ;; Global dispatch handler - store-id is passed in the request
-          remote-fn 'datahike.kabel/dispatch]
+          remote-fn 'datahike.kabel/dispatch
+          finalize! (fn [remote-result]
+                      (swap! pending-txs dissoc request-id)
+                      ;; Reconstruct tx-report with live DBs from connection's store
+                      (let [conn @conn-atom
+                            store (:store @(:wrapped-atom conn))
+                            final-tx-report (reconstruct-tx-report remote-result store)]
+                        ;; Fire listeners for this transaction
+                        (doseq [callback @listeners]
+                          (try
+                            (callback final-tx-report)
+                            (catch #?(:clj Exception :cljs js/Error) e
+                              (log/error "Error in listen! callback" e))))
+                        (put! result-ch final-tx-report)))]
       (go
         (try
-          ;; 1. Send to remote peer via distributed-scope
-          (let [remote-result (<?- (ds/invoke-remote peer-id
-                                                     remote-fn
-                                                     {:store-id store-id
-                                                      :branch branch
-                                                      :request-id request-id
-                                                      :arg-map arg-map}))]
-            (if (instance? #?(:clj Throwable :cljs js/Error) remote-result)
+          ;; 1. Send to remote peer
+          ;; kabel resolves a nil local peer through its route registry
+          (let [remote-result (<?- (remote/invoke local-peer peer-id
+                                                  remote-fn
+                                                  {:store-id store-id
+                                                   :branch branch
+                                                   :request-id request-id
+                                                   :arg-map arg-map}))
+                expected-max-tx (get-in remote-result [:db-after :max-tx])]
+            (cond
               ;; Remote error - return immediately
+              (instance? #?(:clj Throwable :cljs js/Error) remote-result)
               (put! result-ch remote-result)
 
-              ;; 2. Wait for sync to catch up before returning
-              ;; Keep full tx-report from remote, release when synced
-              (let [expected-max-tx (get-in remote-result [:db-after :max-tx])
-                    wait-ch (promise-chan)]
+              ;; Not a transaction report: gc-storage! returns a set, the
+              ;; secondary-index ops a status map. Nothing to wait for.
+              (not (number? expected-max-tx))
+              (put! result-ch remote-result)
 
-                (when-not (number? expected-max-tx)
-                  (throw (ex-info "Remote writer returned no commit watermark"
-                                  {:type :kabel/invalid-writer-report
-                                   :request-id request-id
-                                   :report remote-result})))
-
-                ;; Register waiter with full tx-report
+              ;; 2. Wait for sync to catch up before returning; keep the full
+              ;; tx-report from the remote and release it once synced.
+              :else
+              (let [wait-ch (promise-chan)]
                 (swap! pending-txs assoc request-id
                        {:expected-max-tx expected-max-tx
                         :tx-report remote-result
                         :ch wait-ch})
+                (if (>= @current-max-tx expected-max-tx)
+                  ;; Already synced: the sync may have arrived before the RPC returned
+                  (finalize! remote-result)
+                  ;; Bounded: the server applied the write, and a caller parked
+                  ;; forever could never learn that.
+                  (let [[v port] (clojure.core.async/alts! [wait-ch (timeout default-sync-timeout-ms)])]
+                    (cond
+                      ;; shutdown delivers its error on the wait channel
+                      (and (= port wait-ch) (instance? #?(:clj Throwable :cljs js/Error) v))
+                      (do (swap! pending-txs dissoc request-id)
+                          (put! result-ch v))
 
-                ;; Helper to finalize and return tx-report
-                (let [finalize-and-return!
-                      (fn []
-                        (swap! pending-txs dissoc request-id)
-                        ;; Reconstruct tx-report with live DBs from connection's store
-                        (let [conn @conn-atom
-                              store (:store @(:wrapped-atom conn))
-                              final-tx-report (reconstruct-tx-report remote-result store)]
-                          ;; Fire listeners for this transaction
-                          (doseq [callback @listeners]
-                            (try
-                              (callback final-tx-report)
-                              (catch #?(:clj Exception :cljs js/Error) e
-                                (log/error "Error in listen! callback" e))))
-                          ;; Return reconstructed tx-report
-                          (put! result-ch final-tx-report)))]
+                      (= port wait-ch)
+                      (finalize! remote-result)
 
-                  ;; Check if already synced (sync may have arrived before RPC returned)
-                  (if (>= @current-max-tx expected-max-tx)
-                    (finalize-and-return!)
-
-                    ;; Wait indefinitely for sync (no timeout)
-                    ;; Cleanup happens on shutdown or connection close
-                    (do
-                      (<?- wait-ch)
-                      (finalize-and-return!)))))))
-          (catch #?(:clj Exception :cljs js/Error) e
+                      :else
+                      (do (swap! pending-txs dissoc request-id)
+                          (put! result-ch
+                                (ex-info "Transaction applied on the server but its sync did not arrive in time"
+                                         {:type :kabel/sync-timeout
+                                          :request-id request-id
+                                          :expected-max-tx expected-max-tx
+                                          :timeout-ms default-sync-timeout-ms})))))))))
+          (catch #?(:clj Throwable :cljs :default) e
             (log/error "Error in KabelWriter dispatch" e)
-            (put! result-ch e))))
+            (put! result-ch (if (instance? #?(:clj Throwable :cljs js/Error) e)
+                              e
+                              (ex-info "KabelWriter dispatch failed" {:error e}))))))
       result-ch))
 
   (-streaming? [_]
@@ -158,10 +200,19 @@
       ;; Drop the store from the index-reconstruction registry
       (when store-config
         (dcbor/unregister-store! store-config))
-      ;; Return closed channel to signal completion
-      (let [ch (promise-chan)]
-        (put! ch true)
-        ch))))
+      ;; Release the store subscription this connection held on the peer. A
+      ;; later connect on the same peer and store would otherwise be refused
+      ;; as a duplicate subscription.
+      (if local-peer
+        (go
+          (try
+            (<?- (await-topic-release! local-peer store-id 30000))
+            (catch #?(:clj Exception :cljs js/Error) e
+              (log/warn "Store unsubscribe on writer shutdown failed" {:store-id store-id :error (ex-message e)})))
+          true)
+        (let [ch (promise-chan)]
+          (put! ch true)
+          ch)))))
 
 ;; =============================================================================
 ;; Connection Reference
@@ -270,7 +321,10 @@
   ([peer-id store-id store-config]
    (kabel-writer peer-id store-id :db store-config))
   ([peer-id store-id branch store-config]
+   (kabel-writer peer-id nil store-id branch store-config))
+  ([peer-id local-peer store-id branch store-config]
    (->KabelWriter peer-id
+                  local-peer
                   store-id
                   branch
                   store-config
@@ -284,13 +338,13 @@
 ;; =============================================================================
 
 (defmethod writer/create-writer :kabel
-  [{:keys [peer-id store-config branch]} connection]
+  [{:keys [peer-id local-peer store-config branch]} connection]
   ;; Extract store-id from store config :id
   (let [store-id (:id store-config)
         branch (or branch
                    (some-> connection :wrapped-atom deref :config :branch)
                    :db)]
-    (kabel-writer peer-id store-id branch store-config)))
+    (kabel-writer peer-id local-peer store-id branch store-config)))
 
 (defmethod writer/create-database :kabel
   [config & _args]
@@ -302,9 +356,9 @@
     (go
       (try
         ;; Global create-database handler - config contains store-id
-        (let [result (<?- (ds/invoke-remote peer-id
-                                            'datahike.kabel/create-database
-                                            {:config remote-config}))]
+        (let [result (<?- (remote/invoke (get-in config [:writer :local-peer]) peer-id
+                                         'datahike.kabel/create-database
+                                         {:config remote-config}))]
           (#?(:clj deliver :cljs put!) p result))
         (catch #?(:clj Exception :cljs js/Error) e
           (log/error "Error in create-database :kabel" e)
@@ -320,9 +374,9 @@
     (go
       (try
         ;; Global delete-database handler - config contains store-id
-        (let [result (<?- (ds/invoke-remote peer-id
-                                            'datahike.kabel/delete-database
-                                            {:config remote-config}))]
+        (let [result (<?- (remote/invoke (get-in config [:writer :local-peer]) peer-id
+                                         'datahike.kabel/delete-database
+                                         {:config remote-config}))]
           ;; Same reason as the :datahike-server backend: the delete happened on
           ;; the remote peer, so nothing here has touched THIS process's
           ;; connection registry. Left alone, a later `d/connect` with the same

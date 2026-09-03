@@ -1,9 +1,25 @@
 // Compile-only contract test for the public Datahike JavaScript API.
 
 import * as d from './index';
+import * as dk from './kabel';
 
 async function typescriptTest() {
   const configuredLogLevel: d.LogLevel = d.setLogLevel('warn');
+
+  const clientId = dk.randomUuid();
+  const peer: dk.KabelPeer = dk.createKabelPeer(clientId, {
+    token: 'test-token',
+    onAuth: principal => console.log(principal)
+  });
+  await dk.connectKabelPeer(peer, 'ws://localhost:47296');
+  const stopped: Promise<boolean> = dk.stopKabelPeer(peer);
+  console.log(stopped);
+  const writer: dk.KabelWriterConfig = {
+    backend: ':kabel',
+    'peer-id': dk.randomUuid(),
+    'local-peer': peer
+  };
+  console.log(writer);
 
   // DatabaseConfig type is now properly typed
   const config: d.DatabaseConfig = {

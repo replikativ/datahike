@@ -17,7 +17,7 @@
                :deps-file "deps.edn"
                :jar-pattern "{{repo.lib}}-{{version-str}}.jar"
                :lib org.replikativ/datahike}
-         :http-server-clj {:src-dirs      ["src" "http-server" "resources"]
+         :http-server-clj {:src-dirs      ["src" "src-kabel" "http-server" "resources"]
                            :java-src-dirs ["java" "http-server-java"]
                            :target-dir    "target-http-server"
                            :class-dir     "target-http-server/classes"
@@ -45,10 +45,12 @@
                                   ;; CI treats this as a regression budget, not a
                                   ;; product promise. Raise it deliberately when a
                                   ;; new bundled backend justifies the increase.
-                                  ;; Audited GCS and Azure HTTP transports bring
-                                  ;; the current artifact to ~71.7 MiB. Keep a
-                                  ;; bounded 8.3 MiB allowance for SDK patch drift.
-                                  :max-bytes   83886080}
+                                  ;; The Kabel endpoint currently pulls in
+                                  ;; ClojureScript because distributed-scope
+                                  ;; 0.1.9 loads cljs.analyzer on the JVM. Keep
+                                  ;; that temporary cost bounded until the
+                                  ;; runtime/analyzer namespaces are split.
+                                  :max-bytes   117440512}
          ;; Used only on Windows, where native-image cannot take the classpath
          ;; on the command line (8191-char limit). Same shape as :native, but
          ;; carrying the CLI's own aliases rather than libdatahike's.

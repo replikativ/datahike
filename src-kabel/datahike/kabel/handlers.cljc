@@ -1,7 +1,7 @@
 (ns ^:no-doc datahike.kabel.handlers
   "Server-side handlers for remote datahike operations via kabel.
 
-   This namespace provides GLOBAL handlers that are registered with distributed-scope
+   This namespace provides GLOBAL handlers that are registered with kabel.remote
    to handle remote transaction requests. The handlers look up the local
    connection by store-id and branch and forward operations to its writer.
 
@@ -23,7 +23,7 @@
   (:require [datahike.api :as d]
             [datahike.writer :as writer]
             [datahike.writing :as w]
-            [is.simm.distributed-scope :as ds]
+            [kabel.remote :as remote]
             [datahike.kabel.tx-broadcast :as tx-broadcast]
             [konserve-sync.core :as sync]
             ;; datahike's own walker — follows :db.type/store-ref values so referenced
@@ -32,7 +32,7 @@
             [kabel.peer :as peer]
             #?(:clj [superv.async :refer [go-try S <?]]
                :cljs [superv.async :refer [<?] :refer-macros [go-try]])
-            #?(:clj [clojure.core.async :refer [go <! put!]]
+            #?(:clj [clojure.core.async :as async :refer [go <! put!]]
                :cljs [clojure.core.async :refer [put!] :include-macros true])
             #?(:clj [replikativ.logging :as log]
                :cljs [replikativ.logging :as log :include-macros true]))
@@ -118,6 +118,11 @@
   [{:keys [store-id branch arg-map request-id]
     :or {branch :db}}]
   (go-try S
+          ;; The request id is echoed to every tx-report subscriber; a client
+          ;; does not get to choose its shape. (Older callers omit it.)
+          (when (and (some? request-id) (not (uuid? request-id)))
+            (throw (ex-info "request-id must be a UUID"
+                            {:type :datahike.kabel/invalid-request-id})))
           (log/trace "Global dispatch handler" {:store-id store-id
                                                 :branch branch
                                                 :op (:op arg-map)})
@@ -187,13 +192,11 @@
   [peer store-config-fn]
   (fn [{:keys [config]}]
     (go-try S
-            #?(:clj (println "[SERVER] create-database handler invoked!" config)
-               :cljs (.log js/console "[SERVER] create-database handler invoked!" config))
             (let [store-id (-> config :store :id)  ;; Extract UUID from store config
-                  _ (do
-                      #?(:clj (println "[SERVER] Processing store-id:" store-id)
-                         :cljs (.log js/console "[SERVER] Processing store-id:" store-id))
-                      (log/info "Global create-database request" {:store-id store-id}))
+                  _ (when-not (uuid? store-id)
+                      (throw (ex-info "A browser database is identified by a UUID"
+                                      {:type :datahike.kabel/invalid-store-id :store-id store-id})))
+                  _ (log/info "Global create-database request" {:store-id store-id})
 
             ;; Build server-side config using store-config-fn
             ;; Client's store config is ignored - server controls the backend
@@ -206,9 +209,10 @@
                   _ (<? S (w/create-database server-config))
                   _ (log/trace "Database created" {:store-id store-id})
 
-            ;; Connect and register for remote access
-            ;; Note: d/connect is synchronous in JVM Clojure
-                  conn (d/connect server-config)
+            ;; Connect and register for remote access. Asynchronously: this
+            ;; handler runs inside a go block on some servers, and a blocking
+            ;; connect there holds one of the dispatch pool's few threads.
+                  conn (<? S (d/connect server-config {:sync? false}))
                   _ (log/trace "Connected" {:store-id store-id})
 
             ;; Register connection in store registry (use UUID directly)
@@ -247,6 +251,9 @@
   (fn [{:keys [config]}]
     (go-try S
             (let [store-id (-> config :store :id)  ;; Extract UUID from store config
+                  _ (when-not (uuid? store-id)
+                      (throw (ex-info "A browser database is identified by a UUID"
+                                      {:type :datahike.kabel/invalid-store-id :store-id store-id})))
                   _ (log/info "Global delete-database request" {:store-id store-id})
                   registrations (vec (store-registrations store-id))
                   peer (:peer (first registrations))
@@ -265,8 +272,10 @@
                 (unregister-connection-for-store! store-id)
 
           ;; Release every branch connection registered for this store.
-                (doseq [conn conns]
-                  (d/release conn))
+          ;; Releasing closes stores and index writers, blocking work that must
+          ;; not run on a go dispatch thread: on the JVM it runs on its own.
+                #?(:clj  (<? S (async/thread (doseq [conn conns] (d/release conn)) true))
+                   :cljs (doseq [conn conns] (d/release conn)))
                 (log/trace "Connection released" {:store-id store-id}))
 
         ;; Delete database using server-side config
@@ -310,13 +319,10 @@
   ([peer opts]
    (let [store-config-fn (or (:store-config-fn opts) default-store-config-fn)]
      (log/trace "Registering global datahike.kabel handlers" {:peer-id (some-> @peer :id)})
-     #?(:clj (println "[SERVER] Registering handlers...")
-        :cljs (.log js/console "[SERVER] Registering handlers..."))
-     (ds/register-remote-fn! 'datahike.kabel/dispatch global-dispatch-handler)
-     (ds/register-remote-fn! 'datahike.kabel/create-database (make-create-database-handler peer store-config-fn))
-     (ds/register-remote-fn! 'datahike.kabel/delete-database (make-delete-database-handler peer store-config-fn))
-     #?(:clj (println "[SERVER] Handlers registered: dispatch, create-database, delete-database")
-        :cljs (.log js/console "[SERVER] Handlers registered: dispatch, create-database, delete-database")))))
+     (remote/register! 'datahike.kabel/dispatch global-dispatch-handler)
+     (remote/register! 'datahike.kabel/create-database (make-create-database-handler peer store-config-fn))
+     (remote/register! 'datahike.kabel/delete-database (make-delete-database-handler peer store-config-fn))
+     (log/info "Registered global datahike.kabel handlers" {:peer-id (some-> @peer :id)}))))
 
 ;; =============================================================================
 ;; Legacy Scope-Specific Handler Registration (Deprecated)

@@ -16,7 +16,7 @@
             [kabel.peer :as peer]
             [kabel.http-kit :refer [create-http-kit-handler!]]
             [konserve-sync.core :as sync]
-            [is.simm.distributed-scope :refer [remote-middleware]]
+            [kabel.remote :as remote]
             [superv.async :refer [S go-try <?]]
             [clojure.java.io :as io]
             [clojure.core.async :refer [<!!]]
@@ -92,24 +92,24 @@
   (log/info "Starting browser test server on port" test-server-port)
 
   (let [temp-dir (create-temp-dir "datahike-browser-test")
-        ;; Create server peer with distributed-scope and konserve-sync middleware
+        ;; Create server peer with kabel.remote and konserve-sync middleware
         server (peer/server-peer
                 S
                 (create-http-kit-handler! S test-server-url test-server-id)
                 test-server-id
                  ;; Middleware composition (innermost runs first):
-                 ;; 1. remote-middleware - distributed-scope for remote function invocation
+                 ;; 1. remote-middleware - kabel.remote for remote function invocation
                  ;; 2. sync/server-middleware - konserve-sync for store replication
                 (comp (sync/server-middleware)
-                      remote-middleware)
+                      remote/middleware)
                 datahike-serialization-middleware)]
 
     ;; Start the server
     (<!! (go-try S (<? S (peer/start server))))
 
-    ;; Set up distributed-scope to process remote invocations
+    ;; Set up kabel.remote to process remote invocations
     ;; This enables the server to receive and execute remote function calls
-    (is.simm.distributed-scope/invoke-on-peer server)
+    (remote/serve server)
 
     ;; Register global handlers for remote Datahike operations
     ;; This enables clients to use d/create-database, d/delete-database, and d/transact

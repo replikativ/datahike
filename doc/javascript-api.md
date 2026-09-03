@@ -4,6 +4,10 @@
 
 ## Overview
 
+For a browser database that stays a replica of one a server owns, with
+writes through the server, reconnection, token refresh and per-database
+permissions, see [Browser replicas](browser-replicas.md).
+
 The Datahike JavaScript API provides a Promise-based interface for Node.js and browser environments. All async operations return Promises, and data is automatically converted between JavaScript and ClojureScript.
 
 ## Project Structure

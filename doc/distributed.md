@@ -88,7 +88,7 @@ The stack consists of:
 
 - [kabel](https://github.com/replikativ/kabel) - WebSocket transport with middleware support
 - [boring](https://github.com/replikativ/boring) - the CBOR codec on the wire
-- [distributed-scope](https://github.com/replikativ/distributed-scope) - Remote function invocation with Clojure semantics
+- [kabel.remote](https://github.com/replikativ/kabel/blob/main/doc/remote-invocation.md) - Remote function invocation over the connection
 - [konserve-sync](https://github.com/replikativ/konserve-sync) - Differential store synchronization (only transmits changed data)
 
 This setup is particularly useful for browser clients where storage backends cannot be shared directly, and for applications requiring reactive UIs that update automatically when data changes on the server (see [JavaScript API](javascript-api.md)).
@@ -106,7 +106,7 @@ backend and broadcasts updates to connected clients via konserve-sync.
             [kabel.peer :as peer]
             [kabel.http-kit :refer [create-http-kit-handler!]]
             [konserve-sync.core :as sync]
-            [is.simm.distributed-scope :refer [remote-middleware invoke-on-peer]]
+            [kabel.remote :as remote]
             [superv.async :refer [S go-try <?]]
             [clojure.core.async :refer [<!!]]))
 
@@ -124,18 +124,18 @@ backend and broadcasts updates to connected clients via konserve-sync.
 (defn start-server! []
   (let [;; Create kabel server peer with middleware stack:
         ;; - sync/server-middleware: handles konserve-sync replication
-        ;; - remote-middleware: handles distributed-scope RPC
+        ;; - remote/middleware: carries remote function invocations
         ;; - datahike-cbor-middleware: serializes Datahike types as CBOR
         server (peer/server-peer
                 S
                 (create-http-kit-handler! S server-url server-id)
                 server-id
-                (comp (sync/server-middleware) remote-middleware)
+                (comp (sync/server-middleware) remote/middleware)
                 datahike-cbor-middleware)]
 
     ;; Start server and enable remote function invocation
     (<!! (peer/start server))
-    (invoke-on-peer server)
+    (remote/serve server)
 
     ;; Register global Datahike handlers for create-database, delete-database, transact
     ;; The :store-config-fn translates client config to server-side store config
@@ -167,7 +167,7 @@ client peers when two branches must stay connected simultaneously.
   (:require [cljs.core.async :refer [<! timeout alts!] :refer-macros [go]]
             [datahike.api :as d]
             [datahike.kabel.cbor-handlers :refer [datahike-cbor-middleware]]
-            [is.simm.distributed-scope :as ds]
+            [kabel.remote :as remote]
             [kabel.peer :as peer]
             [konserve-sync.core :as sync]
             [superv.async :refer [S] :refer-macros [go-try <?]]))
@@ -180,23 +180,23 @@ client peers when two branches must stay connected simultaneously.
 
 (defn init-peer! []
   ;; Create client peer with middleware stack (innermost runs first):
-  ;; - ds/remote-middleware: handles distributed-scope RPC responses
+  ;; - remote/middleware: carries remote function invocations and their results
   ;; - sync/client-middleware: handles konserve-sync replication
   (let [peer-atom (peer/client-peer
                    S
                    client-id
-                   (comp ds/remote-middleware (sync/client-middleware))
+                   (comp remote/middleware (sync/client-middleware))
                    datahike-cbor-middleware)]
     ;; Start invocation loop for handling remote calls
-    (ds/invoke-on-peer peer-atom)
+    (remote/serve peer-atom)
     (reset! client-peer peer-atom)))
 
 (defn example []
   ;; go-try/<?  from superv.async propagate errors through async channels
   ;; Use go/<! if you prefer manual error handling
   (go-try S
-    ;; Connect to server via distributed-scope
-    (<? S (ds/connect-distributed-scope S @client-peer server-url))
+    ;; Connect and wait until remote invocations work
+    (<? S (remote/connect S @client-peer server-url))
 
     (let [store-id (random-uuid)
           db-name (str "db-" store-id)
@@ -213,7 +213,7 @@ client peers when two branches must stay connected simultaneously.
                   :schema-flexibility :write
                   :keep-history? false}]
 
-      ;; Create database on server (transmitted via distributed-scope RPC)
+      ;; Create database on server (a remote invocation)
       (<? S (d/create-database config))
 
       ;; Connect locally - syncs initial state from server via konserve-sync
@@ -356,6 +356,107 @@ without effective authentication. Configure a nonblank `:token` or a custom
 `:validator`, or use an explicit loopback host such as `:host "127.0.0.1"` for
 unauthenticated local development. `:dev-mode true` bypasses authentication and
 therefore never permits a public bind, even if a token is also present.
+
+### Browser replicas over Kabel
+
+The TypeScript view of this setup, server container to first query, is
+[browser-replicas.md](browser-replicas.md). This section is the reference for
+the server configuration and the Clojure side.
+
+The standalone server can expose an additional WebSocket listener for the
+optional `datahike/kabel` npm entry. The application or identity provider
+issues JWTs; Datahike validates them and does not manage user accounts.
+
+```clojure
+{:host "127.0.0.1"
+ :port 4444
+ :token "replace-with-an-http-token"
+ :kabel
+ {:host "127.0.0.1"
+  :port 47296
+  :peer-id #uuid "aaaaaaaa-0000-0000-0000-000000000001"
+  :jwt {:alg :HS256
+        :secret "replace-with-a-separate-jwt-secret"
+        :required-claims {:iss "my-app" :aud "datahike"}}
+  :store {:backend :file :path "/var/lib/datahike/browser-databases"}}}
+```
+
+The `:peer-id` is the value used by the browser's `writer.peer-id`; its stable
+default is the UUID shown above. `:store` is server-owned and supports `:memory`
+or `:file` in this first version. A client chooses a database UUID but cannot
+choose a server filesystem path or backend credentials. Each file database is
+stored below `:store :path` in a directory named for that UUID.
+
+Every remote call and store subscription requires a successfully validated JWT
+with a `sub` claim. Browser peers cannot publish Konserve nodes directly;
+transactions go through Datahike's Kabel writer and the resulting store changes
+replicate back. Authorization is the HTTP server's: with a `:system-db`, the
+same eacl relationships decide, and a remote call to `datahike.kabel/dispatch`
+is a `:transact` on its store, `create-database` a `:create`,
+`delete-database` a `:delete`, and a store subscription a `:read`. Without a
+permissions database every authenticated JWT may do everything, as over HTTP.
+
+#### Controlling who may do what
+
+Authentication says who the caller is; the server's `:authorize` policy says
+what they may do, for the Kabel listener and the HTTP routes alike (see
+[Authorization](http-routes.md#authorization-what-they-may-do)). Three ways
+to use it, from least to most application-specific:
+
+1. **Per-database roles, built in.** With a `:system-db` the server keeps a
+   permission graph: server `admin`s, and per database `owner`, `writer` and
+   `reader`. A transaction from a browser is a `:transact` on its database, a
+   replica subscription a `:read`. Grant through the HTTP API as an admin:
+
+   ```clojure
+   (client/request-cbor :post "permissions/relationships!" admin-peer
+                        [{:operation :touch
+                          :relationship {:subject  {:type :user :id "alice"}
+                                         :relation :writer
+                                         :resource {:type :database :id (str store-id)}}}])
+   ```
+
+   For a multi-tenant application the natural unit is one database per
+   tenant, or per user: databases are cheap, the graph keeps them apart, and
+   a subject cannot even list the databases it cannot read.
+
+2. **Your own policy.** `:authorize` in the server config sees the full
+   call, transaction data included, so it can refuse a write by its content.
+   With a `:system-db` it is composed over the built-in graph: it receives
+   `:default`, a thunk of the graph's decision, to fall back on.
+
+   ```clojure
+   {:authorize (fn [{:keys [op principal db payload fn-name default]}]
+                 (case op
+                   :transact (and (default) (tenant-may-write? principal db (tx-data payload)))
+                   :invoke   (app-function-allowed? principal fn-name)
+                   (default)))}
+   ```
+
+3. **Your own remote functions.** The pattern Simmis uses: browsers do not
+   transact directly; they call domain operations the server registered with
+   `kabel.remote/register!`, and those run the transaction after checking the
+   caller (`:kabel/principal` in the argument map). The listener asks the
+   policy about such a function as `{:op :invoke :fn-name … :db nil}`: the
+   built-in permissions allow that to server admins only, a custom policy
+   decides per function, and Datahike's own `dispatch` stays gated as a
+   `:transact`, so a client that bypasses the domain API still cannot write
+   what the graph does not grant.
+
+What is not there yet is a declarative row- or attribute-level rule language
+in the style of InstantDB's permissions; the seam for it is the `:authorize`
+function above.
+
+RS256 can use `:public-key`; deployments with multiple issuers can supply the
+same trusted `:issuers` registry accepted by Kabel authentication. Terminate TLS
+in front of the listener and use `wss://` outside a loopback development setup.
+
+The client reconnects with backoff through `kabel.peer/maintain` and
+authenticates again with a freshly read token; a store subscription made by
+`connect` is not remade after a reconnection, so reconnect the database when
+the peer reports `:connected`.
+Restoring a connection across a page reload and coordinating one replica among
+multiple tabs or Web Workers are not yet part of the supported lifecycle.
 
 ### Kabel transport metrics
 

@@ -6,6 +6,24 @@ When something is added, it's typically marked *Experimental*. When the API cont
 
 ## 0.8
 
+- **Kabel listener and browser client.** The standalone server takes an
+  optional `:kabel` listener (JWT-authenticated WebSocket next to the HTTP
+  routes) and the npm package an opt-in `datahike/kabel` entry for a tiered
+  memory + IndexedDB replica with the `:kabel` writer. Remote calls and store
+  subscriptions are authorized by the server's `:authorize` policy, the same
+  eacl relationships as the HTTP routes. The client reads its token from a
+  function at every connection and refreshes it before expiry
+  (`refreshKabelToken`), reconnects with backoff (`maintainKabelPeer`), and
+  can call and serve remote functions (`invokeRemote`, `registerRemoteFn`).
+  The remote-invocation runtime is `kabel.remote` (kabel 0.3.129);
+  distributed-scope is no longer a dependency, which removes the ClojureScript
+  compiler from the server JAR. The connector fails fast when a store
+  subscription is refused instead of waiting forever, and a write waits for
+  its own sync for at most two minutes. The listener reopens the databases an
+  earlier run created, so they survive a restart, and gates the string
+  spelling of its remote functions and the transaction-report topics as what
+  they are.
+
 - **The standalone server drains work on shutdown.** SIGTERM stops new accepts,
   waits up to 30 seconds for in-flight HTTP operations, then releases database
   connections, permissions state, and metrics ownership exactly once. The

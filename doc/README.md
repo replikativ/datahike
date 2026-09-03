@@ -33,6 +33,7 @@ Datahike supports multiple languages and platforms:
 
 ### JavaScript/TypeScript
 - **[JavaScript API](./javascript-api.md)** - Promise-based API for Node.js and browsers
+- **[Browser replicas](./browser-replicas.md)** - Datahike in the browser, writing through a server, with permissions
   - npm: `npm install datahike@next`
   - Status: **Beta** - Functional and tested, but may receive breaking changes
 

@@ -108,6 +108,14 @@
   UUID values must be created explicitly with d.uuid() or d.randomUuid()."
   [x]
   (cond
+    ;; UUIDs and ClojureScript atoms are opaque API values. In particular, the
+    ;; Kabel browser entry returns its peer as an atom which is then placed in
+    ;; writer.local-peer. Walking either value as a generic JavaScript object
+    ;; corrupts it before the connector sees the config.
+    (or (instance? UUID x)
+        (satisfies? IDeref x))
+    x
+
     ;; Dates are API values (temporal queries and GC cutoffs), not option maps.
     ;; Preserve them before the generic JavaScript-object conversion below.
     (instance? js/Date x)
