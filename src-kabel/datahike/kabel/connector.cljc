@@ -211,6 +211,10 @@
          store-topic store-id
          _ (log/trace "Subscribing to store topic" {:store-topic store-topic})
 
+         ;; A previous connection on this peer may still hold the topic (its
+         ;; release unsubscribes asynchronously); kabel refuses a duplicate,
+         ;; so hand the topic over first.
+         _ (<?- (kw/await-topic-release! local-peer store-topic 30000))
          _ (log/trace "Calling subscribe-store!")
          sub-result (<?- (kp/subscribe-store!
                           local-peer store-topic sync-store

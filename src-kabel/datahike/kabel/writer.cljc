@@ -18,10 +18,12 @@
             [datahike.store :as dstore]
             [datahike.cbor :as dcbor]
             [datahike.tools :refer [throwable-promise]]
+            [kabel.pubsub :as pubsub]
             [kabel.remote :as remote]
+            [konserve-sync.transport.kabel-pubsub :as kp]
             [superv.async :refer [<?-]]
-            #?(:clj [clojure.core.async :refer [go put! promise-chan]]
-               :cljs [clojure.core.async :refer [go put! promise-chan]])
+            #?(:clj [clojure.core.async :refer [go put! promise-chan timeout]]
+               :cljs [clojure.core.async :refer [go put! promise-chan timeout]])
             #?(:clj [replikativ.logging :as log]
                :cljs [replikativ.logging :as log :include-macros true])))
 
@@ -74,6 +76,28 @@
   (if local-peer
     (remote/invoke local-peer peer-id fn-name arg-map)
     (remote/invoke peer-id fn-name arg-map)))
+
+(defn await-topic-release!
+  "Yield true once the subscription `peer` holds on `topic` right now is gone:
+   unsubscribe it while it is still active, and wait out a cancellation already
+   under way rather than issuing a second one, which kabel would never answer.
+   Pinned to that subscription's generation, so a newer subscription made
+   meanwhile on the same topic is left alone. Throws after `timeout-ms`."
+  [peer topic timeout-ms]
+  (go
+    (let [now-ms (fn [] #?(:clj (System/currentTimeMillis) :cljs (.now js/Date)))
+          deadline (+ timeout-ms (now-ms))
+          generation (:generation (pubsub/subscription peer topic))]
+      (if (nil? generation)
+        true
+        (loop []
+          (let [sub (pubsub/subscription peer topic)]
+            (cond
+              (not= generation (:generation sub)) true
+              (> (now-ms) deadline) (ex-info "Store subscription did not release in time"
+                                             {:type :datahike.kabel/unsubscribe-timeout :topic topic})
+              (:cancelling? sub) (do (<?- (timeout 20)) (recur))
+              :else (do (<?- (kp/unsubscribe-store! peer topic)) (recur)))))))))
 
 (defrecord KabelWriter
            [peer-id        ; UUID of the remote peer that owns the database
@@ -167,10 +191,19 @@
       ;; Drop the store from the index-reconstruction registry
       (when store-config
         (dcbor/unregister-store! store-config))
-      ;; Return closed channel to signal completion
-      (let [ch (promise-chan)]
-        (put! ch true)
-        ch))))
+      ;; Release the store subscription this connection held on the peer. A
+      ;; later connect on the same peer and store would otherwise be refused
+      ;; as a duplicate subscription.
+      (if local-peer
+        (go
+          (try
+            (<?- (await-topic-release! local-peer store-id 30000))
+            (catch #?(:clj Exception :cljs js/Error) e
+              (log/warn "Store unsubscribe on writer shutdown failed" {:store-id store-id :error (ex-message e)})))
+          true)
+        (let [ch (promise-chan)]
+          (put! ch true)
+          ch)))))
 
 ;; =============================================================================
 ;; Connection Reference

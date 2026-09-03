@@ -239,7 +239,7 @@
       ;; =====================================================================
 
       (release client-conn)
-      (sync/unsubscribe-store! client-peer store-topic)
+      (<!! (kw/await-topic-release! client-peer store-topic 10000))
       (handlers/unregister-store-for-remote-access! store-id server-peer)
       (<?? S (peer/stop server-peer))
       (release server-conn)
@@ -316,7 +316,7 @@
 
       ;; Cleanup
       (release client-conn)
-      (sync/unsubscribe-store! client-peer store-topic)
+      (<!! (kw/await-topic-release! client-peer store-topic 10000))
       (handlers/unregister-store-for-remote-access! store-id server-peer)
       (<?? S (peer/stop server-peer))
       (release server-conn)
@@ -394,7 +394,7 @@
       ;; Cleanup
       (d/unlisten client-conn listener-key)
       (release client-conn)
-      (sync/unsubscribe-store! client-peer store-topic)
+      (<!! (kw/await-topic-release! client-peer store-topic 10000))
       (handlers/unregister-store-for-remote-access! store-id server-peer)
       (<?? S (peer/stop server-peer))
       (release server-conn)
@@ -493,7 +493,7 @@
       ;; =====================================================================
       ;; DISCONNECT FIRST CLIENT - keep server running for reconnect test
       ;; =====================================================================
-      (sync/unsubscribe-store! client-peer-1 store-topic)
+      (<!! (kw/await-topic-release! client-peer-1 store-topic 10000))
       (Thread/sleep 200)  ;; Allow pending callbacks to complete
       (<?? S (peer/stop client-peer-1))
       (release client-conn-1)
@@ -548,7 +548,7 @@
           (is (some #(= ["Carol" 35] %) all-people) "Carol should exist from cache"))
 
         ;; Cleanup second connection
-        (sync/unsubscribe-store! client-peer-2 store-topic)
+        (<!! (kw/await-topic-release! client-peer-2 store-topic 10000))
         (Thread/sleep 100)
         (<?? S (peer/stop client-peer-2))
         (release client-conn-2))
@@ -719,7 +719,7 @@
         (release client-conn)
         ;; Await the drain: a subscribe on the same topic before the old one has
         ;; been released is refused as a duplicate.
-        (<!! (sync/unsubscribe-store! client-peer store-topic))
+        (<!! (kw/await-topic-release! client-peer store-topic 10000))
         (handlers/register-store-for-remote-access! store-id pre-conn server-peer)
         (let [fork-client (<!! (d/connect (assoc client-config :branch :pre-fork)
                                           {:sync? false}))]
@@ -741,7 +741,7 @@
                            @server-conn))
                 "trunk remains unchanged"))
           (release fork-client)
-          (sync/unsubscribe-store! client-peer store-topic)))
+          (<!! (kw/await-topic-release! client-peer store-topic 10000))))
 
       ;; cleanup
       (handlers/unregister-store-for-remote-access! store-id server-peer)
@@ -847,7 +847,7 @@
               "a's friend must be d")))
 
       (release client-conn)
-      (sync/unsubscribe-store! client-peer store-topic)
+      (<!! (kw/await-topic-release! client-peer store-topic 10000))
       (handlers/unregister-store-for-remote-access! store-id server-peer)
       (<?? S (peer/stop server-peer))
       (release server-conn)

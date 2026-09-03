@@ -134,10 +134,14 @@
           ;; npm 11 returned a vector; npm 12 returns an object keyed by the
           ;; package name. Accept both so the release gate checks the tarball
           ;; rather than silently treating a new CLI shape as an empty report.
+          _ (when (and (map? parsed) (:error parsed))
+              (throw (ex-info "npm pack dry-run reported an error"
+                              {:error (:error parsed) :stderr (:err result)})))
           report (cond
                    (vector? parsed) (first parsed)
                    (:files parsed) parsed
-                   (map? parsed) (first (vals parsed)))
+                   (map? parsed) (let [v (first (vals parsed))]
+                                   (if (vector? v) (first v) v)))
           files (into #{} (map :path) (:files report))
           required #{"LICENSE" "THIRD_PARTY_LICENSES.md"
                      "README.md" "package.json" "index.d.ts"
