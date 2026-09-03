@@ -85,6 +85,20 @@
                               :warnings-as-errors true
                               :closure-warnings {:useless-code :off}}}
 
+          ;; Opt-in browser build for replicated Datahike clients. It registers
+          ;; IndexedDB, the Kabel writer/connector and the small JS peer API.
+          :browser-kabel-release
+          {:target :browser
+           :output-to "npm-package/kabel/datahike.js"
+           :output-dir "npm-package/kabel"
+           :modules {:datahike {:entries [datahike.js.api
+                                          datahike.js.kabel]}}
+           :compiler-options {:optimizations :advanced
+                              :infer-externs :auto
+                              :output-feature-set :es-next
+                              :warnings-as-errors true
+                              :closure-warnings {:useless-code :off}}}
+
           :npm-release
           {:target :npm-module
            :output-dir "npm-package"

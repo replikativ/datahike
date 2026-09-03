@@ -23,6 +23,7 @@ npm-package/*.d.ts
 npm-package/package.json
 npm-package/browser/
 npm-package/s3/
+npm-package/kabel/
 npm-package/LICENSE
 npm-package/karma.conf.js
 !npm-package/test.js

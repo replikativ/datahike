@@ -42,20 +42,13 @@
 (defn- assert-slim! [jar max-bytes]
   (let [bytes (fs/size jar)]
     (expect! (str "jar exceeds " max-bytes " bytes") #(<= % max-bytes) bytes)
+    ;; distributed-scope 0.1.9 loads cljs.analyzer from its JVM namespace for
+    ;; macro free-variable analysis. The Kabel server therefore still needs
+    ;; ClojureScript at runtime; the byte budget keeps that temporary cost
+    ;; bounded until its runtime and analyzer namespaces are split.
     (with-open [zip (ZipFile. (str jar))]
       (let [names (mapv #(.getName %) (enumeration-seq (.entries zip)))
-            name-set (set names)
-            compiler-content
-            (filterv #(or (str/starts-with? % "com/google/javascript/jscomp/")
-                          (str/starts-with? % "cljs/analyzer")
-                          (str/starts-with? % "cljs/compiler")
-                          (str/starts-with? % "cljs/closure")
-                          (str/starts-with? % "cljs/repl")
-                          (= % "goog/base.js"))
-                     names)]
-        (expect! "ClojureScript compiler content is absent"
-                 empty?
-                 compiler-content)
+            name-set (set names)]
         (expect! "portable Java launcher is present"
                  #(contains? % "datahike/http/Launcher.class")
                  name-set)
@@ -67,6 +60,8 @@
   (with-open [zip (ZipFile. (str jar))]
     (let [names (into #{} (map #(.getName %)) (enumeration-seq (.entries zip)))]
       (doseq [path ["datahike/http/main.clj"
+                    "datahike/http/kabel.clj"
+                    "datahike/kabel/handlers.cljc"
                     "datahike/http/Launcher.class"
                     "eacl/core.cljc"
                     "eacl/datahike/core.clj"
@@ -85,6 +80,8 @@
         project      (get-in config [:build :http-server-standalone])
         jar          (build/jar-path config project)
         port     (free-port)
+        kabel-port (loop [candidate (free-port)]
+                     (if (= candidate port) (recur (free-port)) candidate))
         token    "standalone-smoke-token"
         base-url (str "http://127.0.0.1:" port)
         temp-dir (fs/create-temp-dir {:prefix "datahike-http-server-smoke-"})
@@ -99,6 +96,10 @@
                    :port port
                    :token token
                    :metrics true
+                   :kabel {:host "127.0.0.1"
+                           :port kabel-port
+                           :jwt {:alg :HS256 :secret "standalone-kabel-smoke-secret"}
+                           :store {:backend :memory}}
                    :nrepl {:port 0}
                    :system-db {:store {:backend :memory}}}))
     (let [process (p/process ["java" "-jar" jar config-file]

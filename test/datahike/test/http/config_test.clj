@@ -1,6 +1,7 @@
 (ns datahike.test.http.config-test
   (:require [clojure.test :refer [deftest is testing]]
-            [datahike.http.config :as config]))
+            [datahike.http.config :as config]
+            [datahike.http.kabel :as kabel]))
 
 (defn- temp-file [contents]
   (doto (java.io.File/createTempFile "datahike-server-config-" ".edn")
@@ -71,6 +72,28 @@
       (is (thrown-with-msg? clojure.lang.ExceptionInfo #"Refusing unauthenticated HTTP bind"
                             (config/assert-safe-bind! unsafe))
           (pr-str unsafe)))))
+
+(deftest kabel-configuration-is-opt-in-and-jwt-authenticated
+  (is (= {:host "127.0.0.1"}
+         (kabel/validate-config {:host "127.0.0.1"})))
+  (let [validated (kabel/validate-config
+                   {:host "127.0.0.1"
+                    :kabel {:port 47296
+                            :jwt {:alg :HS256 :secret "test-secret"}
+                            :store {:backend :memory}}})]
+    (is (= "127.0.0.1" (get-in validated [:kabel :host])))
+    (is (= kabel/default-peer-id (get-in validated [:kabel :peer-id]))))
+  (doseq [invalid [{:port 0 :jwt {:alg :HS256 :secret "s"}}
+                   {:port 47296}
+                   {:port 47296 :jwt {:alg :HS256}}
+                   {:port 47296 :jwt {:alg :HS256 :secret "s"}
+                    :store {:backend :indexeddb}}]]
+    (let [error (try
+                  (kabel/validate-config {:kabel invalid})
+                  nil
+                  (catch clojure.lang.ExceptionInfo e e))]
+      (is (= :datahike.kabel/invalid-config (:type (ex-data error)))
+          (pr-str invalid)))))
 
 (deftest command-line-overrides-environment-overrides-file
   (let [file (temp-file (pr-str {:port 1001

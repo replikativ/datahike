@@ -106,6 +106,7 @@
     (and (#{'commit-as-db 'branch-as-db} fn-name) (= idx 0))
     "Connection | Database"
     (and (= fn-name 'gc-storage) (= idx 2)) "GcOptions"
+    (and (= fn-name 'connect) (= idx 1)) "ConnectOptions"
 
     :else (malli->ts-type schema)))
 
@@ -248,6 +249,32 @@ export interface TieredS3StoreConfig extends StoreConfig {
 export interface WriterConfig {
   backend: Keyword;
   [key: string]: any;
+}
+
+export interface ConnectOptions {
+  /**
+   * Preserve the ClojureScript API's execution mode. Memory stores can run
+   * synchronously; browser and remote stores use false and resolve a Promise.
+   */
+  'sync?'?: boolean;
+  [key: string]: any;
+}
+
+/** Persistent browser backend registered by the `datahike/kabel` entry. */
+export interface IndexedDbStoreConfig extends StoreConfig {
+  backend: ':indexeddb';
+  id: DatahikeUuid;
+  name?: string;
+}
+
+/** Synchronous memory frontend over an authoritative IndexedDB cache. */
+export interface TieredIndexedDbStoreConfig extends StoreConfig {
+  backend: ':tiered';
+  id: DatahikeUuid;
+  'frontend-config': { backend: ':memory'; id: DatahikeUuid };
+  'backend-config': IndexedDbStoreConfig;
+  'write-policy'?: ':write-through';
+  'read-policy'?: ':frontend-first';
 }
 
 export interface DatabaseConfig {
@@ -491,6 +518,39 @@ export function setLogLevel(level: LogLevel): LogLevel;
   ([output-path]
    (spit output-path (generate-type-definitions))
    (println "TypeScript definitions written to:" output-path)))
+
+(defn generate-kabel-type-definitions []
+  "export * from './index';
+
+export interface KabelPeer {
+  readonly __kabelPeerBrand: never;
+}
+
+export interface KabelPeerOptions {
+  token?: string;
+  onAuth?: (principal: Record<string, any>) => void;
+  onError?: (error: any) => void;
+}
+
+export interface KabelWriterConfig {
+  backend: ':kabel';
+  'peer-id': import('./index').DatahikeUuid;
+  'local-peer': KabelPeer;
+  url?: string;
+}
+
+export function createKabelPeer(
+  clientId: import('./index').DatahikeUuid,
+  options?: KabelPeerOptions
+): KabelPeer;
+
+export function connectKabelPeer(peer: KabelPeer, url: string): Promise<unknown>;
+export function stopKabelPeer(peer: KabelPeer): Promise<boolean>;
+")
+
+(defn write-kabel-type-definitions! [output-path]
+  (spit output-path (generate-kabel-type-definitions))
+  (println "Kabel TypeScript definitions written to:" output-path))
 
 (comment
   ;; Generate types

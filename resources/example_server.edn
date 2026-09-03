@@ -1,4 +1,14 @@
-{:port     4444
- :level    :debug
- :dev-mode true
- :token    "securerandompassword"}
+{:host  "127.0.0.1"
+ :port  4444
+ :level :debug
+ :token "replace-with-a-random-http-token"
+
+ ;; Optional browser replica endpoint. JWTs are issued by your application or
+ ;; identity provider; Datahike validates them but does not manage accounts.
+ :kabel {:host    "127.0.0.1"
+         :port    47296
+         :peer-id #uuid "aaaaaaaa-0000-0000-0000-000000000001"
+         :jwt     {:alg :HS256
+                   :secret "replace-with-a-separate-random-jwt-secret"
+                   :required-claims {:iss "example-app" :aud "datahike"}}
+         :store   {:backend :file :path "data/kabel"}}}

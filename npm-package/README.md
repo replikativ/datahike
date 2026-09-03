@@ -89,6 +89,69 @@ initial level (for example, `DATAHIKE_LOG_LEVEL=off node app.js`).
 
 ## Documentation
 
+### Replicated browser client (Kabel + IndexedDB)
+
+Use the opt-in `datahike/kabel` entry when the browser should keep a local
+queryable replica and send writes to a Datahike server over Kabel. The store ID
+must identify the same database on the client and server.
+
+```typescript
+import * as d from 'datahike/kabel';
+
+const storeId = d.uuid('550e8400-e29b-41d4-a716-446655440000');
+const serverId = d.uuid('aaaaaaaa-0000-0000-0000-000000000001');
+const peer = d.createKabelPeer(d.randomUuid(), { token: accessToken });
+
+await d.connectKabelPeer(peer, 'wss://data.example.com');
+
+const conn = await d.connect({
+  store: {
+    backend: ':tiered',
+    id: storeId,
+    'frontend-config': { backend: ':memory', id: storeId },
+    'backend-config': {
+      backend: ':indexeddb',
+      id: storeId,
+      name: 'my-app'
+    },
+    'write-policy': ':write-through'
+  },
+  writer: {
+    backend: ':kabel',
+    'peer-id': serverId,
+    'local-peer': peer
+  }
+}, { 'sync?': false });
+```
+
+The matching standalone-server configuration is:
+
+```clojure
+{:kabel {:host "127.0.0.1"
+         :port 47296
+         :peer-id #uuid "aaaaaaaa-0000-0000-0000-000000000001"
+         :jwt {:alg :HS256
+               :secret "application-jwt-secret"
+               :required-claims {:iss "my-app" :aud "datahike"}}
+         :store {:backend :file :path "/var/lib/datahike/browser-databases"}}}
+```
+
+The application issues the JWT. Datahike validates it but does not provide a
+user database or login flow. Kabel authorization is authentication-only in the
+first server version: every authenticated subject can reach every Kabel
+database. Put the listener behind an application trust boundary until the
+server's per-database authorization is connected to this transport.
+
+This follows the ClojureScript API directly: asynchronous browser and remote
+stores use `{ 'sync?': false }`; an in-memory database can continue to use
+`{ 'sync?': true }`. Applications can put a domain API in front of Datahike
+instead when they do not need database queries in the browser.
+
+The current package does not automatically reconnect after a transport loss.
+Recreate the peer and connection when the application decides to reconnect.
+Restoring a connection across a page reload and coordinating one replica among
+multiple tabs or Web Workers are not yet part of the supported lifecycle.
+
 ### S3-compatible storage in browsers
 
 Import the opt-in build when a browser should persist Datahike directly to

@@ -7,6 +7,7 @@
    [datahike.http.admin :as admin]
    [datahike.http.backends]
    [datahike.http.config :as server-config]
+   [datahike.http.kabel :as kabel-server]
    [datahike.http.nrepl :as server-nrepl]
    [datahike.metrics :as metrics]
    [datahike.http.permissions :as permissions]
@@ -233,20 +234,24 @@
            (when configurator
              (configurator server)))))
 
-(defn- cleanup-owned! [connections config nrepl-resource pg-listener metrics-lease]
+(defn- cleanup-owned!
+  [connections config nrepl-resource pg-listener kabel-resource metrics-lease]
   (try
     (server-nrepl/stop! nrepl-resource)
     (finally
       (try
-        (pg/stop! pg-listener)
+        (kabel-server/stop! kabel-resource)
         (finally
           (try
-            (routes/release-all! connections)
+            (pg/stop! pg-listener)
             (finally
               (try
-                (system/close! config)
+                (routes/release-all! connections)
                 (finally
-                  (release-metrics-sink! metrics-lease))))))))))
+                  (try
+                    (system/close! config)
+                    (finally
+                      (release-metrics-sink! metrics-lease))))))))))))
 
 (defn start-server
   "Start Jetty and acquire the standalone server's shared Konserve metric sink
@@ -265,29 +270,35 @@
         pg-listener (try
                       (pg/start! config connections)
                       (catch Throwable t
-                        (cleanup-owned! connections config nil nil nil)
+                        (cleanup-owned! connections config nil nil nil nil)
                         (throw t)))
+        kabel-resource (try
+                         (kabel-server/start! config)
+                         (catch Throwable t
+                           (cleanup-owned! connections config nil pg-listener nil nil)
+                           (throw t)))
         metrics-lease (try
                         (when-not (false? (:metrics config))
                           (acquire-metrics-sink!))
                         (catch Throwable t
-                          (cleanup-owned! connections config nil pg-listener nil)
+                          (cleanup-owned! connections config nil pg-listener kabel-resource nil)
                           (throw t)))
         nrepl-resource (try
                          (server-nrepl/start! config (routes/redact requested-config)
                                               connections nrepl-status)
                          (catch Throwable t
-                           (cleanup-owned! connections config nil pg-listener metrics-lease)
+                           (cleanup-owned! connections config nil pg-listener kabel-resource metrics-lease)
                            (throw t)))
         server      (try (run-jetty app jetty-config)
                          (catch Throwable t
                            ;; Nothing owns what `app` opened if Jetty never started.
-                           (cleanup-owned! connections config nrepl-resource pg-listener metrics-lease)
+                           (cleanup-owned! connections config nrepl-resource pg-listener kabel-resource metrics-lease)
                            (throw t)))]
     (swap! owned assoc server {:connections connections
                                :config config
                                :nrepl-resource nrepl-resource
                                :pg-listener pg-listener
+                               :kabel-resource kabel-resource
                                :metrics-lease metrics-lease})
     server))
 
@@ -298,11 +309,12 @@
    twice."
   [^org.eclipse.jetty.server.Server server]
   (let [[before _] (swap-vals! owned dissoc server)
-        {:keys [connections config nrepl-resource pg-listener metrics-lease]} (get before server)]
+        {:keys [connections config nrepl-resource pg-listener kabel-resource metrics-lease]}
+        (get before server)]
     (try (.stop server)
          (finally
            (when connections
-             (cleanup-owned! connections config nrepl-resource pg-listener metrics-lease))))))
+             (cleanup-owned! connections config nrepl-resource pg-listener kabel-resource metrics-lease))))))
 
 (defn- shutdown-hook [server config]
   (Thread.

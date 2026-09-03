@@ -59,6 +59,26 @@
    (spit output-path (generate-esm-wrapper))
    (println "ESM browser wrapper written to:" output-path)))
 
+(def ^:private kabel-js-exports
+  ["createKabelPeer" "connectKabelPeer" "stopKabelPeer"])
+
+(defn generate-kabel-esm-wrapper
+  "Generate the ESM wrapper for the opt-in replicated browser client."
+  []
+  (let [base (generate-esm-wrapper)
+        ;; The regular generator owns the complete core export list. Replace
+        ;; only its default export, then append Kabel's deliberately small API.
+        base (str/replace base "export default _api;"
+                          "var _kabel = (typeof self !== 'undefined' ? self : globalThis)['datahike']['js']['kabel'];\nvar _datahikeKabel = Object.assign({}, _api, _kabel);\nexport default _datahikeKabel;")]
+    (str base
+         (str/join "\n" (for [name kabel-js-exports]
+                          (str "export var " name " = _kabel." name ";")))
+         "\n")))
+
+(defn write-kabel-esm-wrapper! [output-path]
+  (spit output-path (generate-kabel-esm-wrapper))
+  (println "Kabel ESM browser wrapper written to:" output-path))
+
 (comment
   ;; Preview generated wrapper
   (println (generate-esm-wrapper))

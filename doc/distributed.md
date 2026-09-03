@@ -357,6 +357,50 @@ without effective authentication. Configure a nonblank `:token` or a custom
 unauthenticated local development. `:dev-mode true` bypasses authentication and
 therefore never permits a public bind, even if a token is also present.
 
+### Browser replicas over Kabel
+
+The standalone server can expose an additional WebSocket listener for the
+optional `datahike/kabel` npm entry. The application or identity provider
+issues JWTs; Datahike validates them and does not manage user accounts.
+
+```clojure
+{:host "127.0.0.1"
+ :port 4444
+ :token "replace-with-an-http-token"
+ :kabel
+ {:host "127.0.0.1"
+  :port 47296
+  :peer-id #uuid "aaaaaaaa-0000-0000-0000-000000000001"
+  :jwt {:alg :HS256
+        :secret "replace-with-a-separate-jwt-secret"
+        :required-claims {:iss "my-app" :aud "datahike"}}
+  :store {:backend :file :path "/var/lib/datahike/browser-databases"}}}
+```
+
+The `:peer-id` is the value used by the browser's `writer.peer-id`; its stable
+default is the UUID shown above. `:store` is server-owned and supports `:memory`
+or `:file` in this first version. A client chooses a database UUID but cannot
+choose a server filesystem path or backend credentials. Each file database is
+stored below `:store :path` in a directory named for that UUID.
+
+Every remote call and store subscription requires a successfully validated JWT
+with a `sub` claim. Browser peers cannot publish Konserve nodes directly;
+transactions go through Datahike's Kabel writer and the resulting store changes
+replicate back. This first version authenticates callers but does not yet apply
+the HTTP server's EACL database relationships to Kabel: any authenticated JWT
+may create, read, transact, or delete any Kabel database whose UUID it knows.
+Use it only inside an application trust boundary until database authorization
+is connected.
+
+RS256 can use `:public-key`; deployments with multiple issuers can supply the
+same trusted `:issuers` registry accepted by Kabel authentication. Terminate TLS
+in front of the listener and use `wss://` outside a loopback development setup.
+
+The current client does not automatically reconnect after a transport loss.
+Recreate the peer and connection when the application decides to reconnect.
+Restoring a connection across a page reload and coordinating one replica among
+multiple tabs or Web Workers are not yet part of the supported lifecycle.
+
 ### Kabel transport metrics
 
 Kabel can publish bounded transport metrics into the same
