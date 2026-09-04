@@ -6,6 +6,15 @@ When something is added, it's typically marked *Experimental*. When the API cont
 
 ## 0.8
 
+- **`:create-database` policy for the server.** `create-database` took the
+  client's `:store` as given, so a client with `:create` could point the
+  server at any backend it has loaded, a JDBC URL, an S3 bucket or a file
+  path anywhere the process may write. The optional server option
+  `{:create-database {:backends #{…}}}` allows only those backends, and
+  `{:create-database {:store {:backend :file :path root}}}` makes the server
+  choose the store below its own root with the client's id, as the Kabel
+  listener does. Without the option behaviour is unchanged and the server
+  logs at start that creation is unrestricted.
 - **Query functions are allow-listed on the server.** A `:where` function or
   predicate, an aggregate, a `:db.attr/preds` or `:db.entity/preds` symbol
   resolved through `clojure.core/resolve` and reflection, so any client of the

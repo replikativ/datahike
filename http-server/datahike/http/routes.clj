@@ -18,6 +18,7 @@
    speaks) comes along."
   (:refer-clojure :exclude [read-string filter])
   (:require
+   [datahike.http.stores :as stores]
    [datahike.query.resolve :as qr]
    [clojure.string :as str]
    [clojure.core.async :as async]
@@ -75,6 +76,13 @@
    straight to the caller."
   [e]
   {:status 500
+   :body   {:msg (ex-message e) :ex-data (redact (ex-data e))}})
+
+(defn- store-refused
+  "403 for a store the server's `:create-database` policy does not allow."
+  [e]
+  (metrics/http-rejected! :forbidden)
+  {:status 403
    :body   {:msg (ex-message e) :ex-data (redact (ex-data e))}})
 
 (defn forbidden
@@ -262,7 +270,7 @@
                           (fn []
                             ;; Remove remote-peer while this server creates the
                             ;; physical store, then restore it in the response.
-                            (let [requested (local (first body))
+                            (let [requested (stores/assign (:create-database config) (local (first body)))
                                   principal (:datahike/principal request)]
                               (when-let [prepare! (:datahike.http.system/prepare-register! config)]
                                 (prepare! requested principal))
@@ -321,7 +329,9 @@
                  {:headers {"Cache-Control" (str (when (:dev-mode config) "public, ")
                                                  "max-age=" (get-in config [:cache :get :max-age]))}})))))
       (catch Exception e
-        (error-response e)))))
+        (if (= :datahike.http/store-refused (:type (ex-data e)))
+          (store-refused e)
+          (error-response e))))))
 
 (declare create-routes)
 
@@ -475,10 +485,12 @@
                                  (try
                                    {:status 200
                                     :body   (async/<!! (apply datahike.writing/create-database
-                                                              cfg
+                                                              (stores/assign (:create-database config) cfg)
                                                               (rest body)))}
                                    (catch Exception e
-                                     (error-response e))))))
+                                     (if (= :datahike.http/store-refused (:type (ex-data e)))
+                                       (store-refused e)
+                                       (error-response e)))))))
             :operationId "create-database"},
      :swagger {:tags ["Internal"]}}]
    ["/transact!-writer"
@@ -635,6 +647,11 @@
    - `:default-handler` — what answers a request the router does not match;
      reitit's default 404 unless given (the server puts swagger-ui here).
 
+   `:create-database` restricts what a client may create (see
+   `datahike.http.stores`): `{:backends #{…}}` allows only those backends,
+   `{:store {:backend :file :path root}}` makes the server choose the store
+   below its own root. Without it any store configuration is accepted.
+
    Every request runs under the query function resolver `config` asks for
    (`:query-functions`, `:safe` by default; see `query-function-binding`),
    so what a client sends never resolves symbols the host did not allow,
@@ -644,6 +661,11 @@
    releases what the routes opened when the host shuts down."
   ([config] (handler config {}))
   ([config {:keys [connections default-handler] :as opts}]
+   (if (stores/validate-policy (:create-database config))
+     (log/info :datahike/create-database-policy (select-keys (:create-database config) [:backends :store]))
+     (log/info :datahike/create-database-policy
+               {:policy :unrestricted
+                :note "clients with :create may name any store configuration; set :create-database to restrict"}))
    (let [connections (or connections (atom {}))
          rtr         (router config (assoc opts :state (new-state)))
          h           (-> (wrap-api (ring/ring-handler rtr (or default-handler (ring/create-default-handler)))
