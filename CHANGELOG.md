@@ -6,6 +6,11 @@ When something is added, it's typically marked *Experimental*. When the API cont
 
 ## 0.8
 
+- **kabel 0.3.134; the listener's gates decide on a thread.** Kabel asks the
+  `:authorize` gate from inside a go block, and Datahike's gate runs a
+  synchronous permission query, which held one of the dispatch pool's few
+  threads per decision. Kabel 0.3.134 lets a gate answer with a channel, so
+  `authorize-remote` and `authorize-sync` now decide on `async/thread`.
 - **kabel 0.3.133.** Two concurrent releases of a store subscription (a
   connection's shutdown and its owner's) could send two unsubscribe
   requests; the second drain then removed a subscription made meanwhile and

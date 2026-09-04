@@ -9,7 +9,8 @@
    `create-database` a `:create`, `delete-database` a `:delete`, and a sync
    subscription to a store's topic a `:read`. Without a policy every
    authenticated caller may do everything, as over HTTP."
-  (:require [clojure.java.io :as io]
+  (:require [clojure.core.async :as async]
+            [clojure.java.io :as io]
             [clojure.string :as str]
             [datahike.api :as d]
             [datahike.http.routes :as routes]
@@ -131,32 +132,39 @@
    to server admins only and a custom `:authorize` decides for everyone else."
   [config]
   (fn [{:keys [principal fn-name arg-map]}]
-    (let [sym (remote-name fn-name)]
-      (cond
-        (remote-op sym arg-map)
-        (allowed? config (remote-op sym arg-map) principal (remote-store-id sym arg-map) arg-map)
-
-        ;; Nothing else under Datahike's own namespace is served; refuse any
-        ;; spelling of it rather than asking the host about it.
-        (= "datahike.kabel" (some-> sym namespace))
-        false
-
-        :else
+    ;; Decided on a thread: the permission graph is a synchronous Datahike
+    ;; query, and kabel asks this gate from inside a go block, where a
+    ;; blocking call holds one of the dispatch pool's few threads. Since kabel
+    ;; 0.3.134 a gate may answer with a channel.
+    (async/thread
+      (let [sym (remote-name fn-name)]
         (boolean
-         (and principal
-              (if-let [policy (:authorize config)]
-                (policy {:op :invoke :fn-name sym :principal principal
-                         :db nil :payload arg-map})
-                true)))))))
+         (cond
+           (remote-op sym arg-map)
+           (allowed? config (remote-op sym arg-map) principal (remote-store-id sym arg-map) arg-map)
+
+           ;; Nothing else under Datahike's own namespace is served; refuse any
+           ;; spelling of it rather than asking the host about it.
+           (= "datahike.kabel" (some-> sym namespace))
+           false
+
+           :else
+           (and principal
+                (if-let [policy (:authorize config)]
+                  (policy {:op :invoke :fn-name sym :principal principal
+                           :db nil :payload arg-map})
+                  true))))))))
 
 (defn authorize-sync
   "The gate for the sync middleware: subscribing to a store's topic reads the
    store; nobody publishes into the server."
   [config]
   (fn [{:keys [op principal topic]}]
-    (case op
-      :subscribe (allowed? config :read principal (topic-store-id topic) nil)
-      false)))
+    (async/thread
+      (boolean
+       (case op
+         :subscribe (allowed? config :read principal (topic-store-id topic) nil)
+         false)))))
 
 (defn- reopen-databases!
   "Serve again the databases an earlier run of this listener created: every
