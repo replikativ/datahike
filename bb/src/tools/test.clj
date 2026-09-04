@@ -235,7 +235,9 @@
     (let [up? (try (= 200 (:status (babashka.http-client/get url {:throw false})))
                    (catch Exception _ false))]
       (cond up? true
-            (< attempt 479) (do (Thread/sleep 250) (recur (inc attempt)))
+            ;; `clojure -M` resolves the classpath before the JVM starts; the
+            ;; native-image script measured 79 s warm, and a busy machine is slower.
+            (< attempt 959) (do (Thread/sleep 250) (recur (inc attempt)))
             :else (throw (ex-info "The test server never came up" {:url url}))))))
 
 (defn node-remote

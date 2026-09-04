@@ -25,7 +25,9 @@
             [boring.core :as boring]
             [datahike.remote :as remote]
             [datahike.remote.cbor :as rcbor]
-            [replikativ.logging :as log])
+            ;; The logger and its printer stay out of the browser bundle; a
+            ;; request is traced with the console there.
+            #?(:clj [replikativ.logging :as log]))
   #?(:clj (:import [java.io ByteArrayOutputStream])
      :cljs (:require-macros [datahike.http.client :refer [emit-remote-api]])))
 
@@ -234,6 +236,13 @@
          response))))
 
 #?(:cljs
+   (defn- trace
+     "`console.debug` when the page asked for it (`datahike.http.client.trace = true`)."
+     [event data]
+     (when (some-> js/globalThis .-datahike_http_client_trace)
+       (js/console.debug (str event) (clj->js data)))))
+
+#?(:cljs
    (def url-args-limit
      "Encoded arguments up to this many bytes travel in a GET's URL; beyond it
       the call is a POST. Well under every intermediary's line limit."
@@ -293,13 +302,13 @@
             ;; make the next call.
             decode   (fn [bytes] (binding [remote/*remote-peer* remote-peer]
                                    (boring/decode bytes (rcbor/decode-opts registry))))]
-        (log/trace :datahike/http-request {:url url :end-point end-point :method (:method init)})
+        (trace :datahike/http-request {:url url :end-point end-point :method (:method init)})
         (-> (js/fetch target (clj->js init))
             (.then (fn [^js resp]
                      (.then (.arrayBuffer resp)
                             (fn [buf]
                               (let [bytes (js/Uint8Array. buf)]
-                                (log/trace :datahike/http-response {:end-point end-point})
+                                (trace :datahike/http-response {:end-point end-point})
                                 (deliver! (if (.-ok resp)
                                             (try (decode bytes)
                                                  (catch :default e

@@ -48,10 +48,8 @@
        ~@(for [clj-fn-name exports
                :let [{:keys [doc]} (get api-specification clj-fn-name)
                      js-fn-name (symbol (clj-name->js-name clj-fn-name))
-                     client-fn (symbol "datahike.http.client" (name clj-fn-name))
-                     args-sym (gensym "args")]]
-           `(defn ~(with-meta js-fn-name {:export true :doc doc})
-              [& ~args-sym]
-              (-> (apply ~client-fn (datahike.js.convert/js->clj-api-args ~(name clj-fn-name) ~args-sym))
-                  datahike.js.convert/maybe-chan->promise
-                  (.then datahike.js.convert/clj->js-recursive)))))))
+                     client-fn (symbol "datahike.http.client" (name clj-fn-name))]]
+           ;; One shared wrapper, one closure per function: the bundle carries
+           ;; the boundary logic once, not thirty-seven times.
+           `(def ~(with-meta js-fn-name {:export true :doc doc})
+              (datahike.js.remote/wrap ~(name clj-fn-name) ~client-fn))))))

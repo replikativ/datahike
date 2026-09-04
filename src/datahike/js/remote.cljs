@@ -13,6 +13,15 @@
             [datahike.remote])
   (:require-macros [datahike.js.api-macros :refer [emit-js-remote-api]]))
 
+(defn wrap
+  "The JavaScript boundary around one client function: arguments converted
+   in, the channel's value converted out as a Promise."
+  [operation client-fn]
+  (fn [& args]
+    (-> (apply client-fn (datahike.js.convert/js->clj-api-args operation args))
+        datahike.js.convert/maybe-chan->promise
+        (.then datahike.js.convert/clj->js-recursive))))
+
 (emit-js-remote-api)
 
 (defn ^:export isPromise

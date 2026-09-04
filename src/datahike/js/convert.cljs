@@ -4,10 +4,10 @@
   (:require [datahike.db.interface]
             [datahike.datom]
             [datahike.remote :as remote]
-            [cljs.core.async :refer [<!]]
+            [cljs.core.async]
+            [cljs.core.async.impl.protocols]
             [clojure.string :as str]
-            [goog.object :as gobj])
-  (:require-macros [cljs.core.async.macros :refer [go]]))
+            [goog.object :as gobj]))
 
 ;;
 ;; Universal EDN Conversion Rules (consistent across Python, JavaScript, Java):
@@ -175,16 +175,14 @@
   (if (satisfies? cljs.core.async.impl.protocols/Channel x)
     (js/Promise.
      (fn [resolve reject]
-       (go
-         (try
-           (let [result (<! x)]
-             ;; Check if result is an error object - reject promise if so
-             (if (or (instance? js/Error result)
-                     (instance? ExceptionInfo result))
-               (reject result)
-               (resolve result)))
-           (catch :default e
-             ;; Catch any exceptions thrown during channel operations
-             (reject e))))))
+       ;; A plain take, not a go block: the go machinery is a runtime of its
+       ;; own that the thin client does not otherwise need.
+       (cljs.core.async/take! x
+                              (fn [result]
+                                ;; An error object delivered on the channel rejects.
+                                (if (or (instance? js/Error result)
+                                        (instance? ExceptionInfo result))
+                                  (reject result)
+                                  (resolve result))))))
     (js/Promise.resolve x)))
 

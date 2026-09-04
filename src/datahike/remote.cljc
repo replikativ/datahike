@@ -30,7 +30,11 @@
 ;; readers to attach the remote again.
 (def ^:dynamic *remote-peer* nil)
 
-(defmulti remote-deref (fn [{:keys [remote-peer]}] (:backend remote-peer)))
+#?(:clj
+   (defmulti remote-deref
+     "Deref of a remote connection: synchronous, so JVM-only; ClojureScript
+      asks the server for a database with `db`."
+     (fn [{:keys [remote-peer]}] (:backend remote-peer))))
 
 (defprotocol PRemotePeer
   (-remote-peer [_] "Retrieve remote peer."))
