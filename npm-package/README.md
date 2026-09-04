@@ -12,6 +12,22 @@ Durable Datalog database for JavaScript and Node.js, powered by ClojureScript.
 - **Promise-based API**: Native JavaScript async/await support
 - **TypeScript Support**: Complete type definitions included
 
+## Thin client: `datahike/remote`
+
+The API against a Datahike server with no engine in the bundle (about 76 KiB
+gzipped). Same functions, same values, every call a request:
+
+```javascript
+import * as d from 'datahike/remote';
+const config = { store: { backend: ':memory', id: d.randomUuid() },
+                 'remote-peer': { backend: ':datahike-server', url: 'https://data.example.com', token } };
+const conn = await d.connect(config);
+await d.q('[:find ?n :where [?e :name ?n]]', await d.db(conn));
+```
+
+See `doc/thin-client.md` in the repository for the three modes (embedded,
+replica, thin) and how to choose.
+
 ## Installation
 
 ```bash

@@ -9,7 +9,9 @@ go to the server, which applies them and streams the changed storage back, so
 every replica converges on the same database value. The server validates a
 JWT per connection and decides per database who may read and who may write.
 
-This page is the TypeScript view of that setup. The Clojure and
+A page that should carry no database at all uses the thin client instead,
+[thin-client.md](thin-client.md), the same API against the server with
+nothing local. This page is the TypeScript view of the replica setup. The Clojure and
 ClojureScript equivalents are in [distributed.md](distributed.md); the HTTP
 API and its authorization in [http-routes.md](http-routes.md).
 

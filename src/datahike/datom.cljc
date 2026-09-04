@@ -3,7 +3,6 @@
              [clojure.data]
              [datahike.array :as da]
              [datahike.constants :refer [tx0]]
-             [datahike.tools :refer [combine-hashes]]
              #?(:cljs [goog.array :as garray]))
   #?(:cljs (:require-macros [datahike.datom :refer [combine-cmp]])))
 
@@ -12,6 +11,14 @@
 (defprotocol IDatom
   (datom-tx [this])
   (datom-added [this]))
+
+(defn- combine-hashes
+  "Inlined from `datahike.tools`: a datom must not pull the tools namespace,
+   whose requires (supervisor, hashing, logging) would follow it into every
+   bundle that only carries datoms, the thin HTTP client for one."
+  [x y]
+  #?(:clj  (clojure.lang.Util/hashCombine x y)
+     :cljs (hash-combine x y)))
 
 (deftype Datom #?(:clj  [^long e a v ^long tx ^:unsynchronized-mutable ^int _hash]
                   :cljs [^number e a v ^number tx ^:mutable ^number _hash])

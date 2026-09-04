@@ -64,6 +64,7 @@
 
   That is why only the one dominant type pays it."
   (:require [boring.core :as boring]
+            [datahike.cbor.elements :as elements]
             [datahike.datom :as dd]
             [datahike.db.utils :as dbu]
             [datahike.writing :as dw]
@@ -90,7 +91,7 @@
 ;; `datahike.datom.Datom` cannot tell where the namespace ends;
 ;; `datahike.datom/Datom` is self-describing, which is the whole reason the
 ;; frames are an IETF format rather than a private one.
-(def ^:const datom-name     "datahike.datom/Datom")
+(def datom-name elements/datom-name)
 (def ^:const db-name        "datahike.db/DB")
 (def ^:const tx-report-name "datahike.db/TxReport")
 
@@ -146,20 +147,9 @@
 ;; Handlers
 ;; ---------------------------------------------------------------------------
 
-(defn install-element-handlers
-  "Datom write + read. Returns a NEW registry.
-
-  `register-tag 27` supplies the WRITE side (a Datom is a deftype, so boring
-  does not emit it natively the way it does a defrecord); `register-record`
-  supplies the READ side, keyed by the same name. The `nil` read-fn on
-  `register-tag` is deliberate — passing one would replace boring's built-in
-  tag-27 dispatch wholesale, and that dispatch is what looks the name up."
-  [reg]
-  (-> reg
-      (boring/register-tag 27 #?(:clj Datom :cljs dd/Datom)
-                           (fn [d] [datom-name (vec (seq d))])
-                           nil)
-      (boring/register-record datom-name dd/datom-from-reader)))
+(def install-element-handlers
+  "Datom write + read; see `datahike.cbor.elements`."
+  elements/install-element-handlers)
 
 (defn install-db-handlers
   "DB and TxReport write + read. Returns a NEW registry.

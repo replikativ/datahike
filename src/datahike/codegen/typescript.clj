@@ -9,7 +9,8 @@
   (:require [datahike.api.specification :refer [api-specification]]
             [datahike.api.types :as types]
             [datahike.codegen.naming :refer [assert-unique-js-names!
-                                             js-skip-list clj-name->js-name]]
+                                             js-skip-list clj-name->js-name
+                                             remote-js-exports]]
             [clojure.string :as str]))
 
 ;; =============================================================================
@@ -177,14 +178,17 @@
            "\n */"))))
 
 (defn generate-type-definitions
-  "Generate complete TypeScript type definitions from api-specification."
-  []
-  (let [header "// Auto-generated TypeScript definitions for Datahike JavaScript API
+  "Generate complete TypeScript type definitions from api-specification.
+   With `:remote-only? true`, the thin HTTP client's: the remote-capable
+   functions and the value helpers, no optimistic overlay, no logging."
+  ([] (generate-type-definitions {}))
+  ([{:keys [remote-only?]}]
+   (let [header "// Auto-generated TypeScript definitions for Datahike JavaScript API
 // DO NOT EDIT - Generated from datahike.api.specification
 
 "
         ;; Core type definitions
-        types "
+         types "
 // Core Datahike Types
 
 export type Keyword = `:${string}`;
@@ -470,18 +474,20 @@ export interface OptimisticStatusEvent {
 
 "
         ;; Generate function signatures
-        clj-exports (for [[fn-name _] (sort-by first api-specification)
-                          :when (not (contains? js-skip-list fn-name))]
-                      fn-name)
-        _ (assert-unique-js-names! clj-exports)
-        functions (str/join "\n\n"
-                            (for [fn-name clj-exports
-                                  :let [spec-data (get api-specification fn-name)
-                                        entry [fn-name spec-data]
-                                        {:keys [signatures doc]} (generate-function-signatures entry)
-                                        jsdoc (generate-jsdoc doc (:examples spec-data))]]
-                              (str jsdoc "\n" (str/join "\n" signatures))))
-        optimistic-functions "
+         clj-exports (if remote-only?
+                       (remote-js-exports api-specification)
+                       (for [[fn-name _] (sort-by first api-specification)
+                             :when (not (contains? js-skip-list fn-name))]
+                         fn-name))
+         _ (assert-unique-js-names! clj-exports)
+         functions (str/join "\n\n"
+                             (for [fn-name clj-exports
+                                   :let [spec-data (get api-specification fn-name)
+                                         entry [fn-name spec-data]
+                                         {:keys [signatures doc]} (generate-function-signatures entry)
+                                         jsdoc (generate-jsdoc doc (:examples spec-data))]]
+                               (str jsdoc "\n" (str/join "\n" signatures))))
+         optimistic-functions "
 
 // Explicit optimistic overlay API. Unlike specification-generated functions,
 // snapshot reads and lifecycle commands are synchronous.
@@ -509,7 +515,15 @@ export type LogLevel = 'off' | 'trace' | 'debug' | 'info' | 'warn' | 'error';
  */
 export function setLogLevel(level: LogLevel): LogLevel;
 "]
-    (str header types "\n// API Functions\n\n" functions optimistic-functions "\n")))
+     (if remote-only?
+       (str header types "\n// API Functions (the thin HTTP client; every call reaches the server)\n\n" functions "
+
+// JavaScript-specific value helpers.
+export function isPromise(value: any): value is Promise<unknown>;
+export function uuid(value: string): DatahikeUuid;
+export function randomUuid(): DatahikeUuid;
+")
+       (str header types "\n// API Functions\n\n" functions optimistic-functions "\n")))))
 
 (defn write-type-definitions!
   "Write TypeScript definitions to a file."
@@ -593,6 +607,10 @@ export function registerRemoteFn(
 export function unregisterRemoteFn(fnName: string): void;
 export function stopKabelPeer(peer: KabelPeer): Promise<boolean>;
 ")
+
+(defn write-remote-type-definitions! [output-path]
+  (spit output-path (generate-type-definitions {:remote-only? true}))
+  (println "Thin-client TypeScript definitions written to:" output-path))
 
 (defn write-kabel-type-definitions! [output-path]
   (spit output-path (generate-kabel-type-definitions))

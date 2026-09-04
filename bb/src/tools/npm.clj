@@ -27,7 +27,10 @@
       (println "Removed S3 browser build directory"))
     (when (fs/exists? (str npm-package-path "/kabel"))
       (fs/delete-tree (str npm-package-path "/kabel"))
-      (println "Removed Kabel browser build directory"))))
+      (println "Removed Kabel browser build directory"))
+    (when (fs/exists? (str npm-package-path "/remote"))
+      (fs/delete-tree (str npm-package-path "/remote"))
+      (println "Removed thin-client build directory"))))
 
 (defn update-package-json-version!
   "Generate npm package.json from template with version from config.edn"
@@ -54,6 +57,15 @@
       (println (:err result))
       (throw (ex-info "TypeScript generation failed" result)))
     (println (str "TypeScript definitions written to: " output-path))))
+
+(defn generate-remote-typescript-definitions! [output-path]
+  (let [clj-code (str "(require '[datahike.codegen.typescript :as ts]) "
+                      "(ts/write-remote-type-definitions! \"" output-path "\")")
+        result (p/shell {:out :string :err :string}
+                        "clojure" "-M" "-e" clj-code)]
+    (when-not (zero? (:exit result))
+      (throw (ex-info "Thin-client TypeScript generation failed" result)))
+    (println (str "Thin-client TypeScript definitions written to: " output-path))))
 
 (defn generate-kabel-typescript-definitions! [output-path]
   (let [clj-code (str "(require '[datahike.codegen.typescript :as ts]) "
@@ -114,6 +126,21 @@
                "var root = (typeof self !== 'undefined' ? self : global);\n"
                "module.exports = Object.assign({}, root['datahike']['js']['api'], root['datahike']['js']['kabel']);\n"))))
 
+(defn write-remote-index! [remote-path]
+  (let [esm-path (str remote-path "/index.mjs")
+        tmp-file (str (fs/create-temp-file {:prefix "remote-esm-codegen-" :suffix ".clj"}))
+        _ (spit tmp-file (str "(require '[datahike.codegen.esm :as esm])\n"
+                              "(esm/write-remote-esm-wrapper! \"" esm-path "\")\n"))
+        result (p/shell {:out :string :err :string}
+                        "clojure" "-M" tmp-file)]
+    (fs/delete tmp-file)
+    (when-not (zero? (:exit result))
+      (throw (ex-info "Thin-client ESM wrapper generation failed" result)))
+    (spit (str remote-path "/index.js")
+          (str "require('./datahike.js');\n"
+               "var root = (typeof self !== 'undefined' ? self : global);\n"
+               "module.exports = root['datahike']['js']['remote'];\n"))))
+
 (defn- run-package-command!
   [npm-package-path description & command]
   (let [result (apply p/shell {:dir npm-package-path
@@ -154,7 +181,9 @@
                      "browser/index.js" "browser/index.mjs"
                      "s3/datahike.js" "s3/index.js" "s3/index.mjs"
                      "kabel/datahike.js" "kabel/index.js" "kabel/index.mjs"
-                     "kabel.d.ts"}
+                     "kabel.d.ts"
+                     "remote/datahike.js" "remote/index.js" "remote/index.mjs"
+                     "remote.d.ts"}
           missing (remove files required)
           forbidden (filter #(or (and (str/ends-with? % ".ts")
                                       (not (str/ends-with? % ".d.ts")))
@@ -204,6 +233,7 @@
   (println "Step 3/9: Generating TypeScript definitions")
   (generate-typescript-definitions! (str npm-package-path "/index.d.ts"))
   (generate-kabel-typescript-definitions! (str npm-package-path "/kabel.d.ts"))
+  (generate-remote-typescript-definitions! (str npm-package-path "/remote.d.ts"))
   (println "")
 
   (println "Step 4/9: Releasing Node.js build with shadow-cljs")
@@ -241,6 +271,15 @@
     (write-kabel-index! (str npm-package-path "/kabel"))
     (println ""))
 
+  (println "Step 7b/9: Releasing optional thin-client browser build")
+  (let [result (p/shell {:out :inherit
+                         :err :inherit}
+                        "npx shadow-cljs release browser-remote-release")]
+    (when-not (zero? (:exit result))
+      (throw (ex-info "Shadow-cljs thin-client release failed" result)))
+    (write-remote-index! (str npm-package-path "/remote"))
+    (println ""))
+
   (println "Step 8/9: Verifying runtime, types, and tarball")
   (verify-npm-package! npm-package-path)
 
@@ -254,5 +293,6 @@
   (println (str "           " npm-package-path "/browser/index.js     (webpack/legacy, CJS)"))
   (println (str "  S3:      " npm-package-path "/s3/index.mjs        (optional browser build)"))
   (println (str "  Kabel:   " npm-package-path "/kabel/index.mjs     (IndexedDB + replicated writer)"))
+  (println (str "  Remote:  " npm-package-path "/remote/index.mjs    (thin HTTP client, no engine)"))
   (println "")
   (println "The main-branch release workflow publishes this verified artifact."))

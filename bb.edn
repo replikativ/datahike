@@ -306,6 +306,10 @@
                                  (shell {:extra-env {"DATAHIKE_LOG_LEVEL" "off"}}
                                         "node target/out/node-test.js"))}
 
+         node-remote-test {:doc "Run the thin HTTP client's node tests against a JVM server started for the run"
+                           :depends [prep]
+                           :task (test/node-remote)}
+
          cljs-s3-concurrency-test
          {:doc "Run two independent CLJS Datahike writers against an available S3/MinIO bucket"
           :task (do

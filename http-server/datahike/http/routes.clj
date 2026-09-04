@@ -256,7 +256,8 @@
   (fn [request]
     (try
       (let [{{body :body} :parameters
-             :keys [headers params method]} request]
+             :keys [headers params]
+             method :request-method} request]
         (log/trace :datahike/http-handler-request {:handler f :op op})
         (or (authorize config request op body)
             ;; The server IS the writer: a config's :writer names a client's
@@ -324,7 +325,7 @@
                 (when-not (headers "no-return-value")
                   ret-body)}
                (when (and (= method :get)
-                          (get params "args-id")
+                          (or (get params "args-id") (get params "args"))
                           (get-in config [:cache :get :max-age]))
                  {:headers {"Cache-Control" (str (when (:dev-mode config) "public, ")
                                                  "max-age=" (get-in config [:cache :get :max-age]))}})))))
@@ -409,6 +410,34 @@
        (assoc-in [:formats "application/transit+json" :encoder-opts]
                  {:handlers transit/write-handlers}))))
 
+(def ^:private url-args-formats
+  {"cbor"    "application/cbor"
+   "transit" "application/transit+json"
+   "edn"     "application/edn"
+   "json"    "application/json"})
+
+(defn- url-args-middleware
+  "A GET may carry its arguments in the URL: `args` is the argument vector,
+   encoded in the format `f` names (`cbor` by default) and base64url'd. A
+   browser cannot send a GET with a body, and a URL is what an HTTP cache
+   keys on, so this is how a browser client gets a cached read. Decoded into
+   `:body-params`, where the body would have landed, so coercion and the
+   handler see no difference."
+  [muuntaja-with-opts]
+  (fn [handler]
+    (fn [request]
+      (if-let [encoded (and (= :get (:request-method request))
+                            (get-in request [:query-params "args"]))]
+        (let [format (get url-args-formats (get-in request [:query-params "f"] "cbor"))]
+          (when-not format
+            (throw (ex-info "Unknown args format" {:type :datahike.http/bad-request
+                                                   :f (get-in request [:query-params "f"])})))
+          (handler (assoc request :body-params
+                          (m/decode muuntaja-with-opts format
+                                    (java.io.ByteArrayInputStream.
+                                     (.decode (java.util.Base64/getUrlDecoder) ^String encoded))))))
+        (handler request)))))
+
 (defn- default-route-opts [muuntaja-with-opts]
   {:data      {:coercion   (reitit.coercion.malli/create
                             {:compile mu/closed-schema
@@ -422,6 +451,7 @@
                             muuntaja/format-response-middleware
                             exception/exception-middleware
                             muuntaja/format-request-middleware
+                            (url-args-middleware muuntaja-with-opts)
                             (middleware/encode-plain-value muuntaja-with-opts)
                             middleware/support-embedded-edn-in-json
                             coercion/coerce-response-middleware
@@ -436,15 +466,20 @@
     ~(vec
       (for [[n {:keys [args doc supports-remote? referentially-transparent?]}] api-specification
             :when supports-remote?]
-        `[~(str "/" (->url n))
-          {:swagger {:tags ["API"]}
-           ~(if referentially-transparent? :get :post)
-           {:operationId ~(str n)
-            :metric-op   ~(route-op n referentially-transparent?)
-            :summary     ~(extract-first-sentence doc)
-            :description ~doc
-            :parameters  {:body ~(extract-input-schema args)}
-            :handler     (generic-handler ~'config ~'state ~(route-op n referentially-transparent?) ~(resolve n))}}]))))
+        (let [route {:operationId (str n)
+                     :metric-op   (route-op n referentially-transparent?)
+                     :summary     (extract-first-sentence doc)
+                     :description doc
+                     :parameters  {:body (extract-input-schema args)}
+                     :handler     `(generic-handler ~'config ~'state ~(route-op n referentially-transparent?) ~(resolve n))}]
+          `[~(str "/" (->url n))
+            ;; A read is a GET, cached by its URL: the arguments travel in the
+            ;; `args` parameter (`url-args-middleware`) or, for a client that
+            ;; can, in the body. It answers POST as well, for arguments too
+            ;; large for a URL; that path carries no cache headers.
+            ~(if referentially-transparent?
+               {:swagger {:tags ["API"]} :get route :post (assoc route :no-doc true)}
+               {:swagger {:tags ["API"]} :post route})])))))
 
 (defn- internal-writer-routes
   "What a `:datahike-server` writer posts to; `state` as in `new-state`."
