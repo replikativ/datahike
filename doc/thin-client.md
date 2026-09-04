@@ -1,14 +1,14 @@
 # Thin client: the Datahike API against a server, no engine in the page
 
 **Status: Beta.** Tested on Node.js and the JVM against the standalone server;
-the browser build is the same code over `fetch`.
+the JavaScript browser client is the same TypeScript code over `fetch`.
 
 The npm entry `datahike/remote` is the Datahike API with nothing behind it:
 every call is a request to a Datahike server, and connections, databases and
 entities are opaque handles that go back to the server as they came. The
 bundle carries no database engine, which is what makes it a fit for a web
-page that should not ship one: about 76 KiB gzipped, against 440 KiB for the
-full runtime.
+page that should not ship one: about 4 KiB gzipped, against 69 KiB for the
+former ClojureScript thin-client bundle and about 440 KiB for the full runtime.
 
 This is the same mode the `dthk` binary and the Clojure client use: a
 configuration whose `:remote-peer` names the server. Three modes, one API,
@@ -42,13 +42,16 @@ await d.q('[:find ?n :where [?e :person/name ?n]]', db);   // => [['Ada']]
 await d.release(conn);
 ```
 
-`connect`, `db` and the rest return handles: pass them back, do not look
-inside. A transaction report is a JavaScript object whose `db-after` is such
-a handle. Values convert at the boundary the way the main entry converts
-them: keywords as `':name'` strings, uuids made with `d.uuid` or
-`d.randomUuid`, results as plain arrays and objects. Every function returns a
-Promise. The functions are exactly the specification's remote-capable ones;
-`remote.d.ts` lists them.
+For JavaScript and TypeScript consumers this entry is a hand-written
+TypeScript client. `connect`, `db` and the rest return handles: pass them back,
+do not look inside. A transaction report is a JavaScript object whose
+`db-after` is such a handle. Values convert at the boundary the way the main
+entry converts them: keywords as `':name'` strings, uuids made with `d.uuid`
+or `d.randomUuid`, results as plain arrays and objects. Every function returns
+a Promise. The functions are exactly the specification's remote-capable ones;
+`remote/index.d.ts` lists them. ClojureScript consumers instead require
+`datahike.http.client` from the Clojure artifact; that API and its `listen`
+implementation are unchanged.
 
 Authentication is the HTTP API's: the shared `token`, or a JWT once the
 server has a `:validator` ([http-routes.md](http-routes.md#authentication-who-is-calling)).
@@ -59,13 +62,15 @@ registered ([http-routes.md](http-routes.md#query-functions)).
 
 ## On the wire
 
-CBOR, through boring, in both directions. A read (`q`, `pull`, `datoms`, …)
-is a GET whose arguments travel base64url-encoded in the URL while they fit
-in 2 KiB, so the response is cacheable by URL and the server sends the cache
-headers its `:cache` configuration asks for; larger arguments go by POST,
-which is never cached. A write is a POST. A database handle carries the
-snapshot's commit id, so a read against one is the same result for as long
-as the handle is used.
+JSON in both directions, using the server's tagged arrays for keywords,
+symbols, sets, UUIDs, dates, datoms, connections, databases, entities and
+transaction reports. A read (`q`, `pull`, `datoms`, …) is a GET whose JSON
+argument vector travels base64url-encoded in the URL while the encoded bytes
+fit in 2 KiB, so the response is cacheable by URL and the server sends the
+cache headers its `:cache` configuration asks for; larger arguments go by
+POST with a JSON body, which is never cached. A write is always a POST. A
+database handle carries the snapshot's commit id, so a read against one is
+the same result for as long as the handle is used.
 
 ## Change notification
 
@@ -119,6 +124,7 @@ with `error` and `status` in JavaScript, and the listener stops.
 
 ## Reference
 
-`npm-package/remote.d.ts` is generated from the API specification. The
-ClojureScript namespace behind the entry is `datahike.http.client`, the
-same one the JVM uses; `datahike.js.remote` is the JavaScript boundary.
+`ts-client/src/api.generated.ts` is generated from the API specification and
+the hand-written transport and codec live beside it. ClojureScript consumers
+use `datahike.http.client` from the Clojure artifact, the same namespace the
+JVM client uses.

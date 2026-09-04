@@ -99,19 +99,6 @@
                               :warnings-as-errors true
                               :closure-warnings {:useless-code :off}}}
 
-          ;; Opt-in browser build of the thin HTTP client: the API against a
-          ;; server over fetch and CBOR, no database engine in the bundle.
-          :browser-remote-release
-          {:target :browser
-           :output-to "npm-package/remote/datahike.js"
-           :output-dir "npm-package/remote"
-           :modules {:datahike {:entries [datahike.js.remote]}}
-           :compiler-options {:optimizations :advanced
-                              :infer-externs :auto
-                              :output-feature-set :es-next
-                              :warnings-as-errors true
-                              :closure-warnings {:useless-code :off}}}
-
           :node-remote-test
           {:target :node-script
            :output-to "target/out/node-remote-test.js"

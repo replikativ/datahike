@@ -1,13 +1,11 @@
 (ns datahike.test.remote-test
   "The thin HTTP client against a live server, on Node.js: the ClojureScript
-   API (`datahike.http.client`) and the JavaScript boundary
-   (`datahike.js.remote`). `bb node-remote-test` starts the server and
+   API (`datahike.http.client`). `bb node-remote-test` starts the server and
    points DATAHIKE_REMOTE_URL / DATAHIKE_REMOTE_TOKEN at it; without them the
    suite reports itself skipped."
   (:require [cljs.test :refer [deftest is async] :as t]
             [datahike.http.client :as client]
             [datahike.remote :as remote]
-            [datahike.js.remote :as js-remote]
             [cljs.core.async :refer [<! go] :as core-async]))
 
 (def ^:private url (some-> js/process .-env .-DATAHIKE_REMOTE_URL))
@@ -132,65 +130,6 @@
              (catch :default e
                (is false (str "unexpected: " (ex-message e) " " (pr-str (ex-data e))))))
            (done))))
-
-(deftest javascript-boundary-against-the-server
-  (async done
-    ;; As in the JavaScript docs: the configuration object holding the uuid()
-    ;; value is what connect and deleteDatabase take; the echoed copy renders
-    ;; its id as a plain string, like every uuid at the JavaScript boundary.
-         (let [cfg #js {:store #js {:backend ":memory" :id (js-remote/randomUuid)}
-                        :schema-flexibility ":read"
-                        :remote-peer #js {:backend ":datahike-server" :url url :token token}}]
-           (-> (js-remote/createDatabase cfg)
-               (.then (fn [echoed]
-                        (is (some? (aget echoed "store")) "a configuration comes back as a JavaScript object")
-                        (.then (js-remote/connect cfg)
-                               (fn [conn]
-                                 (-> (js-remote/transact conn #js [#js {:name "Linus"}])
-                                     (.then (fn [report]
-                                              (is (some? (aget report "db-after")) "a report is a JavaScript object with handles inside")
-                                              (js-remote/db conn)))
-                                     (.then (fn [db] (js-remote/q "[:find ?n :where [?e :name ?n]]" db)))
-                                     (.then (fn [result]
-                                              (is (= [["Linus"]] (js->clj result)) "results are JavaScript values")
-                                              (let [phase (atom :resync)
-                                                    key (atom nil)
-                                                    report-promise
-                                                    (js/Promise.
-                                                     (fn [resolve reject]
-                                                       (let [timeout (js/setTimeout
-                                                                      #(do
-                                                                         (when @key
-                                                                           (js-remote/unlisten conn @key))
-                                                                         (reject (js/Error. "Timed out waiting for a JavaScript change event")))
-                                                                      5000)]
-                                                         (reset! key
-                                                                 (js-remote/listen
-                                                                  conn
-                                                                  (fn [report]
-                                                                    (case @phase
-                                                                      :resync
-                                                                      (do
-                                                                        (is (object? report) "a listener receives a JavaScript object")
-                                                                        (is (true? (aget report "resync")))
-                                                                        (reset! phase :report)
-                                                                        (-> (js-remote/transact
-                                                                             conn #js [#js {:name "Listener"}])
-                                                                            (.catch reject)))
-
-                                                                      :report
-                                                                      (do
-                                                                        (js/clearTimeout timeout)
-                                                                        (resolve report)))))))))]
-                                                (.then report-promise
-                                                       (fn [report]
-                                                         (is (some? (aget report "db-after"))
-                                                             "a JavaScript change report carries a handle")
-                                                         (js-remote/unlisten conn @key)
-                                                         (js-remote/release conn))))))
-                                     (.then (fn [_] (js-remote/deleteDatabase cfg))))))))
-               (.catch (fn [e] (is false (str "unexpected: " e))))
-               (.finally done)))))
 
 (defn -main [& _]
   (if (and url token)

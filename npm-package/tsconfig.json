@@ -7,5 +7,5 @@
     "strict": true,
     "target": "ES2022"
   },
-  "files": ["typescript-test.ts"]
+  "files": ["typescript-test.ts", "remote-typescript-test.ts"]
 }
