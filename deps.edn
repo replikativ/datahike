@@ -177,7 +177,7 @@
                                ;; longer duplicated here: it is a main dep now,
                                ;; because declaring it twice is precisely how the
                                ;; tested and shipped versions came apart.
-                               org.replikativ/kabel          {:mvn/version "0.3.132"}
+                               org.replikativ/kabel          {:mvn/version "0.3.133"}
                                org.replikativ/konserve-sync  {:mvn/version "0.1.40"}
                                org.replikativ/geheimnis      {:mvn/version "0.2.33"
                                                               :exclusions [org.clojure/clojurescript]}
@@ -257,7 +257,7 @@
                                       nrepl/nrepl             {:mvn/version "1.7.0"}
                                       org.clojure/tools.cli   {:mvn/version "1.4.256"}
                                       ch.qos.logback/logback-classic {:mvn/version "1.5.32"}
-                                      org.replikativ/kabel          {:mvn/version "0.3.132"}
+                                      org.replikativ/kabel          {:mvn/version "0.3.133"}
                                       org.replikativ/konserve-sync  {:mvn/version "0.1.40"}
                                       org.replikativ/geheimnis      {:mvn/version "0.2.33"
                                                                      :exclusions [org.clojure/clojurescript]}

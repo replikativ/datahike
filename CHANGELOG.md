@@ -6,6 +6,11 @@ When something is added, it's typically marked *Experimental*. When the API cont
 
 ## 0.8
 
+- **kabel 0.3.133.** Two concurrent releases of a store subscription (a
+  connection's shutdown and its owner's) could send two unsubscribe
+  requests; the second drain then removed a subscription made meanwhile and
+  its handshake failed, which surfaced as the fork-branch Kabel test timing
+  out in CI. Fixed in kabel; nothing changes in Datahike's own code.
 - **`:create-database` policy for the server.** `create-database` took the
   client's `:store` as given, so a client with `:create` could point the
   server at any backend it has loaded, a JDBC URL, an S3 bucket or a file
