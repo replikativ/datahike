@@ -1,8 +1,7 @@
 (ns datahike.js.api
   "JavaScript API for Datahike with Promise conversion and data transformation"
   (:refer-clojure :exclude [filter uuid])
-  (:require [datahike.api.specification :refer [api-specification]]
-            [datahike.api.impl]
+  (:require [datahike.api.impl]
             [datahike.connector]
             [datahike.optimistic :as optimistic]
             [datahike.store] ;; Register :mem backend

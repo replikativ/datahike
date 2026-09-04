@@ -6,6 +6,12 @@ When something is added, it's typically marked *Experimental*. When the API cont
 
 ## 0.8
 
+- **Smaller browser bundle: malli stays on the JVM.** `datahike.api`
+  registered malli schemas for every API function at load so that a JVM user
+  running malli's instrumenter gets Datahike's API checked; on ClojureScript
+  that only pulled malli, cljs.spec and the specification data into every
+  bundle. The registration is JVM-only now. Browser bundle 461 -> 420 KiB
+  gzipped; JVM behaviour unchanged.
 - **kabel 0.3.134; the listener's gates decide on a thread.** Kabel asks the
   `:authorize` gate from inside a go block, and Datahike's gate runs a
   synchronous permission query, which held one of the dispatch pool's few
