@@ -360,7 +360,28 @@ your service — or give that client a `:self` writer.
 
 Checklist: a token or validator set · `:dev-mode` false · secrets in
 env/secret store · TLS at the edge · `release-all!` on shutdown · `delete`
-granted only to owners who may · `:query-functions` left at `:safe`.
+granted only to owners who may · `:query-functions` left at `:safe` ·
+`:create-database` set unless clients may choose any store.
+
+### What may be created
+
+`create-database` takes the client's configuration, `:store` included. Without
+a policy a client with `:create` may point the server at any backend it has
+loaded: a JDBC URL of its choosing, an S3 bucket, a file path anywhere the
+process may write. `:create-database` in the server config restricts that:
+
+```clojure
+{:create-database {:backends #{:memory :file}}}            ; only these backends
+{:create-database {:store {:backend :file                  ; the server chooses:
+                           :path "/var/lib/datahike/databases"}}} ; root/<id>
+```
+
+With `:store` the client's store is replaced: the server keeps the id the
+client chose, or picks one, and places the database below its own root, as
+the Kabel listener does with its `:store`. With `:backends` the client's
+store is kept but its backend must be in the set. A refused create is `403`
+with `{:type :datahike.http/store-refused}`. Both keys may be given; without
+the option the server logs at start that creation is unrestricted.
 
 ### Query functions
 
@@ -431,6 +452,7 @@ clojure -M:http-server --config config.edn
  :token    "securerandompassword"
  :dev-mode false
  :query-functions :safe     ; the default; :permissive only for trusted clients
+ :create-database {:store {:backend :file :path "/var/lib/datahike/databases"}}
  :level    :info
  :log-format :text}
 ```

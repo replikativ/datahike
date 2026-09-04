@@ -339,3 +339,40 @@
     (is (thrown-with-msg? Exception #"safe or :permissive"
                           (start-server {:port 23198 :host "127.0.0.1" :join? false :dev-mode false
                                          :token "securerandompassword" :query-functions :anything})))))
+
+(deftest test-create-database-policy
+  (let [remote (fn [port] {:backend :datahike-server :url (str "http://localhost:" port)
+                           :token "securerandompassword" :format :transit})
+        create (fn [port store] (api/create-database {:store store :schema-flexibility :read
+                                                      :remote-peer (remote port)}))]
+    (testing "an allow-list of backends"
+      (let [port 23199
+            server (start-server {:port port :host "127.0.0.1" :join? false :dev-mode false
+                                  :token "securerandompassword"
+                                  :create-database {:backends #{:memory}}})]
+        (try
+          (is (map? (create port {:backend :memory :id #uuid "de110000-0000-0000-0000-000000000011"})))
+          (is (thrown-with-msg? Exception #"403"
+                                (create port {:backend :file :path "/tmp/anywhere" :id #uuid "de110000-0000-0000-0000-000000000012"}))
+              "a backend outside the set is refused before anything is created")
+          (finally (stop-server server)))))
+    (testing "the server chooses the store below its root"
+      (let [port 23200
+            root (str (System/getProperty "java.io.tmpdir") "/dh-policy-" (random-uuid))
+            server (start-server {:port port :host "127.0.0.1" :join? false :dev-mode false
+                                  :token "securerandompassword"
+                                  :create-database {:store {:backend :file :path root}}})]
+        (try
+          (let [id  #uuid "de110000-0000-0000-0000-000000000013"
+                cfg (create port {:backend :memory :id id})]
+            (is (= :file (get-in cfg [:store :backend])) "the client's backend is not what gets created")
+            (is (= id (get-in cfg [:store :id])) "the client's id is kept")
+            (is (.startsWith ^String (get-in cfg [:store :path]) root) "the path is the server's"))
+          (let [cfg (create port {:backend :file :path "/etc" :id #uuid "de110000-0000-0000-0000-000000000014"})]
+            (is (.startsWith ^String (get-in cfg [:store :path]) root) "a client path is ignored"))
+          (finally (stop-server server)))))
+    (testing "a policy the server cannot act on is refused at start"
+      (is (thrown-with-msg? Exception #":create-database"
+                            (start-server {:port 23201 :host "127.0.0.1" :join? false :dev-mode false
+                                           :token "securerandompassword"
+                                           :create-database {:store {:backend :s3}}}))))))
