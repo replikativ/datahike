@@ -301,7 +301,10 @@
                               (let [bytes (js/Uint8Array. buf)]
                                 (log/trace :datahike/http-response {:end-point end-point})
                                 (deliver! (if (.-ok resp)
-                                            (decode bytes)
+                                            (try (decode bytes)
+                                                 (catch :default e
+                                                   (ex-info (str "Undecodable response from " target ": " (ex-message e))
+                                                            {:type :datahike.http/bad-response :url target})))
                                             (error-from-response (.-status resp) target bytes registry))))))))
             (.catch (fn [e]
                       (deliver! (ex-info (str "Request to " target " failed: " (or (some-> e .-message) (str e)))
@@ -336,6 +339,10 @@
               (map? (:writer a))      (update :writer dissoc :token))
             a))
         args))
+
+;; `db` and its siblings are defined by the `eval` below; the declaration is
+;; for readers of the source, human and linter alike.
+#?(:clj (declare db))
 
 #?(:clj
    (doseq [[n {:keys [args doc supports-remote? referentially-transparent?]}] api/api-specification]

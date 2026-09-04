@@ -363,6 +363,18 @@ env/secret store · TLS at the edge · `release-all!` on shutdown · `delete`
 granted only to owners who may · `:query-functions` left at `:safe` ·
 `:create-database` set unless clients may choose any store.
 
+### Reads by URL, or by POST
+
+A read (every function the specification marks referentially transparent)
+is a GET. Its arguments travel either in the body, as the JVM client sends
+them, or in the URL as `?args=<base64url of the encoded argument vector>&f=cbor`
+(`f` is `cbor`, `transit`, `edn` or `json`), which is what a browser client
+sends since a browser cannot GET with a body. Either way the response
+carries the cache headers `:cache {:get {:max-age …}}` asks for, and the URL
+form is what an HTTP cache keys on. Every read route answers POST as well,
+for arguments too large for a URL; that path is never cached. Writes are
+POST only.
+
 ### What may be created
 
 `create-database` takes the client's configuration, `:store` included. Without

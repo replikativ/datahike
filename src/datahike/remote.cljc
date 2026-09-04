@@ -44,9 +44,9 @@
 (defrecord RemoteConnection [store-id remote-peer]
   #?@(:clj
       [IDeref
-       (deref [conn] (remote-deref conn))
-       PRemotePeer
-       (-remote-peer [_] remote-peer)]))
+       (deref [conn] (remote-deref conn))])
+  PRemotePeer
+  (-remote-peer [_] remote-peer))
 
 (defn remote-connection [store-id]
   (RemoteConnection. store-id *remote-peer*))

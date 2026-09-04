@@ -6,6 +6,22 @@ When something is added, it's typically marked *Experimental*. When the API cont
 
 ## 0.8
 
+- **Thin client for npm: `datahike/remote`.** *Experimental.* The Datahike
+  API against a server with no engine in the bundle, about 76 KiB gzipped:
+  `datahike.http.client` is now `cljc`, speaking CBOR over `fetch` on
+  ClojureScript with a promise-channel per call, and `datahike.js.remote`
+  is its JavaScript boundary, generated from the specification like the
+  main entry. Connections, databases and entities are opaque handles. See
+  `doc/thin-client.md`.
+- **Reads by URL, and every read route answers POST.** A GET may carry its
+  arguments base64url-encoded in the `args` query parameter (format in `f`),
+  which is how a browser client gets a cacheable read; the read routes also
+  accept POST for arguments too large for a URL. The generic handler read the
+  request method from a key Ring never sets, so the configured `Cache-Control`
+  header was never sent; it is now. A scalar result on a body-less GET is
+  encoded in the negotiated response format.
+- `datahike.remote` and `datahike.remote.cbor` compile on ClojureScript;
+  the Datom CBOR handler lives in `datahike.cbor.elements`.
 - **kabel 0.3.133.** Two concurrent releases of a store subscription (a
   connection's shutdown and its owner's) could send two unsubscribe
   requests; the second drain then removed a subscription made meanwhile and

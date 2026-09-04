@@ -60,14 +60,26 @@
 (defn cause->status-code [cause]
   400)
 
-(defn encode-plain-value [muuntaja-with-opts]
+(defn encode-plain-value
+  "Muuntaja encodes collection bodies; a scalar result (a count, an entity
+   id, a boolean) needs encoding too. The format is the request's content
+   type or, for a body-less GET with its arguments in the URL, the response
+   format negotiated from `Accept`."
+  [muuntaja-with-opts]
   (fn [handler]
     (fn [request]
-      (let [format         (:content-type request)
+      (let [request-format (:content-type request)
+            format         (or request-format
+                               (get-in request [:muuntaja/response :format]))
             encoder        (when format (m/encoder muuntaja-with-opts format))
             response       (handler request)
+            body           (:body response)
             should-encode? (and encoder
-                                (not (instance? java.io.ByteArrayInputStream (:body response))))
+                                (not (instance? java.io.ByteArrayInputStream body))
+                                ;; Without a request content type only a scalar is
+                                ;; encoded here; a collection stays for muuntaja,
+                                ;; which also sets the response content type.
+                                (or request-format (not (coll? body))))
             ret            (if should-encode? (update response :body #(encoder %)) response)]
         ret))))
 

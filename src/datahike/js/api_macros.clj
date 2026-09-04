@@ -2,7 +2,8 @@
   "Macros for generating JavaScript API."
   (:require [datahike.api.specification :refer [api-specification]]
             [datahike.codegen.naming :refer [assert-unique-js-names!
-                                             js-skip-list clj-name->js-name]]))
+                                             js-skip-list clj-name->js-name
+                                             remote-js-exports]]))
 
 (defmacro emit-js-api
   "Generate JavaScript API functions from api-specification.
@@ -34,3 +35,23 @@
                 (-> ~result-sym
                     datahike.js.api/maybe-chan->promise
                     (.then datahike.js.api/clj->js-recursive))))))))
+
+(defmacro emit-js-remote-api
+  "Generate the JavaScript functions of the thin HTTP client from
+  api-specification: every remote-capable function, calling
+  `datahike.http.client` and converting at the boundary the way
+  `emit-js-api` does. Every call returns a Promise."
+  []
+  (let [exports (remote-js-exports api-specification)]
+    (assert-unique-js-names! exports)
+    `(do
+       ~@(for [clj-fn-name exports
+               :let [{:keys [doc]} (get api-specification clj-fn-name)
+                     js-fn-name (symbol (clj-name->js-name clj-fn-name))
+                     client-fn (symbol "datahike.http.client" (name clj-fn-name))
+                     args-sym (gensym "args")]]
+           `(defn ~(with-meta js-fn-name {:export true :doc doc})
+              [& ~args-sym]
+              (-> (apply ~client-fn (datahike.js.convert/js->clj-api-args ~(name clj-fn-name) ~args-sym))
+                  datahike.js.convert/maybe-chan->promise
+                  (.then datahike.js.convert/clj->js-recursive)))))))

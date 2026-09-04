@@ -54,3 +54,20 @@
     (when (seq collisions)
       (throw (ex-info "JavaScript API name collision"
                       {:collisions collisions})))))
+
+(defn remote-js-exports
+  "The specification names the thin HTTP client exposes to JavaScript: the
+   remote-capable functions. `js-skip-list` exists because two functions can
+   share a JavaScript name (`transact` and `transact!` both become
+   `transact`); a skipped name comes back here when the function that
+   displaced it is not remote-capable, since on the thin client there is
+   nothing to collide with."
+  [api-specification]
+  (let [remote (for [[n {:keys [supports-remote?]}] (sort-by first api-specification)
+                     :when supports-remote?]
+                 n)
+        taken (frequencies (map clj-name->js-name remote))]
+    (for [n remote
+          :when (or (not (contains? js-skip-list n))
+                    (= 1 (get taken (clj-name->js-name n))))]
+      n)))

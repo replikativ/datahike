@@ -16,7 +16,7 @@
   "keywords" : [ "database", "datalog", "datomic", "clojurescript", "immutable", "functional" ],
   "types" : "index.d.ts",
   "author" : "Christian Weilbach",
-  "files" : [ "*.js", "!test*.js", "*.js.map", "browser/datahike.js", "browser/index.mjs", "browser/index.js", "s3/datahike.js", "s3/index.mjs", "s3/index.js", "kabel/datahike.js", "kabel/index.mjs", "kabel/index.js", "index.d.ts", "kabel.d.ts", "README.md", "LICENSE", "THIRD_PARTY_LICENSES.md" ],
+  "files" : [ "*.js", "!test*.js", "*.js.map", "browser/datahike.js", "browser/index.mjs", "browser/index.js", "s3/datahike.js", "s3/index.mjs", "s3/index.js", "kabel/datahike.js", "kabel/index.mjs", "kabel/index.js", "remote/datahike.js", "remote/index.mjs", "remote/index.js", "index.d.ts", "kabel.d.ts", "remote.d.ts", "README.md", "LICENSE", "THIRD_PARTY_LICENSES.md" ],
   "version" : "{{VERSION}}",
   "publishConfig" : {
     "access" : "public",
@@ -52,10 +52,20 @@
       },
       "default": "./kabel/index.mjs"
     },
+    "./remote": {
+      "types": "./remote.d.ts",
+      "browser": {
+        "import": "./remote/index.mjs",
+        "require": "./remote/index.js",
+        "default": "./remote/index.mjs"
+      },
+      "default": "./remote/index.mjs"
+    },
     "./package.json": "./package.json",
     "./browser/datahike.js": "./browser/datahike.js",
     "./s3/datahike.js": "./s3/datahike.js",
-    "./kabel/datahike.js": "./kabel/datahike.js"
+    "./kabel/datahike.js": "./kabel/datahike.js",
+    "./remote/datahike.js": "./remote/datahike.js"
   },
   "browser" : "./browser/datahike.js"
 }

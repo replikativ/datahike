@@ -1,6 +1,7 @@
 (ns tools.test
   (:refer-clojure :exclude [test])
   (:require [babashka.fs :as fs]
+            [babashka.http-client]
             [babashka.process :as p]
             [clojure.java.io :as io]
             [clojure.string :as str]
@@ -50,7 +51,7 @@
     (println "Generating Java API for old version...")
     (let [old-dir old-version-dir
           cp (:out (p/shell {:out :string :dir old-dir}
-                           "clojure" "-Spath"))]
+                            "clojure" "-Spath"))]
       ;; First compile Java dependencies
       (println "Compiling Java dependencies...")
       (p/shell {:dir old-dir}
@@ -226,3 +227,34 @@
       "cljs-browser" (cljs-browser-test)
       (apply kaocha "--focus" args))
     (all config)))
+
+(defn- wait-for-http! [process url]
+  (loop [attempt 0]
+    (when-not (p/alive? process)
+      (throw (ex-info "The test server exited before it came up" {:url url})))
+    (let [up? (try (= 200 (:status (babashka.http-client/get url {:throw false})))
+                   (catch Exception _ false))]
+      (cond up? true
+            (< attempt 479) (do (Thread/sleep 250) (recur (inc attempt)))
+            :else (throw (ex-info "The test server never came up" {:url url}))))))
+
+(defn node-remote
+  "The thin-client node tests against a JVM server started for the run."
+  []
+  (fs/create-dirs "target")
+  (println "Compiling the thin-client node tests...")
+  (p/shell "npx shadow-cljs compile node-remote-test")
+  (let [config "bb/resources/remote-test-config.edn"
+        base-url "http://localhost:32192"
+        log (fs/file "target/remote-test-server.log")
+        process (p/process ["clojure" "-M:http-server" config] {:out log :err log})]
+    (try
+      (println "Starting the test server (see target/remote-test-server.log)...")
+      (wait-for-http! process (str base-url "/swagger.json"))
+      (println "Running the thin-client node tests...")
+      (p/shell {:extra-env {"DATAHIKE_REMOTE_URL" base-url
+                            "DATAHIKE_REMOTE_TOKEN" "remotetesttoken"
+                            "DATAHIKE_LOG_LEVEL" "off"}}
+               "node target/out/node-remote-test.js")
+      (finally
+        (p/destroy-tree process)))))

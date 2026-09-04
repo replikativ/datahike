@@ -284,6 +284,10 @@ jobs:
           name: Run CLJS node tests
           command: bb node-cljs-test
           no_output_timeout: 5m
+      - run:
+          name: Run the thin HTTP client's node tests against a server
+          command: bb node-remote-test
+          no_output_timeout: 10m
       - save_cache:
           key: deps-{{ checksum "deps.edn" }}
           paths:

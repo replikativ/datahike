@@ -1,0 +1,6 @@
+;; The JVM server the thin-client node tests talk to (bb node-remote-test).
+{:port     32192
+ :join?    false
+ :dev-mode false
+ :level    :warn
+ :token    "remotetesttoken"}
