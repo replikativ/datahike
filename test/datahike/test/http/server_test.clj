@@ -6,6 +6,7 @@
    [datahike.http.client :as api]
    [datahike.http.routes :as routes]
    [datahike.http.server :as server :refer [start-server stop-server]]
+   [datahike.query.resolve :as qr]
    [datahike.http.system :as system]))
 
 (defn- local-port [^org.eclipse.jetty.server.Server instance]
@@ -303,3 +304,33 @@
                                      "[\"{:store {:backend :memory :id #uuid \\\"23196000-0000-0000-0000-000000000001\\\"}}\"]")
                (catch Exception _))
           (stop-server server))))))
+
+(deftest test-query-functions-are-safe-by-default
+  (let [port   23197
+        before qr/*symbol-resolver*
+        server (start-server {:port port :host "127.0.0.1" :join? false :dev-mode false
+                              :token "securerandompassword"})
+        remote {:backend :datahike-server :url (str "http://localhost:" port)
+                :token "securerandompassword" :format :transit}]
+    (try
+      (let [cfg  (api/create-database {:store {:backend :memory :id #uuid "de110000-0000-0000-0000-000000000007"}
+                                       :schema-flexibility :read
+                                       :remote-peer        remote})
+            conn (api/connect cfg)
+            _    (api/transact conn [{:name "Peter"}])
+            db   @conn]
+        (testing "the curated functions work over the wire"
+          (is (= #{["PETER"]}
+                 (api/q '[:find ?u :where [_ :name ?n] [(clojure.string/upper-case ?n) ?u]] db))))
+        (testing "evaluation, I/O, vars and reflection are refused"
+          (doseq [q ['[:find ?x :where [(load-string "(+ 1 2)") ?x]]
+                     '[:find ?x :where [(slurp "/etc/hostname") ?x]]
+                     '[:find ?x :where [_ :name ?n] [(.getBytes ?n) ?x]]
+                     '[:find ?x :where [_ :name ?n] [(clojure.core/requiring-resolve (quote clojure.core/inc)) ?x]]]]
+            (is (thrown? Exception (api/q q db)) (pr-str q)))))
+      (finally
+        (stop-server server)))
+    (is (identical? before qr/*symbol-resolver*) "stop-server restores the process's resolver"))
+  (testing "an unknown mode is refused at start"
+    (is (thrown-with-msg? Exception #"safe or :permissive"
+                          (start-server {:port 23198 :join? false :query-functions :anything})))))

@@ -3,7 +3,8 @@
    #?(:cljs [cljs.test    :as t :refer-macros [is are deftest testing]]
       :clj  [clojure.test :as t :refer        [is are deftest testing]])
    [datahike.api :as d]
-   [datahike.db :as db])
+   [datahike.db :as db]
+   [datahike.query.resolve :as qr])
   (:import [java.util UUID Date])
   #?(:clj
      (:import [clojure.lang ExceptionInfo])))
@@ -741,3 +742,68 @@
                       (str (d/explain '[:find ?e :in $ ?min
                                         :where [?e :salary ?s] [(> ?s ?min)]] db 2000)))
              "scalar :in predicate must still reach the index")))))
+
+#?(:clj
+   (defn shout [s] (clojure.string/upper-case s)))
+
+#?(:clj
+   (deftest test-safe-function-resolution
+     (let [db (-> (db/empty-db)
+                  (d/db-with [{:db/id 1 :name "ivan" :age 15}
+                              {:db/id 2 :name "petr" :age 22}]))
+           unknown? (fn [q & inputs]
+                      (try (apply d/q q db inputs) false
+                           (catch ExceptionInfo e
+                             (and (= :query/where (:error (ex-data e)))
+                                  (boolean (re-find #"Unknown (function|predicate)" (ex-message e)))))))]
+       (binding [qr/*symbol-resolver* qr/safe-symbol-resolver]
+         (testing "under the safe resolver the curated core functions and clojure.string resolve"
+           (is (= #{["IVAN"] ["PETR"]}
+                  (d/q '[:find ?u :where [_ :name ?n] [(clojure.string/upper-case ?n) ?u]] db)))
+           (is (= #{[16] [23]}
+                  (d/q '[:find ?a1 :where [_ :age ?a] [(clojure.core/inc ?a) ?a1]] db)))
+           (is (= #{["petr"]}
+                  (d/q '[:find ?n :where [?e :name ?n] [?e :age ?a] [(even? ?a)]] db)))
+           (is (= #{["ivan"]}
+                  (d/q '[:find ?n :where [?e :name ?n] [(re-find #"^i" ?n)]] db))))
+         (testing "evaluation, I/O and namespace access are refused"
+           (is (unknown? '[:find ?x :where [(load-string "(+ 1 2)") ?x]]))
+           (is (unknown? '[:find ?x :where [(clojure.core/load-string "(+ 1 2)") ?x]]))
+           (is (unknown? '[:find ?x :where [(slurp "/etc/hostname") ?x]]))
+           (is (unknown? '[:find ?x :where [(requiring-resolve (quote clojure.core/inc)) ?x]]))
+           (is (unknown? '[:find ?x :where [(eval 1) ?x]]))
+           (is (unknown? '[:find ?x :where [(read-string "1") ?x]]))
+           (is (unknown? '[:find ?x :where [(deref 1) ?x]])))
+         (testing "vars are not loaded by name, and methods are not called by reflection"
+           (is (unknown? '[:find ?x :where [_ :name ?n] [(datahike.test.query-fns-test/shout ?n) ?x]]))
+           (is (unknown? '[:find ?x :where [_ :name ?n] [(.getBytes ?n) ?x]]))
+           (is (unknown? '[:find ?x :where [_ :name ?n] [(.toUpperCase ?n) ?x]])))
+         (testing "an aggregate is resolved the same way"
+           (is (thrown-with-msg? ExceptionInfo #"Unknown aggregate"
+                                 (d/q '[:find (datahike.test.query-fns-test/shout ?n) :where [_ :name ?n]] db)))))
+       (testing "embedded, the resolver is permissive: vars and methods resolve (after the safe run, since compiled plans are cached per query)"
+         (is (= #{["IVAN"] ["PETR"]}
+                (d/q '[:find ?x :where [_ :name ?n] [(datahike.test.query-fns-test/shout ?n) ?x]] db)))
+         (is (= #{["IVAN"] ["PETR"]}
+                (d/q '[:find ?x :where [_ :name ?n] [(.toUpperCase ?n) ?x]] db))))
+       (testing "a registered function resolves under the safe resolver too"
+         (qr/register-fn! 'app/shout shout)
+         (try
+           (binding [qr/*symbol-resolver* qr/safe-symbol-resolver]
+             (is (= #{["IVAN"] ["PETR"]}
+                    (d/q '[:find ?x :where [_ :name ?n] [(app/shout ?n) ?x]] db))))
+           (finally (qr/unregister-fn! 'app/shout)))
+         (is (thrown-with-msg? ExceptionInfo #"qualified symbol" (qr/register-fn! 'shout shout))))
+       (testing "a whole namespace can be registered, optionally under an alias"
+         (let [syms (qr/register-ns! 'datahike.test.query-fns-test 'qf)]
+           (try
+             (is (some #{'datahike.test.query-fns-test/shout 'qf/shout} syms))
+             (binding [qr/*symbol-resolver* qr/safe-symbol-resolver]
+               (is (= #{["IVAN"] ["PETR"]}
+                      (d/q '[:find ?x :where [_ :name ?n] [(qf/shout ?n) ?x]] db))))
+             (finally (run! qr/unregister-fn! syms)))))
+       (testing "a resolver over the process's own registry"
+         (binding [qr/*symbol-resolver* {'app/shout shout}]
+           (is (= #{["IVAN"] ["PETR"]}
+                  (d/q '[:find ?x :where [_ :name ?n] [(app/shout ?n) ?x]] db)))
+           (is (unknown? '[:find ?x :where [(load-string "1") ?x]])))))))

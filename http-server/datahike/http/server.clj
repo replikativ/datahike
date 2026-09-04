@@ -8,6 +8,7 @@
    [datahike.http.backends]
    [datahike.http.config :as server-config]
    [datahike.http.kabel :as kabel-server]
+   [datahike.query.resolve :as qr]
    [datahike.http.nrepl :as server-nrepl]
    [datahike.metrics :as metrics]
    [datahike.http.permissions :as permissions]
@@ -253,10 +254,20 @@
                     (finally
                       (release-metrics-sink! metrics-lease))))))))))))
 
+(declare start-server*)
+
 (defn start-server
   "Start Jetty and acquire the standalone server's shared Konserve metric sink
    unless `:metrics` is false. `stop-server` releases both."
   [config]
+  (let [resolver-before (routes/restrict-query-functions! config)]
+    (try (start-server* config resolver-before)
+         (catch Throwable t
+           (alter-var-root #'qr/*symbol-resolver* (constantly resolver-before))
+           (throw t)))))
+
+(defn- start-server*
+  [config resolver-before]
   (let [requested-config (-> config
                              server-config/assert-safe-nrepl!
                              server-config/assert-safe-bind!)
@@ -294,7 +305,8 @@
                            ;; Nothing owns what `app` opened if Jetty never started.
                            (cleanup-owned! connections config nrepl-resource pg-listener kabel-resource metrics-lease)
                            (throw t)))]
-    (swap! owned assoc server {:connections connections
+    (swap! owned assoc server {:resolver-before resolver-before
+                               :connections connections
                                :config config
                                :nrepl-resource nrepl-resource
                                :pg-listener pg-listener
@@ -309,10 +321,12 @@
    twice."
   [^org.eclipse.jetty.server.Server server]
   (let [[before _] (swap-vals! owned dissoc server)
-        {:keys [connections config nrepl-resource pg-listener kabel-resource metrics-lease]}
+        {:keys [resolver-before connections config nrepl-resource pg-listener kabel-resource metrics-lease]}
         (get before server)]
     (try (.stop server)
          (finally
+           (when resolver-before
+             (alter-var-root #'qr/*symbol-resolver* (constantly resolver-before)))
            (when connections
              (cleanup-owned! connections config nrepl-resource pg-listener kabel-resource metrics-lease))))))
 

@@ -13,6 +13,7 @@
    [datahike.query.analyze :as analyze]
    [datahike.query.plan :as plan]
    [datahike.query.relation :as rel]
+   [datahike.query.resolve :as qr]
    #?(:clj [datahike.index.secondary :as sec])
    #?(:clj [datahike.index.entity-set :as es])
    #?(:clj [datahike.query :as legacy])
@@ -2898,16 +2899,13 @@
 
 (defn- resolve-pred-fn
   "Resolve a predicate or function symbol to a callable.
-   Handles built-ins, clj-core built-ins, regular vars, and Java interop methods."
+   Handles the query built-ins and whatever `datahike.query.resolve/*symbol-resolver*`
+   knows: any loaded var when embedded, the curated safe functions only
+   under the server."
   [f]
   (or (get #?(:clj @(requiring-resolve 'datahike.query/built-ins)
               :cljs @registered-built-ins) f)
-      (get #?(:clj @(requiring-resolve 'datahike.query/clj-core-built-ins)
-              :cljs @registered-clj-core-built-ins) f)
-      #?(:clj (some-> (resolve f) deref)
-         :cljs nil)
-      #?(:clj ((requiring-resolve 'datahike.query/resolve-method) f)
-         :cljs nil)))
+      (qr/*symbol-resolver* f)))
 
 (defn- resolve-pred-fns
   "Resolve all predicate/function symbols up front, failing fast for unknowns.

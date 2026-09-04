@@ -6,6 +6,23 @@ When something is added, it's typically marked *Experimental*. When the API cont
 
 ## 0.8
 
+- **Query functions are allow-listed on the server.** A `:where` function or
+  predicate, an aggregate, a `:db.attr/preds` or `:db.entity/preds` symbol
+  resolved through `clojure.core/resolve` and reflection, so any client of the
+  HTTP API or the Kabel listener could run `load-string` in the server
+  process. The standalone server and `routes/handler` now set
+  `datahike.query.resolve/*symbol-resolver*` to the safe resolver: a curated
+  pure subset of `clojure.core`, all of `clojure.string`, and whatever the
+  process registered with `datahike.query.resolve/register-fn!` or
+  `register-ns!`. `:query-functions :permissive` restores the old behaviour
+  for a server that trusts every client. **Breaking for server deployments**
+  whose client queries call other functions or Java methods: register them.
+  Embedded use is unchanged, except that a qualified symbol now loads its
+  namespace on demand (`requiring-resolve`) and functions can be registered
+  by symbol on ClojureScript too.
+- **Server alias carries the Kabel sources.** `clojure -M:http-server`
+  failed to start since the listener landed because `src-kabel` was only on
+  the test and jar paths.
 - **Kabel listener and browser client.** The standalone server takes an
   optional `:kabel` listener (JWT-authenticated WebSocket next to the HTTP
   routes) and the npm package an opt-in `datahike/kabel` entry for a tiered
