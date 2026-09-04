@@ -17,6 +17,8 @@
             [datahike.core :as dcore]
             [datahike.pull-api :as dp]
             [datahike.query :as dq]
+
+            [datahike.query.resolve :as qr]
             [datahike.schema :as ds]
             [datahike.tools :as dt]
             [datahike.warm]
@@ -80,3 +82,14 @@
 
 (emit-api)
 (register-api-schemas!)
+
+;; The read-only functions a query may call under every resolver, the
+;; server's safe one included: a subquery, a pull, an index walk.
+(qr/install-datahike-fns!
+ {'datahike.api/q           q
+  'datahike.api/pull        pull
+  'datahike.api/pull-many   pull-many
+  'datahike.api/entity      entity
+  'datahike.api/datoms      datoms
+  'datahike.api/seek-datoms seek-datoms
+  'datahike.api/index-range index-range})

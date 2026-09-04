@@ -12,6 +12,7 @@
   (:require [clojure.java.io :as io]
             [clojure.string :as str]
             [datahike.api :as d]
+            [datahike.http.routes :as routes]
             [datahike.kabel.cbor-handlers :as cbor]
             [datahike.kabel.handlers :as handlers]
             [kabel.auth.websocket :as auth]
@@ -199,7 +200,12 @@
                    cbor/datahike-cbor-middleware)
           served  (remote/serve server {:authorize (authorize-remote config)})]
       (handlers/register-global-handlers!
-       server {:store-config-fn (store-config-fn kabel)})
+       server {:store-config-fn (store-config-fn kabel)
+               ;; a go block carries its bindings across parks and the local
+               ;; writer onto its thread, so the request's resolver holds
+               ;; through the whole dispatch
+               :wrap-handler (let [run (routes/query-function-binding config)]
+                               (fn [handler] (fn [arg-map] (run #(handler arg-map)))))})
       (reopen-databases! server kabel)
       (<?? S (peer/start server))
       (log/info :datahike/kabel-server-started {:url url :peer-id peer-id})

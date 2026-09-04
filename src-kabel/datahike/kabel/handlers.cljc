@@ -302,6 +302,9 @@
    Parameters:
    - peer: The kabel peer atom that will handle requests
    - opts: (optional) Options map
+     - :wrap-handler - (fn [handler] -> handler) applied to each handler as it
+       is registered; the server wraps them in the dynamic bindings a client
+       request runs under (e.g. the query function resolver).
      - :store-config-fn - (fn [store-id client-config] -> store-config)
        Function that returns the server-side store config for a given store-id.
        Default: `default-store-config-fn` which uses the client's store config
@@ -317,11 +320,12 @@
    ```"
   ([peer] (register-global-handlers! peer {}))
   ([peer opts]
-   (let [store-config-fn (or (:store-config-fn opts) default-store-config-fn)]
+   (let [store-config-fn (or (:store-config-fn opts) default-store-config-fn)
+         wrap            (or (:wrap-handler opts) identity)]
      (log/trace "Registering global datahike.kabel handlers" {:peer-id (some-> @peer :id)})
-     (remote/register! 'datahike.kabel/dispatch global-dispatch-handler)
-     (remote/register! 'datahike.kabel/create-database (make-create-database-handler peer store-config-fn))
-     (remote/register! 'datahike.kabel/delete-database (make-delete-database-handler peer store-config-fn))
+     (remote/register! 'datahike.kabel/dispatch (wrap global-dispatch-handler))
+     (remote/register! 'datahike.kabel/create-database (wrap (make-create-database-handler peer store-config-fn)))
+     (remote/register! 'datahike.kabel/delete-database (wrap (make-delete-database-handler peer store-config-fn)))
      (log/info "Registered global datahike.kabel handlers" {:peer-id (some-> @peer :id)}))))
 
 ;; =============================================================================

@@ -65,6 +65,10 @@ config map — authentication (`:token`, `:validator`, `:dev-mode`,
 | `:extra-routes` | none | Your own reitit routes on the same router, under the same prefix and behind the gate; the server adds `/swagger.json` and the permission routes this way. Mark a route `:public? true` to exempt it from authentication (not from the body cap). |
 | `:default-handler` | reitit's 404 | What answers a request the router does not match (the standalone server puts Swagger UI at `/swagger` here). |
 
+Every request runs under the safe query function resolver (see
+[Query functions](#query-functions)); the host's own queries are not
+affected.
+
 The handler adds no middleware beyond what the API itself needs — CORS,
 static files, TLS and the rest of your application are yours. It carries
 its connections atom as metadata: `(routes/release-all! handler)` releases
@@ -352,10 +356,57 @@ your service — or give that client a `:self` writer.
   not send tokens over plain HTTP outside a private network.
 - `:dev-mode true` disables authentication entirely; `:auth :upstream`
   trusts whatever reached the handler. Never deploy either exposed.
+- Client queries call only allow-listed functions (next section).
 
 Checklist: a token or validator set · `:dev-mode` false · secrets in
 env/secret store · TLS at the edge · `release-all!` on shutdown · `delete`
-granted only to owners who may.
+granted only to owners who may · `:query-functions` left at `:safe`.
+
+### Query functions
+
+A query names functions: `[(clojure.string/upper-case ?n) ?u]`, a predicate
+`[(even? ?a)]`, an aggregate, an attribute or entity predicate in schema.
+Embedded in a Clojure process Datahike resolves such a symbol permissively,
+like a Datomic peer: any loaded var, any Java method by reflection. A server
+cannot, because then any client with read access could run
+`[(load-string "...") ?x]` in its process.
+
+The server and `routes/handler` therefore bind
+`datahike.query.resolve/*symbol-resolver*` to the safe resolver around every
+request, as does the Kabel listener around every client dispatch. The
+binding reaches the whole request: queries run on the request thread, and
+the local writer carries the caller's bindings onto the writer thread, so
+attribute and entity predicates in a transaction see the same resolver. The
+process's own queries, in a host application embedding the handler, keep
+the permissive default. Under the safe resolver a query resolves:
+
+- the query built-ins (`get-else`, `missing?`, `tuple`, `q`, …);
+- a curated pure subset of `clojure.core`, bare or qualified: arithmetic,
+  comparison, predicates, `str`, `subs`, `re-find`, `keyword`, `name`,
+  collection functions such as `count`, `get`, `assoc`, `into`, `sort-by`;
+  nothing that evaluates, reads, writes, resolves vars, spawns threads or
+  reflects;
+- all of `clojure.string`, qualified;
+- the read-only Datahike functions: `datahike.api/q` for a subquery,
+  `pull`, `pull-many`, `entity`, `datoms`, `seek-datoms`, `index-range`.
+  These are the only functions that accept a database as argument: the
+  curated ones refuse a database, connection or reference, so `(get $
+  :config)` cannot read the server's store configuration;
+- what the server process registered:
+
+```clojure
+(require '[datahike.query.resolve :as qr])
+
+(qr/register-fn! 'app/valid-sku? (fn [s] (re-matches #"[A-Z]{3}-\d{4}" s)))
+(qr/register-ns! 'app.query-fns)          ; every public fn, as app.query-fns/name
+(qr/register-ns! 'app.query-fns 'app)     ; …and as app/name
+```
+
+Registered functions are usable in `:where` clauses, as aggregates and in
+`:db.attr/preds` and `:db.entity/preds`, from every client. Anything else
+fails with `Unknown function` (`:error :query/where`). `:query-functions
+:permissive` in the server config restores runtime resolution and is logged
+as a warning at start; it is for a server whose every client is trusted.
 
 The standalone server enforces the first two items at bind time: without a
 nonblank token or a validator, every resolved bind address must be loopback.
@@ -379,6 +430,7 @@ clojure -M:http-server --config config.edn
  :join?    false
  :token    "securerandompassword"
  :dev-mode false
+ :query-functions :safe     ; the default; :permissive only for trusted clients
  :level    :info
  :log-format :text}
 ```

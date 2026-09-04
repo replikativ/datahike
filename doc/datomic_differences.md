@@ -107,3 +107,13 @@ Applies transactions to an immutable database value and returns a new database
 snapshot. It does not change the mutable database inside the connection unlike
 [transact](#transact). It works quite the same as Datomics' `with` but does
 not need a `with-db` function to work.
+
+## Functions in queries
+
+A Datomic peer calls any function or Java method on its classpath from a
+query; Datomic Cloud requires custom functions to be deployed as ions and
+listed under `:allow`. Datahike embedded behaves like the peer. The Datahike
+server resolves only a curated pure subset of `clojure.core`, `clojure.string`
+and functions registered with `datahike.query.resolve/register-fn!` or
+`register-ns!`, the counterpart of the ion allow-list; see
+[http-routes.md](http-routes.md#query-functions).

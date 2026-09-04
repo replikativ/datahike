@@ -167,6 +167,13 @@ stay gated by the graph, so a client that skips your domain API still cannot
 write what it was not granted. The page can also serve functions the server
 calls back into, with `d.registerRemoteFn(name, fn)`.
 
+Queries run in the browser, against the replica, so the server never
+evaluates a client's query. What it does evaluate is schema: an attribute or
+entity predicate named by symbol runs on the server, and there only the
+curated safe functions and what the server registered with
+`datahike.query.resolve/register-fn!` resolve (see
+[http-routes.md](http-routes.md#query-functions)).
+
 ## 5. What is not there yet
 
 - **No durable offline write queue.** A write issued while disconnected waits

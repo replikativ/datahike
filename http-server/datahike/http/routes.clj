@@ -18,6 +18,7 @@
    speaks) comes along."
   (:refer-clojure :exclude [read-string filter])
   (:require
+   [datahike.query.resolve :as qr]
    [clojure.string :as str]
    [clojure.core.async :as async]
    [datahike.connections :refer [*connections*]]
@@ -418,7 +419,6 @@
                             multipart/multipart-middleware
                             middleware/patch-swagger-json]}})
 
-
 ;; This code expands and evals the server route construction given the
 ;; API specification.
 (eval
@@ -589,6 +589,33 @@
             (metrics/http-request! metric-op (:status response) started))
           response)))))
 
+(defn query-function-binding
+  "How client input is evaluated: `(fn [thunk])` running `thunk` under the
+   query function resolver `config` asks for. Queries, aggregates, attribute
+   and entity predicates in what a client sends resolve symbols only to the
+   curated safe functions, the read-only Datahike functions and what the
+   process registered with `datahike.query.resolve/register-fn!`; the
+   binding is carried onto the writer thread by the local writer, so
+   transactions are covered too. `:query-functions :permissive` evaluates
+   client input with the process's own resolver, which on the JVM reaches
+   every function on the classpath, `load-string` included; it is for a
+   server that trusts all of its clients and is logged as a warning."
+  [{:keys [query-functions] :or {query-functions :safe}}]
+  (case query-functions
+    :safe (fn [thunk] (binding [qr/*symbol-resolver* qr/safe-symbol-resolver] (thunk)))
+    :permissive (do (log/warn :datahike/query-functions
+                              {:mode :permissive
+                               :warning "clients may call any function on the classpath, load-string included"})
+                    (fn [thunk] (thunk)))
+    (throw (ex-info ":query-functions must be :safe or :permissive"
+                    {:type :datahike.http/invalid-config :query-functions query-functions}))))
+
+(defn- wrap-query-functions
+  "Run every request under `config`'s query function resolver."
+  [handler config]
+  (let [run (query-function-binding config)]
+    (fn [request] (run #(handler request)))))
+
 (defn handler
   "A Ring handler serving Datahike's HTTP API, for mounting in a host app.
 
@@ -608,12 +635,18 @@
    - `:default-handler` — what answers a request the router does not match;
      reitit's default 404 unless given (the server puts swagger-ui here).
 
+   Every request runs under the query function resolver `config` asks for
+   (`:query-functions`, `:safe` by default; see `query-function-binding`),
+   so what a client sends never resolves symbols the host did not allow,
+   while the host's own queries are untouched.
+
    The returned fn carries the atom as metadata; `(release-all! handler)`
    releases what the routes opened when the host shuts down."
   ([config] (handler config {}))
   ([config {:keys [connections default-handler] :as opts}]
    (let [connections (or connections (atom {}))
          rtr         (router config (assoc opts :state (new-state)))
-         h           (wrap-api (ring/ring-handler rtr (or default-handler (ring/create-default-handler)))
-                               rtr config connections)]
+         h           (-> (wrap-api (ring/ring-handler rtr (or default-handler (ring/create-default-handler)))
+                                   rtr config connections)
+                         (wrap-query-functions config))]
      (with-meta h {::connections connections}))))

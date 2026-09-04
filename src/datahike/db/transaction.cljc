@@ -1249,9 +1249,13 @@
      :clj
      (reduce
       (fn [coll pred]
-        (if ((resolve pred) db e)
-          coll
-          (conj coll pred)))
+        (let [f (or (ap/resolve-pred pred)
+                    (throw (ex-info (str "Unknown entity predicate " pred
+                                         " (see datahike.query.resolve/*symbol-resolver*)")
+                                    {:error :transact/preds :pred pred :e e})))]
+          (if (f db e)
+            coll
+            (conj coll pred))))
       #{} preds)))
 
 (def builtin-op?

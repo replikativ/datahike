@@ -13,6 +13,7 @@
    [datahike.query.analyze :as analyze]
    [datahike.query.plan :as plan]
    [datahike.query.relation :as rel]
+   [datahike.query.resolve :as qr]
    #?(:clj [datahike.index.secondary :as sec])
    #?(:clj [datahike.index.entity-set :as es])
    #?(:clj [datahike.query :as legacy])
@@ -2898,16 +2899,13 @@
 
 (defn- resolve-pred-fn
   "Resolve a predicate or function symbol to a callable.
-   Handles built-ins, clj-core built-ins, regular vars, and Java interop methods."
+   Handles the query built-ins and whatever `datahike.query.resolve/*symbol-resolver*`
+   knows: any loaded var when embedded, the curated safe functions only
+   under the server."
   [f]
   (or (get #?(:clj @(requiring-resolve 'datahike.query/built-ins)
               :cljs @registered-built-ins) f)
-      (get #?(:clj @(requiring-resolve 'datahike.query/clj-core-built-ins)
-              :cljs @registered-clj-core-built-ins) f)
-      #?(:clj (some-> (resolve f) deref)
-         :cljs nil)
-      #?(:clj ((requiring-resolve 'datahike.query/resolve-method) f)
-         :cljs nil)))
+      (qr/*symbol-resolver* f)))
 
 (defn- resolve-pred-fns
   "Resolve all predicate/function symbols up front, failing fast for unknowns.
@@ -5940,7 +5938,7 @@
                  entity-filter (external-context-filter ctx op idx-ident entity-var)
                  ;; For now, call the resolved function with args to get query-spec
                  resolved-fn (when (and (symbol? fn-sym) (namespace fn-sym))
-                               (some-> (resolve fn-sym) deref))
+                               (qr/*symbol-resolver* fn-sym))
                  result-bs (if resolved-fn
                              ;; `search-with-vt` reads the db's `:datahike/valid-at`
                              ;; marker (set by `d/valid-at`) and routes through
@@ -6003,7 +6001,7 @@
          ;; Solver: extract input, call function, merge output
          :solver
          (let [resolved-fn (when (and (symbol? fn-sym) (namespace fn-sym))
-                             (some-> (resolve fn-sym) deref))
+                             (qr/*symbol-resolver* fn-sym))
                query-spec (first (remove analyze/free-var? args))]
            (if resolved-fn
              ;; Derive input vars: all context vars referenced by the query-spec

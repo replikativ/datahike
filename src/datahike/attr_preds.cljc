@@ -11,10 +11,14 @@
      (clj + cljs) path. Registrations are process-local: re-register after
      every fresh `connect` (the reference persists in schema, the fn does not),
      and on the writer process for remote/kabel writers.
-   - on clj only, if the symbol is not registered it is `requiring-resolve`d
-     as a var (Datomic-style `:db.attr/preds ['my.ns/valid-sku?]`).
+   - on clj only, if the symbol is not registered it is asked of
+     `datahike.query.resolve/*symbol-resolver*`: embedded, that loads the var
+     by name (Datomic-style `:db.attr/preds ['my.ns/valid-sku?]`); under the
+     server, which receives schema from clients, only registered predicates
+     and the curated safe functions resolve.
 
-   Declarative `:db/maxLength` needs no registration — it is a built-in.")
+   Declarative `:db/maxLength` needs no registration — it is a built-in."
+  (:require [datahike.query.resolve :as qr]))
 
 (defonce ^:private registry (atom {}))
 
@@ -43,13 +47,13 @@
 (defn resolve-pred
   "Resolve a `:db.attr/preds` reference to a predicate fn, or `nil` if it
    cannot be resolved. `fn` -> itself; keyword -> registry; symbol ->
-   registry, else (clj only) `requiring-resolve`."
+   registry, else (clj only) `datahike.query.resolve/*symbol-resolver*`."
   [p]
   (cond
     (fn? p)      p
     (keyword? p) (get @registry p)
     (symbol? p)  (or (get @registry p)
-                     #?(:clj  (try (some-> (requiring-resolve p) deref)
+                     #?(:clj  (try (qr/*symbol-resolver* p)
                                    (catch #?(:clj Throwable :cljs :default) _ nil))
                         :cljs nil))
     :else        nil))

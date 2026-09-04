@@ -219,7 +219,9 @@
 
            :deploy {:extra-deps {slipset/deps-deploy {:mvn/version "0.2.5"}}}
 
-           :http-server {:extra-paths ["http-server"]
+           :http-server {:extra-paths ["http-server"
+                                       ;; the Kabel listener's handlers live in src-kabel
+                                       "src-kabel"]
                          ;; These libraries are cross-platform, but the standalone
                          ;; server is JVM-only. Their ClojureScript compiler edges
                          ;; are needed to build CLJS consumers, not to run the JVM

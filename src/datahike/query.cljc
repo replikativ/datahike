@@ -3,7 +3,6 @@
   (:require
    [#?(:cljs cljs.reader :clj clojure.edn) :as edn]
    [clojure.set :as set]
-   #?(:clj [clojure.string :as str])
    [clojure.walk :as walk]
    [datahike.datom :as datom]
    [datahike.db.interface :as dbi]
@@ -27,6 +26,7 @@
    [datahike.query.relation :as rel]
    [datahike.query.plan :as plan]
    [datahike.query.analyze :as analyze]
+   [datahike.query.resolve :as qr]
    #?(:clj [datahike.query.logical :as logical])
    #?(:clj [datahike.query.lower :as lower])
    #?(:cljs [datahike.db :refer [DB AsOfDB SinceDB HistoricalDB]])
@@ -46,14 +46,13 @@
    [replikativ.logging :as log])
   (:refer-clojure :exclude [seqable?])
 
-  #?(:clj (:import [clojure.lang Reflector Seqable]
+  #?(:clj (:import [clojure.lang Seqable]
                    [datahike.datom Datom]
                    [datahike.db DB AsOfDB SinceDB HistoricalDB]
                    [datahike.query.relation Relation]
                    [datalog.parser.type Aggregate BindColl BindIgnore BindScalar BindTuple Constant
                     FindColl FindRel FindScalar FindTuple PlainSymbol Pull
                     RulesVar SrcVar Variable]
-                   [java.lang.reflect Method]
                    [java.util Date Map HashSet HashSet])))
 
 #?(:clj (set! *warn-on-reflection* true))
@@ -1075,10 +1074,9 @@
                 #'datahike.query/q q})
 
 (def clj-core-built-ins
-  #?(:clj
-     (dissoc (ns-publics 'clojure.core)
-             'eval)
-     :cljs {}))
+  "The functions a query may name without the caller binding
+   `datahike.query.resolve/*symbol-resolver*`; see `datahike.query.resolve/safe-fns`."
+  qr/safe-fns)
 
 ;; Register built-ins with execute module for CLJS (breaks circular dep)
 #?(:cljs (execute/register-built-ins! built-ins clj-core-built-ins))
@@ -1642,53 +1640,15 @@
             (da/aset static-args i v))))
       (apply f static-args))))
 
-(defn- resolve-sym [#?(:clj sym :cljs _)]
-  #?(:cljs nil
-     :clj (when (and (symbol? sym) (namespace sym))
-            (when-some [v (resolve sym)] @v))))
-
-#?(:clj (def ^:private find-method
-          (memoize
-           (fn find-method-impl [^Class this-class method-name args-classes]
-             (or (->> this-class
-                      .getMethods
-                      (some (fn [^Method method]
-                              (when (and (= method-name (.getName method))
-                                         (= (count args-classes)
-                                            (.getParameterCount method))
-                                         (every? true? (map #(Reflector/paramArgTypeMatch %1 %2)
-                                                            (.getParameterTypes method)
-                                                            args-classes)))
-                                method))))
-                 (throw (ex-info (str (.getName this-class) "."
-                                      method-name "("
-                                      (str/join "," (map #(.getName ^Class %) args-classes))
-                                      ") not found")
-                                 {:this-class this-class
-                                  :method-name method-name
-                                  :args-classes args-classes})))))))
-
-(defn- resolve-method [#?(:clj method-sym :cljs _)]
-  #?(:cljs nil
-     :clj (when (symbol? method-sym)
-            (let [method-str (name method-sym)]
-              (when (= \. (.charAt method-str 0))
-                (let [method-name (subs method-str 1)]
-                  (fn [this & args]
-                    (let [^Method method (find-method (class this) method-name (mapv class args))]
-                      (Reflector/prepRet (.getReturnType method) (.invoke method this (into-array Object args)))))))))))
-
 (defn filter-by-pred [context clause]
   (let [[[f & args]] clause
         _ (analyze/check-fn-args clause args)
         pred (or (get built-ins f)
-                 (get clj-core-built-ins f)
+                 (qr/*symbol-resolver* f)
                  (context-resolve-val context f)
                  (when (or (fn? f) (var? f)) f)
-                 (resolve-sym f)
-                 (resolve-method f)
                  (when (nil? (rel-with-attr context f))
-                   (log/raise "Unknown predicate '" f " in " clause
+                   (log/raise "Unknown predicate '" f " in " clause " (see datahike.query.resolve/*symbol-resolver*)"
                               {:error :query/where, :form clause, :var f})))
         [context production] (rel-prod-by-attrs context (filter symbol? args))
         new-rel (if pred
@@ -1707,13 +1667,11 @@
         _ (analyze/check-fn-args clause args)
         binding (dpi/parse-binding out)
         fun (or (get built-ins f)
-                (get clj-core-built-ins f)
+                (qr/*symbol-resolver* f)
                 (context-resolve-val context f)
                 (when (or (fn? f) (var? f)) f)
-                (resolve-sym f)
-                (resolve-method f)
                 (when (nil? (rel-with-attr context f))
-                  (log/raise "Unknown function '" f " in " clause
+                  (log/raise "Unknown function '" f " in " clause " (see datahike.query.resolve/*symbol-resolver*)"
                              {:error :query/where, :form clause, :var f})))
         attrs (filter symbol? args)
         [context production] (rel-prod-by-attrs context attrs)
@@ -2957,8 +2915,11 @@
     (get-in context [:sources (.-symbol var)]))
   PlainSymbol
   (-context-resolve [var _]
-    (or (get built-in-aggregates (.-symbol var))
-        (resolve-sym (.-symbol var))))
+    (let [sym (.-symbol var)]
+      (or (get built-in-aggregates sym)
+          (qr/*symbol-resolver* sym)
+          (log/raise "Unknown aggregate '" sym " (see datahike.query.resolve/*symbol-resolver*)"
+                     {:error :query/find, :var sym}))))
   Constant
   (-context-resolve [var _]
     (.-value var)))
@@ -3950,11 +3911,11 @@
         ;; stable across calls — memoize its cleanliness and only rebuild
         ;; when it actually contains BigDecimals (folded constants).
         key-prefix [clauses bound-vars (when rules rules) (not-empty in-cards)]
-        cache-key #?(:cljs (conj key-prefix schema-hash)
+        cache-key #?(:cljs (conj key-prefix schema-hash qr/*symbol-resolver*)
                      :clj (if (form-memo [::bigdec-free key-prefix]
                                          #(not (key-has-bigdec? key-prefix)))
-                            (conj key-prefix schema-hash)
-                            (scale-sensitive-key (conj key-prefix schema-hash))))]
+                            (conj key-prefix schema-hash qr/*symbol-resolver*)
+                            (scale-sensitive-key (conj key-prefix schema-hash qr/*symbol-resolver*))))]
     (if-some [cached (get @plan-cache cache-key nil)]
       (do
         (dhm/query-planning! started :hit :success)
@@ -4899,17 +4860,12 @@
 (defn- resolve-pred-symbol
   "Resolve a predicate symbol used in a post-filter clause.
 
-   In CLJ, user-defined predicates that aren't built-in are looked up
-   via runtime resolution. In CLJS, `resolve` is compile-time only, so
-   we restrict to the built-ins maps; user-defined cross-component
-   filter predicates are CLJ-only and `eval-post-filter` raises a
-   targeted error if encountered."
+   Predicates that are not built in go through `qr/*symbol-resolver*`
+   (permissive embedded, the curated safe functions under the server);
+   `eval-post-filter` raises a targeted error for an unresolved one."
   [sym]
   (or (get built-ins sym)
-      (get clj-core-built-ins sym)
-      #?(:clj  (when (symbol? sym)
-                 (some-> (clojure.core/resolve sym) deref))
-         :cljs nil)))
+      (qr/*symbol-resolver* sym)))
 
 (defn- eval-post-filter
   "Apply a single predicate post-filter to a set of wide tuples.
@@ -5501,13 +5457,13 @@
                 ;; first-cached scale. Keep them distinct. The QUERY form's
                 ;; cleanliness is memoized so the per-call walk covers only
                 ;; the args (the form walk was 9% of point-query CPU).
-                cache-key #?(:cljs [query non-db-args offset limit order-by *disable-planner*]
+                cache-key #?(:cljs [query non-db-args offset limit order-by *disable-planner* qr/*symbol-resolver*]
                              :clj (if (and (form-memo [::bigdec-free-q query]
                                                       #(not (key-has-bigdec? query)))
                                            (not (key-has-bigdec? non-db-args)))
-                                    [query non-db-args offset limit order-by *disable-planner*]
+                                    [query non-db-args offset limit order-by *disable-planner* qr/*symbol-resolver*]
                                     (scale-sensitive-key
-                                     [query non-db-args offset limit order-by *disable-planner*])))
+                                     [query non-db-args offset limit order-by *disable-planner* qr/*symbol-resolver*])))
                 entry (result-cache-get db cache-key)]
             (if entry
               (recorded :hit (fn [] (:result entry)))
