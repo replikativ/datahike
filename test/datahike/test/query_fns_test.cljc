@@ -778,6 +778,10 @@
            (is (unknown? '[:find ?x :where [_ :name ?n] [(datahike.test.query-fns-test/shout ?n) ?x]]))
            (is (unknown? '[:find ?x :where [_ :name ?n] [(.getBytes ?n) ?x]]))
            (is (unknown? '[:find ?x :where [_ :name ?n] [(.toUpperCase ?n) ?x]])))
+         (testing "a subquery and a pull are Datahike functions a client may call"
+           (is (= #{[2]} (d/q '[:find ?c :where [(datahike.api/q [:find (count ?e) . :where [?e :name _]] $) ?c]] db)))
+           (is (= #{[{:name "ivan"}]}
+                  (d/q '[:find ?p :where [?e :name "ivan"] [(datahike.api/pull $ [:name] ?e) ?p]] db))))
          (testing "an aggregate is resolved the same way"
            (is (thrown-with-msg? ExceptionInfo #"Unknown aggregate"
                                  (d/q '[:find (datahike.test.query-fns-test/shout ?n) :where [_ :name ?n]] db)))))

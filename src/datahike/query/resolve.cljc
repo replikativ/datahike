@@ -10,15 +10,18 @@
    Embedded in a Clojure process, Datahike keeps resolving symbols the
    permissive way (`permissive-symbol-resolver`: any loaded var, any method
    by reflection), since there the query author is the process itself. The
-   server sets `*symbol-resolver*` to `safe-symbol-resolver` at start, which
-   knows only `safe-fns`: a curated pure subset of `clojure.core` and all of
-   `clojure.string`, plus whatever the process registered with `register-fn!`
-   or `register-ns!`, which is how an application exposes its own functions
-   to client queries. Set the resolver process-wide with `alter-var-root`
-   rather than `binding` when transactions are involved: `:db.entity/preds`
-   and `:db.attr/preds` run on the writer thread, which a binding does not
-   reach. Compiled plans and results are cached per query, so choose the
-   resolver before running queries rather than switching between runs.
+   server binds `*symbol-resolver*` to `safe-symbol-resolver` around every
+   client request; that resolver knows `safe-fns`, a curated pure subset of
+   `clojure.core` and all of `clojure.string`, the read-only Datahike
+   functions (`datahike.api/q` for a subquery, `pull`, `datoms`, …), and
+   whatever the process registered with `register-fn!` or `register-ns!`,
+   which is how an application exposes its own functions to client queries.
+
+   A binding reaches everything a request does: queries run on the request
+   thread, and the local writer carries the caller's bindings onto the
+   writer thread, so `:db.entity/preds` and `:db.attr/preds` see the same
+   resolver. Cached plans and results are keyed by the resolver, so the two
+   never share an entry.
 
    This namespace is a leaf so that the transaction path can use it without a
    cycle through `datahike.query`."
@@ -118,6 +121,16 @@
 
 (defonce ^:private registry (atom {}))
 
+(defonce ^:private datahike-fns (atom {}))
+
+(defn ^:no-doc install-datahike-fns!
+  "Called by `datahike.api` at load: the read-only Datahike functions a query
+   may call under every resolver, `datahike.api/q` for a subquery, `pull`,
+   `datoms` and so on. Separate from the registry so that `unregister-fn!`
+   cannot remove them."
+  [m]
+  (swap! datahike-fns merge m))
+
 (defn register-fn!
   "Make `f` callable from queries, aggregates, `:db.attr/preds` and
    `:db.entity/preds` as `sym`, a qualified symbol, under every resolver,
@@ -164,6 +177,7 @@
    from the runtime."
   [sym]
   (or (get safe-fns sym)
+      (get @datahike-fns sym)
       (get @registry sym)))
 
 (defn permissive-symbol-resolver
@@ -174,6 +188,7 @@
    a process that accepts them from clients uses `safe-symbol-resolver`."
   [sym]
   (or (get safe-fns sym)
+      (get @datahike-fns sym)
       (get @registry sym)
       (resolve-sym sym)
       (resolve-method sym)))

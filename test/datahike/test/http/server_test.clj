@@ -319,9 +319,13 @@
             conn (api/connect cfg)
             _    (api/transact conn [{:name "Peter"}])
             db   @conn]
-        (testing "the curated functions work over the wire"
+        (testing "the curated functions and a subquery work over the wire"
           (is (= #{["PETER"]}
-                 (api/q '[:find ?u :where [_ :name ?n] [(clojure.string/upper-case ?n) ?u]] db))))
+                 (api/q '[:find ?u :where [_ :name ?n] [(clojure.string/upper-case ?n) ?u]] db)))
+          (is (= #{[1]}
+                 (api/q '[:find ?c :where [(datahike.api/q [:find (count ?e) . :where [?e :name _]] $) ?c]] db))))
+        (testing "the process's own resolver is untouched while the server runs"
+          (is (identical? before qr/*symbol-resolver*)))
         (testing "evaluation, I/O, vars and reflection are refused"
           (doseq [q ['[:find ?x :where [(load-string "(+ 1 2)") ?x]]
                      '[:find ?x :where [(slurp "/etc/hostname") ?x]]
@@ -330,7 +334,8 @@
             (is (thrown? Exception (api/q q db)) (pr-str q)))))
       (finally
         (stop-server server)))
-    (is (identical? before qr/*symbol-resolver*) "stop-server restores the process's resolver"))
+    (is (identical? before qr/*symbol-resolver*) "the server never touches the process's own resolver"))
   (testing "an unknown mode is refused at start"
     (is (thrown-with-msg? Exception #"safe or :permissive"
-                          (start-server {:port 23198 :join? false :query-functions :anything})))))
+                          (start-server {:port 23198 :host "127.0.0.1" :join? false :dev-mode false
+                                         :token "securerandompassword" :query-functions :anything})))))

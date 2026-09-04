@@ -87,10 +87,11 @@
 
 #?(:clj
    (deftest test-predicates-under-the-safe-resolver
-     ;; The server runs with the safe resolver set process-wide (with-redefs
-     ;; here, since the transaction runs on the writer thread): a predicate
-     ;; named by symbol then has to be registered, not loaded from a var.
-     (with-redefs [qr/*symbol-resolver* qr/safe-symbol-resolver]
+     ;; The server binds the safe resolver around a client request; the local
+     ;; writer carries that binding onto the writer thread, where the entity
+     ;; predicate runs. A predicate named by symbol then has to be registered,
+     ;; not loaded from a var.
+     (binding [qr/*symbol-resolver* qr/safe-symbol-resolver]
        (let [schema (conj schema-template
                           {:db/ident :account/guard
                            :db.entity/preds ['datahike.test.entity-spec-test/is-email?]})

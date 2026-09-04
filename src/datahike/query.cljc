@@ -1071,7 +1071,6 @@
                 'tuple vector, 'untuple identity
                 'q q
                 'datahike.query/q q
-                'datahike.api/q q
                 #'datahike.query/q q})
 
 (def clj-core-built-ins
@@ -3912,11 +3911,11 @@
         ;; stable across calls — memoize its cleanliness and only rebuild
         ;; when it actually contains BigDecimals (folded constants).
         key-prefix [clauses bound-vars (when rules rules) (not-empty in-cards)]
-        cache-key #?(:cljs (conj key-prefix schema-hash)
+        cache-key #?(:cljs (conj key-prefix schema-hash qr/*symbol-resolver*)
                      :clj (if (form-memo [::bigdec-free key-prefix]
                                          #(not (key-has-bigdec? key-prefix)))
-                            (conj key-prefix schema-hash)
-                            (scale-sensitive-key (conj key-prefix schema-hash))))]
+                            (conj key-prefix schema-hash qr/*symbol-resolver*)
+                            (scale-sensitive-key (conj key-prefix schema-hash qr/*symbol-resolver*))))]
     (if-some [cached (get @plan-cache cache-key nil)]
       (do
         (dhm/query-planning! started :hit :success)
@@ -5458,13 +5457,13 @@
                 ;; first-cached scale. Keep them distinct. The QUERY form's
                 ;; cleanliness is memoized so the per-call walk covers only
                 ;; the args (the form walk was 9% of point-query CPU).
-                cache-key #?(:cljs [query non-db-args offset limit order-by *disable-planner*]
+                cache-key #?(:cljs [query non-db-args offset limit order-by *disable-planner* qr/*symbol-resolver*]
                              :clj (if (and (form-memo [::bigdec-free-q query]
                                                       #(not (key-has-bigdec? query)))
                                            (not (key-has-bigdec? non-db-args)))
-                                    [query non-db-args offset limit order-by *disable-planner*]
+                                    [query non-db-args offset limit order-by *disable-planner* qr/*symbol-resolver*]
                                     (scale-sensitive-key
-                                     [query non-db-args offset limit order-by *disable-planner*])))
+                                     [query non-db-args offset limit order-by *disable-planner* qr/*symbol-resolver*])))
                 entry (result-cache-get db cache-key)]
             (if entry
               (recorded :hit (fn [] (:result entry)))

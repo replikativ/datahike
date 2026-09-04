@@ -65,9 +65,9 @@ config map — authentication (`:token`, `:validator`, `:dev-mode`,
 | `:extra-routes` | none | Your own reitit routes on the same router, under the same prefix and behind the gate; the server adds `/swagger.json` and the permission routes this way. Mark a route `:public? true` to exempt it from authentication (not from the body cap). |
 | `:default-handler` | reitit's 404 | What answers a request the router does not match (the standalone server puts Swagger UI at `/swagger` here). |
 
-Constructing the handler also sets the process's query function resolution
-to the safe resolver (see [Query functions](#query-functions)), since a
-handler exists to accept queries from clients.
+Every request runs under the safe query function resolver (see
+[Query functions](#query-functions)); the host's own queries are not
+affected.
 
 The handler adds no middleware beyond what the API itself needs — CORS,
 static files, TLS and the rest of your application are yours. It carries
@@ -371,9 +371,14 @@ like a Datomic peer: any loaded var, any Java method by reflection. A server
 cannot, because then any client with read access could run
 `[(load-string "...") ?x]` in its process.
 
-The server and `routes/handler` therefore set
-`datahike.query.resolve/*symbol-resolver*` to the safe resolver, process
-wide, and `stop-server` restores it. Under it a query resolves:
+The server and `routes/handler` therefore bind
+`datahike.query.resolve/*symbol-resolver*` to the safe resolver around every
+request, as does the Kabel listener around every client dispatch. The
+binding reaches the whole request: queries run on the request thread, and
+the local writer carries the caller's bindings onto the writer thread, so
+attribute and entity predicates in a transaction see the same resolver. The
+process's own queries, in a host application embedding the handler, keep
+the permissive default. Under the safe resolver a query resolves:
 
 - the query built-ins (`get-else`, `missing?`, `tuple`, `q`, …);
 - a curated pure subset of `clojure.core`, bare or qualified: arithmetic,
@@ -382,6 +387,8 @@ wide, and `stop-server` restores it. Under it a query resolves:
   nothing that evaluates, reads, writes, resolves vars, spawns threads or
   reflects;
 - all of `clojure.string`, qualified;
+- the read-only Datahike functions: `datahike.api/q` for a subquery,
+  `pull`, `pull-many`, `entity`, `datoms`, `seek-datoms`, `index-range`;
 - what the server process registered:
 
 ```clojure

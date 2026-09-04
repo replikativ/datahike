@@ -10,16 +10,20 @@ When something is added, it's typically marked *Experimental*. When the API cont
   predicate, an aggregate, a `:db.attr/preds` or `:db.entity/preds` symbol
   resolved through `clojure.core/resolve` and reflection, so any client of the
   HTTP API or the Kabel listener could run `load-string` in the server
-  process. The standalone server and `routes/handler` now set
-  `datahike.query.resolve/*symbol-resolver*` to the safe resolver: a curated
-  pure subset of `clojure.core`, all of `clojure.string`, and whatever the
-  process registered with `datahike.query.resolve/register-fn!` or
-  `register-ns!`. `:query-functions :permissive` restores the old behaviour
-  for a server that trusts every client. **Breaking for server deployments**
-  whose client queries call other functions or Java methods: register them.
-  Embedded use is unchanged, except that a qualified symbol now loads its
-  namespace on demand (`requiring-resolve`) and functions can be registered
-  by symbol on ClojureScript too.
+  process. The standalone server, `routes/handler` and the Kabel listener
+  now bind `datahike.query.resolve/*symbol-resolver*` to the safe resolver
+  around every client request: a curated pure subset of `clojure.core`, all
+  of `clojure.string`, the read-only Datahike functions (`datahike.api/q`
+  for a subquery, `pull`, `datoms`, …) and whatever the process registered
+  with `datahike.query.resolve/register-fn!` or `register-ns!`. The local
+  writer carries the caller's dynamic bindings onto the writer thread, so
+  attribute and entity predicates are covered too. `:query-functions
+  :permissive` restores the old behaviour for a server that trusts every
+  client. **Breaking for server deployments** whose client queries call
+  other functions or Java methods: register them. Embedded use is
+  unchanged, except that a qualified symbol now loads its namespace on
+  demand (`requiring-resolve`) and functions can be registered by symbol on
+  ClojureScript too.
 - **Server alias carries the Kabel sources.** `clojure -M:http-server`
   failed to start since the listener landed because `src-kabel` was only on
   the test and jar paths.

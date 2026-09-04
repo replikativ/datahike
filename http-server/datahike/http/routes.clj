@@ -238,9 +238,7 @@
     (binding [*connections* connections]
       (doseq [[_ {:keys [conn]}] @connections]
         (when conn
-          (try (api/release conn true) (catch Exception _)))))
-    (when-some [before (::resolver-before (meta handler-or-connections))]
-      (alter-var-root #'qr/*symbol-resolver* (constantly before)))))
+          (try (api/release conn true) (catch Exception _)))))))
 
 ;; ---------------------------------------------------------------------------
 ;; The API routes
@@ -591,29 +589,32 @@
             (metrics/http-request! metric-op (:status response) started))
           response)))))
 
-(defn restrict-query-functions!
-  "Queries and schema arrive from clients, so symbols in them resolve only to
-   the curated safe functions and what the process registered with
-   `datahike.query.resolve/register-fn!`. Set process-wide: transactions run
-   on writer threads, which a per-request binding would not reach. The
-   `:query-functions :permissive` option restores runtime resolution, which
-   lets every client run arbitrary code in this process; it is for a server
-   that trusts all of its clients. Returns the resolver in place before, which
-   `stop-server` and `release-all!` restore."
+(defn query-function-binding
+  "How client input is evaluated: `(fn [thunk])` running `thunk` under the
+   query function resolver `config` asks for. Queries, aggregates, attribute
+   and entity predicates in what a client sends resolve symbols only to the
+   curated safe functions, the read-only Datahike functions and what the
+   process registered with `datahike.query.resolve/register-fn!`; the
+   binding is carried onto the writer thread by the local writer, so
+   transactions are covered too. `:query-functions :permissive` evaluates
+   client input with the process's own resolver, which on the JVM reaches
+   every function on the classpath, `load-string` included; it is for a
+   server that trusts all of its clients and is logged as a warning."
   [{:keys [query-functions] :or {query-functions :safe}}]
-  (let [resolver (case query-functions
-                   :safe qr/safe-symbol-resolver
-                   :permissive qr/permissive-symbol-resolver
-                   (throw (ex-info ":query-functions must be :safe or :permissive"
-                                   {:type :datahike.http/invalid-config :query-functions query-functions})))
-        before qr/*symbol-resolver*]
-    (alter-var-root #'qr/*symbol-resolver* (constantly resolver))
-    (if (= :permissive query-functions)
-      (log/warn :datahike/query-functions
-                {:mode :permissive
-                 :warning "clients may call any function on the classpath, load-string included"})
-      (log/info :datahike/query-functions {:mode :safe}))
-    before))
+  (case query-functions
+    :safe (fn [thunk] (binding [qr/*symbol-resolver* qr/safe-symbol-resolver] (thunk)))
+    :permissive (do (log/warn :datahike/query-functions
+                              {:mode :permissive
+                               :warning "clients may call any function on the classpath, load-string included"})
+                    (fn [thunk] (thunk)))
+    (throw (ex-info ":query-functions must be :safe or :permissive"
+                    {:type :datahike.http/invalid-config :query-functions query-functions}))))
+
+(defn- wrap-query-functions
+  "Run every request under `config`'s query function resolver."
+  [handler config]
+  (let [run (query-function-binding config)]
+    (fn [request] (run #(handler request)))))
 
 (defn handler
   "A Ring handler serving Datahike's HTTP API, for mounting in a host app.
@@ -634,18 +635,18 @@
    - `:default-handler` — what answers a request the router does not match;
      reitit's default 404 unless given (the server puts swagger-ui here).
 
-   Constructing the handler sets the process's query function resolution to
-   the safe resolver (`:query-functions`, see `restrict-query-functions!`):
-   a handler exists to accept queries and schema from clients.
+   Every request runs under the query function resolver `config` asks for
+   (`:query-functions`, `:safe` by default; see `query-function-binding`),
+   so what a client sends never resolves symbols the host did not allow,
+   while the host's own queries are untouched.
 
    The returned fn carries the atom as metadata; `(release-all! handler)`
-   releases what the routes opened when the host shuts down and restores the
-   resolver."
+   releases what the routes opened when the host shuts down."
   ([config] (handler config {}))
   ([config {:keys [connections default-handler] :as opts}]
-   (let [resolver-before (restrict-query-functions! config)
-         connections (or connections (atom {}))
+   (let [connections (or connections (atom {}))
          rtr         (router config (assoc opts :state (new-state)))
-         h           (wrap-api (ring/ring-handler rtr (or default-handler (ring/create-default-handler)))
-                               rtr config connections)]
-     (with-meta h {::connections connections ::resolver-before resolver-before}))))
+         h           (-> (wrap-api (ring/ring-handler rtr (or default-handler (ring/create-default-handler)))
+                                   rtr config connections)
+                         (wrap-query-functions config))]
+     (with-meta h {::connections connections}))))

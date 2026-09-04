@@ -32,7 +32,11 @@
     (let [p (promise-chan)]
       ;; put! on a CLOSED queue returns false and would leave p silent — the
       ;; caller's deref would hang forever. Deliver the failure instead.
-      (when-not (put! transaction-queue (assoc arg-map :callback p))
+      ;; The op runs on the writer thread; carry the caller's dynamic bindings
+      ;; over so that what it bound (the query function resolver, for one)
+      ;; holds for the transaction as well.
+      (when-not (put! transaction-queue (assoc arg-map :callback p
+                                               #?@(:clj [:bindings (get-thread-bindings)])))
         (put! p (ex-info "Writer is shut down (a previous fatal error closed it); release and reconnect."
                          {:type :writer-shut-down})))
       p))
@@ -226,7 +230,7 @@
                     ;; is starved: a non-empty transaction-queue keeps the batch
                     ;; open only until the bound, after which it closes, `pending`
                     ;; reaches 0, and the retry is taken.
-                    (if-let [{:keys [op args callback] :as invocation}
+                    (if-let [{:keys [op args callback bindings] :as invocation}
                              (or (when (and (zero? pending) (pos? (count retry-queue-buffer)))
                                    (let [inv (poll! retry-queue)
                                          n   (get inv :datahike/attempt 1)]
@@ -293,7 +297,7 @@
                                     (try (<?- (w/reload-branch-head old false))
                                          (catch #?(:clj Throwable :cljs js/Error) e
                                            (log/error :datahike/head-reload-failed
-                                                      {:invocation invocation :error e})
+                                                      {:invocation (dissoc invocation :bindings) :error e})
                                            (put! callback e)
                                            #?(:clj (when (instance? Error e)
                                                      (reset! writer-down? true)
@@ -375,11 +379,14 @@
                                                             {:type :writer/unknown-op
                                                              :op op
                                                              :supported (set (keys write-fn-map))})))
-                                          (apply op-fn old args)))
+                                          #?(:clj (if bindings
+                                                    (with-bindings* bindings apply op-fn old args)
+                                                    (apply op-fn old args))
+                                             :cljs (apply op-fn old args))))
                               ;; Catch all Throwables to handle AssertionError and other Errors
                               ;; These should crash the writer, but we deliver to callback first to prevent hangs
                                       (catch #?(:clj Throwable :cljs js/Error) e
-                                        (log/error :datahike/write-error {:invocation invocation :error e :args args})
+                                        (log/error :datahike/write-error {:invocation (dissoc invocation :bindings) :error e :args args})
                                 ;; short circuit on errors
                                         #?(:cljs (put! callback e)
                                            :clj

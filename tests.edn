@@ -44,10 +44,5 @@
                                   :test-paths ["test/datahike/kabel"]
                                   :skip-meta  [:browser]}]
                       ;; More verbose than the default reporter, and with prettier errors
-                      :reporter kaocha.report/documentation
-                      ;; The server sets the query function resolver process-wide; a
-                      ;; handler a test never releases must not decide the next
-                      ;; namespace's resolution.
-                      :kaocha/plugins [:kaocha.plugin/hooks]
-                      :kaocha.hooks/pre-test [datahike.test.kaocha-hooks/reset-query-resolver]}
+                      :reporter kaocha.report/documentation}
                      #include "tests.user.edn"]
