@@ -30,10 +30,16 @@
          (and (= (str store-a) (str (:store-id db)))
               (contains? #{:transact :read} op)))))
 
+(defn- decided
+  "The gate as a plain predicate: since kabel 0.3.134 the listener's gates
+   decide on a thread and answer with a channel."
+  [gate]
+  (fn [ctx] (<!! (gate ctx))))
+
 (deftest gates-map-remote-calls-and-topics-onto-the-policy
   (let [config {:authorize policy}
-        remote-gate (kabel/authorize-remote config)
-        sync-gate (kabel/authorize-sync config)
+        remote-gate (decided (kabel/authorize-remote config))
+        sync-gate (decided (kabel/authorize-sync config))
         alice {:sub "alice"} bob {:sub "bob"}]
     (testing "dispatch is a transact on the store the call names"
       (is (remote-gate {:principal alice :fn-name 'datahike.kabel/dispatch
@@ -76,7 +82,7 @@
       (is (not (sync-gate {:op :subscribe :principal bob :topic store-a})))
       (is (not (sync-gate {:op :publish :principal alice :topic store-a}))))
     (testing "without a policy every authenticated principal passes, nobody anonymous"
-      (let [open-gate (kabel/authorize-remote {})]
+      (let [open-gate (decided (kabel/authorize-remote {}))]
         (is (open-gate {:principal bob :fn-name 'datahike.kabel/dispatch :arg-map {:store-id store-b}}))
         (is (not (open-gate {:principal nil :fn-name 'datahike.kabel/dispatch :arg-map {:store-id store-b}})))))))
 
@@ -143,7 +149,7 @@
                               (if (= op :invoke)
                                 (and (= 'app/ping fn-name) (= "alice" (:sub principal)))
                                 (default)))})
-        gate (kabel/authorize-remote config)]
+        gate (decided (kabel/authorize-remote config))]
     (try
       (testing "the host rules on its own remote functions"
         (is (gate {:principal {:sub "alice"} :fn-name 'app/ping :arg-map {}}))
