@@ -144,3 +144,41 @@
                                             [{:db/id 100 :tag :z}]
                                             [{:db/id 100 :name "a" :tag :x}]]))]
       (is (= order-a order-b)))))
+
+;; ---------------------------------------------------------------------------
+;; The DB views — FilteredDB / HistoricalDB / AsOfDB / SinceDB — carry no
+;; precomputed `:hash`. They hash by `db-view-hash`, deliberately the SAME
+;; additive [e a v] sum DB maintains as `:hash`, computed over their own datoms.
+;; Two properties that had no test: the sum IS the hash, and a FilteredDB that
+;; mirrors a DB hashes equal to it (equiv-db reports them equal, so it must).
+
+(deftest views-over-the-same-content-hash-equal
+  (testing "the view hash is a function of content, not instance identity: two
+            separately constructed views over the same database hash equal (as a
+            java.util.HashSet needs, and as a per-instance cache must preserve)."
+    (with-conn true
+      (fn [conn]
+        (d/transact conn [{:db/id -1 :name "a" :score 1}])
+        (d/transact conn [{:db/id [:name "a"] :score 2}])
+        (let [db @conn]
+          (doseq [[label mk] [["FilteredDB" #(d/filter db (fn [_ _] true))]
+                              ["HistoricalDB" #(d/history db)]
+                              ["AsOfDB" #(d/as-of db (:max-tx db))]
+                              ["SinceDB" #(d/since db 0)]]]
+            (is (= (hash (mk)) (hash (mk)))
+                (str label ": two views over the same content must hash equal"))))))))
+
+(deftest a-filtered-view-mirroring-a-db-hashes-equal-to-it
+  (testing "a FilteredDB with an always-true predicate has the same schema and
+            `:eavt` datoms as the DB, so `equiv-db` reports them equal — and
+            equal values must hash equal, otherwise they take two slots in a
+            java.util.HashSet. `:keep-history? false` so the DB's `:hash` is the
+            sum over the current index the FilteredDB sees."
+    (with-conn false
+      (fn [conn]
+        (d/transact conn [{:db/id -1 :name "a" :score 1}
+                          {:db/id -2 :name "b" :score 2}])
+        (let [db @conn
+              mirror (d/filter db (fn [_ _] true))]
+          (is (= db mirror) "a FilteredDB mirroring the DB must be equal to it")
+          (is (= (hash db) (hash mirror)) "and therefore must hash equal"))))))
