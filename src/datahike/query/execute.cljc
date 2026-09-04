@@ -5938,7 +5938,7 @@
                  entity-filter (external-context-filter ctx op idx-ident entity-var)
                  ;; For now, call the resolved function with args to get query-spec
                  resolved-fn (when (and (symbol? fn-sym) (namespace fn-sym))
-                               (some-> (resolve fn-sym) deref))
+                               (qr/*symbol-resolver* fn-sym))
                  result-bs (if resolved-fn
                              ;; `search-with-vt` reads the db's `:datahike/valid-at`
                              ;; marker (set by `d/valid-at`) and routes through
@@ -6001,7 +6001,7 @@
          ;; Solver: extract input, call function, merge output
          :solver
          (let [resolved-fn (when (and (symbol? fn-sym) (namespace fn-sym))
-                             (some-> (resolve fn-sym) deref))
+                             (qr/*symbol-resolver* fn-sym))
                query-spec (first (remove analyze/free-var? args))]
            (if resolved-fn
              ;; Derive input vars: all context vars referenced by the query-spec

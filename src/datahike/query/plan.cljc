@@ -11,6 +11,7 @@
    - :not, :not-join — subtraction via sub-plans (when not foldable into anti-merge)
    - :passthrough — delegates to legacy engine"
   (:require
+   #?(:clj [datahike.query.resolve :as qr])
    [clojure.set]
    [clojure.walk]
    [datahike.constants :refer [e0 tx0 emax txmax]]
@@ -228,13 +229,14 @@
       :estimated-card nil})))
 
 (defn- resolve-external-engine-meta
-  "If fn-sym is a namespaced symbol that resolves to a var with
+  "If fn-sym is a namespaced symbol the query function resolver admits and
+   that resolves to a var with
    :datahike/external-engine metadata, return that metadata. Else nil."
   [fn-sym]
   #?(:cljs nil
      :clj (when (and (symbol? fn-sym) (namespace fn-sym))
             (try
-              (when-some [v (resolve fn-sym)]
+              (when-some [v (when (qr/*symbol-resolver* fn-sym) (resolve fn-sym))]
                 (:datahike/external-engine (meta v)))
               (catch Exception e
                 (log/debug :datahike/external-engine-meta-failed {:fn-sym fn-sym :error (.getMessage e)})
@@ -280,7 +282,7 @@
      :clj (when (and (symbol? fn-sym) (namespace fn-sym)
                      (contains? #{:collection :relation} (binding-shape binding)))
             (try
-              (when-some [v (resolve fn-sym)]
+              (when-some [v (when (qr/*symbol-resolver* fn-sym) (resolve fn-sym))]
                 (when-some [c (:datahike/output-cardinality (meta v))]
                   (let [n (cond
                             (number? c) c
@@ -397,7 +399,7 @@
   #?(:cljs nil
      :clj (when (and (symbol? fn-sym) (namespace fn-sym))
             (try
-              (when-some [v (resolve fn-sym)]
+              (when-some [v (when (qr/*symbol-resolver* fn-sym) (resolve fn-sym))]
                 (when-some [c (:datahike/cost (meta v))]
                   (cond
                     (number? c) (fn [input-rows] (* c input-rows))

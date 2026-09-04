@@ -1644,9 +1644,9 @@
   (let [[[f & args]] clause
         _ (analyze/check-fn-args clause args)
         pred (or (get built-ins f)
+                 (qr/*symbol-resolver* f)
                  (context-resolve-val context f)
                  (when (or (fn? f) (var? f)) f)
-                 (qr/*symbol-resolver* f)
                  (when (nil? (rel-with-attr context f))
                    (log/raise "Unknown predicate '" f " in " clause " (see datahike.query.resolve/*symbol-resolver*)"
                               {:error :query/where, :form clause, :var f})))
@@ -1667,9 +1667,9 @@
         _ (analyze/check-fn-args clause args)
         binding (dpi/parse-binding out)
         fun (or (get built-ins f)
+                (qr/*symbol-resolver* f)
                 (context-resolve-val context f)
                 (when (or (fn? f) (var? f)) f)
-                (qr/*symbol-resolver* f)
                 (when (nil? (rel-with-attr context f))
                   (log/raise "Unknown function '" f " in " clause " (see datahike.query.resolve/*symbol-resolver*)"
                              {:error :query/where, :form clause, :var f})))

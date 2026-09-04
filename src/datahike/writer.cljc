@@ -404,7 +404,7 @@
                                                                  "usual cause; otherwise see :error for the original.")
                                                             {:type       :writer-error-during-invocation
                                                              :op         op
-                                                             :invocation invocation
+                                                             :invocation (dissoc invocation :bindings)
                                                              :connection connection
                                                              :error      e}
                                                             e)

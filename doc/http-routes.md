@@ -388,7 +388,10 @@ the permissive default. Under the safe resolver a query resolves:
   reflects;
 - all of `clojure.string`, qualified;
 - the read-only Datahike functions: `datahike.api/q` for a subquery,
-  `pull`, `pull-many`, `entity`, `datoms`, `seek-datoms`, `index-range`;
+  `pull`, `pull-many`, `entity`, `datoms`, `seek-datoms`, `index-range`.
+  These are the only functions that accept a database as argument: the
+  curated ones refuse a database, connection or reference, so `(get $
+  :config)` cannot read the server's store configuration;
 - what the server process registered:
 
 ```clojure

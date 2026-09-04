@@ -778,6 +778,14 @@
            (is (unknown? '[:find ?x :where [_ :name ?n] [(datahike.test.query-fns-test/shout ?n) ?x]]))
            (is (unknown? '[:find ?x :where [_ :name ?n] [(.getBytes ?n) ?x]]))
            (is (unknown? '[:find ?x :where [_ :name ?n] [(.toUpperCase ?n) ?x]])))
+         (testing "the database itself is not data a curated function may look into"
+           (is (thrown-with-msg? ExceptionInfo #"may not receive a database"
+                                 (d/q '[:find ?c . :where [(get $ :config) ?c]] db)))
+           (is (not (re-find #":config|:backend|:path" (d/q '[:find ?c . :where [(pr-str $) ?c]] db)))
+               "the built-in printer shows a database's identity, not its configuration")
+           (is (thrown? ExceptionInfo (d/q '[:find ?c . :where [(apply get $ [:config]) ?c]] db)))
+           (is (thrown? ExceptionInfo (d/q '[:find ?c . :where [(apply get [$ :config]) ?c]] db))
+               "a literal vector is not substituted, so `$` never reaches the function"))
          (testing "a subquery and a pull are Datahike functions a client may call"
            (is (= #{[2]} (d/q '[:find ?c :where [(datahike.api/q [:find (count ?e) . :where [?e :name _]] $) ?c]] db)))
            (is (= #{[{:name "ivan"}]}
@@ -785,6 +793,9 @@
          (testing "an aggregate is resolved the same way"
            (is (thrown-with-msg? ExceptionInfo #"Unknown aggregate"
                                  (d/q '[:find (datahike.test.query-fns-test/shout ?n) :where [_ :name ?n]] db)))))
+       (testing "embedded, every bare clojure.core function still resolves"
+         (is (= #{[1] [0]} (d/q '[:find ?b :where [_ :age ?a] [(bit-and ?a 1) ?b]] db)))
+         (is (= #{[15] [23]} (d/q '[:find ?b :where [_ :age ?a] [(bit-or ?a 1) ?b]] db))))
        (testing "embedded, the resolver is permissive: vars and methods resolve (after the safe run, since compiled plans are cached per query)"
          (is (= #{["IVAN"] ["PETR"]}
                 (d/q '[:find ?x :where [_ :name ?n] [(datahike.test.query-fns-test/shout ?n) ?x]] db)))

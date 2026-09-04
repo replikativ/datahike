@@ -25,13 +25,17 @@
 
    This namespace is a leaf so that the transaction path can use it without a
    cycle through `datahike.query`."
-  #?(:clj (:require [clojure.string :as str]))
-  #?(:clj (:import [clojure.lang Reflector]
+  #?(:clj (:require [clojure.string :as str]
+                    [datahike.db.interface]))
+  #?(:clj (:import [clojure.lang IDeref Reflector]
+                   [datahike.db.interface IDB]
                    [java.lang.reflect Method])))
 
 ;; Everything here is pure over its arguments: no I/O, no evaluation, no
 ;; namespace, var or thread access, no reflection. Infinite generators
-;; (`iterate`, `cycle`, `repeatedly`) are left out on purpose.
+;; (`iterate`, `cycle`, `repeat`, `repeatedly`) are left out on purpose;
+;; `range` stays because it has always been a query built-in, and a query
+;; can already be made arbitrarily expensive without it.
 #?(:clj
    (def ^:private safe-core-symbols
      '[;; arithmetic and comparison
@@ -58,15 +62,42 @@
        partition partition-all partition-by take drop take-while drop-while take-last drop-last take-nth
        split-at split-with filter remove keep map mapv mapcat map-indexed keep-indexed
        reduce reductions apply some every? not-any? not-every? merge merge-with select-keys zipmap
-       interleave interpose flatten range repeat min-key max-key shuffle rand rand-int rand-nth
+       interleave interpose flatten range min-key max-key shuffle rand rand-int rand-nth
     ;; function combinators (their function arguments come from the same resolution)
        identity constantly comp partial juxt fnil complement every-pred some-fn
        hash]))
 
+#?(:clj
+   (defn- engine-value?
+     "A database, a connection or any other reference: values a curated
+      function must not receive. On the server `$` is the live `DB` record,
+      whose `:config` holds the store configuration with its credentials, so
+      `(get $ :config)` would hand a read-only client the server's secrets."
+     [x]
+     (or (instance? IDB x)
+         (instance? IDeref x))))
+
+#?(:clj
+   (defn- guard
+     "`f`, refusing a database, connection or reference among its arguments.
+      The engine substitutes variables only at the top level of a clause's
+      arguments, so a check there is complete. The query built-ins, resolved
+      before this, need none: printing a database shows its identity and
+      counters only, and the rest either take a database by design
+      (`get-else`, `q`) or cannot look inside one."
+     [sym f]
+     (fn [& args]
+       (when (some engine-value? args)
+         (throw (ex-info (str "Function " sym " may not receive a database, connection or reference"
+                              " (only Datahike's own query functions may; see datahike.query.resolve)")
+                         {:error :query/where :var sym})))
+       (apply f args))))
+
 (def safe-fns
   "The functions a query may name without any opt-in, keyed by bare symbol
    (`str`), by qualified core symbol (`clojure.core/str`) and by qualified
-   string symbol (`clojure.string/upper-case`)."
+   string symbol (`clojure.string/upper-case`). Each refuses a database,
+   connection or reference as argument (`guard`)."
   #?(:clj
      (let [core (ns-publics 'clojure.core)
            core-fns (into {} (keep (fn [sym]
@@ -75,10 +106,18 @@
                           safe-core-symbols)
            qualified (fn [ns-sym m] (into {} (map (fn [[k v]] [(symbol (name ns-sym) (name k)) v])) m))
            string-fns (into {} (map (fn [[k v]] [k @v])) (ns-publics 'clojure.string))]
-       (merge core-fns
-              (qualified 'clojure.core core-fns)
-              (qualified 'clojure.string string-fns)))
+       (into {}
+             (map (fn [[sym f]] [sym (guard sym f)]))
+             (merge core-fns
+                    (qualified 'clojure.core core-fns)
+                    (qualified 'clojure.string string-fns))))
      :cljs {}))
+
+#?(:clj
+   (def ^:private core-publics
+     "What the permissive resolver falls back to for a bare symbol: all of
+      `clojure.core` except `eval`, as queries always resolved before."
+     (dissoc (ns-publics 'clojure.core) 'eval)))
 
 (defn- resolve-sym
   "The var named by a qualified symbol, loading its namespace on demand."
@@ -181,15 +220,17 @@
       (get @registry sym)))
 
 (defn permissive-symbol-resolver
-  "The default `*symbol-resolver*` on the JVM: `safe-fns`, then any qualified
+  "The default `*symbol-resolver*` on the JVM: the Datahike functions and the
+   registry, any bare `clojure.core` symbol except `eval`, any qualified
    symbol through `requiring-resolve`, then a leading-dot symbol as a
    reflective method call. That is everything the JVM can reach, `load-string`
    included, so it is only for queries and schema the process wrote itself;
    a process that accepts them from clients uses `safe-symbol-resolver`."
   [sym]
-  (or (get safe-fns sym)
-      (get @datahike-fns sym)
+  (or (get @datahike-fns sym)
       (get @registry sym)
+      #?(:clj (when (and (symbol? sym) (nil? (namespace sym)))
+                (some-> (get core-publics sym) deref)))
       (resolve-sym sym)
       (resolve-method sym)))
 
