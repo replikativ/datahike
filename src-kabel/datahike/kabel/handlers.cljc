@@ -21,6 +21,7 @@
    ;; Now clients can send transactions to this store via KabelWriter
    ```"
   (:require [datahike.api :as d]
+            #?(:cljs [datahike.db :refer [TxReport]])
             [datahike.writer :as writer]
             [datahike.writing :as w]
             [kabel.remote :as remote]
@@ -36,7 +37,8 @@
                :cljs [clojure.core.async :refer [put!] :include-macros true])
             #?(:clj [replikativ.logging :as log]
                :cljs [replikativ.logging :as log :include-macros true]))
-  #?(:cljs (:require-macros [clojure.core.async.macros :refer [go]])))
+  #?(:cljs (:require-macros [clojure.core.async.macros :refer [go]]))
+  #?(:clj (:import [datahike.db TxReport])))
 
 ;; =============================================================================
 ;; Connection Registry
@@ -100,23 +102,11 @@
 ;; Global Dispatch Handler
 ;; =============================================================================
 
-(defn global-dispatch-handler
-  "Global dispatch handler that routes transactions by store-id and branch.
-
-   The handler:
-   1. Extracts store-id and branch from the request
-   2. Looks up the exact branch connection
-   3. Forwards the operation to the connection's writer
-   4. Publishes tx-report to subscribers
-   5. Returns the tx-report
-
-   Request format:
-   Old clients that omit :branch address :db for wire compatibility.
-
-   Request format:
-   {:store-id UUID :branch :db :arg-map {:op 'transact! :args [...]}}"
+(defn- dispatch-handler
   [{:keys [store-id branch arg-map request-id]
-    :or {branch :db}}]
+    :or {branch :db}}
+   on-report]
+  #_{:clj-kondo/ignore [:unresolved-symbol]}
   (go-try S
           ;; The request id is echoed to every tx-report subscriber; a client
           ;; does not get to choose its shape. (Older callers omit it.)
@@ -127,22 +117,15 @@
                                                 :branch branch
                                                 :op (:op arg-map)})
           (if-let [conn (get-connection-for-store store-id branch)]
-            (let [;; Get writer from connection
-                  writer (:writer @(:wrapped-atom conn))
-            ;; Dispatch to local writer
+            (let [writer (:writer @(:wrapped-atom conn))
                   tx-report (<? S (writer/dispatch! writer arg-map))]
-
-        ;; Publish tx-report to subscribers (if peer registered)
               (when-let [peer (get-peer-for-store store-id branch)]
                 (tx-broadcast/publish-tx-report! peer store-id tx-report request-id))
-
-        ;; Return the op's result unchanged. Stripping the live DBs out of a
-        ;; TxReport is the CODEC's job, done by the tag-27 write handler
-        ;; `datahike.cbor` registers for the TxReport class — so it happens for
-        ;; a TxReport and only for a TxReport. Projecting here instead meant
-        ;; projecting every op's result, and `gc-storage!` returns a set.
+              (when (and on-report (instance? TxReport tx-report))
+                (on-report store-id tx-report))
+              ;; Return the op's result unchanged. The codec projects live DBs
+              ;; only when this value really is a TxReport.
               tx-report)
-
             (throw (ex-info "Store branch is not registered for remote writes"
                             {:store-id store-id
                              :branch branch
@@ -152,6 +135,12 @@
                                           (when (= store-id registered-store-id)
                                             registered-branch)))
                                   set)})))))
+
+(defn global-dispatch-handler
+  "Route a writer operation by store and branch. Old clients that omit branch
+   address `:db`; the optional report callback is installed at registration."
+  [arg-map]
+  (dispatch-handler arg-map nil))
 
 ;; =============================================================================
 ;; Global Create/Delete Database Handlers
@@ -189,7 +178,7 @@
 
    The client sends logical config (schema-flexibility, keep-history?, etc.)
    and the store-id. The server uses store-config-fn to determine the actual store backend."
-  [peer store-config-fn]
+  [peer store-config-fn on-connect]
   (fn [{:keys [config]}]
     (go-try S
             (let [store-id (-> config :store :id)  ;; Extract UUID from store config
@@ -214,6 +203,7 @@
             ;; connect there holds one of the dispatch pool's few threads.
                   conn (<? S (d/connect server-config {:sync? false}))
                   _ (log/trace "Connected" {:store-id store-id})
+                  _ (when on-connect (on-connect conn))
 
             ;; Register connection in store registry (use UUID directly)
                   _ (register-connection-for-store! store-id conn peer)
@@ -247,7 +237,7 @@
 
    The client sends store-id. The server uses store-config-fn to determine
    which store to delete."
-  [_peer store-config-fn]  ;; peer looked up from store-registry
+  [_peer store-config-fn on-delete]  ;; peer looked up from store-registry
   (fn [{:keys [config]}]
     (go-try S
             (let [store-id (-> config :store :id)  ;; Extract UUID from store config
@@ -262,21 +252,24 @@
                   store-config (store-config-fn store-id config)
                   server-config {:store store-config}]
 
-              (when (seq registrations)
+              (if on-delete
+                #?(:clj  (<? S (async/thread (on-delete store-id)))
+                   :cljs (on-delete store-id))
+                (when (seq registrations)
           ;; Unregister from sync (use UUID directly)
-                (when peer
-                  (sync/unregister-store! peer store-id)
-                  (tx-broadcast/unregister-tx-report-topic! peer store-id))
+                  (when peer
+                    (sync/unregister-store! peer store-id)
+                    (tx-broadcast/unregister-tx-report-topic! peer store-id))
 
           ;; Remove from registry (use UUID directly)
-                (unregister-connection-for-store! store-id)
+                  (unregister-connection-for-store! store-id)
 
           ;; Release every branch connection registered for this store.
           ;; Releasing closes stores and index writers, blocking work that must
           ;; not run on a go dispatch thread: on the JVM it runs on its own.
-                #?(:clj  (<? S (async/thread (doseq [conn conns] (d/release conn)) true))
-                   :cljs (doseq [conn conns] (d/release conn)))
-                (log/trace "Connection released" {:store-id store-id}))
+                  #?(:clj  (<? S (async/thread (doseq [conn conns] (d/release conn)) true))
+                     :cljs (doseq [conn conns] (d/release conn)))
+                  (log/trace "Connection released" {:store-id store-id})))
 
         ;; Delete database using server-side config
               (<? S (w/delete-database server-config))
@@ -305,6 +298,11 @@
      - :wrap-handler - (fn [handler] -> handler) applied to each handler as it
        is registered; the server wraps them in the dynamic bindings a client
        request runs under (e.g. the query function resolver).
+     - :on-report - (fn [store-id tx-report]) called after a TxReport is
+       published to the Kabel topic.
+     - :on-connect - (fn [conn]) called before a new connection is registered.
+     - :on-delete - (fn [store-id]) tears down a database's registrations
+       before its storage is deleted.
      - :store-config-fn - (fn [store-id client-config] -> store-config)
        Function that returns the server-side store config for a given store-id.
        Default: `default-store-config-fn` which uses the client's store config
@@ -321,11 +319,17 @@
   ([peer] (register-global-handlers! peer {}))
   ([peer opts]
    (let [store-config-fn (or (:store-config-fn opts) default-store-config-fn)
-         wrap            (or (:wrap-handler opts) identity)]
+         wrap            (or (:wrap-handler opts) identity)
+         on-report       (:on-report opts)
+         on-connect      (:on-connect opts)
+         on-delete       (:on-delete opts)]
      (log/trace "Registering global datahike.kabel handlers" {:peer-id (some-> @peer :id)})
-     (remote/register! 'datahike.kabel/dispatch (wrap global-dispatch-handler))
-     (remote/register! 'datahike.kabel/create-database (wrap (make-create-database-handler peer store-config-fn)))
-     (remote/register! 'datahike.kabel/delete-database (wrap (make-delete-database-handler peer store-config-fn)))
+     (remote/register! 'datahike.kabel/dispatch
+                       (wrap #(dispatch-handler % on-report)))
+     (remote/register! 'datahike.kabel/create-database
+                       (wrap (make-create-database-handler peer store-config-fn on-connect)))
+     (remote/register! 'datahike.kabel/delete-database
+                       (wrap (make-delete-database-handler peer store-config-fn on-delete)))
      (log/info "Registered global datahike.kabel handlers" {:peer-id (some-> @peer :id)}))))
 
 ;; =============================================================================

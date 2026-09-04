@@ -13,6 +13,7 @@
             [clojure.java.io :as io]
             [clojure.string :as str]
             [datahike.api :as d]
+            [datahike.connections :refer [*connections*]]
             [datahike.http.routes :as routes]
             [datahike.kabel.cbor-handlers :as cbor]
             [datahike.kabel.handlers :as handlers]
@@ -171,33 +172,38 @@
    UUID-named directory below the file store's path is opened and registered
    for dispatch and sync. Without this a restart leaves every existing
    database unreachable until it is deleted."
-  [server {:keys [store] :as kabel}]
+  [config server {:keys [store] :as kabel} connections]
   (when (= :file (:backend store))
-    (let [config-fn (store-config-fn kabel)]
-      (doseq [dir (some->> (io/file (:path store)) .listFiles (filter #(.isDirectory ^java.io.File %)))
-              :let [store-id (parse-uuid (.getName ^java.io.File dir))]
-              :when store-id]
-        (try
+    (binding [*connections* connections]
+      (let [config-fn (store-config-fn kabel)]
+        (doseq [dir (some->> (io/file (:path store)) .listFiles (filter #(.isDirectory ^java.io.File %)))
+                :let [store-id (parse-uuid (.getName ^java.io.File dir))]
+                :when store-id]
+          (try
           ;; Reopen with the configuration the database was created with:
           ;; Datahike refuses a connect whose settings differ from the stored ones.
-          (let [store-config (config-fn store-id nil)
-                store (ks/connect-store store-config {:sync? true})
-                stored (try (k/get store :db nil {:sync? true})
-                            (finally (ks/release-store store-config store {:sync? true})))
-                config (-> (:config stored) (assoc :store store-config :writer {:backend :self}))
-                conn (d/connect config)]
-            (handlers/register-store-for-remote-access! store-id conn server)
-            (log/info :datahike/kabel-database-reopened {:store-id store-id}))
-          (catch Throwable t
-            (log/warn :datahike/kabel-database-reopen-failed
-                      {:store-id store-id :error (ex-message t)})))))))
+            (let [store-config (config-fn store-id nil)
+                  store (ks/connect-store store-config {:sync? true})
+                  stored (try (k/get store :db nil {:sync? true})
+                              (finally (ks/release-store store-config store {:sync? true})))
+                  db-config (-> (:config stored) (assoc :store store-config :writer {:backend :self}))
+                  conn (d/connect db-config)]
+              (when-let [state (get config routes/report-bus-key)]
+                (routes/register-report-listener! config state conn))
+              (handlers/register-store-for-remote-access! store-id conn server)
+              (log/info :datahike/kabel-database-reopened {:store-id store-id}))
+            (catch Throwable t
+              (log/warn :datahike/kabel-database-reopen-failed
+                        {:store-id store-id :error (ex-message t)}))))))))
 
 (defn start!
   "Start the configured Kabel listener. Returns an owned peer resource or nil."
   [config]
   (when-let [{:keys [host port peer-id jwt] :as kabel}
              (:kabel (validate-config config))]
-    (let [url     (str "ws://" host ":" port)
+    (let [connections (or (get config routes/connections-key) *connections*)
+          bus-state (get config routes/report-bus-key)
+          url     (str "ws://" host ":" port)
           handler (create-http-kit-handler! S url peer-id (atom {}) (atom {})
                                             {:server-opts {:ip host}})
           server  (peer/server-peer
@@ -209,19 +215,32 @@
           served  (remote/serve server {:authorize (authorize-remote config)})]
       (handlers/register-global-handlers!
        server {:store-config-fn (store-config-fn kabel)
+               :on-connect (when bus-state
+                             #(routes/register-report-listener! config bus-state %))
+               :on-report (when bus-state
+                            #(routes/publish-kabel-report! config bus-state %1 %2))
+               :on-delete (when bus-state #(routes/forget-database! config bus-state %))
                ;; a go block carries its bindings across parks and the local
                ;; writer onto its thread, so the request's resolver holds
                ;; through the whole dispatch
                :wrap-handler (let [run (routes/query-function-binding config)]
-                               (fn [handler] (fn [arg-map] (run #(handler arg-map)))))})
-      (reopen-databases! server kabel)
+                               (fn [handler]
+                                 (fn [arg-map]
+                                   (binding [*connections* connections]
+                                     (run #(handler arg-map))))))})
+      (reopen-databases! config server kabel connections)
       (<?? S (peer/start server))
+      (when-let [peer-ref (get config routes/kabel-peer-key)]
+        (reset! peer-ref server))
       (log/info :datahike/kabel-server-started {:url url :peer-id peer-id})
-      {:peer server :url url :peer-id peer-id :served served})))
+      {:peer server :url url :peer-id peer-id :served served
+       :route-peer-ref (get config routes/kabel-peer-key)})))
 
 (defn stop! [resource]
   (when-let [server (:peer resource)]
     (try
+      (when-let [peer-ref (:route-peer-ref resource)]
+        (reset! peer-ref nil))
       (when-let [stop! (get-in resource [:served :stop!])] (stop!))
       (<?? S (peer/stop server))
       (finally

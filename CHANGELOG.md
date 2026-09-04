@@ -6,13 +6,25 @@ When something is added, it's typically marked *Experimental*. When the API cont
 
 ## 0.8
 
+- **Thin-client change stream.** *Experimental.* Authenticated thin clients
+  can follow `GET /listen` as a server-sent-event stream. It sends an initial
+  resync when needed, compact transaction reports for subsequent commits,
+  coalesces slow consumers at the current head, and closes with a deletion
+  event. The standalone server shares one connection registry and report bus
+  between HTTP and Kabel: writes in either transport reach SSE, HTTP writes
+  reach the Kabel transaction-report topic, and every report is published
+  there exactly once. Database and branch deletion terminate affected streams.
+  Jetty uses virtual threads for blocking streams on JDK 21+, with
+  `:max-threads` available for older runtimes.
 - **Thin client for npm: `datahike/remote`.** *Experimental.* The Datahike
   API against a server with no engine in the bundle, about 76 KiB gzipped:
   `datahike.http.client` is now `cljc`, speaking CBOR over `fetch` on
   ClojureScript with a promise-channel per call, and `datahike.js.remote`
   is its JavaScript boundary, generated from the specification like the
   main entry. Connections, databases and entities are opaque handles. See
-  `doc/thin-client.md`.
+  `doc/thin-client.md`. Its ClojureScript and JavaScript APIs now provide
+  `listen` and `unlisten`, with automatic reconnect and resume from the last
+  commit.
 - **Reads by URL, and every read route answers POST.** A GET may carry its
   arguments base64url-encoded in the `args` query parameter (format in `f`),
   which is how a browser client gets a cacheable read; the read routes also

@@ -24,6 +24,19 @@
 
 (emit-js-remote-api)
 
+(defn ^:export listen
+  "Listen for remote changes and pass JavaScript reports to the callback."
+  [conn callback]
+  (datahike.http.client/listen
+   conn
+   (fn [report]
+     (callback (datahike.js.convert/clj->js-recursive report)))))
+
+(defn ^:export unlisten
+  "Stop a remote change listener by its key."
+  [conn key]
+  (datahike.http.client/unlisten conn key))
+
 (defn ^:export isPromise
   "Check if a value is a Promise."
   [x]

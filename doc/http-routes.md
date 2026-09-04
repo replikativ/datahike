@@ -101,6 +101,80 @@ middleware, reitit's 405 or the `:default-handler`:
 A handler with no `:token`, no `:validator`, no `:dev-mode` and no
 `:auth :upstream` admits nobody; that is the secure default, not a bug.
 
+## Listening for changes
+
+Thin clients can keep a change stream open after connecting:
+
+```text
+GET /listen?store=<store UUID>&branch=<keyword>&since=<commit UUID>
+Accept: text/event-stream
+Authorization: token …
+```
+
+`branch` defaults to `db` and `since` is optional. The route passes through
+the same authentication gate as every API route, then asks `:authorize` for
+`:read` on `{:store-id … :branch …}`. The database must already be present in
+the handler's shared connection registry; in the standalone server this also
+includes databases created or reopened by its Kabel listener, without a prior
+HTTP `connect`. The stream does not retain a connection lease, so an open
+listener never prevents deletion.
+
+The response is `text/event-stream` with `Cache-Control: no-cache`. Each event
+has one JSON object on its `data:` line, encoded with Datahike's JSON mapper:
+
+- `resync` is the first event when `since` is absent or differs from the
+  current head. It carries `store-id`, `branch`, `commit-id`, `max-tx`, and
+  `max-eid`.
+- `report` describes a subsequent commit and adds `tempids` and `tx-data`.
+  Reports of at most 500 datoms include the datoms; larger reports omit them
+  and carry `truncated: true`.
+- `coalesced` means the consumer fell behind and must fetch current state. It
+  has the same shape and meaning as `resync`.
+- `deleted` is terminal. The server closes the stream after sending it.
+
+Each subscriber has a 16-event sliding buffer. A slow connection can therefore
+lose intermediate reports; its next event is `coalesced` at the current head,
+never a misleading partial suffix. When idle, the server writes an SSE comment
+heartbeat every 20 seconds. There are no acknowledgements and no replay.
+
+The response body is blocking. The standalone server uses Jetty virtual-thread
+dispatch on JDK 21 and newer, so open streams do not consume its bounded worker
+threads. `:max-threads` and `:min-threads` size Jetty's platform pool; they do
+not bound concurrent streams dispatched on virtual threads. On older JDKs
+streams share that platform pool. Embedded hosts must make the same choice
+themselves: use a virtual-thread-enabled Jetty thread pool on JDK 21+, or budget
+their adapter's worker pool for every concurrent stream.
+
+Browser `EventSource` cannot attach the `Authorization` header. Use `fetch`
+and consume its stream instead:
+
+```javascript
+const response = await fetch(
+  `${base}/listen?store=${storeId}&since=${commitId}`,
+  {headers: {Authorization: `Bearer ${token}`}}
+);
+if (!response.ok) throw new Error(`listen failed: ${response.status}`);
+
+const reader = response.body.pipeThrough(new TextDecoderStream()).getReader();
+let pending = "";
+for (;;) {
+  const {value, done} = await reader.read();
+  if (done) break;
+  pending += value;
+  const frames = pending.split("\n\n");
+  pending = frames.pop();
+  for (const frame of frames) {
+    if (frame.startsWith(":")) continue;
+    const event = frame.match(/^event: (.+)$/m)?.[1];
+    const data = JSON.parse(frame.match(/^data: (.+)$/m)?.[1]);
+    handleChange(event, data);
+  }
+}
+```
+
+Use the authorization scheme your validator expects; the built-in shared token
+uses `token <value>` rather than `Bearer <value>`.
+
 ## Authentication: who is calling
 
 The config describes a chain of validators, each

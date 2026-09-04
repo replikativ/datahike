@@ -5,7 +5,8 @@
    [datahike.json :as json]
    [datahike.readers :refer [edn-readers]]
    [muuntaja.core :as m]
-   [replikativ.logging :as log])
+   [replikativ.logging :as log]
+   [ring.core.protocols :as protocols])
   (:import
    [clojure.lang ExceptionInfo]))
 
@@ -76,6 +77,8 @@
             body           (:body response)
             should-encode? (and encoder
                                 (not (instance? java.io.ByteArrayInputStream body))
+                                (not (and (some? body)
+                                          (satisfies? protocols/StreamableResponseBody body)))
                                 ;; Without a request content type only a scalar is
                                 ;; encoded here; a collection stays for muuntaja,
                                 ;; which also sets the response content type.

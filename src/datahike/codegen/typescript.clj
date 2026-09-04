@@ -518,6 +518,22 @@ export function setLogLevel(level: LogLevel): LogLevel;
      (if remote-only?
        (str header types "\n// API Functions (the thin HTTP client; every call reaches the server)\n\n" functions "
 
+export interface RemoteReport {
+  'db-after'?: Database;
+  'db-before'?: null;
+  'tx-data'?: Datom[];
+  tempids?: { [key: string]: number };
+  'commit-id'?: UuidValue;
+  resync?: boolean;
+  deleted?: boolean;
+  truncated?: boolean;
+  error?: any;
+  status?: number;
+}
+
+export function listen(conn: Connection, callback: (report: RemoteReport) => void): string;
+export function unlisten(conn: Connection, key: string): void;
+
 // JavaScript-specific value helpers.
 export function isPromise(value: any): value is Promise<unknown>;
 export function uuid(value: string): DatahikeUuid;
