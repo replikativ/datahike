@@ -1531,7 +1531,7 @@
       :db/retractEntity (retract-entity db report op-vec)
 
       :db/purge (if (dbi/-keep-history? db)
-                  (let [history (HistoricalDB. db)]
+                  (let [history (HistoricalDB. db (volatile! nil))]
                     (if-some [e (dbu/entid history e)]
                       (let [v (if (dbu/ref? history a) (dbu/entid-strict history v) v)
                             old-datoms (dbi/search history [e a v])]
@@ -1542,7 +1542,7 @@
                              {:error :transact/purge :operation op :tx-data op-vec}))
 
       :db.purge/attribute (if (dbi/-keep-history? db)
-                            (let [history (HistoricalDB. db)]
+                            (let [history (HistoricalDB. db (volatile! nil))]
                               (if-let [e (dbu/entid history e)]
                                 (let [datoms (vec (dbi/search history [e a]))]
                                   [(reduce transact-purge-datom report datoms)
@@ -1553,7 +1553,7 @@
                                        {:error :transact/purge :operation op :tx-data op-vec}))
 
       :db.purge/entity (if (dbi/-keep-history? db)
-                         (let [history (HistoricalDB. db)]
+                         (let [history (HistoricalDB. db (volatile! nil))]
                            (if-let [e (dbu/entid history e)]
                              (let [e-datoms (vec (dbi/search history [e]))
                                    v-datoms (vec (mapcat (fn [a] (dbi/search history [nil a e]))
@@ -1566,7 +1566,7 @@
                                     {:error :transact/purge :operation op :tx-data op-vec}))
 
       :db.history.purge/before (if (dbi/-keep-history? db)
-                                 (let [history (HistoricalDB. db)
+                                 (let [history (HistoricalDB. db (volatile! nil))
                                        into-sorted-set #(apply sorted-set-by dd/cmp-datoms-eavt-quick %)
                                        e-datoms (-> (clojure.set/difference
                                                      (into-sorted-set (dbs/search-temporal-indices db nil))

@@ -482,7 +482,7 @@
 
 ;; FilteredDB
 
-(defrecord-updatable FilteredDB [unfiltered-db pred]
+(defrecord-updatable FilteredDB [unfiltered-db pred hash-cache]
   #?@(:cljs
       [IEquiv (-equiv [db other] (equiv-db db other))
        ISeqable (-seq [db] (dbi/datoms db :eavt []))
@@ -507,11 +507,11 @@
       ;; `(= view db)` threw while `(= db view)` answered true —
       ;; asymmetric, which `equals` may never be.
       [Object
-       (hashCode [db] (db-view-hash db))
+       (hashCode [db] (db-view-hash db (.-hash-cache db)))
        (equals [db other] (equiv-db db other))
 
        clojure.lang.IHashEq
-       (hasheq [db] (db-view-hash db))
+       (hasheq [db] (db-view-hash db (.-hash-cache db)))
 
        IPersistentCollection
        (count [db] (count (dbi/datoms db :eavt [])))
@@ -577,7 +577,7 @@
 
 ;; HistoricalDB
 
-(defrecord-updatable HistoricalDB [origin-db]
+(defrecord-updatable HistoricalDB [origin-db hash-cache]
   #?@(:cljs
       [IEquiv (-equiv [db other] (equiv-db db other))
        ISeqable (-seq [db] (dbi/datoms db :eavt []))
@@ -601,11 +601,11 @@
       ;; `(= view db)` threw while `(= db view)` answered true —
       ;; asymmetric, which `equals` may never be.
       [Object
-       (hashCode [db] (db-view-hash db))
+       (hashCode [db] (db-view-hash db (.-hash-cache db)))
        (equals [db other] (equiv-db db other))
 
        clojure.lang.IHashEq
-       (hasheq [db] (db-view-hash db))
+       (hasheq [db] (db-view-hash db (.-hash-cache db)))
 
        IPersistentCollection
        (count [db] (count (dbi/datoms db :eavt [])))
@@ -668,7 +668,7 @@
 
 ;; AsOfDB
 
-(defrecord-updatable AsOfDB [origin-db time-point]
+(defrecord-updatable AsOfDB [origin-db time-point hash-cache]
   #?@(:cljs
       [IEquiv (-equiv [db other] (equiv-db db other))
        ISeqable (-seq [db] (dbi/datoms db :eavt []))
@@ -691,11 +691,11 @@
       ;; `(= view db)` threw while `(= db view)` answered true —
       ;; asymmetric, which `equals` may never be.
       [Object
-       (hashCode [db] (db-view-hash db))
+       (hashCode [db] (db-view-hash db (.-hash-cache db)))
        (equals [db other] (equiv-db db other))
 
        clojure.lang.IHashEq
-       (hasheq [db] (db-view-hash db))
+       (hasheq [db] (db-view-hash db (.-hash-cache db)))
 
        IPersistentCollection
        (count [db] (count (dbi/datoms db :eavt [])))
@@ -754,7 +754,7 @@
   (-index-range [db attr start end context]
                 (deeper-index-range (.-origin-db db) db attr start end context)))
 
-(defrecord-updatable SinceDB [origin-db time-point]
+(defrecord-updatable SinceDB [origin-db time-point hash-cache]
   #?@(:cljs
       [IEquiv (-equiv [db other] (equiv-db db other))
        ISeqable (-seq [db] (dbi/datoms db :eavt []))
@@ -777,11 +777,11 @@
       ;; `(= view db)` threw while `(= db view)` answered true —
       ;; asymmetric, which `equals` may never be.
       [Object
-       (hashCode [db] (db-view-hash db))
+       (hashCode [db] (db-view-hash db (.-hash-cache db)))
        (equals [db other] (equiv-db db other))
 
        clojure.lang.IHashEq
-       (hasheq [db] (db-view-hash db))
+       (hasheq [db] (db-view-hash db (.-hash-cache db)))
 
        IPersistentCollection
        (count [db] (count (dbi/datoms db :eavt [])))
@@ -877,10 +877,23 @@
    Deliberately the SAME additive datom-sum DB maintains incrementally
    (see `:hash` in `new-db`), so a view and a DB holding the same datoms
    hash alike — `equiv-db` reports those equal, so their hashes must
-   agree. O(n) per call: there is no running sum to read off, the same
-   reason `count` on a view is O(n)."
-  [db]
-  (reduce #(+ %1 (hash %2)) 0 (dbi/datoms db :eavt [])))
+   agree.
+
+   The sum is O(n) to compute — there is no running sum to read off, the
+   same reason `count` on a view is O(n) — so it is memoized per instance
+   in the view's `hash-cache` volatile: the first hasheq/hashCode scans,
+   later calls read the cached value. Views are immutable once constructed
+   (only ever assoc'd with non-content keys), so the cache never goes stale.
+
+   `cache` (the view's `hash-cache` volatile) is read by each caller from its
+   own typed record and passed in, so this shared fn carries no polymorphic
+   field access — which ClojureScript would reject as an un-inferable target."
+  [db cache]
+  (if-let [h (and cache @cache)]
+    h
+    (let [h (reduce #(+ %1 (hash %2)) 0 (dbi/datoms db :eavt []))]
+      (some-> cache (vreset! h))
+      h)))
 
 #?(:cljs
    (do
