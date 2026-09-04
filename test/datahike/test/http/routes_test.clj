@@ -14,6 +14,8 @@
    [datahike.http.server :as server]
    [datahike.migrate.fs :as fs]
    [datahike.remote :as remote]
+   [datahike.remote.cbor :as rcbor]
+   [boring.core :as boring]
    [ring.adapter.jetty :refer [run-jetty]]))
 
 (def ^:private token "securerandompassword")
@@ -186,9 +188,9 @@
                                          :headers {"origin" "http://localhost:8080"
                                                    "access-control-request-method" "GET"}})))
           "a CORS preflight carries no token and must reach the CORS middleware, not the gate")
-      (is (= 405 (:status (http/post (str url "/q") {:throw false
-                                                     :headers {"authorization" (str "token " token)}
-                                                     :body "garbage"})))
+      (is (= 405 (:status (http/put (str url "/q") {:throw false
+                                                    :headers {"authorization" (str "token " token)}
+                                                    :body "garbage"})))
           "a wrong method is reitit's 405, whoever asks")
       (finally
         (.stop server)))))
@@ -328,3 +330,39 @@
       (finally
         (routes/release-all! h)
         (.stop server)))))
+
+(deftest a-read-by-url-or-by-post
+  (testing "a GET carries its arguments in the URL and is cached; a POST carries them in the body and is not"
+    (let [port      23202
+          server    (run-jetty (routes/handler {:token token :dev-mode false :cache {:get {:max-age 60}}})
+                               {:port port :join? false})
+          url       (str "http://localhost:" port)
+          peer      {:backend :datahike-server :url url :token token :format :cbor}
+          registry  (rcbor/client-registry)
+          encode    (fn [args] (boring/encode args (rcbor/encode-opts registry)))
+          decode    (fn [bytes] (binding [remote/*remote-peer* peer]
+                                  (boring/decode bytes (rcbor/decode-opts registry))))
+          base64url (fn [^bytes b] (.encodeToString (java.util.Base64/getUrlEncoder) b))
+          headers   {"authorization" (str "token " token) "accept" "application/cbor"}]
+      (try
+        (let [cfg     (client/create-database {:store {:backend :memory :id (random-uuid)}
+                                               :schema-flexibility :read :remote-peer peer})
+              conn    (client/connect cfg)
+              _       (client/transact conn [{:name "Ada"}])
+              db      (client/db conn)
+              q-args  [[:find '?n :where ['?e :name '?n]] db]
+              by-get  (http/get (str url "/q?args=" (base64url (encode q-args)) "&f=cbor")
+                                {:headers headers :as :bytes})
+              by-post (http/post (str url "/q") {:headers (assoc headers "content-type" "application/cbor")
+                                                 :body (encode q-args) :as :bytes})]
+          (is (= #{["Ada"]} (decode (:body by-get))))
+          (is (= #{["Ada"]} (decode (:body by-post))))
+          (is (re-find #"max-age=60" (get-in by-get [:headers "cache-control"] ""))
+              "a read by URL is cacheable")
+          (is (nil? (get-in by-post [:headers "cache-control"]))
+              "a read by POST is not")
+          (is (= 500 (:status (http/get (str url "/q?args=" (base64url (encode q-args)) "&f=nope")
+                                        {:headers headers :throw false})))
+              "an unknown args format is refused"))
+        (finally
+          (.stop server))))))
