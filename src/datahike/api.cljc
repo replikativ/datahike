@@ -4,10 +4,10 @@
   #?(:cljs (:require-macros [datahike.api :refer [emit-api]]))
   (:require [datahike.connector :as dc]
             [datahike.config :as config]
-            [datahike.api.specification :refer [api-specification malli-schema->argslist]]
-            [datahike.api.types :as types]
-            [malli.core :as m]
-            [malli.util :as mu]
+            #?(:clj [datahike.api.specification :refer [api-specification malli-schema->argslist]])
+            #?(:clj [datahike.api.types :as types])
+            #?(:clj [malli.core :as m])
+            #?(:clj [malli.util :as mu])
             [datahike.api.impl]
             [datahike.writer :as dw]
             #?(:clj [datahike.http.writer])
@@ -44,9 +44,10 @@
         ()
         (into (sorted-map) api-specification))))
 
-(defn ^:no-doc register-api-schemas!
-  "Publish this namespace's malli function schemas so `malli.instrument/instrument!`
-   can find them. Idempotent; called once at load.
+#?(:clj
+   (defn ^:no-doc register-api-schemas!
+     "Publish this namespace's malli function schemas so `malli.instrument/instrument!`
+   can find them. Idempotent; called once at JVM load.
 
    REGISTRATION IS NOT INSTRUMENTATION. This only records `[:=> …]` forms in
    malli's function-schema registry — no var is wrapped, nothing is validated,
@@ -61,9 +62,9 @@
 
    The schemas reference datahike's own type registry (`:datahike/SDB` and
    friends), so they are compiled against it here rather than the default one."
-  []
-  (let [opts {:registry (merge (m/default-schemas) (mu/schemas) types/registry)}]
-    (doseq [[n {:keys [args]}] api-specification]
+     []
+     (let [opts {:registry (merge (m/default-schemas) (mu/schemas) types/registry)}]
+       (doseq [[n {:keys [args]}] api-specification]
       ;; EVERY operation, with no exclusion list. NOT wrapped in a try either: a
       ;; schema that fails to compile is a schema that silently checks nothing,
       ;; which is how seven of them stayed wrong — so a new one must break the
@@ -77,11 +78,11 @@
       ;; that carries `Util.normalizeCollections`. Do not reintroduce the list —
       ;; an operation that cannot be registered is a schema bug or a codegen
       ;; gap, and both are fixable.
-      (m/-register-function-schema! 'datahike.api n (m/schema args opts) {}))
-    (count api-specification)))
+         (m/-register-function-schema! 'datahike.api n (m/schema args opts) {}))
+       (count api-specification))))
 
 (emit-api)
-(register-api-schemas!)
+#?(:clj (register-api-schemas!))
 
 ;; The read-only functions a query may call under every resolver, the
 ;; server's safe one included: a subquery, a pull, an index walk.
