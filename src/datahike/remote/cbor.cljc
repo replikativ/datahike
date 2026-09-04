@@ -70,13 +70,16 @@
   `datahike.test.remote-cbor-test` asserts that by enumerating the record types
   in those namespaces rather than repeating a list that can go stale."
   (:require [boring.core :as boring]
-            [datahike.cbor :as dcbor]
-            [datahike.db]
-            [datahike.readers :as readers]
+            [datahike.cbor.elements :as elements]
             [datahike.remote :as remote]
-            [datahike.connector]
-            [datahike.impl.entity]
-            [datahike.transit :refer [db->map config->store-id]]))
+            ;; The server half resolves handles into live objects; a peer that
+            ;; holds no store (the thin client, on either platform) needs none
+            ;; of it.
+            #?@(:clj [[datahike.db]
+                      [datahike.readers :as readers]
+                      [datahike.connector]
+                      [datahike.impl.entity]
+                      [datahike.transit :refer [db->map config->store-id]]])))
 
 ;; ---------------------------------------------------------------------------
 ;; Wire names
@@ -94,7 +97,7 @@
   "Every name this codec speaks, including the Datom name `datahike.cbor` owns.
   Both registries must cover exactly this set."
   #{connection-name db-name historical-name since-name as-of-name
-    entity-name tx-report-name dcbor/datom-name})
+    entity-name tx-report-name elements/datom-name})
 
 ;; ---------------------------------------------------------------------------
 ;; Decode options
@@ -131,6 +134,19 @@
 ;; Client side: writes handles, reads handles
 ;; ---------------------------------------------------------------------------
 
+(defn- install-client-tx-report
+  "On the JVM a report comes back as the `TxReport` record; the client only
+   ever reads one, but registering the write side keeps a client-held report
+   from falling through to boring's native record emission. On ClojureScript
+   the thin client carries no `datahike.db`, so a report stays the map it
+   arrived as."
+  [reg]
+  #?(:clj (-> reg
+              (boring/register-tag 27 datahike.db.TxReport
+                                   (fn [r] [tx-report-name (into {} r)]) nil)
+              (boring/register-record tx-report-name datahike.db/map->TxReport))
+     :cljs (boring/register-record reg tx-report-name identity)))
+
 (defn install-client
   "Handlers for a peer that holds no store: the `Remote*` records go out as
   bare handles and come back reattached to `*remote-peer*`.
@@ -140,94 +156,91 @@
   end."
   [reg]
   (-> reg
-      dcbor/install-element-handlers
+      elements/install-element-handlers
 
-      (boring/register-tag 27 datahike.remote.RemoteConnection
+      (boring/register-tag 27 #?(:clj datahike.remote.RemoteConnection :cljs remote/RemoteConnection)
                            (fn [c] [connection-name (:store-id c)]) nil)
       (boring/register-record connection-name remote/remote-connection)
 
-      (boring/register-tag 27 datahike.remote.RemoteDB
+      (boring/register-tag 27 #?(:clj datahike.remote.RemoteDB :cljs remote/RemoteDB)
                            (fn [db] [db-name (remote/map-without-remote db)]) nil)
       (boring/register-record db-name remote/remote-db)
 
-      (boring/register-tag 27 datahike.remote.RemoteHistoricalDB
+      (boring/register-tag 27 #?(:clj datahike.remote.RemoteHistoricalDB :cljs remote/RemoteHistoricalDB)
                            (fn [db] [historical-name (remote/map-without-remote db)]) nil)
       (boring/register-record historical-name remote/remote-historical-db)
 
-      (boring/register-tag 27 datahike.remote.RemoteSinceDB
+      (boring/register-tag 27 #?(:clj datahike.remote.RemoteSinceDB :cljs remote/RemoteSinceDB)
                            (fn [db] [since-name (remote/map-without-remote db)]) nil)
       (boring/register-record since-name remote/remote-since-db)
 
-      (boring/register-tag 27 datahike.remote.RemoteAsOfDB
+      (boring/register-tag 27 #?(:clj datahike.remote.RemoteAsOfDB :cljs remote/RemoteAsOfDB)
                            (fn [db] [as-of-name (remote/map-without-remote db)]) nil)
       (boring/register-record as-of-name remote/remote-as-of-db)
 
-      (boring/register-tag 27 datahike.remote.RemoteEntity
+      (boring/register-tag 27 #?(:clj datahike.remote.RemoteEntity :cljs remote/RemoteEntity)
                            (fn [e] [entity-name (remote/map-without-remote e)]) nil)
       (boring/register-record entity-name remote/remote-entity)
 
       ;; A TxReport has no :remote-peer field, and its :db-before/:db-after are
-      ;; RemoteDBs written by the handler above, nested. The client only ever
-      ;; reads one, but registering the write side keeps a client-held report
-      ;; from falling through to boring's native record emission.
-      (boring/register-tag 27 datahike.db.TxReport
-                           (fn [r] [tx-report-name (into {} r)]) nil)
-      (boring/register-record tx-report-name datahike.db/map->TxReport)))
+      ;; RemoteDBs written by the handler above, nested.
+      install-client-tx-report))
 
+#?(:clj
 ;; ---------------------------------------------------------------------------
 ;; Server side: writes handles, reads real objects
 ;; ---------------------------------------------------------------------------
 
-(defn install-server
-  "Handlers for the peer that holds the store. Reads resolve a handle into a
+   (defn install-server
+     "Handlers for the peer that holds the store. Reads resolve a handle into a
   live object through `datahike.readers`, which is where the connection
   registry lookup lives; writes project a live object back down to a handle.
 
   `DB` and the three time-travel DBs are registered as much to SUPPRESS
   boring's native record emission as to enable the handle: unregistered, a DB
   would go out as its whole in-memory record, index roots included."
-  [reg]
-  (-> reg
-      dcbor/install-element-handlers
+     [reg]
+     (-> reg
+         elements/install-element-handlers
 
-      (boring/register-tag 27 datahike.connector.Connection
-                           (fn [c] [connection-name
-                                    (config->store-id (:config @(:wrapped-atom c)))]) nil)
-      (boring/register-record connection-name readers/connection-from-reader)
+         (boring/register-tag 27 datahike.connector.Connection
+                              (fn [c] [connection-name
+                                       (config->store-id (:config @(:wrapped-atom c)))]) nil)
+         (boring/register-record connection-name readers/connection-from-reader)
 
-      (boring/register-tag 27 datahike.db.DB
-                           (fn [db] [db-name (db->map db)]) nil)
-      (boring/register-record db-name readers/db-from-reader)
+         (boring/register-tag 27 datahike.db.DB
+                              (fn [db] [db-name (db->map db)]) nil)
+         (boring/register-record db-name readers/db-from-reader)
 
-      (boring/register-tag 27 datahike.db.HistoricalDB
-                           (fn [{:keys [origin-db]}]
-                             [historical-name {:origin origin-db}]) nil)
-      (boring/register-record historical-name readers/history-from-reader)
+         (boring/register-tag 27 datahike.db.HistoricalDB
+                              (fn [{:keys [origin-db]}]
+                                [historical-name {:origin origin-db}]) nil)
+         (boring/register-record historical-name readers/history-from-reader)
 
-      (boring/register-tag 27 datahike.db.SinceDB
-                           (fn [{:keys [origin-db time-point]}]
-                             [since-name {:origin origin-db :time-point time-point}]) nil)
-      (boring/register-record since-name readers/since-from-reader)
+         (boring/register-tag 27 datahike.db.SinceDB
+                              (fn [{:keys [origin-db time-point]}]
+                                [since-name {:origin origin-db :time-point time-point}]) nil)
+         (boring/register-record since-name readers/since-from-reader)
 
-      (boring/register-tag 27 datahike.db.AsOfDB
-                           (fn [{:keys [origin-db time-point]}]
-                             [as-of-name {:origin origin-db :time-point time-point}]) nil)
-      (boring/register-record as-of-name readers/as-of-from-reader)
+         (boring/register-tag 27 datahike.db.AsOfDB
+                              (fn [{:keys [origin-db time-point]}]
+                                [as-of-name {:origin origin-db :time-point time-point}]) nil)
+         (boring/register-record as-of-name readers/as-of-from-reader)
 
-      (boring/register-tag 27 datahike.impl.entity.Entity
-                           (fn [^datahike.impl.entity.Entity e]
-                             [entity-name (assoc (into {} e)
-                                                 :db (.-db e)
-                                                 :eid (.-eid e))]) nil)
-      (boring/register-record entity-name readers/entity-from-reader)
+         (boring/register-tag 27 datahike.impl.entity.Entity
+                              (fn [^datahike.impl.entity.Entity e]
+                                [entity-name (assoc (into {} e)
+                                                    :db (.-db e)
+                                                    :eid (.-eid e))]) nil)
+         (boring/register-record entity-name readers/entity-from-reader)
 
-      (boring/register-tag 27 datahike.db.TxReport
-                           (fn [r] [tx-report-name (into {} r)]) nil)
-      (boring/register-record tx-report-name datahike.db/map->TxReport)))
+         (boring/register-tag 27 datahike.db.TxReport
+                              (fn [r] [tx-report-name (into {} r)]) nil)
+         (boring/register-record tx-report-name datahike.db/map->TxReport))))
 
 ;; ---------------------------------------------------------------------------
 ;; Convenience
 ;; ---------------------------------------------------------------------------
 
 (defn client-registry [] (install-client (boring/tag-registry)))
-(defn server-registry [] (install-server (boring/tag-registry)))
+#?(:clj (defn server-registry [] (install-server (boring/tag-registry))))

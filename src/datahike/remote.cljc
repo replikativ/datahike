@@ -1,26 +1,30 @@
 (ns datahike.remote
   "Literals that can function as lightweight remote pointers to connections and
   dbs."
-  (:require [cognitect.transit :as transit]
-            [jsonista.core :as j]
-            [jsonista.tagged :as jt]
-            [clojure.edn :as edn]
-            [datahike.json :refer [json-base-handlers]]
+  (:require #?@(:clj [[cognitect.transit :as transit]
+                      [jsonista.core :as j]
+                      [jsonista.tagged :as jt]
+                      [datahike.json :refer [json-base-handlers]]])
             [datahike.datom :as dd])
   #?(:clj
      (:import [clojure.lang IDeref]
               [datahike.datom Datom]
               [com.fasterxml.jackson.core JsonGenerator])))
 
-;; https://github.com/thi-ng/color/issues/10
-;; fixes lein repl / Cloure 1.10.0 
-(prefer-method print-method java.util.Map clojure.lang.IDeref)
+;; The handle records and `*remote-peer*` are cross-platform: the thin HTTP
+;; client on ClojureScript passes the same handles the JVM client does. The
+;; transit, JSON and EDN codecs below are JVM-only; ClojureScript speaks CBOR
+;; (`datahike.remote.cbor`).
 
-;; fixes lein repl / Clojure 1.10.1
-(prefer-method print-method clojure.lang.IPersistentMap clojure.lang.IDeref)
-
-;; fixes CIDER / Clojure 1.9.0 / 1.10.0 / 1.10.1
-(prefer-method clojure.pprint/simple-dispatch clojure.lang.IPersistentMap clojure.lang.IDeref)
+#?(:clj
+   (do
+     ;; https://github.com/thi-ng/color/issues/10
+     ;; fixes lein repl / Cloure 1.10.0
+     (prefer-method print-method java.util.Map clojure.lang.IDeref)
+     ;; fixes lein repl / Clojure 1.10.1
+     (prefer-method print-method clojure.lang.IPersistentMap clojure.lang.IDeref)
+     ;; fixes CIDER / Clojure 1.9.0 / 1.10.0 / 1.10.1
+     (prefer-method clojure.pprint/simple-dispatch clojure.lang.IPersistentMap clojure.lang.IDeref)))
 
 ;; Remote peer currently operated on. This is used to allow the tagged literal
 ;; readers to attach the remote again.
@@ -32,7 +36,7 @@
   (-remote-peer [_] "Retrieve remote peer."))
 
 (extend-protocol PRemotePeer
-  Object
+  #?(:clj Object :cljs default)
   (-remote-peer [_] nil))
 
 (defn remote-peer [obj] (-remote-peer obj))
@@ -118,38 +122,42 @@
      (.write w "#datahike/RemoteEntity")
      (.write w (pr-str (dissoc (into {} e) :remote-peer)))))
 
-(defn edn-replace-remote-literals [s]
-  (reduce (fn [^String s [^String from ^String to]]
-            (.replace s from to))
-          s
-          [["#datahike/RemoteConnection" "#datahike/Connection"]
-           ["#datahike/RemoteDB" "#datahike/DB"]
-           ["#datahike/RemoteHistoricalDB" "#datahike/HistoricalDB"]
-           ["#datahike/RemoteSinceDB" "#datahike/SinceDB"]
-           ["#datahike/RemoteAsOfDB" "#datahike/AsOfDB"]]))
+#?(:clj
+   (do
+     (defn edn-replace-remote-literals [s]
+       (reduce (fn [^String s [^String from ^String to]]
+                 (.replace s from to))
+               s
+               [["#datahike/RemoteConnection" "#datahike/Connection"]
+                ["#datahike/RemoteDB" "#datahike/DB"]
+                ["#datahike/RemoteHistoricalDB" "#datahike/HistoricalDB"]
+                ["#datahike/RemoteSinceDB" "#datahike/SinceDB"]
+                ["#datahike/RemoteAsOfDB" "#datahike/AsOfDB"]]))
 
-(def edn-readers {'datahike/Connection   remote-connection
-                  'datahike/DB           remote-db
-                  'datahike/HistoricalDB remote-historical-db
-                  'datahike/AsOfDB       remote-as-of-db
-                  'datahike/SinceDB      remote-since-db
-                  'datahike/Datom        datahike.datom/datom-from-reader
-                  'datahike.db.TxReport  datahike.db/map->TxReport})
+     (def edn-readers {'datahike/Connection   remote-connection
+                       'datahike/DB           remote-db
+                       'datahike/HistoricalDB remote-historical-db
+                       'datahike/AsOfDB       remote-as-of-db
+                       'datahike/SinceDB      remote-since-db
+                       'datahike/Datom        datahike.datom/datom-from-reader
+                       'datahike.db.TxReport  datahike.db/map->TxReport})))
 
 (defn map-without-remote [r]
   (dissoc (into {} r) :remote-peer))
 
-(defn datom-as-vec [^Datom d]
+(defn datom-as-vec [#?(:clj ^Datom d :cljs ^datahike.datom/Datom d)]
   [(.-e d) (.-a d) (.-v d) (dd/datom-tx d) (dd/datom-added d)])
 
 (defn datom-from-vec [v] (apply dd/datom v))
 
-(def transit-write-handlers {datahike.remote.RemoteConnection   (transit/write-handler "datahike/Connection" #(:store-id %))
-                             datahike.datom.Datom               (transit/write-handler "datahike/Datom" datom-as-vec)
-                             datahike.remote.RemoteDB           (transit/write-handler "datahike/DB" map-without-remote)
-                             datahike.remote.RemoteHistoricalDB (transit/write-handler "datahike/HistoricalDB" map-without-remote)
-                             datahike.remote.RemoteSinceDB      (transit/write-handler "datahike/SinceDB" map-without-remote)
-                             datahike.remote.RemoteAsOfDB       (transit/write-handler "datahike/AsOfDB" map-without-remote)
+#?(:clj
+   (do
+     (def transit-write-handlers {datahike.remote.RemoteConnection   (transit/write-handler "datahike/Connection" #(:store-id %))
+                                  datahike.datom.Datom               (transit/write-handler "datahike/Datom" datom-as-vec)
+                                  datahike.remote.RemoteDB           (transit/write-handler "datahike/DB" map-without-remote)
+                                  datahike.remote.RemoteHistoricalDB (transit/write-handler "datahike/HistoricalDB" map-without-remote)
+                                  datahike.remote.RemoteSinceDB      (transit/write-handler "datahike/SinceDB" map-without-remote)
+                                  datahike.remote.RemoteAsOfDB       (transit/write-handler "datahike/AsOfDB" map-without-remote)
                              ;; `map-without-remote`, like every sibling above.
                              ;; `(into {} %)` keeps :remote-peer, which carries
                              ;; the peer's url and bearer TOKEN — so it went out
@@ -157,71 +165,71 @@
                              ;; log/trace of that body. The far end never reads
                              ;; it: readers/entity-from-reader takes :db and
                              ;; :eid only.
-                             datahike.remote.RemoteEntity       (transit/write-handler "datahike/Entity" map-without-remote)})
+                                  datahike.remote.RemoteEntity       (transit/write-handler "datahike/Entity" map-without-remote)})
 
-(def transit-read-handlers {"datahike/Connection"   (transit/read-handler remote-connection)
-                            "datahike/Datom"        (transit/read-handler datom-from-vec)
-                            "datahike/TxReport"     (transit/read-handler datahike.db/map->TxReport)
-                            "datahike/DB"           (transit/read-handler remote-db)
-                            "datahike/HistoricalDB" (transit/read-handler remote-historical-db)
-                            "datahike/SinceDB"      (transit/read-handler remote-since-db)
-                            "datahike/AsOfDB"       (transit/read-handler remote-as-of-db)
-                            "datahike/Entity"       (transit/read-handler remote-entity)})
+     (def transit-read-handlers {"datahike/Connection"   (transit/read-handler remote-connection)
+                                 "datahike/Datom"        (transit/read-handler datom-from-vec)
+                                 "datahike/TxReport"     (transit/read-handler datahike.db/map->TxReport)
+                                 "datahike/DB"           (transit/read-handler remote-db)
+                                 "datahike/HistoricalDB" (transit/read-handler remote-historical-db)
+                                 "datahike/SinceDB"      (transit/read-handler remote-since-db)
+                                 "datahike/AsOfDB"       (transit/read-handler remote-as-of-db)
+                                 "datahike/Entity"       (transit/read-handler remote-entity)})
 
-(declare json-mapper)
+     (declare json-mapper)
 
-(defn write-to-generator [f]
-  (fn [x ^JsonGenerator gen]
-    (let [json-out (j/write-value-as-string (f x) json-mapper)]
-      (.writeRawValue gen json-out))))
+     (defn write-to-generator [f]
+       (fn [x ^JsonGenerator gen]
+         (let [json-out (j/write-value-as-string (f x) json-mapper)]
+           (.writeRawValue gen json-out))))
 
-(def json-mapper-opts
-  {:encode-key-fn true
-   :decode-key-fn true
-   :modules       [(jt/module
-                    {:handlers
-                     (merge
-                      json-base-handlers
-                      {datahike.remote.RemoteConnection
-                       {:tag    "!datahike/Connection"
-                        :encode (write-to-generator :store-id)
-                        :decode remote-connection}
+     (def json-mapper-opts
+       {:encode-key-fn true
+        :decode-key-fn true
+        :modules       [(jt/module
+                         {:handlers
+                          (merge
+                           json-base-handlers
+                           {datahike.remote.RemoteConnection
+                            {:tag    "!datahike/Connection"
+                             :encode (write-to-generator :store-id)
+                             :decode remote-connection}
 
-                       datahike.datom.Datom
-                       {:tag    "!datahike/Datom"
-                        :encode (write-to-generator datom-as-vec)
-                        :decode datom-from-vec}
+                            datahike.datom.Datom
+                            {:tag    "!datahike/Datom"
+                             :encode (write-to-generator datom-as-vec)
+                             :decode datom-from-vec}
 
-                       datahike.db.TxReport
-                       {:tag    "!datahike/TxReport"
-                        :encode (write-to-generator #(into {} %))
-                        :decode datahike.db/map->TxReport}
+                            datahike.db.TxReport
+                            {:tag    "!datahike/TxReport"
+                             :encode (write-to-generator #(into {} %))
+                             :decode datahike.db/map->TxReport}
 
-                       datahike.remote.RemoteDB
-                       {:tag    "!datahike/DB"
-                        :encode (write-to-generator map-without-remote)
-                        :decode remote-db}
+                            datahike.remote.RemoteDB
+                            {:tag    "!datahike/DB"
+                             :encode (write-to-generator map-without-remote)
+                             :decode remote-db}
 
-                       datahike.remote.RemoteHistoricalDB
-                       {:tag    "!datahike/HistoricalDB"
-                        :encode (write-to-generator map-without-remote)
-                        :decode remote-historical-db}
+                            datahike.remote.RemoteHistoricalDB
+                            {:tag    "!datahike/HistoricalDB"
+                             :encode (write-to-generator map-without-remote)
+                             :decode remote-historical-db}
 
-                       datahike.remote.RemoteSinceDB
-                       {:tag    "!datahike/SinceDB"
-                        :encode (write-to-generator map-without-remote)
-                        :decode remote-since-db}
+                            datahike.remote.RemoteSinceDB
+                            {:tag    "!datahike/SinceDB"
+                             :encode (write-to-generator map-without-remote)
+                             :decode remote-since-db}
 
-                       datahike.remote.RemoteAsOfDB
-                       {:tag    "!datahike/AsOfDB"
-                        :encode (write-to-generator map-without-remote)
-                        :decode remote-as-of-db}
+                            datahike.remote.RemoteAsOfDB
+                            {:tag    "!datahike/AsOfDB"
+                             :encode (write-to-generator map-without-remote)
+                             :decode remote-as-of-db}
 
                        ;; `map-without-remote`, not `(into {} %)` — see the
                        ;; transit handler above; the token leaked here too.
-                       datahike.remote.RemoteEntity
-                       {:tag    "!datahike/Entity"
-                        :encode (write-to-generator map-without-remote)
-                        :decode remote-entity}})})]})
+                            datahike.remote.RemoteEntity
+                            {:tag    "!datahike/Entity"
+                             :encode (write-to-generator map-without-remote)
+                             :decode remote-entity}})})]})
 
-(def json-mapper (j/object-mapper json-mapper-opts))
+     (def json-mapper (j/object-mapper json-mapper-opts))))
