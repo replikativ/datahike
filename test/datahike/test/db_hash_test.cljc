@@ -33,6 +33,7 @@
    unnoticed since 2020 (`e9d55972`)."
   (:require [clojure.test :refer [deftest testing is]]
             [datahike.api :as d]
+            [datahike.db.interface :as dbi]
             [datahike.test.utils :as utils]))
 
 (def ^:private schema
@@ -182,3 +183,27 @@
               mirror (d/filter db (fn [_ _] true))]
           (is (= db mirror) "a FilteredDB mirroring the DB must be equal to it")
           (is (= (hash db) (hash mirror)) "and therefore must hash equal"))))))
+
+(deftest hashing-a-view-scans-its-datoms-once-then-serves-cached
+  (testing "a view keeps no running `:hash`, so `db-view-hash` scans its datoms
+            to compute the sum — an O(n) walk. Repeated hashes of the SAME view
+            instance must reuse that result rather than rescan, or every hash
+            (e.g. using a view as a map/set key) pays another full scan. Counts
+            datom scans via `datahike.db.interface/datoms`, which `db-view-hash`
+            calls, over five hashes of one instance."
+    (with-conn true
+      (fn [conn]
+        (d/transact conn [{:db/id -1 :name "a" :score 1}])
+        (d/transact conn [{:db/id [:name "a"] :score 2}])
+        (let [db @conn]
+          (doseq [[label view] [["FilteredDB" (d/filter db (fn [_ _] true))]
+                                ["HistoricalDB" (d/history db)]
+                                ["AsOfDB" (d/as-of db (:max-tx db))]
+                                ["SinceDB" (d/since db 0)]]]
+            (let [scans (atom 0)
+                  orig  dbi/datoms]
+              (with-redefs [dbi/datoms (fn [& args] (swap! scans inc) (apply orig args))]
+                (dotimes [_ 5] (hash view)))
+              (is (= 1 @scans)
+                  (str label ": expected one datom scan across five hashes, got "
+                       @scans)))))))))
