@@ -10,7 +10,8 @@
    fit (`url-args-limit`), which is what lets an HTTP cache serve it; larger
    arguments go by POST."
   (:refer-clojure :exclude [filter])
-  (:require #?@(:clj [[babashka.http-client :as http]
+  (:require [clojure.string :as str]
+            #?@(:clj [[babashka.http-client :as http]
                       [cognitect.transit :as transit]
                       [jsonista.core :as j]
                       [hasch.core :refer [uuid]]
@@ -18,7 +19,6 @@
                       [datahike.datom :as dd]
                       [datahike.impl.entity :as de]]
                 :cljs [[clojure.core.async :as async]
-                       [clojure.string :as str]
                        [datahike.datom :as dd]])
             ;; The specification drives the JVM's generated functions at load
             ;; and ClojureScript's at macro time; a browser bundle carries
@@ -30,7 +30,8 @@
             ;; The logger and its printer stay out of the browser bundle; a
             ;; request is traced with the console there.
             #?(:clj [replikativ.logging :as log]))
-  #?(:clj (:import [java.io ByteArrayOutputStream])
+  #?(:clj (:import [java.io BufferedReader ByteArrayOutputStream InputStreamReader]
+                   [java.lang Thread])
      :cljs (:require-macros [datahike.http.client :refer [emit-remote-api]])))
 
 (def MEGABYTE (* 1024 1024))
@@ -356,7 +357,218 @@
 #?(:clj (declare db))
 
 #?(:clj
-   (doseq [[n {:keys [args doc supports-remote? referentially-transparent?]}] api/api-specification]
+   (do
+     (defonce ^:private listeners (atom {}))
+
+     (defn- listener-id [conn key]
+       [(get-in conn [:remote-peer :url]) (:store-id conn) key])
+
+     (defn- active-listener? [{:keys [id stopped?] :as listener}]
+       (and (not @stopped?) (identical? listener (get @listeners id))))
+
+     (defn- close-listen-stream! [{:keys [stream]}]
+       (when-let [body @stream]
+         (reset! stream nil)
+         (try
+           (.close ^java.io.Closeable body)
+           (catch Exception _))))
+
+     (defn- stop-listener! [{:keys [id stopped? thread] :as listener}]
+       (reset! stopped? true)
+       (close-listen-stream! listener)
+       (when-let [worker @thread]
+         (when-not (identical? worker (Thread/currentThread))
+           (.interrupt ^Thread worker)))
+       (swap! listeners #(if (identical? listener (get % id)) (dissoc % id) %)))
+
+     (defn- remote-db-from-head [conn head]
+       (binding [remote/*remote-peer* (:remote-peer conn)]
+         (remote/remote-db
+          (assoc (select-keys head [:max-tx :max-eid :commit-id])
+                 :store-id (if (sequential? (:store-id head))
+                             (:store-id head)
+                             [(:store-id head) (:branch head :db)])))))
+
+     (defn- invoke-listener-callback! [{:keys [callback]} report]
+       (try
+         (callback report)
+         (catch Throwable error
+           (log/error :datahike/http-listen-callback-error
+                      {:message (ex-message error)
+                       :error-class (.getName (class error))}))))
+
+     (defn- deliver-listen-event!
+       [{:keys [conn last-commit] :as listener} event data]
+       (when (active-listener? listener)
+         (case event
+           "report"
+           (do
+             (reset! last-commit (:commit-id data))
+             (invoke-listener-callback!
+              listener
+              (cond-> {:db-after (remote-db-from-head conn data)
+                       :db-before nil
+                       :tempids (:tempids data)
+                       :commit-id (:commit-id data)}
+                (contains? data :tx-data) (assoc :tx-data (:tx-data data))
+                (:truncated data) (assoc :truncated true))))
+
+           ("resync" "coalesced")
+           (do
+             (reset! last-commit (:commit-id data))
+             (invoke-listener-callback!
+              listener {:resync true :db-after (remote-db-from-head conn data)}))
+
+           "deleted"
+           (do
+             (invoke-listener-callback! listener {:deleted true})
+             (stop-listener! listener))
+
+           nil)))
+
+     (defn- sse-field-value [line prefix]
+       (let [value (subs line (count prefix))]
+         (if (str/starts-with? value " ") (subs value 1) value)))
+
+     (defn- read-listen-stream! [listener ^java.io.InputStream body]
+       (with-open [reader (BufferedReader. (InputStreamReader. body "UTF-8"))]
+         (loop [event nil data []]
+           (when (active-listener? listener)
+             (if-let [line (.readLine reader)]
+               (cond
+                 (empty? line)
+                 (do
+                   (when (and event (seq data))
+                     (deliver-listen-event!
+                      listener event
+                      (j/read-value (str/join "\n" data) remote/json-mapper)))
+                   (recur nil []))
+
+                 (str/starts-with? line ":")
+                 (recur event data)
+
+                 (str/starts-with? line "event:")
+                 (recur (sse-field-value line "event:") data)
+
+                 (str/starts-with? line "data:")
+                 (recur event (conj data (sse-field-value line "data:")))
+
+                 :else
+                 (recur event data))
+               nil)))))
+
+     (defn- listen-target [{:keys [conn last-commit]}]
+       (let [{:keys [url]} (:remote-peer conn)
+             [store-id branch] (if (sequential? (:store-id conn))
+                                 (:store-id conn)
+                                 [(:store-id conn) :db])]
+         {:url (str url "/listen")
+          :query-params (cond-> {"store" (str store-id)
+                                 "branch" (name branch)}
+                          @last-commit (assoc "since" (str @last-commit)))}))
+
+     (defn- wait-to-reconnect [listener ^long delay]
+       (try
+         (Thread/sleep delay)
+         (active-listener? listener)
+         (catch InterruptedException _ false)))
+
+     (defn- listen-once! [{:keys [conn stream] :as listener}]
+       (let [{:keys [url query-params]} (listen-target listener)
+             {:keys [token]} (:remote-peer conn)
+             response (http/get url
+                                {:query-params query-params
+                                 :headers (cond-> {"accept" "text/event-stream"}
+                                            token (assoc "authorization" (str "token " token)))
+                                 :as :stream
+                                 :throw false})
+             status (:status response)
+             body (:body response)]
+         (cond
+           (contains? #{401 403 404} status)
+           (do
+             (when body
+               (try (.close ^java.io.Closeable body) (catch Exception _)))
+             (invoke-listener-callback!
+              listener {:error (ex-info (str "HTTP " status " from " url)
+                                        {:status status :url url})
+                        :status status})
+             (stop-listener! listener)
+             :terminal)
+
+           (= 200 status)
+           (do
+             (reset! stream body)
+             (try
+               (when (active-listener? listener)
+                 (read-listen-stream! listener body))
+               (catch Throwable error
+                 (when (active-listener? listener)
+                   (log/error :datahike/http-listen-error
+                              {:message (ex-message error)
+                               :error-class (.getName (class error))})))
+               (finally
+                 (close-listen-stream! listener)))
+             :success)
+
+           :else
+           (do
+             (when body
+               (try (.close ^java.io.Closeable body) (catch Exception _)))
+             (throw (ex-info (str "HTTP " status " from " url)
+                             {:status status :url url}))))))
+
+     (defn- run-listener! [listener]
+       (loop [backoff 500]
+         (when (active-listener? listener)
+           (let [outcome (try
+                           (listen-once! listener)
+                           (catch Throwable error
+                             (when (active-listener? listener)
+                               (log/error :datahike/http-listen-error
+                                          {:message (ex-message error)
+                                           :error-class (.getName (class error))}))
+                             :failure))]
+             (case outcome
+               :success (when (wait-to-reconnect listener 500)
+                          (recur 1000))
+               :failure (when (wait-to-reconnect listener backoff)
+                          (recur (min 30000 (* 2 backoff))))
+               nil)))))
+
+     (declare unlisten)
+
+     (defn listen
+       "Listen for remote changes so a thin client can refresh without polling."
+       ([conn callback]
+        (listen conn (str (random-uuid)) callback))
+       ([conn key callback]
+        (unlisten conn key)
+        (let [listener {:id (listener-id conn key)
+                        :conn conn
+                        :callback callback
+                        :last-commit (atom nil)
+                        :stream (atom nil)
+                        :thread (atom nil)
+                        :stopped? (atom false)}
+              worker (doto (Thread. #(run-listener! listener)
+                                    (str "datahike-http-listen-" key))
+                       (.setDaemon true))]
+          (reset! (:thread listener) worker)
+          (swap! listeners assoc (:id listener) listener)
+          (.start worker)
+          key)))
+
+     (defn unlisten
+       "Stop a remote change listener so its request and reconnect loop release resources."
+       [conn key]
+       (when-let [listener (get @listeners (listener-id conn key))]
+         (stop-listener! listener))
+       nil)))
+
+#?(:clj
+   (doseq [[n {:keys [args doc supports-remote? referentially-transparent?]}] api/api-specification
+           :when (not (#{'listen 'unlisten} n))]
      (eval
       `(def
          ~(with-meta n

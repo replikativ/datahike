@@ -443,11 +443,15 @@ A read (every function the specification marks referentially transparent)
 is a GET. Its arguments travel either in the body, as the JVM client sends
 them, or in the URL as `?args=<base64url of the encoded argument vector>&f=cbor`
 (`f` is `cbor`, `transit`, `edn` or `json`), which is what a browser client
-sends since a browser cannot GET with a body. Either way the response
-carries the cache headers `:cache {:get {:max-age …}}` asks for, and the URL
-form is what an HTTP cache keys on. Every read route answers POST as well,
-for arguments too large for a URL; that path is never cached. Writes are
-POST only.
+sends since a browser cannot GET with a body. The URL response carries the
+cache headers `:cache {:get {:max-age …}}` asks for, and the URL form is what
+an HTTP cache keys on. When every Datahike handle in a referentially
+transparent call is an immutable database value (including historical, since,
+and as-of views), and at least one is present, the URL response instead carries
+`max-age=31536000, immutable`; a connection handle never does. This is what
+makes a browser's own HTTP cache a correct persistent cache for snapshot reads.
+Every read route answers POST as well, for arguments too large for a URL; that
+path is never cached. Writes are POST only.
 
 ### What may be created
 

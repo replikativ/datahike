@@ -13,6 +13,14 @@ When something is added, it's typically marked *Experimental*. When the API cont
   `:tx-options {:allow-index-backfill? true}` to enable index/uniqueness backfill
   for that transaction without changing the database configuration.
 
+- **JVM thin-client change stream.** *Experimental.* `datahike.http.client`
+  now provides `listen` and `unlisten` for Clojure remote connections, with
+  the same SSE reports, automatic reconnect and resume, terminal deletion and
+  authentication-error behavior as the ClojureScript thin client.
+- **Persistent and in-memory caching for immutable snapshot reads.** The HTTP
+  server marks referentially transparent URL reads against database values as
+  `immutable`, and the TypeScript thin client deduplicates and retains up to
+  128 such results per client instance with configurable LRU eviction.
 - **Bounded query execution.** Queries accept `:timeout` in milliseconds and
   fail with `:datahike/query-timeout` when the engine reaches the deadline,
   including planner, relational, rule and nested-query execution. The dynamic

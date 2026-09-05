@@ -13,7 +13,7 @@ const generated = fs.readFileSync(path.join(compiled, "api.generated.js"), "utf8
 const names = [...generated.matchAll(/^export function ([A-Za-z0-9_$]+)/gm)]
   .map((match) => match[1])
   .filter((name, index, all) => all.indexOf(name) === index);
-const helpers = ["isPromise", "listen", "randomUuid", "unlisten", "uuid"];
+const helpers = ["clearCache", "configureCache", "isPromise", "listen", "randomUuid", "unlisten", "uuid"];
 const esm = `${core}\n${generated}\nexport { ${helpers.join(", ")} };\n` +
   `export default { ${[...names, ...helpers].join(", ")} };\n`;
 

@@ -24,10 +24,15 @@ function eventWhere(predicate, timeout = 5000) {
 test("TypeScript thin client against the JVM server", { skip: !url || !token }, async () => {
   const calls = [];
   const realFetch = globalThis.fetch;
+  let failNextQuery = false;
   let conn;
   let key;
   globalThis.fetch = (input, init) => {
     calls.push({ url: String(input), method: init?.method });
+    if (failNextQuery && String(input).includes("/q")) {
+      failNextQuery = false;
+      return Promise.reject(new Error("deliberate fetch failure"));
+    }
     return realFetch(input, init);
   };
 
@@ -53,11 +58,32 @@ test("TypeScript thin client against the JVM server", { skip: !url || !token }, 
     assert.ok(calls.some((call) => call.url.endsWith("/writer-barrier") && call.method === "POST"));
 
     const db = await d.db(conn);
-    const small = await d.q("[:find ?n :where [?e :name ?n]]", db);
+    d.clearCache();
+    const query = "[:find ?n :where [?e :name ?n]]";
+    const qCallsBefore = calls.filter((call) => call.url.includes("/q")).length;
+    const [small, duplicate] = await Promise.all([d.q(query, db), d.q(query, db)]);
     assert.deepEqual(small.map((row) => row[0]).sort(), ["Ada", "Grace"]);
+    assert.deepEqual(duplicate, small);
     const qCalls = calls.filter((call) => call.url.includes("/q"));
+    assert.equal(qCalls.length, qCallsBefore + 1);
     assert.equal(qCalls.at(-1).method, "GET");
     assert.match(qCalls.at(-1).url, /\?args=.*&f=json$/);
+
+    d.clearCache();
+    await d.q(query, db);
+    assert.equal(calls.filter((call) => call.url.includes("/q")).length, qCallsBefore + 2);
+
+    const dbCallsBefore = calls.filter((call) => call.url.endsWith("/db")).length;
+    await d.db(conn);
+    await d.db(conn);
+    assert.equal(calls.filter((call) => call.url.endsWith("/db")).length, dbCallsBefore + 2);
+
+    const failedQuery = "[:find ?n :where [?e :name ?n] [(identity true)]]";
+    const failedCallsBefore = calls.filter((call) => call.url.includes("/q")).length;
+    failNextQuery = true;
+    await assert.rejects(d.q(failedQuery, db), /deliberate fetch failure/);
+    await d.q(failedQuery, db);
+    assert.equal(calls.filter((call) => call.url.includes("/q")).length, failedCallsBefore + 2);
 
     const ages = Array.from({ length: 3000 }, (_, index) => index);
     const large = await d.q("[:find ?n :in $ [?a ...] :where [?e :age ?a] [?e :name ?n]]", db, ages);
@@ -83,6 +109,9 @@ test("TypeScript thin client against the JVM server", { skip: !url || !token }, 
     const laterDb = await d.db(conn);
     assert.equal(report["commit-id"], report["db-after"]["commit-id"]);
     assert.equal(report["commit-id"], laterDb["commit-id"]);
+    const laterCallsBefore = calls.filter((call) => call.url.includes("/q")).length;
+    assert.deepEqual((await d.q(query, laterDb)).map((row) => row[0]).sort(), ["Ada", "Grace"]);
+    assert.equal(calls.filter((call) => call.url.includes("/q")).length, laterCallsBefore + 1);
     assert.deepEqual(await d.q("[:find ?v :where [?e :listener/value ?v]]", report["db-after"]), [[":received"]]);
 
     d.unlisten(conn, key);
