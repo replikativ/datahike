@@ -6,6 +6,17 @@ When something is added, it's typically marked *Experimental*. When the API cont
 
 ## 0.8
 
+- **Scalar NaNs have a consistent numeric index order.** NaN sorts after all
+  other numbers; repeated NaNs compare equal. Cardinality-one writes between
+  finite values and NaN now emit the corresponding retraction and assertion.
+  **Upgrade:** restart all writers; legacy persistent-set records containing
+  scalar NaNs (including NaNs inside tuples) are refused until exported using
+  the old runtime and rebuilt into a new database. See
+  [the upgrade procedure](doc/nan-index-upgrade.md). Earlier
+  versions could order NaN entries incorrectly or silently omit writes; an
+  index rebuild cannot recover omitted writes. Signed-zero comparison and
+  scalar datom hashing are unchanged.
+
 - **Bounded query execution.** Queries accept `:timeout` in milliseconds and
   fail with `:datahike/query-timeout` when the engine reaches the deadline,
   including planner, relational, rule and nested-query execution. The dynamic

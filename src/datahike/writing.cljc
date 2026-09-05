@@ -10,6 +10,7 @@
             [datahike.index :as di]
             [datahike.index.persistent-set :as dip]
             [datahike.index.audit :as audit]
+            [datahike.index.compatibility :as compatibility]
             [datahike.index.secondary :as sec]
             [datahike.store :as ds]
             [datahike.tools :as dt]
@@ -50,7 +51,7 @@
    :temporal-eavt-key :temporal-aevt-key :temporal-avet-key
    :schema-meta-key :secondary-index-keys
    :schema :rschema :system-entities :ref-ident-map :ident-ref-map
-   :max-tx :max-eid :op-count :hash :meta])
+   :max-tx :max-eid :op-count :hash :meta :pss-comparator-version])
 
 (defn- stored-head-identity [stored]
   (-> (select-keys stored stored-head-identity-keys)
@@ -469,6 +470,7 @@
                                  :temporal-avet-root (di/-root-node temporal-avet'))))]
       [schema-meta-kv-to-write
        (merge
+        (compatibility/stored-marker config)
         {:schema-meta-key  schema-meta-key
          :config          config
          :meta            meta
@@ -627,6 +629,7 @@
 (defn stored->db
   "Constructs in-memory db instance from stored map value."
   [stored-db store]
+  (compatibility/ensure-compatible! stored-db store)
   (let [{:keys [eavt-key aevt-key avet-key
                 temporal-eavt-key temporal-aevt-key temporal-avet-key
                 eavt-root aevt-root avet-root
@@ -972,6 +975,11 @@
                     max-tx max-eid
                     (dissoc meta :datahike/commit-id)]
                    [hash max-tx max-eid meta])
+         ;; Missing marker preserves the byte-for-byte legacy hash input.
+         ;; New commits bind the comparator format to their content identity.
+         content (cond-> content
+                   (contains? stored-db :pss-comparator-version)
+                   (conj {:pss-comparator-version (:pss-comparator-version stored-db)}))
          content-uuid (uuid content)]
      (if (:crypto-hash? config)
        content-uuid
@@ -1522,7 +1530,8 @@
          ;; Detach roots before they enter the store (see db->stored).
          detach (fn [idx] (di/with-storage (:index config) idx nil))
          pre-cid-stored
-         (merge {:max-tx          max-tx
+         (merge (compatibility/stored-marker config)
+                {:max-tx          max-tx
                  :max-eid         max-eid
                  :op-count        op-count
                  :hash            hash
