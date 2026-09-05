@@ -133,6 +133,8 @@
     db "Database dereferencing handled internally via input_format parameter"
     listen "Requires persistent callbacks across FFI boundary - not supported"
     unlisten "Requires persistent callbacks across FFI boundary - not supported"
+    listen-commits "Requires persistent callbacks across FFI boundary - not supported"
+    unlisten-commits "Requires persistent callbacks across FFI boundary - not supported"
     as-of "Returns DB object - use input_format='asof:timestamp_ms' instead"
     since "Returns DB object - use input_format='since:timestamp_ms' instead"
     history "Returns DB object - use input_format='history' instead"

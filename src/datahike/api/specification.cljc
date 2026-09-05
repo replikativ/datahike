@@ -822,6 +822,32 @@
                  :code "(unlisten conn :my-listener)"}]
      :impl datahike.core/unlisten!}
 
+    listen-commits
+    {:args [:function
+            [:=> [:cat :datahike/SConnection :any] :any]
+            [:=> [:cat :datahike/SConnection :any :any] :any]]
+     :ret :any
+     :categories [:connection :reactive :versioning]
+     :stability :experimental
+     :supports-remote? false
+     :referentially-transparent? false
+     :doc "Listen once per successful durable writer commit. The callback receives commit identity, parents, branch, store identity, max transaction, the exact durable db-before/db-after batch boundary, and ordered finalized transaction reports. Notifications are local and post-commit. Retaining an event retains its immutable database values. Callback failures do not undo the commit. WARNING: callbacks run on the commit loop; return promptly and use only asynchronous writer operations."
+     :examples [{:desc "Observe durable branch-head transitions"
+                 :code "(listen-commits conn :publisher (fn [{:keys [commit-id parent-commit-ids]}] ...))"}]
+     :impl datahike.core/listen-commits!}
+
+    unlisten-commits
+    {:args [:=> [:cat :datahike/SConnection :any] :map]
+     :ret :map
+     :categories [:connection :reactive :versioning]
+     :stability :experimental
+     :supports-remote? false
+     :referentially-transparent? false
+     :doc "Remove a durable commit listener."
+     :examples [{:desc "Stop observing durable commits"
+                 :code "(unlisten-commits conn :publisher)"}]
+     :impl datahike.core/unlisten-commits!}
+
     ;; =========================================================================
     ;; Schema Operations
     ;; =========================================================================
