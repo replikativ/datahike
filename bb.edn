@@ -81,7 +81,11 @@
                :task (clojure "-X:deps" "prep" ":aliases" "[:test]")}
 
          codegen-java {:doc "Generate Java API bindings from specification"
-                       :depends [prep]
+                       ;; `jcompile` needs a strict clean -> codegen -> compile
+                       ;; order. Keeping `clean` beside this task in jcompile's
+                       ;; dependency vector lets babashka run it concurrently
+                       ;; and delete IEntity.class while codegen is loading it.
+                       :depends [clean prep]
                        :task (let [cp (str/trim (:out (shell {:out :string} "clojure" "-Spath")))]
                                ;; First compile Java dependencies (Util, IEntity) so Clojure can load them
                                (println "Compiling Java dependencies...")
@@ -127,7 +131,7 @@
                          :task (clojure "-M" "-m" "datahike.codegen.report")}
 
          jcompile {:doc "Compile java classes"
-                   :depends [clean codegen-java]
+                   :depends [codegen-java]
                    :task (build/compile-java (-> config :build :clj))}
 
          javadoc {:doc "Generate Javadoc for Java API (published to javadoc.io)"

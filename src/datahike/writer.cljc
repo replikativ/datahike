@@ -60,6 +60,52 @@
 ;; at the cost of higher latency
 (def ^:const DEFAULT_COMMIT_WAIT_TIME 0) ;; in ms
 
+(def ^:private barrier-marker ::barrier)
+
+(defn- commit-batch
+  "Drain reports up to the next barrier, retaining that marker for the next
+   commit-loop iteration. Reports after it belong to a later durable root."
+  [first-entry commit-queue]
+  (loop [reports [first-entry]]
+    (if-let [entry (poll! commit-queue)]
+      (if (= barrier-marker (first entry))
+        [reports entry]
+        (recur (conj reports entry)))
+      [reports nil])))
+
+(defn- fail-pending-commits! [commit-queue pending failure]
+  (when pending (put! (second pending) failure))
+  (loop []
+    (when-let [[_ callback] (poll! commit-queue)]
+      (put! callback failure)
+      (recur))))
+
+(defn- carry-retry-barrier! [retry-barriers callback marker]
+  (swap! retry-barriers update callback (fnil conj []) marker))
+
+(defn- settle-retry-failure!
+  [retry-pending retry-barriers callback failure]
+  (swap! retry-pending
+         (fn [callbacks]
+           (into [] (remove #{callback}) callbacks)))
+  (when-let [markers (get @retry-barriers callback)]
+    (swap! retry-barriers dissoc callback)
+    (doseq [marker markers]
+      (put! (second marker) failure))))
+
+(defn- settle-retry-success! [retry-barriers callback commit-db]
+  (when-let [markers (get @retry-barriers callback)]
+    (swap! retry-barriers dissoc callback)
+    (doseq [marker markers]
+      (put! (second marker) commit-db))))
+
+(defn- fail-retry-barriers! [retry-barriers retry-pending failure]
+  (doseq [[_ markers] @retry-barriers
+          marker markers]
+    (put! (second marker) failure))
+  (reset! retry-barriers {})
+  (reset! retry-pending []))
+
 ;; How many transactions a SHARED writer chains onto one head read before
 ;; it stops and waits for them to commit. The head read synchronises us with
 ;; OTHER processes. If another writer commits during the batch, conditional head
@@ -185,6 +231,21 @@
         ;; committing group can conflict, and a group is at most one batch.
         retry-queue-buffer          (buffer (max 1 max-batch))
         retry-queue                 (chan retry-queue-buffer)
+        ;; Barriers following a transaction that loses a fenced head race
+        ;; follow that logical transaction through its transparent retry.
+        ;; Keyed by the original callback, which the retry preserves; the value
+        ;; is a vector because several consecutive barriers can all be waiting
+        ;; on the same last retrying transaction.
+        retry-barriers              (atom {})
+        retry-pending               (atom [])
+        ;; Hold the boundary in the transaction loop until the entire preceding
+        ;; batch, including all retries, has settled. No later invocation may
+        ;; be prepared while this marker is held.
+        deferred-barrier            (atom nil)
+        fail-deferred-barrier!      (fn [failure]
+                                      (when-let [marker @deferred-barrier]
+                                        (put! (:callback marker) failure)
+                                        (reset! deferred-barrier nil)))
         ;; Set before the fatal path closes anything. A retry is only worth
         ;; queueing while a loop remains to drain it, and there is no
         ;; non-destructive way to ask a core.async channel whether it is closed —
@@ -232,6 +293,7 @@
                   (if (and shared?
                            (pos? pending)
                            (or (>= pending max-batch)
+                               (some? @deferred-barrier)
                                (zero? (count transaction-queue-buffer))))
                     (do
                       ;; One signal per COMMITTED TRANSACTION, so this balances
@@ -279,6 +341,9 @@
                                        (<! (timeout (+ (* backoff (bit-shift-left 1 (min 16 (dec n))))
                                                        (rand-int (inc backoff))))))
                                      inv))
+                                 (when-let [marker @deferred-barrier]
+                                   (reset! deferred-barrier nil)
+                                   marker)
                                  (<?- transaction-queue))]
                       (do
                         (when (> (count transaction-queue-buffer) (* 0.9 transaction-queue-size))
@@ -322,6 +387,7 @@
                                            (log/error :datahike/head-reload-failed
                                                       {:invocation (dissoc invocation :bindings) :error e})
                                            (put! callback e)
+                                           (settle-retry-failure! retry-pending retry-barriers callback e)
                                            #?(:clj (when (instance? Error e)
                                                      (reset! writer-down? true)
                                                      (close! transaction-queue)
@@ -330,6 +396,8 @@
                                                      (close! retry-queue)
                                                      (fail-queued-invocations! transaction-queue e)
                                                      (fail-queued-invocations! retry-queue e)
+                                                     (fail-retry-barriers! retry-barriers retry-pending e)
+                                                     (fail-deferred-barrier! e)
                                                      (throw e)))
                                            ::reload-failed)))
                               reload-failed? (= ::reload-failed old)
@@ -432,6 +500,7 @@
                                                              :error      e}
                                                             e)
                                                    e)))
+                                        (settle-retry-failure! retry-pending retry-barriers callback e)
                                 ;; Re-throw Errors (AssertionError, OutOfMemoryError, etc.) to crash the writer
                                 ;; Only Exceptions should be handled and allow the writer to continue.
                                 ;; CLOSE the queues first: a dead loop with open queues would accept
@@ -445,6 +514,8 @@
                                                   (close! retry-queue)
                                                   (fail-queued-invocations! transaction-queue e)
                                                   (fail-queued-invocations! retry-queue e)
+                                                  (fail-retry-barriers! retry-barriers retry-pending e)
+                                                  (fail-deferred-barrier! e)
                                                   (throw e)))
                                         :error))]
                           (cond reload-failed?
@@ -485,6 +556,25 @@
                                   ;; check at the top of the loop closes the batch
                                   ;; if this turns out to be the last work there is.
                                   (recur old needs-reload? pending))
+
+                                (= barrier-marker res)
+                                (if (and shared?
+                                         (or (pos? pending)
+                                             (pos? (count retry-queue-buffer))))
+                                  (do
+                                    (reset! deferred-barrier invocation)
+                                    (recur old needs-reload? pending))
+                                  (do
+                                    (when-not (put! commit-queue [barrier-marker callback])
+                                      (put! callback
+                                            (ex-info "Writer shut down before this barrier could settle"
+                                                     {:type :writer-shut-down})))
+                                  ;; The marker separates commit groups, but
+                                  ;; later reports may still be prepared from
+                                  ;; this ordered speculative chain. The commit
+                                  ;; loop cannot cross the marker and resolves
+                                  ;; it only after the preceding group is durable.
+                                    (recur old needs-reload? pending)))
 
                                 (not= res :error)
                                 (do
@@ -571,11 +661,17 @@
                        ;; stamp the batch opened with.
                        last-rev nil]
                   (when tx
-                    (let [txs (into [tx] (take-while some?) (repeatedly #(poll! commit-queue)))]
+                    (if (= barrier-marker (first tx))
+                      (do
+                        (if-let [retry-callback (peek @retry-pending)]
+                          (carry-retry-barrier! retry-barriers retry-callback tx)
+                          (>! (second tx) @(:wrapped-atom connection)))
+                        (recur (<?- commit-queue) last-cid last-rev))
+                      (let [[txs pending-marker] (commit-batch tx commit-queue)]
               ;; empty channel of pending transactions
-                      (log/trace :datahike/batch-commit {:batch-size (count txs)})
+                        (log/trace :datahike/batch-commit {:batch-size (count txs)})
               ;; commit latest tx to disk
-                      (let [;; FIRST, not peek: only a batch's opening
+                        (let [;; FIRST, not peek: only a batch's opening
                             ;; transaction carries a cid, and it is the parent of
                             ;; the commit we are about to make. The chained ones
                             ;; carry nil and mean "you committed my parent
@@ -583,93 +679,98 @@
                             ;; can never put a stamped transaction after a nil
                             ;; one: the transaction loop does not enqueue a new
                             ;; batch until the previous one is confirmed durable.
-                            last-cid (if-not shared?
-                                       last-cid
-                                       (or (nth (first txs) 2 nil) last-cid))
+                              last-cid (if-not shared?
+                                         last-cid
+                                         (or (nth (first txs) 2 nil) last-cid))
                             ;; Same source as last-cid: the batch's opening
                             ;; transaction carries the revision it was applied to.
                             ;; A chained one carries nil, which is correct — the
                             ;; commit that precedes it in this batch moved the head,
                             ;; so its own revision is stale by construction and the
                             ;; commit loop re-reads (see below).
-                            head-rev (when shared?
-                                       (or (nth (first txs) 3 nil) last-rev))
-                            db (:db-after (first (peek txs)))
+                              head-rev (when shared?
+                                         (or (nth (first txs) 3 nil) last-rev))
+                              db (:db-after (first (peek txs)))
                             ;; Check for merge parents (set by merge-writer!)
-                            merge-parents (get-in db [:meta :datahike/merge-parents])
+                              merge-parents (get-in db [:meta :datahike/merge-parents])
                             ;; Clear merge-parents from db meta before persisting
-                            db (if merge-parents
-                                 (update db :meta dissoc :datahike/merge-parents)
-                                 db)
-                            build-cleanup-complete? (atom false)]
-                        (try
-                          (let [start-ts (get-time-ms)
-                                {{:keys [datahike/commit-id]} :meta
-                                 :as commit-db} (<?- (w/commit! db merge-parents false last-cid head-rev))
-                                commit-time (- (get-time-ms) start-ts)
+                              db (if merge-parents
+                                   (update db :meta dissoc :datahike/merge-parents)
+                                   db)
+                              build-cleanup-complete? (atom false)
+                              carried-marker? (atom false)]
+                          (try
+                            (let [start-ts (get-time-ms)
+                                  {{:keys [datahike/commit-id]} :meta
+                                   :as commit-db} (<?- (w/commit! db merge-parents false last-cid head-rev))
+                                  commit-time (- (get-time-ms) start-ts)
                                 ;; Finalize once, then hand these SAME report
                                 ;; values to both the durable-batch listener and
                                 ;; each transaction's caller. This preserves
                                 ;; transaction boundaries while making every
                                 ;; :db-after the head that actually landed.
-                                finalized-txs
-                                (mapv (fn [[tx-report callback]]
-                                        [(-> tx-report
-                                             (assoc-in [:tx-meta :db/commitId] commit-id)
-                                             (assoc :db-after commit-db))
-                                         callback])
-                                      txs)
-                                tx-reports (mapv first finalized-txs)]
-                            (log/trace :datahike/commit-time {:duration-ms commit-time})
-                            (metrics/commit! (:config db)
-                                             commit-time
-                                             (count txs)
-                                             (reduce + 0 (map (comp count :tx-data first) txs)))
+                                  finalized-txs
+                                  (mapv (fn [[tx-report callback]]
+                                          [(-> tx-report
+                                               (assoc-in [:tx-meta :db/commitId] commit-id)
+                                               (assoc :db-after commit-db))
+                                           callback])
+                                        txs)
+                                  tx-reports (mapv first finalized-txs)]
+                              (log/trace :datahike/commit-time {:duration-ms commit-time})
+                              (metrics/commit! (:config db)
+                                               commit-time
+                                               (count txs)
+                                               (reduce + 0 (map (comp count :tx-data first) txs)))
                             ;; The head is durable now, so the background build's
                             ;; pin can be released. Do this BEFORE publishing
                             ;; `commit-db` through the connection or callback:
                             ;; observing :ready must mean its GC lifecycle is
                             ;; finished, not merely that cleanup is about to run
                             ;; in this loop's `finally`.
-                            #?(:clj
-                               (doseq [[tx-report _] txs
-                                       :let [build-guard
-                                             (:secondary-index-build-guard
-                                              tx-report)]
-                                       :when build-guard]
-                                 (w/finish-secondary-index-build! build-guard)))
-                            (reset! build-cleanup-complete? true)
-                            (reset! connection commit-db)
+                              #?(:clj
+                                 (doseq [[tx-report _] txs
+                                         :let [build-guard
+                                               (:secondary-index-build-guard
+                                                tx-report)]
+                                         :when build-guard]
+                                   (w/finish-secondary-index-build! build-guard)))
+                              (reset! build-cleanup-complete? true)
+                              (reset! connection commit-db)
                             ;; This is the one exact durable-commit boundary. A
                             ;; drained group may contain many transaction reports,
                             ;; but commit! wrote one immutable commit and flipped
                             ;; one branch head. Transaction listeners cannot infer
                             ;; that grouping because every report below receives
                             ;; the same final db-after and commit id.
-                            (notify-commit-listeners!
-                             connection
-                             {:type :datahike/commit
-                              :store-id (ds/canonical-store-id
-                                         (:store commit-db)
-                                         (get-in commit-db [:config :store]))
-                              :branch (get-in commit-db [:config :branch])
-                              :commit-id commit-id
-                              :parent-commit-ids
-                              (or (get-in commit-db [:meta :datahike/parents]) #{})
-                              :max-tx (:max-tx commit-db)
-                              :tx-count (count txs)
+                              (notify-commit-listeners!
+                               connection
+                               {:type :datahike/commit
+                                :store-id (ds/canonical-store-id
+                                           (:store commit-db)
+                                           (get-in commit-db [:config :store]))
+                                :branch (get-in commit-db [:config :branch])
+                                :commit-id commit-id
+                                :parent-commit-ids
+                                (or (get-in commit-db [:meta :datahike/parents]) #{})
+                                :max-tx (:max-tx commit-db)
+                                :tx-count (count txs)
                               ;; Rich process-local view. Attaching these is
                               ;; cheap: the writer already retains them until
                               ;; callers are notified. Consumers that keep the
                               ;; event also keep the immutable DB values alive.
-                              :db-before (:db-before (first tx-reports))
-                              :db-after commit-db
-                              :tx-reports tx-reports})
+                                :db-before (:db-before (first tx-reports))
+                                :db-after commit-db
+                                :tx-reports tx-reports})
                     ;; notify all processes that transaction is complete
-                            (doseq [[tx-report callback] finalized-txs]
-                              (>! callback tx-report)))
-                          (catch #?(:clj Throwable :cljs js/Error) e
-                            (cond
+                              (doseq [[tx-report callback] finalized-txs]
+                                (>! callback tx-report)
+                                (swap! retry-pending
+                                       (fn [callbacks]
+                                         (into [] (remove #{callback}) callbacks)))
+                                (settle-retry-success! retry-barriers callback commit-db)))
+                            (catch #?(:clj Throwable :cljs js/Error) e
+                              (cond
                               ;; NOT FATAL, and NOT RETRIED. The connection demands
                               ;; fencing and this head has no revision to fence
                               ;; against — a legacy branch head on an upgraded
@@ -680,14 +781,15 @@
                               ;; :writer-shut-down instead of the error that says
                               ;; what to do. Fail this group's callers with the
                               ;; message and keep the writer alive.
-                              (= :datahike/fencing-unavailable (:type (ex-data e)))
-                              (do
-                                (log/warn :datahike/fencing-unavailable
-                                          {:branch (:branch (:config db))})
-                                (doseq [[_ callback] txs]
-                                  (put! callback e)))
+                                (= :datahike/fencing-unavailable (:type (ex-data e)))
+                                (do
+                                  (log/warn :datahike/fencing-unavailable
+                                            {:branch (:branch (:config db))})
+                                  (doseq [[_ callback] txs]
+                                    (put! callback e)
+                                    (settle-retry-failure! retry-pending retry-barriers callback e)))
 
-                              (= :konserve/revision-mismatch (:type (ex-data e)))
+                                (= :konserve/revision-mismatch (:type (ex-data e)))
                               ;; NOT FATAL. Another writer moved the branch head
                               ;; between our head read and our head write, so this
                               ;; commit did not land — which is the fence doing its
@@ -708,19 +810,38 @@
                               ;; `connection` is deliberately NOT reset: nothing was
                               ;; committed, so the db this writer holds is still the
                               ;; last one that was.
-                              (do
-                                (log/warn :datahike/head-conflict
-                                          {:branch (:branch (:config db)) :transactions (count txs)})
+                                (do
+                                  (log/warn :datahike/head-conflict
+                                            {:branch (:branch (:config db)) :transactions (count txs)})
                                 ;; EXACTLY ONE outcome per invocation: it is either
                                 ;; handed back for replay or its caller is told.
                                 ;; Never both — the caller is still waiting on that
                                 ;; one callback.
-                                (doseq [[_ callback _ _ invocation] txs]
-                                  (let [attempt (inc (get invocation :datahike/attempt 0))
-                                        op      (:op invocation)]
-                                    (if (and (contains? retryable-ops op)
-                                             (<= attempt retries)
-                                             invocation
+                                  (let [retryable-txs
+                                        (filterv
+                                         (fn [[_ _ _ _ invocation]]
+                                           (let [attempt (inc (get invocation :datahike/attempt 0))]
+                                             (and invocation
+                                                  (contains? retryable-ops (:op invocation))
+                                                  (<= attempt retries)
+                                                  (not @writer-down?))))
+                                         txs)
+                                        carrier-callback (some-> retryable-txs last second)]
+                                    (when (and pending-marker carrier-callback)
+                                      (carry-retry-barrier! retry-barriers carrier-callback pending-marker)
+                                      (reset! carried-marker? true))
+                                    (let [retry-callbacks (mapv second retryable-txs)
+                                          retried?       (set retry-callbacks)]
+                                      (swap! retry-pending
+                                             (fn [callbacks]
+                                               (into (into [] (remove retried?) callbacks)
+                                                     retry-callbacks))))
+                                    (doseq [[_ callback _ _ invocation] txs]
+                                      (let [attempt (inc (get invocation :datahike/attempt 0))
+                                            op      (:op invocation)]
+                                        (if (and (contains? retryable-ops op)
+                                                 (<= attempt retries)
+                                                 invocation
                                              ;; A retry is only worth queueing while
                                              ;; a loop remains to drain it. `put!`
                                              ;; alone cannot tell us that — it
@@ -734,26 +855,28 @@
                                              ;; dropped invocation whose caller is
                                              ;; still holding the callback is exactly
                                              ;; the permanent hang we are closing.
-                                             (not @writer-down?)
-                                             (put! retry-queue
-                                                   (assoc invocation :datahike/attempt attempt)))
-                                      (do
-                                        (metrics/head-conflict! (:config db) :retried)
-                                        (log/trace :datahike/head-conflict-retry {:op op :attempt attempt}))
-                                      (do
-                                        (metrics/head-conflict! (:config db) :failed)
-                                        (put! callback
-                                              (ex-info (str "The branch head moved while this transaction was being "
-                                                            "prepared, so it was NOT applied — another writer committed "
-                                                            "first. Nothing was lost and nothing partially applied; "
-                                                            "re-read and transact again.")
-                                                       {:type    :datahike/head-conflict
-                                                        :branch  (:branch (:config db))
-                                                        :op      op
-                                                        :attempt attempt
-                                                        :error   e})))))))
-                              :else
-                              (do
+                                                 (not @writer-down?)
+                                                 (put! retry-queue
+                                                       (assoc invocation :datahike/attempt attempt)))
+                                          (do
+                                            (metrics/head-conflict! (:config db) :retried)
+                                            (log/trace :datahike/head-conflict-retry {:op op :attempt attempt}))
+                                          (do
+                                            (metrics/head-conflict! (:config db) :failed)
+                                            (let [failure
+                                                  (ex-info (str "The branch head moved while this transaction was being "
+                                                                "prepared, so it was NOT applied — another writer committed "
+                                                                "first. Nothing was lost and nothing partially applied; "
+                                                                "re-read and transact again.")
+                                                           {:type    :datahike/head-conflict
+                                                            :branch  (:branch (:config db))
+                                                            :op      op
+                                                            :attempt attempt
+                                                            :error   e})]
+                                              (put! callback failure)
+                                              (settle-retry-failure! retry-pending retry-barriers callback failure))))))))
+                                :else
+                                (do
                             ;; Close the queues BEFORE delivering the failed
                             ;; callbacks. Delivering first unblocks the caller
                             ;; while the queues are still open, so a subsequent
@@ -762,39 +885,42 @@
                             ;; saw the "dead" writer accept a further write).
                             ;; Closing first makes that transact observe the
                             ;; closed queue and fail loudly (:writer-shut-down).
-                                (reset! writer-down? true)
-                                (close! commit-queue)
-                                (close! transaction-queue)
+                                  (reset! writer-down? true)
+                                  (close! commit-queue)
+                                  (close! transaction-queue)
                             ;; Release a shared-writer transaction loop that is
                             ;; parked on commit-done, or it never observes the
                             ;; closed transaction-queue and never shuts down.
-                                (close! commit-done)
+                                  (close! commit-done)
                             ;; And the retry queue, which NOTHING else drains once
                             ;; this loop is gone. A head conflict racing a fatal
                             ;; error hands its whole group here; with no loop left,
                             ;; every one of those callers derefs a promise that is
                             ;; never delivered. That is a silent permanent hang, so
                             ;; the queued invocations get the fatal error instead.
-                                (close! retry-queue)
-                                #?(:clj (fail-queued-invocations! retry-queue e))
-                                (doseq [[_ callback] txs]
-                                  (put! callback e))
-                                (log/error :datahike/writer-shutdown {:error e})
+                                  (close! retry-queue)
+                                  #?(:clj (fail-queued-invocations! retry-queue e))
+                                  (doseq [[_ callback] txs]
+                                    (put! callback e))
+                                  (fail-pending-commits! commit-queue pending-marker e)
+                                  (fail-retry-barriers! retry-barriers retry-pending e)
+                                  (fail-deferred-barrier! e)
+                                  (log/error :datahike/writer-shutdown {:error e})
                             ;; Re-throw Errors (AssertionError, OutOfMemoryError, etc.) to crash the writer
-                                #?(:clj (when (instance? Error e)
-                                          (throw e))))))
-                          (finally
+                                  #?(:clj (when (instance? Error e)
+                                            (throw e))))))
+                            (finally
                             ;; A background secondary build holds a GC guard
                             ;; until the commit that publishes its ready key-map
                             ;; has either landed or definitively failed.
-                            (when-not @build-cleanup-complete?
-                              #?(:clj
-                                 (doseq [[tx-report _] txs
-                                         :let [build-guard
-                                               (:secondary-index-build-guard
-                                                tx-report)]
-                                         :when build-guard]
-                                   (w/finish-secondary-index-build! build-guard))))))
+                              (when-not @build-cleanup-complete?
+                                #?(:clj
+                                   (doseq [[tx-report _] txs
+                                           :let [build-guard
+                                                 (:secondary-index-build-guard
+                                                  tx-report)]
+                                           :when build-guard]
+                                     (w/finish-secondary-index-build! build-guard))))))
                         ;; Signalled AFTER the head flip (or after the failure
                         ;; path closed everything), so the transaction loop's
                         ;; next head read sees this commit.
@@ -807,11 +933,12 @@
                         ;; growing pile of pending puts if we over-signal. Puts
                         ;; are capped at 1024 and THROW past it; MAX_SHARED_WRITER_BATCH
                         ;; keeps the count far below that.
-                        (when shared?
-                          (dotimes [_ (count txs)]
-                            (put! commit-done true)))
-                        (<! (timeout commit-wait-time))
-                        (recur (<?- commit-queue)
+                          (when shared?
+                            (dotimes [_ (count txs)]
+                              (put! commit-done true)))
+                          (<! (timeout commit-wait-time))
+                          (recur (or (when-not @carried-marker? pending-marker)
+                                     (<?- commit-queue))
                                ;; Non-throwing read, for two reasons that meet
                                ;; here: `@connection` routes through `deref-conn`,
                                ;; which throws once the connection is released
@@ -822,12 +949,12 @@
                                ;; SHARED connection it would additionally
                                ;; round-trip to storage. The wrapped atom holds the
                                ;; same value with neither hazard, for both writers.
-                               (get-in @(:wrapped-atom connection) [:meta :datahike/commit-id])
+                                 (get-in @(:wrapped-atom connection) [:meta :datahike/commit-id])
                                ;; The revision our commit just created, read off the
                                ;; db `commit!` handed back rather than from storage —
                                ;; the write returned it, which is the whole point of
                                ;; asking for it.
-                               (get @(:wrapped-atom connection) ::w/head-revision)))))))))]))
+                                 (get @(:wrapped-atom connection) ::w/head-revision))))))))))]))
 
 (defn- with-tx-pred
   "Wrap a report-producing write-fn so a store-level tx-pred (if registered)
@@ -842,6 +969,8 @@
 
 ;; public API to internal mapping
 (def default-write-fn-map {'transact!     (with-tx-pred w/transact!)
+                           ;; An ordering marker, not a write or a TxReport.
+                           'writer-barrier (fn [_] barrier-marker)
                            'load-entities (with-tx-pred w/load-entities)
                            ;; import-internal; see writing/load-entities-migrating
                            'load-entities-migrating (with-tx-pred w/load-entities-migrating)
@@ -1196,6 +1325,13 @@
             (callback tx-report)))
         (#?(:clj deliver :cljs put!) p tx-report)))
     p))
+
+(defn writer-barrier!
+  "Return a promise of the durable database after preceding accepted writes
+   have settled. The barrier creates no transaction and does not run predicates
+   or transaction listeners."
+  [connection]
+  (dispatch-load! connection 'writer-barrier []))
 
 (defn load-entities
   [connection entities]

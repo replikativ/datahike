@@ -4,7 +4,7 @@
   (:require [clojure.string :as str]))
 
 ;; Functions to skip in JS export (ClojureScript incompatible or aliases)
-;; - transact/merge-db: synchronous writer operations are not the JavaScript
+;; - transact/merge-db/writer-barrier: synchronous writer operations are not the JavaScript
 ;;             contract; use their async siblings, whose trailing ! is removed
 ;;             (`transact!` -> `transact`, `merge-db!` -> `mergeDb`)
 ;; - warm-*:   EXPERIMENTAL index warming. The walk's ClojureScript arm is REAL
@@ -14,7 +14,7 @@
 ;;             only the JS binding round: the generated wrappers need the
 ;;             channel->Promise adaptation and regenerated artifacts, which is
 ;;             its own change. Remove them from this set in that round.
-(def js-skip-list #{'transact 'merge-db 'warm-index 'warm-datoms 'warm-db})
+(def js-skip-list #{'transact 'merge-db 'writer-barrier 'warm-index 'warm-datoms 'warm-db})
 
 (defn clj-name->js-name
   "Convert Clojure kebab-case to JavaScript camelCase.

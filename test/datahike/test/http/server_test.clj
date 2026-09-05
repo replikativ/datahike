@@ -331,11 +331,12 @@
         server (start-server {:port port :host "127.0.0.1" :join? false :dev-mode false
                               :token "securerandompassword"})
         remote {:backend :datahike-server :url (str "http://localhost:" port)
-                :token "securerandompassword" :format :transit}]
+                :token "securerandompassword" :format :transit}
+        cfg {:store {:backend :memory :id #uuid "de110000-0000-0000-0000-000000000007"}
+             :schema-flexibility :read
+             :remote-peer remote}]
     (try
-      (let [cfg  (api/create-database {:store {:backend :memory :id #uuid "de110000-0000-0000-0000-000000000007"}
-                                       :schema-flexibility :read
-                                       :remote-peer        remote})
+      (let [cfg  (api/create-database cfg)
             conn (api/connect cfg)
             _    (api/transact conn [{:name "Peter"}])
             db   @conn]
@@ -353,7 +354,9 @@
                      '[:find ?x :where [_ :name ?n] [(clojure.core/requiring-resolve (quote clojure.core/inc)) ?x]]]]
             (is (thrown? Exception (api/q q db)) (pr-str q)))))
       (finally
-        (stop-server server)))
+        (try
+          (api/delete-database cfg)
+          (finally (stop-server server)))))
     (is (identical? before qr/*symbol-resolver*) "the server never touches the process's own resolver"))
   (testing "an unknown mode is refused at start"
     (is (thrown-with-msg? Exception #"safe or :permissive"
@@ -371,10 +374,13 @@
                                   :token "securerandompassword"
                                   :create-database {:backends #{:memory}}})]
         (try
-          (is (map? (create port {:backend :memory :id #uuid "de110000-0000-0000-0000-000000000011"})))
-          (is (thrown-with-msg? Exception #"403"
-                                (create port {:backend :file :path "/tmp/anywhere" :id #uuid "de110000-0000-0000-0000-000000000012"}))
-              "a backend outside the set is refused before anything is created")
+          (let [cfg (create port {:backend :memory :id #uuid "de110000-0000-0000-0000-000000000011"})]
+            (try
+              (is (map? cfg))
+              (is (thrown-with-msg? Exception #"403"
+                                    (create port {:backend :file :path "/tmp/anywhere" :id #uuid "de110000-0000-0000-0000-000000000012"}))
+                  "a backend outside the set is refused before anything is created")
+              (finally (api/delete-database cfg))))
           (finally (stop-server server)))))
     (testing "the server chooses the store below its root"
       (let [port 23200
@@ -385,11 +391,15 @@
         (try
           (let [id  #uuid "de110000-0000-0000-0000-000000000013"
                 cfg (create port {:backend :memory :id id})]
-            (is (= :file (get-in cfg [:store :backend])) "the client's backend is not what gets created")
-            (is (= id (get-in cfg [:store :id])) "the client's id is kept")
-            (is (.startsWith ^String (get-in cfg [:store :path]) root) "the path is the server's"))
+            (try
+              (is (= :file (get-in cfg [:store :backend])) "the client's backend is not what gets created")
+              (is (= id (get-in cfg [:store :id])) "the client's id is kept")
+              (is (.startsWith ^String (get-in cfg [:store :path]) root) "the path is the server's")
+              (finally (api/delete-database cfg))))
           (let [cfg (create port {:backend :file :path "/etc" :id #uuid "de110000-0000-0000-0000-000000000014"})]
-            (is (.startsWith ^String (get-in cfg [:store :path]) root) "a client path is ignored"))
+            (try
+              (is (.startsWith ^String (get-in cfg [:store :path]) root) "a client path is ignored")
+              (finally (api/delete-database cfg))))
           (finally (stop-server server)))))
     (testing "a policy the server cannot act on is refused at start"
       (is (thrown-with-msg? Exception #":create-database"

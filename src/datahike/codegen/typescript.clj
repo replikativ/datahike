@@ -147,6 +147,7 @@
     pull-many "T[]"
     transact! "TransactionReport"
     merge-db! "TransactionReport"
+    writer-barrier! "Database"
     branch! "unknown"
     delete-branch! "unknown"
     parent-commit-ids "UuidValue[] | null"
@@ -316,6 +317,7 @@ export type Transaction =
 export interface WithArgs {
   'tx-data': Transaction[];
   'tx-meta'?: any;
+  'tx-options'?: { 'allow-index-backfill?'?: boolean } | null;
 }
 
 export interface QueryArgs {

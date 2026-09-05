@@ -6,6 +6,13 @@ When something is added, it's typically marked *Experimental*. When the API cont
 
 ## 0.8
 
+- **Ordered writer barriers and transaction-scoped index backfill.**
+  `writer-barrier` and `writer-barrier!` wait for preceding accepted writes
+  without creating a transaction. Barriers preserve ordering through batching
+  and writer retries. Transaction maps accept
+  `:tx-options {:allow-index-backfill? true}` to enable index/uniqueness backfill
+  for that transaction without changing the database configuration.
+
 - **JVM thin-client change stream.** *Experimental.* `datahike.http.client`
   now provides `listen` and `unlisten` for Clojure remote connections, with
   the same SSE reports, automatic reconnect and resume, terminal deletion and

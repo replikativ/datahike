@@ -74,6 +74,7 @@ export type Transaction =
 export interface WithArgs {
   "tx-data": Transaction[];
   "tx-meta"?: any;
+  "tx-options"?: { "allow-index-backfill?"?: boolean } | null;
 }
 
 export interface QueryArgs {
