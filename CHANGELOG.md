@@ -6,6 +6,10 @@ When something is added, it's typically marked *Experimental*. When the API cont
 
 ## 0.8
 
+- **JVM thin-client change stream.** *Experimental.* `datahike.http.client`
+  now provides `listen` and `unlisten` for Clojure remote connections, with
+  the same SSE reports, automatic reconnect and resume, terminal deletion and
+  authentication-error behavior as the ClojureScript thin client.
 - **Persistent and in-memory caching for immutable snapshot reads.** The HTTP
   server marks referentially transparent URL reads against database values as
   `immutable`, and the TypeScript thin client deduplicates and retains up to
