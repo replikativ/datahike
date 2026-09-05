@@ -38,6 +38,7 @@
               :else               (log/raise "Bad argument to transact, expected map, vector or sequence."
                                              {:error         :transact/syntax
                                               :argument-type (type arg-map)}))]
+    (dbt/validate-tx-options! (:tx-options arg))
     (dw/transact! connection arg)))
 
 (defn transact [connection arg-map]
@@ -45,6 +46,14 @@
      @(transact! connection arg-map)
      :cljs (throw (ex-info "Synchronous transact not supported in ClojureScript, use transact! instead."
                            {:error :transact/sync-not-supported}))))
+
+(defn writer-barrier! [connection]
+  (dw/writer-barrier! connection))
+
+(defn writer-barrier [connection]
+  #?(:clj @(writer-barrier! connection)
+     :cljs (throw (ex-info "Synchronous writer-barrier is not supported in ClojureScript; use writer-barrier!"
+                           {:error :writer-barrier/sync-not-supported}))))
 
 ;; necessary to support initial-tx shorthand, which really should have been avoided
 (defn create-database [& args]
@@ -123,10 +132,12 @@
 
 (defn with
   ([db arg-map]
-   (let [tx-data (if (:tx-data arg-map) (:tx-data arg-map) arg-map)
-         tx-meta (if (:tx-meta arg-map) (:tx-meta arg-map) nil)]
-     (with db tx-data tx-meta)))
+   (if (and (map? arg-map) (contains? arg-map :tx-data))
+     (with db (:tx-data arg-map) (:tx-meta arg-map) (:tx-options arg-map))
+     (with db arg-map nil nil)))
   ([db tx-data tx-meta]
+   (with db tx-data tx-meta nil))
+  ([db tx-data tx-meta tx-options]
    (if (dcore/is-filtered db)
      (log/raise "Filtered DB cannot be modified" {:error :transaction/filtered})
      ;; Operation provenance is carried only as far as writer-side transaction
@@ -137,7 +148,7 @@
                                      :db-after  db
                                      :tx-data   []
                                      :tempids   {}
-                                     :tx-meta   tx-meta}) tx-data)
+                                     :tx-meta   tx-meta}) tx-data tx-options)
              :datahike/tx-ops))))
 
 (defn db-with [db tx-data]

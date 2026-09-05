@@ -110,11 +110,17 @@
 
   PWriter
 
-  (-dispatch! [_ arg-map]
+  (-dispatch! [_ {:keys [op] :as arg-map}]
     (let [result-ch (promise-chan)
           request-id (random-uuid)
           ;; Global dispatch handler - store-id is passed in the request
           remote-fn 'datahike.kabel/dispatch
+          finish-barrier! (fn [remote-result]
+                            (swap! pending-txs dissoc request-id)
+                            (let [conn @conn-atom
+                                  store (:store @(:wrapped-atom conn))]
+                              (put! result-ch
+                                    (reconstruct-stored-db remote-result store))))
           finalize! (fn [remote-result]
                       (swap! pending-txs dissoc request-id)
                       ;; Reconstruct tx-report with live DBs from connection's store
@@ -138,11 +144,39 @@
                                                    :branch branch
                                                    :request-id request-id
                                                    :arg-map arg-map}))
-                expected-max-tx (get-in remote-result [:db-after :max-tx])]
+                expected-max-tx (if (= op 'writer-barrier)
+                                  (:max-tx remote-result)
+                                  (get-in remote-result [:db-after :max-tx]))]
             (cond
               ;; Remote error - return immediately
               (instance? #?(:clj Throwable :cljs js/Error) remote-result)
               (put! result-ch remote-result)
+
+              (= op 'writer-barrier)
+              (let [wait-ch (promise-chan)]
+                (swap! pending-txs assoc request-id
+                       {:expected-max-tx expected-max-tx :ch wait-ch})
+                (if (>= @current-max-tx expected-max-tx)
+                  (finish-barrier! remote-result)
+                  (let [[v port] (clojure.core.async/alts!
+                                  [wait-ch (timeout default-sync-timeout-ms)])]
+                    (cond
+                      (and (= port wait-ch)
+                           (instance? #?(:clj Throwable :cljs js/Error) v))
+                      (do (swap! pending-txs dissoc request-id)
+                          (put! result-ch v))
+
+                      (= port wait-ch)
+                      (finish-barrier! remote-result)
+
+                      :else
+                      (do (swap! pending-txs dissoc request-id)
+                          (put! result-ch
+                                (ex-info "Writer barrier settled remotely but its sync did not arrive in time"
+                                         {:type :kabel/sync-timeout
+                                          :request-id request-id
+                                          :expected-max-tx expected-max-tx
+                                          :timeout-ms default-sync-timeout-ms})))))))
 
               ;; Not a transaction report: gc-storage! returns a set, the
               ;; secondary-index ops a status map. Nothing to wait for.

@@ -2009,11 +2009,11 @@
            :idx-idents (set new-building)
            :writer writer-config})))))
 
-(defn transact! [old {:keys [tx-data tx-meta]}]
+(defn transact! [old {:keys [tx-data tx-meta tx-options]}]
   (log/debug :datahike/transact {:tx-count (count tx-data)})
   (log/trace :datahike/transact-detail {:tx-data tx-data :tx-meta tx-meta})
   (let [tx-report (binding [sec/*durable-secondary-write-context* :commit]
-                    (core/with old tx-data tx-meta))]
+                    (core/with old tx-data tx-meta tx-options))]
     #?(:clj (validate-secondary-backfill-writer! old tx-report))
     (complete-db-update old tx-report)))
 

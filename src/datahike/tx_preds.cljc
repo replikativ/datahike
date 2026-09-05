@@ -29,28 +29,67 @@
 
      (register-tx-pred! store-id (fn [report] … throw to reject))
 
-   Signature is intentionally minimal (one fn per store) and NOT a stable public
-   API yet; a named-predicate list and a symbol-in-data wiring are possible later.")
+   Predicates are registered by name so independent consumers can govern the
+   same store without replacing one another. The two-argument registration API
+   retains the original unnamed/default slot for compatibility.")
 
 (defonce ^:private registry (atom {}))
 
+(def ^:private default-pred-id ::default)
+
 (defn register-tx-pred!
   "Register tx-pred `f` = `(fn [tx-report] …)` for `store-id`. Runs on every
-   committed write to that store; throw an Exception to reject. Returns store-id."
-  [store-id f]
+   committed write to that store; throw an Exception to reject. The three-arg
+   form registers an independently removable named predicate. Returns store-id."
+  ([store-id f]
+   (register-tx-pred! store-id default-pred-id f))
+  ([store-id pred-id f]
+   (assert (ifn? f) "tx-pred must be a function")
+   (swap! registry assoc-in [store-id pred-id] f)
+   store-id))
+
+(defn ensure-tx-pred!
+  "Install the named predicate only when its slot is empty. Returns :installed
+   or :present when the identical function is already registered. A different
+   function at the same id is an error; callers cannot replace another guard
+   while establishing their own writer invariant."
+  [store-id pred-id f]
   (assert (ifn? f) "tx-pred must be a function")
-  (swap! registry assoc store-id f)
-  store-id)
+  (loop []
+    (let [registered @registry
+          existing (get-in registered [store-id pred-id])]
+      (cond
+        (identical? existing f) :present
+        (some? existing)
+        (throw (ex-info "A different transaction predicate is registered at this id"
+                        {:type :tx-pred/id-collision
+                         :store-id store-id :pred-id pred-id}))
+        (compare-and-set! registry registered
+                          (assoc-in registered [store-id pred-id] f))
+        :installed
+        :else (recur)))))
 
 (defn unregister-tx-pred!
-  [store-id]
-  (swap! registry dissoc store-id)
-  nil)
+  ([store-id]
+   (unregister-tx-pred! store-id default-pred-id))
+  ([store-id pred-id]
+   (swap! registry
+          (fn [registered]
+            (let [remaining (dissoc (get registered store-id) pred-id)]
+              (if (seq remaining)
+                (assoc registered store-id remaining)
+                (dissoc registered store-id)))))
+   nil))
 
 (defn tx-pred-for
   "The tx-pred fn registered for `store-id`, or nil."
   [store-id]
-  (get @registry store-id))
+  (get-in @registry [store-id default-pred-id]))
+
+(defn tx-preds-for
+  "The named transaction predicates registered for `store-id`."
+  [store-id]
+  (get @registry store-id {}))
 
 (defn check-report
   "Run the store's tx-pred (if any) on `tx-report`. Throws to reject; returns the
@@ -59,7 +98,9 @@
    bounded by the small operation vocabulary; an ungoverned store still pays
    only that collection plus a single registry lookup."
   [tx-report]
-  (when-let [f (tx-pred-for (get-in tx-report [:db-after :config :store :id]))]
+  (doseq [[_ f] (sort-by (comp pr-str key)
+                         (tx-preds-for
+                          (get-in tx-report [:db-after :config :store :id])))]
     (f tx-report))
   ;; Operation provenance is a writer-side governance aid, not part of the
   ;; Datomic-shaped transaction report contract. Strip it once, after the

@@ -31,10 +31,10 @@
     (is (= #{["Object" "List"] ["Object" "Object"]} (spec-sigs 'transact!)))
     (is (= #{["Object" "List"] ["Object" "Object"]} (spec-sigs 'db-with))))
 
-  (testing "`with` keeps exactly the three overloads it had before its schema
-            was rewritten from three same-arity branches into one `[:or …]`.
-            This is the operation the whole exclusion mechanism existed for."
-    (is (= #{["Object" "List"] ["Object" "Object"] ["Object" "List" "Object"]}
+  (testing "`with` keeps the original three overloads and adds the transaction
+            options arity without changing how the existing calls marshal."
+    (is (= #{["Object" "List"] ["Object" "Object"] ["Object" "List" "Object"]
+             ["Object" "List" "Object" "Object"]}
            (spec-sigs 'with)))))
 
 (deftest non-additive-expansion-is-refused
