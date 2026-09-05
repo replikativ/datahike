@@ -17,7 +17,9 @@
                       [clojure.edn :as edn]
                       [datahike.datom :as dd]
                       [datahike.impl.entity :as de]]
-                :cljs [[clojure.core.async :as async]])
+                :cljs [[clojure.core.async :as async]
+                       [clojure.string :as str]
+                       [datahike.datom :as dd]])
             ;; The specification drives the JVM's generated functions at load
             ;; and ClojureScript's at macro time; a browser bundle carries
             ;; none of it.
@@ -399,13 +401,244 @@
            out)
          result))))
 
+#?(:cljs
+   (do
+     (defonce ^:private listeners (atom {}))
+
+     (def ^:private listen-event-keys
+       #{"store-id" "branch" "commit-id" "max-tx" "max-eid"
+         "tempids" "tx-data" "truncated"})
+
+     (defn ^:no-doc decode-listen-json
+       "Decode the tagged values present in change events into client values."
+       [value]
+       (cond
+         (array? value)
+         (let [items (mapv decode-listen-json (array-seq value))]
+           (if (and (= 2 (count items)) (string? (first items)))
+             (case (first items)
+               "!kw" (keyword (second items))
+               "!sym" (symbol (second items))
+               "!set" (set (second items))
+               "!uuid" (uuid (second items))
+               "!date" (js/Date. (js/Number (second items)))
+               "!datahike/Datom" (apply dd/datom (second items))
+               items)
+             items))
+
+         (and (some? value) (object? value))
+         (into {}
+               (map (fn [key]
+                      [key
+                       (decode-listen-json (aget value key))]))
+               (js-keys value))
+
+         :else value))
+
+     (defn- decode-listen-event [value]
+       (let [decoded (decode-listen-json value)]
+         (into {}
+               (map (fn [[key value]]
+                      [(if (contains? listen-event-keys key) (keyword key) key)
+                       value]))
+               decoded)))
+
+     (defn- listener-id [conn key]
+       [(get-in conn [:remote-peer :url]) (:store-id conn) key])
+
+     (defn- active-listener? [{:keys [id stopped?] :as listener}]
+       (and (not @stopped?) (identical? listener (get @listeners id))))
+
+     (defn- stop-listener! [{:keys [id stopped? controller timer] :as listener}]
+       (reset! stopped? true)
+       (when-let [timeout @timer]
+         (js/clearTimeout timeout)
+         (reset! timer nil))
+       (when-let [abort @controller]
+         (.abort abort)
+         (reset! controller nil))
+       (swap! listeners #(if (identical? listener (get % id)) (dissoc % id) %)))
+
+     (defn- remote-db-from-head [conn head]
+       (binding [remote/*remote-peer* (:remote-peer conn)]
+         (remote/remote-db
+          (assoc (select-keys head [:max-tx :max-eid :commit-id])
+                 :store-id (if (sequential? (:store-id head))
+                             (:store-id head)
+                             [(:store-id head) (:branch head :db)])))))
+
+     (defn- invoke-listener-callback! [{:keys [callback]} report]
+       (try
+         (callback report)
+         (catch :default error
+           (trace :datahike/http-listen-callback-error
+                  {:message (or (.-message error) (str error))}))))
+
+     (defn- deliver-listen-event!
+       [{:keys [conn last-commit] :as listener} event data]
+       (when (active-listener? listener)
+         (case event
+           "report"
+           (do
+             (reset! last-commit (:commit-id data))
+             (invoke-listener-callback!
+              listener
+              (cond-> {:db-after (remote-db-from-head conn data)
+                       :db-before nil
+                       :tempids (:tempids data)
+                       :commit-id (:commit-id data)}
+                (contains? data :tx-data) (assoc :tx-data (:tx-data data))
+                (:truncated data) (assoc :truncated true))))
+
+           ("resync" "coalesced")
+           (do
+             (reset! last-commit (:commit-id data))
+             (invoke-listener-callback!
+              listener {:resync true :db-after (remote-db-from-head conn data)}))
+
+           "deleted"
+           (do
+             (invoke-listener-callback! listener {:deleted true})
+             (stop-listener! listener))
+
+           nil)))
+
+     (defn- parse-sse-frame! [listener frame]
+       (let [{:keys [event data]}
+             (reduce (fn [parsed line]
+                       (cond
+                         (or (empty? line) (str/starts-with? line ":")) parsed
+                         (str/starts-with? line "event:")
+                         (assoc parsed :event (str/trim (subs line 6)))
+                         (str/starts-with? line "data:")
+                         (update parsed :data conj (str/triml (subs line 5)))
+                         :else parsed))
+                     {:data []}
+                     (str/split-lines frame))]
+         (when (and event (seq data))
+           (deliver-listen-event! listener event
+                                  (decode-listen-event
+                                   (js/JSON.parse (str/join "\n" data)))))))
+
+     (defn ^:no-doc split-listen-chunk
+       "Split complete SSE frames while retaining an unfinished trailing CR."
+       [pending chunk]
+       (let [raw (str pending chunk)
+             trailing-cr? (str/ends-with? raw "\r")
+             complete (if trailing-cr? (subs raw 0 (dec (count raw))) raw)
+             normalized (str/replace complete #"\r\n?" "\n")
+             frames (.split normalized "\n\n")
+             pending (str (.pop frames) (when trailing-cr? "\r"))]
+         [(vec (array-seq frames)) pending]))
+
+     (defn- read-listen-stream! [listener reader decoder pending]
+       (-> (.read reader)
+           (.then
+            (fn [result]
+              (if (.-done result)
+                nil
+                (let [chunk (.decode decoder (.-value result) #js {:stream true})
+                      [frames pending] (split-listen-chunk pending chunk)]
+                  (doseq [frame frames]
+                    (when (seq frame)
+                      (parse-sse-frame! listener frame)))
+                  (if (active-listener? listener)
+                    (read-listen-stream! listener reader decoder pending)
+                    (.cancel reader))))))))
+
+     (declare connect-listener! unlisten)
+
+     (defn- reconnect-listener! [{:keys [backoff timer] :as listener}]
+       (when (active-listener? listener)
+         (let [delay @backoff]
+           (reset! backoff (min 30000 (* 2 delay)))
+           (reset! timer
+                   (js/setTimeout
+                    (fn []
+                      (reset! timer nil)
+                      (connect-listener! listener))
+                    delay)))))
+
+     (defn- listen-url [{:keys [conn last-commit]}]
+       (let [{:keys [url]} (:remote-peer conn)
+             [store-id branch] (if (sequential? (:store-id conn))
+                                 (:store-id conn)
+                                 [(:store-id conn) :db])
+             since @last-commit]
+         (str url "/listen?store=" (js/encodeURIComponent (str store-id))
+              "&branch=" (js/encodeURIComponent (name branch))
+              (when since (str "&since=" (js/encodeURIComponent (str since)))))))
+
+     (defn- connect-listener!
+       [{:keys [conn controller] :as listener}]
+       (when (active-listener? listener)
+         (let [{:keys [token]} (:remote-peer conn)
+               abort (js/AbortController.)
+               target (listen-url listener)
+               headers (cond-> {"accept" "text/event-stream"}
+                         token (assoc "authorization" (str "token " token)))]
+           (reset! controller abort)
+           (trace :datahike/http-listen {:url target})
+           (-> (js/fetch target
+                         #js {:method "GET"
+                              :headers (clj->js headers)
+                              :signal (.-signal abort)})
+               (.then (fn [response]
+                        (let [status (.-status response)]
+                          (if-not (.-ok response)
+                            (if (contains? #{401 403 404} status)
+                              (let [error (ex-info (str "HTTP " status " from " target)
+                                                   {:status status :url target})]
+                                (invoke-listener-callback!
+                                 listener {:error error :status status})
+                                (stop-listener! listener)
+                                nil)
+                              (throw (js/Error. (str "HTTP " status " from " target))))
+                            (do
+                              (reset! (:backoff listener) 500)
+                              (if-let [body (.-body response)]
+                                (read-listen-stream! listener (.getReader body) (js/TextDecoder.) "")
+                                (throw (js/Error. (str "No response body from " target)))))))))
+               (.then (fn [_] (reconnect-listener! listener)))
+               (.catch (fn [error]
+                         (when (active-listener? listener)
+                           (trace :datahike/http-listen-error {:url target
+                                                               :message (or (.-message error) (str error))})
+                           (reconnect-listener! listener))))))))
+
+     (defn listen
+       "Listen for remote changes so a thin client can refresh without polling."
+       ([conn callback]
+        (listen conn (str (random-uuid)) callback))
+       ([conn key callback]
+        (unlisten conn key)
+        (let [listener {:id (listener-id conn key)
+                        :conn conn
+                        :callback callback
+                        :last-commit (atom nil)
+                        :backoff (atom 500)
+                        :controller (atom nil)
+                        :timer (atom nil)
+                        :stopped? (atom false)}]
+          (swap! listeners assoc (:id listener) listener)
+          (connect-listener! listener)
+          key)))
+
+     (defn unlisten
+       "Stop a remote change listener so its request and reconnect loop release resources."
+       [conn key]
+       (when-let [listener (get @listeners (listener-id conn key))]
+         (stop-listener! listener))
+       nil)))
+
 #?(:clj
    (defmacro emit-remote-api
      "Define the API functions for ClojureScript, one per specification entry:
       the remote-capable ones call the server, the rest throw as on the JVM."
      []
      `(do
-        ~@(for [[n {:keys [args doc supports-remote? referentially-transparent?]}] api/api-specification]
+        ~@(for [[n {:keys [args doc supports-remote? referentially-transparent?]}] api/api-specification
+                :when (not (#{'listen 'unlisten} n))]
             `(defn ~(with-meta n {:arglists (list 'quote (api/malli-schema->argslist args)) :doc doc})
                [& ~'args]
                ~(if supports-remote?

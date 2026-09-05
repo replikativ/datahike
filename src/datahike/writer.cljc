@@ -2,6 +2,7 @@
   (:require [superv.async :refer [S thread-try <?- go-try]]
             [replikativ.logging :as log]
             [datahike.core]
+            #?(:cljs [datahike.db :refer [TxReport]])
             [datahike.config :as dc]
             [datahike.metrics :as metrics]
             [datahike.writing :as w]
@@ -12,7 +13,8 @@
             [clojure.string :as str]
             [clojure.core.async :refer [chan close! promise-chan put! go go-loop <! >! poll! buffer timeout]]
             #?(:cljs [cljs.core.async.impl.channels :refer [ManyToManyChannel]]))
-  #?(:clj (:import [clojure.core.async.impl.channels ManyToManyChannel])))
+  #?(:clj (:import [clojure.core.async.impl.channels ManyToManyChannel]
+                   [datahike.db TxReport])))
 
 (defn chan? [x]
   (instance? ManyToManyChannel x))
@@ -1133,6 +1135,9 @@
         writer (:writer @(:wrapped-atom connection))]
     (go
       (let [tx-report (<! (dispatch! writer {:op op :args args}))]
+        (when (instance? TxReport tx-report)
+          (doseq [[_ callback] (some-> (:listeners (meta connection)) deref)]
+            (callback tx-report)))
         (#?(:clj deliver :cljs put!) p tx-report)))
     p))
 

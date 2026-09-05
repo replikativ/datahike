@@ -94,7 +94,8 @@
   []
   (let [clj-exports (remote-js-exports api-specification)
         _ (assert-unique-js-names! clj-exports)
-        all-exports (concat (map clj-name->js-name clj-exports) ["isPromise" "uuid" "randomUuid"])
+        all-exports (concat (map clj-name->js-name clj-exports)
+                            ["listen" "unlisten" "isPromise" "uuid" "randomUuid"])
         lines (concat
                ["// Auto-generated ESM wrapper for the thin HTTP client (datahike/remote)."
                 "// DO NOT EDIT - Generated from datahike.api.specification"
