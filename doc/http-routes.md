@@ -463,11 +463,14 @@ process may write. `:create-database` in the server config restricts that:
 ```
 
 With `:store` the client's store is replaced: the server keeps the id the
-client chose, or picks one, and places the database below its own root, as
-the Kabel listener does with its `:store`. With `:backends` the client's
-store is kept but its backend must be in the set. A refused create is `403`
-with `{:type :datahike.http/store-refused}`. Both keys may be given; without
-the option the server logs at start that creation is unrestricted.
+client chose, or picks one, and places the database below its own root. The
+same policy applies to Kabel creates. Its policy store wins over the Kabel
+listener's own `:store`; without a policy, the listener store remains the
+location. With `:backends` the resulting listener store or HTTP client's store
+must be in the set. A refused create is `403` over HTTP and carries
+`{:type :datahike.http/store-refused}` over both transports. Both keys may be
+given; without the option the server logs at start that HTTP creation is
+unrestricted.
 
 ### Query functions
 
@@ -515,6 +518,18 @@ fails with `Unknown function` (`:error :query/where`). `:query-functions
 :permissive` in the server config restores runtime resolution and is logged
 as a warning at start; it is for a server whose every client is trusted.
 
+### Query deadlines
+
+A server that accepts client queries needs a finite execution budget: an
+authorized client can otherwise submit a Cartesian product or recursive rule
+that occupies an execution thread indefinitely. Every HTTP request and Kabel
+dispatch therefore binds `:query-timeout-ms`, 30000 milliseconds by default.
+Set it to `false` or `nil` to disable the server cap. A query may include its
+own `:timeout` in milliseconds to ask for a shorter deadline, but cannot raise
+the server's ambient limit. A timeout returns HTTP 503 with
+`{:type :datahike/query-timeout, :timeout-ms ...}`; 503 denotes a temporary
+service resource limit rather than a timeout at an upstream gateway.
+
 The standalone server enforces the first two items at bind time: without a
 nonblank token or a validator, every resolved bind address must be loopback.
 Missing and wildcard hosts count as public. `:auth :upstream` is valid only for
@@ -537,11 +552,19 @@ clojure -M:http-server --config config.edn
  :join?    false
  :token    "securerandompassword"
  :dev-mode false
+ :query-timeout-ms 30000 ; default; false or nil disables the cap
  :query-functions :safe     ; the default; :permissive only for trusted clients
  :create-database {:store {:backend :file :path "/var/lib/datahike/databases"}}
  :level    :info
  :log-format :text}
 ```
+
+
+Cancellation is cooperative: the engine checks the deadline at its clause and
+join boundaries, so a query stops between steps rather than being interrupted
+mid-step. In practice a query that scans and joins is stopped promptly; the
+deadline is a bound on how long a request occupies a thread, not a hard
+real-time guarantee.
 
 ### Operator landing page
 

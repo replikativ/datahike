@@ -329,6 +329,49 @@
       (finally
         (kabel/stop! resource)))))
 
+(deftest listener-create-database-policy
+  (testing "a backend outside the policy is refused with the policy's type"
+    (let [port (free-port)
+          resource (kabel/start!
+                    {:host "127.0.0.1"
+                     :create-database {:backends #{:memory}}
+                     :kabel {:port port :jwt {:alg :HS256 :secret secret}
+                             :store {:backend :file
+                                     :path (str (fs/temp-dir! "dh-kabel-refused-") "/listener")}}})
+          peer (client (random-uuid) (token-for "alice"))]
+      (try
+        (remote/serve peer)
+        (<?? S (remote/connect S peer (str "ws://127.0.0.1:" port)))
+        (is (= :datahike.http/store-refused
+               (refusal
+                (remote/invoke peer (:peer-id resource) 'datahike.kabel/create-database
+                               {:config {:store {:backend :file :id (random-uuid)}}}))))
+        (finally
+          (<?? S (peer/stop peer))
+          (kabel/stop! resource)))))
+  (testing "a pinned store root overrides the listener store and keeps the client id"
+    (let [port (free-port)
+          store-id (random-uuid)
+          root (str (fs/temp-dir! "dh-kabel-policy-root-") "/databases")
+          db-config {:store {:backend :file :path (str root "/" store-id) :id store-id}}
+          resource (kabel/start!
+                    {:host "127.0.0.1"
+                     :create-database {:store {:backend :file :path root}}
+                     :kabel {:port port :jwt {:alg :HS256 :secret secret}
+                             :store {:backend :memory}}})
+          peer (client (random-uuid) (token-for "alice"))]
+      (try
+        (remote/serve peer)
+        (<?? S (remote/connect S peer (str "ws://127.0.0.1:" port)))
+        (<?? S (remote/invoke peer (:peer-id resource) 'datahike.kabel/create-database
+                              {:config {:store {:backend :memory :id store-id}}}))
+        (is (d/database-exists? db-config))
+        (finally
+          (<?? S (peer/stop peer))
+          (kabel/stop! resource)
+          (when (d/database-exists? db-config)
+            (d/delete-database db-config)))))))
+
 (deftest host-policy-composes-over-the-permission-graph
   (let [config (permissions/configure
                 {:system-db {:store {:backend :memory :id (random-uuid)}}

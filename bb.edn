@@ -281,6 +281,9 @@
          npm-clean {:doc "Clean compiled files from npm package directory"
                     :task (npm/clean-npm-package! "npm-package")}
 
+         ts-client-build {:doc "Generate, type-check, and build the TypeScript thin HTTP client"
+                          :task (shell "npm run ts-client-build")}
+
          npm-build {:doc "Build npm package (clean, update version, generate types, compile ClojureScript)"
                     :depends [prep]
                     :task (npm/build-npm-package! config "npm-package")}
@@ -313,6 +316,10 @@
          node-remote-test {:doc "Run the thin HTTP client's node tests against a JVM server started for the run"
                            :depends [prep]
                            :task (test/node-remote)}
+
+         ts-client-test {:doc "Run the TypeScript thin HTTP client against a JVM server"
+                         :depends [prep]
+                         :task (test/ts-client)}
 
          cljs-s3-concurrency-test
          {:doc "Run two independent CLJS Datahike writers against an available S3/MinIO bucket"

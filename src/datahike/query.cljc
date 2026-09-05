@@ -53,7 +53,8 @@
                    [datalog.parser.type Aggregate BindColl BindIgnore BindScalar BindTuple Constant
                     FindColl FindRel FindScalar FindTuple PlainSymbol Pull
                     RulesVar SrcVar Variable]
-                   [java.util Date Map HashSet HashSet])))
+                   [java.util Date Map HashSet HashSet]
+                   [java.util.concurrent Executors ScheduledExecutorService ThreadFactory TimeUnit])))
 
 #?(:clj (set! *warn-on-reflection* true))
 
@@ -74,6 +75,74 @@
   "When true (default), query results are cached by [query args db-snapshot].
    Bind to false for benchmarking raw query execution."
   true)
+
+(def ^:dynamic *query-timeout-ms*
+  "The ambient query deadline in milliseconds. nil means no limit. A query's
+   own :timeout may shorten this limit but cannot extend it."
+  nil)
+
+(def ^:dynamic ^:private *query-cancel* nil)
+
+(declare memoized-parse-query)
+
+#?(:clj
+   (defonce ^:private ^ScheduledExecutorService query-timeout-scheduler
+     (Executors/newSingleThreadScheduledExecutor
+      (reify ThreadFactory
+        (newThread [_ runnable]
+          (doto (Thread. runnable "datahike-query-timeouts")
+            (.setDaemon true)))))))
+
+(defn- cancellation-value [cancel]
+  (when cancel @cancel))
+
+(defn- throw-cancellation! [value]
+  (if (= :datahike/query-timeout (:type value))
+    (throw (ex-info "query timed out" value))
+    (throw (ex-info "query canceled" {:datahike/canceled true}))))
+
+(defn- check-cancel! [cancel]
+  (when-let [value (cancellation-value cancel)]
+    (throw-cancellation! value)))
+
+(defn- combined-cancel [cancels]
+  (let [cancels (vec (remove nil? cancels))]
+    (case (count cancels)
+      0 nil
+      1 (first cancels)
+      #?(:clj (reify clojure.lang.IDeref
+                (deref [_] (some cancellation-value cancels)))
+         :cljs (reify IDeref
+                 (-deref [_] (some cancellation-value cancels)))))))
+
+(defn- effective-query-timeout [query]
+  (let [query-timeout (:qtimeout (memoized-parse-query query))
+        limits (remove nil? [*query-timeout-ms* query-timeout])]
+    (when (seq limits) (apply min limits))))
+
+(defn- run-with-query-timeout [query-map f]
+  (let [timeout-ms (effective-query-timeout (:query query-map))
+        timeout-cell (when (some? timeout-ms) (volatile! nil))
+        started #?(:clj (System/nanoTime) :cljs (.now js/Date))
+        fire! (fn []
+                (vreset! timeout-cell
+                         {:type :datahike/query-timeout
+                          :timeout-ms timeout-ms
+                          :elapsed-ms #?(:clj (long (/ (- (System/nanoTime) started) 1000000))
+                                         :cljs (long (- (.now js/Date) started)))}))
+        scheduled #?(:clj (when timeout-cell
+                            (.schedule query-timeout-scheduler
+                                       ^Runnable fire! (long timeout-ms) TimeUnit/MILLISECONDS))
+                     :cljs (when timeout-cell (js/setTimeout fire! timeout-ms)))
+        cancel (combined-cancel [(:cancel query-map) timeout-cell *query-cancel*])]
+    (try
+      (binding [*query-cancel* cancel]
+        (let [result (f (assoc query-map :cancel cancel))]
+          (check-cancel! cancel)
+          result))
+      (finally
+        #?(:clj (when scheduled (.cancel scheduled false))
+           :cljs (when scheduled (js/clearTimeout scheduled)))))))
 
 (declare -collect -resolve-clause resolve-clause raw-q)
 
@@ -802,6 +871,7 @@
       (persistent!
        (reduce
         (fn [acc t1]
+          (when *query-cancel* (check-cancel! *query-cancel*))
           (reduce (fn [acc t2]
                     (conj! acc (join-tuples t1 idxs1 t2 idxs2)))
                   acc (:tuples rel2)))
@@ -1429,7 +1499,8 @@
   (loop [tuples tuples
          hash-table (transient {})]
     (if-some [tuple (first tuples)]
-      (let [key (key-fn tuple)]
+      (let [_ (when *query-cancel* (check-cancel! *query-cancel*))
+            key (key-fn tuple)]
         (recur (next tuples)
                (assoc! hash-table key (conj (get hash-table key '()) tuple))))
       (persistent! hash-table))))
@@ -1452,7 +1523,8 @@
       (let [hash       (hash-attrs key-fn1 tuples1)
             new-tuples (->>
                         (reduce (fn [acc tuple2]
-                                  (let [key (key-fn2 tuple2)]
+                                  (let [_ (when *query-cancel* (check-cancel! *query-cancel*))
+                                        key (key-fn2 tuple2)]
                                     (if-some [tuples1 (get hash key)]
                                       (reduce (fn [acc tuple1]
                                                 (conj! acc (join-tuples tuple1 keep-idxs1 tuple2 keep-idxs2)))
@@ -1465,7 +1537,8 @@
       (let [hash       (hash-attrs key-fn2 tuples2)
             new-tuples (->>
                         (reduce (fn [acc tuple1]
-                                  (let [key (key-fn1 tuple1)]
+                                  (let [_ (when *query-cancel* (check-cancel! *query-cancel*))
+                                        key (key-fn1 tuple1)]
                                     (if-some [tuples2 (get hash key)]
                                       (reduce (fn [acc tuple2]
                                                 (conj! acc (join-tuples tuple1 keep-idxs1 tuple2 keep-idxs2)))
@@ -1654,6 +1727,7 @@
         new-rel (if pred
                   (let [tuple-pred (-call-fn context production pred args)
                         safe-pred (fn [tuple]
+                                    (when *query-cancel* (check-cancel! *query-cancel*))
                                     (try (tuple-pred tuple)
                                          #?(:clj (catch ClassCastException _ false)
                                             :cljs (catch :default _ false))
@@ -1712,7 +1786,8 @@
                                         acc []]
                                    (if-not ts
                                      acc
-                                     (let [tuple (first ts)
+                                     (let [_ (when *query-cancel* (check-cancel! *query-cancel*))
+                                           tuple (first ts)
                                            val (tuple-fn tuple)]
                                        (if (nil? val)
                                          (recur (next ts) plan-attrs2 plan acc)
@@ -1862,9 +1937,7 @@
       ;; an unbounded counter, say — could not be interrupted. That matters more
       ;; now: the planner DECLINES rules whose recursion it cannot bound to this
       ;; solver, so this is where such a rule ends up.
-      (when-let [c (:cancel context)]
-        (when @c
-          (log/raise "query canceled" {:error :query/canceled})))
+      (check-cancel! (:cancel context))
       (if-some [frame (first stack)]
         (let [[clauses [rule-clause & next-clauses]] (split-with #(not (rule? context %)) (:clauses frame))]
           (if (nil? rule-clause)
@@ -5424,7 +5497,7 @@
                          (dhm/query-engine! :secondary-index :aggregate)
                          (-post-process qfind result)))))))))))))
 
-(defn raw-q [{:keys [query args stats? count-fns? offset limit order-by] :as query-map}]
+(defn- raw-q-unbounded [{:keys [query args stats? count-fns? offset limit order-by] :as query-map}]
   (let [sampled? (dhm/sample-query?)
         started (dhm/query-timer sampled?)
         recorded (fn [result-cache f]
@@ -5477,6 +5550,12 @@
                        attr-deps  (merge-attr-deps where-deps find-deps)]
                    (result-cache-put! db cache-key result attr-deps)
                    result))))))))))
+
+(defn raw-q [query-map]
+  (if (or *query-cancel* *query-timeout-ms*
+          (contains? (:query query-map) :timeout))
+    (run-with-query-timeout query-map raw-q-unbounded)
+    (raw-q-unbounded query-map)))
 
 ;; ---------------------------------------------------------------------------
 ;; Register legacy functions for CLJS execute.cljc (breaks circular dep)
