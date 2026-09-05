@@ -4,6 +4,7 @@
             [datahike.codegen.naming :as naming]
             [datahike.codegen.typescript :as ts]
             [datahike.codegen.esm :as esm]
+            [datahike.codegen.cli :as cli]
             [datahike.js.api-macros]))
 
 (deftest writer-barrier-has-one-async-javascript-export
@@ -31,3 +32,9 @@
               (tree-seq coll? seq
                         (macroexpand-1 '(datahike.js.api-macros/emit-js-remote-api)))))
     (is (nil? (naming/assert-unique-js-names! remote)))))
+
+(deftest writer-barrier-has-one-synchronous-cli-command
+  (let [exports (remove cli/cli-excluded-operations (keys api-specification))]
+    (is (= ['writer-barrier]
+           (filterv #(= ["writer-barrier"] (cli/->cli-command % nil)) exports)))
+    (is (= 'writer-barrier (get (cli/build-command-index) "writer-barrier")))))
