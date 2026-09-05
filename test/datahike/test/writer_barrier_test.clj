@@ -147,7 +147,7 @@
           (is (instance? AssertionError (await failure)))
           (is (instance? AssertionError (await barrier))))))))
 
-(deftest shared-barrier-follows-transparent-head-conflict-retry
+(deftest shared-barriers-follow-transparent-head-conflict-retry
   (let [config {:store {:backend :memory :id (random-uuid)}
                 :schema-flexibility :read
                 :max-string-length 0
@@ -183,15 +183,19 @@
             ;; The transaction loop is held inside the operation, so this
             ;; marker is deterministically queued behind that invocation before
             ;; its first commit attempt can begin.
-            (let [barrier (dispatch conn 'writer-barrier [])]
+            (let [barrier-1 (dispatch conn 'writer-barrier [])
+                  barrier-2 (dispatch conn 'writer-barrier [])]
               (deliver release true)
               (let [report (await tx)
-                    snapshot (await barrier)]
+                    snapshot-1 (await barrier-1)
+                    snapshot-2 (await barrier-2)]
                 (is (map? report))
-                (is (map? snapshot))
+                (is (map? snapshot-1))
+                (is (map? snapshot-2))
                 (is (= 2 @commits))
-                (is (= #{[1]} (d/q '[:find ?n :where [_ :n ?n]] snapshot)))
-                (is (= (:max-tx (:db-after report)) (:max-tx snapshot)))))))
+                (doseq [snapshot [snapshot-1 snapshot-2]]
+                  (is (= #{[1]} (d/q '[:find ?n :where [_ :n ?n]] snapshot)))
+                  (is (= (:max-tx (:db-after report)) (:max-tx snapshot))))))))
         (finally
           (d/release conn)
           (d/delete-database config))))))

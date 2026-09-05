@@ -77,6 +77,32 @@
       (put! callback failure)
       (recur))))
 
+(defn- carry-retry-barrier! [retry-barriers callback marker]
+  (swap! retry-barriers update callback (fnil conj []) marker))
+
+(defn- settle-retry-failure!
+  [retry-pending retry-barriers callback failure]
+  (swap! retry-pending
+         (fn [callbacks]
+           (into [] (remove #{callback}) callbacks)))
+  (when-let [markers (get @retry-barriers callback)]
+    (swap! retry-barriers dissoc callback)
+    (doseq [marker markers]
+      (put! (second marker) failure))))
+
+(defn- settle-retry-success! [retry-barriers callback commit-db]
+  (when-let [markers (get @retry-barriers callback)]
+    (swap! retry-barriers dissoc callback)
+    (doseq [marker markers]
+      (put! (second marker) commit-db))))
+
+(defn- fail-retry-barriers! [retry-barriers retry-pending failure]
+  (doseq [[_ markers] @retry-barriers
+          marker markers]
+    (put! (second marker) failure))
+  (reset! retry-barriers {})
+  (reset! retry-pending []))
+
 ;; How many transactions a SHARED writer chains onto one head read before
 ;; it stops and waits for them to commit. The head read synchronises us with
 ;; OTHER processes. If another writer commits during the batch, conditional head
@@ -182,28 +208,18 @@
         ;; committing group can conflict, and a group is at most one batch.
         retry-queue-buffer          (buffer (max 1 max-batch))
         retry-queue                 (chan retry-queue-buffer)
-        ;; A barrier immediately following a transaction that loses a fenced
-        ;; head race follows that logical transaction through its transparent
-        ;; retry. Keyed by the original callback, which the retry preserves.
+        ;; Barriers following a transaction that loses a fenced head race
+        ;; follow that logical transaction through its transparent retry.
+        ;; Keyed by the original callback, which the retry preserves; the value
+        ;; is a vector because several consecutive barriers can all be waiting
+        ;; on the same last retrying transaction.
         retry-barriers              (atom {})
         retry-pending               (atom [])
         ;; Set before the fatal path closes anything. A retry is only worth
         ;; queueing while a loop remains to drain it, and there is no
         ;; non-destructive way to ask a core.async channel whether it is closed —
         ;; `poll!` would CONSUME an invocation to find out.
-        writer-down?                (atom false)
-        settle-retry-failure!       (fn [callback failure]
-                                      (swap! retry-pending
-                                             (fn [callbacks]
-                                               (into [] (remove #{callback}) callbacks)))
-                                      (when-let [marker (get @retry-barriers callback)]
-                                        (swap! retry-barriers dissoc callback)
-                                        (put! (second marker) failure)))
-        fail-retry-barriers!        (fn [failure]
-                                      (doseq [[_ marker] @retry-barriers]
-                                        (put! (second marker) failure))
-                                      (reset! retry-barriers {})
-                                      (reset! retry-pending []))]
+        writer-down?                (atom false)]
     [transaction-queue commit-queue
      (#?(:clj thread-try :cljs try)
       S
@@ -336,7 +352,7 @@
                                            (log/error :datahike/head-reload-failed
                                                       {:invocation (dissoc invocation :bindings) :error e})
                                            (put! callback e)
-                                           (settle-retry-failure! callback e)
+                                           (settle-retry-failure! retry-pending retry-barriers callback e)
                                            #?(:clj (when (instance? Error e)
                                                      (reset! writer-down? true)
                                                      (close! transaction-queue)
@@ -345,7 +361,7 @@
                                                      (close! retry-queue)
                                                      (fail-queued-invocations! transaction-queue e)
                                                      (fail-queued-invocations! retry-queue e)
-                                                     (fail-retry-barriers! e)
+                                                     (fail-retry-barriers! retry-barriers retry-pending e)
                                                      (throw e)))
                                            ::reload-failed)))
                               reload-failed? (= ::reload-failed old)
@@ -448,7 +464,7 @@
                                                              :error      e}
                                                             e)
                                                    e)))
-                                        (settle-retry-failure! callback e)
+                                        (settle-retry-failure! retry-pending retry-barriers callback e)
                                 ;; Re-throw Errors (AssertionError, OutOfMemoryError, etc.) to crash the writer
                                 ;; Only Exceptions should be handled and allow the writer to continue.
                                 ;; CLOSE the queues first: a dead loop with open queues would accept
@@ -462,7 +478,7 @@
                                                   (close! retry-queue)
                                                   (fail-queued-invocations! transaction-queue e)
                                                   (fail-queued-invocations! retry-queue e)
-                                                  (fail-retry-barriers! e)
+                                                  (fail-retry-barriers! retry-barriers retry-pending e)
                                                   (throw e)))
                                         :error))]
                           (cond reload-failed?
@@ -605,7 +621,7 @@
                     (if (= barrier-marker (first tx))
                       (do
                         (if-let [retry-callback (peek @retry-pending)]
-                          (swap! retry-barriers assoc retry-callback tx)
+                          (carry-retry-barrier! retry-barriers retry-callback tx)
                           (>! (second tx) @(:wrapped-atom connection)))
                         (recur (<?- commit-queue) last-cid last-rev))
                       (let [[txs pending-marker] (commit-batch tx commit-queue)]
@@ -674,9 +690,7 @@
                                   (swap! retry-pending
                                          (fn [callbacks]
                                            (into [] (remove #{callback}) callbacks)))
-                                  (when-let [marker (get @retry-barriers callback)]
-                                    (swap! retry-barriers dissoc callback)
-                                    (>! (second marker) commit-db)))))
+                                  (settle-retry-success! retry-barriers callback commit-db))))
                             (catch #?(:clj Throwable :cljs js/Error) e
                               (cond
                               ;; NOT FATAL, and NOT RETRIED. The connection demands
@@ -695,7 +709,7 @@
                                             {:branch (:branch (:config db))})
                                   (doseq [[_ callback] txs]
                                     (put! callback e)
-                                    (settle-retry-failure! callback e)))
+                                    (settle-retry-failure! retry-pending retry-barriers callback e)))
 
                                 (= :konserve/revision-mismatch (:type (ex-data e)))
                               ;; NOT FATAL. Another writer moved the branch head
@@ -736,7 +750,7 @@
                                          txs)
                                         carrier-callback (some-> retryable-txs last second)]
                                     (when (and pending-marker carrier-callback)
-                                      (swap! retry-barriers assoc carrier-callback pending-marker)
+                                      (carry-retry-barrier! retry-barriers carrier-callback pending-marker)
                                       (reset! carried-marker? true))
                                     (let [retry-callbacks (mapv second retryable-txs)
                                           retried?       (set retry-callbacks)]
@@ -782,7 +796,7 @@
                                                             :attempt attempt
                                                             :error   e})]
                                               (put! callback failure)
-                                              (settle-retry-failure! callback failure))))))))
+                                              (settle-retry-failure! retry-pending retry-barriers callback failure))))))))
                                 :else
                                 (do
                             ;; Close the queues BEFORE delivering the failed
@@ -811,7 +825,7 @@
                                   (doseq [[_ callback] txs]
                                     (put! callback e))
                                   (fail-pending-commits! commit-queue pending-marker e)
-                                  (fail-retry-barriers! e)
+                                  (fail-retry-barriers! retry-barriers retry-pending e)
                                   (log/error :datahike/writer-shutdown {:error e})
                             ;; Re-throw Errors (AssertionError, OutOfMemoryError, etc.) to crash the writer
                                   #?(:clj (when (instance? Error e)
