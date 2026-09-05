@@ -6,6 +6,18 @@ When something is added, it's typically marked *Experimental*. When the API cont
 
 ## 0.8
 
+- **Bounded query execution.** Queries accept `:timeout` in milliseconds and
+  fail with `:datahike/query-timeout` when the engine reaches the deadline,
+  including planner, relational, rule and nested-query execution. The dynamic
+  `datahike.query/*query-timeout-ms*` supplies an ambient cap which a query may
+  shorten but not extend. HTTP and Kabel requests use the server's
+  `:query-timeout-ms` (30000 by default; `false` or `nil` disables it), and HTTP
+  reports a clean 503 response rather than an internal-error stack trace.
+- **Kabel creates obey `:create-database`.** The listener now applies the same
+  backend allow-list or server-pinned store root as HTTP creation. The policy
+  wins over the listener's own store configuration, preserves the client id,
+  and returns `:datahike.http/store-refused` when it rejects a create.
+
 - **The npm thin client is now TypeScript.** The `datahike/remote` entry uses
   a hand-written `fetch` transport and tagged-JSON codec instead of carrying
   the ClojureScript runtime and boring. Its generated API still follows the

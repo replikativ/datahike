@@ -41,19 +41,20 @@
 ;;
 ;; `cancel` is an optional IDeref (typically a Volatile) threaded through the
 ;; query context. When its stored value is truthy, the next `check-cancel!`
-;; throws an ex-info with :datahike/canceled true.
+;; throws. A timeout descriptor becomes :datahike/query-timeout; an explicit
+;; protocol cancellation remains :datahike/canceled.
 ;;
-;; Datahike itself is protocol-agnostic — the raised ex-info carries
-;; :datahike/canceled only. Adapter layers (pgwire, client drivers) map
-;; this to their own error codes at the boundary.
+;; Explicit cancellation remains protocol-agnostic and carries
+;; :datahike/canceled only. Adapter layers (pgwire, client drivers) map that
+;; to their own error codes at the boundary.
 ;;
 ;; Cost model: when `cancel` is nil (non-pgwire callers), the nil guard
 ;; short-circuits before any deref — a single ifnull + predicted-not-taken
 ;; branch per check, far below measurement noise.
 
 (defmacro check-cancel!
-  "Throw :datahike/canceled if `cancel` (a Volatile or Atom, or nil) holds a
-   truthy value. No-op on nil. Hot-path safe: callers should bind the value
+  "Throw the typed timeout or :datahike/canceled represented by `cancel` (a
+   Volatile, Atom, composite IDeref, or nil). No-op on nil. Hot-path safe: callers should bind the value
    from `(:cancel ctx)` to a local *outside* any tight loop, then pass the
    local to this macro inside the loop.
 
@@ -64,14 +65,16 @@
   (if (:ns &env)
     ;; CLJS expansion
     `(when-let [c# ~cancel]
-       (when (cljs.core/deref c#)
-         (throw (ex-info "query canceled"
-                         {:datahike/canceled true}))))
+       (when-let [v# (cljs.core/deref c#)]
+         (if (= :datahike/query-timeout (:type v#))
+           (throw (ex-info "query timed out" v#))
+           (throw (ex-info "query canceled" {:datahike/canceled true})))))
     ;; CLJ expansion — direct .deref via IDeref hint
     `(when-let [^clojure.lang.IDeref c# ~cancel]
-       (when (.deref c#)
-         (throw (ex-info "query canceled"
-                         {:datahike/canceled true}))))))
+       (when-let [v# (.deref c#)]
+         (if (= :datahike/query-timeout (:type v#))
+           (throw (ex-info "query timed out" v#))
+           (throw (ex-info "query canceled" {:datahike/canceled true})))))))
 
 ;; ---------------------------------------------------------------------------
 ;; Cross-platform helpers
