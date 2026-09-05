@@ -28,7 +28,8 @@
 (deftest remote-barriers-wait-for-sync-without-replacing-report-waiters
   (with-writer
     (fn [remote db]
-      (let [db (d/db-with db [{:barrier-test 1}])
+      (let [db (assoc-in (d/db-with db [{:barrier-test 1}])
+                         [:meta :datahike/commit-id] (random-uuid))
             max-tx (:max-tx db)
             report-waiter (async/promise-chan)
             registered (async/promise-chan)
@@ -49,12 +50,35 @@
             (is (= true (await registered)))
             (is (nil? (async/poll! left)))
             (is (nil? (async/poll! right)))
-            (kabel/on-sync-update! remote max-tx)
+            (kabel/on-sync-update! remote (inc max-tx) (random-uuid))
+            (is (nil? (async/poll! left))
+                "a higher transaction number on another root is not readiness")
+            (is (nil? (async/poll! right)))
+            (kabel/on-sync-update! remote max-tx
+                                   (get-in db [:meta :datahike/commit-id]))
             (is (= :synced (await report-waiter)))
             (is (= db (await left)))
             (is (= db (await right)))
             (is (= #{::report} (set (keys @(:pending-txs remote)))))
             (is (zero? @listeners))))))))
+
+(deftest remote-barrier-remembers-exact-sync-before-rpc-response
+  (with-writer
+    (fn [remote db]
+      (let [commit-id (random-uuid)
+            snapshot (assoc-in db [:meta :datahike/commit-id] commit-id)
+            response (async/promise-chan)
+            invoked (async/promise-chan)]
+        (with-redefs [remote/invoke (fn [& _]
+                                      (async/put! invoked true)
+                                      response)]
+          (let [result (writer/dispatch! remote {:op 'writer-barrier :args []})]
+            (is (= true (await invoked)))
+            (kabel/on-sync-update! remote (:max-tx db) commit-id)
+            (kabel/on-sync-update! remote (inc (:max-tx db)) (random-uuid))
+            (async/put! response snapshot)
+            (is (= snapshot (await result)))
+            (is (empty? @(:pending-txs remote)))))))))
 
 (deftest remote-barrier-preserves-unknown-operation-errors
   (with-writer
@@ -77,7 +101,8 @@
 (deftest remote-barrier-fails-on-shutdown-while-waiting-for-sync
   (with-writer
     (fn [remote db]
-      (let [db (d/db-with db [{:barrier-test 1}])
+      (let [db (assoc-in (d/db-with db [{:barrier-test 1}])
+                         [:meta :datahike/commit-id] (random-uuid))
             registered (async/promise-chan)]
         (add-watch (:pending-txs remote) ::registered
                    (fn [_ _ _ pending]

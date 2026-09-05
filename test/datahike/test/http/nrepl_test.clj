@@ -6,7 +6,8 @@
             [datahike.http.nrepl :as server-nrepl]
             [datahike.http.server :as server]
             [nrepl.core :as nrepl])
-  (:import [java.nio.file Files Path]))
+  (:import [java.nio.file Files Path]
+           [java.net Socket InetSocketAddress]))
 
 (defn- eval-values [connection code]
   (->> (nrepl/message (nrepl/client connection 3000)
@@ -86,8 +87,10 @@
       (finally
         (server/stop-server instance)))
     (is (thrown? java.net.ConnectException
-                 (with-open [connection (nrepl/connect :host (:bind endpoint)
-                                                       :port (:port endpoint))]
-                   ;; connect constructs a lazy transport; sending proves the
-                   ;; server socket was actually closed by stop-server.
-                   (eval-values connection "(+ 1 1)"))))))
+                 (with-open [socket (Socket.)]
+                   ;; Test socket closure directly. The nREPL client's lazy
+                   ;; response sequence may end without surfacing a transport
+                   ;; exception; an empty response is not proof of a listener.
+                   (.connect socket (InetSocketAddress. ^String (:bind endpoint)
+                                                        (int (:port endpoint)))
+                             3000))))))

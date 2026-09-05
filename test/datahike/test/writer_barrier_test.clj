@@ -178,6 +178,85 @@
           (is (instance? AssertionError (await failure)))
           (is (instance? AssertionError (await barrier))))))))
 
+(deftest shared-barrier-retains-boundary-across-multiple-retries
+  (let [entered (promise)
+        release (promise)
+        config {:store {:backend :memory :id (random-uuid)}
+                :schema-flexibility :read :keep-history? false
+                :writer {:backend :self :writer-ownership :shared
+                         :head-conflict-backoff-ms 0
+                         :head-conflict-retries 8
+                         :write-fn-map
+                         {'held-transact
+                          (fn [old arg]
+                            (deliver entered true)
+                            @release
+                            (writing/transact! old arg))}}}]
+    (d/create-database config)
+    (let [conn (d/connect config)
+          original writing/commit!
+          attempts (atom 0)]
+      (try
+        (with-redefs [writer/retryable-ops (conj writer/retryable-ops 'held-transact)
+                      writing/commit!
+                      (fn [& args]
+                        (if (<= (swap! attempts inc) 2)
+                          (async/to-chan!
+                           [(ex-info "forced repeated conflict"
+                                     {:type :konserve/revision-mismatch})])
+                          (apply original args)))]
+          (let [a (dispatch conn 'held-transact [{:tx-data [{:db/id 1 :n 1}]}])]
+            (is (= true (deref entered 10000 ::timed-out)))
+            (let [b (dispatch conn 'transact! [{:tx-data [{:db/id 2 :n 2}]}])
+                  barrier (dispatch conn 'writer-barrier [])
+                  c (dispatch conn 'transact! [{:tx-data [{:db/id 3 :n 3}]}])]
+              (deliver release true)
+              (is (map? (await a)))
+              (is (map? (await b)))
+              (let [snapshot (await barrier)]
+                (is (map? snapshot))
+                (when (map? snapshot)
+                  (is (= #{[1] [2]} (d/q '[:find ?n :where [_ :n ?n]] snapshot)))))
+              (is (map? (await c))))))
+        (finally
+          (deliver release true)
+          (d/release conn)
+          (d/delete-database config))))))
+
+(deftest deferred-barrier-fails-if-retry-processing-crashes
+  (let [entered (promise)
+        release (promise)
+        calls (atom 0)
+        config {:store {:backend :memory :id (random-uuid)}
+                :schema-flexibility :read :keep-history? false
+                :writer {:backend :self :writer-ownership :shared
+                         :head-conflict-backoff-ms 0
+                         :write-fn-map
+                         {'held-transact
+                          (fn [old arg]
+                            (if (= 1 (swap! calls inc))
+                              (do (deliver entered true) @release
+                                  (writing/transact! old arg))
+                              (throw (AssertionError. "retry processing crashed"))))}}}]
+    (d/create-database config)
+    (let [conn (d/connect config)]
+      (try
+        (with-redefs [writer/retryable-ops (conj writer/retryable-ops 'held-transact)
+                      writing/commit! (fn [& _]
+                                        (async/to-chan!
+                                         [(ex-info "forced conflict"
+                                                   {:type :konserve/revision-mismatch})]))]
+          (let [tx (dispatch conn 'held-transact [{:tx-data [{:n 1}]}])]
+            (is (= true (deref entered 10000 ::timed-out)))
+            (let [barrier (dispatch conn 'writer-barrier [])]
+              (deliver release true)
+              (is (instance? AssertionError (await tx)))
+              (is (instance? AssertionError (await barrier))))))
+        (finally
+          (deliver release true)
+          (d/release conn)
+          (d/delete-database config))))))
+
 (deftest shared-barriers-follow-transparent-head-conflict-retry
   (let [config {:store {:backend :memory :id (random-uuid)}
                 :schema-flexibility :read

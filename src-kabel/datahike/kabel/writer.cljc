@@ -113,6 +113,12 @@
   (-dispatch! [_ {:keys [op] :as arg-map}]
     (let [result-ch (promise-chan)
           request-id (random-uuid)
+          barrier-wait-ch (when (= op 'writer-barrier) (promise-chan))
+          ;; Observe exact synchronized roots while the RPC is in flight. A
+          ;; later head must not erase evidence that this request's root arrived.
+          observed-commits (when (= op 'writer-barrier)
+                             (atom #{(get-in @(:wrapped-atom @conn-atom)
+                                             [:meta :datahike/commit-id])}))
           ;; Global dispatch handler - store-id is passed in the request
           remote-fn 'datahike.kabel/dispatch
           finish-barrier! (fn [remote-result]
@@ -134,6 +140,9 @@
                             (catch #?(:clj Exception :cljs js/Error) e
                               (log/error "Error in listen! callback" e))))
                         (put! result-ch final-tx-report)))]
+      (when observed-commits
+        (swap! pending-txs assoc request-id
+               {:observed-commits observed-commits :ch barrier-wait-ch}))
       (go
         (try
           ;; 1. Send to remote peer
@@ -150,13 +159,19 @@
             (cond
               ;; Remote error - return immediately
               (instance? #?(:clj Throwable :cljs js/Error) remote-result)
-              (put! result-ch remote-result)
+              (do (swap! pending-txs dissoc request-id)
+                  (put! result-ch remote-result))
 
               (= op 'writer-barrier)
-              (let [wait-ch (promise-chan)]
+              (let [wait-ch barrier-wait-ch
+                    commit-id (get-in remote-result [:meta :datahike/commit-id])]
+                (when-not commit-id
+                  (throw (ex-info "Remote barrier did not identify its durable snapshot"
+                                  {:type :kabel/barrier-missing-commit-id})))
                 (swap! pending-txs assoc request-id
-                       {:expected-max-tx expected-max-tx :ch wait-ch})
-                (if (>= @current-max-tx expected-max-tx)
+                       {:expected-commit-id commit-id :ch wait-ch
+                        :observed-commits observed-commits})
+                (if (contains? @observed-commits commit-id)
                   (finish-barrier! remote-result)
                   (let [[v port] (clojure.core.async/alts!
                                   [wait-ch (timeout default-sync-timeout-ms)])]
@@ -175,6 +190,7 @@
                                 (ex-info "Writer barrier settled remotely but its sync did not arrive in time"
                                          {:type :kabel/sync-timeout
                                           :request-id request-id
+                                          :expected-commit-id commit-id
                                           :expected-max-tx expected-max-tx
                                           :timeout-ms default-sync-timeout-ms})))))))
 
@@ -215,6 +231,7 @@
                                           :expected-max-tx expected-max-tx
                                           :timeout-ms default-sync-timeout-ms})))))))))
           (catch #?(:clj Throwable :cljs :default) e
+            (swap! pending-txs dissoc request-id)
             (log/error "Error in KabelWriter dispatch" e)
             (put! result-ch (if (instance? #?(:clj Throwable :cljs js/Error) e)
                               e
@@ -229,7 +246,7 @@
     ;; Cancel all pending waiters with shutdown error
     (let [shutdown-error (ex-info "Writer shutdown" {:type :writer-shutdown})]
       (doseq [[_ {:keys [ch]}] @pending-txs]
-        (put! ch shutdown-error))
+        (when ch (put! ch shutdown-error)))
       (reset! pending-txs {})
       ;; Drop the store from the index-reconstruction registry
       (when store-config
@@ -273,15 +290,20 @@
    Parameters:
    - writer: The KabelWriter instance
    - new-max-tx: The max-tx from the newly synced db"
-  [writer new-max-tx]
-  (let [{:keys [pending-txs current-max-tx]} writer]
+  ([writer new-max-tx] (on-sync-update! writer new-max-tx nil))
+  ([writer new-max-tx commit-id]
+   (let [{:keys [pending-txs current-max-tx]} writer]
     ;; Update current max-tx
-    (reset! current-max-tx new-max-tx)
+     (reset! current-max-tx new-max-tx)
 
     ;; Resolve any pending transactions that are now synced
-    (doseq [[_ {:keys [expected-max-tx ch]}] @pending-txs]
-      (when (>= new-max-tx expected-max-tx)
-        (put! ch :synced)))))
+     (doseq [[_ {:keys [expected-max-tx expected-commit-id observed-commits ch]}] @pending-txs]
+       (when (and observed-commits commit-id)
+         (swap! observed-commits conj commit-id))
+       (when (and ch (if expected-commit-id
+                       (= commit-id expected-commit-id)
+                       (and (number? expected-max-tx) (>= new-max-tx expected-max-tx))))
+         (put! ch :synced))))))
 
 (defn on-db-sync!
   "Called by konserve-sync when the :db key is updated.
@@ -321,7 +343,8 @@
 
       ;; Notify writer of sync (resolves pending transactions)
       (when writer
-        (on-sync-update! writer (:max-tx live-db))))))
+        (on-sync-update! writer (:max-tx live-db)
+                         (get-in live-db [:meta :datahike/commit-id]))))))
 
 ;; =============================================================================
 ;; Listener Management

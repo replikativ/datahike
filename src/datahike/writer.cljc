@@ -238,6 +238,14 @@
         ;; on the same last retrying transaction.
         retry-barriers              (atom {})
         retry-pending               (atom [])
+        ;; Hold the boundary in the transaction loop until the entire preceding
+        ;; batch, including all retries, has settled. No later invocation may
+        ;; be prepared while this marker is held.
+        deferred-barrier            (atom nil)
+        fail-deferred-barrier!      (fn [failure]
+                                      (when-let [marker @deferred-barrier]
+                                        (put! (:callback marker) failure)
+                                        (reset! deferred-barrier nil)))
         ;; Set before the fatal path closes anything. A retry is only worth
         ;; queueing while a loop remains to drain it, and there is no
         ;; non-destructive way to ask a core.async channel whether it is closed —
@@ -285,6 +293,7 @@
                   (if (and shared?
                            (pos? pending)
                            (or (>= pending max-batch)
+                               (some? @deferred-barrier)
                                (zero? (count transaction-queue-buffer))))
                     (do
                       ;; One signal per COMMITTED TRANSACTION, so this balances
@@ -332,6 +341,9 @@
                                        (<! (timeout (+ (* backoff (bit-shift-left 1 (min 16 (dec n))))
                                                        (rand-int (inc backoff))))))
                                      inv))
+                                 (when-let [marker @deferred-barrier]
+                                   (reset! deferred-barrier nil)
+                                   marker)
                                  (<?- transaction-queue))]
                       (do
                         (when (> (count transaction-queue-buffer) (* 0.9 transaction-queue-size))
@@ -385,6 +397,7 @@
                                                      (fail-queued-invocations! transaction-queue e)
                                                      (fail-queued-invocations! retry-queue e)
                                                      (fail-retry-barriers! retry-barriers retry-pending e)
+                                                     (fail-deferred-barrier! e)
                                                      (throw e)))
                                            ::reload-failed)))
                               reload-failed? (= ::reload-failed old)
@@ -502,6 +515,7 @@
                                                   (fail-queued-invocations! transaction-queue e)
                                                   (fail-queued-invocations! retry-queue e)
                                                   (fail-retry-barriers! retry-barriers retry-pending e)
+                                                  (fail-deferred-barrier! e)
                                                   (throw e)))
                                         :error))]
                           (cond reload-failed?
@@ -544,17 +558,23 @@
                                   (recur old needs-reload? pending))
 
                                 (= barrier-marker res)
-                                (do
-                                  (when-not (put! commit-queue [barrier-marker callback])
-                                    (put! callback
-                                          (ex-info "Writer shut down before this barrier could settle"
-                                                   {:type :writer-shut-down})))
+                                (if (and shared?
+                                         (or (pos? pending)
+                                             (pos? (count retry-queue-buffer))))
+                                  (do
+                                    (reset! deferred-barrier invocation)
+                                    (recur old needs-reload? pending))
+                                  (do
+                                    (when-not (put! commit-queue [barrier-marker callback])
+                                      (put! callback
+                                            (ex-info "Writer shut down before this barrier could settle"
+                                                     {:type :writer-shut-down})))
                                   ;; The marker separates commit groups, but
                                   ;; later reports may still be prepared from
                                   ;; this ordered speculative chain. The commit
                                   ;; loop cannot cross the marker and resolves
                                   ;; it only after the preceding group is durable.
-                                  (recur old needs-reload? pending))
+                                    (recur old needs-reload? pending)))
 
                                 (not= res :error)
                                 (do
@@ -884,6 +904,7 @@
                                     (put! callback e))
                                   (fail-pending-commits! commit-queue pending-marker e)
                                   (fail-retry-barriers! retry-barriers retry-pending e)
+                                  (fail-deferred-barrier! e)
                                   (log/error :datahike/writer-shutdown {:error e})
                             ;; Re-throw Errors (AssertionError, OutOfMemoryError, etc.) to crash the writer
                                   #?(:clj (when (instance? Error e)

@@ -6,6 +6,7 @@
             [datahike.audit :as audit]
             [datahike.online-gc :as online-gc]
             [datahike.writing :as dw]
+            [datahike.writer :as writer]
             [taoensso.trove :as trove]
             [konserve.core :as k]
             [fress.impl.bigdec :as fbd] ;; cljs BigDecimal — :db.type/bigdec value type
@@ -120,6 +121,35 @@
    both. Only the ROOT stops being assumed to be a POSIX `/tmp`."
   [nm]
   (path.join (os.tmpdir) nm))
+
+(deftest writer-barrier-preserves-queued-boundary
+  (async done
+         (go
+           (let [config {:store {:backend :memory :id (random-uuid)}
+                         :schema-flexibility :read :keep-history? false
+                         :writer {:backend :self :writer-ownership :shared}}]
+             (<! (d/create-database config))
+             (let [conn (d/connect config)
+                   w (:writer @(:wrapped-atom conn))]
+               (try
+                 (let [a (writer/dispatch! w {:op 'transact!
+                                              :args [{:tx-data [{:n 1}]}]})
+                       barrier (writer/dispatch! w {:op 'writer-barrier :args []})
+                       b (writer/dispatch! w {:op 'transact!
+                                              :args [{:tx-data [{:n 2}]}]})
+                       before (<! a)
+                       snapshot (<! barrier)]
+                   (is (map? before))
+                   (is (map? snapshot))
+                   (is (= #{[1]} (d/q '[:find ?n :where [_ :n ?n]] snapshot)))
+                   (is (map? (<! b)))
+                   (is (= #{[1]} (d/q '[:find ?n :where [_ :n ?n]] snapshot))
+                       "later commits cannot change the returned snapshot"))
+                 (catch :default e (is false (str e)))
+                 (finally
+                   (d/release conn)
+                   (<! (d/delete-database config))
+                   (done))))))))
 
 (deftest bigdec-roundtrip-test
   ;; :db.type/bigdec must accept a fress `Bigdec` (unscaled js/BigInt + scale) in
