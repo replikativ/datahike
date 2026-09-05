@@ -60,6 +60,9 @@ async function typescriptTest() {
   
   // Connect returns Connection type
   const conn: d.Connection = await d.connect(config);
+  const barrierPromise: Promise<d.Database> = d.writerBarrier(conn);
+  const barrierDb: d.Database = await barrierPromise;
+  console.log(barrierDb);
 
   // Transaction with typed Transaction array
   const transactions: d.Transaction[] = [

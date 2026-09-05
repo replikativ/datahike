@@ -148,6 +148,7 @@
     pull-many "T[]"
     transact! "TransactionReport"
     merge-db! "TransactionReport"
+    writer-barrier! "Database"
     branch! "unknown"
     delete-branch! "unknown"
     parent-commit-ids "UuidValue[] | null"

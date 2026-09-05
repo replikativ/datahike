@@ -518,6 +518,35 @@ async function testSchemaRetrieval() {
   await d.deleteDatabase(config);
 }
 
+async function testWriterBarrier() {
+  const config = {
+    store: { backend: ':memory', id: d.randomUuid() },
+    'schema-flexibility': ':read',
+    'value-caps': ':default'
+  };
+  await d.createDatabase(config);
+  const conn = await d.connect(config);
+  try {
+    await d.transact(conn, [{ name: 'Before barrier' }]);
+    const result = d.writerBarrier(conn);
+    if (!(result instanceof Promise)) {
+      throw new Error('writerBarrier must expose the asynchronous Promise API');
+    }
+    const snapshot = await result;
+    const names = await d.q('[:find [?name ...] :where [_ :name ?name]]', snapshot);
+    if (names.length !== 1 || names[0] !== 'Before barrier') {
+      throw new Error('writerBarrier did not return the durable database snapshot');
+    }
+    const after = await d.writerBarrier(conn);
+    if (await d.commitId(snapshot) !== await d.commitId(after)) {
+      throw new Error('writerBarrier must not create a transaction');
+    }
+  } finally {
+    await d.release(conn);
+    await d.deleteDatabase(config);
+  }
+}
+
 async function testMultipleTransactions() {
   console.log('\n=== Test 10: Multiple Sequential Transactions ===');
 
@@ -725,6 +754,7 @@ async function runAllTests() {
     testVersioningAndGc,
     testFilePersistence,
     testSchemaRetrieval,
+    testWriterBarrier,
     testMultipleTransactions,
     testQueryAPI,
     testOptimisticOverlay
