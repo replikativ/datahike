@@ -27,6 +27,7 @@ catalog and the permissions:
  :port 4444
  :token "replace-with-a-long-random-token"          ; the break-glass identity
  :system-db {:store {:backend :file :path "/var/lib/datahike/system"}}
+ :create-database {:store {:backend :file :path "/var/lib/datahike/browser-databases"}}
  :kabel {:host "0.0.0.0"
          :port 47296
          :jwt {:alg :HS256                            ; or :RS256 with :public-key, or an :issuers registry
@@ -47,7 +48,9 @@ Port 4444 is the HTTP API, used below to manage permissions. Port 47296 is
 the WebSocket the browser connects to; put TLS in front of it and use `wss://`
 anywhere but on a loopback development setup. The server never lets a client
 choose a filesystem path: every browser database is stored below the
-listener's `:store :path` in a directory named for its id.
+`:create-database :store :path` in a directory named for its id. That policy
+wins over the listener's `:store`; when no policy is set, the listener's
+`:store :path` is used instead.
 
 The server validates tokens; it does not issue them. Your application does,
 with the algorithm and key above, and the token's `sub` is the user. Any

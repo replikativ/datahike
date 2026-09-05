@@ -1208,3 +1208,32 @@ we query all (parent, child) pairs."
 
     (testing "a repeated argument in a function clause is still not a self-join"
       (is (= #{[2]} (d/q '[:find ?y :in $ [?x ...] :where [(+ ?x ?x) ?y]] db [1]))))))
+
+#?(:clj
+   (deftest query-deadlines
+     (let [slow-query '{:find [?x ?y]
+                        :in [[?x ...] [?y ...]]
+                        :where [[(not= ?x ?y)]]}
+           values (range 10000)
+           timed-out (fn [query]
+                       (try
+                         (d/q query values values)
+                         nil
+                         (catch ExceptionInfo e e)))]
+       (testing "a query's own timeout cancels a deterministic cross product"
+         (let [e (timed-out (assoc slow-query :timeout 5))]
+           (is (= :datahike/query-timeout (:type (ex-data e))))
+           (is (= 5 (:timeout-ms (ex-data e))))
+           (is (nat-int? (:elapsed-ms (ex-data e))))))
+       (testing "a query cannot extend an ambient deadline"
+         (let [e (binding [dq/*query-timeout-ms* 5]
+                   (timed-out (assoc slow-query :timeout 60000)))]
+           (is (= :datahike/query-timeout (:type (ex-data e))))
+           (is (= 5 (:timeout-ms (ex-data e))))))
+       (testing "nil leaves unbounded queries unchanged"
+         (is (= #{[1 3] [2 3]}
+                (binding [dq/*query-timeout-ms* nil]
+                  (d/q '[:find ?x ?y
+                         :in [?x ...] [?y ...]
+                         :where [(< ?x ?y)]]
+                       [1 2] [3]))))))))

@@ -59,6 +59,7 @@
    {:key :token        :parse non-blank}
    {:key :dev-mode     :parse parse-bool}
    {:key :shutdown-timeout-ms :parse parse-nonnegative-long}
+   {:key :query-timeout-ms :parse parse-nonnegative-long}
    {:key :query-functions :parse parse-query-functions}
    {:key :level        :parse parse-level}
    {:key :log-format   :parse parse-log-format}
@@ -83,6 +84,7 @@
    [nil "--token-file FILE" "Read the shared token from FILE" :parse-fn non-blank]
    [nil "--dev-mode BOOLEAN" "Enable or disable development authentication" :parse-fn parse-bool]
    [nil "--shutdown-timeout-ms MILLIS" "Grace period for in-flight requests" :parse-fn parse-nonnegative-long]
+   [nil "--query-timeout-ms MILLIS" "Maximum query duration (default 30000)" :parse-fn parse-nonnegative-long]
    [nil "--query-functions MODE" "Functions client queries may call: safe (default) or permissive" :parse-fn parse-query-functions]
    ["-l" "--level LEVEL" "Log level" :parse-fn parse-level]
    [nil "--log-format FORMAT" "Log format: text or json" :parse-fn parse-log-format]

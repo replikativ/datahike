@@ -19,6 +19,7 @@
   (:refer-clojure :exclude [read-string filter])
   (:require
    [datahike.http.stores :as stores]
+   [datahike.query :as query]
    [datahike.query.resolve :as qr]
    [clojure.string :as str]
    [clojure.core.async :as async]
@@ -83,6 +84,22 @@
   [e]
   {:status 500
    :body   {:msg (ex-message e) :ex-data (redact (ex-data e))}})
+
+(declare store-refused)
+
+(defn- query-timeout-response
+  "503 means the service deliberately stopped work at its configured resource
+   limit; unlike 504, no upstream gateway timed out. The request may be retried
+   with a cheaper query."
+  [e]
+  {:status 503
+   :body {:msg (ex-message e) :ex-data (redact (ex-data e))}})
+
+(defn- throwable-response [e]
+  (case (:type (ex-data e))
+    :datahike.http/store-refused (store-refused e)
+    :datahike/query-timeout (query-timeout-response e)
+    (error-response e)))
 
 (defn- store-refused
   "403 for a store the server's `:create-database` policy does not allow."
@@ -632,9 +649,7 @@
                  {:headers {"Cache-Control" (str (when (:dev-mode config) "public, ")
                                                  "max-age=" (get-in config [:cache :get :max-age]))}})))))
       (catch Exception e
-        (if (= :datahike.http/store-refused (:type (ex-data e)))
-          (store-refused e)
-          (error-response e))))))
+        (throwable-response e)))))
 
 (declare create-routes)
 
@@ -825,9 +840,7 @@
                                                               (stores/assign (:create-database config) cfg)
                                                               (rest body)))}
                                    (catch Exception e
-                                     (if (= :datahike.http/store-refused (:type (ex-data e)))
-                                       (store-refused e)
-                                       (error-response e)))))))
+                                     (throwable-response e))))))
             :operationId "create-database"},
      :swagger {:tags ["Internal"]}}]
    ["/transact!-writer"
@@ -965,10 +978,28 @@
     (throw (ex-info ":query-functions must be :safe or :permissive"
                     {:type :datahike.http/invalid-config :query-functions query-functions}))))
 
+(defn request-binding
+  "How each HTTP request or Kabel dispatch runs: under the configured query
+   function resolver and a query deadline. `:query-timeout-ms` defaults to
+   30000; an explicit false or nil disables the server cap."
+  [config]
+  (let [run (query-function-binding config)
+        timeout-ms (if (contains? config :query-timeout-ms)
+                     (:query-timeout-ms config)
+                     30000)]
+    (when-not (or (nil? timeout-ms) (false? timeout-ms)
+                  (and (integer? timeout-ms) (<= 0 timeout-ms)))
+      (throw (ex-info ":query-timeout-ms must be false, nil, or a nonnegative integer"
+                      {:type :datahike.http/invalid-config
+                       :query-timeout-ms timeout-ms})))
+    (fn [thunk]
+      (binding [query/*query-timeout-ms* (when timeout-ms timeout-ms)]
+        (run thunk)))))
+
 (defn- wrap-query-functions
-  "Run every request under `config`'s query function resolver."
+  "Run every request under `config`'s query resolver and deadline."
   [handler config]
-  (let [run (query-function-binding config)]
+  (let [run (request-binding config)]
     (fn [request] (run #(handler request)))))
 
 (defn handler
@@ -998,7 +1029,8 @@
    Every request runs under the query function resolver `config` asks for
    (`:query-functions`, `:safe` by default; see `query-function-binding`),
    so what a client sends never resolves symbols the host did not allow,
-   while the host's own queries are untouched.
+   while the host's own queries are untouched. Queries are capped by
+   `:query-timeout-ms` (30000 by default); false or nil disables the cap.
 
    The returned fn carries the atom as metadata; `(release-all! handler)`
    releases what the routes opened when the host shuts down."

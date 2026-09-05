@@ -15,6 +15,7 @@
             [datahike.api :as d]
             [datahike.connections :refer [*connections*]]
             [datahike.http.routes :as routes]
+            [datahike.http.stores :as stores]
             [datahike.kabel.cbor-handlers :as cbor]
             [datahike.kabel.handlers :as handlers]
             [kabel.auth.websocket :as auth]
@@ -65,13 +66,22 @@
           (fail "A Kabel :file store requires a nonblank :path" {}))
         (assoc config :kabel (assoc kabel :host host :peer-id peer-id :store store))))))
 
-(defn- store-config-fn [{:keys [store]}]
-  (fn [store-id _client-config]
-    (case (:backend store)
-      :memory {:backend :memory :id store-id}
-      :file   {:backend :file
-               :path (.getPath (io/file (:path store) (str store-id)))
-               :id store-id})))
+(defn- store-config-fn
+  "Build the database configuration for a Kabel create. The listener's own
+   `:kabel :store` supplies the normal location, then the server's
+   `:create-database` policy is applied; where both apply, the policy wins."
+  [{:keys [kabel create-database]}]
+  (let [{:keys [store]} kabel]
+    (fn [store-id client-config]
+      (let [listener-store
+            (case (:backend store)
+              :memory {:backend :memory :id store-id}
+              :file   {:backend :file
+                       :path (.getPath (io/file (:path store) (str store-id)))
+                       :id store-id})]
+        (:store
+         (stores/assign create-database
+                        (assoc (or client-config {}) :store listener-store)))))))
 
 (defn- remote-name
   "The function a call names, as the symbol kabel resolves it to: kabel
@@ -175,7 +185,7 @@
   [config server {:keys [store] :as kabel} connections]
   (when (= :file (:backend store))
     (binding [*connections* connections]
-      (let [config-fn (store-config-fn kabel)]
+      (let [config-fn (store-config-fn (assoc config :kabel kabel))]
         (doseq [dir (some->> (io/file (:path store)) .listFiles (filter #(.isDirectory ^java.io.File %)))
                 :let [store-id (parse-uuid (.getName ^java.io.File dir))]
                 :when store-id]
@@ -214,7 +224,7 @@
                    cbor/datahike-cbor-middleware)
           served  (remote/serve server {:authorize (authorize-remote config)})]
       (handlers/register-global-handlers!
-       server {:store-config-fn (store-config-fn kabel)
+       server {:store-config-fn (store-config-fn (assoc config :kabel kabel))
                :on-connect (when bus-state
                              #(routes/register-report-listener! config bus-state %))
                :on-report (when bus-state
@@ -223,7 +233,7 @@
                ;; a go block carries its bindings across parks and the local
                ;; writer onto its thread, so the request's resolver holds
                ;; through the whole dispatch
-               :wrap-handler (let [run (routes/query-function-binding config)]
+               :wrap-handler (let [run (routes/request-binding config)]
                                (fn [handler]
                                  (fn [arg-map]
                                    (binding [*connections* connections]

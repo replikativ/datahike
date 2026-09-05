@@ -822,3 +822,20 @@
            (is (= #{["IVAN"] ["PETR"]}
                   (d/q '[:find ?x :where [_ :name ?n] [(app/shout ?n) ?x]] db)))
            (is (unknown? '[:find ?x :where [(load-string "1") ?x]])))))))
+
+#?(:clj
+   (deftest an-outer-deadline-cancels-a-nested-query
+     (let [query '{:find [?result]
+                   :in [?values]
+                   :where [[(datahike.api/q
+                             {:find [?x ?y]
+                              :in [[?x ...] [?y ...]]
+                              :where [[(not= ?x ?y)]]}
+                             ?values ?values) ?result]]
+                   :timeout 5}
+           e (try
+               (d/q query (range 10000))
+               nil
+               (catch ExceptionInfo e e))]
+       (is (= :datahike/query-timeout (:type (ex-data e))))
+       (is (= 5 (:timeout-ms (ex-data e)))))))

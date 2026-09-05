@@ -12,6 +12,7 @@
   (is (= "DATAHIKE_PORT" (config/env-name :port)))
   (is (= "DATAHIKE_DEV_MODE" (config/env-name :dev-mode)))
   (is (= "DATAHIKE_SHUTDOWN_TIMEOUT_MS" (config/env-name :shutdown-timeout-ms)))
+  (is (= "DATAHIKE_QUERY_TIMEOUT_MS" (config/env-name :query-timeout-ms)))
   (is (= "DATAHIKE_LOG_FORMAT" (config/env-name :log-format)))
   (is (= "DATAHIKE_NREPL_PORT" (config/env-name :nrepl-port)))
   (is (= "DATAHIKE_NREPL_BIND" (config/env-name :nrepl-bind)))
@@ -101,6 +102,7 @@
                                  :token "file-token"
                                  :dev-mode false
                                  :shutdown-timeout-ms 10000
+                                 :query-timeout-ms 10000
                                  :level :info
                                  :metrics false
                                  :system-db {:store {:backend :memory}
@@ -110,6 +112,7 @@
               "DATAHIKE_TOKEN" "env-token"
               "DATAHIKE_DEV_MODE" "true"
               "DATAHIKE_SHUTDOWN_TIMEOUT_MS" "20000"
+              "DATAHIKE_QUERY_TIMEOUT_MS" "20000"
               "DATAHIKE_LEVEL" "warn"
               "DATAHIKE_LOG_FORMAT" "text"
               "DATAHIKE_SYSTEM_DB_PATH" "/env/system"}
@@ -119,6 +122,7 @@
               "--token" "cli-token"
               "--dev-mode" "false"
               "--shutdown-timeout-ms" "30000"
+              "--query-timeout-ms" "30000"
               "--level" "error"
               "--log-format" "json"
               "--system-db-path" "/cli/system"]
@@ -128,6 +132,7 @@
     (is (= "cli-token" (:token resolved)))
     (is (false? (:dev-mode resolved)))
     (is (= 30000 (:shutdown-timeout-ms resolved)))
+    (is (= 30000 (:query-timeout-ms resolved)))
     (is (= :error (:level resolved)))
     (is (= :json (:log-format resolved)))
     (is (false? (:metrics resolved)) "unoverridden EDN remains the full surface")
@@ -173,6 +178,8 @@
                           (config/resolve-config ["--dev-mode" "perhaps"] {})))
     (is (thrown-with-msg? clojure.lang.ExceptionInfo #"Invalid DATAHIKE_SHUTDOWN_TIMEOUT_MS"
                           (config/resolve-config [] {"DATAHIKE_SHUTDOWN_TIMEOUT_MS" "-1"})))
+    (is (thrown-with-msg? clojure.lang.ExceptionInfo #"Invalid command line"
+                          (config/resolve-config ["--query-timeout-ms" "-1"] {})))
     (is (thrown-with-msg? clojure.lang.ExceptionInfo #"Invalid DATAHIKE_LOG_FORMAT"
                           (config/resolve-config [] {"DATAHIKE_LOG_FORMAT" "xml"}))))
   (testing "config parse errors never echo the possibly secret EDN value"

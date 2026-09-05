@@ -366,3 +366,34 @@
               "an unknown args format is refused"))
         (finally
           (.stop server))))))
+
+(deftest query-timeout-is-a-clean-http-error
+  (let [port 23203
+        server (run-jetty (routes/handler {:token token :query-timeout-ms 100})
+                          {:port port :join? false})
+        url (str "http://localhost:" port)
+        registry (rcbor/client-registry)
+        encode #(boring/encode % (rcbor/encode-opts registry))
+        decode #(boring/decode % (rcbor/decode-opts registry))
+        headers {"authorization" (str "token " token)
+                 "accept" "application/cbor"
+                 "content-type" "application/cbor"}
+        post-q (fn [args]
+                 (http/post (str url "/q")
+                            {:headers headers :body (encode args)
+                             :as :bytes :throw false}))]
+    (try
+      (let [response (post-q ['[:find ?x :in [?x ...] :where [(pos? ?x)]] [1 2]])]
+        (is (= 200 (:status response)))
+        (is (= #{[1] [2]} (decode (:body response)))))
+      (let [response (post-q ['{:find [?x ?y]
+                                :in [[?x ...] [?y ...]]
+                                :where [[(not= ?x ?y)]]
+                                :timeout 5}
+                              (range 10000) (range 10000)])
+            body (decode (:body response))]
+        (is (= 503 (:status response)))
+        (is (= :datahike/query-timeout (get-in body [:ex-data :type])))
+        (is (= 5 (get-in body [:ex-data :timeout-ms]))))
+      (finally
+        (.stop server)))))
