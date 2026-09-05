@@ -430,7 +430,7 @@
        (let [value (subs line (count prefix))]
          (if (str/starts-with? value " ") (subs value 1) value)))
 
-     (defn- read-listen-stream! [listener body]
+     (defn- read-listen-stream! [listener ^java.io.InputStream body]
        (with-open [reader (BufferedReader. (InputStreamReader. body "UTF-8"))]
          (loop [event nil data []]
            (when (active-listener? listener)
@@ -467,7 +467,7 @@
                                  "branch" (name branch)}
                           @last-commit (assoc "since" (str @last-commit)))}))
 
-     (defn- wait-to-reconnect [listener delay]
+     (defn- wait-to-reconnect [listener ^long delay]
        (try
          (Thread/sleep delay)
          (active-listener? listener)
