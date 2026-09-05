@@ -333,9 +333,14 @@
 
 (deftest a-read-by-url-or-by-post
   (testing "a GET carries its arguments in the URL and is cached; a POST carries them in the body and is not"
-    (let [port      23202
-          server    (run-jetty (routes/handler {:token token :dev-mode false :cache {:get {:max-age 60}}})
-                               {:port port :join? false})
+    (let [port        23202
+          connections (atom {})
+          server      (run-jetty (routes/handler {:token token :dev-mode false :cache {:get {:max-age 60}}}
+                                                 {:connections connections})
+                                 {:port port :join? false})
+          uncached-server (run-jetty (routes/handler {:token token :dev-mode false}
+                                                     {:connections connections})
+                                     {:port 23203 :join? false})
           url       (str "http://localhost:" port)
           peer      {:backend :datahike-server :url url :token token :format :cbor}
           registry  (rcbor/client-registry)
@@ -354,17 +359,28 @@
               by-get  (http/get (str url "/q?args=" (base64url (encode q-args)) "&f=cbor")
                                 {:headers headers :as :bytes})
               by-post (http/post (str url "/q") {:headers (assoc headers "content-type" "application/cbor")
-                                                 :body (encode q-args) :as :bytes})]
+                                                 :body (encode q-args) :as :bytes})
+              by-connection (http/post (str url "/db")
+                                       {:headers (assoc headers "content-type" "application/cbor")
+                                        :body (encode [conn]) :as :bytes})
+              cache-unset (http/get (str "http://localhost:23203/q?args="
+                                         (base64url (encode q-args)) "&f=cbor")
+                                    {:headers headers :as :bytes})]
           (is (= #{["Ada"]} (decode (:body by-get))))
           (is (= #{["Ada"]} (decode (:body by-post))))
-          (is (re-find #"max-age=60" (get-in by-get [:headers "cache-control"] ""))
-              "a read by URL is cacheable")
+          (is (= "max-age=31536000, immutable" (get-in by-get [:headers "cache-control"]))
+              "a snapshot read by URL is immutable")
           (is (nil? (get-in by-post [:headers "cache-control"]))
               "a read by POST is not")
+          (is (nil? (get-in by-connection [:headers "cache-control"]))
+              "a call carrying a connection is not immutable")
+          (is (nil? (get-in cache-unset [:headers "cache-control"]))
+              "without cache configuration no header is added")
           (is (= 500 (:status (http/get (str url "/q?args=" (base64url (encode q-args)) "&f=nope")
                                         {:headers headers :throw false})))
               "an unknown args format is refused"))
         (finally
+          (.stop uncached-server)
           (.stop server))))))
 
 (deftest query-timeout-is-a-clean-http-error

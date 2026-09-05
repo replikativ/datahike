@@ -6,6 +6,10 @@ When something is added, it's typically marked *Experimental*. When the API cont
 
 ## 0.8
 
+- **Persistent and in-memory caching for immutable snapshot reads.** The HTTP
+  server marks referentially transparent URL reads against database values as
+  `immutable`, and the TypeScript thin client deduplicates and retains up to
+  128 such results per client instance with configurable LRU eviction.
 - **Bounded query execution.** Queries accept `:timeout` in milliseconds and
   fail with `:datahike/query-timeout` when the engine reaches the deadline,
   including planner, relational, rule and nested-query execution. The dynamic

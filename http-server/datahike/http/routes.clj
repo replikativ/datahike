@@ -25,6 +25,8 @@
    [clojure.core.async :as async]
    [clojure.core.async.impl.protocols :as async-protocols]
    [datahike.connections :refer [*connections*]]
+   [datahike.connector :as connector]
+   [datahike.db.utils :as dbu]
    [datahike.store]
    [reitit.core :as reitit]
    [datahike.api.specification :refer [api-specification ->url]]
@@ -166,6 +168,16 @@
        (keep database-of)
        distinct
        vec))
+
+(defn- immutable-database-arguments?
+  "True when `args` contains a database value and no connection or other
+   database-bearing handle."
+  [args]
+  (let [values (mapcat #(tree-seq descend? seq %) args)]
+    (and (some dbu/db? values)
+         (not-any? #(or (connector/connection? %)
+                        (instance? Entity %))
+                   values))))
 
 (defn authorize
   "The 403 for `op` with `args` under `config`'s `:authorize`, or nil when the
@@ -562,7 +574,7 @@
 ;; The API routes
 ;; ---------------------------------------------------------------------------
 
-(defn- generic-handler [config state op f]
+(defn- generic-handler [config state op referentially-transparent? f]
   (fn [request]
     (try
       (let [{{body :body} :parameters
@@ -646,8 +658,13 @@
                (when (and (= method :get)
                           (or (get params "args-id") (get params "args"))
                           (get-in config [:cache :get :max-age]))
-                 {:headers {"Cache-Control" (str (when (:dev-mode config) "public, ")
-                                                 "max-age=" (get-in config [:cache :get :max-age]))}})))))
+                 {:headers
+                  {"Cache-Control"
+                   (str (when (:dev-mode config) "public, ")
+                        (if (and referentially-transparent?
+                                 (immutable-database-arguments? body))
+                          "max-age=31536000, immutable"
+                          (str "max-age=" (get-in config [:cache :get :max-age]))))}})))))
       (catch Exception e
         (throwable-response e)))))
 
@@ -788,7 +805,7 @@
                      :summary     (extract-first-sentence doc)
                      :description doc
                      :parameters  {:body (extract-input-schema args)}
-                     :handler     `(generic-handler ~'config ~'state ~(route-op n referentially-transparent?) ~(resolve n))}]
+                     :handler     `(generic-handler ~'config ~'state ~(route-op n referentially-transparent?) ~referentially-transparent? ~(resolve n))}]
           `[~(str "/" (->url n))
             ;; A read is a GET, cached by its URL: the arguments travel in the
             ;; `args` parameter (`url-args-middleware`) or, for a client that
