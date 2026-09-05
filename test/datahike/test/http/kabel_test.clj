@@ -16,6 +16,7 @@
    [datahike.json :as json]
    [datahike.migrate.fs :as fs]
    [datahike.kabel.cbor-handlers :as cbor]
+   [kabel.pubsub :as pubsub]
    [kabel.auth.jwt :as jwt]
    [kabel.auth.websocket :as auth]
    [kabel.peer :as peer]
@@ -118,6 +119,20 @@
   (.getLocalPort ^org.eclipse.jetty.server.ServerConnector
    (first (.getConnectors instance))))
 
+(defn- await-subscribed!
+  "Wait until the server has registered this peer's subscription to `topic`.
+
+   `subscribe-tx-reports!` settles when the request has gone out, not when the
+   far end serves it, so a write issued immediately after could be published
+   to nobody and the test would wait for an event that was never sent."
+  [peer topic]
+  (is (loop [attempts 200]
+        (cond
+          (:handshake-complete? (pubsub/subscription peer topic)) true
+          (zero? attempts) false
+          :else (do (Thread/sleep 25) (recur (dec attempts)))))
+      (str "subscription to " topic " became ready")))
+
 (defn- next-report
   ([events] (next-report events 5000))
   ([events timeout-ms]
@@ -187,6 +202,7 @@
       (<?? S (remote/connect S peer (str "ws://127.0.0.1:" kabel-port)))
       (<?? S (tx-broadcast/subscribe-tx-reports! peer store-id
                                                  #(put! reports %)))
+      (await-subscribed! peer (tx-broadcast/tx-report-topic store-id))
       (let [http-peer {:backend :datahike-server
                        :url (str "http://127.0.0.1:" (local-port server))
                        :token "http-kabel-token"
