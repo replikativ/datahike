@@ -19,7 +19,7 @@
            (filterv #(= "writerBarrier" (naming/clj-name->js-name %)) exports)))
     (is (nil? (naming/assert-unique-js-names! exports)))
     (is (thrown-with-msg? clojure.lang.ExceptionInfo #"JavaScript API name collision"
-                         (naming/assert-unique-js-names! ['writer-barrier 'writer-barrier!])))
+                          (naming/assert-unique-js-names! ['writer-barrier 'writer-barrier!])))
     (is (contains? symbols 'datahike.api.impl/writer-barrier!))
     (is (not (contains? symbols 'datahike.api.impl/writer-barrier)))
     (is (contains? symbols 'datahike.js.api/maybe-chan->promise))
