@@ -73,3 +73,31 @@
     (is (map? (d/transact conn {:tx-data [[:db/add -1 :name "second"]]})))
     (is (= 2 (count @events)))
     (d/release conn)))
+
+#?(:clj
+   (deftest durable-listener-matches-writer-batch-groups
+     (let [conn (du/setup-db
+                 {:writer {:backend :self
+                           :writer-ownership :exclusive
+                           ;; Give the transaction loop time to fill the commit
+                           ;; queue so this exercises multi-transaction groups.
+                           :commit-wait-time 50}})
+           events (atom [])
+           _ (d/listen-commits conn :batches #(swap! events conj %))
+           pending (mapv (fn [n]
+                           (d/transact! conn
+                                        {:tx-data [[:db/add (- (inc n))
+                                                    :batch/value n]]}))
+                         (range 24))
+           reports (mapv deref pending)
+           report-groups (frequencies
+                          (map #(get-in % [:tx-meta :db/commitId]) reports))
+           event-groups (into {}
+                              (map (juxt :commit-id :tx-count))
+                              @events)]
+       (is (= report-groups event-groups)
+           "one event describes each exact durable commit group")
+       (is (= 24 (reduce + (map :tx-count @events))))
+       (is (< (count @events) 24)
+           "the fixture actually exercised writer batching")
+       (d/release conn))))
