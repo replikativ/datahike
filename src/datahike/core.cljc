@@ -244,6 +244,41 @@
          (atom? (:listeners (meta conn)))]}
   (swap! (:listeners (meta conn)) dissoc key))
 
+(defn listen-commits!
+  "Listen for durable branch-head commits made by this connection's local writer.
+
+   Unlike [[listen!]], which is called once for every transaction report, this
+   callback is called exactly once for each successful writer batch after its
+   immutable commit and mutable branch head are durable. The event contains:
+
+     :type              :datahike/commit
+     :store-id          canonical Konserve store identity
+     :branch            committed branch keyword
+     :commit-id         immutable Datahike commit identifier
+     :parent-commit-ids set of parent commit identifiers
+     :max-tx            maximum transaction in the committed snapshot
+     :tx-count          transactions grouped into this durable commit
+
+   Notifications are local and post-commit: another process writing a shared
+   store does not notify this connection, and callback failure cannot undo the
+   commit. Callbacks execute on the writer's commit loop, so they must return
+   promptly and use only asynchronous writer operations.
+
+   `key` is any opaque unique value. Registering the same key again replaces its
+   callback. Returns the key; see [[unlisten-commits!]]."
+  ([conn callback] (listen-commits! conn (rand) callback))
+  ([conn key callback]
+   {:pre [(conn? conn) (atom? (:commit-listeners (meta conn)))]}
+   (swap! (:commit-listeners (meta conn)) assoc key callback)
+   key))
+
+(defn unlisten-commits!
+  "Remove a durable commit listener registered by [[listen-commits!]]."
+  [conn key]
+  {:pre [(conn? conn)
+         (atom? (:commit-listeners (meta conn)))]}
+  (swap! (:commit-listeners (meta conn)) dissoc key))
+
 ;; Datomic compatibility layer
 
 (def ^:private last-tempid (atom -1000000))

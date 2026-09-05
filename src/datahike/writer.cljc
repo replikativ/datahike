@@ -4,6 +4,7 @@
             [datahike.core]
             [datahike.config :as dc]
             [datahike.metrics :as metrics]
+            [datahike.store :as ds]
             [datahike.writing :as w]
             [datahike.tx-preds :as txp]
             [datahike.gc :as gc]
@@ -98,6 +99,22 @@
    milliseconds would have avoided. The jitter matters as much as the delay: two
    writers backing off by the same amount collide again in lockstep."
   25)
+
+(defn- notify-commit-listeners!
+  "Notify a stable snapshot of the connection's durable-commit listeners.
+
+   A listener observes an already-durable head and therefore cannot veto it.
+   Isolate failures so one integration callback cannot kill the writer or hide
+   the commit from the remaining listeners."
+  [connection event]
+  (doseq [[key callback]
+          (some-> (:commit-listeners (meta connection)) deref)]
+    (try
+      (callback event)
+      (catch #?(:clj Throwable :cljs :default) error
+        (log/error :datahike/commit-listener-error
+                   {:key key :event (dissoc event :db-after) :error error}))))
+  nil)
 
 (def retryable-ops
   "Operations a head conflict may re-apply on the caller's behalf.
@@ -604,6 +621,24 @@
                                  (w/finish-secondary-index-build! build-guard)))
                             (reset! build-cleanup-complete? true)
                             (reset! connection commit-db)
+                            ;; This is the one exact durable-commit boundary. A
+                            ;; drained group may contain many transaction reports,
+                            ;; but commit! wrote one immutable commit and flipped
+                            ;; one branch head. Transaction listeners cannot infer
+                            ;; that grouping because every report below receives
+                            ;; the same final db-after and commit id.
+                            (notify-commit-listeners!
+                             connection
+                             {:type :datahike/commit
+                              :store-id (ds/canonical-store-id
+                                         (:store commit-db)
+                                         (get-in commit-db [:config :store]))
+                              :branch (get-in commit-db [:config :branch])
+                              :commit-id commit-id
+                              :parent-commit-ids
+                              (or (get-in commit-db [:meta :datahike/parents]) #{})
+                              :max-tx (:max-tx commit-db)
+                              :tx-count (count txs)})
                     ;; notify all processes that transaction is complete
                             (doseq [[tx-report callback] txs]
                               (let [tx-report (-> tx-report

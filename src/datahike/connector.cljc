@@ -118,7 +118,8 @@
 (defn conn-from-db
   "Creates a mutable reference to a given immutable database. See [[create-conn]]."
   [db]
-  (Connection. (atom db :meta {:listeners (atom {})})))
+  (Connection. (atom db :meta {:listeners (atom {})
+                               :commit-listeners (atom {})})))
 
 (s/def ::connection #(and (instance? Connection %)
                           (not= @(:wrapped-atom %) :released)))

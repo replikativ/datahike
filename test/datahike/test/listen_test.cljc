@@ -42,3 +42,34 @@
     (is (= (dissoc (:tx-meta (second @reports)) :db/txInstant :db/commitId)
            {}))
     (d/release conn)))
+
+(deftest test-listen-commits!
+  (let [conn   (du/setup-db)
+        events (atom [])
+        key    (d/listen-commits conn :test #(swap! events conj %))
+        report (d/transact conn {:tx-data [[:db/add -1 :name "durable"]]})
+        event  (first @events)]
+    (is (= :test key))
+    (is (= 1 (count @events)))
+    (is (= :datahike/commit (:type event)))
+    (is (= (get-in report [:tx-meta :db/commitId]) (:commit-id event)))
+    (is (= (d/commit-id @conn) (:commit-id event)))
+    (is (= (d/parent-commit-ids @conn) (:parent-commit-ids event)))
+    (is (= (get-in @conn [:config :store :id]) (:store-id event)))
+    (is (= (get-in @conn [:config :branch]) (:branch event)))
+    (is (= (:max-tx @conn) (:max-tx event)))
+    (is (= 1 (:tx-count event)))
+    (d/unlisten-commits conn :test)
+    (d/transact conn {:tx-data [[:db/add -1 :name "not observed"]]})
+    (is (= 1 (count @events)))
+    (d/release conn)))
+
+(deftest commit-listener-failure-does-not-kill-writer-or-other-listeners
+  (let [conn   (du/setup-db)
+        events (atom [])]
+    (d/listen-commits conn :broken #(throw (ex-info "listener failed" {:event %})))
+    (d/listen-commits conn :healthy #(swap! events conj %))
+    (is (map? (d/transact conn {:tx-data [[:db/add -1 :name "first"]]})))
+    (is (map? (d/transact conn {:tx-data [[:db/add -1 :name "second"]]})))
+    (is (= 2 (count @events)))
+    (d/release conn)))
