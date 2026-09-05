@@ -8,6 +8,10 @@ async function remoteTypescriptTest() {
   };
   await d.createDatabase(config);
   const conn: d.Connection = await d.connect(config);
+  await d.transact(conn, { "tx-data": [], "tx-options": { "allow-index-backfill?": true } });
+  const barrierPromise: Promise<d.Database> = d.writerBarrier(conn);
+  const barrierDb: d.Database = await barrierPromise;
+  await d.q<Array<[string]>>("[:find ?name :where [?e :name ?name]]", barrierDb);
   const db: d.Database = await d.db(conn);
   const rows = await d.q<Array<[string]>>("[:find ?name :where [?e :name ?name]]", db);
   const listener: string = d.listen(conn, (report: d.RemoteReport) => console.log(report["db-after"]));

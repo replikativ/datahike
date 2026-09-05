@@ -45,6 +45,13 @@ test("TypeScript thin client against the JVM server", { skip: !url || !token }, 
     assert.ok(firstReport["db-after"]);
     assert.ok(firstReport["tx-data"].every((datom) => typeof datom.e === "number"));
 
+    const barrierPromise = d.writerBarrier(conn);
+    assert.ok(barrierPromise instanceof Promise);
+    const barrierDb = await barrierPromise;
+    assert.deepEqual((await d.q("[:find ?name :where [?e :name ?name]]", barrierDb)).sort(),
+      [["Ada"], ["Grace"]]);
+    assert.ok(calls.some((call) => call.url.endsWith("/writer-barrier") && call.method === "POST"));
+
     const db = await d.db(conn);
     const small = await d.q("[:find ?n :where [?e :name ?n]]", db);
     assert.deepEqual(small.map((row) => row[0]).sort(), ["Ada", "Grace"]);

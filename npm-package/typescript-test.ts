@@ -61,6 +61,7 @@ async function typescriptTest() {
   // Connect returns Connection type
   const conn: d.Connection = await d.connect(config);
   const barrierPromise: Promise<d.Database> = d.writerBarrier(conn);
+  await d.transact(conn, { "tx-data": [], "tx-options": { "allow-index-backfill?": true } });
   const barrierDb: d.Database = await barrierPromise;
   console.log(barrierDb);
 

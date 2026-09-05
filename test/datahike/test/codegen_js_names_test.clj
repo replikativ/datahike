@@ -3,6 +3,7 @@
             [datahike.api.specification :refer [api-specification]]
             [datahike.codegen.naming :as naming]
             [datahike.codegen.typescript :as ts]
+            [datahike.codegen.ts-client :as ts-client]
             [datahike.codegen.esm :as esm]
             [datahike.codegen.cli :as cli]
             [datahike.js.api-macros]))
@@ -27,10 +28,10 @@
     (is (= 1 (count (re-seq #"export var writerBarrier =" (esm/generate-esm-wrapper)))))
     (is (contains? remote 'writer-barrier))
     (is (not (contains? remote 'writer-barrier!)))
-    (is (= 1 (count (re-seq #"export var writerBarrier =" (esm/generate-remote-esm-wrapper)))))
-    (is (some #{'datahike.http.client/writer-barrier}
-              (tree-seq coll? seq
-                        (macroexpand-1 '(datahike.js.api-macros/emit-js-remote-api)))))
+    (let [source (ts-client/generate-api-source)]
+      (is (= 1 (count (re-seq #"export function writerBarrier\(\.\.\.args:" source))))
+      (is (re-find #"writerBarrier\(.*Connection.*\): Promise<Database>;" source))
+      (is (re-find #"return request\(\"writer-barrier\", false, args, false\)" source)))
     (is (nil? (naming/assert-unique-js-names! remote)))))
 
 (deftest writer-barrier-has-one-synchronous-cli-command

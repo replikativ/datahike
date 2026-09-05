@@ -276,7 +276,7 @@ export function since(...args: unknown[]): Promise<any> {
 }
 
 /**
- * Applies transaction to the database and updates connection. Blocks until committed. WARNING: Do not call from listener callbacks or transaction functions — use transact! instead to avoid deadlocks.
+ * Applies transaction to the database and updates connection. Blocks until committed. The map form accepts :tx-options {:allow-index-backfill? true} to permit index/uniqueness backfill for this transaction only; it does not change the database config. WARNING: Do not call from listener callbacks or transaction functions — use transact! instead to avoid deadlocks.
  */
 export function transact(arg0: Connection, arg1: Transaction[] | WithArgs): Promise<TransactionReport>;
 export function transact(...args: unknown[]): Promise<any> {
@@ -325,4 +325,12 @@ export function validBetween(...args: unknown[]): Promise<any> {
 export function validDuring(arg0: Database, arg1: any, arg2: any): Promise<Database>;
 export function validDuring(...args: unknown[]): Promise<any> {
   return request("valid-during", true, args, false);
+}
+
+/**
+ * Wait for preceding accepted writes to settle and return the durable database. Creates no transaction. Do not call from a transaction function or durable commit listener: they run inside the writer. Queue writer-barrier! instead, without waiting for its result inside the callback.
+ */
+export function writerBarrier(arg0: Connection): Promise<Database>;
+export function writerBarrier(...args: unknown[]): Promise<any> {
+  return request("writer-barrier", false, args, false);
 }
