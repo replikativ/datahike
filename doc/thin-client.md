@@ -82,8 +82,25 @@ job, not this client's.
 ## Change notification
 
 A thin client can follow the connected database without carrying a replica.
-In JavaScript, `listen` returns a key immediately and calls back with plain
-JavaScript reports; pass that key to `unlisten`:
+On the JVM and in ClojureScript, `listen` returns a key immediately and calls
+back with transaction-report maps; pass that key to `unlisten`:
+
+```clojure
+(require '[datahike.http.client :as client])
+
+(def listener
+  (client/listen conn ::ui
+    (fn [{:keys [db-after deleted error] :as report}]
+      (cond
+        error   (println "listen failed" error)
+        deleted (println "database deleted")
+        :else   (println (client/q '[:find ?e :where [?e]] db-after))))))
+
+(client/unlisten conn listener)
+```
+
+In JavaScript the callback receives the corresponding plain JavaScript
+object:
 
 ```javascript
 const listener = d.listen(conn, report => {
@@ -98,13 +115,6 @@ const listener = d.listen(conn, report => {
 d.unlisten(conn, listener);
 ```
 
-The ClojureScript API also accepts an explicit listener key:
-
-```clojure
-(def listener (client/listen conn ::ui refresh!))
-(client/unlisten conn listener)
-```
-
 The first callback is a resync report with `:resync true` and a `:db-after`
 handle. Later transaction reports contain `:db-after`, `:db-before nil`,
 `:tempids`, and `:commit-id`. Reports of at most 500 datoms also contain
@@ -117,8 +127,8 @@ The client reconnects after a stream error or clean disconnect, starting at
 commit id when reconnecting; the server resyncs when that id is no longer the
 head. `unlisten` aborts the open request and cancels reconnects. Deletion does
 not reconnect. HTTP 401, 403, and 404 responses are terminal too: the callback
-receives `{:error <ex-info> :status <integer>}` in ClojureScript, or an object
-with `error` and `status` in JavaScript, and the listener stops.
+receives `{:error <ex-info> :status <integer>}` in Clojure or ClojureScript,
+or an object with `error` and `status` in JavaScript, and the listener stops.
 
 ## What is not there
 
