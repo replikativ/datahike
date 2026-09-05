@@ -72,6 +72,13 @@ POST with a JSON body, which is never cached. A write is always a POST. A
 database handle carries the snapshot's commit id, so a read against one is
 the same result for as long as the handle is used.
 
+The TypeScript client keeps up to 128 snapshot-read results per client instance
+in an in-memory least-recently-used cache. `configureCache({maxEntries})`
+changes that bound (zero disables it), and `clearCache()` empties it. The cache
+dies with the page and uses neither localStorage nor IndexedDB. Persistence
+across sessions is the browser's HTTP cache; offline reads are the replica's
+job, not this client's.
+
 ## Change notification
 
 A thin client can follow the connected database without carrying a replica.
@@ -118,9 +125,6 @@ with `error` and `status` in JavaScript, and the listener stops.
 - No offline operation: every call needs the server.
 - No streaming results: a query result arrives whole. Use `:limit` and
   `:offset`, or narrow the query.
-- No client-side result cache yet. A read against a database handle is
-  immutable for that snapshot, so one is possible; the HTTP cache covers the
-  GET path meanwhile.
 
 ## Reference
 

@@ -3,6 +3,9 @@ const rawSymbol: unique symbol = Symbol("datahike.raw");
 const peerSymbol: unique symbol = Symbol("datahike.peer");
 const uuidSymbol: unique symbol = Symbol("datahike.uuid");
 
+const resultCache = new Map<string, Promise<any>>();
+let maxCacheEntries = 128;
+
 export type Keyword = `:${string}`;
 export type Attribute = Keyword;
 export type UuidValue = string;
@@ -245,6 +248,35 @@ function encodeValue(value: unknown): unknown {
   return value;
 }
 
+function cacheableArguments(value: unknown): boolean {
+  let database = false;
+  let connection = false;
+  const visit = (item: unknown): void => {
+    if (!Array.isArray(item)) {
+      if (item !== null && typeof item === "object") Object.values(item).forEach(visit);
+      return;
+    }
+    if (item[0] === "!datahike/Connection") connection = true;
+    if (["!datahike/DB", "!datahike/HistoricalDB", "!datahike/SinceDB", "!datahike/AsOfDB"].includes(item[0])) {
+      database = true;
+    } else {
+      item.forEach(visit);
+    }
+  };
+  visit(value);
+  return database && !connection;
+}
+
+export function configureCache({ maxEntries }: { maxEntries: number }): void {
+  if (!Number.isInteger(maxEntries) || maxEntries < 0) throw new RangeError("maxEntries must be a non-negative integer.");
+  maxCacheEntries = maxEntries;
+  while (resultCache.size > maxEntries) resultCache.delete(resultCache.keys().next().value!);
+}
+
+export function clearCache(): void {
+  resultCache.clear();
+}
+
 function peerFromArgs(args: unknown[]): RemotePeer {
   const peers = new Set<RemotePeer>();
   const first = args[0];
@@ -324,30 +356,50 @@ async function responseValue(response: Response, target: string, peer: RemotePee
   return decoded;
 }
 
-export async function request(
+export function request(
   route: string,
-  readable: boolean,
+  referentiallyTransparent: boolean,
   args: unknown[],
   create = false,
 ): Promise<any> {
   const peer = peerFromArgs(args);
-  const encoded = new TextEncoder().encode(
-    JSON.stringify(encodeValue(normalizeSetArguments(route, withoutCredentials(args)))),
-  );
-  const asGet = readable && encoded.byteLength <= 2048;
+  const encodedArgs = encodeValue(normalizeSetArguments(route, withoutCredentials(args)));
+  const encodedString = JSON.stringify(encodedArgs);
+  const encoded = new TextEncoder().encode(encodedString);
+  const cacheKey = `${route}\0${encodedString}`;
+  const cacheable = referentiallyTransparent && maxCacheEntries > 0 && cacheableArguments(encodedArgs);
+  if (cacheable) {
+    const cached = resultCache.get(cacheKey);
+    if (cached) {
+      resultCache.delete(cacheKey);
+      resultCache.set(cacheKey, cached);
+      return cached;
+    }
+  }
+  const asGet = referentiallyTransparent && encoded.byteLength <= 2048;
   const base = `${peer.url}/${route}`;
   const target = asGet ? `${base}?args=${base64url(encoded)}&f=json` : base;
   const headers: Record<string, string> = { Accept: "application/json" };
   if (!asGet) headers["Content-Type"] = "application/json";
   if (peer.token) headers.Authorization = `token ${peer.token}`;
-  const response = await fetch(target, {
+  const promise = fetch(target, {
     method: asGet ? "GET" : "POST",
     headers,
     ...(asGet ? {} : { body: encoded }),
+  }).then((response) => responseValue(response, target, peer)).then((result) => {
+    if (create && result !== null && typeof result === "object") result["remote-peer"] = peer;
+    return result;
   });
-  const result = await responseValue(response, target, peer);
-  if (create && result !== null && typeof result === "object") result["remote-peer"] = peer;
-  return result;
+  if (cacheable) {
+    const cached = promise.catch((error) => {
+      if (resultCache.get(cacheKey) === cached) resultCache.delete(cacheKey);
+      throw error;
+    });
+    resultCache.set(cacheKey, cached);
+    if (resultCache.size > maxCacheEntries) resultCache.delete(resultCache.keys().next().value!);
+    return cached;
+  }
+  return promise;
 }
 
 export function uuid(value: string): DatahikeUuid {
