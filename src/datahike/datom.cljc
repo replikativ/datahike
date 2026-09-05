@@ -426,6 +426,16 @@
                     (recur (next xs) (next ys))
                     c)))))))
 
+(defn- scalar-nan? [v]
+  #?(:clj (or (and (instance? Double v) (Double/isNaN ^double v))
+              (and (instance? Float v) (Float/isNaN ^float v)))
+     :cljs (and (number? v) (js/isNaN v))))
+
+(defn- compare-nan [v1 v2]
+  (cond
+    (scalar-nan? v1) (if (scalar-nan? v2) 0 1)
+    :else -1))
+
 (defn compare-value
   "Compare two values with cross-platform UUID compatibility.
    CLJS UUID comparison is adjusted to match CLJ's signed comparison,
@@ -455,11 +465,19 @@
    reads equal as a duplicate. Repairing this function fixes all four, which is
    why the fix is here and not at the call sites.
 
-   Only values that CONTAIN an array change order; anything already Comparable
-   takes the same path it always did, so existing indices do not move."
+   Scalar NaNs sort after all other numbers and compare equal to each other.
+   Clojure's numeric compare otherwise equates a NaN with every number, losing
+   cardinality-many values and suppressing cardinality-one updates. Finite
+   numeric ordering, including equality of signed zeros, is unchanged. Existing
+   indexes containing NaNs may need rebuilding; lost writes cannot be recovered
+   by changing the comparator."
   [v1 v2]
   #?(:clj (try
             (cond
+              (and (number? v1) (number? v2)
+                   (or (scalar-nan? v1) (scalar-nan? v2)))
+              (compare-nan v1 v2)
+
               (and (da/value-array? v1) (da/value-array? v2))
               (da/compare-arrays v1 v2)
 
@@ -496,6 +514,10 @@
      :cljs
      (try
        (cond
+         (and (number? v1) (number? v2)
+              (or (scalar-nan? v1) (scalar-nan? v2)))
+         (compare-nan v1 v2)
+
          (and (uuid? v1) (uuid? v2))
        ;; Match Java's signed UUID comparison where MSB is treated as signed
        ;; In signed comparison: 0x8... is negative, so 0x8... < 0x0...

@@ -6,6 +6,24 @@ When something is added, it's typically marked *Experimental*. When the API cont
 
 ## 0.8
 
+- **Ordered writer barriers and transaction-scoped index backfill.**
+  `writer-barrier` and `writer-barrier!` wait for preceding accepted writes
+  without creating a transaction. Barriers preserve ordering through batching
+  and writer retries. Transaction maps accept
+  `:tx-options {:allow-index-backfill? true}` to enable index/uniqueness backfill
+  for that transaction without changing the database configuration.
+
+- **Scalar NaNs have a consistent numeric index order.** NaN sorts after all
+  other numbers; repeated NaNs compare equal. Cardinality-one writes between
+  finite values and NaN now emit the corresponding retraction and assertion.
+  **Upgrade:** restart all writers; legacy persistent-set records containing
+  scalar NaNs (including NaNs inside tuples) are refused until exported using
+  the old runtime and rebuilt into a new database. See
+  [the upgrade procedure](doc/nan-index-upgrade.md). Earlier
+  versions could order NaN entries incorrectly or silently omit writes; an
+  index rebuild cannot recover omitted writes. Signed-zero comparison and
+  scalar datom hashing are unchanged.
+
 - **Thin client for npm: `datahike/remote`.** *Experimental.* The Datahike
   API against a server with no engine in the bundle, about 76 KiB gzipped:
   `datahike.http.client` is now `cljc`, speaking CBOR over `fetch` on
