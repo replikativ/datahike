@@ -30,13 +30,13 @@
     (init-db (map (fn [[e a v tx]] (datom e a v tx)) datoms) schema)))
 
 (defn history-from-reader [{:keys [origin]}]
-  (HistoricalDB. origin))
+  (HistoricalDB. origin (volatile! nil)))
 
 (defn since-from-reader [{:keys [origin time-point]}]
-  (SinceDB. origin time-point))
+  (SinceDB. origin time-point (volatile! nil)))
 
 (defn as-of-from-reader [{:keys [origin time-point]}]
-  (AsOfDB. origin time-point))
+  (AsOfDB. origin time-point (volatile! nil)))
 
 (defn connection-from-reader [conn-id]
   (:conn (@*connections* conn-id)))

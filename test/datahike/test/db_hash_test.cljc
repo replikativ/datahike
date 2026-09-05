@@ -33,6 +33,7 @@
    unnoticed since 2020 (`e9d55972`)."
   (:require [clojure.test :refer [deftest testing is]]
             [datahike.api :as d]
+            [datahike.db.interface :as dbi]
             [datahike.test.utils :as utils]))
 
 (def ^:private schema
@@ -144,3 +145,65 @@
                                             [{:db/id 100 :tag :z}]
                                             [{:db/id 100 :name "a" :tag :x}]]))]
       (is (= order-a order-b)))))
+
+;; ---------------------------------------------------------------------------
+;; The DB views — FilteredDB / HistoricalDB / AsOfDB / SinceDB — carry no
+;; precomputed `:hash`. They hash by `db-view-hash`, deliberately the SAME
+;; additive [e a v] sum DB maintains as `:hash`, computed over their own datoms.
+;; Two properties that had no test: the sum IS the hash, and a FilteredDB that
+;; mirrors a DB hashes equal to it (equiv-db reports them equal, so it must).
+
+(deftest views-over-the-same-content-hash-equal
+  (testing "the view hash is a function of content, not instance identity: two
+            separately constructed views over the same database hash equal (as a
+            java.util.HashSet needs, and as a per-instance cache must preserve)."
+    (with-conn true
+      (fn [conn]
+        (d/transact conn [{:db/id -1 :name "a" :score 1}])
+        (d/transact conn [{:db/id [:name "a"] :score 2}])
+        (let [db @conn]
+          (doseq [[label mk] [["FilteredDB" #(d/filter db (fn [_ _] true))]
+                              ["HistoricalDB" #(d/history db)]
+                              ["AsOfDB" #(d/as-of db (:max-tx db))]
+                              ["SinceDB" #(d/since db 0)]]]
+            (is (= (hash (mk)) (hash (mk)))
+                (str label ": two views over the same content must hash equal"))))))))
+
+(deftest a-filtered-view-mirroring-a-db-hashes-equal-to-it
+  (testing "a FilteredDB with an always-true predicate has the same schema and
+            `:eavt` datoms as the DB, so `equiv-db` reports them equal — and
+            equal values must hash equal, otherwise they take two slots in a
+            java.util.HashSet. `:keep-history? false` so the DB's `:hash` is the
+            sum over the current index the FilteredDB sees."
+    (with-conn false
+      (fn [conn]
+        (d/transact conn [{:db/id -1 :name "a" :score 1}
+                          {:db/id -2 :name "b" :score 2}])
+        (let [db @conn
+              mirror (d/filter db (fn [_ _] true))]
+          (is (= db mirror) "a FilteredDB mirroring the DB must be equal to it")
+          (is (= (hash db) (hash mirror)) "and therefore must hash equal"))))))
+
+(deftest hashing-a-view-scans-its-datoms-once-then-serves-cached
+  (testing "a view keeps no running `:hash`, so `db-view-hash` scans its datoms
+            to compute the sum — an O(n) walk. Repeated hashes of the SAME view
+            instance must reuse that result rather than rescan, or every hash
+            (e.g. using a view as a map/set key) pays another full scan. Counts
+            datom scans via `datahike.db.interface/datoms`, which `db-view-hash`
+            calls, over five hashes of one instance."
+    (with-conn true
+      (fn [conn]
+        (d/transact conn [{:db/id -1 :name "a" :score 1}])
+        (d/transact conn [{:db/id [:name "a"] :score 2}])
+        (let [db @conn]
+          (doseq [[label view] [["FilteredDB" (d/filter db (fn [_ _] true))]
+                                ["HistoricalDB" (d/history db)]
+                                ["AsOfDB" (d/as-of db (:max-tx db))]
+                                ["SinceDB" (d/since db 0)]]]
+            (let [scans (atom 0)
+                  orig  dbi/datoms]
+              (with-redefs [dbi/datoms (fn [& args] (swap! scans inc) (apply orig args))]
+                (dotimes [_ 5] (hash view)))
+              (is (= 1 @scans)
+                  (str label ": expected one datom scan across five hashes, got "
+                       @scans)))))))))

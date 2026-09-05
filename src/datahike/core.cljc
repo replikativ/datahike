@@ -120,8 +120,8 @@
      (let [^FilteredDB fdb db
            orig-pred (.-pred fdb)
            orig-db (.-unfiltered-db fdb)]
-       (FilteredDB. orig-db #(and (orig-pred %) (pred orig-db %))))
-     (FilteredDB. db #(pred db %)))
+       (FilteredDB. orig-db #(and (orig-pred %) (pred orig-db %)) (volatile! nil)))
+     (FilteredDB. db #(pred db %) (volatile! nil)))
    assoc :datahike/secondary-filter-provenance :opaque))
 
 ; Changing DB
