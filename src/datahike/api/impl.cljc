@@ -148,7 +148,7 @@
 
 (defn since [db time-point]
   (if (dbi/-temporal-index? db)
-    (SinceDB. db time-point)
+    (SinceDB. db time-point (volatile! nil))
     (log/raise "since is only allowed on temporal indexed databases." {:config (dbi/-config db)})))
 
 (defn as-of
@@ -177,10 +177,10 @@
   (if (dbi/-temporal-index? db)
     (if (int? time-point)
       (if (<= const/tx0 time-point)
-        (AsOfDB. db time-point)
+        (AsOfDB. db time-point (volatile! nil))
         (log/raise (str "Invalid transaction ID. Must be bigger than " const/tx0 ".")
                    {:time-point time-point}))
-      (AsOfDB. db time-point))
+      (AsOfDB. db time-point (volatile! nil)))
     (log/raise "as-of is only allowed on temporal indexed databases." {:config (dbi/-config db)})))
 
 (defn history [db]
@@ -191,7 +191,7 @@
     ;; legacy lookup path on cljs (the fused temporal path needs the origin's
     ;; :eavt to be a real PersistentSortedSet, which a nested wrapper isn't).
     (instance? HistoricalDB db) db
-    (dbi/-temporal-index? db) (HistoricalDB. db)
+    (dbi/-temporal-index? db) (HistoricalDB. db (volatile! nil))
     :else (log/raise "history is only allowed on temporal indexed databases." {:config (dbi/-config db)})))
 
 ;; `vt-meta-attrs`, `tx-covers-at?`, `find-eav-winner`, `mk-vt-pred`,
