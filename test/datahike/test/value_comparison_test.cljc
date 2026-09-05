@@ -22,18 +22,6 @@
   #?(:clj (byte-array (map unchecked-byte xs))
      :cljs (js/Uint8Array.from (clj->js (map #(bit-and % 0xff) xs)))))
 
-(deftest scalar-nan-has-a-total-numeric-order
-  (doseq [nan #?(:clj [Double/NaN Float/NaN
-                       (Double/longBitsToDouble 9221120237041090561)]
-                 :cljs [js/NaN])
-          finite [##-Inf -1 0 -0.0 0.0 1 1.5 ##Inf]]
-    (is (pos? (dd/compare-value nan finite)))
-    (is (neg? (dd/compare-value finite nan)))
-    (is (zero? (dd/compare-value nan nan)))
-    (is (pos? (dd/compare-value [nan] [finite]))))
-  (is (zero? (dd/compare-value -0.0 0.0)))
-  #?(:clj (is (zero? (dd/compare-value Float/NaN Double/NaN)))))
-
 #?(:clj
    (defn- conn-with [attr]
      (let [cfg {:store {:backend :memory :id (java.util.UUID/randomUUID)}
@@ -42,57 +30,6 @@
        (let [c (d/connect cfg)]
          (d/transact c [attr])
          c))))
-
-#?(:clj
-   (deftest scalar-nan-writes-and-index-lookups
-     (doseq [[type finite nan] [[:db.type/double 0.0 Double/NaN]
-                                [:db.type/float (float 0) Float/NaN]]]
-       (let [c (conn-with {:db/ident :n/value :db/valueType type
-                           :db/cardinality :db.cardinality/one :db/index true})]
-         (try
-           (d/transact c [{:db/id 100 :n/value finite}])
-           (let [report (d/transact c [[:db/add 100 :n/value nan]])]
-             (is (= 2 (count (filter #(= :n/value (:a %)) (:tx-data report)))))
-             (is (Double/isNaN (double (:n/value (d/entity @c 100))))))
-           (d/transact c [{:db/id 101 :n/value finite}])
-           (is (= [101] (mapv :e (d/datoms @c :avet :n/value finite))))
-           (is (= [100] (mapv :e (d/datoms @c :avet :n/value nan))))
-           (is (= [101 100] (mapv :e (d/datoms @c :avet :n/value))))
-           (let [report (d/transact c [[:db/add 100 :n/value finite]])]
-             (is (= 2 (count (filter #(= :n/value (:a %)) (:tx-data report)))))
-             (is (zero? (:n/value (d/entity @c 100)))))
-           (finally (d/release c)))))))
-
-#?(:clj
-   (deftest scalar-nan-index-order-survives-reconnect
-     (let [root (java.nio.file.Files/createTempDirectory
-                 "datahike-nan-index-"
-                 (make-array java.nio.file.attribute.FileAttribute 0))
-           cfg {:store {:backend :file :id (java.util.UUID/randomUUID)
-                        :path (str (.resolve root "store"))}
-                :keep-history? true :schema-flexibility :write}]
-       (try
-         (d/create-database cfg)
-         (let [c (d/connect cfg)]
-           (try
-             (d/transact c [{:db/ident :n/value :db/valueType :db.type/double
-                             :db/cardinality :db.cardinality/many :db/index true}])
-             ;; Put NaN on the smaller entity: ordering by entity before value
-             ;; would give the wrong AVET order after reopening.
-             (d/transact c [[:db/add 100 :n/value Double/NaN]
-                            [:db/add 101 :n/value 0.0]
-                            [:db/add 101 :n/value Double/NaN]])
-             (is (= 2 (count (d/datoms @c :eavt 101 :n/value))))
-             (finally (d/release c))))
-         (let [c (d/connect cfg)]
-           (try
-             (is (= [101 100 101] (mapv :e (d/datoms @c :avet :n/value))))
-             (is (= [100 101] (mapv :e (d/datoms @c :avet :n/value Double/NaN))))
-             (is (= [101] (mapv :e (d/datoms @c :avet :n/value 0.0))))
-             (finally (d/release c))))
-         (finally
-           (d/delete-database cfg)
-           (java.nio.file.Files/deleteIfExists root))))))
 
 #?(:clj
    (deftest a-tuple-holding-an-array-is-usable

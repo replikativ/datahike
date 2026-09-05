@@ -13,17 +13,6 @@ When something is added, it's typically marked *Experimental*. When the API cont
   `:tx-options {:allow-index-backfill? true}` to enable index/uniqueness backfill
   for that transaction without changing the database configuration.
 
-- **Scalar NaNs have a consistent numeric index order.** NaN sorts after all
-  other numbers; repeated NaNs compare equal. Cardinality-one writes between
-  finite values and NaN now emit the corresponding retraction and assertion.
-  **Upgrade:** restart all writers; legacy persistent-set records containing
-  scalar NaNs (including NaNs inside tuples) are refused until exported using
-  the old runtime and rebuilt into a new database. See
-  [the upgrade procedure](doc/nan-index-upgrade.md). Earlier
-  versions could order NaN entries incorrectly or silently omit writes; an
-  index rebuild cannot recover omitted writes. Signed-zero comparison and
-  scalar datom hashing are unchanged.
-
 - **Thin-client change stream.** *Experimental.* Authenticated thin clients
   can follow `GET /listen` as a server-sent-event stream. It sends an initial
   resync when needed, compact transaction reports for subsequent commits,
