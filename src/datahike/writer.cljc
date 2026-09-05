@@ -113,7 +113,11 @@
       (callback event)
       (catch #?(:clj Throwable :cljs :default) error
         (log/error :datahike/commit-listener-error
-                   {:key key :event (dissoc event :db-after) :error error}))))
+                   {:key key
+                    ;; DB values and reports can retain indexes and make an
+                    ;; otherwise small listener error enormous.
+                    :event (dissoc event :db-before :db-after :tx-reports)
+                    :error error}))))
   nil)
 
 (def retryable-ops
@@ -600,7 +604,20 @@
                           (let [start-ts (get-time-ms)
                                 {{:keys [datahike/commit-id]} :meta
                                  :as commit-db} (<?- (w/commit! db merge-parents false last-cid head-rev))
-                                commit-time (- (get-time-ms) start-ts)]
+                                commit-time (- (get-time-ms) start-ts)
+                                ;; Finalize once, then hand these SAME report
+                                ;; values to both the durable-batch listener and
+                                ;; each transaction's caller. This preserves
+                                ;; transaction boundaries while making every
+                                ;; :db-after the head that actually landed.
+                                finalized-txs
+                                (mapv (fn [[tx-report callback]]
+                                        [(-> tx-report
+                                             (assoc-in [:tx-meta :db/commitId] commit-id)
+                                             (assoc :db-after commit-db))
+                                         callback])
+                                      txs)
+                                tx-reports (mapv first finalized-txs)]
                             (log/trace :datahike/commit-time {:duration-ms commit-time})
                             (metrics/commit! (:config db)
                                              commit-time
@@ -638,13 +655,17 @@
                               :parent-commit-ids
                               (or (get-in commit-db [:meta :datahike/parents]) #{})
                               :max-tx (:max-tx commit-db)
-                              :tx-count (count txs)})
+                              :tx-count (count txs)
+                              ;; Rich process-local view. Attaching these is
+                              ;; cheap: the writer already retains them until
+                              ;; callers are notified. Consumers that keep the
+                              ;; event also keep the immutable DB values alive.
+                              :db-before (:db-before (first tx-reports))
+                              :db-after commit-db
+                              :tx-reports tx-reports})
                     ;; notify all processes that transaction is complete
-                            (doseq [[tx-report callback] txs]
-                              (let [tx-report (-> tx-report
-                                                  (assoc-in [:tx-meta :db/commitId] commit-id)
-                                                  (assoc :db-after commit-db))]
-                                (>! callback tx-report))))
+                            (doseq [[tx-report callback] finalized-txs]
+                              (>! callback tx-report)))
                           (catch #?(:clj Throwable :cljs js/Error) e
                             (cond
                               ;; NOT FATAL, and NOT RETRIED. The connection demands

@@ -258,6 +258,15 @@
      :parent-commit-ids set of parent commit identifiers
      :max-tx            maximum transaction in the committed snapshot
      :tx-count          transactions grouped into this durable commit
+     :db-before         database before the batch's first transaction
+     :db-after          exact durable database snapshot that was committed
+     :tx-reports        ordered finalized transaction reports in the batch
+
+   Every report in `:tx-reports` has the same durable `:db-after` and commit ID
+   delivered to its transaction caller, while retaining its own `:db-before`,
+   `:tx-data`, `:tx-meta`, and `:tempids`. The vector preserves transaction
+   boundaries; callers may flatten its `:tx-data` as an ordered change sequence,
+   but that is not necessarily a minimal net delta.
 
    Notifications are local and post-commit: another process writing a shared
    store does not notify this connection, and callback failure cannot undo the

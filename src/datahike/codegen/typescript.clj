@@ -362,6 +362,9 @@ export interface DurableCommitEvent {
   'parent-commit-ids': UuidValue[];
   'max-tx': number;
   'tx-count': number;
+  'db-before': Database;
+  'db-after': Database;
+  'tx-reports': TransactionReport[];
 }
 
 export interface Datom {

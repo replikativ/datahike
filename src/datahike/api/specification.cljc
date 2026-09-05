@@ -831,7 +831,7 @@
      :stability :experimental
      :supports-remote? false
      :referentially-transparent? false
-     :doc "Listen once per successful durable writer commit. The callback receives commit identity, parents, branch, store identity, max transaction, and the number of transactions in the writer batch. Notifications are local and post-commit. Callback failures do not undo the commit. WARNING: callbacks run on the commit loop; return promptly and use only asynchronous writer operations."
+     :doc "Listen once per successful durable writer commit. The callback receives commit identity, parents, branch, store identity, max transaction, the exact durable db-before/db-after batch boundary, and ordered finalized transaction reports. Notifications are local and post-commit. Retaining an event retains its immutable database values. Callback failures do not undo the commit. WARNING: callbacks run on the commit loop; return promptly and use only asynchronous writer operations."
      :examples [{:desc "Observe durable branch-head transitions"
                  :code "(listen-commits conn :publisher (fn [{:keys [commit-id parent-commit-ids]}] ...))"}]
      :impl datahike.core/listen-commits!}
