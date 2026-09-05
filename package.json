@@ -11,7 +11,8 @@
     "typescript": "^5.9.3"
   },
   "scripts": {
-    "test:browser": "karma start --single-run"
+    "test:browser": "karma start --single-run",
+    "ts-client-build": "clojure -M -m datahike.codegen.ts-client ts-client/src/api.generated.ts && tsc --project ts-client/tsconfig.json --noEmit && tsc --project ts-client/tsconfig.json --emitDeclarationOnly && tsc --project ts-client/tsconfig.json && node ts-client/build.mjs"
   },
   "author": "",
   "license": "EPL-1.0"

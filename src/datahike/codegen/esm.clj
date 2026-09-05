@@ -12,8 +12,7 @@
   fileExistsSync errors in the browser. ESM avoids this entirely."
   (:require [datahike.api.specification :refer [api-specification]]
             [datahike.codegen.naming :refer [assert-unique-js-names!
-                                             js-skip-list clj-name->js-name
-                                             remote-js-exports]]
+                                             js-skip-list clj-name->js-name]]
             [clojure.string :as str]))
 
 ;; Additional exports defined in datahike.js.api that are not in the
@@ -87,29 +86,3 @@
 
   ;; Write to file
   (write-esm-wrapper!))
-
-(defn generate-remote-esm-wrapper
-  "The ESM wrapper of the thin HTTP client: the remote-capable API functions
-   and the value helpers, from the `datahike.js.remote` bundle."
-  []
-  (let [clj-exports (remote-js-exports api-specification)
-        _ (assert-unique-js-names! clj-exports)
-        all-exports (concat (map clj-name->js-name clj-exports)
-                            ["listen" "unlisten" "isPromise" "uuid" "randomUuid"])
-        lines (concat
-               ["// Auto-generated ESM wrapper for the thin HTTP client (datahike/remote)."
-                "// DO NOT EDIT - Generated from datahike.api.specification"
-                ""
-                "import './datahike.js';"
-                ""
-                "var _api = (typeof self !== 'undefined' ? self : globalThis)['datahike']['js']['remote'];"
-                ""
-                "export default _api;"]
-               (for [name all-exports]
-                 (str "export var " name " = _api." name ";"))
-               [""])]
-    (str/join "\n" lines)))
-
-(defn write-remote-esm-wrapper! [output-path]
-  (spit output-path (generate-remote-esm-wrapper))
-  (println "Thin-client ESM wrapper written to:" output-path))

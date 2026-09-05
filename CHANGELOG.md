@@ -6,6 +6,13 @@ When something is added, it's typically marked *Experimental*. When the API cont
 
 ## 0.8
 
+- **The npm thin client is now TypeScript.** The `datahike/remote` entry uses
+  a hand-written `fetch` transport and tagged-JSON codec instead of carrying
+  the ClojureScript runtime and boring. Its generated API still follows the
+  specification, including the existing opaque handles and change-stream
+  semantics, while the ESM bundle drops from about 69 KiB to about 4 KiB
+  gzipped. ClojureScript consumers continue to use `datahike.http.client`
+  from the Clojure artifact unchanged.
 - **Thin-client change stream.** *Experimental.* Authenticated thin clients
   can follow `GET /listen` as a server-sent-event stream. It sends an initial
   resync when needed, compact transaction reports for subsequent commits,

@@ -58,15 +58,6 @@
       (throw (ex-info "TypeScript generation failed" result)))
     (println (str "TypeScript definitions written to: " output-path))))
 
-(defn generate-remote-typescript-definitions! [output-path]
-  (let [clj-code (str "(require '[datahike.codegen.typescript :as ts]) "
-                      "(ts/write-remote-type-definitions! \"" output-path "\")")
-        result (p/shell {:out :string :err :string}
-                        "clojure" "-M" "-e" clj-code)]
-    (when-not (zero? (:exit result))
-      (throw (ex-info "Thin-client TypeScript generation failed" result)))
-    (println (str "Thin-client TypeScript definitions written to: " output-path))))
-
 (defn generate-kabel-typescript-definitions! [output-path]
   (let [clj-code (str "(require '[datahike.codegen.typescript :as ts]) "
                       "(ts/write-kabel-type-definitions! \"" output-path "\")")
@@ -126,20 +117,10 @@
                "var root = (typeof self !== 'undefined' ? self : global);\n"
                "module.exports = Object.assign({}, root['datahike']['js']['api'], root['datahike']['js']['kabel']);\n"))))
 
-(defn write-remote-index! [remote-path]
-  (let [esm-path (str remote-path "/index.mjs")
-        tmp-file (str (fs/create-temp-file {:prefix "remote-esm-codegen-" :suffix ".clj"}))
-        _ (spit tmp-file (str "(require '[datahike.codegen.esm :as esm])\n"
-                              "(esm/write-remote-esm-wrapper! \"" esm-path "\")\n"))
-        result (p/shell {:out :string :err :string}
-                        "clojure" "-M" tmp-file)]
-    (fs/delete tmp-file)
+(defn build-ts-client! []
+  (let [result (p/shell {:out :inherit :err :inherit} "npm run ts-client-build")]
     (when-not (zero? (:exit result))
-      (throw (ex-info "Thin-client ESM wrapper generation failed" result)))
-    (spit (str remote-path "/index.js")
-          (str "require('./datahike.js');\n"
-               "var root = (typeof self !== 'undefined' ? self : global);\n"
-               "module.exports = root['datahike']['js']['remote'];\n"))))
+      (throw (ex-info "TypeScript thin-client build failed" result)))))
 
 (defn- run-package-command!
   [npm-package-path description & command]
@@ -182,8 +163,8 @@
                      "s3/datahike.js" "s3/index.js" "s3/index.mjs"
                      "kabel/datahike.js" "kabel/index.js" "kabel/index.mjs"
                      "kabel.d.ts"
-                     "remote/datahike.js" "remote/index.js" "remote/index.mjs"
-                     "remote.d.ts"}
+                     "remote/index.js" "remote/index.mjs" "remote/index.d.ts"
+                     "remote/core.d.ts" "remote/api.generated.d.ts"}
           missing (remove files required)
           forbidden (filter #(or (and (str/ends-with? % ".ts")
                                       (not (str/ends-with? % ".d.ts")))
@@ -211,6 +192,10 @@
   (run-package-command! npm-package-path "CommonJS API test" "node" "test.js")
   (run-package-command! npm-package-path "ESM wrapper syntax check"
                         "node" "--check" "browser/index.mjs")
+  (run-package-command! npm-package-path "Remote ESM syntax check"
+                        "node" "--check" "remote/index.mjs")
+  (run-package-command! npm-package-path "Remote CommonJS load check"
+                        "node" "-e" "if (typeof require('./remote/index.js').q !== 'function') throw Error('missing q')")
   (run-package-command! npm-package-path "TypeScript declaration test"
                         "npx" "tsc" "--noEmit" "--project" "tsconfig.json")
   (validate-package-manifest! npm-package-path))
@@ -233,7 +218,6 @@
   (println "Step 3/9: Generating TypeScript definitions")
   (generate-typescript-definitions! (str npm-package-path "/index.d.ts"))
   (generate-kabel-typescript-definitions! (str npm-package-path "/kabel.d.ts"))
-  (generate-remote-typescript-definitions! (str npm-package-path "/remote.d.ts"))
   (println "")
 
   (println "Step 4/9: Releasing Node.js build with shadow-cljs")
@@ -271,14 +255,9 @@
     (write-kabel-index! (str npm-package-path "/kabel"))
     (println ""))
 
-  (println "Step 7b/9: Releasing optional thin-client browser build")
-  (let [result (p/shell {:out :inherit
-                         :err :inherit}
-                        "npx shadow-cljs release browser-remote-release")]
-    (when-not (zero? (:exit result))
-      (throw (ex-info "Shadow-cljs thin-client release failed" result)))
-    (write-remote-index! (str npm-package-path "/remote"))
-    (println ""))
+  (println "Step 7b/9: Building the TypeScript thin client")
+  (build-ts-client!)
+  (println "")
 
   (println "Step 8/9: Verifying runtime, types, and tarball")
   (verify-npm-package! npm-package-path)
