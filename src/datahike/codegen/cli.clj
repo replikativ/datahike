@@ -57,7 +57,8 @@
    - is-filtered: Requires filtered db input, which can't exist in CLI (filter excluded)
    - transact!: Async variant, redundant with transact in single-shot CLI (also collides on command name)
    - warm-*: EXPERIMENTAL prefetch into a node cache that dies with the single-shot process"
-  #{'listen 'unlisten 'release 'db 'tempid 'entity-db
+  #{'listen 'unlisten 'listen-commits 'unlisten-commits
+    'release 'db 'tempid 'entity-db
     'as-of 'since 'history 'filter
     'connect 'db-with 'is-filtered 'transact!
     'warm-index 'warm-datoms 'warm-db})

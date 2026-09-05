@@ -246,7 +246,7 @@
      :stability :alpha
      :supports-remote? true
      :referentially-transparent? false
-     :doc "Wait for preceding accepted writes to settle and return the durable database. Creates no transaction. Do not call synchronously from a transaction function; use writer-barrier! outside the writer instead."
+     :doc "Wait for preceding accepted writes to settle and return the durable database. Creates no transaction. Do not call from a transaction function or durable commit listener: they run inside the writer. Queue writer-barrier! instead, without waiting for its result inside the callback."
      :impl datahike.api.impl/writer-barrier}
 
     writer-barrier!
@@ -256,7 +256,7 @@
      :stability :alpha
      :supports-remote? false
      :referentially-transparent? false
-     :doc "Asynchronously return the durable database after preceding accepted writes settle. Creates no transaction and fires no transaction listeners or predicates."
+     :doc "Asynchronously return the durable database after preceding accepted writes settle. Creates no transaction and fires no transaction listeners, durable commit listeners, or predicates. Do not wait for the result inside a transaction function or durable commit listener."
      :impl datahike.api.impl/writer-barrier!}
 
     load-entities
@@ -842,6 +842,32 @@
      :examples [{:desc "Remove listener"
                  :code "(unlisten conn :my-listener)"}]
      :impl datahike.core/unlisten!}
+
+    listen-commits
+    {:args [:function
+            [:=> [:cat :datahike/SConnection :any] :any]
+            [:=> [:cat :datahike/SConnection :any :any] :any]]
+     :ret :any
+     :categories [:connection :reactive :versioning]
+     :stability :experimental
+     :supports-remote? false
+     :referentially-transparent? false
+     :doc "Listen once per successful durable writer commit. The callback receives commit identity, parents, branch, store identity, max transaction, the exact durable db-before/db-after batch boundary, and ordered finalized transaction reports. Notifications are local and post-commit. Retaining an event retains its immutable database values. Callback failures do not undo the commit. WARNING: callbacks run on the commit loop; return promptly and use only asynchronous writer operations."
+     :examples [{:desc "Observe durable branch-head transitions"
+                 :code "(listen-commits conn :publisher (fn [{:keys [commit-id parent-commit-ids]}] ...))"}]
+     :impl datahike.core/listen-commits!}
+
+    unlisten-commits
+    {:args [:=> [:cat :datahike/SConnection :any] :map]
+     :ret :map
+     :categories [:connection :reactive :versioning]
+     :stability :experimental
+     :supports-remote? false
+     :referentially-transparent? false
+     :doc "Remove a durable commit listener."
+     :examples [{:desc "Stop observing durable commits"
+                 :code "(unlisten-commits conn :publisher)"}]
+     :impl datahike.core/unlisten-commits!}
 
     ;; =========================================================================
     ;; Schema Operations

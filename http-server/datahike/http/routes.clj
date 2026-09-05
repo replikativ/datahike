@@ -22,6 +22,7 @@
    [datahike.query.resolve :as qr]
    [clojure.string :as str]
    [clojure.core.async :as async]
+   [clojure.core.async.impl.protocols :as async-protocols]
    [datahike.connections :refer [*connections*]]
    [datahike.store]
    [reitit.core :as reitit]
@@ -34,6 +35,8 @@
    [datahike.remote.cbor :as rcbor]
    [datahike.http.cbor :as cbor]
    [datahike.json :as json]
+   [datahike.kabel.handlers :as kabel-handlers]
+   [datahike.kabel.tx-broadcast :as tx-broadcast]
    [datahike.api :refer :all :as api]
    [datahike.writing]
    [datahike.writer]
@@ -47,10 +50,13 @@
    [reitit.ring.middleware.multipart :as multipart]
    [reitit.ring.middleware.parameters :as parameters]
    [muuntaja.core :as m]
+   [jsonista.core :as j]
    [replikativ.metrics :as registry]
-   [replikativ.logging :as log])
+   [replikativ.logging :as log]
+   [ring.core.protocols :as protocols])
   (:import [datahike.datom Datom]
            [datahike.impl.entity Entity]
+           [java.io OutputStreamWriter]
            [java.util.concurrent.locks ReentrantReadWriteLock]))
 
 ;; ---------------------------------------------------------------------------
@@ -176,14 +182,126 @@
 (defn- conn-id [cfg]
   [(datahike.store/store-identity (:store cfg)) (:branch cfg :db)])
 
+(def kabel-peer-key
+  "The internal config key holding the standalone server's live Kabel peer."
+  ::kabel-peer)
+
+(def connections-key
+  "The internal config key holding the standalone server's connection registry."
+  ::connections-registry)
+
+(def report-bus-key
+  "The internal config key holding the routes' change-stream state."
+  ::report-bus)
+
+(def ^:private report-listener-key ::report-bus)
+(def ^:private subscriber-buffer-size 16)
+(def ^:private heartbeat-ms 20000)
+
+(deftype OverflowTrackingBuffer [delegate overflowed]
+  async-protocols/UnblockingBuffer
+  async-protocols/Buffer
+  (full? [_] false)
+  (remove! [_] (async-protocols/remove! delegate))
+  (add!* [this item]
+    ;; add!* runs under the channel mutex, so this observes the exact moment
+    ;; the sliding buffer evicts an event rather than racing a consumer take.
+    (when (>= (count delegate) subscriber-buffer-size)
+      (reset! overflowed true))
+    (async-protocols/add!* delegate item)
+    this)
+  (close-buf! [_] (async-protocols/close-buf! delegate))
+  clojure.lang.Counted
+  (count [_] (count delegate)))
+
+(defn- db-head [store-id branch db]
+  {:store-id store-id
+   :branch branch
+   :commit-id (get-in db [:meta :datahike/commit-id])
+   :max-tx (:max-tx db)
+   :max-eid (:max-eid db)})
+
+(defn- thin-report [store-id branch report]
+  (let [{:keys [db-after tempids tx-data]} report
+        head (db-head store-id branch db-after)
+        tx-data-count (count tx-data)]
+    (cond-> (assoc head :tempids tempids)
+      (<= tx-data-count 500) (assoc :tx-data tx-data)
+      (> tx-data-count 500) (assoc :truncated true))))
+
+(defn- enqueue!
+  "Offer one event without making a transaction callback wait."
+  [{:keys [channel] :as subscriber} event]
+  (locking subscriber
+    (async/offer! channel event)))
+
+(defn- publish-report!
+  [{:keys [subscribers heads]} config id report origin]
+  (let [[store-id branch] id
+        head (db-head store-id branch (:db-after report))]
+    (locking subscribers
+      ;; Head publication and subscriber registration use the same lock. A new
+      ;; subscriber therefore sees either the old head and this report, or the
+      ;; new head without this report, never both the new head and its report.
+      (swap! heads assoc id head)
+      (doseq [subscriber (get @subscribers id)]
+        (enqueue! subscriber {:event :report
+                              :data (thin-report store-id branch report)})))
+    ;; The Kabel handler already published its report with the request id.
+    (when (not= origin :kabel)
+      (when-let [peer (some-> (get config kabel-peer-key) deref)]
+        (tx-broadcast/publish-tx-report! peer store-id report nil)))))
+
+(defn publish-kabel-report!
+  "Publish one Kabel-originated report to SSE without broadcasting it again."
+  [config state store-id report]
+  (let [branch (get-in report [:db-after :config :branch] :db)]
+    (publish-report! state config [store-id branch] report :kabel)))
+
+(defn register-report-listener!
+  "Install the report listener owned by `conn`'s presence in the shared
+   registry. Repeated registration of the same connection is harmless."
+  [config {:keys [listener-keys] :as state} conn]
+  (let [id (conn-id (:config @conn))
+        listener-key [report-listener-key listener-keys]]
+    (locking listener-keys
+      (when-not (contains? @listener-keys conn)
+        (api/listen conn listener-key
+                    (fn [report]
+                      (try
+                        (publish-report! state config id report :connection)
+                        (catch Throwable error
+                          (log/error :datahike/http-report-publish-failed
+                                     (ex-message error)
+                                     {:store-id (first id)
+                                      :branch (second id)
+                                      :error-class (.getName (class error))})))))
+        (swap! listener-keys assoc conn {:id id :key listener-key})))
+    conn))
+
+(defn- detach-report-listeners!
+  [{:keys [listener-keys]} pred]
+  (let [removed (locking listener-keys
+                  (let [found (into {} (clojure.core/filter
+                                        (fn [[_ {:keys [id]}]] (pred id))
+                                        @listener-keys))]
+                    (swap! listener-keys #(apply dissoc % (keys found)))
+                    found))]
+    (doseq [[conn {:keys [key]}] removed]
+      (try (api/unlisten conn key) (catch Exception _)))))
+
 (defn- new-state
   "What the routes keep per handler: `leases`, per database — `:base`, whether
    the server holds its base lease, and `:api`, how many leases it has handed
-   out through `connect` — and a read-write lock that lets a delete wait for
-   the calls pinned on the database it removes."
-  []
+   out through `connect` — a report bus, and a read-write lock that lets a
+   delete wait for the calls pinned on the database it removes."
+  [connections]
   {:leases (atom {})
-   :lock   (ReentrantReadWriteLock.)})
+   :lock (ReentrantReadWriteLock.)
+   :connections connections
+   :subscribers (atom {})
+   :heads (atom {})
+   :listener-keys (atom {})})
 
 (defn- with-connection
   "Run `f` with a connection to `cfg`'s database, pinned for the duration.
@@ -196,15 +314,15 @@
    requests instead of being rebuilt for each; `release-all!` drops it on
    shutdown, a delete drops it. The call holds the read side of the lock, so
    a delete (`with-exclusive`) waits for it."
-  [cfg {:keys [leases ^ReentrantReadWriteLock lock]} f]
+  [cfg {:keys [leases ^ReentrantReadWriteLock lock] :as state} config f]
   (let [id (conn-id cfg)]
     (.lock (.readLock lock))
     (try
       (locking leases
         (when-not (and (get-in @leases [id :base]) (get-in @*connections* [id :conn]))
-          (api/connect cfg)
+          (register-report-listener! config state (api/connect cfg))
           (swap! leases assoc-in [id :base] true)))
-      (let [conn (api/connect cfg)]
+      (let [conn (register-report-listener! config state (api/connect cfg))]
         (try (f conn)
              (finally (api/release conn))))
       (finally (.unlock (.readLock lock))))))
@@ -218,7 +336,8 @@
 
 (defn- granted!
   "Count a lease handed out through `connect`."
-  [{:keys [leases]} conn]
+  [config {:keys [leases] :as state} conn]
+  (register-report-listener! config state conn)
   (swap! leases update-in [(conn-id (:config @conn)) :api] (fnil inc 0))
   conn)
 
@@ -242,11 +361,185 @@
    shared its atom, the host's own — for a process shutting down. Takes the
    connections atom or the handler `handler` returned."
   [handler-or-connections]
-  (let [connections (or (::connections (meta handler-or-connections)) handler-or-connections)]
+  (let [state (or (::state (meta handler-or-connections))
+                  (when (and (map? handler-or-connections)
+                             (:connections handler-or-connections))
+                    handler-or-connections))
+        connections (or (::connections (meta handler-or-connections))
+                        (:connections state)
+                        handler-or-connections)]
+    (when state
+      (detach-report-listeners! state (constantly true)))
     (binding [*connections* connections]
       (doseq [[_ {:keys [conn]}] @connections]
         (when conn
           (try (api/release conn true) (catch Exception _)))))))
+
+;; ---------------------------------------------------------------------------
+;; Change stream
+;; ---------------------------------------------------------------------------
+
+(defn- parse-listen-uuid [value parameter]
+  (try
+    (java.util.UUID/fromString value)
+    (catch Exception _
+      (throw (ex-info (str parameter " must be a UUID")
+                      {:type :datahike.http/invalid-listen-parameter
+                       :parameter parameter
+                       :value value})))))
+
+(defn- write-sse! [^OutputStreamWriter writer {:keys [event data]}]
+  (.write writer (str "event: " (name event) "\n"
+                      "data: " (j/write-value-as-string data json/mapper) "\n\n"))
+  (.flush writer))
+
+(defn- remove-subscriber!
+  [{:keys [subscribers]} id subscriber]
+  (locking subscribers
+    (swap! subscribers
+           (fn [subscriptions]
+             (let [remaining (disj (get subscriptions id #{}) subscriber)]
+               (if (seq remaining)
+                 (assoc subscriptions id remaining)
+                 (dissoc subscriptions id)))))
+    (async/close! (:channel subscriber))))
+
+(defn- coalesced-event!
+  "Replace queued reports with one current head after the sliding buffer drops."
+  [{:keys [heads]} id {:keys [channel overflowed] :as subscriber}]
+  (locking subscriber
+    (when @overflowed
+      (reset! overflowed false)
+      (loop []
+        (when (async/poll! channel)
+          (recur)))
+      {:event :coalesced :data (get @heads id)})))
+
+(defn- stream-body [state id subscriber]
+  (reify protocols/StreamableResponseBody
+    (write-body-to-stream [_ _ output-stream]
+      (let [writer (OutputStreamWriter. output-stream "UTF-8")]
+        (try
+          ;; Commit the response headers even when `since` is current and the
+          ;; first event is therefore still in the future.
+          (.flush writer)
+          (loop [heartbeat (async/timeout heartbeat-ms)]
+            (let [[event port] (async/alts!! [(:channel subscriber) heartbeat])]
+              (cond
+                (= port heartbeat)
+                (do (.write writer ": heartbeat\n\n")
+                    (.flush writer)
+                    (recur (async/timeout heartbeat-ms)))
+
+                (nil? event)
+                nil
+
+                :else
+                (let [event (or (coalesced-event! state id subscriber) event)]
+                  (write-sse! writer event)
+                  (when-not (= :deleted (:event event))
+                    ;; Keep the one outstanding heartbeat deadline. Busy
+                    ;; streams do not accumulate abandoned timeout channels.
+                    (recur heartbeat))))))
+          (catch java.io.IOException _)
+          (finally
+            (remove-subscriber! state id subscriber)
+            (try (.close writer) (catch java.io.IOException _))))))))
+
+(defn- listen-handler
+  [config {:keys [connections subscribers heads] :as state}]
+  (fn [request]
+    (try
+      (let [query (:query-params request)
+            store-id (some-> (get query "store") (parse-listen-uuid "store"))
+            branch (some-> (get query "branch") (str/replace-first #"^:" "") keyword)
+            branch (or branch :db)
+            since (some-> (get query "since") (parse-listen-uuid "since"))
+            id [store-id branch]
+            authorization-config {:store {:backend :listen :id store-id}
+                                  :branch branch}]
+        (when-not store-id
+          (throw (ex-info "store is required"
+                          {:type :datahike.http/invalid-listen-parameter
+                           :parameter "store"})))
+        (or (authorize config request :read [authorization-config])
+            (if-let [conn (get-in @connections [id :conn])]
+              (let [overflowed (atom false)
+                    buffer (OverflowTrackingBuffer.
+                            (async/sliding-buffer subscriber-buffer-size)
+                            overflowed)
+                    subscriber {:channel (async/chan buffer)
+                                :overflowed overflowed}]
+                (locking subscribers
+                  (register-report-listener! config state conn)
+                  (let [head (db-head store-id branch @conn)]
+                    (swap! heads assoc id head)
+                    (when (not= since (:commit-id head))
+                      (enqueue! subscriber {:event :resync :data head}))
+                    (swap! subscribers update id (fnil conj #{}) subscriber)))
+                {:status 200
+                 :headers {"Content-Type" "text/event-stream; charset=utf-8"
+                           "Cache-Control" "no-cache"}
+                 :body (stream-body state id subscriber)})
+              {:status 404
+               :body {:msg "Database is not connected"
+                      :ex-data {:type :datahike.http/not-connected
+                                :databases [{:store-id store-id :branch branch}]}}})))
+      (catch Exception e
+        (error-response e)))))
+
+(defn- delete-subscribers!
+  "Send the terminal deletion event and close streams selected by `pred`."
+  [{:keys [subscribers heads]} pred]
+  (let [removed (locking subscribers
+                  (let [selected (fn [entries]
+                                   (clojure.core/filter pred (keys entries)))
+                        found (select-keys @subscribers (selected @subscribers))]
+                    (swap! subscribers #(apply dissoc % (keys found)))
+                    (swap! heads #(apply dissoc % (selected %)))
+                    found))]
+    (doseq [[[store-id branch] subscriptions] removed
+            {:keys [channel overflowed] :as subscriber} subscriptions]
+      (locking subscriber
+        (reset! overflowed false)
+        (loop []
+          (when (async/poll! channel)
+            (recur)))
+        (async/offer! channel {:event :deleted
+                               :data {:store-id store-id :branch branch}})
+        (async/close! channel)))))
+
+(defn forget-database!
+  "Remove a store, or one branch, from every transport-owned registry.
+   The caller performs the physical database/branch deletion."
+  ([config state store-id]
+   (forget-database! config state store-id nil))
+  ([config {:keys [connections leases] :as state} store-id branch]
+   (with-exclusive
+     state
+     (fn []
+       (let [matches? (if branch
+                        #(= [store-id branch] %)
+                        #(= store-id (first %)))
+             conns (keep (fn [[id {:keys [conn]}]]
+                           (when (and conn (matches? id)) conn))
+                         @connections)
+             peer (some-> (get config kabel-peer-key) deref)]
+         (delete-subscribers! state matches?)
+         (swap! leases (fn [entries]
+                         (reduce (fn [result id]
+                                   (if (matches? id) (dissoc result id) result))
+                                 entries (keys entries))))
+         (detach-report-listeners! state matches?)
+         (if branch
+           (kabel-handlers/unregister-connection-for-store! store-id branch)
+           (if peer
+             (kabel-handlers/unregister-store-for-remote-access! store-id peer)
+             (kabel-handlers/unregister-connection-for-store! store-id)))
+         (binding [*connections* connections]
+           (doseq [conn conns]
+             (try (api/release conn true) (catch Exception _))))
+         nil)))))
 
 ;; ---------------------------------------------------------------------------
 ;; The API routes
@@ -284,18 +577,14 @@
                         (with-exclusive state
                           (fn []
                             (let [id           (conn-id (first body))
-                                  lease-state  (get @(:leases state) id)
                                   local-config (local (first body))
                                   principal    (:datahike/principal request)]
                               (when-let [prepare! (:datahike.http.system/prepare-delete! config)]
                                 (prepare! local-config principal))
-                              (swap! (:leases state) dissoc id)
                               (let [result
                                     (try
                                       (apply f local-config (rest body))
                                       (catch Throwable e
-                                        (when lease-state
-                                          (swap! (:leases state) assoc id lease-state))
                                         (when-let [cancel! (:datahike.http.system/cancel-delete! config)]
                                           (try
                                             (cancel! local-config principal)
@@ -306,16 +595,29 @@
                                         (throw e)))]
                                 (when-let [deleted! (:datahike.http.system/delete! config)]
                                   (deleted! local-config principal))
+                                (forget-database! config state (first id))
                                 result))))
 
                         (= f #'api/connect)
-                        (granted! state (apply f (cons (local (first body)) (rest body))))
+                        (granted! config state (apply f (cons (local (first body)) (rest body))))
 
                         ;; One caller releases one lease of its own.
                         ;; `release-all?` would close a connection the host
                         ;; and other callers share.
                         (= f #'api/release)
                         (give-back! state (first body))
+
+                        (= f #'api/delete-branch!)
+                        (let [conn (first body)
+                              id [(first (conn-id (:config @conn))) (second body)]
+                              result (apply f body)]
+                          (forget-database! config state (first id) (second id))
+                          result)
+
+                        ;; The public bulk loader is asynchronous locally, but
+                        ;; an HTTP response must contain its completed report.
+                        (= f #'api/load-entities)
+                        @(apply f body)
 
                         :else
                         (apply f body))]
@@ -499,12 +801,12 @@
                                  (try
                                    (with-exclusive state
                                      (fn []
-                                       (swap! (:leases state) dissoc (conn-id cfg))
                                        (try
                                          (api/release (api/connect cfg) true)
                                          (catch Exception _))
-                                       {:status 200
-                                        :body   (async/<!! (apply datahike.writing/delete-database cfg (rest body)))}))
+                                       (let [result (async/<!! (apply datahike.writing/delete-database cfg (rest body)))]
+                                         (forget-database! config state (first (conn-id cfg)))
+                                         {:status 200 :body result})))
                                    (catch Exception e
                                      (error-response e))))))
             :operationId "delete-database"},
@@ -538,7 +840,7 @@
                              (or (authorize config request :transact (cons cfg (rest body)))
                                  (try
                                    {:status 200
-                                    :body   (with-connection cfg state
+                                    :body   (with-connection cfg state config
                                               (fn [conn] @(apply datahike.writer/transact! conn (rest body))))}
                                    (catch Exception e
                                      (error-response e))))))
@@ -558,6 +860,12 @@
 (defn- router
   [config {:keys [prefix extra-routes state]}]
   (let [routes (vec (concat extra-routes
+                            [["/listen"
+                              {:muuntaja nil
+                               :coercion nil
+                               :get {:metric-op :read
+                                     :summary "Listen for committed changes."
+                                     :handler (listen-handler config state)}}]]
                             (create-routes config state)
                             (internal-writer-routes config state)))]
     (ring/router (if-let [p (normalize-prefix prefix)] [p routes] routes)
@@ -702,8 +1010,9 @@
                {:policy :unrestricted
                 :note "clients with :create may name any store configuration; set :create-database to restrict"}))
    (let [connections (or connections (atom {}))
-         rtr         (router config (assoc opts :state (new-state)))
+         state       (new-state connections)
+         rtr         (router config (assoc opts :state state))
          h           (-> (wrap-api (ring/ring-handler rtr (or default-handler (ring/create-default-handler)))
                                    rtr config connections)
                          (wrap-query-functions config))]
-     (with-meta h {::connections connections}))))
+     (with-meta h {::connections connections ::state state}))))

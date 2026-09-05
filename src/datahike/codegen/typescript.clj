@@ -72,7 +72,9 @@
    'rseek-datoms ["db" "indexOrOptions" "components"]
    'index-range ["db" "options"]
    'listen ["conn" "key" "listener"]
-   'unlisten ["conn" "key"]})
+   'unlisten ["conn" "key"]
+   'listen-commits ["conn" "key" "listener"]
+   'unlisten-commits ["conn" "key"]})
 
 (defn- function-arities [schema]
   (if (and (vector? schema) (= :function (first schema)))
@@ -80,13 +82,18 @@
     [schema]))
 
 (defn- parameter-name [fn-name arity-size idx]
-  (or (when (and (= fn-name 'listen) (= arity-size 2) (= idx 1))
+  (or (when (and (#{'listen 'listen-commits} fn-name)
+                 (= arity-size 2) (= idx 1))
         "listener")
       (get-in parameter-names [fn-name idx])
       (str "arg" idx)))
 
 (defn- parameter-type [fn-name arity-size idx schema]
   (cond
+    (and (= fn-name 'listen-commits)
+         (= idx (dec arity-size)))
+    "(event: DurableCommitEvent) => void"
+
     (and (= fn-name 'listen)
          (= idx (dec arity-size)))
     "(report: TransactionReport) => void"
@@ -347,6 +354,19 @@ export interface TransactionReport {
   'tx-meta'?: any;
 }
 
+export interface DurableCommitEvent {
+  type: ':datahike/commit';
+  'store-id': UuidValue;
+  branch: Keyword;
+  'commit-id': UuidValue;
+  'parent-commit-ids': UuidValue[];
+  'max-tx': number;
+  'tx-count': number;
+  'db-before': Database;
+  'db-after': Database;
+  'tx-reports': TransactionReport[];
+}
+
 export interface Datom {
   e: number;
   a: Attribute;
@@ -517,6 +537,22 @@ export function setLogLevel(level: LogLevel): LogLevel;
 "]
      (if remote-only?
        (str header types "\n// API Functions (the thin HTTP client; every call reaches the server)\n\n" functions "
+
+export interface RemoteReport {
+  'db-after'?: Database;
+  'db-before'?: null;
+  'tx-data'?: Datom[];
+  tempids?: { [key: string]: number };
+  'commit-id'?: UuidValue;
+  resync?: boolean;
+  deleted?: boolean;
+  truncated?: boolean;
+  error?: any;
+  status?: number;
+}
+
+export function listen(conn: Connection, callback: (report: RemoteReport) => void): string;
+export function unlisten(conn: Connection, key: string): void;
 
 // JavaScript-specific value helpers.
 export function isPromise(value: any): value is Promise<unknown>;

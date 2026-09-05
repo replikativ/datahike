@@ -77,6 +77,8 @@
   "Operations excluded from pod with documented reasons."
   '{listen        "Requires persistent callbacks - not supported in pod protocol"
     unlisten      "Requires persistent callbacks - not supported in pod protocol"
+    listen-commits "Requires persistent callbacks - not supported in pod protocol"
+    unlisten-commits "Requires persistent callbacks - not supported in pod protocol"
     transact!     "Async variant - pods are synchronous"
     tempid        "Only useful within transaction context"
     entity-db     "Returns DB from entity - limited utility in pod context"

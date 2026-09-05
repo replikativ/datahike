@@ -27,7 +27,9 @@
    [replikativ.metrics.konserve :as metrics-konserve]
    [replikativ.metrics.prometheus :as prometheus]
    [replikativ.logging :as log]
-   [ring.adapter.jetty :refer [run-jetty]]))
+   [ring.adapter.jetty :refer [run-jetty]])
+  (:import
+   [org.eclipse.jetty.util.thread QueuedThreadPool]))
 
 (def ^:private prometheus-content-type
   "text/plain; version=0.0.4; charset=utf-8")
@@ -161,7 +163,8 @@
   ([config connections]
    (app config connections (server-nrepl/status-atom)))
   ([config connections nrepl-status]
-   (let [server-config config
+   (let [server-config (dissoc config routes/kabel-peer-key routes/connections-key
+                               routes/report-bus-key)
          config  (system/configure config)
          config  (if (get config system/conn-key)
                    (permissions/configure config)
@@ -234,8 +237,31 @@
            (when configurator
              (configurator server)))))
 
+(defn- virtual-threads-supported? []
+  (>= (.feature (Runtime/version)) 21))
+
+(defn- with-sse-thread-pool [config]
+  (cond
+    (:thread-pool config) config
+
+    (virtual-threads-supported?)
+    (let [pool (QueuedThreadPool. (int (get config :max-threads 50))
+                                  (int (get config :min-threads 8)))
+          executor (clojure.lang.Reflector/invokeStaticMethod
+                    java.util.concurrent.Executors
+                    "newVirtualThreadPerTaskExecutor" (object-array 0))]
+      (.setVirtualThreadsExecutor pool executor)
+      (assoc config :thread-pool pool ::virtual-executor executor))
+
+    :else
+    (do
+      (log/info :datahike/http-sse-platform-threads
+                {:max-threads (get config :max-threads 50)
+                 :note "SSE streams share Jetty's worker pool; JDK 21+ enables virtual threads"})
+      config)))
+
 (defn- cleanup-owned!
-  [connections config nrepl-resource pg-listener kabel-resource metrics-lease]
+  [connections config nrepl-resource pg-listener kabel-resource metrics-lease virtual-executor]
   (try
     (server-nrepl/stop! nrepl-resource)
     (finally
@@ -246,12 +272,16 @@
             (pg/stop! pg-listener)
             (finally
               (try
-                (routes/release-all! connections)
+                (routes/release-all! (or (get config routes/report-bus-key) connections))
                 (finally
                   (try
                     (system/close! config)
                     (finally
-                      (release-metrics-sink! metrics-lease))))))))))))
+                      (try
+                        (release-metrics-sink! metrics-lease)
+                        (finally
+                          (when virtual-executor
+                            (.close ^java.lang.AutoCloseable virtual-executor)))))))))))))))
 
 (defn start-server
   "Start Jetty and acquire the standalone server's shared Konserve metric sink
@@ -260,46 +290,55 @@
   (let [requested-config (-> config
                              server-config/assert-safe-nrepl!
                              server-config/assert-safe-bind!)
-        config      requested-config
-        timeout     (shutdown-timeout config)
+        kabel-peer  (atom nil)
         connections (atom {})
+        config      (assoc requested-config
+                           routes/kabel-peer-key kabel-peer
+                           routes/connections-key connections)
+        timeout     (shutdown-timeout config)
         nrepl-status (server-nrepl/status-atom)
         app         (app config connections nrepl-status)
-        config      (::config (meta app))
-        jetty-config (with-graceful-shutdown config timeout)
+        config      (assoc (::config (meta app))
+                           routes/report-bus-key (::routes/state (meta app)))
+        jetty-config (-> config
+                         (with-graceful-shutdown timeout)
+                         with-sse-thread-pool)
+        virtual-executor (::virtual-executor jetty-config)
         pg-listener (try
                       (pg/start! config connections)
                       (catch Throwable t
-                        (cleanup-owned! connections config nil nil nil nil)
+                        (cleanup-owned! connections config nil nil nil nil virtual-executor)
                         (throw t)))
         kabel-resource (try
                          (kabel-server/start! config)
                          (catch Throwable t
-                           (cleanup-owned! connections config nil pg-listener nil nil)
+                           (cleanup-owned! connections config nil pg-listener nil nil virtual-executor)
                            (throw t)))
         metrics-lease (try
                         (when-not (false? (:metrics config))
                           (acquire-metrics-sink!))
                         (catch Throwable t
-                          (cleanup-owned! connections config nil pg-listener kabel-resource nil)
+                          (cleanup-owned! connections config nil pg-listener kabel-resource nil virtual-executor)
                           (throw t)))
         nrepl-resource (try
                          (server-nrepl/start! config (routes/redact requested-config)
                                               connections nrepl-status)
                          (catch Throwable t
-                           (cleanup-owned! connections config nil pg-listener kabel-resource metrics-lease)
+                           (cleanup-owned! connections config nil pg-listener kabel-resource metrics-lease virtual-executor)
                            (throw t)))
-        server      (try (run-jetty app jetty-config)
+        server      (try (run-jetty app (dissoc jetty-config ::virtual-executor))
                          (catch Throwable t
                            ;; Nothing owns what `app` opened if Jetty never started.
-                           (cleanup-owned! connections config nrepl-resource pg-listener kabel-resource metrics-lease)
+                           (cleanup-owned! connections config nrepl-resource pg-listener kabel-resource metrics-lease
+                                           virtual-executor)
                            (throw t)))]
     (swap! owned assoc server {:connections connections
                                :config config
                                :nrepl-resource nrepl-resource
                                :pg-listener pg-listener
                                :kabel-resource kabel-resource
-                               :metrics-lease metrics-lease})
+                               :metrics-lease metrics-lease
+                               :virtual-executor virtual-executor})
     server))
 
 (defn stop-server
@@ -309,12 +348,14 @@
    twice."
   [^org.eclipse.jetty.server.Server server]
   (let [[before _] (swap-vals! owned dissoc server)
-        {:keys [connections config nrepl-resource pg-listener kabel-resource metrics-lease]}
+        {:keys [connections config nrepl-resource pg-listener kabel-resource metrics-lease
+                virtual-executor]}
         (get before server)]
     (try (.stop server)
          (finally
            (when connections
-             (cleanup-owned! connections config nrepl-resource pg-listener kabel-resource metrics-lease))))))
+             (cleanup-owned! connections config nrepl-resource pg-listener kabel-resource metrics-lease
+                             virtual-executor))))))
 
 (defn- shutdown-hook [server config]
   (Thread.

@@ -69,11 +69,44 @@ as the handle is used.
 
 ## Change notification
 
-A thin client holds no replica, so it learns about other writers' changes
-only by asking. The server broadcasts every transaction report per store
-over Kabel; a page that wants to be told adds the `datahike/kabel` entry's
-peer and subscribes to the store's report topic. That is the replica's
-transport and adds its bundle; there is no lighter notification lane.
+A thin client can follow the connected database without carrying a replica.
+In JavaScript, `listen` returns a key immediately and calls back with plain
+JavaScript reports; pass that key to `unlisten`:
+
+```javascript
+const listener = d.listen(conn, report => {
+  if (report.error) {
+    console.error(`listen failed with HTTP ${report.status}`, report.error);
+    return;
+  }
+  if (report.deleted) return;
+  renderFrom(report['db-after']);
+});
+
+d.unlisten(conn, listener);
+```
+
+The ClojureScript API also accepts an explicit listener key:
+
+```clojure
+(def listener (client/listen conn ::ui refresh!))
+(client/unlisten conn listener)
+```
+
+The first callback is a resync report with `:resync true` and a `:db-after`
+handle. Later transaction reports contain `:db-after`, `:db-before nil`,
+`:tempids`, and `:commit-id`. Reports of at most 500 datoms also contain
+`:tx-data`; larger reports instead contain `:truncated true`. A slow consumer
+can receive another resync report after the server coalesces changes. Database
+deletion produces the terminal `:deleted true` report.
+
+The client reconnects after a stream error or clean disconnect, starting at
+500 ms and doubling the delay up to 30 seconds. It sends the last observed
+commit id when reconnecting; the server resyncs when that id is no longer the
+head. `unlisten` aborts the open request and cancels reconnects. Deletion does
+not reconnect. HTTP 401, 403, and 404 responses are terminal too: the callback
+receives `{:error <ex-info> :status <integer>}` in ClojureScript, or an object
+with `error` and `status` in JavaScript, and the listener stops.
 
 ## What is not there
 

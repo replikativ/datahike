@@ -2,8 +2,10 @@
   (:require [superv.async :refer [S thread-try <?- go-try]]
             [replikativ.logging :as log]
             [datahike.core]
+            #?(:cljs [datahike.db :refer [TxReport]])
             [datahike.config :as dc]
             [datahike.metrics :as metrics]
+            [datahike.store :as ds]
             [datahike.writing :as w]
             [datahike.tx-preds :as txp]
             [datahike.gc :as gc]
@@ -12,7 +14,8 @@
             [clojure.string :as str]
             [clojure.core.async :refer [chan close! promise-chan put! go go-loop <! >! poll! buffer timeout]]
             #?(:cljs [cljs.core.async.impl.channels :refer [ManyToManyChannel]]))
-  #?(:clj (:import [clojure.core.async.impl.channels ManyToManyChannel])))
+  #?(:clj (:import [clojure.core.async.impl.channels ManyToManyChannel]
+                   [datahike.db TxReport])))
 
 (defn chan? [x]
   (instance? ManyToManyChannel x))
@@ -144,6 +147,26 @@
    milliseconds would have avoided. The jitter matters as much as the delay: two
    writers backing off by the same amount collide again in lockstep."
   25)
+
+(defn- notify-commit-listeners!
+  "Notify a stable snapshot of the connection's durable-commit listeners.
+
+   A listener observes an already-durable head and therefore cannot veto it.
+   Isolate failures so one integration callback cannot kill the writer or hide
+   the commit from the remaining listeners."
+  [connection event]
+  (doseq [[key callback]
+          (some-> (:commit-listeners (meta connection)) deref)]
+    (try
+      (callback event)
+      (catch #?(:clj Throwable :cljs :default) error
+        (log/error :datahike/commit-listener-error
+                   {:key key
+                    ;; DB values and reports can retain indexes and make an
+                    ;; otherwise small listener error enormous.
+                    :event (dissoc event :db-before :db-after :tx-reports)
+                    :error error}))))
+  nil)
 
 (def retryable-ops
   "Operations a head conflict may re-apply on the caller's behalf.
@@ -660,7 +683,20 @@
                             (let [start-ts (get-time-ms)
                                   {{:keys [datahike/commit-id]} :meta
                                    :as commit-db} (<?- (w/commit! db merge-parents false last-cid head-rev))
-                                  commit-time (- (get-time-ms) start-ts)]
+                                  commit-time (- (get-time-ms) start-ts)
+                                ;; Finalize once, then hand these SAME report
+                                ;; values to both the durable-batch listener and
+                                ;; each transaction's caller. This preserves
+                                ;; transaction boundaries while making every
+                                ;; :db-after the head that actually landed.
+                                  finalized-txs
+                                  (mapv (fn [[tx-report callback]]
+                                          [(-> tx-report
+                                               (assoc-in [:tx-meta :db/commitId] commit-id)
+                                               (assoc :db-after commit-db))
+                                           callback])
+                                        txs)
+                                  tx-reports (mapv first finalized-txs)]
                               (log/trace :datahike/commit-time {:duration-ms commit-time})
                               (metrics/commit! (:config db)
                                                commit-time
@@ -681,16 +717,38 @@
                                    (w/finish-secondary-index-build! build-guard)))
                               (reset! build-cleanup-complete? true)
                               (reset! connection commit-db)
+                            ;; This is the one exact durable-commit boundary. A
+                            ;; drained group may contain many transaction reports,
+                            ;; but commit! wrote one immutable commit and flipped
+                            ;; one branch head. Transaction listeners cannot infer
+                            ;; that grouping because every report below receives
+                            ;; the same final db-after and commit id.
+                              (notify-commit-listeners!
+                               connection
+                               {:type :datahike/commit
+                                :store-id (ds/canonical-store-id
+                                           (:store commit-db)
+                                           (get-in commit-db [:config :store]))
+                                :branch (get-in commit-db [:config :branch])
+                                :commit-id commit-id
+                                :parent-commit-ids
+                                (or (get-in commit-db [:meta :datahike/parents]) #{})
+                                :max-tx (:max-tx commit-db)
+                                :tx-count (count txs)
+                              ;; Rich process-local view. Attaching these is
+                              ;; cheap: the writer already retains them until
+                              ;; callers are notified. Consumers that keep the
+                              ;; event also keep the immutable DB values alive.
+                                :db-before (:db-before (first tx-reports))
+                                :db-after commit-db
+                                :tx-reports tx-reports})
                     ;; notify all processes that transaction is complete
-                              (doseq [[tx-report callback] txs]
-                                (let [tx-report (-> tx-report
-                                                    (assoc-in [:tx-meta :db/commitId] commit-id)
-                                                    (assoc :db-after commit-db))]
-                                  (>! callback tx-report)
-                                  (swap! retry-pending
-                                         (fn [callbacks]
-                                           (into [] (remove #{callback}) callbacks)))
-                                  (settle-retry-success! retry-barriers callback commit-db))))
+                              (doseq [[tx-report callback] finalized-txs]
+                                (>! callback tx-report)
+                                (swap! retry-pending
+                                       (fn [callbacks]
+                                         (into [] (remove #{callback}) callbacks)))
+                                (settle-retry-success! retry-barriers callback commit-db)))
                             (catch #?(:clj Throwable :cljs js/Error) e
                               (cond
                               ;; NOT FATAL, and NOT RETRIED. The connection demands
@@ -1241,6 +1299,9 @@
         writer (:writer @(:wrapped-atom connection))]
     (go
       (let [tx-report (<! (dispatch! writer {:op op :args args}))]
+        (when (instance? TxReport tx-report)
+          (doseq [[_ callback] (some-> (:listeners (meta connection)) deref)]
+            (callback tx-report)))
         (#?(:clj deliver :cljs put!) p tx-report)))
     p))
 

@@ -134,6 +134,26 @@
                 (catch clojure.lang.ExceptionInfo e e))]
     (is (= :datahike.http/invalid-shutdown-timeout (:type (ex-data error))))))
 
+(deftest standalone-uses-virtual-threads-for-streaming-on-jdk-21
+  (when (>= (.feature (Runtime/version)) 21)
+    (let [instance (start-server {:host "127.0.0.1"
+                                  :port 0
+                                  :join? false
+                                  :metrics false
+                                  :max-threads 17})
+          pool (.getThreadPool ^org.eclipse.jetty.server.Server instance)
+          executor (.getVirtualThreadsExecutor
+                    ^org.eclipse.jetty.util.thread.QueuedThreadPool pool)]
+      (try
+        (is (instance? org.eclipse.jetty.util.thread.QueuedThreadPool pool))
+        (is (= 17 (.getMaxThreads
+                   ^org.eclipse.jetty.util.thread.QueuedThreadPool pool)))
+        (is (some? executor))
+        (finally
+          (stop-server instance)))
+      (is (.isShutdown ^java.util.concurrent.ExecutorService executor)
+          "the owned virtual-thread executor is closed with the server"))))
+
 (deftest graceful-stop-drains-active-requests-and-cleans-up-once
   (let [entered       (promise)
         finish        (promise)

@@ -4,12 +4,11 @@
    (`datahike.js.remote`). `bb node-remote-test` starts the server and
    points DATAHIKE_REMOTE_URL / DATAHIKE_REMOTE_TOKEN at it; without them the
    suite reports itself skipped."
-  (:require [cljs.test :refer [deftest is testing async] :as t]
+  (:require [cljs.test :refer [deftest is async] :as t]
             [datahike.http.client :as client]
             [datahike.remote :as remote]
             [datahike.js.remote :as js-remote]
-            [cljs.core.async :refer [<! go]]
-            [cljs.nodejs :as nodejs]))
+            [cljs.core.async :refer [<! go] :as core-async]))
 
 (def ^:private url (some-> js/process .-env .-DATAHIKE_REMOTE_URL))
 (def ^:private token (some-> js/process .-env .-DATAHIKE_REMOTE_TOKEN))
@@ -21,10 +20,39 @@
   (go (let [v (<! ch)]
         (if (instance? js/Error v) (throw v) v))))
 
+(defn- <event
+  "Take one listener event or fail so a broken stream cannot hang the suite."
+  [events]
+  (let [out (core-async/promise-chan)
+        pending? (atom true)
+        timeout (js/setTimeout
+                 #(when (compare-and-set! pending? true false)
+                    (core-async/put! out (js/Error. "Timed out waiting for a change event")))
+                 5000)]
+    (core-async/take! events
+                      (fn [value]
+                        (when (compare-and-set! pending? true false)
+                          (js/clearTimeout timeout)
+                          (core-async/put! out value))))
+    out))
+
 (defn- config []
   {:store {:backend :memory :id (random-uuid)}
    :schema-flexibility :read
    :remote-peer peer})
+
+(deftest listen-json-and-crlf-chunks
+  (let [decoded (client/decode-listen-json
+                 #js ["!set" #js [#js ["!kw" "one"]
+                                  #js ["!sym" "two"]]])
+        [frames pending] (client/split-listen-chunk
+                          "" "event: report\r\ndata: {\"max-tx\":1}\r")
+        [frames-2 pending-2] (client/split-listen-chunk pending "\n\r\n")]
+    (is (= #{:one 'two} decoded) "all collection element tags are decoded")
+    (is (empty? frames) "a trailing CR is retained rather than becoming a frame end")
+    (is (= ["event: report\ndata: {\"max-tx\":1}"] frames-2)
+        "a CR/LF split across chunks produces exactly one frame")
+    (is (empty? pending-2))))
 
 (deftest cljs-api-against-the-server
   (async done
@@ -55,6 +83,56 @@
                (is false (str "unexpected: " (ex-message e) " " (pr-str (ex-data e))))))
            (done))))
 
+(deftest cljs-change-listener
+  (async done
+         (go
+           (try
+             (let [cfg (<! (<ok (client/create-database (config))))
+                   conn (<! (<ok (client/connect cfg)))
+                   events (core-async/chan 8)
+                   key (client/listen conn :remote-test #(core-async/put! events %))
+                   resync (<! (<ok (<event events)))
+                   _ (is (= :remote-test key) "an explicit listener key is returned")
+                   _ (is (:resync resync) "a listener without since starts with a resync")
+                   _ (is (instance? remote/RemoteDB (:db-after resync)))
+                   _ (<! (<ok (client/transact conn [{:db/id "Serg"
+                                                      :listener/value :received
+                                                      :listener/symbol 'tagged}])))
+                   report (<! (<ok (<event events)))
+                   _ (is (not (:resync report)) "the next event is a transaction report")
+                   _ (is (= [:received] (mapv :v (filter #(= :listener/value (:a %))
+                                                         (:tx-data report))))
+                         "tagged JSON datoms and keywords are decoded")
+                   _ (is (number? (get (:tempids report) "Serg"))
+                         "string tempid keys remain strings")
+                   _ (is (= ['tagged]
+                            (mapv :v (filter #(= :listener/symbol (:a %))
+                                             (:tx-data report))))
+                         "tagged JSON symbols are decoded")
+                   db (<! (<ok (client/db conn)))
+                   _ (is (= (:commit-id report) (:commit-id (:db-after report)) (:commit-id db))
+                         "the event handle is the new head")
+                   _ (client/unlisten conn key)
+                   _ (<! (<ok (client/transact conn [{:listener/value :after-unlisten}])))
+                   [_ port] (core-async/alts! [events (core-async/timeout 300)])
+                   _ (is (not= port events) "unlisten stops delivery")
+                   failures (core-async/chan 2)
+                   bad-conn (assoc conn :remote-peer (assoc peer :token "wrong"))
+                   _ (client/listen bad-conn :permanent-failure #(core-async/put! failures %))
+                   failure (<! (<ok (<event failures)))
+                   _ (is (= 401 (:status failure)))
+                   _ (is (instance? ExceptionInfo (:error failure))
+                         "a permanent HTTP status reaches the application as ex-info")
+                   [_ retry-port] (core-async/alts! [failures (core-async/timeout 800)])
+                   _ (is (not= retry-port failures)
+                         "a permanent HTTP status stops instead of reconnecting")
+                   _ (<! (client/release conn))
+                   _ (<! (<ok (client/delete-database cfg)))]
+               (is true))
+             (catch :default e
+               (is false (str "unexpected: " (ex-message e) " " (pr-str (ex-data e))))))
+           (done))))
+
 (deftest javascript-boundary-against-the-server
   (async done
     ;; As in the JavaScript docs: the configuration object holding the uuid()
@@ -75,7 +153,41 @@
                                      (.then (fn [db] (js-remote/q "[:find ?n :where [?e :name ?n]]" db)))
                                      (.then (fn [result]
                                               (is (= [["Linus"]] (js->clj result)) "results are JavaScript values")
-                                              (js-remote/release conn)))
+                                              (let [phase (atom :resync)
+                                                    key (atom nil)
+                                                    report-promise
+                                                    (js/Promise.
+                                                     (fn [resolve reject]
+                                                       (let [timeout (js/setTimeout
+                                                                      #(do
+                                                                         (when @key
+                                                                           (js-remote/unlisten conn @key))
+                                                                         (reject (js/Error. "Timed out waiting for a JavaScript change event")))
+                                                                      5000)]
+                                                         (reset! key
+                                                                 (js-remote/listen
+                                                                  conn
+                                                                  (fn [report]
+                                                                    (case @phase
+                                                                      :resync
+                                                                      (do
+                                                                        (is (object? report) "a listener receives a JavaScript object")
+                                                                        (is (true? (aget report "resync")))
+                                                                        (reset! phase :report)
+                                                                        (-> (js-remote/transact
+                                                                             conn #js [#js {:name "Listener"}])
+                                                                            (.catch reject)))
+
+                                                                      :report
+                                                                      (do
+                                                                        (js/clearTimeout timeout)
+                                                                        (resolve report)))))))))]
+                                                (.then report-promise
+                                                       (fn [report]
+                                                         (is (some? (aget report "db-after"))
+                                                             "a JavaScript change report carries a handle")
+                                                         (js-remote/unlisten conn @key)
+                                                         (js-remote/release conn))))))
                                      (.then (fn [_] (js-remote/deleteDatabase cfg))))))))
                (.catch (fn [e] (is false (str "unexpected: " e))))
                (.finally done)))))

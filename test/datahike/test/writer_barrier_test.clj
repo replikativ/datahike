@@ -66,6 +66,7 @@
             calls (atom 0)]
         (txp/ensure-tx-pred! store-id :guard (fn [_] (swap! calls inc)))
         (d/listen conn :barrier-test (fn [_] (swap! calls inc)))
+        (d/listen-commits conn :barrier-test (fn [_] (swap! calls inc)))
         (try
           (with-redefs [writing/commit! (fn [& _]
                                           (throw (ex-info "A barrier must not commit" {})))]
@@ -77,7 +78,37 @@
           (is (zero? @calls))
           (finally
             (d/unlisten conn :barrier-test)
+            (d/unlisten-commits conn :barrier-test)
             (txp/unregister-tx-pred! store-id :guard)))))))
+
+(deftest barrier-follows-durable-listener-publication
+  (with-db
+    (fn [conn]
+      (let [entered (promise)
+            release (promise)
+            events (atom [])]
+        (d/listen-commits conn :held-listener
+                          (fn [event]
+                            (swap! events conj event)
+                            (deliver entered true)
+                            @release))
+        (try
+          (let [tx (dispatch conn 'transact! [{:tx-data [{:db/id 1 :n 1}]}])]
+            (is (= true (deref entered 10000 ::timed-out)))
+            (let [barrier (dispatch conn 'writer-barrier [])]
+              (is (nil? (async/poll! barrier))
+                  "a barrier cannot overtake a preceding durable listener")
+              (deliver release true)
+              (let [report (await tx)
+                    snapshot (await barrier)
+                    event (first @events)]
+                (is (= 1 (count @events)))
+                (is (identical? report (first (:tx-reports event))))
+                (is (= (:db-after event) snapshot))
+                (is (= (:commit-id event) (get-in snapshot [:meta :datahike/commit-id]))))))
+          (finally
+            (deliver release true)
+            (d/unlisten-commits conn :held-listener)))))))
 
 (defn- run-queued-barrier [fail-second?]
   (with-db
@@ -165,9 +196,11 @@
     (let [conn (d/connect config)
           original writing/commit!
           commits (atom 0)
+          events (atom [])
           entered (promise)
           release (promise)]
       (try
+        (d/listen-commits conn :retry-events #(swap! events conj %))
         (with-redefs [writer/retryable-ops (conj writer/retryable-ops
                                                  'held-transact)
                       writing/commit!
@@ -193,6 +226,9 @@
                 (is (map? snapshot-1))
                 (is (map? snapshot-2))
                 (is (= 2 @commits))
+                (is (= 1 (count @events))
+                    "the failed commit attempt does not publish an event")
+                (is (identical? report (first (:tx-reports (first @events)))))
                 (doseq [snapshot [snapshot-1 snapshot-2]]
                   (is (= #{[1]} (d/q '[:find ?n :where [_ :n ?n]] snapshot)))
                   (is (= (:max-tx (:db-after report)) (:max-tx snapshot))))))))
