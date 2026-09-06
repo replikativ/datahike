@@ -128,8 +128,9 @@
 
 (defn with
   "Same as [[transact!]], but applies to an immutable database value. Returns transaction report (see [[transact!]])."
-  ([db tx-data] (with db tx-data nil))
-  ([db tx-data tx-meta]
+  ([db tx-data] (with db tx-data nil nil))
+  ([db tx-data tx-meta] (with db tx-data tx-meta nil))
+  ([db tx-data tx-meta tx-options]
    {:pre [(dbu/db? db)]}
    (if (is-filtered db)
      (throw (ex-info "Filtered DB cannot be modified" {:error :transaction/filtered}))
@@ -143,7 +144,7 @@
                          :tx-data   []
                          :tempids   {}
                          :tx-meta   tx-meta})
-                       tx-data)
+                       tx-data tx-options)
                       (catch #?(:clj Throwable :cljs js/Error) failure
                         (sec/abort-tracked-secondary-transients!)
                         (throw failure))))
