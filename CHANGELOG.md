@@ -12,7 +12,10 @@ When something is added, it's typically marked *Experimental*. When the API cont
   conflicting owner. Transaction maps accept
   `:tx-options {:allow-index-backfill? true}` without changing persistent
   configuration. Adding uniqueness to an already indexed attribute also
-  checks existing values for duplicates.
+  checks existing values for duplicates. Validation scans current AVET in value
+  order instead of retaining a set of all distinct values. Backfill remains
+  synchronous within the transaction; the index build as a whole is not a
+  bounded-heap or background migration.
 
 - **JVM thin-client change stream.** *Experimental.* `datahike.http.client`
   now provides `listen` and `unlisten` for Clojure remote connections, with

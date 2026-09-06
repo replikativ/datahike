@@ -3,7 +3,9 @@
             [datahike.api :as d]
             [datahike.api.types :as types]
             [datahike.core :as core]
+            [datahike.datom :as datom]
             [datahike.db.transaction :as dbt]
+            [datahike.index :as index]
             [datahike.writing :as writing]
             [malli.core :as m]
             [malli.instrument :as mi]))
@@ -212,6 +214,55 @@
                      (datom-set (:db-after report) :avet :sample/value)))
               (is (= (datom-set (d/history before) :avet :sample/value)
                      (datom-set (d/history (:db-after report)) :avet :sample/value))))))))))
+
+(deftest ordered-unique-validation-uses-avet-and-stops-at-first-duplicate
+  (with-db
+    (fn [conn]
+      (let [validate! (ns-resolve 'datahike.db.transaction 'validate-unique-avet!)
+            visited (atom 0)
+            ;; Equal arrays must compare by content, not object identity/hash.
+            values [(byte-array [1]) (byte-array [1]) (byte-array [2])]]
+        (with-redefs [index/-slice
+                      (fn [_ _ _ order]
+                        (is (= :avet order))
+                        (map (fn [e v]
+                               (swap! visited inc)
+                               (datom/datom e :sample/value v 1))
+                             (iterate inc 100) values))]
+          (is (= :transact/schema
+                 (:error (error-data #(validate! @conn :sample/value)))))
+          (is (= 2 @visited) "do not realize the remainder after detecting a duplicate"))))))
+
+(deftest ordered-unique-upgrade-validates-final-current-state
+  (doseq [indexed? [false true]
+          attribute-refs? [false true]
+          unique [:db.unique/value :db.unique/identity]]
+    (with-db
+      {:attribute-refs? attribute-refs?}
+      (fn [conn]
+        (when indexed? (d/transact conn [[:db/add :sample/value :db/index true]]))
+        ;; Equal values are separated in entity order (AEVT), adjacent in AVET.
+        (d/transact conn [{:db/id 100 :sample/value "z"}
+                          {:db/id 101 :sample/value "a"}
+                          {:db/id 102 :sample/value "z"}])
+        (let [before @conn
+              upgrade [:db/add :sample/value :db/unique unique]]
+          (is (= :transact/schema
+                 (:error (error-data #(d/transact conn {:tx-data [upgrade]
+                                                        :tx-options backfill})))))
+          (is (= (:max-tx before) (:max-tx @conn)))
+          ;; Repair and upgrade atomically. Historical duplicates are allowed.
+          (let [report (d/transact conn
+                                   {:tx-data [[:db/add 102 :sample/value "b"] upgrade]
+                                    :tx-options backfill})]
+            (is (= ["a" "b" "z"]
+                   (mapv :v (d/datoms (:db-after report) :avet :sample/value))))
+            (is (= #{[100 true] [102 true] [102 false]}
+                   (into #{} (map (juxt :e :added))
+                         (d/datoms (d/history (:db-after report))
+                                   :avet :sample/value "z")))))
+          (is (= :transact/unique
+                 (:error (error-data #(d/transact conn [[:db/add 103 :sample/value "z"]]))))))))))
 
 (deftest invalid-options-are-rejected-at-every-entry-point
   (with-db

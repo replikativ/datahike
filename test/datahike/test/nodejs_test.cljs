@@ -150,6 +150,39 @@
                    (<! (d/delete-database cfg))
                    (done))))))))
 
+(deftest ordered-unique-upgrade-in-cljs
+  (async done
+         (go
+           (let [cfg {:store {:backend :memory :id (random-uuid)}
+                      :schema-flexibility :write}]
+             (<! (d/create-database cfg))
+             (let [conn (d/connect cfg)]
+               (try
+                 (doseq [indexed? [false true]]
+                   (let [attr (if indexed? :ordered/indexed :ordered/unindexed)
+                         upgrade {:tx-data [[:db/add attr :db/unique :db.unique/value]]
+                                  :tx-options {:allow-index-backfill? true}}]
+                     (<! (d/transact! conn [{:db/ident attr :db/valueType :db.type/string
+                                             :db/cardinality :db.cardinality/one
+                                             :db/index indexed?}]))
+                     (<! (d/transact! conn [[:db/add 100 attr "z"]
+                                            [:db/add 101 attr "a"]
+                                            [:db/add 102 attr "z"]]))
+                     (let [before (d/db conn)]
+                       (is (instance? js/Error (<! (d/transact! conn upgrade))))
+                       (is (= (:max-tx before) (:max-tx (d/db conn)))))
+                     (let [report (<! (d/transact! conn
+                                                   (update upgrade :tx-data
+                                                           #(into [[:db/add 102 attr "b"]] %))))]
+                       (is (some? (:db-after report)))
+                       (is (= ["a" "b" "z"]
+                              (mapv :v (d/datoms (d/db conn) :avet attr)))))))
+                 (catch :default e (is false (str e)))
+                 (finally
+                   (d/release conn)
+                   (<! (d/delete-database cfg))
+                   (done))))))))
+
 (deftest bigdec-roundtrip-test
   ;; :db.type/bigdec must accept a fress `Bigdec` (unscaled js/BigInt + scale) in
   ;; cljs and round-trip it. The spec was `(complement any?)` — it rejected EVERY

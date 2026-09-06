@@ -1684,12 +1684,35 @@
         (.-e d)
         (recur ds (.-e d))))))
 
+(defn- validate-unique-avet!
+  "Validate current values in AVET order, retaining only the previous datom.
+   The candidate AVET must be complete before calling this function. Historical
+   repetitions do not violate current uniqueness. Uses the index comparator,
+   including its array and tuple value semantics."
+  [db ident]
+  (let [a (if (:attribute-refs? (dbi/-config db))
+            (get (:ident-ref-map db) ident ident)
+            ident)]
+    (loop [remaining (seq (di/-slice (:avet db)
+                                     (datom e0 a nil tx0)
+                                     (datom emax a nil txmax)
+                                     :avet))
+           previous nil]
+      (when-let [^Datom current (first remaining)]
+        (when (and previous
+                   (zero? (dd/compare-value (.-v ^Datom previous) (.-v current))))
+          (log/raise (str "Cannot add :db/unique to " ident
+                          ": existing duplicate value " (.-v current))
+                     {:error :transact/schema :attribute ident
+                      :value (.-v current)}))
+        (recur (next remaining) current)))))
+
 (defn- backfill-enabled-indices
   "Index-backfill migration: for every attribute whose :db/index or
    :db/unique was ENABLED by this transaction (assess-schema-transition's
    :index-backfill / :unique-backfill data checks), populate AVET (and
    :temporal-avet on history dbs) with the attribute's pre-existing
-   datoms, after verifying value uniqueness when :db/unique was added.
+   datoms, then verify current value uniqueness when :db/unique was added.
    Runs on the still-transient :db-after right before it is made
    persistent — the same discipline as finalize-secondary-indices.
 
@@ -1720,44 +1743,30 @@
                   (fn [db]
                     (reduce
                      (fn [db ident]
-                       (let [datoms (schema-attr-current-datoms db ident)
-                             unique? (get-in new-schema [ident :db/unique])]
-                         ;; Uniqueness gate: a duplicate among existing values
-                         ;; makes the constraint unsatisfiable — reject the
-                         ;; transaction (the SQL layer maps :transact/unique
-                         ;; to its duplicate-key error).
-                         (when unique?
-                           ;; Duplicate detection must use the INDEX's value
-                           ;; equality (arr/wrap-comparable gives byte/float
-                           ;; arrays value semantics), not JVM .equals — and
-                           ;; must compile on CLJS (no java.util.HashSet).
-                           (let [seen (volatile! #{})]
-                             (doseq [^Datom d datoms]
-                               (let [k (arr/wrap-comparable (.-v d))]
-                                 (if (contains? @seen k)
-                                   (log/raise (str "Cannot add :db/unique to " ident
-                                                   ": existing duplicate value " (.-v d))
-                                              {:error :transact/schema :attribute ident
-                                               :value (.-v d)})
-                                   (vswap! seen conj k))))))
-                         (if (indexed-entry? (get old-schema ident))
-                           db
-                           (as-> db db
-                             (reduce (fn [db ^Datom d]
-                                       (let [op-count (:op-count db)]
-                                         (-> db
-                                             (update :avet #(di/-insert % d :avet op-count))
-                                             (update :op-count inc))))
-                                     db datoms)
-                             (if (dbi/-keep-history? db)
-                               (reduce (fn [db ^Datom d]
-                                         (let [op-count (:op-count db)]
-                                           (-> db
-                                               (update :temporal-avet
-                                                       #(di/-temporal-insert % d :avet op-count))
-                                               (update :op-count inc))))
-                                       db (schema-attr-history-datoms db ident))
-                               db)))))
+                       (let [unique? (get-in new-schema [ident :db/unique])
+                             db (if (indexed-entry? (get old-schema ident))
+                                  db
+                                  (as-> db db
+                                    (reduce (fn [db ^Datom d]
+                                              (let [op-count (:op-count db)]
+                                                (-> db
+                                                    (update :avet #(di/-insert % d :avet op-count))
+                                                    (update :op-count inc))))
+                                            db (schema-attr-current-datoms db ident))
+                                    (if (dbi/-keep-history? db)
+                                      (reduce (fn [db ^Datom d]
+                                                (let [op-count (:op-count db)]
+                                                  (-> db
+                                                      (update :temporal-avet
+                                                              #(di/-temporal-insert % d :avet op-count))
+                                                      (update :op-count inc))))
+                                              db (schema-attr-history-datoms db ident))
+                                      db)))]
+                         ;; Validate only after the candidate index is complete.
+                         ;; An ordered scan needs no all-values hash set, and
+                         ;; rejection still precedes publication of any changes.
+                         (when unique? (validate-unique-avet! db ident))
+                         db))
                      db enabled))))))))
 
 (defn- remove-disabled-indices
