@@ -72,6 +72,11 @@
   "Transaction metadata - optional collection."
   [:maybe :any])
 
+(def STxOptions
+  "Transaction-local execution options; never persisted in the database."
+  [:maybe [:map {:closed true}
+           [:allow-index-backfill? {:optional true} :boolean]]])
+
 (def STransactionReport
   "Transaction result map.
 
@@ -110,7 +115,8 @@
   "Arguments for 'with' operation."
   [:map
    [:tx-data STransactions]
-   [:tx-meta {:optional true} STxMeta]])
+   [:tx-meta {:optional true} STxMeta]
+   [:tx-options {:optional true} STxOptions]])
 
 (def SIndexLookupArgs
   "Index lookup arguments."
@@ -168,6 +174,7 @@
     :datahike/SDatom SDatom
     :datahike/SDatoms SDatoms
     :datahike/STxMeta STxMeta
+    :datahike/STxOptions STxOptions
     :datahike/STransactionReport STransactionReport
     :datahike/STransactions STransactions
     :datahike/SPullOptions SPullOptions

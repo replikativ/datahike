@@ -64,6 +64,7 @@
             ;; Attribute-value constraints — registry resolution (pure, here)
             ;; and an async enforcement test below.
             [datahike.test.attr-preds-test]
+            [datahike.test.tx-preds-test]
             ;; Dump digests. A dump written on the JVM is verified here, so the
             ;; SHA-256 and the xor64+sum64 semantic digest must come out
             ;; bit-identical — and 64-bit arithmetic is exactly what cljs does
@@ -120,6 +121,34 @@
    both. Only the ROOT stops being assumed to be a POSIX `/tmp`."
   [nm]
   (path.join (os.tmpdir) nm))
+
+(deftest transaction-backfill-option-is-local-in-cljs
+  (async done
+         (go
+           (let [cfg {:store {:backend :memory :id (random-uuid)}
+                      :schema-flexibility :write :allow-index-backfill? false}]
+             (<! (d/create-database cfg))
+             (let [conn (d/connect cfg)]
+               (try
+                 (<! (d/transact! conn
+                                  (mapv (fn [ident]
+                                          {:db/ident ident :db/valueType :db.type/string
+                                           :db/cardinality :db.cardinality/one})
+                                        [:option/left :option/right])))
+                 (<! (d/transact! conn [{:option/left "left" :option/right "right"}]))
+                 (let [report (<! (d/transact!
+                                   conn {:tx-data [{:db/ident :option/left :db/index true}]
+                                         :tx-options {:allow-index-backfill? true}}))]
+                   (is (some? (:db-after report)))
+                   (is (= 1 (count (d/datoms (d/db conn) :avet :option/left "left"))))
+                   (is (false? (get-in (d/db conn) [:config :allow-index-backfill?]))))
+                 (is (instance? js/Error
+                                (<! (d/transact! conn [{:db/ident :option/right :db/index true}]))))
+                 (catch :default e (is false (str e)))
+                 (finally
+                   (d/release conn)
+                   (<! (d/delete-database cfg))
+                   (done))))))))
 
 (deftest bigdec-roundtrip-test
   ;; :db.type/bigdec must accept a fress `Bigdec` (unscaled js/BigInt + scale) in
@@ -871,4 +900,5 @@
                'datahike.test.experimental.anomaly-test
                'datahike.test.lru-weighted-test
                'datahike.test.lru-weighted-property-test
-               'datahike.test.attr-preds-test))
+               'datahike.test.attr-preds-test
+               'datahike.test.tx-preds-test))

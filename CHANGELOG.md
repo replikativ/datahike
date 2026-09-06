@@ -6,6 +6,14 @@ When something is added, it's typically marked *Experimental*. When the API cont
 
 ## 0.8
 
+- **Named transaction predicates and transaction-scoped index backfill.**
+  Independent consumers can register store predicates without replacing each
+  other; `ensure-tx-pred!` atomically installs an empty named slot or rejects a
+  conflicting owner. Transaction maps accept
+  `:tx-options {:allow-index-backfill? true}` without changing persistent
+  configuration. Adding uniqueness to an already indexed attribute also
+  checks existing values for duplicates.
+
 - **JVM thin-client change stream.** *Experimental.* `datahike.http.client`
   now provides `listen` and `unlisten` for Clojure remote connections, with
   the same SSE reports, automatic reconnect and resume, terminal deletion and
