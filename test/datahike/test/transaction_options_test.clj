@@ -233,6 +233,45 @@
                  (:error (error-data #(validate! @conn :sample/value)))))
           (is (= 2 @visited) "do not realize the remainder after detecting a duplicate"))))))
 
+(deftest ordered-unique-upgrade-compares-real-array-values
+  (doseq [indexed? [false true]
+          tuple? [false true]]
+    (with-db
+      (fn [conn]
+        (let [value (fn [n] (if tuple? [(byte-array [n]) 7] (byte-array [n])))
+              upgrade [:db/add :sample/array :db/unique :db.unique/value]]
+          (d/transact conn
+                      [(merge {:db/ident :sample/array
+                               :db/cardinality :db.cardinality/one
+                               :db/index indexed?}
+                              (if tuple?
+                                {:db/valueType :db.type/tuple
+                                 :db/tupleTypes [:db.type/bytes :db.type/long]}
+                                {:db/valueType :db.type/bytes}))])
+          ;; Distinct array instances with equal contents must collide, even
+          ;; when nested inside tuples and separated in entity order.
+          (d/transact conn (mapv (fn [e n] [:db/add e :sample/array (value n)])
+                                 [100 101 102] [2 1 2]))
+          (let [before @conn]
+            (is (= :transact/schema
+                   (:error (error-data #(d/transact conn {:tx-data [upgrade]
+                                                          :tx-options backfill})))))
+            (is (= (:max-tx before) (:max-tx @conn)))
+            (is (nil? (get-in @conn [:schema :sample/array :db/unique])))
+            (is (= 3 (count (d/datoms @conn :aevt :sample/array))))
+            (is (= (if indexed? 3 0)
+                   (count (d/datoms @conn :avet :sample/array)))))
+          (let [report (d/transact conn {:tx-data [[:db/add 102 :sample/array (value 3)]
+                                                   upgrade]
+                                         :tx-options backfill})]
+            (is (= :db.unique/value
+                   (get-in report [:db-after :schema :sample/array :db/unique])))
+            (is (= [1 2 3]
+                   (mapv (fn [d] (first (seq (if tuple? (first (:v d)) (:v d)))))
+                         (d/datoms (:db-after report) :avet :sample/array)))))
+          (is (= :transact/unique
+                 (:error (error-data #(d/transact conn [[:db/add 103 :sample/array (value 2)]]))))))))))
+
 (deftest ordered-unique-upgrade-validates-final-current-state
   (doseq [indexed? [false true]
           attribute-refs? [false true]
