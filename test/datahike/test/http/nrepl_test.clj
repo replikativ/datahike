@@ -60,12 +60,19 @@
                            (make-array java.nio.file.LinkOption 0))))))
 
 (deftest standalone-server-owns-nrepl-and-reports-its-resolved-endpoint
-  (let [instance (server/start-server {:host "127.0.0.1"
-                                       :port 0
-                                       :join? false
-                                       :metrics false
-                                       :token "test-token"
-                                       :nrepl {:port 0}})
+  (let [resource (atom nil)
+        start-nrepl! server-nrepl/start!
+        instance (with-redefs [server-nrepl/start!
+                               (fn [& args]
+                                 (let [started (apply start-nrepl! args)]
+                                   (reset! resource started)
+                                   started))]
+                   (server/start-server {:host "127.0.0.1"
+                                         :port 0
+                                         :join? false
+                                         :metrics false
+                                         :token "test-token"
+                                         :nrepl {:port 0}}))
         endpoint (try
                    (let [response (http/request
                                    {:method :get
@@ -81,13 +88,11 @@
                      (throw t)))]
     (try
       (is (= :tcp (:transport endpoint)))
+      (is (= endpoint @(:status @resource)))
+      (is (not (.isClosed ^java.net.ServerSocket (get-in @resource [:server :server-socket]))))
       (with-open [connection (nrepl/connect :host (:bind endpoint) :port (:port endpoint))]
         (is (= ["11"] (eval-values connection "(+ 5 6)"))))
       (finally
         (server/stop-server instance)))
-    (is (thrown? java.net.ConnectException
-                 (with-open [connection (nrepl/connect :host (:bind endpoint)
-                                                       :port (:port endpoint))]
-                   ;; connect constructs a lazy transport; sending proves the
-                   ;; server socket was actually closed by stop-server.
-                   (eval-values connection "(+ 1 1)"))))))
+    (is (.isClosed ^java.net.ServerSocket (get-in @resource [:server :server-socket])))
+    (is (= server-nrepl/disabled-status @(:status @resource)))))
