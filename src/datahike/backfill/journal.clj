@@ -56,6 +56,34 @@
   [descriptor f init]
   (file/reduce-journal descriptor f init))
 
+(defn start-cursor
+  "Return an opaque cursor before the first notification of this journal.
+   Cursors support value equality, not field access or numeric arithmetic."
+  [descriptor]
+  (file/start-cursor descriptor))
+
+(defn end-cursor
+  "Return an opaque cursor at this descriptor's accepted end. A cursor is
+   valid only while its boundary remains in the owned, retained lineage."
+  [descriptor]
+  (file/end-cursor descriptor))
+
+(defn compare-cursors
+  "Compare two cursor positions within this descriptor's accepted prefix.
+   Reject foreign, abandoned or out-of-prefix cursors. Returns negative, zero
+   or positive; callers must not infer byte distances from the result."
+  [descriptor left right]
+  (file/compare-cursors descriptor left right))
+
+(defn reduce-range
+  "Reduce from an issued cursor through this descriptor's exact accepted end.
+   f receives accumulator, notification and an opaque next cursor. Honors
+   reduced; the returned cursor can resume a later call while retained.
+   The backend checks cursor identity and validity; callers still own build
+   generations, leases and transaction grouping. Synchronous JVM operation."
+  [descriptor start f init]
+  (file/reduce-range descriptor start f init))
+
 (defn dispose!
   "Release this owner's scratch once no accepted report or reader needs it.
    Idempotent after success; failure may require cleanup to be retried."

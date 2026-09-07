@@ -428,7 +428,7 @@ Configure the scratch directory and per-index limits on the local writer:
 
 The directory must already exist. Without `:directory`, scratch uses the
 JVM temporary directory. Defaults allow a 1 MiB encoded notification and
-256 MiB per journal, including eight-byte frame headers. Encoding also limits
+256 MiB per journal, including 24-byte frame headers. Encoding also limits
 individual scalar allocations and nesting. Exceeding a limit rejects the
 transaction without advancing its database or accepted journal boundary.
 Wait for the build to finish, cancel it, or start a new build with larger limits
