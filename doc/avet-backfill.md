@@ -135,6 +135,10 @@ retrying. Sort or private-storage failures fail the background request. Very
 high write rates can delay activation; bounded catch-up does not guarantee a
 completion deadline or a fixed write-pause duration.
 
+If build ownership changes between predicate validation and journal staging,
+the in-flight transaction is rejected with `:retryable? true` rather than
+publishing a state its predicates did not validate. Retry against a fresh head.
+
 ## Recovery and garbage collection
 
 Schema changes invalidate an active build. A different writer taking over its
