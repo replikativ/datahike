@@ -196,11 +196,20 @@
 #?(:clj
    (defn- enqueue-avet-cancel! [runtime queue generation]
      (let [callback (promise-chan)]
-       (if (put! queue {:op 'cancel-avet-build! :args [generation :build-failed]
-                        :callback callback})
-         (go (when (instance? Throwable (<! callback))
-               (avet-runtime/fail-generation! runtime generation :cancel-rejected)))
-         (avet-runtime/fail-generation! runtime generation :dispatch-failed)))))
+       (try
+         (if (put! queue {:op 'cancel-avet-build! :args [generation :build-failed]
+                          :callback callback})
+           (go (when (instance? Throwable (<! callback))
+                 (avet-runtime/fail-generation! runtime generation :cancel-rejected)))
+           (avet-runtime/fail-generation! runtime generation :dispatch-failed))
+         (catch Throwable enqueue-error
+           ;; In particular, pending-put overflow throws AssertionError rather
+           ;; than returning false. This helper runs inside writer error paths:
+           ;; failed best-effort cancellation must not hide the original error
+           ;; or bypass its callback/shutdown handling.
+           (avet-runtime/fail-generation! runtime generation :dispatch-failed)
+           (log/warn :datahike/avet-cancel-enqueue-failed
+                     {:generation generation :message (ex-message enqueue-error)}))))))
 
 #?(:clj
    (defn- reject-avet-installs! [runtime owner queue txs]
@@ -1179,10 +1188,16 @@
                                            :install {:op 'try-install-avet-build! :args [token]
                                                      ::avet-generation generation}
                                            :cancel {:op 'cancel-avet-build! :args [generation :build-failed]})]
-                          (when-not (and @queue-holder
-                                         (put! @queue-holder (assoc invocation :callback callback)))
-                            (avet-runtime/fail-generation! avet-runtime generation :dispatch-failed)
-                            (throw (ex-info "AVET writer queue is closed." {:type :writer-shut-down})))
+                          (try
+                            (when-not (and @queue-holder
+                                           (put! @queue-holder (assoc invocation :callback callback)))
+                              (throw (ex-info "AVET writer queue is closed." {:type :writer-shut-down})))
+                            (catch Throwable enqueue-error
+                              ;; A worker may catch this error and fail to enqueue
+                              ;; its cancellation too. Retire local lineage now,
+                              ;; before it releases the last owned candidate.
+                              (avet-runtime/fail-generation! avet-runtime generation :dispatch-failed)
+                              (throw enqueue-error)))
                           (go (let [result (<! callback)]
                                 (when (instance? Throwable result)
                                   (when (= op :cancel)
