@@ -1533,7 +1533,8 @@
       :db/purge (if (dbi/-keep-history? db)
                   (let [history (HistoricalDB. db (volatile! nil))]
                     (if-some [e (dbu/entid history e)]
-                      (let [v (if (dbu/ref? history a) (dbu/entid-strict history v) v)
+                      (let [a (dbu/normalize-and-validate-attr a op-vec db)
+                            v (if (dbu/ref? history a) (dbu/entid-strict history v) v)
                             old-datoms (dbi/search history [e a v])]
                         [(reduce transact-purge-datom report old-datoms) []])
                       (log/raise "Can't find entity with ID " e " to be purged"
@@ -1544,7 +1545,8 @@
       :db.purge/attribute (if (dbi/-keep-history? db)
                             (let [history (HistoricalDB. db (volatile! nil))]
                               (if-let [e (dbu/entid history e)]
-                                (let [datoms (vec (dbi/search history [e a]))]
+                                (let [a (dbu/normalize-and-validate-attr a op-vec db)
+                                      datoms (vec (dbi/search history [e a]))]
                                   [(reduce transact-purge-datom report datoms)
                                    (purge-components history datoms)])
                                 (log/raise "Can't find entity with ID " e " to be purged"
@@ -1556,7 +1558,9 @@
                          (let [history (HistoricalDB. db (volatile! nil))]
                            (if-let [e (dbu/entid history e)]
                              (let [e-datoms (vec (dbi/search history [e]))
-                                   v-datoms (vec (mapcat (fn [a] (dbi/search history [nil a e]))
+                                   v-datoms (vec (mapcat (fn [a]
+                                                           (dbi/search history
+                                                                       [nil (dbu/attr-ref-or-ident db a) e]))
                                                          (dbi/-attrs-by history :db.type/ref)))]
                                [(reduce transact-purge-datom report (concat e-datoms v-datoms))
                                 (purge-components history e-datoms)])

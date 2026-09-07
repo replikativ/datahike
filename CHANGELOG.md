@@ -6,6 +6,11 @@ When something is added, it's typically marked *Experimental*. When the API cont
 
 ## 0.8
 
+- **Purge with attribute references.** In databases using `:attribute-refs? true`,
+  value and attribute purges accept keyword attribute names as well as numeric
+  IDs. Entity purge also removes current and historical incoming references;
+  these operations previously could leave matching data behind.
+
 - **Named transaction predicates and transaction-scoped index backfill.**
   Independent consumers can register store predicates without replacing each
   other; `ensure-tx-pred!` atomically installs an empty named slot or rejects a
