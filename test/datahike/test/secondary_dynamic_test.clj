@@ -4,6 +4,8 @@
    [clojure.core.async :as async]
    [clojure.test :refer [deftest testing is use-fixtures]]
    [datahike.api :as d]
+   [datahike.backfill.capture :as capture]
+   [datahike.tx-preds :as tx-preds]
    [datahike.gc-guard :as guard]
    [datahike.gc-roots :as roots]
    [konserve.core :as k]
@@ -287,9 +289,8 @@
             (is (= :building
                    (get-in (d/db conn)
                            [:schema :idx/cancel-slow :db.secondary/status])))
-            (is (= 1 (count (get-in (d/db conn)
-                                    [:secondary-index-build-deltas
-                                     :idx/cancel-slow]))))
+            (is (= 1 (capture/reduce-deltas (d/db conn) :idx/cancel-slow
+                                            (fn [n _] (inc n)) 0)))
             (let [report @(writer/cancel-secondary-index-build!
                            conn :idx/cancel-slow boundary)]
               (is (= {:idx-ident :idx/cancel-slow
@@ -367,6 +368,100 @@
             (d/release conn)
             (d/delete-database cfg)))))))
 
+(deftest backfill-journal-keeps-snapshots-compact-and-rejects-before-spooling
+  (let [cfg {:store {:backend :memory :id (random-uuid)}
+             :writer {:backend :self :writer-ownership :exclusive
+                      :backfill-journal {:max-frame-bytes 1024 :max-bytes 8192}}
+             :schema-flexibility :write :max-string-length 0}
+        entered (promise)
+        release (promise)]
+    (d/create-database cfg)
+    (let [conn (d/connect cfg)]
+      (try
+        (d/transact conn [{:db/ident :person/name :db/valueType :db.type/string
+                           :db/cardinality :db.cardinality/one}])
+        (d/transact conn [{:person/name "initial"}])
+        (reset! slow-build-control {:entered entered :release release :blocked? (atom false)})
+        (d/transact conn [{:db/ident :idx/journal :db.secondary/type :test/slow-immutable
+                           :db.secondary/attrs [:person/name]}])
+        (is (= true (deref entered 5000 ::timeout)))
+        (d/transact conn [{:person/name "first"}])
+        (let [first-db @conn
+              descriptor (get-in first-db [:secondary-index-build-journals :idx/journal])
+              path (:path descriptor)]
+          (is (pos? (:end descriptor)))
+          (is (nil? (:secondary-index-build-deltas first-db)))
+          ;; Pure previews retain pending notifications without touching disk.
+          (let [preview (d/with first-db [{:person/name "preview"}])]
+            (is (= 1 (count (get-in preview [:db-after :secondary-index-build-deltas :idx/journal]))))
+            (is (= (:end descriptor) (.length (java.io.File. path)))))
+          (tx-preds/register-tx-pred! (get-in cfg [:store :id]) ::reject
+                                      (fn [_] (throw (ex-info "reject before spool" {}))))
+          (try
+            (is (thrown-with-msg? Exception #"reject before spool"
+                                  (d/transact conn [{:person/name "rejected"}])))
+            (is (= (:end descriptor) (.length (java.io.File. path))))
+            (finally (tx-preds/unregister-tx-pred! (get-in cfg [:store :id]) ::reject)))
+          ;; Oversize notifications fail without advancing the accepted prefix.
+          (is (= :backfill.journal/frame-too-large
+                 (try (d/transact conn [{:person/name (apply str (repeat 1100 "x"))}])
+                      nil
+                      (catch Exception e (throwable-type e)))))
+          (is (= (:max-tx first-db) (:max-tx @conn)))
+          (is (= (:end descriptor) (.length (java.io.File. path))))
+          (let [commit-entered (promise)
+                commit-release (promise)
+                captured (promise)
+                installed (promise)
+                capture-count (atom 0)
+                blocked? (atom false)
+                commit! writing/commit!
+                prepare! capture/prepare-report!]
+            (with-redefs [writing/commit!
+                          (fn [& args]
+                            (when (compare-and-set! blocked? false true)
+                              (deliver commit-entered true)
+                              (when (= ::timeout (deref commit-release 10000 ::timeout))
+                                (throw (ex-info "test commit gate timed out" {}))))
+                            (apply commit! args))
+                          capture/prepare-report!
+                          (fn [owner report]
+                            (let [result (prepare! owner report)]
+                              (when (seq (get-in report [:db-after :secondary-index-build-deltas :idx/journal]))
+                                (when (= 10 (swap! capture-count inc))
+                                  (deliver captured (:db-after result))))
+                              (when (= :ready (get-in result [:db-after :schema :idx/journal :db.secondary/status]))
+                                (deliver installed true))
+                              result))]
+              (try
+                (let [pending (mapv #(d/transact! conn [{:person/name (str "later-" %)}]) (range 10))]
+                  (is (= true (deref commit-entered 5000 ::timeout)))
+                  (let [candidate (deref captured 5000 ::timeout)]
+                    (is (not= ::timeout candidate))
+                    (is (nil? (:secondary-index-build-deltas candidate)))
+                    (is (= 11 (capture/reduce-deltas candidate :idx/journal (fn [n _] (inc n)) 0))))
+                  (is (= 1 (capture/reduce-deltas first-db :idx/journal (fn [n _] (inc n)) 0)))
+                  ;; Install uses the speculative journal prefix while commits
+                  ;; are paused; the following write must use the ready index.
+                  (deliver release true)
+                  (is (= true (deref installed 5000 ::timeout)))
+                  (let [after-install (d/transact! conn [{:person/name "after-install"}])]
+                    (deliver commit-release true)
+                    (doseq [p (conj pending after-install)]
+                      (is (map? (deref p 5000 ::timeout))))))
+                (finally (deliver release true) (deliver commit-release true)))))
+          (is (= :ready (await-status conn :idx/journal :ready)))
+          (is (not (.exists (java.io.File. path))))
+          (is (nil? (:secondary-index-build-journals @conn)))
+          (is (= (into #{"initial" "first" "after-install"} (map #(str "later-" %) (range 10)))
+                 (set (map second (:values @(get-in @conn [:secondary-indices :idx/journal])))))))
+        (finally
+          (deliver release true)
+          (reset! slow-build-control nil)
+          (tx-preds/unregister-tx-pred! (get-in cfg [:store :id]) ::reject)
+          (d/release conn)
+          (d/delete-database cfg))))))
+
 (deftest asynchronous-backfill-replays-concurrent-deltas
   (testing "the writer remains available and immutable index updates are not lost"
     ;; A file store, not :memory: the collector is exercised DURING the scan
@@ -425,8 +520,8 @@
             ;; card-one replacement contributes a retract and an assertion.
             (d/transact conn [[:db/add alice :person/name "Alicia"]])
             (d/transact conn [{:person/name "Charlie"}])
-            (is (= 3 (count (get-in (d/db conn)
-                                    [:secondary-index-build-deltas :idx/slow])))
+            (is (= 3 (capture/reduce-deltas (d/db conn) :idx/slow
+                                            (fn [n _] (inc n)) 0))
                 "concurrent changes are journaled instead of racing the build")
             ;; NOW the head has moved past the scanned snapshot, so with
             ;; `(Date.)` as remove-before that snapshot's own nodes are garbage
@@ -442,8 +537,8 @@
                                             [:secondary-indices :idx/slow])]
               (is (= #{"Alicia" "Bob" "Charlie"}
                      (set (map second values))))
-              (is (nil? (:secondary-index-build-deltas (d/db conn)))
-                  "the install removes its in-memory delta journal")
+              (is (nil? (:secondary-index-build-journals (d/db conn)))
+                  "the install removes its scratch journal descriptor")
               (is (not (guard/in-flight? (get-in cfg [:store :id])))
                   "the ready commit releases the build's GC guard")
               (is (empty? (<?? S (roots/roots (:store @conn))))
@@ -584,10 +679,10 @@
                              :db.secondary/type :test/slow-immutable
                              :db.secondary/attrs [:person/name]}])
           (is (= true (deref entered 5000 ::timeout)))
-          ;; Committed while the scan is paused: journaled in memory only.
+          ;; Committed while the scan is paused: journaled in local scratch.
           (d/transact conn [{:person/name "Carol"}])
-          (is (= 1 (count (get-in (d/db conn)
-                                  [:secondary-index-build-deltas :idx/slow]))))
+          (is (= 1 (capture/reduce-deltas (d/db conn) :idx/slow
+                                          (fn [n _] (inc n)) 0)))
           ;; The process stops before install; the journal dies with it.
           (d/release conn)
           (deliver release true)

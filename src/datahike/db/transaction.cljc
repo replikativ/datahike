@@ -459,9 +459,9 @@
                        (= :disabled status) db'
 
                        ;; The background worker exclusively owns the building
-                       ;; instance. Journal concurrent changes for the short
-                       ;; serialized install step instead of racing it or
-                       ;; replacing an immutable result with a stale snapshot.
+                       ;; instance. Collect this transaction's notifications;
+                       ;; the writer spools them only after predicates accept
+                       ;; the report. Pure db-with keeps this collection local.
                        (= :building status)
                        (update-in db' [:secondary-index-build-deltas idx-ident]
                                   (fnil conj []) tx-report)
