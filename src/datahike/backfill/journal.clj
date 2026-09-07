@@ -49,7 +49,7 @@
     (swap! owners assoc (:id descriptor) (dissoc descriptor :end))
     descriptor))
 
-(defn- checked-path [descriptor]
+(defn- checked-path ^Path [descriptor]
   (when-not (and (= (get @owners (:id descriptor)) (dissoc descriptor :end))
                  (integer? (:end descriptor)) (<= 0 (:end descriptor) (:max-bytes descriptor)))
     (fail! :backfill.journal/invalid-descriptor "Unknown or modified journal descriptor." {}))
@@ -72,7 +72,7 @@
                                    (< (inc i) (.length s))
                                    (Character/isLowSurrogate (.charAt s (inc i))))]
                     (recur (+ i (if pair? 2 1))
-                           (+ n (cond pair? 4 (< (int c) 128) 1 (< (int c) 2048) 2 :else 3)))))))
+                           (long (+ n (cond pair? 4 (< (int c) 128) 1 (< (int c) 2048) 2 :else 3))))))))
             (visit [x depth]
               (when (or (> depth 128) (neg? (vswap! budget dec)))
                 (fail! :backfill.journal/frame-too-large "Journal value exceeds traversal budget." {}))
