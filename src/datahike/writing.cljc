@@ -2003,7 +2003,7 @@
          (doseq [idx-ident new-building]
            (close-secondary-index! (get-in db-after [:secondary-indices idx-ident])))
          (log/raise
-          "Asynchronous secondary-index backfill currently requires local exclusive writer ownership. Remote writers cannot transfer a live build generation, and shared writers cannot coordinate its in-memory delta journal across processes."
+          "Asynchronous secondary-index backfill currently requires local exclusive writer ownership. Remote writers cannot transfer a live build generation, and shared writers cannot coordinate its local scratch journal across processes."
           {:type :secondary-index-backfill-unsupported-writer
            :idx-ident (first new-building)
            :idx-idents (set new-building)

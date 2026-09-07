@@ -407,9 +407,7 @@ Pure `d/db-with` can update a durable index only when the adapter declares that
 its transient is wholly in memory (`IPureSecondaryMutation`). Stratum does;
 Scriptum and Proximum currently do not, because opening their builders performs
 external writes. A pure transaction touching either fails before a builder is
-opened. Connection transactions support all three. An immutable in-memory delta
-overlay is the intended way to remove this limitation without leaking resources
-from abandoned database values.
+opened. Connection transactions support all three.
 
 ### Backfill scalability
 
@@ -457,25 +455,13 @@ Datahike rejects those writer configurations before committing the index schema.
 Empty indices can still become ready immediately because no asynchronous handoff
 is needed.
 
-The intended scalable follow-up is a resumable generation protocol:
-
-1. Capture and durably pin a base commit.
-2. Scan the snapshot in bounded, checkpointed batches.
-3. Catch up through successive `datahike.experimental.diff/tx-range` windows.
-4. Validate the build generation and install it inside one writer operation.
-
-`tx-range` currently requires `:keep-history? true`, persistent-set indices,
-and materializes each requested window, so it cannot yet replace the general
-path. The snapshot the scan reads is already pinned with a [durable GC
+The snapshot the scan reads is pinned with a [durable GC
 root](./gc.md#durable-roots) (`:pin`, renewed in the background and released by
 the ready commit); a build whose lease is lost is discarded at install instead
-of being published over swept snapshot nodes. The adapter's unpublished build
-generation is not yet named by a durable checkpoint. The shared Konserve guard
-protects it exactly in-process, and the durable `:building` schema state makes a
+of being published over swept snapshot nodes. A shared Konserve guard
+protects the unpublished generation in-process, and the durable `:building` schema state makes a
 collector in any process defer its sweep until the ready commit lands. This
-pauses reclamation, not transactions or the backfill. A resumable
-generation-specific `:checkpoint` root (or a durable Konserve fence) can later
-allow collection to proceed safely during long builds.
+pauses reclamation, not transactions or the backfill.
 
 ## Purge propagation
 
