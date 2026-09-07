@@ -5,6 +5,12 @@ enable it in a separate atomic commit. The same operation can add a uniqueness
 constraint. Reads and writes continue under the old schema while the build runs.
 This API is experimental.
 
+**Upgrade every garbage collector sharing the store before using this API.**
+Older Datahike versions do not recognize the AVET build marker and can delete
+unpublished index nodes even while the source pin remains live. Alternatively,
+keep garbage collection disabled in older processes until all builds and their
+cleanup have finished. Fencing does not make mixed-version collection safe.
+
 Use a local shared writer with an explicit fencing requirement, the
 persistent-set index, and non-cryptographic index addresses:
 
@@ -143,6 +149,10 @@ defer garbage collection's sweep so that unpublished index nodes are not
 reclaimed. Lost pins prevent activation. A marker left after a crash can keep
 sweeping deferred until a successful cancellation, replacement, or ordinary
 write retires it.
+
+All processes collecting this store must support these build markers. A live
+source pin alone does not protect unpublished candidate nodes from an older
+collector, and checking that pin cannot detect such deletion.
 
 Normal completion, cancellation, and orderly writer shutdown clean up owned
 scratch. A process crash can leave files behind. Use a dedicated scratch

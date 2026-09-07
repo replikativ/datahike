@@ -16,6 +16,8 @@ When something is added, it's typically marked *Experimental*. When the API cont
   schema. Activation publishes the schema and completed roots atomically.
   Disk-backed sorting and change capture use configurable limits. Requires a
   local shared, explicitly fenced writer with non-crypto persistent-set indexes.
+  Every garbage collector sharing the store must support AVET build markers;
+  disable legacy collectors before enabling background builds.
   See [background attribute indexing](doc/avet-backfill.md) for the API, limits,
   and recovery behavior.
 
