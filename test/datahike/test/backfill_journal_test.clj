@@ -80,6 +80,19 @@
              (error-type #(journal/dispose! (assoc a :path "/tmp/unowned")))))
       (finally (journal/dispose! a)))))
 
+(deftest ratio-components-are-bounded-before-encoding
+  (let [a (journal/create! {:max-frame-bytes 64})
+        large (.shiftLeft java.math.BigInteger/ONE 4096)
+        encoded? (atom false)]
+    (try
+      (doseq [value [(/ large 3) (/ 3 large)]]
+        (with-redefs [boring/write-to! (fn [& _] (reset! encoded? true))]
+          (is (= :backfill.journal/frame-too-large
+                 (error-type #(journal/append! a [{:value value}]))))))
+      (is (false? @encoded?))
+      (is (= [] (journal/reduce-journal a conj [])))
+      (finally (journal/dispose! a)))))
+
 (deftest streaming-cap-and-truncated-prefix
   (let [a (journal/create! {:max-frame-bytes 64})]
     (try

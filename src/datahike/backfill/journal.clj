@@ -95,6 +95,8 @@
                 (when (> size limit)
                   (fail! :backfill.journal/frame-too-large "Journal scalar exceeds frame allocation budget." {})))
               (cond
+                (ratio? x) (do (visit (numerator x) (inc depth))
+                               (visit (denominator x) (inc depth)))
                 (map? x) (doseq [[k v] x] (visit k (inc depth)) (visit v (inc depth)))
                 (or (sequential? x) (set? x)) (doseq [v x] (visit v (inc depth)))
                 (and x (.isArray (class x)) (not (.isPrimitive (.getComponentType (class x)))))
