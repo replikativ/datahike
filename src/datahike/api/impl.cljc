@@ -18,6 +18,7 @@
             [datahike.impl.entity :as de]
             [datahike.versioning :as dv]
             [datahike.bitemporal.predicate :as bp.pred]
+            #?(:clj [clojure.core.async :as async])
             [replikativ.logging :as log]
             #?(:cljs [clojure.core.async :as async :refer [<! >! chan put! close!]]))
   #?(:cljs (:require-macros [superv.async :refer [go-try- <?-]]
@@ -46,6 +47,44 @@
      @(transact! connection arg-map)
      :cljs (throw (ex-info "Synchronous transact not supported in ClojureScript, use transact! instead."
                            {:error :transact/sync-not-supported}))))
+
+#?(:clj
+   (defn- dispatch-avet! [connection op args]
+     (let [database @(:wrapped-atom connection)
+           writer (:writer database)
+           _ (when-not (and (instance? datahike.writer.LocalWriter writer)
+                            (= :self (get-in database [:config :writer :backend] :self)))
+               (throw (ex-info "Background AVET operations require a local JVM writer."
+                               {:type :avet-build-unsupported-writer})))
+           result (dt/throwable-promise)
+           channel (dw/dispatch! writer {:op op :args args})]
+       (async/take!
+        channel
+        (fn [report]
+          (deliver result (or report (ex-info "AVET writer closed without a report."
+                                              {:type :avet-writer-closed})))
+          (when (map? report)
+            (doseq [[listener-id callback] (some-> (:listeners (meta connection)) deref)]
+              (try (callback report)
+                   (catch Throwable e
+                     (log/warn :datahike/avet-listener-failed
+                               {:listener listener-id :message (ex-message e)})))))))
+       result)))
+
+(defn begin-avet-build! [connection patch]
+  #?(:clj (dispatch-avet! connection 'begin-avet-build! [patch])
+     :cljs (throw (ex-info "Background AVET builds require a local JVM writer."
+                           {:type :avet-build-unsupported-platform}))))
+
+(defn cancel-avet-build! [connection generation]
+  #?(:clj (dispatch-avet! connection 'cancel-avet-build! [generation])
+     :cljs (throw (ex-info "Background AVET builds require a local JVM writer."
+                           {:type :avet-build-unsupported-platform}))))
+
+(defn avet-build-status [database]
+  (if-let [build (:avet-build database)]
+    (select-keys build [:id :status :patch])
+    (:avet-build-result database)))
 
 ;; necessary to support initial-tx shorthand, which really should have been avoided
 (defn create-database [& args]

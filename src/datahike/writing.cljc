@@ -6,6 +6,8 @@
             [datahike.gc-roots :as roots]
             [datahike.db.transaction :as dbtx]
             #?(:clj [datahike.backfill.capture :as capture])
+            #?(:clj [datahike.backfill.admission :as avet-admission])
+            #?(:clj [datahike.backfill.job :as avet-job])
             [datahike.db.utils :as dbu]
             [datahike.db.interface :as dbi]
             [datahike.index :as di]
@@ -51,7 +53,7 @@
    :temporal-eavt-key :temporal-aevt-key :temporal-avet-key
    :schema-meta-key :secondary-index-keys
    :schema :rschema :system-entities :ref-ident-map :ident-ref-map
-   :max-tx :max-eid :op-count :hash :meta])
+   :max-tx :max-eid :op-count :hash :meta :avet-build :avet-build-result])
 
 (defn- stored-head-identity [stored]
   (-> (select-keys stored stored-head-identity-keys)
@@ -485,6 +487,9 @@
           {:temporal-eavt-key (detach temporal-eavt')
            :temporal-aevt-key (detach temporal-aevt')
            :temporal-avet-key (detach temporal-avet')})
+        ;; Only durable job metadata crosses this boundary. Local journal paths,
+        ;; cursors, pending effects, candidate roots and leases stay process-local.
+        (select-keys db [:avet-build :avet-build-result])
         (when secondary-index-keys
           {:secondary-index-keys secondary-index-keys})
         fused-roots)])))
@@ -719,6 +724,7 @@
      ;; an index whose restore failed (see there). Only when there is one: an
      ;; explicit nil would make every db built from storage unequal to the
      ;; same db built in memory.
+     (select-keys stored-db [:avet-build :avet-build-result])
      (when (seq secondary-index-keys)
        {:secondary-index-keys secondary-index-keys})
      (when (seq sec-indices)
@@ -2016,6 +2022,67 @@
                     (core/with old tx-data tx-meta tx-options))]
     #?(:clj (validate-secondary-backfill-writer! old tx-report))
     (complete-db-update old tx-report)))
+
+#?(:clj
+   (defn ^:no-doc begin-avet-build!
+     "Accept one durable background request without changing effective schema.
+      Completion is a separate fenced activation, not success of this report."
+     [old patch]
+     (avet-job/supported! old)
+     (let [base (if (:datahike.backfill.runtime/lost-lineage? old)
+                  (dissoc old :avet-build :avet-build-journal :avet-build-effects
+                          :avet-build-invalidated? :datahike.backfill.runtime/lost-lineage?)
+                  old)
+           request (avet-admission/plan base patch)
+           descriptor (avet-job/descriptor base request)
+           report (binding [sec/*durable-secondary-write-context* :commit]
+                    (core/with base [] nil))]
+       (complete-db-update
+        old (update (assoc report :db-before old :avet-build-id (:id descriptor)) :db-after
+                    #(-> %
+                         (assoc :avet-build descriptor)
+                         (dissoc :avet-build-journal :avet-build-effects
+                                 :avet-build-invalidated? :avet-build-result)))))))
+
+#?(:clj
+   (defn ^:no-doc install-avet-build!
+     "Apply a coordinator-owned prepared certificate through ordinary report
+      admission. The coordinator retains private resources through publication."
+     [old certificate]
+     (avet-job/supported! old)
+     (when-not (avet-job/matches? old (:avet-build old))
+       (throw (ex-info "AVET schema or branch prerequisites changed."
+                       {:type :avet-build-stale-schema})))
+     (let [report (binding [sec/*durable-secondary-write-context* :commit]
+                    (core/with-prepared-avet old certificate))]
+       (complete-db-update
+        old (assoc-in report [:db-after :avet-build-result]
+                      {:id (get-in old [:avet-build :id]) :status :ready})))))
+
+#?(:clj
+   (defn ^:no-doc cancel-avet-build!
+     "Retire only the named durable generation. Safe for recovery on any writer;
+      cancellation performs no private build or schema change."
+     ([old id] (cancel-avet-build! old id :canceled))
+     ([old id reason]
+      (when-not (and (uuid? id) (= id (get-in old [:avet-build :id])))
+        (throw (ex-info "Cannot cancel a different AVET generation."
+                        {:type :avet-build-generation-mismatch :id id})))
+      (when-not (contains? #{:canceled :schema-changed :head-conflict :owner-lost
+                             :recovered :build-failed :unsupported-operation}
+                           reason)
+        (throw (ex-info "Unknown AVET cancellation reason."
+                        {:type :avet-build-invalid-cancellation})))
+      (let [report (binding [sec/*durable-secondary-write-context* :commit]
+                     (core/with old [] nil))]
+        (complete-db-update
+         old (update report :db-after
+                     #(-> %
+                          (dissoc :avet-build :avet-build-journal :avet-build-effects
+                                  :avet-build-invalidated?)
+                          (assoc :avet-build-result
+                                 {:id id :status (if (= :canceled reason) :canceled :failed)
+                                  :reason reason}))))))))
 
 (defn load-entities
   [old entities]

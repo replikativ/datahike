@@ -2,6 +2,7 @@
   (:refer-clojure :exclude [filter])
   (:require
    [datahike.constants :as dc]
+   #?(:clj [datahike.backfill.admission :as admission])
    [datahike.datom :as dd]
    [datahike.db :as db #?@(:cljs [:refer [FilteredDB]])]
    [datahike.db.interface :as dbi]
@@ -126,37 +127,46 @@
 
 ; Changing DB
 
+(defn- with* [db tx-data tx-meta tx-options prepared]
+  {:pre [(dbu/db? db)]}
+  (if (is-filtered db)
+    (throw (ex-info "Filtered DB cannot be modified" {:error :transaction/filtered}))
+    (let [tracker (atom [])
+          report (binding [sec/*secondary-transient-tracker* tracker]
+                   (try
+                     (dbt/transact-tx-data-internal
+                      (db/map->TxReport
+                       {:db-before db
+                        :db-after  db
+                        :tx-data   []
+                        :tempids   {}
+                        :tx-meta   tx-meta})
+                      tx-data tx-options prepared)
+                     (catch #?(:clj Throwable :cljs js/Error) failure
+                       (sec/abort-tracked-secondary-transients!)
+                       (throw failure))))
+           ;; Propagate query result cache with selective invalidation
+          rim (:ref-ident-map (:db-after report))
+          modified-attrs (into #{}
+                               (comp (map :a)
+                                     (clojure.core/filter some?)
+                                     (map (fn [a] (if (and rim (number? a)) (get rim a a) a))))
+                               (:tx-data report))
+          _ (dq/propagate-query-cache db (:db-after report) modified-attrs)]
+      report)))
+
 (defn with
   "Same as [[transact!]], but applies to an immutable database value. Returns transaction report (see [[transact!]])."
   ([db tx-data] (with db tx-data nil nil))
   ([db tx-data tx-meta] (with db tx-data tx-meta nil))
   ([db tx-data tx-meta tx-options]
-   {:pre [(dbu/db? db)]}
-   (if (is-filtered db)
-     (throw (ex-info "Filtered DB cannot be modified" {:error :transaction/filtered}))
-     (let [tracker (atom [])
-           report (binding [sec/*secondary-transient-tracker* tracker]
-                    (try
-                      (dbt/transact-tx-data
-                       (db/map->TxReport
-                        {:db-before db
-                         :db-after  db
-                         :tx-data   []
-                         :tempids   {}
-                         :tx-meta   tx-meta})
-                       tx-data tx-options)
-                      (catch #?(:clj Throwable :cljs js/Error) failure
-                        (sec/abort-tracked-secondary-transients!)
-                        (throw failure))))
-           ;; Propagate query result cache with selective invalidation
-           rim (:ref-ident-map (:db-after report))
-           modified-attrs (into #{}
-                                (comp (map :a)
-                                      (clojure.core/filter some?)
-                                      (map (fn [a] (if (and rim (number? a)) (get rim a a) a))))
-                                (:tx-data report))
-           _ (dq/propagate-query-cache db (:db-after report) modified-attrs)]
-       report))))
+   (with* db tx-data tx-meta tx-options nil)))
+
+#?(:clj
+   (defn ^:no-doc with-prepared-avet
+     "Internal coordinator seam. Never accepts public options or user tx data."
+     [db certificate]
+     (with* db (admission/transaction-data certificate) nil nil certificate)))
 
 (defn load-entities-with
   ([db entities tx-meta] (load-entities-with db entities tx-meta nil))
