@@ -1,4 +1,7 @@
 {:deps {org.clojure/clojure                         {:mvn/version "1.12.5"}
+        ;; Initialize the CSPRNG at runtime, not in the native-image heap.
+        org.replikativ/geheimnis                   {:mvn/version "0.2.40"
+                                                    :exclusions [org.clojure/clojurescript]}
         ;; 0.4.104 carries incognito 0.3.71 (hasch#34), the other half of
         ;; pulling that fix in — see the konserve note below. Hashes are
         ;; unchanged across the incognito bump; that was checked directly, since
@@ -181,7 +184,7 @@
                                ;; tested and shipped versions came apart.
                                org.replikativ/kabel          {:mvn/version "0.3.136"}
                                org.replikativ/konserve-sync  {:mvn/version "0.1.40"}
-                               org.replikativ/geheimnis      {:mvn/version "0.2.39"
+                               org.replikativ/geheimnis      {:mvn/version "0.2.40"
                                                               :exclusions [org.clojure/clojurescript]}
 
                                ;; Standalone-server backends. Keep these versions in sync with
@@ -261,7 +264,7 @@
                                       ch.qos.logback/logback-classic {:mvn/version "1.5.32"}
                                       org.replikativ/kabel          {:mvn/version "0.3.136"}
                                       org.replikativ/konserve-sync  {:mvn/version "0.1.40"}
-                                      org.replikativ/geheimnis      {:mvn/version "0.2.39"
+                                      org.replikativ/geheimnis      {:mvn/version "0.2.40"
                                                                      :exclusions [org.clojure/clojurescript]}
                                       http-kit/http-kit             {:mvn/version "2.8.1"}
 
