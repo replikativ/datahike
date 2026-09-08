@@ -5,6 +5,25 @@ enable it in a separate atomic commit. The same operation can add a uniqueness
 constraint. Reads and writes continue under the old schema while the build runs.
 This API is experimental.
 
+## Choose a migration mode
+
+Use an ordinary schema transaction when the caller needs the migration to
+finish before proceeding. It remains synchronous: successful completion means
+the schema change and its required index construction and validation committed
+together. The transaction-local `:allow-index-backfill?` option permits that
+work; it does not start a background job. This path can hold up other writes
+and can require substantial memory for large attributes.
+
+Choose `begin-avet-build!` explicitly for online maintenance when writes need
+to continue during construction. It is not the default and does not replace
+ordinary schema transactions. Its promise acknowledges the request, not a
+completed migration. The caller must monitor that generation to a terminal
+result before relying on the new index or uniqueness constraint. Background
+construction still consumes CPU, I/O, and scratch space and can affect write
+latency or reject writes when journal limits are reached.
+
+## Deployment requirements
+
 **Upgrade every garbage collector sharing the store before using this API.**
 Older Datahike versions do not recognize the AVET build marker and can delete
 unpublished index nodes even while the source pin remains live. Alternatively,
@@ -68,6 +87,14 @@ include a reason. This is snapshot state, not a worker-liveness check or a
 complete job history. Keep the request report's `:avet-build-id` when monitoring
 a request: reports in one batch share its final `:db-after`, which may already
 describe a later generation.
+
+Treat only `:ready` for the saved generation as successful completion.
+`:failed` and `:canceled` are unsuccessful outcomes, not completed migrations.
+A different generation's status does not establish the outcome of your
+request; retain its observed result before starting another build if that
+outcome must be recorded. A monitoring timeout does not cancel the build.
+Cancellation must be requested explicitly and can race with activation;
+inspect a fresh snapshot to determine which operation committed.
 
 Ordinary `listen` callbacks receive the public start and cancel reports, not the
 worker's internal activation report. Use `listen-commits` for commit notifications
@@ -162,7 +189,3 @@ Normal completion, cancellation, and orderly writer shutdown clean up owned
 scratch. A process crash can leave files behind. Use a dedicated scratch
 directory and remove abandoned files only after confirming their writer has
 stopped. Reclamation of unused immutable store nodes remains the collector's job.
-
-Ordinary schema transactions remain synchronous. Their existing
-`:allow-index-backfill?` transaction option is separate from this API and does
-not start a background build.
