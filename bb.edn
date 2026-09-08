@@ -18,8 +18,10 @@
                     [tools.reflection :as reflection]
                     [tools.release :as release]
                     [tools.test :as test]
+                    [tools.scratch :as scratch]
                     [tools.version :as version]]
-         :init (do (def config-file "config.edn")
+         :init (do (scratch/ensure-task-run!)
+                   (def config-file "config.edn")
                    (def config (edn/read-string (slurp config-file))))
 
          ; tools

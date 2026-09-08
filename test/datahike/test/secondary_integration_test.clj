@@ -1,28 +1,30 @@
 (ns datahike.test.secondary-integration-test
   "Integration tests for Proximum and Scriptum secondary index implementations."
-  (:require
-   [clojure.test :refer [deftest testing is]]
-   [clojure.core.async :as async]
-   [datahike.api :as d]
-   [datahike.db :as db]
-   [datahike.gc :as gc]
-   [datahike.index.secondary :as sec]
-   [datahike.index.entity-set :as es]
-   [datahike.query :as q]
-   [datahike.query.execute :as execute]
-   [datahike.writing :as writing]
-   [datahike.index.secondary.scriptum]
-   [datahike.index.secondary.stratum]
-   [datahike.migrate :as m]
-   [datahike.migrate.fs :as fs]
-   [konserve.core :as k]
-   [konserve.gc-guard :as guard]
-   [konserve.memory :refer [new-mem-store]]
-   [stratum.api :as st]
-   [datahike.test.query-aggregates-test :refer [aggregate-contract]]))
+  (:require [datahike.test.scratch :as scratch]
+            [clojure.test :refer [deftest testing is]]
+            [clojure.core.async :as async]
+            [datahike.api :as d]
+            [datahike.db :as db]
+            [datahike.gc :as gc]
+            [datahike.index.secondary :as sec]
+            [datahike.index.entity-set :as es]
+            [datahike.query :as q]
+            [datahike.query.execute :as execute]
+            [datahike.writing :as writing]
+            [datahike.index.secondary.scriptum]
+            [datahike.index.secondary.stratum]
+            [datahike.migrate :as m]
+            [datahike.migrate.fs :as fs]
+            [konserve.core :as k]
+            [konserve.gc-guard :as guard]
+            [konserve.memory :refer [new-mem-store]]
+            [stratum.api :as st]
+            [datahike.test.query-aggregates-test :refer [aggregate-contract]]))
 
 ;; Proximum requires Java 22+ (class file version 66.0).
 ;; Load lazily so the test file compiles on older JVMs.
+(clojure.test/use-fixtures :each scratch/fixture)
+
 (def ^:private proximum-available?
   (try
     (require 'datahike.index.secondary.proximum)
@@ -784,7 +786,7 @@
   (testing "set-valued search does not silently truncate at 1000 matches"
     (let [idx (sec/create-index :scriptum
                                 {:attrs #{:doc/body}
-                                 :path (str "/tmp/scriptum-complete-"
+                                 :path (str (scratch/path) "/scriptum-complete-"
                                             (random-uuid))}
                                 nil)
           transient (sec/-as-transient idx)]
@@ -1683,7 +1685,7 @@
                            :db.secondary/type :scriptum
                            :db.secondary/attrs [:person/bio]
                            :db.secondary/config
-                           {:path (str "/tmp/dh-scriptum-abort-" (random-uuid))}}])
+                           {:path (str (scratch/path) "/dh-scriptum-abort-" (random-uuid))}}])
         (await-secondary-status conn :idx/bio :ready)
         (let [eid (get-in (d/transact conn [{:db/id -1 :person/age 20}])
                           [:tempids -1])
@@ -1733,7 +1735,7 @@
                                  ::sec/store store
                                  ::sec/store-id store-id
                                  ::sec/index-ident :idx/body
-                                 :path (str "/tmp/dh-scriptum-chain-" (random-uuid))}
+                                 :path (str (scratch/path) "/dh-scriptum-chain-" (random-uuid))}
                                 nil)
           mutate (fn [source eid value]
                    (let [transient (sec/-as-transient source)]
@@ -1768,7 +1770,7 @@
                                ::sec/store store
                                ::sec/store-id store-id
                                ::sec/index-ident :idx/body
-                               :path (str "/tmp/dh-scriptum-owner-" (random-uuid))}
+                               :path (str (scratch/path) "/dh-scriptum-owner-" (random-uuid))}
                               nil)
         transient (sec/-as-transient idx)
         _ (sec/-transact! transient
@@ -1802,7 +1804,7 @@
                                ::sec/store store
                                ::sec/store-id store-id
                                ::sec/index-ident :idx/body
-                               :path (str "/tmp/dh-scriptum-close-retry-"
+                               :path (str (scratch/path) "/dh-scriptum-close-retry-"
                                           (random-uuid))}
                               nil)
         transient (sec/-as-transient idx)
@@ -1839,7 +1841,7 @@
                                ::sec/store store
                                ::sec/store-id store-id
                                ::sec/index-ident :idx/body
-                               :path (str "/tmp/dh-scriptum-unknown-" (random-uuid))}
+                               :path (str (scratch/path) "/dh-scriptum-unknown-" (random-uuid))}
                               nil)
         transient (sec/-as-transient idx)
         _ (sec/-transact! transient
@@ -1873,7 +1875,7 @@
                            :db.secondary/type :scriptum
                            :db.secondary/attrs [:foo/body :bar/body]
                            :db.secondary/config
-                           {:path (str "/tmp/dh-scriptum-ns-" (random-uuid))}}])
+                           {:path (str (scratch/path) "/dh-scriptum-ns-" (random-uuid))}}])
         (await-secondary-status conn :idx/namespaced-body :ready)
         (let [eid (get-in (d/transact conn [{:db/id -1
                                              :foo/body "same"
@@ -1905,7 +1907,7 @@
                            :db.secondary/type :scriptum
                            :db.secondary/attrs [:metric/value]
                            :db.secondary/config
-                           {:path (str "/tmp/dh-scriptum-typed-" (random-uuid))}}])
+                           {:path (str (scratch/path) "/dh-scriptum-typed-" (random-uuid))}}])
         (await-secondary-status conn :idx/metric :ready)
         (let [failure (try
                         (d/transact conn [{:metric/value 42}])
@@ -1920,7 +1922,7 @@
 (deftest scriptum-generation-key-maps-fail-closed
   (let [idx (sec/create-index :scriptum
                               {:attrs #{:doc/body}
-                               :path (str "/tmp/dh-scriptum-keymap-" (random-uuid))}
+                               :path (str (scratch/path) "/dh-scriptum-keymap-" (random-uuid))}
                               nil)
         cases [[{:type :scriptum
                  :format-version 2

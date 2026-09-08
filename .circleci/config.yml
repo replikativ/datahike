@@ -29,8 +29,11 @@ jobs:
             - deps-{{ checksum "deps.edn" }}
             - deps-
       - run:
+          name: Test scratch cleanup and active-run protection
+          command: bb --config /dev/null --classpath bb/src -m tools.scratch run -- bb --config /dev/null --classpath bb/src:bb/test -m tools.scratch-test
+      - run:
           name: resolve deps
-          command: clojure -X:deps prep :aliases '[:dev :test :build]'
+          command: bb --config /dev/null --classpath bb/src -m tools.scratch run -- clojure -X:deps prep :aliases '[:dev :test :build]'
       - save_cache:
           key: deps-{{ checksum "deps.edn" }}
           paths:
@@ -259,21 +262,21 @@ jobs:
           at: /home/circleci
       - run:
           name: Prepare dependencies
-          command: clojure -X:deps prep
+          command: bb --config /dev/null --classpath bb/src -m tools.scratch run -- clojure -X:deps prep
       - run:
           name: Start test server
-          command: clojure -M:test -e "(require 'datahike.kabel.browser-test-server) (datahike.kabel.browser-test-server/start-test-server!) (Thread/sleep Long/MAX_VALUE)"
+          command: bb --config /dev/null --classpath bb/src -m tools.scratch run -- clojure -M:test -e "(require 'datahike.kabel.browser-test-server) (datahike.kabel.browser-test-server/start-test-server!) (Thread/sleep Long/MAX_VALUE)"
           background: true
       - run:
           name: Wait for server startup
           command: sleep 20
       - run:
           name: Compile ClojureScript for browser tests
-          command: npx shadow-cljs release browser-ci
+          command: bb --config /dev/null --classpath bb/src -m tools.scratch run -- npx shadow-cljs release browser-ci
           no_output_timeout: 5m
       - run:
           name: Run Karma browser tests
-          command: npx karma start --single-run
+          command: bb --config /dev/null --classpath bb/src -m tools.scratch run -- npx karma start --single-run
           no_output_timeout: 5m
   node-cljs-test:
     executor: tools/clojurecli

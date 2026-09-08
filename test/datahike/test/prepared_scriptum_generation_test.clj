@@ -1,15 +1,17 @@
 (ns datahike.test.prepared-scriptum-generation-test
-  (:require
-   [clojure.java.io :as io]
-   [clojure.set :as set]
-   [clojure.test :refer [deftest is testing]]
-   [datahike.api :as d]
-   [datahike.index.secondary :as sec]
-   [datahike.index.secondary.scriptum]
-   [datahike.versioning :as dv]
-   [konserve.core :as k]
-   [superv.async :refer [<?? S]])
+  (:require [datahike.test.scratch :as scratch]
+            [clojure.java.io :as io]
+            [clojure.set :as set]
+            [clojure.test :refer [deftest is testing]]
+            [datahike.api :as d]
+            [datahike.index.secondary :as sec]
+            [datahike.index.secondary.scriptum]
+            [datahike.versioning :as dv]
+            [konserve.core :as k]
+            [superv.async :refer [<?? S]])
   (:import [java.util Date]))
+
+(clojure.test/use-fixtures :each scratch/fixture)
 
 (defn- await-ready [conn ident]
   (let [deadline (+ (System/currentTimeMillis) 10000)]
@@ -37,10 +39,10 @@
 
 (deftest datahike-roots-scriptum-snapshots-through-cold-reopen-and-gc
   (let [store-id (random-uuid)
-        cache-path (str "/tmp/datahike-scriptum-cache-" store-id)
+        cache-path (str (scratch/path) "/datahike-scriptum-cache-" store-id)
         cfg {:store {:backend :file
                      :id store-id
-                     :path (str "/tmp/datahike-prepared-scriptum-" store-id)}
+                     :path (str (scratch/path) "/datahike-prepared-scriptum-" store-id)}
              :writer {:backend :self :writer-ownership :exclusive}
              :keep-history? false
              :schema-flexibility :write}]

@@ -93,3 +93,6 @@ pydatahike/src/datahike/generated.py
 **/.settings/
 /plugins/
 /test/integration/
+
+# Owned test/build scratch (separate from target, which builds clean).
+/.scratch/
