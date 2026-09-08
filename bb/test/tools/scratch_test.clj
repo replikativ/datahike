@@ -113,6 +113,12 @@
                              {:out :string :err :string})]
         (try
           (cleanup)
+          ;; Windows can report the ProcessHandle terminated before the owned
+          ;; Process reports completion. Check both, using a bounded wait rather
+          ;; than assuming their liveness observations change simultaneously.
+          (is (not (.isAlive (.toHandle (:proc child)))))
+          (is (.waitFor (:proc child) 5 java.util.concurrent.TimeUnit/SECONDS)
+              "cleanup must terminate the child, not leave its 60s sleep running")
           (is (not (p/alive? child)))
           (is (empty? (fs/list-dir root)))
           (finally (p/destroy-tree child) (cleanup)))))))
