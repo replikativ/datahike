@@ -1,17 +1,19 @@
 (ns datahike.test.prepared-stratum-generation-test
-  (:require
-   [clojure.test :refer [deftest is testing]]
-   [datahike.api :as d]
-   [datahike.gc-guard :as guard]
-   [datahike.index.secondary :as sec]
-   [datahike.index.secondary.stratum]
-   [datahike.store :as ds]
-   [datahike.versioning :as dv]
-   [konserve.core :as k]
-   [stratum.dataset :as sd]
-   [stratum.storage :as ss]
-   [superv.async :refer [<?? S]])
+  (:require [datahike.test.scratch :as scratch]
+            [clojure.test :refer [deftest is testing]]
+            [datahike.api :as d]
+            [datahike.gc-guard :as guard]
+            [datahike.index.secondary :as sec]
+            [datahike.index.secondary.stratum]
+            [datahike.store :as ds]
+            [datahike.versioning :as dv]
+            [konserve.core :as k]
+            [stratum.dataset :as sd]
+            [stratum.storage :as ss]
+            [superv.async :refer [<?? S]])
   (:import [java.util Date]))
+
+(clojure.test/use-fixtures :each scratch/fixture)
 
 (defn- await-ready [conn ident]
   (let [deadline (+ (System/currentTimeMillis) 10000)]
@@ -34,7 +36,7 @@
   (let [store-id (random-uuid)
         cfg {:store {:backend :file
                      :id store-id
-                     :path (str "/tmp/datahike-prepared-stratum-" store-id)}
+                     :path (str (scratch/path) "/datahike-prepared-stratum-" store-id)}
              :writer {:backend :self :writer-ownership :exclusive}
              :keep-history? false
              :schema-flexibility :write}]

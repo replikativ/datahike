@@ -96,12 +96,18 @@
 (defn setup-default-db [config test-data]
   (recreate-database config)
   (let [conn (d/connect config)]
-    (d/transact conn test-data)
-    conn))
+    (try
+      (d/transact conn test-data)
+      conn
+      (catch #?(:clj Throwable :cljs :default) e
+        (try (d/release conn)
+             (finally (d/delete-database config)))
+        (throw e)))))
 
 (defn teardown-db [conn]
-  (d/release conn)
-  (d/delete-database (:config @conn)))
+  (let [config (:config @conn)]
+    (try (d/release conn)
+         (finally (d/delete-database config)))))
 
 (defn with-db
   "Test database fixture"
@@ -109,8 +115,9 @@
    (with-db config [] f))
   ([config test-data f]
    (let [conn (setup-default-db config test-data)]
-     (f)
-     (teardown-db conn))))
+     (try
+       (f)
+       (finally (teardown-db conn))))))
 
 (defn sleep [ms]
   #?(:clj (Thread/sleep ms)

@@ -1,16 +1,18 @@
 (ns datahike.test.secondary-versioning-test
   "Integration tests for secondary indices with branching, merging, and GC."
-  (:require
-   [clojure.core.async :as async]
-   [clojure.test :refer [deftest testing is]]
-   [datahike.api :as d]
-   [datahike.versioning :as dv]
-   [datahike.index.secondary :as sec]
-   [datahike.index.entity-set :as es]
-   [datahike.index.secondary.scriptum]
-   [datahike.migrate.fs :as fs]
-   [konserve.core :as k]
-   [superv.async :refer [<?? S]]))
+  (:require [datahike.test.scratch :as scratch]
+            [clojure.core.async :as async]
+            [clojure.test :refer [deftest testing is]]
+            [datahike.api :as d]
+            [datahike.versioning :as dv]
+            [datahike.index.secondary :as sec]
+            [datahike.index.entity-set :as es]
+            [datahike.index.secondary.scriptum]
+            [datahike.migrate.fs :as fs]
+            [konserve.core :as k]
+            [superv.async :refer [<?? S]]))
+
+(clojure.test/use-fixtures :each scratch/fixture)
 
 (defn- delivered [value]
   (let [ch (async/promise-chan)]
@@ -129,7 +131,7 @@
   (testing "secondary index survives branch, diverge, and merge"
     (let [cfg {:store {:backend :file
                        :id (java.util.UUID/randomUUID)
-                       :path (str "/tmp/datahike-scriptum-gc-" (random-uuid))}
+                       :path (str (scratch/path) "/datahike-scriptum-gc-" (random-uuid))}
                :writer {:backend :self :writer-ownership :exclusive}
                :keep-history? false
                :schema-flexibility :write}
