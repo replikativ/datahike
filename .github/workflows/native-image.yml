@@ -79,11 +79,14 @@ jobs:
           cli: 1.12.2.1565
           bb: 1.12.208
 
+      - name: Test scratch lifecycle
+        run: bb --config bb/scratch.edn -m tools.scratch-test
+
       - name: Build native image
-        run: bb ni-cli
+        run: bb --config bb/scratch.edn -m tools.scratch run -- bb ni-cli
 
       - name: Build libdatahike
-        run: bb ni-compile
+        run: bb --config bb/scratch.edn -m tools.scratch run -- bb ni-compile
 
       # Tests gate this platform's upload and nothing else. `continue-on-error`
       # records the outcome without ending the job, so a red test here cannot
@@ -91,26 +94,26 @@ jobs:
       - name: Test native image
         id: test-native-image
         continue-on-error: true
-        run: bb test native-image
+        run: bb --config bb/scratch.edn -m tools.scratch run -- bb test native-image
 
       - name: Test babashka pod
         id: test-bb-pod
         continue-on-error: true
-        run: bb test bb-pod
+        run: bb --config bb/scratch.edn -m tools.scratch run -- bb test bb-pod
 
       - name: Test libdatahike
         if: '!matrix.skip-libdatahike-test'
         id: test-libdatahike
         continue-on-error: true
-        run: bb test libdatahike
+        run: bb --config bb/scratch.edn -m tools.scratch run -- bb test libdatahike
 
       - name: Release native-image
         if: steps.test-native-image.outcome == 'success' && steps.test-bb-pod.outcome == 'success'
-        run: bb release native-image
+        run: bb --config bb/scratch.edn -m tools.scratch run -- bb release native-image
 
       - name: Release libdatahike
         if: "matrix.skip-libdatahike-test || steps.test-libdatahike.outcome == 'success'"
-        run: bb release libdatahike
+        run: bb --config bb/scratch.edn -m tools.scratch run -- bb release libdatahike
 
       # The job still fails if anything above did, so the red X is not lost —
       # it just no longer pre-empts the uploads that did pass.

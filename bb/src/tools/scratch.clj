@@ -130,17 +130,30 @@
        (binding [*out* *err*] (println "Scratch:" (str dir)))
        cleanup))))
 
+(defn task-command
+  "Return an exact invocation when the OS exposes it. Never reconstruct a task
+   from partial metadata: that would drop VM flags, config or runner options."
+  [command arguments]
+  (when-not (and command arguments)
+    (throw (ex-info
+            (str "Cannot inspect the complete Babashka invocation on this platform. "
+                 "Launch explicitly with: bb --config bb/scratch.edn "
+                 "-m tools.scratch run -- bb <original options and task>")
+            {:type ::unavailable-task-command})))
+  (into [command] arguments))
+
 (defn ensure-task-run!
   "Re-enter the bb task once with a real inherited environment. This also covers
    tools.build's ProcessBuilder launches, which bypass babashka.process defaults."
   []
   (if (not-empty (System/getenv "DATAHIKE_SCRATCH_RUN"))
     (start!)
-    (let [cleanup (start!)
-          info (.info (ProcessHandle/current))]
+    (let [info (.info (ProcessHandle/current))
+          command (task-command (.orElse (.command info) nil)
+                                (.orElse (.arguments info) nil))
+          cleanup (start!)]
       (try
-        (let [command (into [(.get (.command info))] (.get (.arguments info)))
-              result (apply p/shell {:continue true} command)]
+        (let [result (apply p/shell {:continue true} command)]
           (cleanup)
           (System/exit (:exit result)))
         (finally (cleanup))))))
