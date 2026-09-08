@@ -10,6 +10,7 @@
    [datahike.db.interface :as dbi]
    [datahike.db.search :as dbs]
    [datahike.db.utils :as dbu]
+   [datahike.dependency-tracking :as tracking]
    [datahike.index :as di]
    [datahike.index.secondary :as sec]
    [datahike.schema :as ds]
@@ -388,6 +389,8 @@
                     (dbi/context-set-current-db-if-not-set context db)))
 
 (defrecord-updatable DB [schema eavt aevt avet temporal-eavt temporal-aevt temporal-avet max-eid max-tx op-count rschema hash config system-entities ident-ref-map ref-ident-map secondary-indices meta]
+  tracking/ITrackedSnapshot
+  (-dependency-entry [db id] (tracking/state-entry db id))
   #?@(:cljs
       [IHash (-hash [db] (.-hash db))
        IEquiv (-equiv [db other] (equiv-db db other))
