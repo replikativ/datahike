@@ -214,7 +214,7 @@
      :stability :stable
      :supports-remote? true
      :referentially-transparent? false
-     :doc "Applies transaction to the database and updates connection. Blocks until committed. WARNING: Do not call from listener callbacks or transaction functions — use transact! instead to avoid deadlocks."
+     :doc "Applies transaction to the database and updates connection. Blocks until committed. The map form accepts :tx-options {:allow-index-backfill? true} to permit index/uniqueness backfill for this transaction only; it does not change the database config. WARNING: Do not call from listener callbacks or transaction functions — use transact! instead to avoid deadlocks."
      :examples [{:desc "Add single datom"
                  :code "(transact conn [[:db/add 1 :name \"Ivan\"]])"}
                 {:desc "Retract datom"
@@ -258,20 +258,21 @@
     ;; is what malli rejects (`:malli.core/duplicate-arities`), and it is why
     ;; this operation spent a while excluded from registration entirely.
     ;;
-    ;; The Java binding keeps all three overloads it has always had:
+    ;; The Java binding keeps its original overloads (plus the 4-arity):
     ;; `codegen/java`'s `expand-or-args` turns an `[:or …]` argument into one
     ;; overload per distinct Java type, so `STransactions`/`SWithArgs` still
     ;; emit `with(Object, List)` — marshalling through
     ;; `Util.normalizeCollections` — beside `with(Object, Object)`.
     {:args [:function
             [:=> [:cat :datahike/SDB [:or :datahike/STransactions :datahike/SWithArgs]] :datahike/STransactionReport]
-            [:=> [:cat :datahike/SDB :datahike/STransactions :datahike/STxMeta] :datahike/STransactionReport]]
+            [:=> [:cat :datahike/SDB :datahike/STransactions :datahike/STxMeta] :datahike/STransactionReport]
+            [:=> [:cat :datahike/SDB :datahike/STransactions :datahike/STxMeta :datahike/STxOptions] :datahike/STransactionReport]]
      :ret :datahike/STransactionReport
      :categories [:transaction :immutable]
      :stability :stable
      :supports-remote? false
      :referentially-transparent? true
-     :doc "Applies transaction to immutable db value. Returns transaction report."
+     :doc "Applies transaction to immutable db value. Returns transaction report. Accepts :tx-options in the map form, or as a fourth argument after tx-meta. The only option is :allow-index-backfill? (boolean): true permits index/uniqueness backfill for this transaction without changing the database config."
      :examples [{:desc "Transaction on db value"
                  :code "(with @conn [[:db/add 1 :name \"Ivan\"]])"}
                 {:desc "With metadata"

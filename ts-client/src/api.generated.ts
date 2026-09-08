@@ -276,7 +276,7 @@ export function since(...args: unknown[]): Promise<any> {
 }
 
 /**
- * Applies transaction to the database and updates connection. Blocks until committed. WARNING: Do not call from listener callbacks or transaction functions — use transact! instead to avoid deadlocks.
+ * Applies transaction to the database and updates connection. Blocks until committed. The map form accepts :tx-options {:allow-index-backfill? true} to permit index/uniqueness backfill for this transaction only; it does not change the database config. WARNING: Do not call from listener callbacks or transaction functions — use transact! instead to avoid deadlocks.
  */
 export function transact(arg0: Connection, arg1: Transaction[] | WithArgs): Promise<TransactionReport>;
 export function transact(...args: unknown[]): Promise<any> {
