@@ -1,7 +1,4 @@
 {:deps {org.clojure/clojure                         {:mvn/version "1.12.5"}
-        ;; Initialize the CSPRNG at runtime, not in the native-image heap.
-        org.replikativ/geheimnis                   {:mvn/version "0.2.40"
-                                                    :exclusions [org.clojure/clojurescript]}
         ;; 0.4.104 carries incognito 0.3.71 (hasch#34), the other half of
         ;; pulling that fix in — see the konserve note below. Hashes are
         ;; unchanged across the incognito bump; that was checked directly, since
@@ -32,7 +29,9 @@
         ;; allocation-free fast path.
         ;; 0.9.393 makes directory persistence fail closed and supplies the
         ;; Windows native barrier (JDK 22+ on Windows; Unix JDK 21 unchanged).
-        org.replikativ/konserve                     {:mvn/version "0.9.393"}
+        ;; 0.9.394 brings Geheimnis 0.2.40: runtime-only CSPRNG initialization
+        ;; fixes the native-image heap failure without a direct dependency pin.
+        org.replikativ/konserve                     {:mvn/version "0.9.394"}
 
         org.replikativ/superv.async                 {:mvn/version "0.3.51"
                                                      :exclusions [org.clojure/clojurescript]}
@@ -234,7 +233,7 @@
                          ;; to this artifact so Datahike's browser builds retain
                          ;; their normal dependency graph.
                          :override-deps {org.replikativ/konserve
-                                         {:mvn/version "0.9.393"
+                                         {:mvn/version "0.9.394"
                                           :exclusions [org.clojure/clojurescript]}
                                          com.github.pkpkpk/cljs-cache
                                          {:mvn/version "1.0.21"
