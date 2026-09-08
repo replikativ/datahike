@@ -7,10 +7,10 @@
     (journal/dispose! descriptor)
     (catch Exception e
       (log/warn :datahike/backfill-scratch-cleanup-failed
-                {:id (:id descriptor) :message (ex-message e)}))))
+                {:id (journal/descriptor-id descriptor) :message (ex-message e)}))))
 
 (defn dispose-owned!
-  "Release scratch files owned by a stopped writer. Never called on a live
+  "Release scratch owned by a stopped writer. Never called on a live
    writer: earlier immutable cursors may still be needed by queued reports."
   [owned]
   (locking owned
@@ -23,10 +23,10 @@
   [owned report]
   (doseq [descriptor (::retired report)]
     (dispose-safely! descriptor)
-    (swap! owned dissoc (:id descriptor))))
+    (swap! owned dissoc (journal/descriptor-id descriptor))))
 
 (defn prepare-report!
-  "Spool notifications after transaction predicates accept a report, before
+  "Capture notifications after transaction predicates accept a report, before
    chaining or enqueuing it. Each database retains its exact immutable prefix.
    Scratch is not a durability source: reconnect rebuilds from primary data."
   [owned report]
@@ -57,7 +57,7 @@
                                           (let [d (journal/create!
                                                    (get-in after [:config :writer :backfill-journal] {}))]
                                             (swap! created conj d)
-                                            (swap! owned assoc (:id d) d)
+                                            (swap! owned assoc (journal/descriptor-id d) d)
                                             d))]
                        (assoc journals ident (journal/append! descriptor notifications)))
                      journals))
@@ -69,10 +69,10 @@
               (seq retired) (assoc ::retired retired)))
           (catch Throwable e
           ;; Previously accepted prefixes remain authoritative if a later
-          ;; journal fails. Their invisible tails are discarded on next append.
+          ;; journal fails. Unaccepted tails must not become visible on retry.
             (doseq [descriptor @created]
               (dispose-safely! descriptor)
-              (swap! owned dissoc (:id descriptor)))
+              (swap! owned dissoc (journal/descriptor-id descriptor)))
             (throw e)))))))
 
 (defn reduce-deltas
