@@ -94,7 +94,10 @@ A different generation's status does not establish the outcome of your
 request; retain its observed result before starting another build if that
 outcome must be recorded. A monitoring timeout does not cancel the build.
 Cancellation must be requested explicitly and can race with activation;
-inspect a fresh snapshot to determine which operation committed.
+if it is rejected because the generation is no longer active, inspect a fresh
+snapshot. A matching `:ready` result means activation committed; a matching
+`:canceled` result means cancellation committed. If another generation has
+replaced the result, the snapshot alone cannot establish the earlier outcome.
 
 Ordinary `listen` callbacks receive the public start and cancel reports, not the
 worker's internal activation report. Use `listen-commits` for commit notifications
