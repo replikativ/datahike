@@ -1,7 +1,18 @@
 # Test and build scratch
 
-Ordinary `bb test`, `bb kaocha`, and build tasks automatically run with owned
-scratch. No Python or additional command prefix is needed.
+On platforms exposing the full process invocation, ordinary `bb test`, `bb kaocha`,
+and build tasks automatically run with owned scratch. On Windows, use the explicit
+launcher (also used by native CI on every platform):
+
+```sh
+bb --config bb/scratch.edn -m tools.scratch run -- bb ni-cli
+```
+
+Put the complete original invocation after `run --`, including any VM flags,
+custom `--config`, runner options and task arguments. This bypasses OS command
+inspection without reconstructing or dropping options. Bare task invocation
+fails with this instruction when complete process information is unavailable;
+it does not fall back to unmanaged scratch. No Python is required.
 
 The default root is `.scratch` under the current checkout. Override it with
 `DATAHIKE_SCRATCH_ROOT=/disk/path`. CircleCI uses the same checkout-local
@@ -46,9 +57,9 @@ For direct commands that are not bb tasks, or scratch inspection without loading
 project dependencies:
 
 ```sh
-bb --config /dev/null --classpath bb/src -m tools.scratch run -- clojure -M:test -m kaocha.runner
-bb --config /dev/null --classpath bb/src -m tools.scratch status
-bb --config /dev/null --classpath bb/src -m tools.scratch clean
+bb --config bb/scratch.edn -m tools.scratch run -- clojure -M:test -m kaocha.runner
+bb --config bb/scratch.edn -m tools.scratch status
+bb --config bb/scratch.edn -m tools.scratch clean
 ```
 
 Startup and `clean` reclaim unlocked runs marked finished, including interrupted
@@ -64,5 +75,5 @@ Never put a worktree inside a run directory: run directories are deleted.
 Run the Babashka lifecycle regression tests with:
 
 ```sh
-bb --config /dev/null --classpath bb/src:bb/test -m tools.scratch-test
+bb --config bb/scratch.edn -m tools.scratch-test
 ```
