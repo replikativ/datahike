@@ -6,7 +6,9 @@
             [datahike.http.nrepl :as server-nrepl]
             [datahike.http.server :as server]
             [datahike.test.scratch :as scratch]
-            [nrepl.core :as nrepl])
+            [nrepl.core :as nrepl]
+            [nrepl.server :as nrepl-server]
+            [nrepl.transport :as transport])
   (:import [java.nio.file Files Path]))
 
 (defn- eval-values [connection code]
@@ -84,12 +86,16 @@
     (is (not (Files/exists ^Path @directory (make-array java.nio.file.LinkOption 0))))))
 
 (deftest standalone-server-owns-nrepl-and-reports-its-resolved-endpoint
-  (let [instance (server/start-server {:host "127.0.0.1"
-                                       :port 0
-                                       :join? false
-                                       :metrics false
-                                       :token "test-token"
-                                       :nrepl {:port 0}})
+  (let [resource (atom nil)
+        start-nrepl server-nrepl/start!
+        instance (with-redefs [server-nrepl/start!
+                               (fn [& args] (reset! resource (apply start-nrepl args)))]
+                   (server/start-server {:host "127.0.0.1"
+                                         :port 0
+                                         :join? false
+                                         :metrics false
+                                         :token "test-token"
+                                         :nrepl {:port 0}}))
         endpoint (try
                    (let [response (http/request
                                    {:method :get
@@ -109,9 +115,72 @@
         (is (= ["11"] (eval-values connection "(+ 5 6)"))))
       (finally
         (server/stop-server instance)))
-    (is (thrown? java.net.ConnectException
-                 (with-open [connection (nrepl/connect :host (:bind endpoint)
-                                                       :port (:port endpoint))]
-                   ;; connect constructs a lazy transport; sending proves the
-                   ;; server socket was actually closed by stop-server.
-                   (eval-values connection "(+ 1 1)"))))))
+    ;; Verify the resource this HTTP server owned. Probing its freed port races
+    ;; native listener closure and port reuse; the delayed-worker tests below
+    ;; separately prove that late connections cannot escape shutdown.
+    (is (.isClosed ^java.net.ServerSocket (get-in @resource [:server :server-socket])))
+    (is (= server-nrepl/disabled-status @(:status @resource)))))
+
+(deftest shutdown-closes-delayed-transports
+  (doseq [phase [:before-transport :after-transport]]
+    (testing (name phase)
+      (let [ready (promise)
+            resume (promise)
+            finished (promise)
+            start-server nrepl-server/start-server]
+        (with-redefs [nrepl-server/start-server
+                      (fn [& {:as options}]
+                        (let [factory (or (:transport-fn options) transport/bencode)
+                              delayed (fn [socket]
+                                        (let [pause (fn []
+                                                      (deliver ready socket)
+                                                      (when (= ::timeout (deref resume 10000 ::timeout))
+                                                        (throw (ex-info "Timed out waiting for shutdown" {}))))]
+                                          (try
+                                            (when (= phase :before-transport) (pause))
+                                            (let [t (factory socket)]
+                                              (when (= phase :after-transport) (pause))
+                                              t)
+                                            (finally (deliver finished true)))))]
+                          (apply start-server (mapcat identity (assoc options :transport-fn delayed)))))]
+          (let [status (server-nrepl/status-atom)
+                config {:nrepl {:port 0 :bind "127.0.0.1"}}
+                resource (server-nrepl/start! config config (atom {}) status)]
+            (try
+              (with-open [connection (nrepl/connect :host (:bind @status) :port (:port @status))]
+                (let [socket (deref ready 10000 ::timeout)]
+                  (is (not= ::timeout socket) "the real accept worker reached the selected race window")
+                  (when-not (= ::timeout socket)
+                    (is (empty? @(get-in resource [:server :open-transports]))
+                        "nREPL has not registered this connection yet")
+                    (server-nrepl/stop! resource)
+                    (when (= phase :after-transport)
+                      (is (.isClosed ^java.net.Socket socket)
+                          "our registry closes transports missing from nREPL's snapshot"))
+                    (deliver resume true)
+                    (is (= true (deref finished 10000 ::timeout)))
+                    (is (.isClosed ^java.net.Socket socket)
+                        "late transport creation must close the accepted socket")
+                    (is (thrown? java.io.IOException (eval-values connection "(+ 1 1)")))
+                    (is (= server-nrepl/disabled-status @status)))))
+              (finally
+                (deliver resume true)
+                (server-nrepl/stop! resource)))))))))
+
+(deftest shutdown-rejects-queued-handler-dispatch
+  (let [handled (atom 0)
+        dispatch (atom nil)
+        start-server nrepl-server/start-server]
+    (with-redefs [nrepl-server/default-handler (fn [] (fn [_] (swap! handled inc)))
+                  nrepl-server/start-server (fn [& {:as options}]
+                                              (reset! dispatch (:handler options))
+                                              (apply start-server (mapcat identity options)))]
+      (let [config {:nrepl {:port 0 :bind "127.0.0.1"}}
+            resource (server-nrepl/start! config config (atom {}) (server-nrepl/status-atom))]
+        (try
+          (@dispatch {:op "eval"})
+          (is (= 1 @handled))
+          (server-nrepl/stop! resource)
+          (@dispatch {:op "eval"})
+          (is (= 1 @handled) "a handler queued before stop must not dispatch after stop")
+          (finally (server-nrepl/stop! resource)))))))
