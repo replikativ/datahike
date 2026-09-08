@@ -20,6 +20,11 @@ process helpers. The Babashka process sets its own `java.io.tmpdir` as well.
 Build artifacts retain their usual paths. Dependency resolution needed to load
 Babashka's own task configuration happens before the initializer.
 
+The Unix-domain nREPL fixture uses a short relative `.scratch/nrepl-<unique>`
+path under the checkout because socket path limits also apply when the configured
+scratch root is long. It removes that directory in `finally`, including startup
+failures.
+
 Cleanup has two layers:
 
 1. The migrated secondary-index tests use `datahike.test.scratch/fixture` with

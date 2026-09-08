@@ -5,6 +5,7 @@
             [clojure.test :refer [deftest is testing]]
             [datahike.http.nrepl :as server-nrepl]
             [datahike.http.server :as server]
+            [datahike.test.scratch :as scratch]
             [nrepl.core :as nrepl])
   (:import [java.nio.file Files Path]))
 
@@ -39,25 +40,48 @@
         (server-nrepl/stop! resource)))
     (is (= server-nrepl/disabled-status @status))))
 
-(deftest unix-socket-is-usable-and-removed-on-stop
-  (let [directory (Files/createTempDirectory "datahike-nrepl-test-"
-                                             (make-array java.nio.file.attribute.FileAttribute 0))
-        socket (str (.resolve directory "nrepl.sock"))
-        status (server-nrepl/status-atom)
-        resource (server-nrepl/start! {:nrepl {:socket socket}}
-                                      {:nrepl {:socket socket}}
-                                      (atom {}) status)]
+(defn- with-unix-socket-path [f]
+  ;; Unix sockets limit the pathname passed to bind/connect, even when the
+  ;; filesystem accepts a much longer name. Keep this path relative and short
+  ;; regardless of checkout depth or the configured java.io.tmpdir. This fixture
+  ;; owns its directory and removes it even if starting the server throws.
+  (let [root (Files/createDirectories (Path/of ".scratch" (make-array String 0))
+                                      (make-array java.nio.file.attribute.FileAttribute 0))
+        directory (Files/createTempDirectory root "nrepl-"
+                                             (make-array java.nio.file.attribute.FileAttribute 0))]
     (try
-      (testing "the JDK Unix-domain transport accepts normal nREPL clients"
-        (is (= {:enabled true :transport :unix :socket socket} @status))
-        (is (Files/exists (Path/of socket (make-array String 0))
-                          (make-array java.nio.file.LinkOption 0)))
-        (with-open [connection (nrepl/connect :socket socket)]
-          (is (= ["42"] (eval-values connection "(* 6 7)")))))
-      (finally
-        (server-nrepl/stop! resource)))
-    (is (not (Files/exists (Path/of socket (make-array String 0))
-                           (make-array java.nio.file.LinkOption 0))))))
+      (f (str (.resolve directory "nrepl.sock")))
+      (finally (scratch/delete-tree! (str directory))))))
+
+(deftest unix-socket-is-usable-and-removed-on-stop
+  (with-unix-socket-path
+    (fn [socket]
+      (let [status (server-nrepl/status-atom)
+            resource (server-nrepl/start! {:nrepl {:socket socket}}
+                                          {:nrepl {:socket socket}}
+                                          (atom {}) status)]
+        (try
+          (testing "the JDK Unix-domain transport accepts normal nREPL clients"
+            (is (= {:enabled true :transport :unix :socket socket} @status))
+            (is (Files/exists (Path/of socket (make-array String 0))
+                              (make-array java.nio.file.LinkOption 0)))
+            (with-open [connection (nrepl/connect :socket socket)]
+              (is (= ["42"] (eval-values connection "(* 6 7)")))))
+          (finally
+            (server-nrepl/stop! resource)))
+        (is (not (Files/exists (Path/of socket (make-array String 0))
+                               (make-array java.nio.file.LinkOption 0))))))))
+
+(deftest unix-socket-directory-is-removed-on-failure
+  (let [directory (atom nil)]
+    (is (thrown-with-msg?
+         Exception #"startup failed"
+         (with-unix-socket-path
+           (fn [socket]
+             (reset! directory (.getParent (Path/of socket (make-array String 0))))
+             (spit (str (.resolve ^Path @directory "partial-startup")) "leftover")
+             (throw (ex-info "startup failed" {}))))))
+    (is (not (Files/exists ^Path @directory (make-array java.nio.file.LinkOption 0))))))
 
 (deftest standalone-server-owns-nrepl-and-reports-its-resolved-endpoint
   (let [instance (server/start-server {:host "127.0.0.1"
