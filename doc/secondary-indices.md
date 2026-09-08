@@ -407,46 +407,61 @@ Pure `d/db-with` can update a durable index only when the adapter declares that
 its transient is wholly in memory (`IPureSecondaryMutation`). Stratum does;
 Scriptum and Proximum currently do not, because opening their builders performs
 external writes. A pure transaction touching either fails before a builder is
-opened. Connection transactions support all three. An immutable in-memory delta
-overlay is the intended way to remove this limitation without leaking resources
-from abandoned database values.
+opened. Connection transactions support all three.
 
 ### Backfill scalability
 
-The current beta path keeps the writer available during the snapshot scan. It
-records concurrent changes in an in-memory, per-index delta journal, then
-replays that journal in a short serialized install operation. This closes the
-lost-write race for mutable and immutable adapters, but the journal is not
-bounded. Registering an index while sustained write volume greatly exceeds
-backfill throughput can therefore consume substantial memory.
+The snapshot scan runs in the background. On the JVM, concurrent changes are
+recorded in local disk scratch, with a fixed read boundary in each database
+snapshot. The journal does not retain all changes as decoded values in heap.
+Pure `d/with` does not write scratch files.
+
+Configure the scratch directory and per-index limits on the local writer:
+
+```clojure
+:writer {:backend :self
+         :writer-ownership :exclusive
+         :backfill-journal {:directory "/path/to/scratch"
+                            :max-frame-bytes 1048576
+                            :max-bytes 268435456}}
+```
+
+The directory must already exist. Without `:directory`, scratch uses the
+JVM temporary directory. Defaults allow a 1 MiB encoded notification and
+256 MiB per journal, including eight-byte frame headers. Encoding also limits
+individual scalar allocations and nesting. Exceeding a limit rejects the
+transaction without advancing its database or accepted journal boundary.
+Wait for the build to finish, cancel it, or start a new build with larger limits
+before retrying. Ordinary writes that do not affect the building index are not
+charged to that journal.
+
+Installation still replays the accumulated journal in the serialized writer;
+a large journal can therefore pause writes. These limits bound journal buffers
+and disk use, not the adapter's own index-building memory, transaction input,
+or aggregate resources across many simultaneous builds. Background AVET
+construction is not supported; attribute-index backfill remains synchronous.
+
+Scratch is removed after successful installation, cancellation, or orderly
+writer shutdown. Reconnect rebuilds from durable primary data rather than
+resuming scratch. An abrupt process exit can leave temporary files; use a
+dedicated scratch directory with an operational cleanup policy for stopped
+processes. Do not remove files belonging to an active writer.
 
 For that reason this path currently requires the local self writer with
-`:writer-ownership :exclusive`. Shared writers cannot coordinate an in-memory
+`:writer-ownership :exclusive`. Shared writers cannot coordinate this local
 journal across processes, and remote writers cannot transfer a native live
 generation between build and install. If pre-existing data requires a backfill,
 Datahike rejects those writer configurations before committing the index schema.
 Empty indices can still become ready immediately because no asynchronous handoff
 is needed.
 
-The intended scalable follow-up is a resumable generation protocol:
-
-1. Capture and durably pin a base commit.
-2. Scan the snapshot in bounded, checkpointed batches.
-3. Catch up through successive `datahike.experimental.diff/tx-range` windows.
-4. Validate the build generation and install it inside one writer operation.
-
-`tx-range` currently requires `:keep-history? true`, persistent-set indices,
-and materializes each requested window, so it cannot yet replace the general
-path. The snapshot the scan reads is already pinned with a [durable GC
+The snapshot the scan reads is pinned with a [durable GC
 root](./gc.md#durable-roots) (`:pin`, renewed in the background and released by
 the ready commit); a build whose lease is lost is discarded at install instead
-of being published over swept snapshot nodes. The adapter's unpublished build
-generation is not yet named by a durable checkpoint. The shared Konserve guard
-protects it exactly in-process, and the durable `:building` schema state makes a
+of being published over swept snapshot nodes. A shared Konserve guard
+protects the unpublished generation in-process, and the durable `:building` schema state makes a
 collector in any process defer its sweep until the ready commit lands. This
-pauses reclamation, not transactions or the backfill. A resumable
-generation-specific `:checkpoint` root (or a durable Konserve fence) can later
-allow collection to proceed safely during long builds.
+pauses reclamation, not transactions or the backfill.
 
 ## Purge propagation
 
