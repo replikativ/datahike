@@ -2,7 +2,7 @@
 
 On platforms exposing the full process invocation, ordinary `bb test`, `bb kaocha`,
 and build tasks automatically run with owned scratch. On Windows, use the explicit
-launcher (also used by native CI on every platform):
+launcher (native CI should use this on every platform):
 
 ```sh
 bb --config bb/scratch.edn -m tools.scratch run -- bb ni-cli
