@@ -27,7 +27,9 @@
         ;; 0.9.391 adds guarded, process-wide metrics sinks around API, blob I/O
         ;; and lock waits. With no sink installed its measurement sites take the
         ;; allocation-free fast path.
-        org.replikativ/konserve                     {:mvn/version "0.9.391"}
+        ;; 0.9.393 makes directory persistence fail closed and supplies the
+        ;; Windows native barrier (JDK 22+ on Windows; Unix JDK 21 unchanged).
+        org.replikativ/konserve                     {:mvn/version "0.9.393"}
 
         org.replikativ/superv.async                 {:mvn/version "0.3.51"
                                                      :exclusions [org.clojure/clojurescript]}
@@ -179,7 +181,7 @@
                                ;; tested and shipped versions came apart.
                                org.replikativ/kabel          {:mvn/version "0.3.136"}
                                org.replikativ/konserve-sync  {:mvn/version "0.1.40"}
-                               org.replikativ/geheimnis      {:mvn/version "0.2.33"
+                               org.replikativ/geheimnis      {:mvn/version "0.2.39"
                                                               :exclusions [org.clojure/clojurescript]}
 
                                ;; Standalone-server backends. Keep these versions in sync with
@@ -229,7 +231,7 @@
                          ;; to this artifact so Datahike's browser builds retain
                          ;; their normal dependency graph.
                          :override-deps {org.replikativ/konserve
-                                         {:mvn/version "0.9.391"
+                                         {:mvn/version "0.9.393"
                                           :exclusions [org.clojure/clojurescript]}
                                          com.github.pkpkpk/cljs-cache
                                          {:mvn/version "1.0.21"
@@ -259,7 +261,7 @@
                                       ch.qos.logback/logback-classic {:mvn/version "1.5.32"}
                                       org.replikativ/kabel          {:mvn/version "0.3.136"}
                                       org.replikativ/konserve-sync  {:mvn/version "0.1.40"}
-                                      org.replikativ/geheimnis      {:mvn/version "0.2.33"
+                                      org.replikativ/geheimnis      {:mvn/version "0.2.39"
                                                                      :exclusions [org.clojure/clojurescript]}
                                       http-kit/http-kit             {:mvn/version "2.8.1"}
 
