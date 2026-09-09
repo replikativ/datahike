@@ -129,17 +129,29 @@
         (is (zero? @live))))))
 
 (deftest byte-budget-causes-spills-and-input-failure-cleans-up
-  (let [spill-var (ns-resolve 'datahike.backfill.sort 'spill!)
-        original @spill-var
-        spills (atom [])]
-    (with-redefs-fn {spill-var (fn [directory run window cmp usage opts]
-                                 (swap! spills conj (reduce + (map :charge window)))
-                                 (original directory run window cmp usage opts))}
+  (let [backend-var (ns-resolve 'datahike.backfill.sort 'file-backend)
+        original @backend-var
+        spills (atom {})]
+    (with-redefs-fn {backend-var
+                     (fn [directory usage opts]
+                       (let [backend (original directory usage opts)
+                             open-writer (:open-writer backend)]
+                         (assoc backend :open-writer
+                                (fn [[pass :as id]]
+                                  (let [writer (open-writer id)
+                                        write! (:write! writer)]
+                                    (if (zero? pass)
+                                      (assoc writer :write!
+                                             (fn [entry]
+                                               (swap! spills update id (fnil + 0) (:charge entry))
+                                               (write! entry)))
+                                      writer))))))}
       (fn []
-        (sort/reduce-sorted! (repeat 20 [1 :v 1 10 true]) msort/by-sort-key
-                             {:window-bytes 512 :window-records 1000} (fn [n _] (inc n)) 0)
+        (is (= 20 (sort/reduce-sorted! (repeat 20 [1 :v 1 10 true]) msort/by-sort-key
+                                       {:window-bytes 512 :window-records 1000}
+                                       (fn [n _] (inc n)) 0)))
         (is (> (count @spills) 1) "byte limit spills before record limit")
-        (is (every? #(<= % 512) @spills)))))
+        (is (every? #(<= % 512) (vals @spills))))))
   (with-directory
     (fn [directory]
       (is (= ::input
@@ -154,9 +166,11 @@
       (let [record [1 :v 1 10 true]
             frame-bytes (+ 4 (alength ^bytes (cbor/encode-record record)))]
         (is (= :datahike.backfill.sort/quota-exceeded
-               (error-type #(sort/reduce-sorted! [record record] msort/by-sort-key
-                                                 {:directory directory :window-records 1
-                                                  :max-bytes (dec (* 3 frame-bytes))}
+               ;; Each input still has unread records when the first output
+               ;; frame is written, so old and new bytes really coexist.
+               (error-type #(sort/reduce-sorted! (repeat 6 record) msort/by-sort-key
+                                                 {:directory directory :window-records 3
+                                                  :max-bytes (dec (* 7 frame-bytes))}
                                                  conj [])))))))
   (let [read-frame (ns-resolve 'datahike.backfill.sort 'read-frame!)]
     (doseq [bytes [[0 0 0] [0 0 0 100] [127 -1 -1 -1]]]

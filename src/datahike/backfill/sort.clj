@@ -2,7 +2,8 @@
   "Scoped JVM external sorting with bounded windows, records and merge fan-in.
    Limits account for retained record data, not exact JVM object sizes."
   (:require [boring.core :as boring]
-            [datahike.migrate.cbor :as cbor])
+            [datahike.migrate.cbor :as cbor]
+            [datahike.sort :as engine])
   (:import [java.io ByteArrayOutputStream DataInputStream DataOutputStream
             BufferedInputStream BufferedOutputStream FileInputStream FileOutputStream OutputStream EOFException]
            [java.nio.file Files Path CopyOption]
@@ -126,82 +127,30 @@
         (catch EOFException e
           (throw (ex-info "Incomplete sort frame." {:type ::corrupt} e)))))))
 
-(defn- with-output! [^Path path f]
-  (with-open [out (DataOutputStream. (BufferedOutputStream. (FileOutputStream. (.toFile path))))]
-    (f out)))
-
-(defn- spill! [directory run window cmp usage opts]
-  (with-output! (run-path directory 0 run)
-    (fn [out]
-      (doseq [entry (sort (fn [a b] (cmp (:record a) (:record b))) window)]
-        (write-frame! out usage (:max-bytes opts) (:bytes entry))))))
-
-(defn- initial-runs! [records directory cmp usage opts]
-  (let [{:keys [window-bytes window-records]} opts
-        {:keys [run window]}
-        (reduce (fn [{:keys [run window charge]} record]
-                  (let [entry (encode! record opts)]
-                    (if (and (seq window)
-                             (or (= (count window) window-records)
-                                 (> (+ charge (:charge entry)) window-bytes)))
-                      (do (spill! directory run window cmp usage opts)
-                          {:run (inc run) :window [entry] :charge (:charge entry)})
-                      {:run run :window (conj window entry) :charge (+ charge (:charge entry))})))
-                {:run 0 :window [] :charge 0} records)]
-    (when (seq window) (spill! directory run window cmp usage opts))
-    (+ run (if (seq window) 1 0))))
-
-(defn- merge-group! [directory pass start end target cmp usage opts]
-  (let [readers (volatile! [])
-        primary (volatile! nil)]
-    (try
-      (doseq [i (range start end)]
-        (vswap! readers conj (open-reader (run-path directory pass i))))
-      (let [entry-cmp (fn [a b]
-                        (let [c (cmp (:record a) (:record b))]
-                          (if (zero? c) (compare (:reader a) (:reader b)) c)))]
-        (with-output! (run-path directory (inc pass) target)
-          (fn [out]
-            (loop [q (reduce-kv (fn [q i in]
-                                  (if-let [entry (read-frame! in (:max-record-bytes opts))]
-                                    (conj q (assoc entry :reader i)) q))
-                                (sorted-set-by entry-cmp) @readers)]
-              (when-let [entry (first q)]
-                (write-frame! out usage (:max-bytes opts) (:bytes entry))
-                (let [q (disj q entry)
-                      next-entry (read-frame! (nth @readers (:reader entry)) (:max-record-bytes opts))]
-                  (recur (if next-entry (conj q (assoc next-entry :reader (:reader entry))) q))))))))
-      (catch Throwable e (vreset! primary e) (throw e))
-      (finally
-        (let [failure (volatile! nil)]
-          (doseq [^DataInputStream in @readers]
-            (try (.close in) (catch Throwable e (when-not @failure (vreset! failure e)))))
-          (when-let [e @failure]
-            (if-let [^Throwable original @primary]
-              (.addSuppressed original e)
-              (throw e)))))))
-  (doseq [i (range start end)]
-    (let [path (run-path directory pass i)
-          size (Files/size path)]
-      (Files/delete path)
-      (vswap! usage - size))))
-
-(defn- sorted-file! [records directory cmp usage opts]
-  (loop [pass 0 runs (initial-runs! records directory cmp usage opts)]
-    (cond
-      (zero? runs) nil
-      (= 1 runs) (run-path directory pass 0)
-      :else
-      (let [fan-in (:fan-in opts)
-            next-runs (quot (+ runs (dec fan-in)) fan-in)]
-        (doseq [group (range next-runs)]
-          (let [start (* group fan-in)
-                end (min runs (+ start fan-in))]
-            (if (= (inc start) end)
-              (Files/move (run-path directory pass start) (run-path directory (inc pass) group)
-                          (make-array CopyOption 0))
-              (merge-group! directory pass start end group cmp usage opts))))
-        (recur (inc pass) next-runs)))))
+(defn- file-backend [directory usage opts]
+  {:prepare #(encode! % opts)
+   :open-reader
+   (fn [[pass run]]
+     (let [in (open-reader (run-path directory pass run))]
+       {:next! #(read-frame! in (:max-record-bytes opts))
+        :close! #(.close ^DataInputStream in)}))
+   :open-writer
+   (fn [[pass run]]
+     (let [path (run-path directory pass run)
+           out (DataOutputStream. (BufferedOutputStream. (FileOutputStream. (.toFile path))))]
+       {:write! #(write-frame! out usage (:max-bytes opts) (:bytes %))
+        :close! #(.close out)}))
+   :delete!
+   (fn [[pass run]]
+     (let [path (run-path directory pass run)
+           size (Files/size path)]
+       (Files/delete path)
+       (vswap! usage - size)))
+   :move!
+   (fn [[from-pass from-run] [to-pass to-run]]
+     (Files/move (run-path directory from-pass from-run)
+                 (run-path directory to-pass to-run)
+                 (make-array CopyOption 0)))})
 
 (defn- cleanup! [^Path directory]
   (let [failure (volatile! nil)]
@@ -229,8 +178,10 @@
                     (Files/createTempDirectory "datahike-sort-" attrs))
         primary (volatile! nil)]
     (try
-      (if-let [path (sorted-file! records directory cmp (volatile! 0) opts)]
-        (with-open [in (open-reader path)]
+      (if-let [[pass run] (engine/sorted-file! records {:cmp cmp}
+                                               (file-backend directory (volatile! 0) opts)
+                                               opts)]
+        (with-open [in (open-reader (run-path directory pass run))]
           (letfn [(step []
                     (lazy-seq
                      (when-let [entry (read-frame! in (:max-record-bytes opts))]
