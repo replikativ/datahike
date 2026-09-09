@@ -1,12 +1,14 @@
 (ns datahike.test.secondary-lease-lifecycle-test
-  (:require
-   [clojure.core.async :as async]
-   [clojure.java.io :as io]
-   [clojure.test :refer [deftest is testing]]
-   [datahike.datom :as datom]
-   [datahike.index.entity-set :as es]
-   [datahike.index.secondary :as sec]
-   [datahike.index.secondary.scriptum]))
+  (:require [datahike.test.scratch :as scratch]
+            [clojure.core.async :as async]
+            [clojure.java.io :as io]
+            [clojure.test :refer [deftest is testing]]
+            [datahike.datom :as datom]
+            [datahike.index.entity-set :as es]
+            [datahike.index.secondary :as sec]
+            [datahike.index.secondary.scriptum]))
+
+(clojure.test/use-fixtures :each scratch/fixture)
 
 (def ^:private proximum-available?
   (try
@@ -19,7 +21,7 @@
     (let [base (sec/create-index
                 :scriptum
                 {:attrs #{:doc/body}
-                 :path (str "/tmp/datahike-scriptum-lease-" (random-uuid))}
+                 :path (str (scratch/path) "/datahike-scriptum-lease-" (random-uuid))}
                 nil)
           source* (atom nil)
           prepared* (atom nil)

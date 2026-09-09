@@ -16,7 +16,76 @@
    COUNT rather than order alone."
   (:require [clojure.test :refer [deftest testing is]]
             [datahike.migrate.fs :as fs]
+            [datahike.migrate.cbor :as cbor]
             [datahike.migrate.sort :as msort]))
+
+(deftest scoped-sort-closes-on-early-return-and-failure
+  (let [dir (fs/temp-dir! "dh-sort-scope-")
+        unrelated (fs/join dir "keep.txt")
+        live (atom 0)
+        peak (atom 0)
+        original fs/reader]
+    (fs/spit-text! unrelated "keep")
+    (try
+      (with-redefs [fs/reader
+                    (fn [path]
+                      (let [{:keys [close] :as reader} (original path)
+                            closed? (atom false)]
+                        (swap! live inc)
+                        (swap! peak max @live)
+                        (assoc reader :close
+                               (fn []
+                                 (when (compare-and-set! closed? false true)
+                                   (try (close) (finally (swap! live dec))))))))]
+        (doseq [consume [first #(reduce (fn [_ x] (reduced x)) nil %)
+                         (fn [_] (throw (ex-info "consumer" {:error ::consumer})))]]
+          (try
+            (msort/with-sorted-records! (map #(vector % :a % 1 true) (range 150))
+              1 dir msort/export-order consume)
+            (catch #?(:clj clojure.lang.ExceptionInfo :cljs :default) e
+              (is (= ::consumer (:error (ex-data e)))))))
+        (is (zero? @live))
+        (is (<= 1 @peak 64))
+        (is (= ["keep.txt"] (fs/list-names dir))))
+      (finally (fs/delete! unrelated) (fs/delete! dir)))))
+
+(deftest migration-optimizations-count-real-work
+  (let [dir (fs/temp-dir! "dh-sort-work-")
+        rs (mapv #(vector % :a % 1 true) (range 65))
+        encodes (atom 0)
+        keys (atom 0)
+        encode cbor/encode-record
+        order {::msort/key-fn (fn [r] (swap! keys inc) (first r))}]
+    (try
+      (with-redefs [cbor/encode-record (fn [r] (swap! encodes inc) (encode r))]
+        (is (= rs (vec (msort/external-sort rs 100 dir order))))
+        (is (= 65 @keys) "one key per in-memory record")
+        (is (zero? @encodes) "no encoding for an in-memory sort")
+        (reset! keys 0)
+        (is (= rs (vec (msort/external-sort rs 1 dir order))))
+        (is (= 67 @encodes) "65 initial records plus only the two-run partial merge")
+        (is (= 132 @keys) "keys computed once for each initial/decoded entry")
+        (reset! encodes 0)
+        (let [path (msort/external-sort-to-file rs 100 dir order)]
+          (is (= 65 @encodes) "a single materialized run is not copied")
+          (with-redefs [msort/sort-key (fn [_] (throw (ex-info "Unexpected sort key on reread" {})))]
+            (is (= rs (vec (msort/read-sorted-file path)))))
+          (fs/delete! path)))
+      (finally (fs/delete! dir)))))
+
+(deftest decoder-construction-error-survives-reader-close-failure
+  (doseq [same-error? [false true]]
+    (let [primary (ex-info "decode" {})
+          cleanup (if same-error? primary (ex-info "close" {}))
+          closed? (atom false)]
+      (with-redefs [fs/reader (fn [_] {:source nil
+                                       :close (fn [] (reset! closed? true) (throw cleanup))})
+                    cbor/decode-records (fn [_] (throw primary))]
+        (is (identical? primary
+                        (try (msort/merge-runs ["unused"])
+                             nil
+                             (catch #?(:clj Throwable :cljs :default) e e))))
+        (is @closed?)))))
 
 (defn- cleanup! [dir]
   (doseq [n (or (fs/list-names dir) [])]

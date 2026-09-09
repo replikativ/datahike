@@ -22,6 +22,14 @@ fs.writeSync = function(fd, buffer, offset, length, position) {};
 fs.fsyncSync = function(fd) {};
 fs.mkdirSync = function(path, options) {};
 fs.readdirSync = function(path, options) {};
+fs.opendirSync = function(path, options) {};
+/** @constructor */
+var Dir = function() {};
+Dir.prototype.readSync = function() {};
+Dir.prototype.closeSync = function() {};
+/** @constructor */
+var Dirent = function() {};
+Dirent.prototype.name;
 fs.unlinkSync = function(path) {};
 fs.renameSync = function(oldPath, newPath) {};
 fs.copyFileSync = function(src, dest, flags) {};

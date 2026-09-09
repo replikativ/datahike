@@ -5,6 +5,7 @@
             [datahike.gc-guard :as guard]
             [datahike.gc-roots :as roots]
             [datahike.db.transaction :as dbtx]
+            #?(:clj [datahike.backfill.capture :as capture])
             [datahike.db.utils :as dbu]
             [datahike.db.interface :as dbi]
             [datahike.index :as di]
@@ -1890,18 +1891,17 @@
                          :actual-building-since-tx building-since-tx
                          :status status}))
            (assert-build-root-live! build-result)
-           (let [deltas (get-in old [:secondary-index-build-deltas idx-ident] [])
-                 use-transient? (satisfies? sec/ITransientSecondaryIndex index)
+           (let [use-transient? (satisfies? sec/ITransientSecondaryIndex index)
                  t-idx (if use-transient?
                          (binding [sec/*durable-secondary-write-context* :commit]
                            (sec/-as-transient index))
                          index)
                  _ (reset! transient-index t-idx)
-                 replayed (reduce (fn [idx tx-report]
-                                    (if use-transient?
-                                      (do (sec/-transact! idx tx-report) idx)
-                                      (sec/-transact idx tx-report)))
-                                  t-idx deltas)
+                 replayed (capture/reduce-deltas old idx-ident (fn [idx tx-report]
+                                                                 (if use-transient?
+                                                                   (do (sec/-transact! idx tx-report) idx)
+                                                                   (sec/-transact idx tx-report)))
+                                                 t-idx)
                  final-idx (if use-transient? (sec/-persistent! replayed) replayed)
                  _ (reset! final-index final-idx)
                  db-after (-> old
@@ -2003,7 +2003,7 @@
          (doseq [idx-ident new-building]
            (close-secondary-index! (get-in db-after [:secondary-indices idx-ident])))
          (log/raise
-          "Asynchronous secondary-index backfill currently requires local exclusive writer ownership. Remote writers cannot transfer a live build generation, and shared writers cannot coordinate its in-memory delta journal across processes."
+          "Asynchronous secondary-index backfill currently requires local exclusive writer ownership. Remote writers cannot transfer a live build generation, and shared writers cannot coordinate its local scratch journal across processes."
           {:type :secondary-index-backfill-unsupported-writer
            :idx-ident (first new-building)
            :idx-idents (set new-building)

@@ -147,7 +147,7 @@
       (if-let [inert (seq (filter (partial contains? writer)
                                   [:writer-ownership :streaming? :require-fencing
                                    :max-batch :head-conflict-retries
-                                   :head-conflict-backoff-ms]))]
+                                   :head-conflict-backoff-ms :backfill-journal]))]
         (log/raise (str "These options configure the :self writer and are inert on a remote writer backend. "
                         "Configure the writer where it runs — the process that owns it — and remove them here.")
                    {:type    :self-writer-options-on-remote-writer

@@ -16,10 +16,13 @@
 
 (defn back-compat [config]
   (println "Testing backwards compatibility")
-  (let [old-version-dir "datahike-old"
+  (let [old-version-dir (str (fs/create-temp-dir
+                              {:dir (System/getProperty "java.io.tmpdir")
+                               :prefix "datahike-old-"}))
         release-tag (str/trim (:out (git {:out :string}
                                          "describe" "--tags" "--abbrev=0" "HEAD")))
-        secondary-root (str (fs/create-temp-dir {:prefix "datahike-secondary-back-compat-"}))
+        secondary-root (str (fs/create-temp-dir {:dir (System/getProperty "java.io.tmpdir")
+                                                 :prefix "datahike-secondary-back-compat-"}))
         secondary-fixture (str (fs/absolutize
                                 "test/datahike/backward_compatibility_test/src"))
         old-secondary-fixture "backward-secondary-src"
@@ -46,6 +49,14 @@
     (git {:dir "."}
          "clone" "--depth" "1" "--branch" release-tag
          (:git-url config) old-version-dir)
+
+    ;; The released writer carries a fixed /tmp path. Change only that path in
+    ;; its fixture so both JVMs share the run's java.io.tmpdir; keep the released
+    ;; writer and dependencies otherwise intact.
+    (let [fixture (fs/file old-version-dir "test/datahike/backward_compatibility_test/src/backward_test.clj")]
+      (spit fixture (str/replace (slurp fixture)
+                                 "\"/tmp/datahike-backward-comp-test\""
+                                 "(str (System/getProperty \"java.io.tmpdir\") \"/datahike-backward-comp-test\")")))
 
     ;; Generate Java API bindings before compiling
     (println "Generating Java API for old version...")
@@ -193,9 +204,9 @@
                                          "/usr/bin/chromium-browser"
                                          "/usr/bin/google-chrome"])))
             env (if chrome-bin
-                  (assoc (into {} (System/getenv)) "CHROME_BIN" chrome-bin)
-                  (into {} (System/getenv)))]
-        (p/shell {:env env} "npx karma start --single-run"))
+                  {"CHROME_BIN" chrome-bin}
+                  {})]
+        (p/shell {:extra-env env} "npx karma start --single-run"))
       (finally
         (println "Stopping test server...")
         (p/destroy server-process)))))

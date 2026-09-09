@@ -22,6 +22,12 @@ Datahike provides pluggable storage through [konserve](https://github.com/replik
 
 ### File Backend
 
+On Windows, the JVM file backend requires JDK 22+ and
+`--enable-native-access=ALL-UNNAMED` for Konserve's directory persistence barrier.
+This does not raise the Unix JVM requirement. Native binary builds use GraalVM
+25. Persistence errors fail the write; do not enable unsafe directory-sync
+fallback to bypass them.
+
 **Use when**: You want to use Unix tools (rsync, git, backup scripts) to manage your database.
 
 **Key advantage**: Deltas in persistent data structures translate directly into individual file deltas, making incremental backups and synchronization highly efficient.
