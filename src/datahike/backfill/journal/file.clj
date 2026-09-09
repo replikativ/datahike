@@ -11,6 +11,21 @@
 (def ^:private owners (atom {}))
 (defn descriptor-id [descriptor] (:id descriptor))
 
+(def ^:private header-bytes 24)
+
+(deftype Cursor [owner ^long start ^long end incarnation]
+  Object
+  (equals [_ other]
+    (and (instance? Cursor other)
+         (identical? owner (.-owner ^Cursor other))
+         (= start (.-start ^Cursor other))
+         (= end (.-end ^Cursor other))
+         (= incarnation (.-incarnation ^Cursor other))))
+  (hashCode [_]
+    (hash [(System/identityHashCode owner) start end incarnation])))
+
+(alter-meta! #'->Cursor assoc :private true)
+
 (def ^:private codec {:profile :archival
                       :registry (elements/install-element-handlers (boring/tag-registry))})
 
@@ -38,7 +53,7 @@
 
 (defn create!
   "Create an owned scratch file. Limits include frame payload bytes and total
-   file bytes respectively; each notification has an eight-byte length header."
+   file bytes respectively. Each frame has a 24-byte length/incarnation header."
   [options]
   (let [{:keys [directory max-frame-bytes max-bytes]} (validate-options! options)
         attrs (make-array FileAttribute 0)
@@ -46,19 +61,81 @@
                (Files/createTempFile (Path/of (str directory) (make-array String 0))
                                      "datahike-build-" ".journal" attrs)
                (Files/createTempFile "datahike-build-" ".journal" attrs))
+        owner (Object.)
         descriptor {:id (UUID/randomUUID) :path (str path) :end 0
+                    ::cursor (Cursor. owner -1 0 nil)
                     :max-frame-bytes max-frame-bytes :max-bytes max-bytes}]
-    (swap! owners assoc (:id descriptor) (dissoc descriptor :end))
+    (swap! owners assoc (:id descriptor)
+           {:metadata (dissoc descriptor :end ::cursor) :capability owner})
     descriptor))
 
 (defn- checked-path ^Path [descriptor]
-  (when-not (and (= (get @owners (:id descriptor)) (dissoc descriptor :end))
-                 (integer? (:end descriptor)) (<= 0 (:end descriptor) (:max-bytes descriptor)))
+  (when-not (let [owner (get @owners (:id descriptor))
+                  cursor (::cursor descriptor)]
+              (and owner (= (:metadata owner) (dissoc descriptor :end ::cursor))
+                   (instance? Cursor cursor)
+                   (identical? (:capability owner) (.-owner ^Cursor cursor))
+                   (integer? (:end descriptor))
+                   (= (:end descriptor) (.-end ^Cursor cursor))
+                   (<= 0 (:end descriptor) (:max-bytes descriptor))))
     (fail! :backfill.journal/invalid-descriptor "Unknown or modified journal descriptor." {}))
   (let [path (Path/of (:path descriptor) (make-array String 0))]
     (when (Files/isSymbolicLink path)
       (fail! :backfill.journal/invalid-descriptor "Journal path is a symbolic link." {}))
     path))
+
+(defn- check-boundary!
+  [^RandomAccessFile file descriptor cursor error-type]
+  (when-not (and (instance? Cursor cursor)
+                 (identical? (.-owner ^Cursor (::cursor descriptor)) (.-owner ^Cursor cursor))
+                 (<= 0 (.-end ^Cursor cursor) (:end descriptor)))
+    (fail! error-type "Cursor belongs to another journal or exceeds the accepted prefix." {}))
+  (let [^Cursor cursor cursor
+        start (.-start cursor)
+        end (.-end cursor)]
+    (if (zero? end)
+      (when-not (and (= -1 start) (nil? (.-incarnation cursor)))
+        (fail! error-type "Invalid empty journal cursor." {}))
+      (do
+        (when-not (and (<= 0 start) (<= header-bytes (- end start))
+                       (instance? UUID (.-incarnation cursor)))
+          (fail! error-type "Cursor does not identify a complete frame boundary." {}))
+        (.seek file start)
+        (let [n (.readLong file)
+              incarnation (UUID. (.readLong file) (.readLong file))]
+          (when-not (= incarnation (.-incarnation cursor))
+            (fail! error-type "Journal cursor names an abandoned or modified frame." {}))
+          (when-not (and (<= 1 n (:max-frame-bytes descriptor))
+                         (= n (- end start header-bytes)))
+            (fail! :backfill.journal/corrupt "Invalid journal boundary frame length." {})))))
+    cursor))
+
+(defn- check-end! [^RandomAccessFile file descriptor]
+  (when (< (.length file) (:end descriptor))
+    (fail! :backfill.journal/corrupt "Journal is shorter than its accepted prefix." {}))
+  (check-boundary! file descriptor (::cursor descriptor) :backfill.journal/invalid-descriptor))
+
+(defn start-cursor [descriptor]
+  (let [path (checked-path descriptor)]
+    (with-open [file (RandomAccessFile. (.toFile path) "r")]
+      (check-end! file descriptor)
+      (Cursor. (.-owner ^Cursor (::cursor descriptor)) -1 0 nil))))
+
+(defn end-cursor [descriptor]
+  (let [path (checked-path descriptor)]
+    (with-open [file (RandomAccessFile. (.toFile path) "r")]
+      (check-end! file descriptor))))
+
+(defn compare-cursors
+  "Compare two owned boundaries within this accepted prefix. Stale cursors
+   raise invalid-cursor; a stale descriptor raises invalid-descriptor."
+  [descriptor left right]
+  (let [path (checked-path descriptor)]
+    (with-open [file (RandomAccessFile. (.toFile path) "r")]
+      (check-end! file descriptor)
+      (check-boundary! file descriptor left :backfill.journal/invalid-cursor)
+      (check-boundary! file descriptor right :backfill.journal/invalid-cursor)
+      (compare (.-end ^Cursor left) (.-end ^Cursor right)))))
 
 (defn- check-scalars!
   "Bound scalar allocations inside the codec before its output cap can act.
@@ -113,65 +190,82 @@
   [{:keys [end max-frame-bytes max-bytes] :as descriptor} notifications]
   (let [path (checked-path descriptor)]
     (with-open [file (RandomAccessFile. (.toFile path) "rw")]
-      (when (< (.length file) end)
-        (fail! :backfill.journal/corrupt "Journal is shorter than its accepted prefix." {}))
+      (check-end! file descriptor)
       (.setLength file end)
       (.seek file end)
-      (try
-        (doseq [notification notifications]
-          (check-scalars! notification max-frame-bytes)
-          (let [start (.getFilePointer file)
-                payload-start (+ start 8)
-                count-bytes (volatile! 0)
-                reserve! (fn [n]
-                           (when (> (+ @count-bytes n) max-frame-bytes)
-                             (fail! :backfill.journal/frame-too-large "Journal frame exceeds byte limit." {}))
-                           (when (> (+ payload-start @count-bytes n) max-bytes)
-                             (fail! :backfill.journal/quota-exceeded "Journal exceeds disk quota." {}))
-                           (vswap! count-bytes + n))
-                out (proxy [OutputStream] []
-                      (write
-                        ([v] (if (number? v)
-                               (do (reserve! 1) (.write file (int v)))
-                               (let [n (alength ^bytes v)]
-                                 (reserve! n) (.write file ^bytes v 0 n))))
-                        ([bs offset n] (reserve! n) (.write file ^bytes bs (int offset) (int n)))))]
-            (when (> payload-start max-bytes)
-              (fail! :backfill.journal/quota-exceeded "Journal exceeds disk quota." {}))
-            (.writeLong file 0)
-            (boring/write-to! (boring/writer (min 8192 max-frame-bytes) codec) notification out)
-            (let [next-end (.getFilePointer file)]
-              (.seek file start)
-              (.writeLong file @count-bytes)
-              (.seek file next-end))))
-        (assoc descriptor :end (.getFilePointer file))
-        (catch Throwable e
-          (try (.setLength file end)
-               (catch Throwable rollback (.addSuppressed e rollback)))
-          (throw e))))))
+      (let [last-cursor (volatile! (::cursor descriptor))]
+        (try
+          (doseq [notification notifications]
+            (check-scalars! notification max-frame-bytes)
+            (let [start (.getFilePointer file)
+                  _ (when (> header-bytes (- max-bytes start))
+                      (fail! :backfill.journal/quota-exceeded "Journal exceeds disk quota." {}))
+                  payload-start (+ start header-bytes)
+                  incarnation (UUID/randomUUID)
+                  count-bytes (volatile! 0)
+                  reserve! (fn [n]
+                             (when (> (+ @count-bytes n) max-frame-bytes)
+                               (fail! :backfill.journal/frame-too-large "Journal frame exceeds byte limit." {}))
+                             (when (> (+ @count-bytes n) (- max-bytes payload-start))
+                               (fail! :backfill.journal/quota-exceeded "Journal exceeds disk quota." {}))
+                             (vswap! count-bytes + n))
+                  out (proxy [OutputStream] []
+                        (write
+                          ([v] (if (number? v)
+                                 (do (reserve! 1) (.write file (int v)))
+                                 (let [n (alength ^bytes v)]
+                                   (reserve! n) (.write file ^bytes v 0 n))))
+                          ([bs offset n] (reserve! n) (.write file ^bytes bs (int offset) (int n)))))]
+              (.writeLong file 0)
+              (.writeLong file (.getMostSignificantBits incarnation))
+              (.writeLong file (.getLeastSignificantBits incarnation))
+              (boring/write-to! (boring/writer (min 8192 max-frame-bytes) codec) notification out)
+              (let [next-end (.getFilePointer file)]
+                (.seek file start)
+                (.writeLong file @count-bytes)
+                (.seek file next-end)
+                (vreset! last-cursor
+                         (Cursor. (.-owner ^Cursor (::cursor descriptor)) start next-end incarnation)))))
+          (assoc descriptor :end (.getFilePointer file) ::cursor @last-cursor)
+          (catch Throwable e
+            (try (.setLength file end)
+                 (catch Throwable rollback (.addSuppressed e rollback)))
+            (throw e)))))))
 
-(defn reduce-journal
-  "Reduce exactly the descriptor's prefix, decoding one bounded frame at a time.
-   Honors reduced and closes the file on completion, early return or exception."
-  [{:keys [end max-frame-bytes] :as descriptor} f init]
+(defn reduce-range
+  "Reduce from an issued cursor through this accepted prefix. Callback receives
+   accumulator, value and an opaque next cursor. No earlier payload is decoded.
+   Boundary validation reads only the descriptor-end and start frame headers.
+   Numeric/foreign/abandoned cursors are rejected; raw file corruption is corrupt.
+   Always closes its reader, including reduced, callback and codec exceptions."
+  [{:keys [end max-frame-bytes] :as descriptor} start f init]
   (let [path (checked-path descriptor)]
     (with-open [file (RandomAccessFile. (.toFile path) "r")]
-      (when (< (.length file) end)
-        (fail! :backfill.journal/corrupt "Journal is shorter than its accepted prefix." {}))
+      (check-end! file descriptor)
+      (check-boundary! file descriptor start :backfill.journal/invalid-cursor)
+      (.seek file (.-end ^Cursor start))
       (loop [acc init]
         (let [position (.getFilePointer file)]
           (if (= position end)
             acc
             (do
-              (when (> (+ position 8) end)
+              (when (> header-bytes (- end position))
                 (fail! :backfill.journal/corrupt "Incomplete journal header." {}))
-              (let [n (.readLong file)]
-                (when-not (<= 1 n (min max-frame-bytes (- end position 8)))
+              (let [n (.readLong file)
+                    incarnation (UUID. (.readLong file) (.readLong file))]
+                (when-not (<= 1 n (min max-frame-bytes (- end position header-bytes)))
                   (fail! :backfill.journal/corrupt "Invalid journal frame length." {}))
                 (let [payload (byte-array n)
                       _ (.readFully file payload)
-                      next-acc (f acc (boring/decode payload codec))]
+                      cursor (Cursor. (.-owner ^Cursor (::cursor descriptor))
+                                      position (.getFilePointer file) incarnation)
+                      next-acc (f acc (boring/decode payload codec) cursor)]
                   (if (reduced? next-acc) @next-acc (recur next-acc)))))))))))
+
+(defn reduce-journal
+  "Reduce exactly this accepted prefix, decoding one bounded frame at a time."
+  [descriptor f init]
+  (reduce-range descriptor (start-cursor descriptor) (fn [acc value _] (f acc value)) init))
 
 (defn dispose!
   "Delete only this process's exact owned scratch file. Idempotent."

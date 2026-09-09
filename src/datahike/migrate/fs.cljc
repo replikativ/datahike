@@ -119,6 +119,24 @@
   #?(:clj (some->> (.listFiles (io/file p)) (mapv #(.getName ^File %)))
      :cljs (when (directory? p) (vec (.readdirSync (fs) (str p))))))
 
+(defn reduce-names
+  "Reduce directory names without retaining a listing. Closes the directory
+   handle on exhaustion, reduced, or failure. Requires synchronous Node IO."
+  [p f init]
+  #?(:clj
+     (with-open [entries (Files/newDirectoryStream (.toPath (io/file p)))]
+       (reduce (fn [acc path] (f acc (str (.getFileName ^java.nio.file.Path path))))
+               init entries))
+     :cljs
+     (let [dir (.opendirSync (fs) (str p))]
+       (try
+         (loop [acc init]
+           (if-let [entry (.readSync dir)]
+             (let [next-acc (f acc (.-name entry))]
+               (if (reduced? next-acc) @next-acc (recur next-acc)))
+             acc))
+         (finally (.closeSync dir))))))
+
 ;; ---------------------------------------------------------------------------
 ;; mutation
 
