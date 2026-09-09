@@ -2,6 +2,7 @@
   "Manage all state changes and access to state of durable store."
   (:require [datahike.connections :refer [invalidate-store-connections!]]
             [datahike.db :as db]
+            [datahike.dependency-tracking :as tracking]
             [datahike.gc-guard :as guard]
             [datahike.gc-roots :as roots]
             [datahike.db.transaction :as dbtx]
@@ -1429,7 +1430,7 @@
         {:keys [db-after tx-data]
          {:keys [db/txInstant]} :tx-meta} tx-report
         new-meta  (assoc (:meta db-after) :datahike/updated-at txInstant)
-        db        (assoc db-after :meta new-meta :writer writer)
+        db        (tracking/schema-transition old (assoc db-after :meta new-meta :writer writer))
         ;; Propagate query result cache from old DB to new DB
         ;; Extract modified attributes from tx-data for selective invalidation
         rim (:ref-ident-map db)
@@ -2128,7 +2129,7 @@
   (complete-db-update
    old
    {:db-before old
-    :db-after  (merge old fields)
+    :db-after  (tracking/forget (merge old fields))
     :tx-data   []
     :tempids   {}
     :tx-meta   {:db/txInstant (dt/get-date)}}))

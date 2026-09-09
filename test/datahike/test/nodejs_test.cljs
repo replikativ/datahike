@@ -19,6 +19,7 @@
             [datahike.test.cljs-pattern-scan-test]
             [datahike.test.optimistic-test]
             [datahike.test.reference-test]
+            [datahike.test.dependency-tracking-test]
             [datahike.test.purge-reference-test]
             [datahike.test.valid-time-test]
             ;; Portable query suites — exercise the query-engine paths that were
@@ -917,6 +918,7 @@
                'datahike.test.cljs-pattern-scan-test
                'datahike.test.optimistic-test
                'datahike.test.reference-test
+               'datahike.test.dependency-tracking-test
                'datahike.test.purge-reference-test
                'datahike.test.valid-time-test
                'datahike.test.time-variance-test

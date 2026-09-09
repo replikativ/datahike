@@ -214,7 +214,7 @@
      :stability :stable
      :supports-remote? true
      :referentially-transparent? false
-     :doc "Applies transaction to the database and updates connection. Blocks until committed. The map form accepts :tx-options {:allow-index-backfill? true} to permit index/uniqueness backfill for this transaction only; it does not change the database config. WARNING: Do not call from listener callbacks or transaction functions — use transact! instead to avoid deadlocks."
+     :doc "Applies transaction to the database and updates connection. Blocks until committed. The map form accepts :tx-options {:allow-index-backfill? true} to permit index/uniqueness backfill for this transaction only; it does not change the database config. :track-dependencies enrolls snapshot-local dependency selectors; see datahike.dependency-tracking. WARNING: Do not call from listener callbacks or transaction functions — use transact! instead to avoid deadlocks."
      :examples [{:desc "Add single datom"
                  :code "(transact conn [[:db/add 1 :name \"Ivan\"]])"}
                 {:desc "Retract datom"
@@ -272,7 +272,7 @@
      :stability :stable
      :supports-remote? false
      :referentially-transparent? true
-     :doc "Applies transaction to immutable db value. Returns transaction report. Accepts :tx-options in the map form, or as a fourth argument after tx-meta. The only option is :allow-index-backfill? (boolean): true permits index/uniqueness backfill for this transaction without changing the database config."
+     :doc "Applies transaction to immutable db value. Returns transaction report. Accepts :tx-options in the map form, or as a fourth argument after tx-meta. :allow-index-backfill? (boolean) permits index/uniqueness backfill for this transaction without changing the database config. :track-dependencies enrolls snapshot-local dependency selectors; see datahike.dependency-tracking."
      :examples [{:desc "Transaction on db value"
                  :code "(with @conn [[:db/add 1 :name \"Ivan\"]])"}
                 {:desc "With metadata"

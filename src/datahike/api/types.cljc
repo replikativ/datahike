@@ -75,7 +75,14 @@
 (def STxOptions
   "Transaction-local execution options; never persisted in the database."
   [:maybe [:map {:closed true}
-           [:allow-index-backfill? {:optional true} :boolean]]])
+           [:allow-index-backfill? {:optional true} :boolean]
+           [:track-dependencies {:optional true}
+            [:map-of :keyword
+             [:maybe [:map {:closed true}
+                      [:attributes {:optional true} [:set :keyword]]
+                      [:namespaces {:optional true} [:set :string]]
+                      [:namespace-prefixes {:optional true} [:set :string]]
+                      [:exclude-attributes {:optional true} [:set :keyword]]]]]]]])
 
 (def STransactionReport
   "Transaction result map.
