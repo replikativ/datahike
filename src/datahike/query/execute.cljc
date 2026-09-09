@@ -2867,6 +2867,22 @@
                                          (contains? inner %)))
                                (:join-vars op)))))
                ops))
+         ;; A group that is BOTH a consumer and a producer is not executable on
+         ;; this path. The multi-group loop below is a two-way `cond`: a group
+         ;; with join-info runs the consumer branch, which writes its tuples and
+         ;; recurs WITHOUT publishing probe-sets/probe-maps for its own
+         ;; downstream consumers -- only the producer (`:else`) branch does that.
+         ;; The downstream consumer then finds no probe-set, `(when (and pinfo
+         ;; probe-set) ...)` skips its scan entirely, and the middle group's
+         ;; unfiltered tuples stand as the answer. Concretely
+         ;;   [?ea :n ?a] [?eb :n ?b] [?d :m ?ea] [?d :m ?eb]
+         ;; plans as SCAN[?ea] -> GROUP(?d){scan ?ea, merge ?eb} -> SCAN[?eb]
+         ;; (dp-order-groups only extends via CONNECTED groups, and the two
+         ;; 1-row name scans share no var, so one must follow the group) and
+         ;; returned the fan-out of ?ea instead of the intersection. The
+         ;; Relation engine joins the trailing scan correctly; leave chains to it.
+     (let [producer-idxs (into #{} (map :producer-idx) (vals (:group-joins plan)))]
+       (not-any? #(contains? producer-idxs %) (keys (:group-joins plan))))
          ;; Multi-group: probe vars resolvable; find-vars from any group or consts
      (every? (fn [[gi {:keys [producer-idx probe-vars]}]]
                (let [consumer-g (nth groups gi)
