@@ -460,9 +460,9 @@
                        (= :disabled status) db'
 
                        ;; The background worker exclusively owns the building
-                       ;; instance. Journal concurrent changes for the short
-                       ;; serialized install step instead of racing it or
-                       ;; replacing an immutable result with a stale snapshot.
+                       ;; instance. Collect this transaction's notifications;
+                       ;; the writer spools them only after predicates accept
+                       ;; the report. Pure db-with keeps this collection local.
                        (= :building status)
                        (update-in db' [:secondary-index-build-deltas idx-ident]
                                   (fnil conj []) tx-report)
@@ -1566,7 +1566,9 @@
                          (let [history (HistoricalDB. db (volatile! nil))]
                            (if-let [e (dbu/entid history e)]
                              (let [e-datoms (vec (dbi/search history [e]))
-                                   v-datoms (vec (mapcat (fn [a] (dbi/search history [nil a e]))
+                                   v-datoms (vec (mapcat (fn [a]
+                                                           (dbi/search history
+                                                                       [nil (dbu/attr-ref-or-ident db a) e]))
                                                          (dbi/-attrs-by history :db.type/ref)))]
                                [(reduce transact-purge-datom report (concat e-datoms v-datoms))
                                 (purge-components history e-datoms)])

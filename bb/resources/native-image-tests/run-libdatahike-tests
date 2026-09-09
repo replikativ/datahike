@@ -4,9 +4,13 @@ set -o errexit
 set -o pipefail
 set -o nounset
 
-export LD_LIBRARY_PATH=./libdatahike/target
-export DYLD_LIBRARY_PATH=./libdatahike/target
+repo_root="$PWD"
+export LD_LIBRARY_PATH="$repo_root/libdatahike/target"
+export DYLD_LIBRARY_PATH="$repo_root/libdatahike/target"
 
-rm -rf "/tmp/libdatahike-test"
 ./libdatahike/compile-cpp
-./libdatahike/target/test_cpp
+# The C++ fixture uses a relative store path inside this owned directory.
+scratch=$(mktemp -d "${TMPDIR:-$repo_root/libdatahike/target}/libdatahike-test.XXXXXX")
+trap 'rm -rf -- "$scratch"' EXIT
+cd "$scratch"
+"$repo_root/libdatahike/target/test_cpp"

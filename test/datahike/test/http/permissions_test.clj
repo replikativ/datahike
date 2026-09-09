@@ -2,6 +2,8 @@
   "The eacl-backed permissions of the server: who may read, write, delete and
    grant, through the API and the remote writer, and across a restart."
   (:require
+   [babashka.http-client :as http]
+   [clojure.string :as str]
    [clojure.test :refer [deftest is testing]]
    [datahike.api :as d]
    [datahike.connections :as connections]
@@ -30,19 +32,40 @@
                  (.getCause e) (recur (.getCause e))
                  :else false)))))
 
+(defn- with-peer-transport [endpoint transport f]
+  (let [request http/request]
+    (with-redefs [http/request
+                  (fn [opts]
+                    (request (if (str/starts-with? (str (:uri opts)) (str @endpoint "/"))
+                               (assoc opts :client @transport)
+                               opts)))]
+      (f))))
+
 (deftest permissions-in-the-system-db
-  (let [port     23210
-        url      (str "http://localhost:" port)
+  (let [endpoint (atom nil)
+        transport (atom nil)
         config   {:token root-token :validator validator
                   :system-db {:store {:backend :file :path (str (fs/temp-dir! "dh-system-") "/system")}}}
         start!   (fn []
-                   (let [conns (atom {}) app (server/app config conns)]
-                     {:server (run-jetty app {:port port :join? false}) :app app :conns conns}))
-        stop!    (fn [{:keys [server app conns]}]
-                   (.stop server)
-                   (routes/release-all! conns)
-                   (permissions/close! (::server/config (meta app))))
-        peer     (fn [t] {:backend :datahike-server :url url :token t})
+                   (let [conns (atom {}) app (server/app config conns)
+                         server (run-jetty app {:port 0 :join? false})
+                         port (.getLocalPort ^org.eclipse.jetty.server.NetworkConnector
+                               (first (.getConnectors ^org.eclipse.jetty.server.Server server)))
+                         http-client (http/client http/default-client-opts)]
+                     (reset! endpoint (str "http://localhost:" port))
+                     (reset! transport http-client)
+                     {:server server :app app :conns conns :http-client http-client}))
+        stop!    (fn [{:keys [server app conns http-client]}]
+                   (try
+                     (.stop server)
+                     (routes/release-all! conns)
+                     (permissions/close! (::server/config (meta app)))
+                     (finally
+                       ;; HttpClient is AutoCloseable on JDK 21+; older supported
+                       ;; runtimes retire the unreferenced pool through GC.
+                       (when (instance? java.lang.AutoCloseable (:client http-client))
+                         (.close ^java.lang.AutoCloseable (:client http-client))))))
+        peer     (fn [t] {:backend :datahike-server :url @endpoint :token t})
         store-id (random-uuid)
         cfg      {:store {:backend :file :path (str (fs/temp-dir! "dh-perm-") "/store") :id store-id}
                   :schema-flexibility :read}
@@ -51,94 +74,98 @@
         list!    (fn [t] (client/request-cbor :get "databases" (peer t) (random-uuid)))
         status!  (fn [t] (client/request-cbor :get "admin/status" (peer t) (random-uuid)))
         s        (atom (start!))]
-    (try
-      (testing "root creates; nobody else may touch the database"
-        (client/create-database (assoc cfg :remote-peer (peer root-token)))
-        (is (= [{:store-id (str store-id) :state :active}]
-               (mapv #(select-keys % [:store-id :state]) (list! root-token))))
-        (is (map? (:node (status! root-token)))
-            "server admins see process-wide query activity")
-        (is (empty? (list! "alice-token"))
-            "the catalog does not reveal databases the caller cannot read")
-        (is (= {:node nil
-                :page {:offset 0 :limit 24 :total 0 :has-more? false}
-                :databases []}
-               (status! "alice-token"))
-            "status reveals neither node activity nor unauthorized databases")
-        (is (forbidden? #(client/connect (assoc cfg :remote-peer (peer "alice-token"))))))
+    (with-peer-transport endpoint transport
+      (fn []
+        (try
+          (testing "root creates; nobody else may touch the database"
+            (client/create-database (assoc cfg :remote-peer (peer root-token)))
+            (is (= [{:store-id (str store-id) :state :active}]
+                   (mapv #(select-keys % [:store-id :state]) (list! root-token))))
+            (is (map? (:node (status! root-token)))
+                "server admins see process-wide query activity")
+            (is (empty? (list! "alice-token"))
+                "the catalog does not reveal databases the caller cannot read")
+            (is (= {:node nil
+                    :page {:offset 0 :limit 24 :total 0 :has-more? false}
+                    :databases []}
+                   (status! "alice-token"))
+                "status reveals neither node activity nor unauthorized databases")
+            (is (forbidden? #(client/connect (assoc cfg :remote-peer (peer "alice-token"))))))
 
-      (testing "root grants alice writer and bob reader in one batch; alice may read and write, not delete or grant"
-        (is (= {:written 2}
-               (grant! root-token [{:operation :touch
-                                    :relationship {:subject {:type :user :id "alice"} :relation :writer :resource db-obj}}
-                                   {:operation :touch
-                                    :relationship {:subject {:type :user :id "bob"} :relation :reader :resource db-obj}}])))
-        (is (= #{(str store-id)} (set (map :store-id (list! "alice-token")))))
-        (is (= #{(str store-id)} (set (map :store-id (list! "bob-token")))))
-        (let [status (status! "bob-token")]
-          (is (nil? (:node status)))
-          (is (= #{(str store-id)} (set (map :store-id (:databases status))))))
-        (let [alice (client/connect (assoc cfg :remote-peer (peer "alice-token")))]
-          (client/transact alice [{:name "Ada"}])
-          (is (= #{["Ada"]} (client/q '[:find ?n :where [?e :name ?n]] @alice)))
-          (is (forbidden? #(client/delete-database (assoc cfg :remote-peer (peer "alice-token")))))
-          (is (forbidden? #(grant! "alice-token" [{:operation :touch
-                                                   :relationship {:subject {:type :user :id "bob"} :relation :reader :resource db-obj}}])))
-          (is (true? (:allowed (client/request-cbor :post "permissions/check" (peer "alice-token")
-                                                    {:permission :transact :resource db-obj}))))
-          (is (false? (:allowed (client/request-cbor :post "permissions/check" (peer "alice-token")
-                                                     {:permission :delete :resource db-obj}))))
-          (is (forbidden? #(client/request-cbor :post "permissions/check" (peer "alice-token")
-                                                {:subject {:type :user :id "bob"} :permission :read :resource db-obj}))
-              "asking about someone else needs grant")
-          (client/release alice)))
+          (testing "root grants alice writer and bob reader in one batch; alice may read and write, not delete or grant"
+            (is (= {:written 2}
+                   (grant! root-token [{:operation :touch
+                                        :relationship {:subject {:type :user :id "alice"} :relation :writer :resource db-obj}}
+                                       {:operation :touch
+                                        :relationship {:subject {:type :user :id "bob"} :relation :reader :resource db-obj}}])))
+            (is (= #{(str store-id)} (set (map :store-id (list! "alice-token")))))
+            (is (= #{(str store-id)} (set (map :store-id (list! "bob-token")))))
+            (let [status (status! "bob-token")]
+              (is (nil? (:node status)))
+              (is (= #{(str store-id)} (set (map :store-id (:databases status))))))
+            (let [alice (client/connect (assoc cfg :remote-peer (peer "alice-token")))]
+              (client/transact alice [{:name "Ada"}])
+              (is (= #{["Ada"]} (client/q '[:find ?n :where [?e :name ?n]] @alice)))
+              (is (forbidden? #(client/delete-database (assoc cfg :remote-peer (peer "alice-token")))))
+              (is (forbidden? #(grant! "alice-token" [{:operation :touch
+                                                       :relationship {:subject {:type :user :id "bob"} :relation :reader :resource db-obj}}])))
+              (is (true? (:allowed (client/request-cbor :post "permissions/check" (peer "alice-token")
+                                                        {:permission :transact :resource db-obj}))))
+              (is (false? (:allowed (client/request-cbor :post "permissions/check" (peer "alice-token")
+                                                         {:permission :delete :resource db-obj}))))
+              (is (forbidden? #(client/request-cbor :post "permissions/check" (peer "alice-token")
+                                                    {:subject {:type :user :id "bob"} :permission :read :resource db-obj}))
+                  "asking about someone else needs grant")
+              (client/release alice)))
 
-      (testing "bob reads and nothing else"
-        (let [bob (client/connect (assoc cfg :remote-peer (peer "bob-token")))]
-          (is (= #{["Ada"]} (client/q '[:find ?n :where [?e :name ?n]] @bob)))
-          (is (forbidden? #(client/transact bob [{:name "Bob"}])))
-          (client/release bob)))
+          (testing "bob reads and nothing else"
+            (let [bob (client/connect (assoc cfg :remote-peer (peer "bob-token")))]
+              (is (= #{["Ada"]} (client/q '[:find ?n :where [?e :name ?n]] @bob)))
+              (is (forbidden? #(client/transact bob [{:name "Bob"}])))
+              (client/release bob)))
 
-      (testing "the remote writer is authorized the same way"
+          (testing "the remote writer is authorized the same way"
         ;; Two processes, so two registries: in one, bob's connect would hand
         ;; him alice's cached connection, writer token included.
-        (let [alice (d/connect (assoc cfg :writer {:backend :datahike-server :url url :token "alice-token"}))
-              bob   (binding [connections/*connections* (atom {})]
-                      (d/connect (assoc cfg :writer {:backend :datahike-server :url url :token "bob-token"})))]
-          (is (some? (:db-after (d/transact alice [{:name "Grace"}]))))
-          (is (forbidden? #(d/transact bob [{:name "Bob"}])))
-          (is (= #{["Ada"] ["Grace"]} (d/q '[:find ?n :where [?e :name ?n]] @alice)))
-          (d/release alice)
-          (d/release bob)))
+            (let [alice (d/connect (assoc cfg :writer {:backend :datahike-server :url @endpoint :token "alice-token"}))
+                  bob   (binding [connections/*connections* (atom {})]
+                          (d/connect (assoc cfg :writer {:backend :datahike-server :url @endpoint :token "bob-token"})))]
+              (is (some? (:db-after (d/transact alice [{:name "Grace"}]))))
+              (is (forbidden? #(d/transact bob [{:name "Bob"}])))
+              (is (= #{["Ada"] ["Grace"]} (d/q '[:find ?n :where [?e :name ?n]] @alice)))
+              (d/release alice)
+              (d/release bob)))
 
-      (testing "relationships survive a restart, and root stays admin"
-        (stop! @s)
-        (reset! s (start!))
-        (is (= #{{:subject {:type :user :id "alice"} :relation :writer :resource db-obj}
-                 {:subject {:type :user :id "bob"} :relation :reader :resource db-obj}}
-               (set (client/request-cbor :post "permissions/relationships" (peer root-token) {:resource db-obj}))))
-        (let [alice (client/connect (assoc cfg :remote-peer (peer "alice-token")))]
-          (is (= #{["Ada"] ["Grace"]} (client/q '[:find ?n :where [?e :name ?n]] @alice)))
-          (client/release alice))
-        (is (= {:written 1}
-               (grant! root-token [{:operation :delete
-                                    :relationship {:subject {:type :user :id "alice"} :relation :writer :resource db-obj}}])))
-        (is (forbidden? #(client/connect (assoc cfg :remote-peer (peer "alice-token"))))
-            "a revoked grant is gone at once")
-        (is (try (grant! root-token [{:operation :touch
-                                      :relationship {:subject {:type :user :id "alice"} :relation :reader :resource db-obj}}
-                                     {:operation :touch
-                                      :relationship {:subject {:type :user :id "alice"} :relation :nonsense :resource db-obj}}])
-                 false
-                 (catch Exception _ true))
-            "a batch with a bad relationship is refused whole")
-        (is (forbidden? #(client/connect (assoc cfg :remote-peer (peer "alice-token"))))
-            "…and its good half did not land")
-        (client/delete-database (assoc cfg :remote-peer (peer root-token)))
-        (is (empty? (list! root-token))
-            "soft-deleted catalog entries are absent from the public list"))
-      (finally
-        (stop! @s)))))
+      ;; This tests durable permissions and data through a new connection,
+      ;; not transparent recovery of a pooled socket to the stopped server.
+          (testing "relationships survive a restart, and root stays admin"
+            (stop! @s)
+            (reset! s (start!))
+            (is (= #{{:subject {:type :user :id "alice"} :relation :writer :resource db-obj}
+                     {:subject {:type :user :id "bob"} :relation :reader :resource db-obj}}
+                   (set (client/request-cbor :post "permissions/relationships" (peer root-token) {:resource db-obj}))))
+            (let [alice (client/connect (assoc cfg :remote-peer (peer "alice-token")))]
+              (is (= #{["Ada"] ["Grace"]} (client/q '[:find ?n :where [?e :name ?n]] @alice)))
+              (client/release alice))
+            (is (= {:written 1}
+                   (grant! root-token [{:operation :delete
+                                        :relationship {:subject {:type :user :id "alice"} :relation :writer :resource db-obj}}])))
+            (is (forbidden? #(client/connect (assoc cfg :remote-peer (peer "alice-token"))))
+                "a revoked grant is gone at once")
+            (is (try (grant! root-token [{:operation :touch
+                                          :relationship {:subject {:type :user :id "alice"} :relation :reader :resource db-obj}}
+                                         {:operation :touch
+                                          :relationship {:subject {:type :user :id "alice"} :relation :nonsense :resource db-obj}}])
+                     false
+                     (catch Exception _ true))
+                "a batch with a bad relationship is refused whole")
+            (is (forbidden? #(client/connect (assoc cfg :remote-peer (peer "alice-token"))))
+                "…and its good half did not land")
+            (client/delete-database (assoc cfg :remote-peer (peer root-token)))
+            (is (empty? (list! root-token))
+                "soft-deleted catalog entries are absent from the public list"))
+          (finally
+            (stop! @s)))))))
 
 (deftest memory-system-dbs-do-not-collide
   (let [a (permissions/configure {:token "a" :system-db {:store {:backend :memory}}})

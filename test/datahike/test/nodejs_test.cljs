@@ -20,6 +20,7 @@
             [datahike.test.optimistic-test]
             [datahike.test.reference-test]
             [datahike.test.dependency-tracking-test]
+            [datahike.test.purge-reference-test]
             [datahike.test.valid-time-test]
             ;; Portable query suites — exercise the query-engine paths that were
             ;; JVM-only (NOT-JOIN, OR, aggregates, recursive rules) on cljs too.
@@ -89,6 +90,7 @@
             ;; the external merge sort, which runs here now that it no longer
             ;; speaks java.io.File and java.util.PriorityQueue.
             [datahike.test.migrate-sort-test]
+            [datahike.test.sort-test]
             [datahike.test.value-comparison-test]
             ;; the streaming bulk index build, which runs here now that
             ;; persistent-sorted-set has a cljs `from-sorted-seq`.
@@ -904,6 +906,7 @@
                'datahike.test.migrate-manifest-test
                'datahike.test.blob-identity-test
                'datahike.test.migrate-sort-test
+               'datahike.test.sort-test
                'datahike.test.value-comparison-test
                'datahike.test.bulk-build-node-test
                'datahike.test.migrate-node-test
@@ -916,6 +919,7 @@
                'datahike.test.optimistic-test
                'datahike.test.reference-test
                'datahike.test.dependency-tracking-test
+               'datahike.test.purge-reference-test
                'datahike.test.valid-time-test
                'datahike.test.time-variance-test
                'datahike.test.query-not-test

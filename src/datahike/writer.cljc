@@ -8,6 +8,8 @@
             [datahike.store :as ds]
             [datahike.writing :as w]
             [datahike.tx-preds :as txp]
+            #?(:clj [datahike.backfill.capture :as capture])
+            #?(:clj [datahike.backfill.journal :as journal])
             [datahike.gc :as gc]
             [datahike.tools :as dt :refer [throwable-promise get-time-ms]]
             [konserve.core :as k]
@@ -29,7 +31,7 @@
   (-refresh-on-deref? [_] "Returns whether dereferencing the connection must refresh its branch head from storage."))
 
 (defrecord LocalWriter [thread writer-ownership transaction-queue-size commit-queue-size
-                        transaction-queue commit-queue]
+                        transaction-queue commit-queue journal-owner]
   PWriter
   (-dispatch! [_ arg-map]
     (let [p (promise-chan)]
@@ -45,7 +47,10 @@
       p))
   (-shutdown [_]
     (close! transaction-queue)
-    thread)
+    #?(:clj (go (let [result (<! thread)]
+                  (when journal-owner (capture/dispose-owned! journal-owner))
+                  result))
+       :cljs thread))
   ;; A local writer always installs its own committed db-after in the connection.
   ;; Shared ownership still refreshes on deref because OTHER writers do not stream
   ;; their commits into this process.
@@ -160,11 +165,12 @@
    before a batch is applied and conditionally published. With exclusive
    ownership this JVM keeps the head in memory. See [[create-writer]]."
   [connection write-fn-map transaction-queue-size commit-queue-size commit-wait-time
-   shared? {:keys [max-batch retries backoff]
+   shared? {:keys [max-batch retries backoff journal-owner]
             :or   {max-batch MAX_SHARED_WRITER_BATCH
                    retries   MAX_HEAD_CONFLICT_RETRIES
                    backoff   DEFAULT_HEAD_CONFLICT_BACKOFF_MS}}]
-  (let [transaction-queue-buffer    (buffer transaction-queue-size)
+  (let [journal-owner #?(:clj (or journal-owner (atom {})) :cljs nil)
+        transaction-queue-buffer    (buffer transaction-queue-size)
         transaction-queue           (chan transaction-queue-buffer)
         commit-queue-buffer         (buffer commit-queue-size)
         commit-queue                (chan commit-queue-buffer)
@@ -402,9 +408,11 @@
                                                             {:type :writer/unknown-op
                                                              :op op
                                                              :supported (set (keys write-fn-map))})))
-                                          #?(:clj (if bindings
-                                                    (with-bindings* bindings apply op-fn old args)
-                                                    (apply op-fn old args))
+                                          #?(:clj (capture/prepare-report!
+                                                   journal-owner
+                                                   (if bindings
+                                                     (with-bindings* bindings apply op-fn old args)
+                                                     (apply op-fn old args)))
                                              :cljs (apply op-fn old args))))
                               ;; Catch all Throwables to handle AssertionError and other Errors
                               ;; These should crash the writer, but we deliver to callback first to prevent hangs
@@ -570,7 +578,8 @@
                        ;; must fence against what we just wrote rather than the
                        ;; stamp the batch opened with.
                        last-rev nil]
-                  (when tx
+                  (if-not tx
+                    #?(:clj (capture/dispose-owned! journal-owner) :cljs nil)
                     (let [txs (into [tx] (take-while some?) (repeatedly #(poll! commit-queue)))]
               ;; empty channel of pending transactions
                       (log/trace :datahike/batch-commit {:batch-size (count txs)})
@@ -615,6 +624,7 @@
                                 finalized-txs
                                 (mapv (fn [[tx-report callback]]
                                         [(-> tx-report
+                                             (dissoc :datahike.backfill.capture/retired)
                                              (assoc-in [:tx-meta :db/commitId] commit-id)
                                              (assoc :db-after commit-db))
                                          callback])
@@ -639,6 +649,9 @@
                                        :when build-guard]
                                  (w/finish-secondary-index-build! build-guard)))
                             (reset! build-cleanup-complete? true)
+                            #?(:clj
+                               (doseq [[tx-report _] txs]
+                                 (capture/finish! journal-owner tx-report)))
                             (reset! connection commit-db)
                             ;; This is the one exact durable-commit boundary. A
                             ;; drained group may contain many transaction reports,
@@ -943,7 +956,7 @@
   #{:backend :writer-ownership :transaction-queue-size :commit-queue-size
     :commit-wait-time :write-fn-map
     :max-batch :head-conflict-retries :head-conflict-backoff-ms
-    :require-fencing})
+    :require-fencing :backfill-journal})
 
 (defn check-fencing!
   "Raise unless `store` can fence branch-head writes as far as `require-fencing`
@@ -982,6 +995,10 @@
                 require-fencing]
          :as writer-config} (dc/normalize-writer-config writer-config)
         shared? (= :shared writer-ownership)]
+    #?(:clj (journal/validate-options! (:backfill-journal writer-config))
+       :cljs (when (contains? writer-config :backfill-journal)
+               (log/raise "Backfill scratch journals require a JVM local writer."
+                          {:type :backfill-journal-unsupported-platform})))
     (when-let [unknown (seq (remove self-writer-keys (keys writer-config)))]
       (log/raise "Unknown key(s) in the :self writer config."
                  {:type    :unknown-self-writer-config-keys
@@ -1011,9 +1028,11 @@
     (let [transaction-queue-size (or transaction-queue-size DEFAULT_QUEUE_SIZE)
           commit-queue-size (or commit-queue-size DEFAULT_QUEUE_SIZE)
           commit-wait-time (or commit-wait-time DEFAULT_COMMIT_WAIT_TIME)
+          journal-owner #?(:clj (atom {}) :cljs nil)
           retry-policy {:max-batch (or max-batch MAX_SHARED_WRITER_BATCH)
                         :retries   (or head-conflict-retries MAX_HEAD_CONFLICT_RETRIES)
-                        :backoff   (or head-conflict-backoff-ms DEFAULT_HEAD_CONFLICT_BACKOFF_MS)}
+                        :backoff   (or head-conflict-backoff-ms DEFAULT_HEAD_CONFLICT_BACKOFF_MS)
+                        :journal-owner journal-owner}
           [transaction-queue commit-queue thread]
           (create-thread connection
                          (merge default-write-fn-map
@@ -1029,7 +1048,8 @@
         :commit-queue commit-queue
         :commit-queue-size commit-queue-size
         :thread thread
-        :writer-ownership writer-ownership}))))
+        :writer-ownership writer-ownership
+        :journal-owner journal-owner}))))
 
 ;; Note: :kabel backend is implemented in datahike.kabel.writer
 ;; Require that namespace to register the defmethod
