@@ -6,6 +6,10 @@ When something is added, it's typically marked *Experimental*. When the API cont
 
 ## 0.8
 
+- **Purge with attribute references.** In databases using `:attribute-refs? true`,
+  value and attribute purges accept keyword attribute names as well as numeric
+  IDs. Entity purge also removes current and historical incoming references;
+  these operations previously could leave matching data behind.
 - **Disk-backed secondary backfill journals.** JVM local-exclusive writers
   capture concurrent changes in bounded-frame scratch files instead of retaining
   decoded changes across database snapshots. Configure `:backfill-journal` on
@@ -13,7 +17,7 @@ When something is added, it's typically marked *Experimental*. When the API cont
   Exceeding a limit rejects the transaction without publishing it. Installation
   still replays the full journal; this does not bound adapter memory or enable
   background AVET construction.
-
+  
 - **Named transaction predicates and transaction-scoped index backfill.**
   Independent consumers can register store predicates without replacing each
   other; `ensure-tx-pred!` atomically installs an empty named slot or rejects a

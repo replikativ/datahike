@@ -87,9 +87,12 @@
 
 (deftest standalone-server-owns-nrepl-and-reports-its-resolved-endpoint
   (let [resource (atom nil)
-        start-nrepl server-nrepl/start!
+        start-nrepl! server-nrepl/start!
         instance (with-redefs [server-nrepl/start!
-                               (fn [& args] (reset! resource (apply start-nrepl args)))]
+                               (fn [& args]
+                                 (let [started (apply start-nrepl! args)]
+                                   (reset! resource started)
+                                   started))]
                    (server/start-server {:host "127.0.0.1"
                                          :port 0
                                          :join? false
@@ -111,6 +114,8 @@
                      (throw t)))]
     (try
       (is (= :tcp (:transport endpoint)))
+      (is (= endpoint @(:status @resource)))
+      (is (not (.isClosed ^java.net.ServerSocket (get-in @resource [:server :server-socket]))))
       (with-open [connection (nrepl/connect :host (:bind endpoint) :port (:port endpoint))]
         (is (= ["11"] (eval-values connection "(+ 5 6)"))))
       (finally
