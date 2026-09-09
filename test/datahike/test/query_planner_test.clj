@@ -1203,3 +1203,50 @@
     (testing "the optimization preserves results on both engines"
       (assert-engines-agree db query [42])
       (is (= 50 (count (d/q query db 42)))))))
+
+;; ---------------------------------------------------------------------------
+;; Direct path: a group that is both a consumer and a producer
+;;
+;; [?ea :n ?a] [?eb :n ?b] [?d :m ?ea] [?d :m ?eb] planned as
+;;   SCAN[?ea :n] -> ENTITY-GROUP(?d){scan [?d :m ?ea], merge [?d :m ?eb]} -> SCAN[?eb :n]
+;; because dp-order-groups only extends via connected groups and the two 1-row
+;; name scans share no variable. The middle group is a consumer (of ?ea) AND a
+;; producer (of ?eb). The direct executor's consumer branch never publishes
+;; probe collections for downstream consumers, so the trailing scan was skipped
+;; and the query answered with the fan-out of ?ea instead of the intersection.
+;; Surfaced by an ansatz Mathlib catalogue spike ("declarations mentioning BOTH
+;; Finset.sum and Nat.choose": truth 13, planned 2,148).
+
+(def ^:private chain-db
+  (delay
+    (d/db-with (db/empty-db {:n {:db/unique :db.unique/identity}
+                             :m {:db/valueType   :db.type/ref
+                                 :db/cardinality :db.cardinality/many}})
+               [{:db/id 1 :n "c0"} {:db/id 2 :n "c1"} {:db/id 3 :n "c2"} {:db/id 4 :n "c3"}
+                {:db/id 10 :n "d0" :m [2 3]}      ; c1 c2   <- in c1∩c2
+                {:db/id 11 :n "d1" :m [2]}        ; c1
+                {:db/id 12 :n "d2" :m [3]}        ; c2
+                {:db/id 13 :n "d3" :m [2 4]}      ; c1 c3
+                {:db/id 14 :n "d4" :m [1 2 3]}    ; c0 c1 c2 <- in c1∩c2 and c0∩c1∩c2
+                {:db/id 15 :n "d5" :m [1 3]}      ; c0 c2
+                {:db/id 16 :n "d6" :m [2 3 4]}    ; c1 c2 c3 <- in c1∩c2
+                {:db/id 17 :n "d7" :m [4]}        ; c3
+                {:db/id 18 :n "d8" :m [1]}        ; c0
+                {:db/id 19 :n "d9" :m [2 3]}])))  ; c1 c2   <- in c1∩c2
+
+(deftest test-direct-path-consumer-producer-chain
+  (let [db @chain-db
+        Q '[:find ?d :in $ ?a ?b :where [?ea :n ?a] [?eb :n ?b] [?d :m ?ea] [?d :m ?eb]]]
+    (testing "two same-attribute merges whose value vars are bound by upstream patterns"
+      (is (= #{[10] [14] [16] [19]} (set (d/q Q db "c1" "c2")))
+          "the intersection, not the fan-out of the first-bound side")
+      (is (= #{[10] [14] [16] [19]} (set (d/q Q db "c2" "c1"))))
+      (assert-engines-agree db Q ["c1" "c2"])
+      (assert-engines-agree db Q ["c2" "c1"]))
+    (testing "the emitted probe var in :find, a third way, and a trailing clause"
+      (assert-engines-agree db '[:find ?d ?eb :in $ ?a ?b :where [?ea :n ?a] [?eb :n ?b] [?d :m ?ea] [?d :m ?eb]] ["c1" "c2"])
+      (is (= #{[14]} (set (d/q '[:find ?d :in $ ?a ?b ?c :where [?ea :n ?a] [?eb :n ?b] [?ec :n ?c] [?d :m ?ea] [?d :m ?eb] [?d :m ?ec]] db "c0" "c1" "c2"))))
+      (assert-engines-agree db '[:find ?d :in $ ?a ?b ?c :where [?ea :n ?a] [?eb :n ?b] [?ec :n ?c] [?d :m ?ea] [?d :m ?eb] [?d :m ?ec]] ["c0" "c1" "c2"])
+      (assert-engines-agree db '[:find ?dn :in $ ?a ?b :where [?ea :n ?a] [?eb :n ?b] [?d :m ?ea] [?d :m ?eb] [?d :n ?dn]] ["c1" "c2"]))
+    (testing "the :in-bound form was already correct and stays on the direct path"
+      (is (= #{[10] [14] [16] [19]} (set (d/q '[:find ?d :in $ ?ea ?eb :where [?d :m ?ea] [?d :m ?eb]] db 2 3)))))))
