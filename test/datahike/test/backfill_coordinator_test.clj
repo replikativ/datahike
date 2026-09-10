@@ -20,7 +20,7 @@
 
 (defn- fixture [options build f]
   (let [id (random-uuid)
-        cursor {:generation id :journal-id (random-uuid) :offset 10 :sequence 1}
+        cursor {:generation id :journal-id (random-uuid) :position (Object.) :sequence 1}
         source {:avet-build {:id id :patch {:value {:db/index true}}}}
         lease (atom {:cursor cursor :source-db source})
         requests (LinkedBlockingQueue.)
@@ -30,6 +30,10 @@
     (with-redefs [runtime/acquire-prefix! (fn [_ generation]
                                             (swap! events conj [:acquire generation]) @lease)
                   runtime/release-prefix! (fn [& _] (swap! events conj :lease-release))
+                  runtime/range-byte-size (fn [_ lease start]
+                                            (if (= (:position start)
+                                                   (get-in lease [:cursor :position]))
+                                              0 1000))
                   job/supported! (fn [_]) job/matches? (fn [& _] true)
                   ds/canonical-store-id (fn [& _] :store)
                   guard/writing! (fn [_] (swap! events conj :guard) :guard)
@@ -91,7 +95,7 @@
            (fn [{:keys [owner source requests events lease] :as context}]
              (begin! context)
              (let [token (:token (request! requests))]
-               (swap! lease update :cursor #(assoc % :sequence 10 :offset 1000))
+               (swap! lease update :cursor #(assoc % :sequence 10 :position (Object.)))
                (is (= :retry (:status (coordinator/try-install! owner source token))))
         ;; Only the worker may perform this over-budget advancement. The next
         ;; offered candidate has already passed the full leased-range replay.

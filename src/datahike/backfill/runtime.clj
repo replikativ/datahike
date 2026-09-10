@@ -30,7 +30,10 @@
   (when (:closed? @state) (fail! ::closed "AVET runtime is closed.")))
 
 (defn- cursor [id descriptor sequence]
-  {:generation id :journal-id (:id descriptor) :offset (:end descriptor) :sequence sequence})
+  {:generation id
+   :journal-id (journal/descriptor-id descriptor)
+   :position (journal/end-cursor descriptor)
+   :sequence sequence})
 
 (defn- cleanup! [state]
   (doseq [[id context] (:contexts @state)
@@ -154,8 +157,9 @@
                                        (get-in report [:db-after :avet-build :id])])
                                     original-reports))
               start? (and context (not (:retired? context)) (not (:started? context)))]
-          ;; A byte offset and sequence must describe the SAME accepted frame
-          ;; boundary, not merely fit independently inside the staged ranges.
+          ;; The opaque cursor position and sequence must describe the SAME
+          ;; accepted frame boundary, not merely fit independently inside the
+          ;; staged ranges.
           ;; The group's original final report is the bounded authority for the
           ;; published prefix. Empty groups may retry cleanup, not advance it.
           (when (and (seq original-reports)
@@ -171,16 +175,25 @@
             (when (and (empty? original-reports) (not= prefix (:committed context)))
               (fail! ::invalid-commit "An empty commit group cannot advance an AVET prefix."))
             (when-not (and (= id (get-in prefix [:cursor :generation]))
-                           (= (get-in context [:descriptor :id]) (get-in prefix [:cursor :journal-id]))
-                           (= (dissoc (:descriptor context) :end) (dissoc (:descriptor prefix) :end))
-                           (= (get-in prefix [:descriptor :end]) (get-in prefix [:cursor :offset]))
+                           (= (journal/descriptor-id (:descriptor context))
+                              (get-in prefix [:cursor :journal-id])
+                              (journal/descriptor-id (:descriptor prefix)))
+                           (zero? (journal/compare-cursors (:descriptor prefix)
+                                                           (get-in prefix [:cursor :position])
+                                                           (journal/end-cursor (:descriptor prefix))))
                            (integer? (get-in prefix [:cursor :sequence]))
                            (<= (get-in context [:committed :cursor :sequence] 0)
                                (get-in prefix [:cursor :sequence])
                                (get-in context [:staged :cursor :sequence]))
-                           (<= (get-in context [:committed :cursor :offset] 0)
-                               (get-in prefix [:cursor :offset] -1)
-                               (get-in context [:staged :cursor :offset])))
+                           (not (pos? (journal/compare-cursors
+                                       (get-in context [:staged :descriptor])
+                                       (or (get-in context [:committed :cursor :position])
+                                           (journal/start-cursor (:descriptor context)))
+                                       (get-in prefix [:cursor :position]))))
+                           (not (pos? (journal/compare-cursors
+                                       (get-in context [:staged :descriptor])
+                                       (get-in prefix [:cursor :position])
+                                       (get-in context [:staged :cursor :position])))))
               (fail! ::invalid-commit "Committed AVET prefix does not belong to this lineage.")))
           ;; Validate the entire publication before retiring any old context.
           (doseq [retired (disj touched id)]
@@ -219,31 +232,50 @@
 
 (defn reduce-prefix
   "Read a leased range. f receives accumulator, complete transaction and next
-   cursor. The start must be a previously supplied cursor (or offset/sequence 0
-   with the same generation/journal identity). No runtime lock is held during I/O."
+   cursor. The start must be a previously supplied boundary. No runtime lock is
+   held during I/O."
   [owner lease start f init]
   (let [state (:state owner)]
     (locking state
       (when-not (= lease (get-in @state [:leases (:id lease)]))
         (fail! ::invalid-lease "Unknown AVET read lease.")))
-    (when-not (and (= (select-keys start [:generation :journal-id])
-                      (select-keys (:cursor lease) [:generation :journal-id]))
-                   (integer? (:offset start)) (integer? (:sequence start))
-                   (<= 0 (:offset start) (get-in lease [:cursor :offset]))
-                   (<= 0 (:sequence start) (get-in lease [:cursor :sequence]))
-                   (or (< (:offset start) (get-in lease [:cursor :offset]))
-                       (= (:sequence start) (get-in lease [:cursor :sequence]))))
-      (fail! ::invalid-cursor "AVET range cursor has the wrong identity or bounds."))
+    (let [position-order (when (and (= (select-keys start [:generation :journal-id])
+                                       (select-keys (:cursor lease) [:generation :journal-id]))
+                                    (some? (:position start)))
+                           (journal/compare-cursors (:descriptor lease)
+                                                    (:position start)
+                                                    (get-in lease [:cursor :position])))]
+      (when-not (and (some? position-order) (not (pos? position-order))
+                     (integer? (:sequence start))
+                     (<= 0 (:sequence start) (get-in lease [:cursor :sequence]))
+                     (or (neg? position-order)
+                         (= (:sequence start) (get-in lease [:cursor :sequence]))))
+        (fail! ::invalid-cursor "AVET range cursor has the wrong identity or bounds.")))
     (let [sequence (volatile! (:sequence start))]
-      (journal/reduce-range (:descriptor lease) (:offset start)
+      (journal/reduce-range (:descriptor lease) (:position start)
                             (fn [acc transaction end]
                               (when-not (and (= :transaction (:kind transaction))
                                              (= (:generation lease) (:generation transaction))
                                              (= (inc @sequence) (:sequence transaction)))
                                 (fail! ::invalid-cursor "AVET transaction sequence is not contiguous."))
                               (vreset! sequence (:sequence transaction))
-                              (f acc transaction (assoc (:cursor lease) :offset end :sequence @sequence)))
+                              (f acc transaction (assoc (:cursor lease) :position end :sequence @sequence)))
                             init))))
+
+(defn range-byte-size
+  "Return backend-accounted bytes between a checked start boundary and the
+   leased end. Cursors remain opaque and no runtime lock is held during I/O."
+  [owner lease start]
+  (let [state (:state owner)]
+    (locking state
+      (when-not (= lease (get-in @state [:leases (:id lease)]))
+        (fail! ::invalid-lease "Unknown AVET read lease.")))
+    (when-not (and (= (select-keys start [:generation :journal-id])
+                      (select-keys (:cursor lease) [:generation :journal-id]))
+                   (some? (:position start)))
+      (fail! ::invalid-cursor "AVET range cursor has the wrong identity."))
+    (journal/range-byte-size (:descriptor lease) (:position start)
+                             (get-in lease [:cursor :position]))))
 
 (defn invalidate!
   "Retire every local lineage after a definite commit conflict or lost owner.

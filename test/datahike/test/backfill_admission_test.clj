@@ -1,5 +1,5 @@
 (ns datahike.test.backfill-admission-test
-  (:require [clojure.test :refer [deftest is testing]]
+  (:require [clojure.test :refer [deftest is]]
             [datahike.backfill.admission :as admission]
             [datahike.backfill.avet :as avet]
             [datahike.backfill.effects :as effects]
@@ -31,7 +31,8 @@
 
 (defn- active [database attrs]
   (let [generation (random-uuid)
-        cursor {:generation generation :journal-id (random-uuid) :sequence 1 :offset 100}]
+        cursor {:generation generation :journal-id (random-uuid)
+                :sequence 1 :position (Object.)}]
     (assoc database :avet-build {:id generation
                                  :attrs (into attrs
                                               (keep (fn [[ident entry]]
@@ -129,7 +130,8 @@
   (let [source (active (base false true) #{:value})
         certificate (mint source {:value {:db/unique :db.unique/value}})
         after (:db-after (core/with source [[:db/add 10000 :value 2] [:db/add 10001 :value 1]]))
-        cursor (-> (get-in source [:avet-build-journal :cursor]) (update :sequence inc) (update :offset + 100))
+        cursor (-> (get-in source [:avet-build-journal :cursor])
+                   (update :sequence inc) (assoc :position (Object.)))
         frame {:kind :transaction :generation (:generation cursor) :sequence (:sequence cursor)
                :max-tx (:max-tx after) :effects (:avet-build-effects after)}
         next-source (-> after (dissoc :avet-build-effects) (assoc-in [:avet-build-journal :cursor] cursor))
@@ -145,8 +147,8 @@
         certificate (mint source {:value {:db/unique :db.unique/value}})
         after (:db-after (core/with source [[:db/add 10000 :value 3]]))
         later (:db-after (core/with (dissoc after :avet-build-effects) [[:db/add 10001 :value 4]]))
-        c1 (-> (admission/cursor certificate) (update :sequence inc) (update :offset + 100))
-        c2 (-> c1 (update :sequence inc) (update :offset + 100))
+        c1 (-> (admission/cursor certificate) (update :sequence inc) (assoc :position (Object.)))
+        c2 (-> c1 (update :sequence inc) (assoc :position (Object.)))
         frame (fn [database cursor]
                 {:kind :transaction :generation (:generation cursor) :sequence (:sequence cursor)
                  :max-tx (:max-tx database) :effects (:avet-build-effects database)})
@@ -236,8 +238,8 @@
         certificate (mint source {:value {:db/unique :db.unique/value}})
         duplicate (:db-after (core/with source [[:db/add 10000 :value 2]]))
         repaired (:db-after (core/with (dissoc duplicate :avet-build-effects) [[:db/add 10001 :value 3]]))
-        c1 (-> (admission/cursor certificate) (update :sequence inc) (update :offset + 100))
-        c2 (-> c1 (update :sequence inc) (update :offset + 100))
+        c1 (-> (admission/cursor certificate) (update :sequence inc) (assoc :position (Object.)))
+        c2 (-> c1 (update :sequence inc) (assoc :position (Object.)))
         final-source (-> repaired (dissoc :avet-build-effects) (assoc-in [:avet-build-journal :cursor] c2))
         reached-repair? (atom false)
         frame (fn [database cursor]

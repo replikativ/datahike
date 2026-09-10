@@ -75,6 +75,13 @@
   [descriptor left right]
   (file/compare-cursors descriptor left right))
 
+(defn range-byte-size
+  "Return backend-accounted bytes from left through right. Both cursors remain
+   opaque; callers use this only to enforce a resource budget. Reversed,
+   foreign, abandoned, or out-of-prefix ranges are rejected."
+  [descriptor left right]
+  (file/range-byte-size descriptor left right))
+
 (defn reduce-range
   "Reduce from an issued cursor through this descriptor's exact accepted end.
    f receives accumulator, notification and an opaque next cursor. Honors

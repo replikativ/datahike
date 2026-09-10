@@ -158,6 +158,8 @@ are conservative accounting units, not exact retained heap measurements.
 Backend node decoding, the index builder's frontier, the database's ordinary
 caches, and user transaction inputs remain outside these buffer budgets.
 Large values or nodes can exceed an individual-record or node limit.
+`:tail-bytes` counts the journal backend's physical bytes, including frame
+headers; journal cursors themselves remain opaque and are not byte offsets.
 
 A journal limit or append failure rejects the affected user transaction without
 advancing its database state. Cancel the build or wait for it to finish before

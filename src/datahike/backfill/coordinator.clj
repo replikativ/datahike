@@ -220,7 +220,8 @@
           (fn [lease]
             (let [certificate (:certificate @work)
                   before (admission/cursor certificate) after (:cursor lease)]
-              (if (or (> (- (:offset after) (:offset before)) (get-in owner [:options :tail-bytes]))
+              (if (or (> (runtime/range-byte-size (:runtime owner) lease before)
+                         (get-in owner [:options :tail-bytes]))
                       (> (- (:sequence after) (:sequence before)) (get-in owner [:options :tail-transactions])))
                 (do (wake! work #(assoc % :phase :running)) {:status :retry})
                 (let [certificate (admission/flush! (advance! owner certificate lease))

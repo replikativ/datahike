@@ -26,7 +26,8 @@
   (Files/exists (Path/of (get-in lease [:descriptor :path]) (make-array String 0))
                 (make-array java.nio.file.LinkOption 0)))
 
-(defn- origin [lease] (assoc (:cursor lease) :offset 0 :sequence 0))
+(defn- origin [lease]
+  (assoc (:cursor lease) :position (journal/start-cursor (:descriptor lease)) :sequence 0))
 
 (deftest definite-conflict-discards-speculation-without-closing-owner
   (let [owner (runtime/create! nil) id (random-uuid)]
@@ -106,6 +107,8 @@
             (is (= 1 (get-in start [:cursor :sequence])))
             (is (= [[]] (runtime/reduce-prefix owner lease (origin lease)
                                                (fn [acc transaction _] (conj acc (:effects transaction))) [])))
+            (is (pos? (runtime/range-byte-size owner lease (origin lease))))
+            (is (zero? (runtime/range-byte-size owner lease (:cursor lease))))
             (is (nil? (runtime/committed! owner (:db-after b) [b])))
             (is (identical? (:db-after a) (:source-db lease)))
             ;; An existing read lease remains the exact older immutable prefix.
@@ -190,10 +193,9 @@
       (let [a (begin owner {} id)
             b (tx owner (:db-after a) [])
             sequence-mismatch (assoc-in (:db-after a) [:avet-build-journal :cursor :sequence] 2)
-            interior-offset (-> (:db-after a)
-                                (assoc-in [:avet-build-journal :descriptor :end] 1)
-                                (assoc-in [:avet-build-journal :cursor :offset] 1))]
-        (doseq [invalid [sequence-mismatch interior-offset (:db-after b)]]
+            invalid-position (assoc-in (:db-after a)
+                                       [:avet-build-journal :cursor :position] (Object.))]
+        (doseq [invalid [sequence-mismatch invalid-position (:db-after b)]]
           (is (= :datahike.backfill.runtime/invalid-commit
                  (error-type #(runtime/committed! owner invalid [a])))))
         (is (= :datahike.backfill.runtime/invalid-commit

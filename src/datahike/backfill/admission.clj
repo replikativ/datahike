@@ -52,7 +52,7 @@
      :attrs (set (keys entries))
      :unique-attrs (into #{} (keep (fn [[ident {:keys [new]}]]
                                      (when (:db/unique new) ident))) entries)
-     :tx-data (into [] (mapcat (fn [[ident {:keys [old new eid]}]]
+     :tx-data (into [] (mapcat (fn [[_ {:keys [old new eid]}]]
                                  (keep (fn [flag]
                                          (when (not= (get old flag) (get new flag))
                                            [:db/add eid flag (get new flag)]))
@@ -70,7 +70,7 @@
 (defn- source-cursor! [source cursor]
   (when-not (and (uuid? (:generation cursor)) (uuid? (:journal-id cursor))
                  (integer? (:sequence cursor)) (pos? (:sequence cursor))
-                 (integer? (:offset cursor)) (pos? (:offset cursor))
+                 (some? (:position cursor))
                  (= (:generation cursor) (get-in source [:avet-build :id]))
                  (= cursor (get-in source [:avet-build-journal :cursor]))
                  (not (:avet-build-invalidated? source))
@@ -117,7 +117,7 @@
                    (= (:generation previous) (:generation cursor) (:generation transaction))
                    (= (:journal-id previous) (:journal-id cursor))
                    (= (inc (:sequence previous)) (:sequence cursor) (:sequence transaction))
-                   (< (:offset previous) (:offset cursor))
+                   (not= (:position previous) (:position cursor))
                    (= :transaction (:kind transaction))
                    (= (:max-tx next-source) (:max-tx transaction))
                    (vector? (:effects transaction)))
@@ -202,9 +202,8 @@
                             (= (:generation cursor) (:generation next-cursor) (:generation frame))
                             (= (:journal-id cursor) (:journal-id next-cursor))
                             (= (inc (:sequence cursor)) (:sequence next-cursor) (:sequence frame))
-                            (integer? (:offset next-cursor))
-                            (< (:offset cursor) (:offset next-cursor))
-                            (<= (:offset next-cursor) (:offset final-cursor))
+                            (some? (:position next-cursor))
+                            (not= (:position cursor) (:position next-cursor))
                             (<= (:sequence next-cursor) (:sequence final-cursor))
                             (integer? (:max-tx frame)) (<= max-tx (:max-tx frame))
                             (vector? (:effects frame)))
