@@ -10,6 +10,20 @@ When something is added, it's typically marked *Experimental*. When the API cont
   value and attribute purges accept keyword attribute names as well as numeric
   IDs. Entity purge also removes current and historical incoming references;
   these operations previously could leave matching data behind.
+
+- **Background attribute indexing (experimental, JVM).** Build AVET indexes and
+  add uniqueness constraints while reads and writes continue under the old
+  schema. Activation publishes the schema and completed roots atomically.
+  Disk-backed sorting and change capture use configurable limits. Requires a
+  local shared, explicitly fenced writer with non-crypto persistent-set indexes.
+  Every garbage collector sharing the store must support AVET build markers;
+  disable legacy collectors before enabling background builds.
+  See [background attribute indexing](doc/avet-backfill.md) for the API, limits,
+  and recovery behavior.
+
+- **Purging retained attribute-index history.** Purges remove matching AVET
+  history even when indexing has since been disabled on the attribute. Enabling
+  the index again no longer exposes those purged historical entries.
 - **Disk-backed secondary backfill journals.** JVM local-exclusive writers
   capture concurrent changes in bounded-frame scratch files instead of retaining
   decoded changes across database snapshots. Configure `:backfill-journal` on

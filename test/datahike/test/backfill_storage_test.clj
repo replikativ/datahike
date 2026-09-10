@@ -8,7 +8,7 @@
             [konserve.core :as k]
             [org.replikativ.persistent-sorted-set :as pss]
             [org.replikativ.persistent-sorted-set.impl.nodes :as nodes])
-  (:import [org.replikativ.persistent_sorted_set IStorage ANode]))
+  (:import [org.replikativ.persistent_sorted_set IStorage ANode Branch PersistentSortedSet RefType]))
 
 (defn- error-type [f]
   (try (f) nil (catch Exception e (:type (ex-data e)))))
@@ -242,3 +242,75 @@
                (select-keys (storage/resources private)
                             [:closed? :failed? :pending-nodes :cached-nodes
                              :pending-weight :cache-weight])))))))
+
+(deftest source-copies-isolate-cold-fused-and-strong-reference-topology
+  (with-db
+    (fn [conn]
+      (let [db @conn
+            datoms (mapv #(dd/datom % :score % 42) (range 1 2301))
+            cmp (dd/index-type->cmp-quick :avet false)
+            address (with-open [^java.io.Closeable writer (storage/create! (:store db) (:config db))]
+                      (let [tree (pss/from-sorted-seq cmp datoms
+                                                      {:storage writer :branching-factor 32 :ref-type :strong
+                                                       :meta {:index-type :avet}})
+                            root (pss/store tree)]
+                        (storage/flush! writer)
+                        root))
+            live (get-in db [:store :storage])
+            source ^PersistentSortedSet (with-meta (pss/restore-by cmp address live {:ref-type :strong})
+                                          {:index-type :avet})
+            root ^Branch (.root source)
+            before-state (.-_state root)
+            before-cache @(:cache live)
+            before-stats @(:stats live)]
+        (is (= RefType/STRONG (.refType (.-_settings root))))
+        (with-open [^java.io.Closeable private (storage/create! (:store db) (:config db)
+                                                                {:cache-node-limit 2 :pending-node-limit 2})]
+          (let [copy ^PersistentSortedSet (storage/copy-index! private source)]
+            (is (not (identical? root (.root copy))))
+            (is (= RefType/WEAK (.refType (.-_settings ^ANode (.root copy)))))
+            (is (= datoms (vec copy)))
+            (is (identical? before-state (.-_state root)))
+            (is (= before-cache @(:cache live)))
+            (is (= before-stats @(:stats live)))
+            (is (<= (:cached-nodes (storage/resources private)) 2))
+            (is (zero? (:writes (storage/resources private)))))
+          ;; A genuinely cold source root must load through private storage.
+          (let [cold ^PersistentSortedSet (with-meta (pss/restore-by cmp address live) {:index-type :avet})
+                copy (storage/copy-index! private cold)]
+            (is (nil? (.-_root cold)))
+            (is (= datoms (vec copy)))
+            (is (nil? (.-_root cold)))
+            (is (= before-cache @(:cache live)))
+            (is (= before-stats @(:stats live))))
+          ;; Fused roots can be resident without a standalone root key. This key
+          ;; belongs to the synthetic source above, not the database's live root.
+          (k/dissoc (:store db) address {:sync? true})
+          (is (not (k/exists? (:store db) address {:sync? true})))
+          (is (= datoms (vec (storage/copy-index! private source))))
+          (is (identical? before-state (.-_state root)))
+          (is (= before-cache @(:cache live)))
+          (is (= before-stats @(:stats live))))))))
+
+(deftest unflushed-source-refused-without-live-write-or-buffer-drain
+  (with-db
+    (fn [conn]
+      (let [db @conn
+            dirty (conj (:avet db) (dd/datom 10000 :unindexed 1 42))
+            live (get-in db [:store :storage])
+            before @(:pending-writes live)]
+        (with-open [^java.io.Closeable private (storage/create! (:store db) (:config db))]
+          (is (= :backfill.storage/unflushed-source
+                 (error-type #(storage/copy-index! private dirty))))
+          (is (= before @(:pending-writes live)))
+          (is (zero? (:writes (storage/resources private))))
+          (let [root-before (.-_root ^PersistentSortedSet dirty)
+                cache-before @(:cache live)
+                stats-before @(:stats live)
+                copy (storage/copy-index! private dirty {:resident-source? true})]
+            (is (pos? (:writes (storage/resources private))))
+            (is (contains? copy (dd/datom 10000 :unindexed 1 42)))
+            (is (identical? root-before (.-_root ^PersistentSortedSet dirty)))
+            (is (= before @(:pending-writes live)))
+            (is (= cache-before @(:cache live)))
+            (is (= stats-before @(:stats live)))))))))

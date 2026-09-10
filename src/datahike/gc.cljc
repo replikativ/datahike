@@ -173,9 +173,10 @@
                       ;; history is kept.
                       head-building-secondary?
                       (and (= to-check branch)
-                           (some (fn [[_ entry]]
-                                   (= :building (:db.secondary/status entry)))
-                                 schema))
+                           (or (= :building (get-in record [:avet-build :status]))
+                               (some (fn [[_ entry]]
+                                       (= :building (:db.secondary/status entry)))
+                                     schema)))
                             ;; Kept SEPARATE from the node addresses, not folded in.
                             ;; A store-ref names an object; it does NOT say where the
                             ;; bytes live. If they are in this konserve store, the

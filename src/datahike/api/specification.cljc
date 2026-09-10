@@ -239,6 +239,36 @@
                  :code "@(transact! conn [{:db/id -1 :name \"Alice\"}])"}]
      :impl datahike.api.impl/transact!}
 
+    begin-avet-build!
+    {:args [:=> [:cat :datahike/SConnection :map] :any]
+     :ret :any
+     :categories [:schema :write :async]
+     :stability :alpha
+     :supports-remote? false
+     :referentially-transparent? false
+     :doc "Start a background AVET build on a local JVM shared, explicitly fenced, non-crypto persistent-set writer. Patch maps existing attribute idents to {:db/index true} and/or {:db/unique :db.unique/value|:db.unique/identity}. Returns a throwable promise for the accepted request report, NOT completion. Its :avet-build-id identifies this request even when reports share a batch's final db-after. The old schema remains effective until atomic activation. Inspect avet-build-status for completion."
+     :impl datahike.api.impl/begin-avet-build!}
+
+    cancel-avet-build!
+    {:args [:=> [:cat :datahike/SConnection :uuid] :any]
+     :ret :any
+     :categories [:schema :write :async]
+     :stability :alpha
+     :supports-remote? false
+     :referentially-transparent? false
+     :doc "Cancel the exact UUID generation of a local JVM AVET build. Returns a throwable promise for its committed cancellation report. A stale generation is rejected without canceling its replacement."
+     :impl datahike.api.impl/cancel-avet-build!}
+
+    avet-build-status
+    {:args [:=> [:cat :datahike/SDB] [:maybe :map]]
+     :ret [:maybe :map]
+     :categories [:schema :query]
+     :stability :alpha
+     :supports-remote? false
+     :referentially-transparent? true
+     :doc "Return this database snapshot's active AVET request or most recent result, or nil. :status is :building, :ready, :failed, or :canceled. :id identifies the generation; failures/cancellation include :reason. This is durable snapshot state, not a worker-liveness check or a history of all builds."
+     :impl datahike.api.impl/avet-build-status}
+
     load-entities
     {:args [:=> [:cat :datahike/SConnection :datahike/STransactions] :any]
      :ret :any

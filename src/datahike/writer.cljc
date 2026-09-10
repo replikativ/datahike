@@ -10,6 +10,10 @@
             [datahike.tx-preds :as txp]
             #?(:clj [datahike.backfill.capture :as capture])
             #?(:clj [datahike.backfill.journal :as journal])
+            #?(:clj [datahike.backfill.runtime :as avet-runtime])
+            #?(:clj [datahike.backfill.coordinator :as avet-coordinator])
+            #?(:clj [datahike.backfill.sort :as avet-sort])
+            #?(:clj [datahike.backfill.storage :as avet-storage])
             [datahike.gc :as gc]
             [datahike.tools :as dt :refer [throwable-promise get-time-ms]]
             [konserve.core :as k]
@@ -30,8 +34,19 @@
 (defprotocol PConnectionRefresh
   (-refresh-on-deref? [_] "Returns whether dereferencing the connection must refresh its branch head from storage."))
 
+#?(:clj
+   (defn- close-local-resources! [journal-owner coordinator runtime]
+     ;; Joining workers and reclaiming owned storage can block on I/O. Every
+     ;; caller runs this on thread-try, never the core.async go dispatcher.
+     (try
+       (when journal-owner (capture/dispose-owned! journal-owner))
+       (finally
+         (try
+           (when coordinator (avet-coordinator/close! coordinator))
+           (finally (when runtime (avet-runtime/close! runtime))))))))
+
 (defrecord LocalWriter [thread writer-ownership transaction-queue-size commit-queue-size
-                        transaction-queue commit-queue journal-owner]
+                        transaction-queue commit-queue journal-owner avet-runtime avet-coordinator]
   PWriter
   (-dispatch! [_ arg-map]
     (let [p (promise-chan)]
@@ -47,9 +62,10 @@
       p))
   (-shutdown [_]
     (close! transaction-queue)
-    #?(:clj (go (let [result (<! thread)]
-                  (when journal-owner (capture/dispose-owned! journal-owner))
-                  result))
+    #?(:clj (go (let [result (<! thread)
+                      cleanup (<! (thread-try S (close-local-resources!
+                                                 journal-owner avet-coordinator avet-runtime)))]
+                  (or cleanup result)))
        :cljs thread))
   ;; A local writer always installs its own committed db-after in the connection.
   ;; Shared ownership still refreshes on deref because OTHER writers do not stream
@@ -158,6 +174,76 @@
          (put! callback e)
          (recur)))))
 
+#?(:clj
+   (defn- apply-avet-write [runtime op-fn old args bindings op]
+     (let [run (fn []
+                 (let [raw (::raw-write-fn (meta op-fn))
+                       report (apply (or raw op-fn) old args)
+                       proposed (avet-runtime/normalize-report runtime report op)]
+                   ;; Keep predicate evaluation inside the caller's bindings,
+                   ;; just as the original wrapped operation did.
+                   (if (or raw (not= (select-keys (:db-after report) [:avet-build :avet-build-result])
+                                     (select-keys (:db-after proposed) [:avet-build :avet-build-result])))
+                     (txp/check-report proposed)
+                     proposed)))]
+       (if bindings (with-bindings* bindings run) (run)))))
+
+#?(:clj
+   (defn- check-avet-installs! [owner txs]
+     (doseq [[report] txs :let [token (::avet-install-token report)] :when token]
+       (avet-coordinator/check-install! owner token))))
+
+#?(:clj
+   (defn- enqueue-avet-cancel! [runtime queue generation]
+     (let [callback (promise-chan)]
+       (try
+         (if (put! queue {:op 'cancel-avet-build! :args [generation :build-failed]
+                          :callback callback})
+           (go (when (instance? Throwable (<! callback))
+                 (avet-runtime/fail-generation! runtime generation :cancel-rejected)))
+           (avet-runtime/fail-generation! runtime generation :dispatch-failed))
+         (catch Throwable enqueue-error
+           ;; In particular, pending-put overflow throws AssertionError rather
+           ;; than returning false. This helper runs inside writer error paths:
+           ;; failed best-effort cancellation must not hide the original error
+           ;; or bypass its callback/shutdown handling.
+           (avet-runtime/fail-generation! runtime generation :dispatch-failed)
+           (log/warn :datahike/avet-cancel-enqueue-failed
+                     {:generation generation :message (ex-message enqueue-error)}))))))
+
+#?(:clj
+   (defn- reject-avet-installs! [runtime owner queue txs]
+     (when runtime
+       (avet-coordinator/invalidate! owner)
+       (avet-runtime/invalidate! runtime)
+       (doseq [[report] txs :let [token (::avet-install-token report)] :when token]
+         (avet-coordinator/abort-install! owner token true)
+         (enqueue-avet-cancel! runtime queue (::avet-generation report))))))
+
+#?(:clj
+   (defn- committed-avet! [runtime owner queue commit-db txs]
+     (when runtime
+       (try
+         (let [start (avet-runtime/committed! runtime commit-db (mapv first txs))]
+           (avet-coordinator/after-commit! owner commit-db start))
+         (catch Throwable hook-error
+           ;; Publication already succeeded. Background failures never alter
+           ;; the durable transaction outcome, including cleanup failures.
+           (log/error :datahike/avet-commit-hook-failed {:error hook-error})
+           (try
+             (avet-coordinator/invalidate! owner)
+             (try
+               (avet-runtime/invalidate! runtime)
+               (finally
+                 (doseq [[report] txs :let [token (::avet-install-token report)] :when token]
+                   (avet-coordinator/abort-install! owner token true))
+                 ;; Cancel only the generation in this durable group, never a
+                 ;; newer speculative begin that may already be queued.
+                 (when-let [id (get-in commit-db [:avet-build :id])]
+                   (enqueue-avet-cancel! runtime queue id))))
+             (catch Throwable cleanup-error
+               (log/error :datahike/avet-commit-hook-cleanup-failed {:error cleanup-error}))))))))
+
 (defn create-thread
   "Creates new transaction thread.
 
@@ -165,7 +251,7 @@
    before a batch is applied and conditionally published. With exclusive
    ownership this JVM keeps the head in memory. See [[create-writer]]."
   [connection write-fn-map transaction-queue-size commit-queue-size commit-wait-time
-   shared? {:keys [max-batch retries backoff journal-owner]
+   shared? {:keys [max-batch retries backoff journal-owner avet-runtime avet-coordinator]
             :or   {max-batch MAX_SHARED_WRITER_BATCH
                    retries   MAX_HEAD_CONFLICT_RETRIES
                    backoff   DEFAULT_HEAD_CONFLICT_BACKOFF_MS}}]
@@ -289,7 +375,17 @@
                       (do
                         (when (> (count transaction-queue-buffer) (* 0.9 transaction-queue-size))
                           (log/warn :datahike/tx-queue-pressure "Transaction queue buffer >90% full" {:count (count transaction-queue-buffer) :size transaction-queue-size}))
-                        (let [;; SHARED: another process may have committed
+                        (let [install? (= op 'try-install-avet-build!)
+                              drain? (and install? (pos? pending))
+                              _ (when drain?
+                                  (loop [n pending]
+                                    (when (pos? n) (<! commit-done) (recur (dec n)))))
+                              old (if drain? @(:wrapped-atom connection) old)
+                              needs-reload? (or drain? needs-reload?)
+                              pending (if drain? 0 pending)
+                              ;; The invocation remains owned here while the
+                              ;; prior speculative batch drains completely.
+                              ;; SHARED: another process may have committed
                               ;; to this branch since our last transaction, so the
                               ;; db we hold is not necessarily the head. Re-read it
                               ;; (one storage read) and apply on top of that. Safe
@@ -323,7 +419,14 @@
                               ;; MAX_SHARED_WRITER_BATCH for why that is sound.
                               old (if (or (not shared?) (not needs-reload?))
                                     old
-                                    (try (<?- (w/reload-branch-head old false))
+                                    (try (let [reloaded (<?- (w/reload-branch-head old false))]
+                                           #?(:clj (if avet-runtime
+                                                     (let [reconciled (avet-runtime/reconcile-db! avet-runtime reloaded)]
+                                                       (when (:datahike.backfill.runtime/lost-lineage? reconciled)
+                                                         (avet-coordinator/invalidate! avet-coordinator))
+                                                       reconciled)
+                                                     reloaded)
+                                              :cljs reloaded))
                                          (catch #?(:clj Throwable :cljs js/Error) e
                                            (log/error :datahike/head-reload-failed
                                                       {:invocation (dissoc invocation :bindings) :error e})
@@ -408,15 +511,27 @@
                                                             {:type :writer/unknown-op
                                                              :op op
                                                              :supported (set (keys write-fn-map))})))
-                                          #?(:clj (capture/prepare-report!
-                                                   journal-owner
-                                                   (if bindings
-                                                     (with-bindings* bindings apply op-fn old args)
-                                                     (apply op-fn old args)))
+                                          #?(:clj (let [report (capture/prepare-report!
+                                                                journal-owner
+                                                                (if avet-runtime
+                                                                  (apply-avet-write avet-runtime op-fn old args bindings op)
+                                                                  (if bindings
+                                                                    (with-bindings* bindings apply op-fn old args)
+                                                                    (apply op-fn old args))))
+                                                        report (if avet-runtime
+                                                                 (avet-runtime/prepare-report! avet-runtime report op true)
+                                                                 report)]
+                                                    (when-let [token (::avet-install-token report)]
+                                                      (avet-coordinator/accepted! avet-coordinator token))
+                                                    report)
                                              :cljs (apply op-fn old args))))
                               ;; Catch all Throwables to handle AssertionError and other Errors
                               ;; These should crash the writer, but we deliver to callback first to prevent hangs
                                       (catch #?(:clj Throwable :cljs js/Error) e
+                                        #?(:clj (when (and install? avet-coordinator)
+                                                  (avet-coordinator/abort-install! avet-coordinator (first args) true)
+                                                  (when-let [generation (::avet-generation invocation)]
+                                                    (enqueue-avet-cancel! avet-runtime transaction-queue generation))))
                                         (log/error :datahike/write-error {:invocation (dissoc invocation :bindings) :error e :args args})
                                 ;; short circuit on errors
                                         #?(:cljs (put! callback e)
@@ -525,7 +640,9 @@
                                                 (when (and (pos? retries)
                                                            (contains? retryable-ops op))
                                                   invocation)]))
-                                    (do (put! callback
+                                    (do #?(:clj (when-let [token (::avet-install-token res)]
+                                                  (avet-coordinator/abort-install! avet-coordinator token true)))
+                                        (put! callback
                                               (ex-info "Writer is shut down (a previous fatal error closed it); release and reconnect."
                                                        {:type :writer-shut-down}))
                                         (recur old needs-reload? pending))
@@ -579,7 +696,9 @@
                        ;; stamp the batch opened with.
                        last-rev nil]
                   (if-not tx
-                    #?(:clj (capture/dispose-owned! journal-owner) :cljs nil)
+                    #?(:clj (<?- (thread-try S (close-local-resources!
+                                                journal-owner avet-coordinator avet-runtime)))
+                       :cljs nil)
                     (let [txs (into [tx] (take-while some?) (repeatedly #(poll! commit-queue)))]
               ;; empty channel of pending transactions
                       (log/trace :datahike/batch-commit {:batch-size (count txs)})
@@ -612,7 +731,11 @@
                                  db)
                             build-cleanup-complete? (atom false)]
                         (try
-                          (let [start-ts (get-time-ms)
+                          (let [_ (when @writer-down?
+                                    (throw (ex-info "Writer is shut down; dependent reports cannot commit."
+                                                    {:type :writer-shut-down})))
+                                _ #?(:clj (check-avet-installs! avet-coordinator txs) :cljs nil)
+                                start-ts (get-time-ms)
                                 {{:keys [datahike/commit-id]} :meta
                                  :as commit-db} (<?- (w/commit! db merge-parents false last-cid head-rev))
                                 commit-time (- (get-time-ms) start-ts)
@@ -624,12 +747,13 @@
                                 finalized-txs
                                 (mapv (fn [[tx-report callback]]
                                         [(-> tx-report
-                                             (dissoc :datahike.backfill.capture/retired)
+                                             (dissoc :datahike.backfill.capture/retired ::avet-install-token ::avet-generation)
                                              (assoc-in [:tx-meta :db/commitId] commit-id)
                                              (assoc :db-after commit-db))
                                          callback])
                                       txs)
                                 tx-reports (mapv first finalized-txs)]
+                            #?(:clj (committed-avet! avet-runtime avet-coordinator transaction-queue commit-db txs))
                             (log/trace :datahike/commit-time {:duration-ms commit-time})
                             (metrics/commit! (:config db)
                                              commit-time
@@ -682,6 +806,7 @@
                             (doseq [[tx-report callback] finalized-txs]
                               (>! callback tx-report)))
                           (catch #?(:clj Throwable :cljs js/Error) e
+                            #?(:clj (reject-avet-installs! avet-runtime avet-coordinator transaction-queue txs))
                             (cond
                               ;; NOT FATAL, and NOT RETRIED. The connection demands
                               ;; fencing and this head has no revision to fence
@@ -695,8 +820,8 @@
                               ;; message and keep the writer alive.
                               (= :datahike/fencing-unavailable (:type (ex-data e)))
                               (do
-                                (log/warn :datahike/fencing-unavailable
-                                          {:branch (:branch (:config db))})
+                                (log/warn :datahike/commit-admission-rejected
+                                          {:branch (:branch (:config db)) :error e})
                                 (doseq [[_ callback] txs]
                                   (put! callback e)))
 
@@ -850,8 +975,9 @@
    the caller, and never enqueues a commit (nothing persists, chain unchanged).
    Ungoverned stores pay a single map lookup. EXPERIMENTAL/internal seam."
   [write-fn]
-  (fn [old & args]
-    (txp/check-report (apply write-fn old args))))
+  (with-meta (fn [old & args]
+               (txp/check-report (apply write-fn old args)))
+    {::raw-write-fn write-fn}))
 
 ;; public API to internal mapping
 (def default-write-fn-map {'transact!     (with-tx-pred w/transact!)
@@ -956,7 +1082,20 @@
   #{:backend :writer-ownership :transaction-queue-size :commit-queue-size
     :commit-wait-time :write-fn-map
     :max-batch :head-conflict-retries :head-conflict-backoff-ms
-    :require-fencing :backfill-journal})
+    :require-fencing :backfill-journal :avet-backfill})
+
+#?(:clj
+   (defn- avet-options! [options]
+     (when-not (and (or (nil? options) (map? options))
+                    (every? #{:runtime :build :tail-bytes :tail-transactions :max-jobs} (keys options)))
+       (throw (ex-info "Unknown AVET writer options." {:type :invalid-avet-backfill-options})))
+     (let [build (:build options)]
+       (when-not (and (or (nil? build) (map? build))
+                      (every? #{:sort :storage} (keys build)))
+         (throw (ex-info "Unknown AVET build options." {:type :invalid-avet-backfill-options})))
+       (avet-sort/validate-options! (:sort build))
+       (avet-storage/validate-options! (:storage build)))
+     options))
 
 (defn check-fencing!
   "Raise unless `store` can fence branch-head writes as far as `require-fencing`
@@ -999,6 +1138,10 @@
        :cljs (when (contains? writer-config :backfill-journal)
                (log/raise "Backfill scratch journals require a JVM local writer."
                           {:type :backfill-journal-unsupported-platform})))
+    #?(:clj (avet-options! (:avet-backfill writer-config))
+       :cljs (when (contains? writer-config :avet-backfill)
+               (log/raise "Background AVET requires a JVM local writer."
+                          {:type :avet-backfill-unsupported-platform})))
     (when-let [unknown (seq (remove self-writer-keys (keys writer-config)))]
       (log/raise "Unknown key(s) in the :self writer config."
                  {:type    :unknown-self-writer-config-keys
@@ -1029,19 +1172,70 @@
           commit-queue-size (or commit-queue-size DEFAULT_QUEUE_SIZE)
           commit-wait-time (or commit-wait-time DEFAULT_COMMIT_WAIT_TIME)
           journal-owner #?(:clj (atom {}) :cljs nil)
+          avet-options (:avet-backfill writer-config)
+          queue-holder (atom nil)
+          avet-runtime #?(:clj (avet-runtime/create! (:runtime avet-options)) :cljs nil)
+          avet-coordinator
+          #?(:clj
+             (avet-coordinator/create!
+              avet-runtime
+              (merge (select-keys avet-options [:max-jobs :tail-bytes :tail-transactions])
+                     {:build-options (:build avet-options)
+                      :submit!
+                      (fn [{:keys [op generation token]}]
+                        (let [callback (promise-chan)
+                              invocation (case op
+                                           :install {:op 'try-install-avet-build! :args [token]
+                                                     ::avet-generation generation}
+                                           :cancel {:op 'cancel-avet-build! :args [generation :build-failed]})]
+                          (try
+                            (when-not (and @queue-holder
+                                           (put! @queue-holder (assoc invocation :callback callback)))
+                              (throw (ex-info "AVET writer queue is closed." {:type :writer-shut-down})))
+                            (catch Throwable enqueue-error
+                              ;; A worker may catch this error and fail to enqueue
+                              ;; its cancellation too. Retire local lineage now,
+                              ;; before it releases the last owned candidate.
+                              (avet-runtime/fail-generation! avet-runtime generation :dispatch-failed)
+                              (throw enqueue-error)))
+                          (go (let [result (<! callback)]
+                                (when (instance? Throwable result)
+                                  (when (= op :cancel)
+                                    (avet-runtime/fail-generation! avet-runtime generation :cancel-rejected))
+                                  (log/warn :datahike/avet-internal-operation-failed
+                                            {:generation generation :error result}))))))}))
+             :cljs nil)
+          avet-ops
+          #?(:clj
+             {'begin-avet-build! (with-tx-pred w/begin-avet-build!)
+              'cancel-avet-build! (with-tx-pred w/cancel-avet-build!)
+              'try-install-avet-build!
+              (fn [old token]
+                (let [{:keys [status certificate] :as result}
+                      (avet-coordinator/try-install! avet-coordinator old token)]
+                  (if (= :ready status)
+                    (assoc (avet-coordinator/with-install!
+                             avet-coordinator token
+                             #(txp/check-report (w/install-avet-build! old certificate)))
+                           ::avet-install-token token
+                           ::avet-generation (get-in old [:avet-build :id]))
+                    (let [p (promise-chan)] (put! p result) p))))}
+             :cljs {})
           retry-policy {:max-batch (or max-batch MAX_SHARED_WRITER_BATCH)
                         :retries   (or head-conflict-retries MAX_HEAD_CONFLICT_RETRIES)
                         :backoff   (or head-conflict-backoff-ms DEFAULT_HEAD_CONFLICT_BACKOFF_MS)
-                        :journal-owner journal-owner}
+                        :journal-owner journal-owner
+                        :avet-runtime avet-runtime :avet-coordinator avet-coordinator}
           [transaction-queue commit-queue thread]
           (create-thread connection
                          (merge default-write-fn-map
-                                write-fn-map)
+                                write-fn-map avet-ops)
                          transaction-queue-size
                          commit-queue-size
                          commit-wait-time
                          shared?
                          retry-policy)]
+      (reset! queue-holder transaction-queue)
       (map->LocalWriter
        {:transaction-queue transaction-queue
         :transaction-queue-size transaction-queue-size
@@ -1049,7 +1243,8 @@
         :commit-queue-size commit-queue-size
         :thread thread
         :writer-ownership writer-ownership
-        :journal-owner journal-owner}))))
+        :journal-owner journal-owner
+        :avet-runtime avet-runtime :avet-coordinator avet-coordinator}))))
 
 ;; Note: :kabel backend is implemented in datahike.kabel.writer
 ;; Require that namespace to register the defmethod

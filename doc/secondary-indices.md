@@ -438,8 +438,10 @@ charged to that journal.
 Installation still replays the accumulated journal in the serialized writer;
 a large journal can therefore pause writes. These limits bound journal buffers
 and disk use, not the adapter's own index-building memory, transaction input,
-or aggregate resources across many simultaneous builds. Background AVET
-construction is not supported; attribute-index backfill remains synchronous.
+or aggregate resources across many simultaneous builds. Attribute indexing has
+a separate [background AVET API](avet-backfill.md), with its own shared-writer
+requirements and limits. Ordinary schema transactions still backfill AVET
+synchronously.
 
 Scratch is removed after successful installation, cancellation, or orderly
 writer shutdown. Reconnect rebuilds from durable primary data rather than
