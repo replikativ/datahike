@@ -59,12 +59,23 @@
                                           (journal/end-cursor first-prefix))))
         (is (neg? (journal/compare-cursors second-prefix start middle)))
         (is (pos? (journal/compare-cursors second-prefix end middle)))
+        (let [first-bytes (journal/range-byte-size second-prefix start middle)
+              second-bytes (journal/range-byte-size second-prefix middle end)]
+          (is (pos? first-bytes))
+          (is (pos? second-bytes))
+          (is (= (+ first-bytes second-bytes)
+                 (journal/range-byte-size second-prefix start end)))
+          (is (zero? (journal/range-byte-size second-prefix end end)))
+          (is (= :backfill.journal/invalid-cursor
+                 (error-type #(journal/range-byte-size second-prefix end middle)))))
         (is (= [] (journal/reduce-range a start conj [])))
         (doseq [foreign [(journal/start-cursor b) (journal/end-cursor b)]]
           (is (= :backfill.journal/invalid-cursor
                  (error-type #(journal/reduce-range second-prefix foreign conj []))))
           (is (= :backfill.journal/invalid-cursor
-                 (error-type #(journal/compare-cursors second-prefix start foreign)))))
+                 (error-type #(journal/compare-cursors second-prefix start foreign))))
+          (is (= :backfill.journal/invalid-cursor
+                 (error-type #(journal/range-byte-size second-prefix start foreign)))))
         (is (= :backfill.journal/invalid-cursor
                (error-type #(journal/reduce-range first-prefix end conj []))))
         (is (= :backfill.journal/invalid-cursor

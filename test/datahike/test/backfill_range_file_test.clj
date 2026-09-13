@@ -23,9 +23,12 @@
         (is (= [:new] (journal/reduce-range replacement retained-cursor
                                             (fn [acc value _] (conj acc value)) [])))
         (is (= -1 (journal/compare-cursors replacement retained-cursor replacement-cursor)))
+        (is (= (- (:end replacement) (:end retained))
+               (journal/range-byte-size replacement retained-cursor replacement-cursor)))
         (doseq [operation [#(journal/reduce-range replacement abandoned-cursor
                                                   (fn [acc _ _] acc) nil)
-                           #(journal/compare-cursors replacement retained-cursor abandoned-cursor)]]
+                           #(journal/compare-cursors replacement retained-cursor abandoned-cursor)
+                           #(journal/range-byte-size replacement retained-cursor abandoned-cursor)]]
           (is (= :backfill.journal/invalid-cursor (error-type operation))))
         (doseq [operation [#(journal/start-cursor abandoned)
                            #(journal/end-cursor abandoned)

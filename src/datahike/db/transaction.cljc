@@ -6,6 +6,8 @@
    [datahike.datom :as dd :refer [datom datom-tx datom-added datom?]]
    #?(:cljs [datahike.db :refer [HistoricalDB]])
    [datahike.array :as arr]
+   [datahike.backfill.effects :as effects]
+   #?(:clj [datahike.backfill.admission :as admission])
    [datahike.attr-preds :as ap]
    [datahike.db.interface :as dbi]
    [datahike.db.search :as dbs]
@@ -161,7 +163,7 @@
           (when (map? entry)
             (when-let [why (ds/key-bearing-misuse entry)]
               (log/raise why {:error :transact/schema :entity-id e :attribute a-ident})))))
-      new-db)))
+      (effects/schema-change new-db))))
 
 (defn update-rschema [db]
   (assoc db :rschema (dbu/rschema (:schema db))))
@@ -368,26 +370,27 @@
     (when (and attribute-refs? (contains? (dbi/-system-entities db) e))
       (log/raise "System schema entity cannot be changed"
                  {:error :retract/schema :entity-id e}))
-    (if (= a-ident :db/ident)
-      (if-not (schema v-ident)
-        (let [err-msg (str "Schema with attribute " v-ident " does not exist")
-              err-map {:error :retract/schema :attribute v-ident}]
-          (throw (ex-info err-msg err-map)))
-        (-> (assoc-in db [:schema e] (dissoc (schema v-ident) a-ident))
-            (update-in [:schema] #(dissoc % v-ident))
-            (update-in [:ident-ref-map] #(dissoc % v-ident))
-            (update-in [:ref-ident-map] #(dissoc % e))))
-      (if-let [schema-entry (schema e)]
-        (if (schema schema-entry)
-          (if (= a-ident :db.attr/preds)
+    (let [db (effects/schema-change db)]
+      (if (= a-ident :db/ident)
+        (if-not (schema v-ident)
+          (let [err-msg (str "Schema with attribute " v-ident " does not exist")
+                err-map {:error :retract/schema :attribute v-ident}]
+            (throw (ex-info err-msg err-map)))
+          (-> (assoc-in db [:schema e] (dissoc (schema v-ident) a-ident))
+              (update-in [:schema] #(dissoc % v-ident))
+              (update-in [:ident-ref-map] #(dissoc % v-ident))
+              (update-in [:ref-ident-map] #(dissoc % e))))
+        (if-let [schema-entry (schema e)]
+          (if (schema schema-entry)
+            (if (= a-ident :db.attr/preds)
             ;; many-valued: drop just the retracted predicate, keep the rest
-            (update-in db [:schema schema-entry a-ident]
-                       (fn [old] (vec (remove #{v-ident} old))))
-            (update-in db [:schema schema-entry] #(dissoc % a-ident)))
-          (update-in db [:schema e] #(dissoc % a-ident v-ident)))
-        (let [err-msg (str "Schema with entity id " e " does not exist")
-              err-map {:error :retract/schema :entity-id e :attribute a :value e}]
-          (throw (ex-info err-msg err-map)))))))
+              (update-in db [:schema schema-entry a-ident]
+                         (fn [old] (vec (remove #{v-ident} old))))
+              (update-in db [:schema schema-entry] #(dissoc % a-ident)))
+            (update-in db [:schema e] #(dissoc % a-ident v-ident)))
+          (let [err-msg (str "Schema with entity id " e " does not exist")
+                err-map {:error :retract/schema :entity-id e :attribute a :value e}]
+            (throw (ex-info err-msg err-map))))))))
 
 ;; In context of `with-datom` we can use faster comparators which
 ;; do not check for nil (~10-15% performance gain in `transact`)
@@ -600,6 +603,7 @@
     (if (datom-added datom)
       (cond-> db
         true (update-in [:eavt] #(di/-insert % prim :eavt op-count))
+        (effects/enabled? db) (effects/emit a-ident :current :insert prim nil)
         true (update-in [:aevt] #(di/-insert % prim :aevt op-count))
         indexing? (update-in [:avet] #(di/-insert % prim :avet op-count))
         has-secondary? (update-secondary-indices a-ident datom true tx-meta)
@@ -612,6 +616,7 @@
       (if-some [removing ^Datom (first (dbi/search db [(.-e prim) (.-a prim) (.-v prim)]))]
         (cond-> db
           true (update-in [:eavt] #(di/-remove % removing :eavt op-count))
+          (effects/enabled? db) (effects/emit a-ident :current :remove removing nil)
           true (update-in [:aevt] #(di/-remove % removing :aevt op-count))
           indexing? (update-in [:avet] #(di/-remove % removing :avet op-count))
           has-secondary? (update-secondary-indices a-ident datom false tx-meta)
@@ -619,6 +624,8 @@
           schema? (-> (remove-schema datom) update-rschema)
           keep-history? (update-in [:temporal-eavt] #(di/-temporal-insert % removing :eavt op-count))
           keep-history? (update-in [:temporal-eavt] #(di/-temporal-insert % prim :eavt (inc op-count)))
+          (and keep-history? (effects/enabled? db)) (effects/emit a-ident :temporal :temporal-insert removing nil)
+          (and keep-history? (effects/enabled? db)) (effects/emit a-ident :temporal :temporal-insert prim nil)
           keep-history? (update-in [:temporal-aevt] #(di/-temporal-insert % removing :aevt op-count))
           keep-history? (update-in [:temporal-aevt] #(di/-temporal-insert % prim :aevt (inc op-count)))
           keep-history? (update :hash + (hash prim))
@@ -639,6 +646,7 @@
         has-secondary? (seq (get-in db [:rschema :db.secondary/index a-ident]))]
     (cond-> db
       current? (update-in [:eavt] #(di/-remove % current-datom :eavt op-count))
+      (and current? (effects/enabled? db)) (effects/emit a-ident :current :remove current-datom nil)
       current? (update-in [:aevt] #(di/-remove % current-datom :aevt op-count))
       (and current? indexing?) (update-in [:avet] #(di/-remove % current-datom :avet op-count))
       current? (update :hash - (hash current-datom))
@@ -648,8 +656,11 @@
       (and current? has-secondary?) (update-secondary-indices a-ident current-datom false)
       (and current? schema?) (-> (remove-schema datom) update-rschema)
       history? (update-in [:temporal-eavt] #(di/-remove % history-datom :eavt op-count))
+      (and history? (effects/enabled? db)) (effects/emit a-ident :temporal :remove history-datom nil)
       history? (update-in [:temporal-aevt] #(di/-remove % history-datom :aevt op-count))
-      (and history? indexing?) (update-in [:temporal-avet] #(di/-remove % history-datom :avet op-count))
+      ;; Disabling an index retains its historical AVET slice. Purge must also
+      ;; remove those old entries, even though new writes are no longer indexed.
+      history? (update-in [:temporal-avet] #(di/-remove % history-datom :avet op-count))
       (or current? history?) (update :op-count inc))))
 
 (defn- queue-tuple [queue tuple idx db e v]
@@ -725,7 +736,9 @@
                    db))
 
        keep-history? (update-in [:temporal-eavt] #(di/-temporal-upsert % prim :eavt op-count old-datom))
+       (and keep-history? (effects/enabled? db)) (effects/emit a-ident :temporal :temporal-upsert prim old-datom)
        true          (update-in [:eavt] #(di/-upsert % prim :eavt op-count old-datom))
+       (effects/enabled? db) (effects/emit a-ident :current :upsert prim old-datom)
 
        keep-history? (update-in [:temporal-aevt] #(di/-temporal-upsert % prim :aevt op-count old-datom))
        true          (update-in [:aevt] #(di/-upsert % prim :aevt op-count old-datom))
@@ -1229,9 +1242,9 @@
             (map (fn [^Datom d] [:db.purge/entity (.-v d)])))]
     (into #{} xf datoms)))
 
-(declare transact-tx-data)
+(declare transact-tx-data-internal)
 
-(defn- retry-with-tempid [initial-report report es tempid upserted-eid tx-options]
+(defn- retry-with-tempid [initial-report report es tempid upserted-eid tx-options prepared]
   (if (contains? (:tempids initial-report) tempid)
     (log/raise "Conflicting upsert: " tempid " resolves"
                " both to " upserted-eid " and " (get-in initial-report [:tempids tempid])
@@ -1242,7 +1255,7 @@
                        (assoc tempid upserted-eid))
           report' (assoc initial-report :tempids tempids')]
       (sec/abort-tracked-secondary-transients!)
-      (transact-tx-data report' es tx-options))))
+      (transact-tx-data-internal report' es tx-options prepared))))
 
 (defn assert-preds [db [_ e _ preds]]
   #?(:cljs (throw (ex-info "tx predicate resolution is not supported in cljs at this time" {:e e :preds preds}))
@@ -1725,7 +1738,7 @@
    re-inserting an identical datom is an idempotent upsert in the index
    implementations, so the backfill can sweep the full :aevt slice
    without tracking which datoms arrived when."
-  [{:keys [db-before db-after] :as report}]
+  [{:keys [db-before db-after] :as report} prepared]
   (let [old-schema (dbi/-schema db-before)
         new-schema (dbi/-schema db-after)]
     (if (identical? old-schema new-schema)
@@ -1740,7 +1753,10 @@
                                                  (or (not (indexed-entry? o))
                                                      (and (:db/unique n)
                                                           (not (:db/unique o)))))))))
-                          (keys new-schema))]
+                          (keys new-schema))
+            enabled #?(:clj (remove #(admission/covers? prepared %
+                                                        (get old-schema %) (get new-schema %)) enabled)
+                       :cljs enabled)]
         (if (empty? enabled)
           report
           (update report :db-after
@@ -1889,7 +1905,7 @@
    - composite :db/tupleAttrs must not reference attributes defined as
      cardinality-many or as tuples (undeclared references are supported —
      their slots stay nil)."
-  [{:keys [db-before db-after] :as _report} tx-options]
+  [{:keys [db-before db-after] :as _report} tx-options prepared]
   (let [old-schema (dbi/-schema db-before)
         new-schema (dbi/-schema db-after)]
     (when-not (identical? old-schema new-schema)
@@ -1937,7 +1953,9 @@
                 ;; accepted as before.
                 (when (and (or (contains? data-checks :index-backfill)
                                (contains? data-checks :unique-backfill))
-                           (not (or (:allow-index-backfill? (dbi/-config db-after))
+                           (not (or #?(:clj (admission/covers? prepared ident old-entry new-entry)
+                                       :cljs false)
+                                    (:allow-index-backfill? (dbi/-config db-after))
                                     (:allow-index-backfill? tx-options)))
                            (or (seq (schema-attr-current-datoms db-after ident))
                                (seq (schema-attr-history-datoms db-after ident))))
@@ -1987,134 +2005,146 @@
                   :value (:allow-index-backfill? tx-options)})))
   tx-options)
 
-(defn transact-tx-data
-  ([initial-report initial-es] (transact-tx-data initial-report initial-es nil))
-  ([{:keys [db-before] :as initial-report} initial-es tx-options]
-   (validate-tx-options! tx-options)
-   (when-not (or (nil? initial-es)
-                 (sequential? initial-es))
-     (log/raise "Bad transaction data " initial-es ", expected sequential collection"
-                {:error :transact/syntax, :tx-data initial-es}))
-   (let [has-tuples? (seq (dbi/-attrs-by (:db-after initial-report) :db.type/tuple))
-         initial-es' (if has-tuples?
-                       (interleave initial-es (repeat ::flush-tuples))
-                       initial-es)
-         initial-report (-> initial-report
-                            (update :datahike/tx-ops #(or % #{}))
-                            (update :tx-meta
-                                    #(merge {:db/txInstant (next-tx-instant db-before)} %)))
+(defn ^:no-doc transact-tx-data-internal
+  [{:keys [db-before] :as initial-report} initial-es tx-options prepared]
+  #?(:clj (when prepared (admission/check! prepared db-before initial-es))
+     :cljs (when prepared (throw (ex-info "Prepared AVET admission requires the JVM." {}))))
+  (validate-tx-options! tx-options)
+  (when-not (or (nil? initial-es)
+                (sequential? initial-es))
+    (log/raise "Bad transaction data " initial-es ", expected sequential collection"
+               {:error :transact/syntax, :tx-data initial-es}))
+  (let [initial-report #?(:clj (if prepared
+                                 (assoc initial-report :db-after (admission/prepare-db prepared db-before))
+                                 initial-report)
+                          :cljs initial-report)
+        has-tuples? (seq (dbi/-attrs-by (:db-after initial-report) :db.type/tuple))
+        initial-es' (if has-tuples?
+                      (interleave initial-es (repeat ::flush-tuples))
+                      initial-es)
+        initial-report (-> initial-report
+                           (update :datahike/tx-ops #(or % #{}))
+                           (update :tx-meta
+                                   #(merge {:db/txInstant (next-tx-instant db-before)} %)))
         ;; Reject zero-width or reverse valid-time windows. A tx
         ;; with `:db.valid/from >= :db.valid/to` would produce a
         ;; tx-entity that no `d/valid-at` query can ever match
         ;; (the AVET predicate is `vf <= at < vt`, unsatisfiable
         ;; when from >= to) — a silent data-quality bug. Throw at
         ;; the transactor so it surfaces immediately.
-         _ (let [tm (:tx-meta initial-report)
-                 vf (:db.valid/from tm)
-                 vt (:db.valid/to tm)]
-             (when (and vf vt (not (bp/date-before? vf vt)))
-               (log/raise (str "Invalid valid-time window: :db.valid/from "
-                               "must be strictly before :db.valid/to "
-                               "(got from=" vf ", to=" vt ")")
-                          {:error :transact/invalid-valid-times
-                           :db.valid/from vf
-                           :db.valid/to vt})))
-         meta-entities (flush-tx-meta initial-report)]
-     (loop [report (update initial-report :db-after transient)
-            es (if (dbi/-keep-history? db-before)
-                 (concat meta-entities
-                         initial-es')
-                 initial-es')]
-       (let [[entity & entities] es
-             {:keys [tempids db-after]} report
-             db db-after]
-         (cond
-           (empty? es)
-           (do
+        _ (let [tm (:tx-meta initial-report)
+                vf (:db.valid/from tm)
+                vt (:db.valid/to tm)]
+            (when (and vf vt (not (bp/date-before? vf vt)))
+              (log/raise (str "Invalid valid-time window: :db.valid/from "
+                              "must be strictly before :db.valid/to "
+                              "(got from=" vf ", to=" vt ")")
+                         {:error :transact/invalid-valid-times
+                          :db.valid/from vf
+                          :db.valid/to vt})))
+        meta-entities (flush-tx-meta initial-report)]
+    (loop [report (update initial-report :db-after transient)
+           es (if (dbi/-keep-history? db-before)
+                (concat meta-entities
+                        initial-es')
+                initial-es')]
+      (let [[entity & entities] es
+            {:keys [tempids db-after]} report
+            db db-after]
+        (cond
+          (empty? es)
+          (do
             ;; Cross-tx vf<vt validation: any prior tx-entity touched
             ;; by this commit's vt-meta writes is checked against the
             ;; final combined state. Throws on invalid window. The
             ;; ::pending-vt-validation bookkeeping is stripped before
             ;; the report exits, matching the ::queued-tuples cleanup
             ;; discipline.
-             (validate-cross-tx-vt-windows! report)
+            (validate-cross-tx-vt-windows! report)
             ;; Deferred schema validation on the RESULTING state — covers
             ;; raw datom vectors, retracts and any datom order uniformly
             ;; (check-schema-update only sees the entity-map path).
-             (validate-schema-changes! report tx-options)
-             (validate-ident-renames! report)
-             (-> report
+            (validate-schema-changes! report tx-options prepared)
+            (validate-ident-renames! report)
+            (-> report
                 ;; Index-backfill migration for :db/index / :db/unique
                 ;; enabled on existing attributes — must run while
                 ;; :db-after is still transient.
-                 backfill-enabled-indices
+                (backfill-enabled-indices prepared)
                 ;; The inverse transition is equally atomic: remove the full
                 ;; current AVET slice before this database value is published.
-                 remove-disabled-indices
-                 (dissoc ::pending-vt-validation)
-                 (assoc-in [:tempids :db/current-tx] (current-tx report))
-                 (update-in [:db-after :max-tx] inc)
-                 (update :db-after persistent!)
-                 (update :db-after finalize-secondary-indices)))
+                remove-disabled-indices
+                (dissoc ::pending-vt-validation)
+                (assoc-in [:tempids :db/current-tx] (current-tx report))
+                (update-in [:db-after :max-tx] inc)
+                (update :db-after persistent!)
+                (update :db-after finalize-secondary-indices)
+                (#?(:clj (fn [report] (admission/finish prepared report))
+                    :cljs identity))))
 
-           (nil? entity)
-           (recur report entities)
+          (nil? entity)
+          (recur report entities)
 
-           (= ::flush-tuples entity)
-           (if (contains? report ::queued-tuples)
-             (recur
-              (dissoc report ::queued-tuples)
-              (concat (flush-tuples report) entities))
-             (recur report entities))
+          (= ::flush-tuples entity)
+          (if (contains? report ::queued-tuples)
+            (recur
+             (dissoc report ::queued-tuples)
+             (concat (flush-tuples report) entities))
+            (recur report entities))
 
-           (map? entity)
-           (let [{:keys [new-report new-entities retry? old-eid upserted-eid]} (entity-map->op-vec db report entity)]
-             (if retry?
-               (retry-with-tempid initial-report report initial-es old-eid upserted-eid tx-options)
-               (recur new-report (concat new-entities entities))))
+          (map? entity)
+          (let [{:keys [new-report new-entities retry? old-eid upserted-eid]} (entity-map->op-vec db report entity)]
+            (if retry?
+              (retry-with-tempid initial-report report initial-es old-eid upserted-eid tx-options prepared)
+              (recur new-report (concat new-entities entities))))
 
-           (sequential? entity)
-           (let [[op e a v] entity]
-             (when (dbu/tuple? db a)
-               (check-tuple db entity))
-             (cond
+          (sequential? entity)
+          (let [[op e a v] entity]
+            (when (dbu/tuple? db a)
+              (check-tuple db entity))
+            (cond
 
-               (tx-id? e)
-               (recur (allocate-eid report e (current-tx report)) (cons [op (current-tx report) a v] entities))
+              (tx-id? e)
+              (recur (allocate-eid report e (current-tx report)) (cons [op (current-tx report) a v] entities))
 
-               (and (dbu/ref? db a) (tx-id? v))
-               (recur (allocate-eid report v (current-tx report)) (cons [op e a (current-tx report)] entities))
+              (and (dbu/ref? db a) (tx-id? v))
+              (recur (allocate-eid report v (current-tx report)) (cons [op e a (current-tx report)] entities))
 
-               (tempid? e)
-               (if (not= op :db/add)
-                 (log/raise "Can't use tempid in '" entity "'. Tempids are allowed in :db/add only"
-                            {:error :transact/syntax, :op entity})
-                 (let [upserted-eid (when (dbu/is-attr? db a :db.unique/identity)
-                                      (:e (first (dbi/datoms db :avet [a v]))))
-                       allocated-eid (get tempids e)]
-                   (if (and upserted-eid allocated-eid (not= upserted-eid allocated-eid))
-                     (retry-with-tempid initial-report report initial-es e upserted-eid tx-options)
-                     (let [eid (or upserted-eid allocated-eid (next-eid db))]
-                       (recur (allocate-eid report e eid) (cons [op eid a v] entities))))))
+              (tempid? e)
+              (if (not= op :db/add)
+                (log/raise "Can't use tempid in '" entity "'. Tempids are allowed in :db/add only"
+                           {:error :transact/syntax, :op entity})
+                (let [upserted-eid (when (dbu/is-attr? db a :db.unique/identity)
+                                     (:e (first (dbi/datoms db :avet [a v]))))
+                      allocated-eid (get tempids e)]
+                  (if (and upserted-eid allocated-eid (not= upserted-eid allocated-eid))
+                    (retry-with-tempid initial-report report initial-es e upserted-eid tx-options prepared)
+                    (let [eid (or upserted-eid allocated-eid (next-eid db))]
+                      (recur (allocate-eid report e eid) (cons [op eid a v] entities))))))
 
-               (and (dbu/ref? db a) (tempid? v))
-               (if-let [vid (get tempids v)]
-                 (recur report (cons [op e a vid] entities))
-                 (recur (allocate-eid report v (next-eid db)) es))
+              (and (dbu/ref? db a) (tempid? v))
+              (if-let [vid (get tempids v)]
+                (recur report (cons [op e a vid] entities))
+                (recur (allocate-eid report v (next-eid db)) es))
 
-               :else
-               (let [[new-report new-entities] (apply-db-op db report entity)]
-                 (recur new-report (concat new-entities entities)))))
+              :else
+              (let [[new-report new-entities] (apply-db-op db report entity)]
+                (recur new-report (concat new-entities entities)))))
 
-           (datom? entity)
-           (let [[e a v tx added] entity]
-             (if added
-               (recur (transact-add report [:db/add e a v tx]) entities)
-               (recur (transact-retract-datom report entity true) entities)))
+          (datom? entity)
+          (let [[e a v tx added] entity]
+            (if added
+              (recur (transact-add report [:db/add e a v tx]) entities)
+              (recur (transact-retract-datom report entity true) entities)))
 
-           :else
-           (log/raise "Bad entity type at " entity ", expected map or vector"
-                      {:error :transact/syntax, :tx-data entity})))))))
+          :else
+          (log/raise "Bad entity type at " entity ", expected map or vector"
+                     {:error :transact/syntax, :tx-data entity}))))))
+
+(defn transact-tx-data
+  ([initial-report initial-es] (transact-tx-data initial-report initial-es nil))
+  ([initial-report initial-es tx-options]
+   (transact-tx-data-internal initial-report initial-es tx-options nil)))
 
 (defn transact-entities-directly
   "Load `initial-es` (raw `[e a v t op]` records) into `(:db-after

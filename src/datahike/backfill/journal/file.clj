@@ -137,6 +137,20 @@
       (check-boundary! file descriptor right :backfill.journal/invalid-cursor)
       (compare (.-end ^Cursor left) (.-end ^Cursor right)))))
 
+(defn range-byte-size
+  "Return the physical byte span between two owned boundaries. This is backend
+   accounting for admission budgets, not a cursor representation guarantee."
+  [descriptor left right]
+  (let [path (checked-path descriptor)]
+    (with-open [file (RandomAccessFile. (.toFile path) "r")]
+      (check-end! file descriptor)
+      (check-boundary! file descriptor left :backfill.journal/invalid-cursor)
+      (check-boundary! file descriptor right :backfill.journal/invalid-cursor)
+      (let [distance (- (.-end ^Cursor right) (.-end ^Cursor left))]
+        (when (neg? distance)
+          (fail! :backfill.journal/invalid-cursor "Journal range is reversed." {}))
+        distance))))
+
 (defn- check-scalars!
   "Bound scalar allocations inside the codec before its output cap can act.
    Traversal has a node budget too, avoiding unbounded collection preflight."

@@ -146,19 +146,27 @@
       (fn [conn]
         (d/transact conn [{:db/id 100 :sample/id "existing" :sample/value "value"}])
         (let [tx (conj upsert-tx [:db/add :sample/value :db/index true])
-              original dbt/transact-tx-data
-              calls (atom 0)]
-          (with-redefs [dbt/transact-tx-data (fn [& args]
-                                               (swap! calls inc)
-                                               (apply original args))]
+              original dbt/transact-tx-data-internal
+              calls (atom [])
+              attempts [{:options backfill :prepared nil :upsert nil}
+                        {:options backfill :prepared nil :upsert 100}]]
+          ;; Observe the shared evaluator, including its actual restart, rather
+          ;; than the compatibility wrapper around the ordinary entry point.
+          (with-redefs [dbt/transact-tx-data-internal
+                        (fn [initial-report tx-data tx-options prepared]
+                          (swap! calls conj {:options tx-options :prepared prepared
+                                             :upsert (get (:tempids initial-report) -1)})
+                          (original initial-report tx-data tx-options prepared))]
             (let [preview (d/with @conn tx nil backfill)]
-              (is (= 2 @calls) "the tempid conflict really restarted the transaction")
+              (is (= 2 (count @calls)) "the tempid conflict really restarted the transaction")
+              (is (= attempts @calls) "restart retains options and the resolved tempid")
               (is (= 100 (get (:tempids preview) -1)))
               (is (= "updated" (:sample/other (d/entity (:db-after preview) 100))))
               (is (= 1 (count (d/datoms (:db-after preview) :avet :sample/value)))))
-            (reset! calls 0)
+            (reset! calls [])
             (let [report (d/transact conn {:tx-data tx :tx-options backfill})]
-              (is (= 2 @calls))
+              (is (= 2 (count @calls)))
+              (is (= attempts @calls))
               (is (= 100 (get (:tempids report) -1)))
               (is (= 1 (count (d/datoms @conn :avet :sample/value))))))
           (is (false? (get-in @conn [:config :allow-index-backfill?]))))))))

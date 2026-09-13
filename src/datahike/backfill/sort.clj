@@ -2,6 +2,7 @@
   "Scoped JVM external sorting with bounded windows, records and merge fan-in.
    Limits account for retained record data, not exact JVM object sizes."
   (:require [boring.core :as boring]
+            [datahike.backfill.control :as control]
             [datahike.migrate.cbor :as cbor]
             [datahike.sort :as engine])
   (:import [java.io ByteArrayOutputStream DataInputStream DataOutputStream
@@ -76,6 +77,7 @@
       @charge)))
 
 (defn- encode! [record {:keys [max-record-bytes window-bytes]}]
+  (control/check!)
   (let [charge (record-charge! record (min window-bytes max-record-bytes))
         buffer (ByteArrayOutputStream. (int (min 8192 max-record-bytes)))
         count-bytes (volatile! 0)
@@ -101,6 +103,7 @@
   (.resolve directory (str "p" pass "-r" run ".cbor")))
 
 (defn- write-frame! [^DataOutputStream out usage limit ^bytes bytes]
+  (control/check!)
   (let [n (+ 4 (long (alength bytes)))]
     (when (> (+ @usage n) limit)
       (fail! ::quota-exceeded "Sort exceeds scratch quota." {}))
@@ -112,6 +115,7 @@
   (DataInputStream. (BufferedInputStream. (FileInputStream. (.toFile path)))))
 
 (defn- read-frame! [^DataInputStream in limit]
+  (control/check!)
   (let [first-byte (.read in)]
     (when (not= -1 first-byte)
       (try

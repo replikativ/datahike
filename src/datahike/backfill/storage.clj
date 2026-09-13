@@ -3,15 +3,17 @@
    deferral, source pin and local GC guard until publication or cancellation.
    This primitive does not establish those protections or enable online AVET."
   (:require [datahike.datom :as dd]
+            [datahike.backfill.control :as control]
             [datahike.index.interface :as di]
             [datahike.index.persistent-set]
             [konserve.core :as k]
+            [org.replikativ.persistent-sorted-set :as pss]
             [org.replikativ.persistent-sorted-set.impl.nodes :as nodes])
   (:import [java.util UUID Date]
            [java.net URI]
            [java.math BigInteger BigDecimal]
            [java.lang.reflect Array]
-           [org.replikativ.persistent_sorted_set IStorage ANode Branch]))
+           [org.replikativ.persistent_sorted_set IStorage ANode Branch Branch$NodeState PersistentSortedSet Settings]))
 
 (def ^:private defaults
   {:max-node-keys 4096 :max-node-weight 8388608
@@ -39,6 +41,12 @@
     (when (> (:max-node-weight options) (:pending-weight-limit options))
       (fail! :backfill.storage/invalid-options "A node must fit in the pending weight limit." {}))
     options))
+
+(defn validate-options!
+  "Validate only private storage budgets without creating storage or doing I/O.
+   create! additionally checks the actual database/backend capabilities."
+  [options]
+  (options! {:index :datahike.index/persistent-set :crypto-hash? false} options))
 
 (defn- weight!
   "Conservative payload accounting units, NOT measured JVM retained heap.
@@ -103,13 +111,15 @@
   (when (:failed? @state)
     (fail! :backfill.storage/failed "Private storage failed; discard the build." {})))
 
-(defn- node-from-blob [blob]
+(defn- node-from-blob
   ;; reader-context memoizes settings without a size limit. Keep its lifetime
   ;; local so heterogeneous historical node settings cannot grow a hidden cache.
-  (let [context (nodes/reader-context {})]
-    (if (contains? blob :level)
-      (nodes/blob->branch context blob)
-      (nodes/blob->leaf context blob))))
+  ([blob] (node-from-blob blob false))
+  ([blob private-read?]
+   (let [context (nodes/reader-context (when private-read? {:ref-type :weak}))]
+     (if (contains? blob :level)
+       (nodes/blob->branch context blob)
+       (nodes/blob->leaf context blob)))))
 
 (defn- cache! [state options address blob weight]
   (when (<= weight (:cache-weight-limit options))
@@ -131,6 +141,7 @@
   (live! state)
   (try
     (doseq [[address blob _weight] (:pending @state)]
+      (control/check!)
       ;; Same immutable synchronous write discipline as writing/write-pending-kvs!,
       ;; without introducing a writing -> storage -> writing namespace cycle.
       (k/assoc store address (node-from-blob blob) {:immutable? true} {:sync? true})
@@ -144,6 +155,7 @@
 (defrecord PrivateStorage [store options state]
   IStorage
   (store [_ node]
+    (control/check!)
     (locking state
       (live! state)
       (let [[blob weight] (blob! node options)
@@ -158,6 +170,7 @@
         (cache! state options address blob weight)
         address)))
   (restore [_ address]
+    (control/check!)
     (locking state
       (live! state)
       (let [[blob weight]
@@ -171,7 +184,7 @@
                   (blob! node options)))]
         (cache! state options address blob weight)
         ;; Never cache returned mutable nodes/child pointers: only detached blobs.
-        (node-from-blob blob))))
+        (node-from-blob blob true))))
   (accessed [_ _address]
     (locking state (live! state) (swap! state update-in [:stats :accessed] inc))
     nil)
@@ -205,6 +218,80 @@
   "Store view for init-index-sorted. It does not expose live storage buffers."
   [storage]
   (assoc (:store storage) :storage storage))
+
+(defn- resident-datoms
+  "Read existing topology without child(), which fills shared branch caches.
+   Missing addressed children load privately. Retention is the traversal frontier
+   plus the caller's already-resident immutable source tree."
+  [storage ^ANode node]
+  (lazy-seq
+   (control/check!)
+   (blob! node (:options storage))
+   (if (instance? Branch node)
+     (let [^Branch$NodeState snapshot (.-_state ^Branch node)
+           children (.-children snapshot)
+           addresses (.-addresses snapshot)]
+       (mapcat (fn [i]
+                 (let [resident (when children
+                                  (.readReference (.-_settings node) (aget ^objects children i)))
+                       address (when addresses (aget ^objects addresses i))
+                       child (or resident
+                                 (when address (.restore ^IStorage storage address))
+                                 (fail! :backfill.storage/invalid-source "Source child has no node or address." {}))]
+                   (resident-datoms storage child)))
+               (range (.-_len node))))
+     (map #(aget (.-_keys node) %) (range (.-_len node))))))
+
+(defn copy-index!
+  "Bind a durable source tree to private read storage without sharing mutable
+   node topology or touching live storage/cache. A resident (including fused)
+   root is projected/copied under the node admission limit; a cold root loads
+   privately. Never flushes the source. Nonempty unflushed trees are refused
+   unless :resident-source? opts into a streaming private materialization; the
+   coordinator may enable that for committed memory-backend snapshots only.
+   Existing node decoding/projection and each copied root are additional bounded
+   candidates outside pending/cache weights. Stored domain values remain shared
+   immutable values. Weak child references prevent hidden strong subtree caches."
+  ([storage index] (copy-index! storage index nil))
+  ([storage index options]
+   (when-not (and (or (nil? options) (map? options))
+                  (every? #{:resident-source?} (keys options))
+                  (or (not (contains? options :resident-source?))
+                      (boolean? (:resident-source? options))))
+     (fail! :backfill.storage/invalid-options "Invalid source copy options." {}))
+   (when-not (instance? PersistentSortedSet index)
+     (fail! :backfill.storage/unsupported "Expected a persistent-set source tree." {}))
+   (locking (:state storage)
+     (live! (:state storage))
+     (let [^PersistentSortedSet index index
+          ;; Match PSS's acquire ordering for a concurrently warmed source root.
+           root-ref (.-_root index)
+           ^Settings settings (.-_settings index)
+           resident (.readReference settings root-ref)
+           address (.-_address index)
+           family (:index-type (meta index))]
+       (when-not (contains? #{:eavt :aevt :avet} family)
+         (fail! :backfill.storage/unsupported "Source tree lacks index-family metadata." {}))
+       (when (and (nil? address) (not (zero? (.-_count index))) (not (:resident-source? options)))
+         (fail! :backfill.storage/unflushed-source "Source must be durably flushed before copying." {}))
+       (when (pos? (.diffBufSize settings))
+         (fail! :backfill.storage/unsupported "Private source copies do not support diff buffers." {}))
+       (if (and (nil? address) (not (zero? (.-_count index))))
+         (do
+           (when-not resident (fail! :backfill.storage/invalid-source "Resident source root is missing." {}))
+           (let [tree (pss/from-sorted-seq
+                       (dd/index-type->cmp-quick family false)
+                       (resident-datoms storage resident)
+                       {:storage storage :meta (meta index) :ref-type :weak
+                        :branching-factor (.branchingFactor settings) :diff-buf-size 0})]
+             (flush-state! (:store storage) (:state storage))
+             tree))
+         (let [root (when resident
+                      (node-from-blob (first (blob! resident (:options storage))) true))
+               weak-settings (nodes/settings-for (.branchingFactor settings) 0 nil :weak
+                                                 (.descriptor (.boundary settings)))]
+           (PersistentSortedSet. (meta index) (dd/index-type->cmp-quick family false)
+                                 address storage root (.-_count index) weak-settings (.-_version index))))))))
 
 (defn flush!
   "Synchronously persist private pending nodes. A failed flush poisons the build."
