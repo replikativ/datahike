@@ -127,39 +127,49 @@ not retain the full change journal or all values being checked for uniqueness
 in heap. The final writer step admits only a bounded journal tail; a larger tail
 is sent back to the worker for another catch-up pass.
 
-Configure limits under the writer's `:avet-backfill` key:
+All settings are optional. Omit `:avet-backfill` to use the defaults. Setting
+these options does not start a build; submit a request explicitly as shown above.
+For most deployments, only choose a scratch directory on a volume with enough
+free space. Within the writer configuration:
 
 ```clojure
 :avet-backfill
-{:runtime {:journal {:directory "/path/to/scratch"
-                     :max-frame-bytes 1048576
-                     :max-bytes 268435456}
-           :max-contexts 8
-           :max-readers 8}
- :build {:sort {:directory "/path/to/scratch"
-                :window-bytes 16777216
-                :window-records 65536
-                :max-record-bytes 1048576
-                :fan-in 16
-                :max-bytes 4294967296}
-         :storage {:pending-node-limit 64
-                   :pending-weight-limit 16777216
-                   :cache-node-limit 64
-                   :cache-weight-limit 16777216}}
- :tail-bytes 1048576
- :tail-transactions 128
- :max-jobs 8}
+{:scratch-directory "/path/to/scratch"}
 ```
 
-The shown values are defaults except for the directories, which default to the
-JVM temporary directory. A configured directory must already exist. Limits are
-per owned runtime or build, not a global memory or disk budget. Weight limits
-are conservative accounting units, not exact retained heap measurements.
+The directory is shared by sort runs and the change journal. It defaults to the
+JVM temporary directory; a configured directory must already exist and be writable.
+The following optional budgets accept positive integer byte counts:
+
+| Setting | Default | Scope and purpose |
+| --- | --- | --- |
+| `:journal-bytes` | 268435456 (256 MiB) | Maximum journal file size per generation, including framing. Size for writes during the entire build; replay does not reclaim earlier journal entries. |
+| `:sort-disk-bytes` | 4294967296 (4 GiB) | Sort scratch-space budget per sort operation. Increase for larger builds. |
+| `:sort-memory-bytes` | 16777216 (16 MiB) | Accounted record-data budget for one sorting window. Larger windows can reduce spill work. This is not a total build heap limit. |
+| `:max-transaction-bytes` | 1048576 (1 MiB) | Maximum encoded payload of one transaction's captured effects and journal bookkeeping. This is not the size of its submitted `:tx-data`. Increase for large transactions during a build. |
+
+For example, retain the default memory budget while allowing more disk scratch:
+
+```clojure
+:avet-backfill
+{:scratch-directory "/path/to/scratch"
+ :journal-bytes 1073741824
+ :sort-disk-bytes 17179869184}
+```
+
+Limits are per generation or build component, not global process budgets.
+Canceled generations can retain resources briefly until their readers finish.
+The writer manages worker capacity, journal readers, merge fan-in, node buffers,
+and final catch-up limits internally; these are not writer configuration options.
+Memory weights are conservative accounting units, not exact heap measurements.
 Backend node decoding, the index builder's frontier, the database's ordinary
 caches, and user transaction inputs remain outside these buffer budgets.
-Large values or nodes can exceed an individual-record or node limit.
-`:tail-bytes` counts the journal backend's physical bytes, including frame
-headers; journal cursors themselves remain opaque and are not byte offsets.
+Effects are collected in memory for each transaction before journaling, so these
+budgets do not bound an arbitrarily large individual transaction. Internal safety
+limits also reject oversized sort records (1 MiB encoded or structurally accounted)
+and tree nodes (8 MiB accounted weight or 4096 keys). A smaller sorting window
+also limits individual records. Increasing the journal transaction budget does
+not increase those limits. Such build failures leave the effective schema unchanged.
 
 A journal limit or append failure rejects the affected user transaction without
 advancing its database state. Cancel the build or wait for it to finish before
@@ -173,8 +183,10 @@ publishing a state its predicates did not validate. Retry against a fresh head.
 
 ## Recovery and garbage collection
 
-Schema changes invalidate an active build. A different writer taking over its
-branch cannot continue the original writer's local journal: its next accepted
+Any schema mutation currently invalidates an active build, including unrelated
+schema changes and changes reverted within the same transaction. A different
+writer taking over its branch cannot continue the original writer's local
+journal: its next accepted
 write retires that generation. The write itself can still commit normally.
 After a restart, submit a fresh request or cancel the durable old generation;
 scratch is not a resumable checkpoint. Transaction predicates also apply to

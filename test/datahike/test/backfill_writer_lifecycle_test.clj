@@ -26,6 +26,46 @@
 
 (def ^:dynamic *predicate-context* nil)
 
+(deftest public-resource-options-default-and-reject-internal-controls
+  (let [defaults (#'writer/avet-options! nil)]
+    (is (= defaults (#'writer/avet-options! {})))
+    (is (= 1048576 (get-in defaults [:runtime :journal :max-frame-bytes])))
+    (is (= 268435456 (get-in defaults [:runtime :journal :max-bytes])))
+    (is (= 16777216 (get-in defaults [:build :sort :window-bytes])))
+    (is (= 4294967296 (get-in defaults [:build :sort :max-bytes]))))
+  (doseq [options [false [] {:runtime {}} {:build {}} {:max-contexts 2}
+                   {:max-readers 2} {:max-jobs 2} {:tail-bytes 1024}
+                   {:tail-transactions 1} {:internal {}} {:scratch-directory ""}
+                   {:journal-bytes 0} {:sort-disk-bytes -1}
+                   {:sort-memory-bytes nil} {:max-transaction-bytes 2147483648}]]
+    (is (thrown? clojure.lang.ExceptionInfo (#'writer/avet-options! options))
+        (str options))))
+
+(deftest public-resource-budgets-reach-the-created-writer
+  (let [directory (str (System/getProperty "java.io.tmpdir"))
+        conn (utils/setup-db
+              {:writer {:backend :self
+                        :avet-backfill {:scratch-directory directory
+                                        :journal-bytes 33554432
+                                        :sort-disk-bytes 67108864
+                                        :sort-memory-bytes 2097152
+                                        :max-transaction-bytes 524288}}})
+        config (:config @conn)]
+    (try
+      (let [local (:writer @conn)
+            runtime-options (:options (:avet-runtime local))
+            coordinator-options (:options (:avet-coordinator local))]
+        (is (= {:directory directory :max-bytes 33554432 :max-frame-bytes 524288}
+               (:journal runtime-options)))
+        (is (= directory (get-in coordinator-options [:build-options :sort :directory])))
+        (is (= 67108864 (get-in coordinator-options [:build-options :sort :max-bytes])))
+        (is (= 2097152 (get-in coordinator-options [:build-options :sort :window-bytes])))
+        (is (= 8 (:max-contexts runtime-options) (:max-readers runtime-options)
+               (:max-jobs coordinator-options)))
+        ;; Configuration alone never starts a generation.
+        (is (nil? (:avet-build @conn))))
+      (finally (d/release conn) (d/delete-database config)))))
+
 (deftest normalized-predicate-runs-once-with-caller-bindings
   (let [owner (runtime/create! nil)
         report {:db-before {} :db-after {}}

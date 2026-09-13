@@ -1087,15 +1087,22 @@
 #?(:clj
    (defn- avet-options! [options]
      (when-not (and (or (nil? options) (map? options))
-                    (every? #{:runtime :build :tail-bytes :tail-transactions :max-jobs} (keys options)))
+                    (every? #{:scratch-directory :journal-bytes :sort-disk-bytes
+                              :sort-memory-bytes :max-transaction-bytes} (keys options)))
        (throw (ex-info "Unknown AVET writer options." {:type :invalid-avet-backfill-options})))
-     (let [build (:build options)]
-       (when-not (and (or (nil? build) (map? build))
-                      (every? #{:sort :storage} (keys build)))
-         (throw (ex-info "Unknown AVET build options." {:type :invalid-avet-backfill-options})))
-       (avet-sort/validate-options! (:sort build))
-       (avet-storage/validate-options! (:storage build)))
-     options))
+     ;; Only deployment budgets cross the writer-config boundary. Internal
+     ;; constructors retain explicit options for focused resource-limit tests.
+     (let [journal-options (cond-> {}
+                             (contains? options :scratch-directory) (assoc :directory (:scratch-directory options))
+                             (contains? options :journal-bytes) (assoc :max-bytes (:journal-bytes options))
+                             (contains? options :max-transaction-bytes) (assoc :max-frame-bytes (:max-transaction-bytes options)))
+           sort-options (cond-> {}
+                          (contains? options :scratch-directory) (assoc :directory (:scratch-directory options))
+                          (contains? options :sort-disk-bytes) (assoc :max-bytes (:sort-disk-bytes options))
+                          (contains? options :sort-memory-bytes) (assoc :window-bytes (:sort-memory-bytes options)))]
+       {:runtime {:journal (journal/validate-options! journal-options)}
+        :build {:sort (avet-sort/validate-options! sort-options)
+                :storage (avet-storage/validate-options! nil)}})))
 
 (defn check-fencing!
   "Raise unless `store` can fence branch-head writes as far as `require-fencing`
@@ -1172,38 +1179,37 @@
           commit-queue-size (or commit-queue-size DEFAULT_QUEUE_SIZE)
           commit-wait-time (or commit-wait-time DEFAULT_COMMIT_WAIT_TIME)
           journal-owner #?(:clj (atom {}) :cljs nil)
-          avet-options (:avet-backfill writer-config)
+          avet-options #?(:clj (avet-options! (:avet-backfill writer-config)) :cljs nil)
           queue-holder (atom nil)
           avet-runtime #?(:clj (avet-runtime/create! (:runtime avet-options)) :cljs nil)
           avet-coordinator
           #?(:clj
              (avet-coordinator/create!
               avet-runtime
-              (merge (select-keys avet-options [:max-jobs :tail-bytes :tail-transactions])
-                     {:build-options (:build avet-options)
-                      :submit!
-                      (fn [{:keys [op generation token]}]
-                        (let [callback (promise-chan)
-                              invocation (case op
-                                           :install {:op 'try-install-avet-build! :args [token]
-                                                     ::avet-generation generation}
-                                           :cancel {:op 'cancel-avet-build! :args [generation :build-failed]})]
-                          (try
-                            (when-not (and @queue-holder
-                                           (put! @queue-holder (assoc invocation :callback callback)))
-                              (throw (ex-info "AVET writer queue is closed." {:type :writer-shut-down})))
-                            (catch Throwable enqueue-error
+              {:build-options (:build avet-options)
+               :submit!
+               (fn [{:keys [op generation token]}]
+                 (let [callback (promise-chan)
+                       invocation (case op
+                                    :install {:op 'try-install-avet-build! :args [token]
+                                              ::avet-generation generation}
+                                    :cancel {:op 'cancel-avet-build! :args [generation :build-failed]})]
+                   (try
+                     (when-not (and @queue-holder
+                                    (put! @queue-holder (assoc invocation :callback callback)))
+                       (throw (ex-info "AVET writer queue is closed." {:type :writer-shut-down})))
+                     (catch Throwable enqueue-error
                               ;; A worker may catch this error and fail to enqueue
                               ;; its cancellation too. Retire local lineage now,
                               ;; before it releases the last owned candidate.
-                              (avet-runtime/fail-generation! avet-runtime generation :dispatch-failed)
-                              (throw enqueue-error)))
-                          (go (let [result (<! callback)]
-                                (when (instance? Throwable result)
-                                  (when (= op :cancel)
-                                    (avet-runtime/fail-generation! avet-runtime generation :cancel-rejected))
-                                  (log/warn :datahike/avet-internal-operation-failed
-                                            {:generation generation :error result}))))))}))
+                       (avet-runtime/fail-generation! avet-runtime generation :dispatch-failed)
+                       (throw enqueue-error)))
+                   (go (let [result (<! callback)]
+                         (when (instance? Throwable result)
+                           (when (= op :cancel)
+                             (avet-runtime/fail-generation! avet-runtime generation :cancel-rejected))
+                           (log/warn :datahike/avet-internal-operation-failed
+                                     {:generation generation :error result}))))))})
              :cljs nil)
           avet-ops
           #?(:clj
