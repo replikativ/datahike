@@ -7,6 +7,7 @@
             [datahike.core :as core]
             [datahike.api :as d]
             [datahike.datom :as dd]
+            [datahike.dependency-tracking :as tracking]
             [datahike.db :as db]
             [datahike.db.transaction :as transaction]
             [datahike.db.utils :as dbu]
@@ -55,6 +56,34 @@
                    (get-in source [:avet-build-journal :cursor])))
 
 (defn- tuples [tree] (mapv #(vec (seq %)) tree))
+
+(deftest prepared-activation-preserves-tracking-and-invalidates-schema-tokens
+  (doseq [refs? [false true] history? [false true]]
+    (let [tracked (:db-after (core/with (base refs? history?) [] nil
+                                        {:track-dependencies
+                                         {::values {:attributes #{:value}}
+                                          ::other {:attributes #{:other}}}}))
+          source (active tracked #{:value :other})
+          values-token (tracking/token source ::values)
+          other-token (tracking/token source ::other)
+          changed (:db-after (core/with source [[:db/add 10000 :value 3]]))
+          ;; This fixture rebuilds the candidate from the complete changed
+          ;; snapshot. Clear pending capture as writer journal staging does.
+          staged (dissoc changed :avet-build-effects)
+          certificate (mint staged {:value {:db/index true}})
+          installed (:db-after (core/with-prepared-avet staged certificate))]
+      ;; Native mutation capture and cache invalidation must both survive the
+      ;; shared transactor path; unrelated dependencies remain valid until DDL.
+      (is (seq (:avet-build-effects changed)))
+      (is (not (tracking/valid? values-token changed ::values)))
+      (is (tracking/valid? other-token changed ::other))
+      (is (tracking/valid? values-token source ::values))
+      (is (some? (tracking/token installed ::values)))
+      (is (some? (tracking/token installed ::other)))
+      (is (not (tracking/valid? (tracking/token changed ::values) installed ::values)))
+      (is (not (tracking/valid? other-token installed ::other)))
+      (is (nil? (:avet-build installed)))
+      (is (= [10000] (mapv :e (d/datoms installed :avet :value 3)))))))
 
 (deftest prepared-activation-matches-synchronous-oracle
   (doseq [refs? [false true] history? [false true]

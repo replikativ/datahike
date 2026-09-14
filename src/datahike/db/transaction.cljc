@@ -12,6 +12,7 @@
    [datahike.db.interface :as dbi]
    [datahike.db.search :as dbs]
    [datahike.db.utils :as dbu]
+   [datahike.dependency-tracking :as tracking]
    [datahike.bitemporal.platform :as bp]
    [datahike.constants :refer [tx0 e0 emax txmax]]
    [datahike.tools :refer [get-date date->epoch-ms]]
@@ -602,6 +603,7 @@
         (assert-secondary-only-storable! db a-ident datom sec-idx-idents)))
     (if (datom-added datom)
       (cond-> db
+        true (tracking/changed a-ident schema?)
         true (update-in [:eavt] #(di/-insert % prim :eavt op-count))
         (effects/enabled? db) (effects/emit a-ident :current :insert prim nil)
         true (update-in [:aevt] #(di/-insert % prim :aevt op-count))
@@ -615,6 +617,7 @@
 
       (if-some [removing ^Datom (first (dbi/search db [(.-e prim) (.-a prim) (.-v prim)]))]
         (cond-> db
+          true (tracking/changed a-ident schema?)
           true (update-in [:eavt] #(di/-remove % removing :eavt op-count))
           (effects/enabled? db) (effects/emit a-ident :current :remove removing nil)
           true (update-in [:aevt] #(di/-remove % removing :aevt op-count))
@@ -645,6 +648,9 @@
         op-count (:op-count db)
         has-secondary? (seq (get-in db [:rschema :db.secondary/index a-ident]))]
     (cond-> db
+      (or current? history?) (tracking/changed a-ident (or schema?
+                                                           (ds/entity-spec-attr? a-ident)
+                                                           (ds/secondary-index-attr? a-ident)))
       current? (update-in [:eavt] #(di/-remove % current-datom :eavt op-count))
       (and current? (effects/enabled? db)) (effects/emit a-ident :current :remove current-datom nil)
       current? (update-in [:aevt] #(di/-remove % current-datom :aevt op-count))
@@ -734,6 +740,8 @@
                  (-> db (remove-schema datom) update-rschema)
                  (catch ExceptionInfo _e
                    db))
+
+       true (tracking/changed a-ident (or schema? (ds/entity-spec-attr? a-ident)))
 
        keep-history? (update-in [:temporal-eavt] #(di/-temporal-upsert % prim :eavt op-count old-datom))
        (and keep-history? (effects/enabled? db)) (effects/emit a-ident :temporal :temporal-upsert prim old-datom)
@@ -1994,7 +2002,7 @@
     (log/raise "Bad transaction options, expected a map or nil"
                {:error :transact/invalid-options :tx-options tx-options}))
   (when (map? tx-options)
-    (when-let [unknown (seq (remove #{:allow-index-backfill?} (keys tx-options)))]
+    (when-let [unknown (seq (remove #{:allow-index-backfill? :track-dependencies} (keys tx-options)))]
       (log/raise "Unknown transaction options: " (vec unknown)
                  {:error :transact/invalid-options :unknown-options (vec unknown)}))
     (when (and (contains? tx-options :allow-index-backfill?)
@@ -2002,7 +2010,9 @@
       (log/raise ":allow-index-backfill? must be a boolean"
                  {:error :transact/invalid-options
                   :option :allow-index-backfill?
-                  :value (:allow-index-backfill? tx-options)})))
+                  :value (:allow-index-backfill? tx-options)}))
+    (when (contains? tx-options :track-dependencies)
+      (tracking/validate-options! (:track-dependencies tx-options))))
   tx-options)
 
 (defn ^:no-doc transact-tx-data-internal
@@ -2023,6 +2033,7 @@
                       (interleave initial-es (repeat ::flush-tuples))
                       initial-es)
         initial-report (-> initial-report
+                           (update :db-after tracking/enroll (:track-dependencies tx-options))
                            (update :datahike/tx-ops #(or % #{}))
                            (update :tx-meta
                                    #(merge {:db/txInstant (next-tx-instant db-before)} %)))
@@ -2080,7 +2091,8 @@
                 (update :db-after persistent!)
                 (update :db-after finalize-secondary-indices)
                 (#?(:clj (fn [report] (admission/finish prepared report))
-                    :cljs identity))))
+                    :cljs identity))
+                (update :db-after #(tracking/schema-transition db-before %))))
 
           (nil? entity)
           (recur report entities)
@@ -2191,7 +2203,8 @@
       (-> report
           (assoc :migration migration-state)
           (update :db-after persistent!)
-          (update :db-after finalize-secondary-indices))
+          (update :db-after finalize-secondary-indices)
+          (update :db-after #(tracking/schema-transition (:db-before initial-report) %)))
       (let [[entity & entities] es
             {:keys [config] :as db} (:db-after report)
             [e a v t op] entity

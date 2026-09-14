@@ -20,6 +20,7 @@
             [datahike.test.optimistic-test]
             [datahike.test.reference-test]
             [datahike.test.purge-reference-test]
+            [datahike.test.dependency-tracking-test]
             [datahike.test.valid-time-test]
             [datahike.test.backfill-effects-portable-test]
             ;; Portable query suites — exercise the query-engine paths that were
@@ -919,6 +920,7 @@
                'datahike.test.optimistic-test
                'datahike.test.reference-test
                'datahike.test.purge-reference-test
+               'datahike.test.dependency-tracking-test
                'datahike.test.valid-time-test
                'datahike.test.backfill-effects-portable-test
                'datahike.test.time-variance-test
