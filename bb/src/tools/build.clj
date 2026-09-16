@@ -125,13 +125,12 @@
           cp-sep (java.io.File/pathSeparator)
           javac (str graalvm-dir "/bin/javac" (when windows? ".exe"))
           native-image (str graalvm-dir "/bin/native-image" (when windows? ".cmd"))
-          java-base-file (str/replace java-interface #"LibDatahike\.java$" "LibDatahikeBase.java")
-          feature-file (str/replace java-interface #"LibDatahike\.java$" "LoadNamespacesFeature.java")]
+          java-base-file (str/replace java-interface #"LibDatahike\.java$" "LibDatahikeBase.java")]
       (println "Compiling native bindings Java classes.")
       (p/shell javac
                "-cp" (str native-jar cp-sep svm-jar)
                "-d" class-path
-               java-base-file java-interface feature-file)
+               java-base-file java-interface)
       (println "Compiling shared library through native image.")
       (apply p/shell
              (concat
@@ -146,9 +145,6 @@
                "-J-Dclojure.compiler.direct-linking=true"
                (str "-H:IncludeResources=" (version/string repo-config))
                "--initialize-at-build-time"
-               ;; Loads the namespaces on one thread before the parallel
-               ;; analysis initializes them concurrently. See the class.
-               "--features=datahike.impl.LoadNamespacesFeature"
                ;; Same reason as :native-cli in deps.edn: the S3 endpoint rules
                ;; engine resolves through `RuleUrl.parse`, which calls
                ;; `new java.net.URL(..)`, and a native image registers no URL
