@@ -126,13 +126,7 @@
           javac (str graalvm-dir "/bin/javac" (when windows? ".exe"))
           native-image (str graalvm-dir "/bin/native-image" (when windows? ".cmd"))
           java-base-file (str/replace java-interface #"LibDatahike\.java$" "LibDatahikeBase.java")
-          feature-file (str/replace java-interface #"LibDatahike\.java$" "LoadNamespacesFeature.java")
-          ;; The Apple Silicon runner has 7 GB of RAM, so the builder runs at
-          ;; -Xmx5g, and at full parallelism it fills that heap while building
-          ;; the universe: the GC thrashes, the deadlock watchdog sees no
-          ;; progress and aborts with exit 30. Fewer workers need less heap.
-          ;; Empty when the CI matrix entry does not set it.
-          parallelism (not-empty (System/getenv "NATIVE_IMAGE_PARALLELISM"))]
+          feature-file (str/replace java-interface #"LibDatahike\.java$" "LoadNamespacesFeature.java")]
       (println "Compiling native bindings Java classes.")
       (p/shell javac
                "-cp" (str native-jar cp-sep svm-jar)
@@ -165,8 +159,13 @@
                "--no-fallback"]
               ;; --no-server is not supported by native-image on Windows.
               (when-not windows? ["--no-server"])
-              (when parallelism [(str "--parallelism=" parallelism)])
-              ["-J-Xmx5g"]))
+              ;; 6g, not 5g: at 5g the Apple Silicon build filled the heap
+              ;; while building the universe (74-76% of that stage in GC even
+              ;; when it passed), and about half the time the watchdog saw no
+              ;; progress and aborted with exit 30. Fewer workers
+              ;; (--parallelism=2) barely moved the peak and cost a third more
+              ;; build time; the heap is the image, not the threads.
+              ["-J-Xmx6g"]))
       (fs/delete-tree project-target-dir)
       (fs/create-dir project-target-dir)
       (->> (slurp "build-artifacts.json")

@@ -22,8 +22,7 @@ public class LoadNamespacesFeature implements Feature {
 
     private static final String[] NAMESPACES = {
         "datahike.impl.libdatahike",
-        "datahike.api",
-        "datahike.cli"
+        "datahike.api"
     };
 
     @Override
