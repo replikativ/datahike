@@ -33,7 +33,11 @@
          :content-type "application/java-archive"
          :draft false})
        (catch ExceptionInfo e
-         (assoc (ex-data e) :failure? true))))
+         (assoc (ex-data e) :failure? true))
+       ;; A network error (e.g. java.net.ConnectException) is not an
+       ;; ExceptionInfo; without this it skipped the retry entirely.
+       (catch Exception e
+         {:failure? true :exception (str e)})))
 
 (defn gh-release
   "Create a GitHub release and upload the library jar"

@@ -125,12 +125,19 @@
           cp-sep (java.io.File/pathSeparator)
           javac (str graalvm-dir "/bin/javac" (when windows? ".exe"))
           native-image (str graalvm-dir "/bin/native-image" (when windows? ".cmd"))
-          java-base-file (str/replace java-interface #"LibDatahike\.java$" "LibDatahikeBase.java")]
+          java-base-file (str/replace java-interface #"LibDatahike\.java$" "LibDatahikeBase.java")
+          feature-file (str/replace java-interface #"LibDatahike\.java$" "LoadNamespacesFeature.java")
+          ;; The Apple Silicon runner has 7 GB of RAM, so the builder runs at
+          ;; -Xmx5g, and at full parallelism it fills that heap while building
+          ;; the universe: the GC thrashes, the deadlock watchdog sees no
+          ;; progress and aborts with exit 30. Fewer workers need less heap.
+          ;; Empty when the CI matrix entry does not set it.
+          parallelism (not-empty (System/getenv "NATIVE_IMAGE_PARALLELISM"))]
       (println "Compiling native bindings Java classes.")
       (p/shell javac
                "-cp" (str native-jar cp-sep svm-jar)
                "-d" class-path
-               java-base-file java-interface)
+               java-base-file java-interface feature-file)
       (println "Compiling shared library through native image.")
       (apply p/shell
              (concat
@@ -145,6 +152,9 @@
                "-J-Dclojure.compiler.direct-linking=true"
                (str "-H:IncludeResources=" (version/string repo-config))
                "--initialize-at-build-time"
+               ;; Loads the namespaces on one thread before the parallel
+               ;; analysis initializes them concurrently. See the class.
+               "--features=datahike.impl.LoadNamespacesFeature"
                ;; Same reason as :native-cli in deps.edn: the S3 endpoint rules
                ;; engine resolves through `RuleUrl.parse`, which calls
                ;; `new java.net.URL(..)`, and a native image registers no URL
@@ -155,6 +165,7 @@
                "--no-fallback"]
               ;; --no-server is not supported by native-image on Windows.
               (when-not windows? ["--no-server"])
+              (when parallelism [(str "--parallelism=" parallelism)])
               ["-J-Xmx5g"]))
       (fs/delete-tree project-target-dir)
       (fs/create-dir project-target-dir)

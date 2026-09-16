@@ -34,6 +34,9 @@ jobs:
             name: macos
             platform: macos
             arch: aarch64
+            # 7 GB runner: at full parallelism the libdatahike build fills its
+            # 5g heap and the watchdog aborts it. See bb/src/tools/build.clj.
+            native-image-parallelism: 2
           # The .dll builds and ships. Only its C++ harness is skipped: that
           # script exports LD_LIBRARY_PATH/DYLD_LIBRARY_PATH, which mean nothing
           # on Windows, and drives compile-cpp through a gcc/clang toolchain.
@@ -51,6 +54,7 @@ jobs:
       # here is what limited this workflow to one architecture.
       DTHK_PLATFORM: ${{ matrix.platform }}
       DTHK_ARCH: ${{ matrix.arch }}
+      NATIVE_IMAGE_PARALLELISM: ${{ matrix.native-image-parallelism }}
     steps:
       - name: Git checkout
         uses: actions/checkout@v2
