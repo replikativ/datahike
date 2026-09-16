@@ -155,7 +155,13 @@
                "--no-fallback"]
               ;; --no-server is not supported by native-image on Windows.
               (when-not windows? ["--no-server"])
-              ["-J-Xmx5g"]))
+              ;; 6g, not 5g: at 5g the Apple Silicon build filled the heap
+              ;; while building the universe (74-76% of that stage in GC even
+              ;; when it passed), and about half the time the watchdog saw no
+              ;; progress and aborted with exit 30. Fewer workers
+              ;; (--parallelism=2) barely moved the peak and cost a third more
+              ;; build time; the heap is the image, not the threads.
+              ["-J-Xmx6g"]))
       (fs/delete-tree project-target-dir)
       (fs/create-dir project-target-dir)
       (->> (slurp "build-artifacts.json")
