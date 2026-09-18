@@ -1,85 +1,134 @@
 (ns datahike.test.schema-cache-test
-  "The per-store schema WRITE cache, under the concurrency it actually sees.
+  "The schema-meta DURABILITY PROOF, at unit level.
 
-   This cache decides one thing: whether `writing/db->stored` may skip
-   re-writing a database's schema meta. It is an optimisation — the key is
-   `(uuid schema-meta)`, so writing again is idempotent — but it sits on the
-   commit path, and anything that throws there kills a user's transaction.
+   This decides one thing: whether `writing/db->stored*` may skip re-writing a
+   database's schema meta. Answering `false` costs one idempotent write of a
+   content-addressed blob. Answering `true` when the blob is not actually there
+   produces a commit that names a key nothing ever stored — a database that
+   works until the process restarts and then has no schema at all, with every
+   commit since pointing at the same missing key.
 
-   And it IS concurrent by design, not by accident: `gc/mark-and-sweep!` evicts
-   a store's write cache (`clear-write-cache`) while writers are inside
-   `db->stored` reading it. `background-gc-under-pipelined-writes` is the test
-   that drives both at once, and it is where this first surfaced — as a
-   NullPointerException from a background collection, blamed on an unrelated
-   transaction, roughly one CI run in many.
+   So the only property that really matters is: `schema-meta-durable?` is true
+   ONLY after something recorded proof, and proof is only recorded after an
+   awaited write or a read that reached the store. The end-to-end paths that
+   used to break that are in `datahike.test.schema-meta-durability-test`.
 
-   These are deterministic where that one is statistical."
+   This replaces a suite about a global LRU-of-LRUs keyed by store id, which had
+   its own concurrency hazard (a `has?`-then-`lookup` pair that a concurrent
+   `clear-write-cache` could empty in between, handing both callers nil to
+   dereference — an NPE from a background collection, blamed on an unrelated
+   transaction). The cell is now a plain atom owned by the store, so that shape
+   is gone; `proof-survives-concurrent-forget` keeps a regression guard on the
+   equivalent race anyway."
   (:require [clojure.test :refer [deftest testing is]]
             [datahike.schema-cache :as sc]))
 
-(defn- hammer
-  "Run `readers` threads doing cache reads and writes while another thread
-   evicts, and collect everything that escapes."
-  [readers iterations]
-  (let [store-config {:backend :memory :id (java.util.UUID/randomUUID)}
-        errors (atom [])
-        stop (atom false)
-        evictor (future
-                  (while (not @stop)
-                    (sc/clear-write-cache store-config)))
-        workers (mapv (fn [_]
-                        (future
-                          (dotimes [i iterations]
-                            (try
-                              (sc/write-cache-has? store-config (str "k" (mod i 7)))
-                              (sc/add-to-write-cache store-config (str "k" (mod i 7)))
-                              (catch Throwable t
-                                (swap! errors conj t))))))
-                      (range readers))]
-    (run! deref workers)
-    (reset! stop true)
-    @evictor
-    @errors))
+(defn- store-with-cell
+  "A stand-in for a konserve store carrying the cell that
+   `datahike.store/add-cache-and-handlers` attaches. That the REAL store carries
+   a cell under the key `schema-cache` reads is asserted end-to-end by
+   `datahike.test.schema-meta-durability-test/steady-state-writes-schema-meta-once`
+   — if the two literals ever drift, the proof is never found and that test sees
+   a re-write on every commit."
+  []
+  {sc/durable-cell-key (sc/new-durable-cell)})
 
-(deftest write-cache-survives-eviction-by-a-concurrent-gc
-  (testing "`get-or-create-write-cache` was `has?` then `lookup` — two
-            operations on a cache a concurrent evict can empty in between. The
-            loser got nil, and both callers then dereferenced it:
+(deftest proof-must-be-recorded-before-it-is-believed
+  (testing "a fresh store proves nothing"
+    (let [store (store-with-cell)]
+      (is (false? (sc/schema-meta-durable? store "k" nil))
+          "an unmarked key is never durable, whatever the cadence")))
 
-              write-cache-has?   (cw/has? nil k)  -> NPE \"fut is null\"
-              add-to-write-cache (cw/miss nil k)  -> NPE \"atom is null\"
+  (testing "marking records proof, forgetting withdraws it"
+    (let [store (store-with-cell)]
+      (sc/mark-schema-meta-durable! store "k")
+      (is (true? (sc/schema-meta-durable? store "k" nil)))
+      (is (false? (sc/schema-meta-durable? store "other" nil))
+          "proof is per key, not per store")
+      (sc/forget-schema-meta-durable! store)
+      (is (false? (sc/schema-meta-durable? store "k" nil))
+          "after a collection or a head rewind the next commit must write again")))
 
-            Measured before the fix, 8 threads x 20000 iterations against a
-            continuous evictor: 5533 failures, both variants. After: 0.
+  (testing "a store with no cell at all answers false rather than throwing"
+    (is (false? (sc/schema-meta-durable? {} "k" nil))
+        "the commit path must degrade to a redundant write, never to an exception")
+    (is (nil? (sc/mark-schema-meta-durable! {} "k")))
+    (is (nil? (sc/forget-schema-meta-durable! {})))))
 
-            The eviction is not hypothetical — `gc.cljc` calls
-            `clear-write-cache` on every mark-and-sweep, and `schema-write-caches`
-            is itself an LRU that evicts when a process touches more stores than
-            `*schema-write-cache-max-db-count*`."
-    (let [errors (hammer 8 20000)]
-      (is (empty? errors)
-          (str "the commit path must not throw when the GC evicts underneath it; got "
-               (count errors) " failures, e.g. "
-               (some-> errors first ex-message))))))
+(deftest two-stores-never-share-a-proof
+  (testing "this is the failure that made a shared store :id corrupt the second
+            database: the old cache was keyed by (:id config), so a store that
+            had never been written to inherited another store's claim. The cell
+            hangs on the store OBJECT, and sibling connections each build their
+            own."
+    (let [a (store-with-cell)
+          b (store-with-cell)]
+      (sc/mark-schema-meta-durable! a "k")
+      (is (true? (sc/schema-meta-durable? a "k" nil)))
+      (is (false? (sc/schema-meta-durable? b "k" nil))))))
 
-(deftest the-cache-still-caches
-  (testing "the fix must not turn the optimisation off. `lookup-or-miss`
-            installs the per-store cache on first use and returns the SAME one
-            afterwards, so a key added is a key found — otherwise every commit
-            would rewrite schema meta and the race would be 'fixed' by making
-            the cache useless."
-    (let [cfg {:backend :memory :id (java.util.UUID/randomUUID)}]
-      (is (false? (sc/write-cache-has? cfg "fresh")))
-      (sc/add-to-write-cache cfg "fresh")
-      (is (true? (sc/write-cache-has? cfg "fresh"))
-          "the second call sees the first call's cache, not a new one")
-      (sc/clear-write-cache cfg)
-      (is (false? (sc/write-cache-has? cfg "fresh"))
-          "and an evicted store starts empty rather than throwing"))
+(deftest proof-expires-on-the-re-assert-clock
+  (testing "nil means never — the exclusive-writer case, where the only deleter
+            is our own GC and it drops the proof itself"
+    (let [store (store-with-cell)]
+      (sc/mark-schema-meta-durable! store "k")
+      (is (true? (sc/schema-meta-durable? store "k" nil)))))
 
-    (testing "two stores do not share one cache"
-      (let [a {:backend :memory :id (java.util.UUID/randomUUID)}
-            b {:backend :memory :id (java.util.UUID/randomUUID)}]
-        (sc/add-to-write-cache a "k")
-        (is (true? (sc/write-cache-has? a "k")))
-        (is (false? (sc/write-cache-has? b "k")))))))
+  (testing "a zero window means the proof is already stale, so the next commit
+            re-asserts. This is the shared-writer case in miniature: proof of a
+            write we made cannot outlive the window in which another process's
+            sweep could have been blind to it."
+    (let [store (store-with-cell)]
+      (sc/mark-schema-meta-durable! store "k")
+      (is (false? (sc/schema-meta-durable? store "k" 0)))))
+
+  (testing "a wide window keeps it"
+    (let [store (store-with-cell)]
+      (sc/mark-schema-meta-durable! store "k")
+      (is (true? (sc/schema-meta-durable? store "k" (* 60 60 1000)))))))
+
+(deftest re-assert-cadence-follows-writer-ownership
+  (testing "ownership is the connection's statement about whether another
+            process may collect, which is exactly what the cadence substitutes
+            for — the same question datahike.gc/default-min-age-ms asks"
+    (is (nil? (sc/re-assert-after-ms {:writer {:backend :self :writer-ownership :exclusive}}))
+        "exclusive: never re-assert, so a settled schema costs zero extra writes")
+    (is (pos? (sc/re-assert-after-ms {:writer {:backend :self :writer-ownership :shared}}))
+        "shared is the default ownership and must re-assert")
+    (is (pos? (sc/re-assert-after-ms {}))
+        "an unstated writer config is shared, the safe direction")
+    (is (pos? (sc/re-assert-after-ms {:writer {:backend :datahike-server}}))
+        "a remote backend writes elsewhere entirely")))
+
+(deftest proof-set-is-bounded
+  (testing "a workload alternating between schemas must not grow the cell without
+            bound; dropping it costs one redundant write of a blob already there"
+    (let [store (store-with-cell)]
+      (dotimes [i (* 4 sc/MAX_PROVEN_KEYS)]
+        (sc/mark-schema-meta-durable! store (str "k" i)))
+      (is (<= (count @(get store sc/durable-cell-key)) (inc sc/MAX_PROVEN_KEYS)))
+      (is (true? (sc/schema-meta-durable? store (str "k" (dec (* 4 sc/MAX_PROVEN_KEYS))) nil))
+          "the most recent key — the one a commit is about to ask for — survives"))))
+
+(deftest proof-survives-concurrent-forget
+  (testing "gc-storage! forgets a store's proof while writers are inside
+            db->stored reading it. Whatever that interleaving produces, it may
+            not be an exception on the commit path."
+    (let [store (store-with-cell)
+          errors (atom [])
+          stop (atom false)
+          forgetter (future (while (not @stop) (sc/forget-schema-meta-durable! store)))
+          workers (mapv (fn [_]
+                          (future
+                            (dotimes [i 20000]
+                              (try
+                                (sc/schema-meta-durable? store (str "k" (mod i 7)) nil)
+                                (sc/mark-schema-meta-durable! store (str "k" (mod i 7)))
+                                (catch Throwable t (swap! errors conj t))))))
+                        (range 8))]
+      (run! deref workers)
+      (reset! stop true)
+      @forgetter
+      (is (empty? @errors)
+          (str "got " (count @errors) " failures, e.g. "
+               (some-> @errors first ex-message))))))

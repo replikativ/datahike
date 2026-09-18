@@ -72,7 +72,6 @@ datahike.store.cache.size   | DATAHIKE_STORE_CACHE_SIZE
 datahike.index.config       | DATAHIKE_INDEX_CONFIG
 datahike.max.db.caches      | DATAHIKE_MAX_DB_CACHES
 schema.meta.cache.size      | SCHEMA_META_CACHE_SIZE
-schema.write.cache.size     | SCHEMA_WRITE_CACHE_SIZE
 
 Only the settings listed above are collected; unrelated process environment and
 JVM properties are ignored. Do not use `:` in keyword strings for environment

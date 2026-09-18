@@ -411,16 +411,18 @@
                        "precondition: the cycle swept garbage (not a vacuous pass)")
                    (deliver release-head true)
                    @tx))
-               ;; NOTHING may be transacted here. gc-storage! calls
-               ;; sc/clear-write-cache, so the NEXT commit would rewrite
-               ;; schema-meta and silently repair the damage — healing the very
-               ;; thing this test exists to catch.
+               ;; NOTHING may be transacted here. gc-storage! withdraws this
+               ;; store's schema-meta durability proof, so the NEXT commit would
+               ;; rewrite schema-meta and silently repair the damage — healing
+               ;; the very thing this test exists to catch. (That self-repair is
+               ;; deliberate; it just has to stay out of this test.)
                (d/release conn))
-             ;; cold reopen: the STORED schema must still know :tag. If the raced
-             ;; sweep took schema-meta, stored->db falls back without erroring and
-             ;; the attribute is simply gone — so assert on the schema, and then
-             ;; prove it by transacting against it (:schema-flexibility :write
-             ;; rejects an unknown attribute).
+             ;; cold reopen: the STORED schema must still know :tag. A raced
+             ;; sweep that took schema-meta now raises :schema-meta-missing here
+             ;; rather than opening a schema-less db, but the guard this test
+             ;; covers is the same one: the sweep must not take it at all. Assert
+             ;; on the schema, then prove it by transacting against it
+             ;; (:schema-flexibility :write rejects an unknown attribute).
              (let [c (d/connect cfg)]
                (is (contains? (:schema @c) :tag)
                    "the attribute the raced commit added survived the collection")

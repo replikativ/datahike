@@ -26,13 +26,25 @@
   "Wrap a raw konserve store with LRU cache and Datahike BTSet handlers.
 
    The cache improves read performance by keeping frequently accessed keys
-   in memory. The handlers enable persistent-sorted-set serialization."
+   in memory. The handlers enable persistent-sorted-set serialization.
+
+   Also attaches the schema-meta durability proof cell. It belongs to the STORE
+   rather than to a store id: sibling connections (branches) each build their own
+   store over their own konserve connection, so a per-store cell is proven and
+   dropped with the thing it makes a claim about, and two stores sharing an `:id`
+   can never borrow each other's proof. See `datahike.schema-cache`."
   [raw-store config]
-  (di/add-konserve-handlers
-   config
-   (kc/ensure-cache
-    raw-store
-    (atom (cache/lru-cache-factory {} :threshold (:store-cache-size config))))))
+  (assoc
+   (di/add-konserve-handlers
+    config
+    (kc/ensure-cache
+     raw-store
+     (atom (cache/lru-cache-factory {} :threshold (:store-cache-size config)))))
+   ;; The key and the {key -> proven-at} shape are `datahike.schema-cache`'s;
+   ;; spelled out here rather than required, because that namespace reads
+   ;; `datahike.config`, which reads this one. One literal keyword is a
+   ;; cheaper coupling than breaking that cycle open.
+   :datahike/schema-meta-durable (atom {})))
 
 ;; =============================================================================
 ;; Store Identity

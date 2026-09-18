@@ -13,7 +13,6 @@
 
 ;; global
 (def ^:dynamic *schema-meta-cache-size* (env :schema-meta-cache-size 1024))
-(def ^:dynamic *schema-write-cache-max-db-count* (env :schema-write-cache-size 1024))
 
 ;; per database
 (def ^:dynamic *default-index* :datahike.index/persistent-set)
@@ -65,6 +64,7 @@
 ;; :exclusive only when one PROCESS owns the writer. See
 ;; datahike.writer/create-writer.
 (s/def ::writer map?)
+
 (s/def ::branch keyword?)
 (s/def ::entity (s/or :map associative? :vec vector?))
 (s/def ::initial-tx (s/nilable (s/or :data (s/coll-of ::entity) :path string?
@@ -123,6 +123,24 @@
    :writer-ownership: deep-merging the fully defaulted self writer into a Kabel or
    HTTP writer would leak a self-only option into that remote writer."
   {:backend :self})
+
+(defn local-exclusive-writer?
+  "Does this configuration state that THIS process is the only writer?
+
+   `{:backend :self :writer-ownership :exclusive}` — a local transactor whose
+   owner has declared that no other process commits to the store. Ownership is
+   the connection's own statement, not something datahike can verify, and it is
+   the fact that several process-local optimizations substitute for: the GC
+   sweep floor (`datahike.gc/default-min-age-ms`) and the schema-meta durability
+   proof (`datahike.schema-cache`) both ask exactly this question, so they ask it
+   in one place.
+
+   Defaults to false: `:shared` is the default ownership and every remote writer
+   backend writes elsewhere entirely."
+  [config]
+  (let [writer (:writer config)]
+    (and (= :self (get writer :backend :self))
+         (= :exclusive (get writer :writer-ownership :shared)))))
 
 (defn normalize-writer-config
   "Default a self writer to shared ownership and translate the experimental

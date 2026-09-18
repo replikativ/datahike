@@ -18,7 +18,6 @@
 
 (def ^:private supported-keys
   #{:schema-meta-cache-size
-    :schema-write-cache-size
     :datahike-store-backend
     :datahike-index
     :datahike-initial-tx

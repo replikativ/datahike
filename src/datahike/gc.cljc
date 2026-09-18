@@ -166,6 +166,28 @@
                             ;; :db.type/store-ref and so declare no key-bearing
                             ;; attribute (store-refs → #{} regardless).
                       schema (or (:schema schema-meta) (:schema record))
+                      ;; A record that NAMES a schema-meta key and cannot produce
+                      ;; it leaves the mark unable to say which attributes are
+                      ;; key-bearing, so `store-refs` below reports NONE and the
+                      ;; sweep deletes blobs the database still names. The same
+                      ;; nil also makes `head-building-secondary?` false, so a
+                      ;; collection no longer defers to a building secondary
+                      ;; index. Both are the mark quietly reporting less than the
+                      ;; truth, which is exactly what a sweep may not do.
+                      ;;
+                      ;; Conditioned on the KEY, not on the nil schema: a record
+                      ;; with no `:schema-meta-key` is either a pre-out-lining
+                      ;; database (schema inline, so not nil here) or a bulk-import
+                      ;; CHECKPOINT (`datahike.migrate`), which carries no schema by
+                      ;; construction and whose blobs travel in `:datahike.gc/keys`
+                      ;; instead. Refusing on a nil schema alone would break every
+                      ;; index build.
+                      _ (when (and schema-meta-key (nil? schema))
+                          (log/raise "Schema metadata missing from store; cannot determine which attributes hold store-refs, so this collection would under-report what is reachable."
+                                     {:type :schema-meta-missing
+                                      :schema-meta-key schema-meta-key
+                                      :record to-check
+                                      :branch branch}))
                       ;; Only the seed record is the CURRENT branch/root head.
                       ;; Historical commits may legitimately contain an old
                       ;; :building schema after the live head made it :ready;
@@ -322,10 +344,9 @@
    connection's own statement about whether other writers may exist, which is
    exactly the fact the floor substitutes for."
   [config]
-  (let [writer (:writer config)
-        local-exclusive? (and (= :self (get writer :backend :self))
-                              (= :exclusive (get writer :writer-ownership :shared)))]
-    (if local-exclusive? DEFAULT_SWEEP_MIN_AGE_MS DEFAULT_SHARED_SWEEP_MIN_AGE_MS)))
+  (if (dc/local-exclusive-writer? config)
+    DEFAULT_SWEEP_MIN_AGE_MS
+    DEFAULT_SHARED_SWEEP_MIN_AGE_MS))
 
 (defn gc-storage!
   "Invokes garbage collection on the database by whitelisting currently known branches.
@@ -421,7 +442,16 @@
                              (sort-by get-time)
                              first)
                  _ (log/debug :datahike/gc-start {:time now :cutoff cutoff :min-age-ms min-age-ms})
-                 _ (sc/clear-write-cache (:store config)) ; Clear the schema write cache for this store
+                 ;; Drop this store's schema-meta durability proof. The mark below
+                 ;; unions every branch head's :schema-meta-key, so THIS sweep
+                 ;; provably spares the blob a live proof refers to — but a
+                 ;; collection is the only moment datahike removes store keys at
+                 ;; all, so it is the natural point to make the next commit
+                 ;; re-earn the claim with a real write rather than carry it
+                 ;; across. Costs one idempotent write of a content-addressed blob
+                 ;; per collection, and repairs the key retroactively for every
+                 ;; commit naming it if anything outside datahike removed it.
+                 _ (sc/forget-schema-meta-durable! store)
                  branches (<? S (k/get store :branches))
                  _ (log/trace :datahike/gc-retain-branches {:branches branches})
                  ;; Durable roots (see `datahike.gc-roots`): reap what has expired
@@ -657,6 +687,19 @@
                  schema-meta   (when-let [k (:schema-meta-key stored-db)]
                                  (<? S (k/get store k)))
                  schema        (or (:schema schema-meta) (:schema stored-db))
+                 ;; As in `reachable-in-branch`: a named-but-unreadable
+                 ;; schema-meta key means the blobs this head names cannot be
+                 ;; enumerated. Here that is worse than a bad sweep — a sync
+                 ;; walker ships the head's datoms and NOT the blobs they name,
+                 ;; landing a subscriber with live references to objects that
+                 ;; never arrive, which is the blind spot store-refs exists to
+                 ;; close. Records with no key (legacy inline, import
+                 ;; checkpoints) are unaffected.
+                 _             (when (and (:schema-meta-key stored-db) (nil? schema))
+                                 (log/raise "Schema metadata missing from store; cannot determine which attributes hold store-refs for this record."
+                                            {:type :schema-meta-missing
+                                             :schema-meta-key (:schema-meta-key stored-db)
+                                             :commit-id (get-in stored-db [:meta :datahike/commit-id])}))
                  ident-ref-map (:ident-ref-map schema-meta)
                  config        {:index index-type
                                 :attribute-refs? (:attribute-refs? rec-config)}
