@@ -315,6 +315,14 @@
               (go-try-
                (let [_ (log/debug :datahike/connect {:config (update-in config [:store] dissoc :password)})
                      store-config (:store config)
+                     ;; BEFORE the connection cache, because the cache is the
+                     ;; thing that goes wrong: `conn-id` is keyed by the store
+                     ;; id, so a config naming a DIFFERENT store under an id
+                     ;; already in use resolves to that store's connection and
+                     ;; the caller reads and writes the wrong database. A check
+                     ;; further in never runs — this path returns without
+                     ;; building a store at all.
+                     _ (ds/claim-store-identity! store-config)
                      store-id (ds/store-identity store-config)
                      conn-id [store-id (:branch config)]
                      lease* (volatile! nil)]

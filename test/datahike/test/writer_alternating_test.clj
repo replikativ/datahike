@@ -47,10 +47,19 @@
 ;; state behind our back. (The memory backend does share the konserve store
 ;; between connections of the same store id, which is fine — it is the durable
 ;; medium — but file is the unambiguous stand-in for S3 here.)
+(defn- tag-id
+  "A DISTINCT store id per tag. Each tag is a different store (different path),
+   and a store :id is a process-wide key — the connection registry, the GC guard
+   and the index storage registry are all keyed by it. Sharing one id across
+   these stores is exactly the in-memory conflation the comment above says this
+   test must not have, and `datahike.store/claim-store-identity!` now refuses it."
+  [tag]
+  (java.util.UUID/nameUUIDFromBytes (.getBytes (str "dh-alternating-" tag) "UTF-8")))
+
 (defn- cfg [tag writer-ownership]
   {:store {:backend :file
            :path (str (System/getProperty "java.io.tmpdir") "/dh-alternating-" tag)
-           :id #uuid "a17e2a71-0000-0000-0000-000000000001"}
+           :id (tag-id tag)}
    :schema-flexibility :read
    :keep-history? false
    :writer (cond-> {:backend :self}

@@ -1530,6 +1530,10 @@
                             "them, or :max-string-length 0 to stay unbounded and silence this.")))
          {:keys [keep-history?] :as config} (dc/apply-default-value-caps loaded-config)
          store-config (:store config)
+         ;; Claim the id BEFORE the store is created: `add-cache-and-handlers`
+         ;; claims too, but by then `create-store` has already made a store
+         ;; directory for a database this call is about to refuse.
+         _ (ds/claim-store-identity! store-config)
          store (ds/add-cache-and-handlers (<?- (ks/create-store store-config opts)) config)
          stored-db (<?- (k/get store :db nil opts))
          _ (when stored-db
@@ -1650,6 +1654,12 @@
        ;; The schema-meta durability proof needs nothing here: it lives on the
        ;; store object, so it is discarded with the store rather than outliving
        ;; the database under a store id that a re-creation could reuse.
+       ;;
+       ;; The store-identity CLAIM does need releasing: the store is gone, so
+       ;; binding its id to a different store is no longer a collision. Only a
+       ;; deletion releases it — releasing a connection must not, since the store
+       ;; still exists and its id must not quietly come to name something else.
+       (ds/release-store-identity! config-store-id)
        (invalidate-store-connections! config-store-id)
        result))))
 

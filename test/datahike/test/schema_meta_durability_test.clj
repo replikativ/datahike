@@ -21,6 +21,7 @@
             [datahike.writing :as dw]
             [datahike.schema-cache :as sc]
             [datahike.gc :as gc]
+            [datahike.store :as ds]
             [konserve.core :as k]
             [superv.async :refer [<?? S]]
             [clojure.core.cache.wrapped :as cw]))
@@ -95,33 +96,36 @@
         (d/release conn))
       (d/delete-database config))))
 
-(deftest two-stores-sharing-an-id-are-independent
-  (testing "`store-identity` is (:id config) alone, so two file stores at
-            different paths that share an :id used to share one write cache and
-            the second database was born with a dangling key — no error, no GC,
-            no concurrency. The proof hangs on the store object instead."
+(deftest two-stores-sharing-an-id-are-refused
+  (testing "This used to be reachable, and it produced a second database BORN
+            with a dangling schema-meta key — no error, no GC, no concurrency:
+            the write cache was keyed by (:id config), so a store that had never
+            been written to inherited another store's claim.
+
+            The sequence is now refused one level down, by
+            `datahike.store/claim-store-identity!`, so it can no longer be
+            constructed here. Asserting the refusal keeps the original defect
+            named in the suite that found it. The invariant that makes the
+            schema-meta side safe on its own — a proof belongs to a store
+            OBJECT, not to an id — is
+            `schema-cache-test/two-stores-never-share-a-proof`, and the guard
+            itself is `datahike.test.store-identity-test`."
     (let [id #uuid "5c4e3a00-0000-0000-0000-000000000102"
           a (cfg "dh-smd-share-a" id)
           b (cfg "dh-smd-share-b" id)]
-      (doseq [config [a b]]
-        (fresh! config)
-        ;; sequential: the connection registry is keyed by [store-id branch] too,
-        ;; so holding both at once returns the FIRST connection for both configs.
-        ;; That is a separate defect; this test is about the schema-meta blob.
-        (let [conn (d/connect config)]
+      (fresh! a)
+      (try
+        (let [conn (d/connect a)]
           (d/transact conn [attr-x])
-          (d/transact conn [{:x 1}])
-          (let [[smk on-disk?] (schema-meta-on-disk? conn)]
-            (is (true? on-disk?)
-                (str (get-in config [:store :path]) " names " smk)))
-          (d/release conn)))
-
-      (cold!)
-      (let [conn (d/connect b)]
-        (is (contains? (:schema @conn) :x)
-            "the second store must be readable on its own terms")
-        (d/release conn))
-      (doseq [config [a b]] (d/delete-database config)))))
+          (is (true? (second (schema-meta-on-disk? conn))))
+          (d/release conn))
+        (is (= :datahike/store-identity-collision
+               (try (d/create-database b) nil
+                    (catch clojure.lang.ExceptionInfo e (:type (ex-data e)))))
+            "a second store may not claim a live id")
+        (finally
+          (try (d/delete-database a) (catch Throwable _))
+          (ds/release-store-identity! id))))))
 
 (deftest projecting-a-db-onto-the-wire-claims-nothing
   (testing "`datahike.cbor` serializes a db with `(db->stored db false)` and
