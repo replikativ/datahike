@@ -6,6 +6,12 @@ When something is added, it's typically marked *Experimental*. When the API cont
 
 ## 0.8
 
+- **Retracted attributes no longer accumulate in the schema.** Retracting an
+  attribute entity left an empty `eid -> {}` entry in the schema map, one per
+  retraction and never removed, so workloads that create and drop attributes
+  grew the schema without bound and slowed every schema scan (pg-datahike's
+  DROP/CREATE TABLE cycles degraded ~2x over 200 cycles).
+
 - **Purge with attribute references.** In databases using `:attribute-refs? true`,
   value and attribute purges accept keyword attribute names as well as numeric
   IDs. Entity purge also removes current and historical incoming references;

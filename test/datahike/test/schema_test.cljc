@@ -382,6 +382,37 @@
       (is (d/transact conn [name-schema])))
     (d/release conn)))
 
+(deftest retracted-attributes-leave-no-schema-entries
+  ;; Retracting an attribute entity used to leave `eid -> {}` in the schema
+  ;; map, one per retraction, forever -- so creating and dropping attributes
+  ;; grew the schema map (and every scan of it) without bound.
+  (let [cfg {:store {:backend :memory
+                     :id #uuid "5c100000-0000-0000-0000-00000000000c"}
+             :schema-flexibility :write}
+        _ (d/delete-database cfg)
+        _ (d/create-database cfg)
+        conn (d/connect cfg)
+        schema-size #(count (dbi/-schema (d/db conn)))
+        cycle! (fn []
+                 (d/transact conn [{:db/ident :churn/a
+                                    :db/valueType :db.type/long
+                                    :db/cardinality :db.cardinality/one}])
+                 (let [e (ffirst (d/q '[:find ?e :where [?e :db/ident :churn/a]] (d/db conn)))]
+                   (d/transact conn [[:db/retractEntity e]])))]
+    (cycle!)
+    (let [baseline (schema-size)]
+      (dotimes [_ 10] (cycle!))
+      (is (= baseline (schema-size)))
+      (is (empty? (filter (fn [[k v]] (and (number? k) (= {} v)))
+                          (dbi/-schema (d/db conn))))))
+    (testing "the attribute can be created and used again"
+      (d/transact conn [{:db/ident :churn/a
+                         :db/valueType :db.type/long
+                         :db/cardinality :db.cardinality/one}])
+      (d/transact conn [{:churn/a 7}])
+      (is (= #{[7]} (d/q '[:find ?v :where [_ :churn/a ?v]] (d/db conn)))))
+    (d/release conn)))
+
 (deftest test-update-schema
   (let [cfg {:store {:backend :memory
                      :id #uuid "5c100000-0000-0000-0000-000000000008"}
