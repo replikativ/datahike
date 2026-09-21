@@ -259,16 +259,54 @@
      (index-type->cmp-quick index-type false)
      datoms)))
 
+(defn superseded-only-temporal?
+  "True when this database's temporal trees hold ONLY what the live trees no
+   longer hold.
+
+   Two layouts exist, and a store is fixed to one at create time by
+   `:index-config {:temporal-superseded-only? true}` (a create-time-fixed index
+   key, adopted from the stored config at connect — see
+   `datahike.connector/create-time-fixed-index-keys`).
+
+   LEGACY (default, false): `temporal-upsert` conj's every cardinality-one
+   assertion into the temporal tree, so for those attributes temporal is a full
+   COPY of the live tree. Only `:db/noHistory` and cardinality-many attributes
+   are missing their live datom, which is what the `current-datoms` filter below
+   puts back.
+
+   SUPERSEDED-ONLY (true): the cardinality-many rule is extended to
+   cardinality-one — the temporal tree receives the original assertion and the
+   retraction only WHEN a datom stops being live. A live datom is then never in
+   both trees, so the history view must union the WHOLE live tree, unfiltered.
+
+   Reading a LEGACY store with the flag on is still correct: the union is
+   deduplicated by `merge-distinct-sorted-seqs`, so the live datoms the legacy
+   temporal tree also holds are not double-counted. The reverse — a
+   superseded-only store read with the flag off — silently drops every live
+   cardinality-one datom from history, which is why the flag is create-time
+   fixed and why `ensure-stored-config-consistency` refuses a config that does
+   not carry it."
+  [db]
+  (boolean (get-in (dbi/-config db) [:index-config :temporal-superseded-only?])))
+
+(defn- live-in-history?
+  "Predicate selecting the LIVE datoms a history view must merge in, i.e. those
+   the temporal tree does not hold. Under the superseded-only layout that is all
+   of them; under the legacy layout only `:db/noHistory` and cardinality-many."
+  [db]
+  (if (superseded-only-temporal? db)
+    (constantly true)
+    (fn [datom]
+      (let [a (:a datom)]
+        (or (no-history? db a)
+            (multival? db a))))))
+
 (defn distinct-datoms
   ([db index-type current-datoms history-datoms]
    (if  (dbi/-keep-history? db)
      (merge-datoms
       index-type
-      (filter (fn [datom]
-                (let [a (:a datom)]
-                  (or (no-history? db a)
-                      (multival? db a))))
-              current-datoms)
+      (filter (live-in-history? db) current-datoms)
       history-datoms)
      current-datoms)))
 
@@ -285,11 +323,7 @@
           rcmp (fn [a b] (cmp b a))]
       (merge-distinct-sorted-seqs
        rcmp
-       (filter (fn [datom]
-                 (let [a (:a datom)]
-                   (or (no-history? db a)
-                       (multival? db a))))
-               current-datoms)
+       (filter (live-in-history? db) current-datoms)
        history-datoms))
     current-datoms))
 

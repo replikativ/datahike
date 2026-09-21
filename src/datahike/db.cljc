@@ -1139,10 +1139,23 @@
         :ident-ref-map ident-ref-map
         :meta (meta-data)
         :op-count (if attribute-refs? (count ref-datoms) 0)}
-       (when keep-history?                                  ;; no difference for attribute references since no update possible
-         {:temporal-eavt eavt
-          :temporal-aevt aevt
-          :temporal-avet avet}))))))
+       (when keep-history?
+         ;; Legacy layout: the temporal trees START as the live ones. Harmless
+         ;; there because the attribute-refs bootstrap datoms are never
+         ;; retracted, and because for cardinality-one the two trees are
+         ;; expected to overlap anyway.
+         ;;
+         ;; Superseded-only: the whole point is that a live datom is NEVER in a
+         ;; temporal tree, so the bootstrap must not be seeded into one. It
+         ;; still reaches `history`/`as-of` — through the live∪temporal merge,
+         ;; exactly like every other live datom under this layout.
+         (if (get-in complete-config [:index-config :temporal-superseded-only?])
+           {:temporal-eavt (di/empty-index index store :eavt index-config)
+            :temporal-aevt (di/empty-index index store :aevt index-config)
+            :temporal-avet (di/empty-index index store :avet index-config)}
+           {:temporal-eavt eavt
+            :temporal-aevt aevt
+            :temporal-avet avet})))))))
 
 (defn ^DB init-db
   ([datoms] (init-db datoms nil nil nil))
