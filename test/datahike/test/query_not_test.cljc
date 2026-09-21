@@ -495,14 +495,14 @@
              (both '[:find ?e
                      :where [?e :name]
                      (or-join [?e]
-                       (not-join [?e] [?e :name] [?o :city "nowhere"]))]))))
+                              (not-join [?e] [?e :name] [?o :city "nowhere"]))]))))
 
     (testing "a satisfiable body still excludes, nested in an or-join"
       (is (= {:planner #{} :base #{}}
              (both '[:find ?e
                      :where [?e :name]
                      (or-join [?e]
-                       (not-join [?e] [?e :name] [?o :city "Kyiv"]))]))))
+                              (not-join [?e] [?e :name] [?o :city "Kyiv"]))]))))
 
     (testing "an unsatisfiable body excludes nothing at the top level"
       (is (= {:planner #{[1] [2]} :base #{[1] [2]}}
@@ -516,9 +516,9 @@
                      :where [?e :name]
                      [(ground false) ?m]
                      (not-join [?e ?m]
-                       [(= ?m false)]
-                       [?e :name]
-                       [?o :city "nowhere"])]))))
+                               [(= ?m false)]
+                               [?e :name]
+                               [?o :city "nowhere"])]))))
 
     (testing "the same, with a body that does have a solution"
       (is (= {:planner #{} :base #{}}
@@ -526,6 +526,6 @@
                      :where [?e :name]
                      [(ground false) ?m]
                      (not-join [?e ?m]
-                       [(= ?m false)]
-                       [?e :name]
-                       [?o :city "Kyiv"])]))))))
+                               [(= ?m false)]
+                               [?e :name]
+                               [?o :city "Kyiv"])]))))))
