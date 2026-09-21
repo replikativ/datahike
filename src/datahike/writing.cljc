@@ -661,11 +661,13 @@
                       (or (sc/cache-lookup schema-meta-key)
                           (if-let [schema-meta (k/get store schema-meta-key nil {:sync? true})]
                             (do (sc/cache-miss schema-meta-key schema-meta)
-                                ;; A read that REACHED the store is proof the blob
-                                ;; is durable — the other way (besides an awaited
-                                ;; write) to earn it. A cache hit proves nothing
-                                ;; and deliberately falls outside this branch.
-                                (sc/mark-schema-meta-durable! store schema-meta-key)
+                                ;; Deliberately does NOT record a durability
+                                ;; proof. The read is evidence the blob is there,
+                                ;; but this function reads historical commits as
+                                ;; readily as the head, and only the head's key is
+                                ;; ever asked about — so proofs from here are
+                                ;; keys nobody queries. See
+                                ;; `sc/mark-schema-meta-durable!`.
                                 schema-meta)
                             (log/raise "Schema metadata missing from store. The commit names a schema-meta key that no value is stored under, so its schema cannot be reconstructed."
                                        {:type            :schema-meta-missing

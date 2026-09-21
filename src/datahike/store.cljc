@@ -40,11 +40,11 @@
     (kc/ensure-cache
      raw-store
      (atom (cache/lru-cache-factory {} :threshold (:store-cache-size config)))))
-   ;; The key and the {key -> proven-at} shape are `datahike.schema-cache`'s;
-   ;; spelled out here rather than required, because that namespace reads
-   ;; `datahike.config`, which reads this one. One literal keyword is a
-   ;; cheaper coupling than breaking that cycle open.
-   :datahike/schema-meta-durable (atom {})))
+   ;; The key and the cell's shape (`{:key … :at …}`, or nil) are
+   ;; `datahike.schema-cache`'s; spelled out here rather than required, because
+   ;; that namespace reads `datahike.config`, which reads this one. One literal
+   ;; keyword is a cheaper coupling than breaking that cycle open.
+   :datahike/schema-meta-durable (atom nil)))
 
 ;; =============================================================================
 ;; Store Identity

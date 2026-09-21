@@ -15,8 +15,8 @@
    slow read, it is a commit that names a key nothing ever wrote — a database
    that opens fine until the process restarts and then has no schema at all.
 
-   The proof is only ever established by (1) a write this process issued AND
-   awaited, or (2) a read that actually reached the store. It is scoped to the
+   A proof is only ever established by a write this process issued AND awaited.
+   It is scoped to the
    STORE OBJECT rather than to a store id, so two stores that happen to share an
    `:id` cannot borrow each other's proof, and it dies with the store. See
    `datahike.store/add-cache-and-handlers` for where the cell is attached and
@@ -47,20 +47,16 @@
   "Where the proof cell hangs on the konserve store map."
   :datahike/schema-meta-durable)
 
-(def ^:const MAX_PROVEN_KEYS
-  "How many distinct schema-meta keys one store's proof holds before it is
-   dropped wholesale.
-
-   A connection needs exactly one — its branch head's — and a schema change
-   replaces it. More than a handful means something is alternating between
-   schemas (reading historical commits between writes, say), and the only cost
-   of forgetting is one redundant write of a blob that is already there."
-  16)
-
 (defn new-durable-cell
-  "The per-store proof cell: an atom of {schema-meta-key -> proven-at Date}."
+  "The per-store proof cell: an atom of `{:key <schema-meta-key> :at <Date>}`,
+   or nil.
+
+   ONE entry, because one is all that is ever asked for. `db->stored` asks only
+   about the db it is committing, whose schema is this connection's head — and a
+   store object belongs to one connection (sibling branches each build their
+   own). A schema change replaces the key rather than adding to it."
   []
-  (atom {}))
+  (atom nil))
 
 (defn- get-time
   "Reader-conditional `.getTime`; mirrors `datahike.gc/get-time` — metadata does
@@ -70,7 +66,9 @@
 
 (defn- proven-at [store schema-meta-key]
   (when-let [cell (get store durable-cell-key)]
-    (get @cell schema-meta-key)))
+    (let [proven @cell]
+      (when (= schema-meta-key (:key proven))
+        (:at proven)))))
 
 (def ^:dynamic *shared-re-assert-ms*
   "How long proof of a write survives when another process may be collecting.
@@ -125,14 +123,19 @@
 (defn mark-schema-meta-durable!
   "Record proof that `schema-meta-key` is durable in `store`.
 
-   Callers must only reach this AFTER a write has been awaited successfully, or
-   after a read that actually reached the store. Marking on an issued-but-not-
-   awaited write is the bug this whole mechanism replaces."
+   A proof means exactly one thing: THIS process wrote that blob and the write
+   completed. Callers must only reach this after an awaited write — marking on
+   an issued-but-not-awaited write is the bug this whole mechanism replaces.
+
+   A READ that reached the store would be evidence too, and an earlier version
+   recorded one. It was dropped: `stored->db` reads historical commits as
+   readily as the head, and a proof for a historical schema is never asked
+   about, so the only thing it bought was an unbounded cell holding keys nobody
+   queries. What it saved was one blob write per CONNECTION (the first commit
+   after connect, which is now unproven), not per commit."
   [store schema-meta-key]
   (when-let [cell (get store durable-cell-key)]
-    (swap! cell (fn [proven]
-                  (assoc (if (< MAX_PROVEN_KEYS (count proven)) {} proven)
-                         schema-meta-key (ku/now))))
+    (reset! cell {:key schema-meta-key :at (ku/now)})
     nil))
 
 (defn forget-schema-meta-durable!
@@ -144,5 +147,5 @@
    head named). The next commit then re-establishes it with a real write."
   [store]
   (when-let [cell (get store durable-cell-key)]
-    (reset! cell {})
+    (reset! cell nil)
     nil))

@@ -100,15 +100,28 @@
     (is (pos? (sc/re-assert-after-ms {:writer {:backend :datahike-server}}))
         "a remote backend writes elsewhere entirely")))
 
-(deftest proof-set-is-bounded
-  (testing "a workload alternating between schemas must not grow the cell without
-            bound; dropping it costs one redundant write of a blob already there"
+(deftest a-new-proof-replaces-the-old-one
+  (testing "The cell holds ONE key, because one is all that is ever asked for:
+            `db->stored` asks only about the db it is committing, whose schema is
+            this connection's head, and a store object belongs to one connection.
+            A schema change replaces the key rather than accumulating.
+
+            This is also why there is no size threshold to get wrong. An earlier
+            version recorded a proof on every store-reaching READ in
+            `stored->db`, which fires for historical commits too — keys nobody
+            ever asks about — so the cell needed a bound and an eviction policy.
+            Proof now comes only from an awaited write, and one entry suffices."
     (let [store (store-with-cell)]
-      (dotimes [i (* 4 sc/MAX_PROVEN_KEYS)]
-        (sc/mark-schema-meta-durable! store (str "k" i)))
-      (is (<= (count @(get store sc/durable-cell-key)) (inc sc/MAX_PROVEN_KEYS)))
-      (is (true? (sc/schema-meta-durable? store (str "k" (dec (* 4 sc/MAX_PROVEN_KEYS))) nil))
-          "the most recent key — the one a commit is about to ask for — survives"))))
+      (sc/mark-schema-meta-durable! store "k1")
+      (sc/mark-schema-meta-durable! store "k2")
+      (is (true? (sc/schema-meta-durable? store "k2" nil))
+          "the key the next commit will ask for")
+      (is (false? (sc/schema-meta-durable? store "k1" nil))
+          "the superseded one is simply gone — and forgetting is the safe
+           direction: it costs one idempotent re-write of a content-addressed
+           blob, where wrongly REMEMBERING costs a commit naming a missing key")
+      (is (= {:key "k2"} (dissoc @(get store sc/durable-cell-key) :at))
+          "one entry, not a growing map"))))
 
 (deftest proof-survives-concurrent-forget
   (testing "gc-storage! forgets a store's proof while writers are inside
