@@ -225,6 +225,33 @@
               (finally (d/release conn2)))))
         (catch Throwable t (d/release conn) (throw t))))))
 
+(deftest the-flag-cannot-be-turned-off-for-a-store-created-with-it
+  (testing "reading a superseded-only store as a full-copy one would silently drop
+            every current value from history; not even :allow-unsafe-config may ask for it"
+    (let [cfg {:store {:backend :memory :id (random-uuid)}
+               :keep-history? true :schema-flexibility :write
+               :index-config {:temporal-superseded-only? true}}
+          conn (utils/setup-db cfg)]
+      (try
+        (d/transact conn schema)
+        (d/transact conn [{:db/id -1 :name "alice" :age 30}])
+        (finally (d/release conn)))
+      (testing "a reconnect that does not mention the flag adopts it from the store"
+        (let [conn (d/connect (dissoc cfg :index-config))]
+          (try
+            (is (true? (get-in (:config @conn) [:index-config :temporal-superseded-only?])))
+            (is (= #{30} (into #{} (map first)
+                               (d/q '[:find ?a :where [?e :name "alice"] [?e :age ?a]]
+                                    (d/history @conn)))))
+            (finally (d/release conn)))))
+      (doseq [unsafe? [false true]]
+        (is (thrown-with-msg?
+             #?(:clj clojure.lang.ExceptionInfo :cljs ExceptionInfo)
+             #"cannot be read without it|differ from the stored configuration"
+             (d/connect (cond-> (assoc cfg :index-config {:temporal-superseded-only? false})
+                          unsafe? (assoc :allow-unsafe-config true))))
+            (str "refused with :allow-unsafe-config " unsafe?))))))
+
 (deftest purge-agrees-between-layouts
   (testing ":db/purge and :db.purge/entity remove the same datoms under both layouts"
     (let [mk (fn [extra]
