@@ -4,6 +4,7 @@
   (:require [konserve.core :as k]
             [datahike.connections :refer [delete-connection!]]
             [datahike.gc-guard :as guard]
+            [datahike.schema-cache :as sc]
             [datahike.store :as ds]
             [datahike.writing :refer [stored->db-read-only db->stored stored-db?
                                       commit! create-commit-id get-and-clear-pending-kvs!
@@ -332,6 +333,15 @@
                             db-with-parents (-> prepared-db
                                                 (assoc-in [:config :branch] branch)
                                                 (assoc-in [:meta :datahike/parents] parents))
+                        ;; A head REWIND invalidates the schema-meta durability
+                        ;; proof: this branch stops naming the key it named, so a
+                        ;; later collection may legitimately sweep that blob while
+                        ;; a proof for it is still held. Forget first, and
+                        ;; db->stored then emits the KV unconditionally — this
+                        ;; path writes the schema-meta every time, which is right
+                        ;; for an operation that is rare, runs on the caller's
+                        ;; thread, and carries no writer-loop state.
+                            _ (sc/forget-schema-meta-durable! store)
                             [schema-meta-kv-to-write pre-cid-store]
                             (db->stored db-with-parents true key-maps)
                             cid (create-commit-id db-with-parents pre-cid-store)
@@ -374,7 +384,9 @@
                             (when-not fenced?
                               (reset! head-write-issued? true))
                             (when (seq writes)
-                              (<?- (k/multi-assoc store writes opts)))
+                              (<?- (k/multi-assoc store writes opts))
+                              (when schema-meta-kv-to-write
+                                (sc/mark-schema-meta-durable! store (first schema-meta-kv-to-write))))
                             ;; Conditional heads cannot live in multi-assoc: its
                             ;; per-key locks cannot make check-all/write-all one
                             ;; atomic operation. Values land first, then the head.
@@ -384,7 +396,8 @@
                           (do
                             (<?- (write-pending-kvs! store pending-kvs sync?))
                             (when schema-meta-kv-to-write
-                              (<?- (k/assoc store (first schema-meta-kv-to-write) (second schema-meta-kv-to-write) opts)))
+                              (<?- (k/assoc store (first schema-meta-kv-to-write) (second schema-meta-kv-to-write) opts))
+                              (sc/mark-schema-meta-durable! store (first schema-meta-kv-to-write)))
                             (when commit-graph?
                               (<?- (k/assoc store cid db-to-store opts)))
                             (reset! head-write-issued? true)

@@ -331,9 +331,16 @@
         backend                                           (di/konserve-backend (:index config) store)
         not-in-memory?                                    (not= :memory (-> config :store :backend))
         flush! (and flush? not-in-memory?)
-        ;; Prepare schema meta KV pair for writing, but don't write it here.
-        schema-meta-kv-to-write (when-not (sc/write-cache-has? (:store config) schema-meta-key)
-                                  (sc/add-to-write-cache (:store config) schema-meta-key)
+        ;; Prepare schema meta KV pair for writing, but don't write it here —
+        ;; and do NOT record it as written here either. This function is called
+        ;; on paths that never write at all (`datahike.cbor` projects a db onto
+        ;; the wire with `(db->stored db false)`) and on paths that can still
+        ;; throw before the batch lands, so marking here would claim durability
+        ;; for a blob nothing ever stored. The commit marks it once the write has
+        ;; been awaited; see `datahike.schema-cache`.
+        schema-meta-kv-to-write (when-not (sc/schema-meta-durable?
+                                           store schema-meta-key
+                                           (sc/re-assert-after-ms config))
                                   [schema-meta-key schema-meta])]
     (when-not (sc/cache-has? schema-meta-key)
       (sc/cache-miss schema-meta-key schema-meta))
@@ -642,11 +649,31 @@
                 schema rschema system-entities ref-ident-map ident-ref-map
                 config max-tx max-eid op-count hash meta schema-meta-key]
          :or   {op-count 0}} stored-db
-        schema-meta (or (sc/cache-lookup schema-meta-key)
-                        ;; not in store in case we load an old db where the schema meta data was inline
-                        (when-let [schema-meta (k/get store schema-meta-key nil {:sync? true})]
-                          (sc/cache-miss schema-meta-key schema-meta)
-                          schema-meta))
+        ;; A record with NO :schema-meta-key predates the out-of-lining and
+        ;; carries :schema/:rschema inline — the `or` below is that fallback and
+        ;; must stay. A record that NAMES a key and cannot produce it is a
+        ;; different thing entirely: the schema is simply gone, and continuing
+        ;; hands back a db with :schema nil and :rschema nil that throws
+        ;; "because this.rschema is null" from somewhere unrelated, later, on a
+        ;; machine where the cause is no longer visible. Fail here, naming the
+        ;; key, so the store can be diagnosed and repaired.
+        schema-meta (when schema-meta-key
+                      (or (sc/cache-lookup schema-meta-key)
+                          (if-let [schema-meta (k/get store schema-meta-key nil {:sync? true})]
+                            (do (sc/cache-miss schema-meta-key schema-meta)
+                                ;; Deliberately does NOT record a durability
+                                ;; proof. The read is evidence the blob is there,
+                                ;; but this function reads historical commits as
+                                ;; readily as the head, and only the head's key is
+                                ;; ever asked about — so proofs from here are
+                                ;; keys nobody queries. See
+                                ;; `sc/mark-schema-meta-durable!`.
+                                schema-meta)
+                            (log/raise "Schema metadata missing from store. The commit names a schema-meta key that no value is stored under, so its schema cannot be reconstructed."
+                                       {:type            :schema-meta-missing
+                                        :schema-meta-key schema-meta-key
+                                        :commit-id       (get-in stored-db [:meta :datahike/commit-id])
+                                        :branch          (get-in stored-db [:config :branch])}))))
         effective-schema (or (:schema schema-meta) schema)
         ;; A partial key-map from an older release must not survive merely
         ;; because stored->db retained it for the carry-forward path.
@@ -1275,7 +1302,13 @@
                             (when (seq writes)
                               (when-not head-revision
                                 (reset! head-write-issued? true))
-                              (<?- (k/multi-assoc store writes metas {:sync? sync?})))
+                              (<?- (k/multi-assoc store writes metas {:sync? sync?}))
+                              ;; AWAITED, so the blob is durable: now the proof is
+                              ;; earned. Recording it before the write is what let a
+                              ;; failed commit strand every later commit on a key
+                              ;; nothing had stored.
+                              (when schema-meta-kv-to-write
+                                (sc/mark-schema-meta-durable! store meta-key)))
                             (when head-revision
                               ;; `:with-revision? true` and the capture below are
                               ;; NOT optional bookkeeping. The commit loop threads
@@ -1301,7 +1334,11 @@
                                                       (k/assoc store meta-key meta-val {:immutable? true} {:sync? sync?}))
 
                           ;; Make sure all pointed to values are written before the commit log and branch
-                                _ (when schema-meta-kv-to-write (<?- schema-meta-written))
+                                _ (when schema-meta-kv-to-write
+                                    (<?- schema-meta-written)
+                                ;; AWAITED, so the blob is durable: now the proof
+                                ;; is earned. See the multi-key path above.
+                                    (sc/mark-schema-meta-durable! store meta-key))
                                 _ (<?- (write-pending-kvs! store pending-kvs sync?))
 
                           ;; the commit is content-addressed by cid → immutable; the branch head is mutable
@@ -1555,10 +1592,10 @@
          gc-store-id (ds/canonical-store-id store store-config)
          gc-token (guard/writing! gc-store-id)]
      (try
-       ;;we just created the first data base in this store, so the write cache is empty
-       ;; schema-meta-key = (uuid schema-meta) → content-addressed, immutable
+       ;; schema-meta-key = (uuid schema-meta) → content-addressed, immutable.
+       ;; AWAITED before the proof is recorded, like every other write of it.
        (<?- (k/assoc store schema-meta-key schema-meta {:immutable? true} opts))
-       (sc/add-to-write-cache (:store config) schema-meta-key)
+       (sc/mark-schema-meta-durable! store schema-meta-key)
        (when-not (sc/cache-has? schema-meta-key)
          (sc/cache-miss schema-meta-key schema-meta))
 
@@ -1610,7 +1647,9 @@
      (let [result (<?- (ks/delete-store (:store config)))]
        ;; Do not invalidate healthy connections when the physical deletion
        ;; failed. Successful remote backends follow the same ordering.
-       (sc/clear-write-cache (:store config))
+       ;; The schema-meta durability proof needs nothing here: it lives on the
+       ;; store object, so it is discarded with the store rather than outliving
+       ;; the database under a store id that a re-creation could reuse.
        (invalidate-store-connections! config-store-id)
        result))))
 
