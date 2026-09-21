@@ -4777,7 +4777,16 @@
           limited-ctx (rel/limit-context (assoc ctx :rels [join-rel]) join-vars)
           neg-ctx (execute-plan (:sub-plan op) limited-ctx db)
           neg-rels (:rels neg-ctx)
-          neg-limited (when neg-ctx (rel/limit-context neg-ctx join-vars))
+          ;; Satisfiability is decided on the FULL negation, before projecting
+          ;; to the join vars: `limit-context` drops every relation with no
+          ;; join-var column -- including the EMPTY one that is the whole
+          ;; reason the body has no solution. Dropping it left the body looking
+          ;; satisfiable, so `(not-join [?e] [?e :a/flag true] [?o :b/x "gone"])`
+          ;; excluded every ?e even though no ?o exists. A negation whose body
+          ;; has no solution excludes nothing.
+          unsatisfiable? (and neg-ctx (some #(zero? (count (:tuples %))) neg-rels))
+          neg-limited (when (and neg-ctx (not unsatisfiable?))
+                        (rel/limit-context neg-ctx join-vars))
           neg-join (when (and neg-limited (seq (:rels neg-limited)))
                      (reduce rel/hash-join (:rels neg-limited)))]
       (cond

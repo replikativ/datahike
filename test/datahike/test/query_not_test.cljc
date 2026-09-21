@@ -5,6 +5,7 @@
    [datahike.api :as d]
    #?(:cljs [datahike.cljs :refer [Throwable]])
    [datahike.db :as db]
+   [datahike.query :as dq]
    [datahike.test.core-test]))
 
 (def test-db
@@ -461,3 +462,70 @@
                     [(?up ?n) ?upper]
                     [?e :name ?n]]
                   db (fn [^String s] (.toUpperCase s))))))))
+
+;; A negation whose body has NO solution excludes nothing. NOT-JOIN has to
+;; decide that on the FULL body, before projecting to the join vars: the empty
+;; relation that makes the body unsolvable is usually one the join vars do not
+;; reach -- a scan over an unrelated entity -- and `limit-context` drops every
+;; relation without a join-var column. With it gone the body looked satisfiable
+;; and the clause excluded EVERY row.
+;;
+;; The base engine has guarded this since `(not-join [?g] [?g :name "a"] [999
+;; :city ?c])`; the planner grew its own NOT-JOIN executors and did not. It
+;; showed up where the body is a cross product by construction: lowering a SQL
+;; outer join whose ON condition is not an equality (pg-datahike) asks "is there
+;; ANY row of the right table satisfying the condition", a body that mentions
+;; the left row only through the join var.
+(defn- not-join-unsat-db []
+  (d/db-with (db/empty-db)
+             [{:db/id 1 :name "Ivan"}
+              {:db/id 2 :name "Oleg"}
+              {:db/id 3 :city "Kyiv"}]))
+
+(deftest test-not-join-unsatisfiable-body
+  (let [db (not-join-unsat-db)
+        answer (fn [query planner?]
+                 (binding [dq/*disable-planner* (not planner?)
+                           dq/*query-result-cache?* false]
+                   (set (d/q query db))))
+        both (fn [query] {:planner (answer query true) :base (answer query false)})]
+
+    (testing "an unsatisfiable body excludes nothing, nested in an or-join"
+      (is (= {:planner #{[1] [2]} :base #{[1] [2]}}
+             (both '[:find ?e
+                     :where [?e :name]
+                     (or-join [?e]
+                              (not-join [?e] [?e :name] [?o :city "nowhere"]))]))))
+
+    (testing "a satisfiable body still excludes, nested in an or-join"
+      (is (= {:planner #{} :base #{}}
+             (both '[:find ?e
+                     :where [?e :name]
+                     (or-join [?e]
+                              (not-join [?e] [?e :name] [?o :city "Kyiv"]))]))))
+
+    (testing "an unsatisfiable body excludes nothing at the top level"
+      (is (= {:planner #{[1] [2]} :base #{[1] [2]}}
+             (both '[:find ?e
+                     :where [?e :name]
+                     (not-join [?e] [?e :name] [?o :city "nowhere"])]))))
+
+    (testing "a join var bound by a function rather than a pattern"
+      (is (= {:planner #{[1 false] [2 false]} :base #{[1 false] [2 false]}}
+             (both '[:find ?e ?m
+                     :where [?e :name]
+                     [(ground false) ?m]
+                     (not-join [?e ?m]
+                               [(= ?m false)]
+                               [?e :name]
+                               [?o :city "nowhere"])]))))
+
+    (testing "the same, with a body that does have a solution"
+      (is (= {:planner #{} :base #{}}
+             (both '[:find ?e ?m
+                     :where [?e :name]
+                     [(ground false) ?m]
+                     (not-join [?e ?m]
+                               [(= ?m false)]
+                               [?e :name]
+                               [?o :city "Kyiv"])]))))))
