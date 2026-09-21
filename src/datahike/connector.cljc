@@ -212,8 +212,15 @@
 (def create-time-fixed-index-keys
   "Sub-keys of :index-config that shape the on-disk index representation and are
    therefore fixed when the database is created. At connect they are adopted from
-   the stored config, so a reconnect does not need to re-specify them."
-  #{:branching-factor :diff-buf-size})
+   the stored config, so a reconnect does not need to re-specify them.
+
+   `:temporal-superseded-only?` (EXPERIMENTAL, default false) shapes WHAT the
+   temporal trees contain rather than how a node is encoded, but it is
+   create-time fixed for the same reason: a store written under it has no live
+   cardinality-one datom in its temporal trees, and reading it with the flag off
+   silently drops every current value from `history`/`as-of`/`since`. See
+   `datahike.db.utils/superseded-only-temporal?`."
+  #{:branching-factor :diff-buf-size :temporal-superseded-only?})
 
 (def store-fixed-record-keys
   "Top-level config keys that describe how records in the store are laid out
