@@ -261,7 +261,7 @@
                 result)
               (catch Throwable failure
                 (try
-                  (publication/complete-holds!
+                  (publication/abort-holds!
                    (publication/publication-owner :scriptum [])
                    @adopted-holds* sc/abort-generation-publication!)
                   (finally
@@ -294,8 +294,12 @@
           (publication/-release-derivation! source-index))))))
 
 (defn- make-scriptum-index
-  [snapshot attrs config store cache store-id address publication-holds
-   supplied-publication-owner]
+  ([snapshot attrs config store cache store-id address publication-holds
+    supplied-publication-owner]
+   (make-scriptum-index snapshot attrs config store cache store-id address
+                        publication-holds supplied-publication-owner false))
+  ([snapshot attrs config store cache store-id address publication-holds
+    supplied-publication-owner prepared-view?]
   (let [attrs (set attrs)
         publication-owner
         (or supplied-publication-owner
@@ -303,8 +307,11 @@
     (reify
       java.io.Closeable
       (close [_]
-        (publication/abort-unpublished!
-         publication-owner sc/abort-generation-publication!)
+        ;; A prepared view shares its source's owner but owns only its
+        ;; retained snapshot; publication is its preparation's business.
+        (when-not prepared-view?
+          (publication/abort-unpublished!
+           publication-owner sc/abort-generation-publication!))
         (when snapshot (.close ^java.io.Closeable snapshot)))
 
       publication/IUnpublishedGeneration
@@ -421,52 +428,55 @@
       (-sec-prepare [this _]
         (publication/completed
          (try
-           (let [[prepared holds owns? prepared-owner]
-                (if (= :unpublished
-                       (publication/publication-state publication-owner))
-                  (let [holds (publication/-take-publication-holds!
-                               this :preparing)]
-                    (try
-                      [(make-scriptum-index
-                        (sc/retain-store-snapshot snapshot)
-                        attrs config store cache store-id address []
-                        publication-owner)
-                       holds true publication-owner]
-                      (catch Throwable failure
-                        (publication/complete-holds!
-                         publication-owner holds
-                         sc/abort-generation-publication!)
-                        (publication/set-publication-state!
-                         publication-owner :aborted)
-                        (throw failure))))
-                  (if (and address
-                           (= :published
-                              (publication/publication-state
-                               publication-owner)))
-                    [this [] false publication-owner]
-                    (if address
-                      (throw (ex-info "This Scriptum generation already has a publication owner."
-                                      {:type :secondary/scriptum-publication-owner-conflict
-                                       :state (publication/publication-state
-                                               publication-owner)}))
-                      (let [generation (sc/begin-generation
-                                        store cache nil
-                                        {:store-id store-id
-                                         :logical-name
-                                         (str (or (::sec/index-ident config)
-                                                  :scriptum))})
-                            [address snapshot hold]
-                            (seal-generation-view!
-                             generation store cache
-                             "datahike-empty-secondary-generation")
-                            prepared-owner
-                            (publication/publication-owner :scriptum [])
-                            _ (publication/set-publication-state!
-                               prepared-owner :preparing)
-                            prepared (make-scriptum-index
-                                      snapshot attrs config store cache
-                                      store-id address [] prepared-owner)]
-                        [prepared [hold] true prepared-owner]))))]
+           (let [claim (when address
+                         ;; Atomic: the writer's transaction loop may derive
+                         ;; the next generation from this one concurrently.
+                         (publication/begin-preparation! publication-owner))
+                 [prepared holds owns? prepared-owner]
+                 (cond
+                   (= :prepare (:status claim))
+                   (let [holds (:holds claim)]
+                     (try
+                       [(make-scriptum-index
+                         (sc/retain-store-snapshot snapshot)
+                         attrs config store cache store-id address []
+                         publication-owner true)
+                        holds true publication-owner]
+                       (catch Throwable failure
+                         (publication/abandon-preparation!
+                          publication-owner holds
+                          sc/abort-generation-publication!)
+                         (throw failure))))
+
+                   (= :published (:status claim))
+                   [this [] false publication-owner]
+
+                   (not= :published
+                         (publication/publication-state publication-owner))
+                   (throw (ex-info "This Scriptum generation already has a publication owner."
+                                   {:type :secondary/scriptum-publication-owner-conflict
+                                    :state (publication/publication-state
+                                            publication-owner)}))
+
+                   :else
+                   (let [generation (sc/begin-generation
+                                     store cache nil
+                                     {:store-id store-id
+                                      :logical-name
+                                      (str (or (::sec/index-ident config)
+                                               :scriptum))})
+                         [address snapshot hold]
+                         (seal-generation-view!
+                          generation store cache
+                          "datahike-empty-secondary-generation")
+                         prepared-owner
+                         (publication/publication-owner :scriptum [])
+                         _ (publication/set-publication-state!
+                            prepared-owner :preparing)
+                         prepared (make-scriptum-index
+                                   snapshot attrs config store cache
+                                   store-id address [] prepared-owner)]
+                     [prepared [hold] true prepared-owner]))]
              (publication/prepared-generation
               prepared holds owns? prepared-owner
               {:root! sc/root-generation-publication!
@@ -491,7 +501,7 @@
             (cond-> {:status status :root recomputed-root}
               (seq errors) (assoc :errors errors)
               (:objects result) (assoc :objects (:objects result))))
-          {:status :unsupported :reason :empty-generation})))))
+          {:status :unsupported :reason :empty-generation}))))))
 
 (sec/register-index-type!
  :scriptum

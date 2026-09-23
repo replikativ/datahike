@@ -1796,6 +1796,148 @@
         (.close ^java.io.Closeable unpublished)
         (.close ^java.io.Closeable idx)))))
 
+(defn- scriptum-test-index [store store-id prefix]
+  (sec/create-index :scriptum
+                    {:attrs #{:doc/body}
+                     ::sec/store store
+                     ::sec/store-id store-id
+                     ::sec/index-ident :idx/body
+                     :path (str "/tmp/" prefix (random-uuid))}
+                    nil))
+
+(defn- scriptum-add [source eid value]
+  (let [transient (sec/-as-transient source)]
+    (sec/-transact! transient
+                    {:datom (datahike.datom/datom eid :doc/body value)
+                     :added? true})
+    transient))
+
+(deftest scriptum-preparation-may-overlap-the-next-derivation
+  ;; The writer pipelines: its commit loop prepares db n while its transaction
+  ;; loop already derives db n+1 from the same generation. Neither order may be
+  ;; refused, and a rejected commit may not release holds the child still needs.
+  (testing "a commit prepares a generation a transaction is deriving from"
+    (let [store-id (random-uuid)
+          store (new-mem-store (atom {}) {:sync? true})
+          idx (scriptum-test-index store store-id "dh-scriptum-overlap-a-")
+          parent (sec/-persistent! (scriptum-add idx 1 "one"))
+          derivation (scriptum-add parent 2 "two")
+          preparation (async/<!! (sec/-sec-prepare parent {}))]
+      (try
+        (is (satisfies? sec/IPreparedSecondaryGeneration preparation)
+            "preparation is not refused by the in-flight derivation")
+        (is (= :secondary/scriptum-publication-owner-conflict
+               (:type (thrown-data #(sec/-as-transient parent))))
+            "derivation itself stays linear")
+        (let [child (sec/-persistent! derivation)]
+          (is (true? (async/<!! (sec/-sec-release preparation {:status :aborted}))))
+          (is (guard/in-flight? store-id)
+              "the rejected parent commit leaves the child's claim on its holds")
+          (let [child-preparation (async/<!! (sec/-sec-prepare child {}))]
+            (is (satisfies? sec/IPreparedSecondaryGeneration child-preparation))
+            (async/<!! (sec/-sec-release child-preparation {:status :committed})))
+          (is (not (guard/in-flight? store-id))
+              "the child's publication releases every inherited hold")
+          (is (= "two" (sec/-sec-value child :doc/body 2)))
+          (.close ^java.io.Closeable child))
+        (finally
+          (.close ^java.io.Closeable parent)
+          (.close ^java.io.Closeable idx)))))
+  (testing "a transaction derives from a generation a commit is preparing"
+    (let [store-id (random-uuid)
+          store (new-mem-store (atom {}) {:sync? true})
+          idx (scriptum-test-index store store-id "dh-scriptum-overlap-b-")
+          parent (sec/-persistent! (scriptum-add idx 1 "one"))
+          preparation (async/<!! (sec/-sec-prepare parent {}))
+          child (sec/-persistent! (scriptum-add parent 2 "two"))]
+      (try
+        (is (satisfies? sec/IPreparedSecondaryGeneration preparation))
+        (is (= :secondary/scriptum-publication-owner-conflict
+               (:type (ex-data (async/<!! (sec/-sec-prepare parent {})))))
+            "a generation is still prepared at most once at a time")
+        (is (true? (async/<!! (sec/-sec-release preparation {:status :aborted}))))
+        (is (guard/in-flight? store-id)
+            "the child re-claimed the parent's holds before the commit was rejected")
+        (let [child-preparation (async/<!! (sec/-sec-prepare child {}))]
+          (async/<!! (sec/-sec-release child-preparation {:status :committed})))
+        (is (not (guard/in-flight? store-id)))
+        (.close ^java.io.Closeable child)
+        (finally
+          (.close ^java.io.Closeable parent)
+          (.close ^java.io.Closeable idx)))))
+  (testing "a committed parent roots holds its child also carries"
+    (let [store-id (random-uuid)
+          store (new-mem-store (atom {}) {:sync? true})
+          idx (scriptum-test-index store store-id "dh-scriptum-overlap-c-")
+          parent (sec/-persistent! (scriptum-add idx 1 "one"))
+          derivation (scriptum-add parent 2 "two")
+          preparation (async/<!! (sec/-sec-prepare parent {}))]
+      (try
+        (async/<!! (sec/-sec-release preparation {:status :committed}))
+        (let [child (sec/-persistent! derivation)]
+          (is (guard/in-flight? store-id) "the child's own hold is still open")
+          (let [child-preparation (async/<!! (sec/-sec-prepare child {}))]
+            (async/<!! (sec/-sec-release child-preparation {:status :aborted})))
+          (is (not (guard/in-flight? store-id))
+              "aborting the child releases only what nobody published")
+          (.close ^java.io.Closeable child))
+        (finally
+          (.close ^java.io.Closeable parent)
+          (.close ^java.io.Closeable idx))))))
+
+(deftest pipelined-writer-publishes-every-scriptum-generation
+  ;; Regression: concurrent transacts on ONE connection made the commit loop's
+  ;; preparation collide with the transaction loop's next derivation
+  ;; (`:secondary/scriptum-publication-owner-conflict`), which is fatal to the
+  ;; writer, so every later write failed with :writer-shut-down.
+  (let [store-id (random-uuid)
+        cfg {:store {:backend :memory :id store-id}
+             :writer {:backend :self :writer-ownership :exclusive}
+             :keep-history? false
+             :schema-flexibility :write}
+        _ (d/create-database cfg)
+        conn (d/connect cfg)
+        threads 8
+        per-thread 20]
+    (try
+      (d/transact conn [{:db/ident :doc/body
+                         :db/valueType :db.type/string
+                         :db/cardinality :db.cardinality/one}])
+      (d/transact conn [{:db/ident :idx/body
+                         :db.secondary/type :scriptum
+                         :db.secondary/attrs [:doc/body]
+                         :db.secondary/config
+                         {:path (str "/tmp/dh-scriptum-pipeline-" (random-uuid))}}])
+      (await-secondary-status conn :idx/body :ready)
+      (let [failures (atom [])
+            writers (doall
+                     (for [t (range threads)]
+                       (future
+                         (dotimes [i per-thread]
+                           (try
+                             (d/transact conn [{:doc/body (str "pipelined " t " " i)}])
+                             (catch Throwable e
+                               (swap! failures conj (ex-message e))))))))
+            _ (run! deref writers)
+            hits (fn [db]
+                   (count (es/entity-bitset-seq
+                           (sec/-search (get-in db [:secondary-indices :idx/body])
+                                        {:query "pipelined" :field "value"} nil))))]
+        (is (empty? @failures))
+        (is (= (* threads per-thread) (hits (d/db conn))))
+        (is (not (guard/in-flight? store-id))
+            "every generation's holds were rooted by some commit")
+        (d/release conn)
+        (let [reopened (d/connect cfg)]
+          (try
+            (is (= (* threads per-thread) (hits (d/db reopened)))
+                "the published head names the last generation")
+            (finally
+              (d/release reopened)))))
+      (finally
+        (try (d/release conn) (catch Throwable _))
+        (d/delete-database cfg)))))
+
 (deftest scriptum-close-retries-publication-cleanup
   (let [store-id (random-uuid)
         store (new-mem-store (atom {}) {:sync? true})
