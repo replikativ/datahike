@@ -235,7 +235,7 @@
                 result)
               (catch Throwable failure
                 (try
-                  (publication/complete-holds!
+                  (publication/abort-holds!
                    (publication/publication-owner :proximum [])
                    @adopted-holds* gen/abort-publication!)
                   (finally
@@ -422,27 +422,25 @@
   (-sec-prepare [this _]
     (let [ch (async/promise-chan)]
       (try
-        (let [[prepared holds owns?]
+        (let [claim (when generation
+                      ;; Atomic: the writer's transaction loop may derive the
+                      ;; next generation from this one concurrently.
+                      (publication/begin-preparation! publication-owner))
+              [prepared holds owns?]
               (cond
-                (= :unpublished
-                   (publication/publication-state publication-owner))
-                (let [holds (publication/-take-publication-holds!
-                             this :preparing)]
+                (= :prepare (:status claim))
+                (let [holds (:holds claim)]
                   (try
                     [(->ProximumIndex (gen/retain-generation-view generation)
                                       attrs config generation-config
                                       publication-owner)
                      holds true]
                     (catch Throwable failure
-                      (publication/complete-holds!
+                      (publication/abandon-preparation!
                        publication-owner holds gen/abort-publication!)
-                      (publication/set-publication-state!
-                       publication-owner :aborted)
                       (throw failure))))
 
-                (and generation
-                     (= :published
-                        (publication/publication-state publication-owner)))
+                (= :published (:status claim))
                 [this [] false]
 
                 generation
