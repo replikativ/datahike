@@ -51,6 +51,17 @@
       (finally
         (.close socket)))))
 
+(defn- within
+  "The value of `f`, or an exception after `ms`: a remote call whose reply is
+   lost fails the test instead of hanging the run."
+  [ms what f]
+  (let [fut (future (f))
+        v (deref fut ms ::timed-out)]
+    (if (= ::timed-out v)
+      (do (future-cancel fut)
+          (throw (ex-info (str what " did not answer within " ms " ms") {:ms ms})))
+      v)))
+
 (defn create-temp-dir
   "Generate a unique temporary directory path (konserve will create it)."
   [prefix]
@@ -138,7 +149,7 @@
                                               remote/middleware)
                                         datahike-serialization-middleware)
           _ (remote/serve client-peer)
-          _ (<?? S (peer/connect S client-peer url))
+          _ (<?? S (remote/connect S client-peer url))
 
           ;; Connect with KabelWriter via d/connect
           ;; (async with :kabel backend, returns channel - we take from it with <!!)
@@ -280,7 +291,7 @@
                                               remote/middleware)
                                         datahike-serialization-middleware)
           _ (remote/serve client-peer)
-          _ (<?? S (peer/connect S client-peer url))
+          _ (<?? S (remote/connect S client-peer url))
 
           client-config {:store {:backend :file :path client-path :id store-id}
                          :index :datahike.index/persistent-set
@@ -357,7 +368,7 @@
                                               remote/middleware)
                                         datahike-serialization-middleware)
           _ (remote/serve client-peer)
-          _ (<?? S (peer/connect S client-peer url))
+          _ (<?? S (remote/connect S client-peer url))
 
           client-config {:store {:backend :file :path client-path :id store-id}
                          :index :datahike.index/persistent-set
@@ -442,7 +453,7 @@
                                                 remote/middleware)
                                           datahike-serialization-middleware)
           _ (remote/serve client-peer-1)
-          _ (<?? S (peer/connect S client-peer-1 url))
+          _ (<?? S (remote/connect S client-peer-1 url))
 
           ;; Client uses tiered store: memory frontend + file backend
           ;; All components use the same :id for sync to work properly
@@ -518,7 +529,7 @@
                                                   remote/middleware)
                                             datahike-serialization-middleware)
             _ (remote/serve client-peer-2)
-            _ (<?? S (peer/connect S client-peer-2 url))
+            _ (<?? S (remote/connect S client-peer-2 url))
 
             ;; Same backend path - should have cached data from first connection
             client-config-2 {:store {:backend :tiered
@@ -589,7 +600,7 @@
                                               remote/middleware)
                                         datahike-serialization-middleware)
           _ (remote/serve client-peer)
-          _ (<?? S (peer/connect S client-peer url))]
+          _ (<?? S (remote/connect S client-peer url))]
 
       ;; Client creates database on server
       (let [create-config {:store {:backend :file :path server-path :id store-id}
@@ -598,7 +609,7 @@
                            :writer {:backend :kabel
                                     :peer-id server-id
                                     :store-id store-id}}
-            create-result (d/create-database create-config)]
+            create-result (within 60000 "remote create-database" #(d/create-database create-config))]
         (is (map? create-result) "create-database should return result map")
         (is (:success create-result) "create-database should succeed"))
 
@@ -622,7 +633,7 @@
                            :writer {:backend :kabel
                                     :peer-id server-id
                                     :store-id store-id}}
-            delete-result (d/delete-database delete-config)]
+            delete-result (within 60000 "remote delete-database" #(d/delete-database delete-config))]
         (is (map? delete-result) "delete-database should return result map")
         (is (:success delete-result) "delete-database should succeed"))
 
@@ -678,7 +689,7 @@
                                         (comp (sync/client-middleware) remote/middleware)
                                         datahike-serialization-middleware)
           _ (remote/serve client-peer)
-          _ (<?? S (peer/connect S client-peer url))
+          _ (<?? S (remote/connect S client-peer url))
           client-config (assoc base
                                :store {:backend :file :path client-path :id store-id}
                                :index :datahike.index/persistent-set
@@ -814,7 +825,7 @@
                                               remote/middleware)
                                         datahike-serialization-middleware)
           _ (remote/serve client-peer)
-          _ (<?? S (peer/connect S client-peer url))
+          _ (<?? S (remote/connect S client-peer url))
           client-config {:store {:backend :file :path client-path :id store-id}
                          :index :datahike.index/persistent-set
                          :schema-flexibility :write :keep-history? false

@@ -119,12 +119,17 @@
                                              (System/getenv "JAVA_TOOL_OPTIONS") "")
                                          " -Djava.io.tmpdir=\"" tmp "\"")}))
        (.addShutdownHook (Runtime/getRuntime) (Thread. cleanup))
+       ;; Report only a change: a line every 30 s would count as output and
+       ;; keep CI's no_output_timeout from ever firing on a hung task.
        (doto (Thread. (fn []
-                        (while (not @done?)
-                          (Thread/sleep 30000)
+                        (loop [last-usage nil]
                           (when-not @done?
-                            (binding [*out* *err*]
-                              (println "Scratch usage:" (str dir) (usage dir)))))))
+                            (Thread/sleep 30000)
+                            (let [u (when-not @done? (usage dir))]
+                              (when (and u (not= u last-usage))
+                                (binding [*out* *err*]
+                                  (println "Scratch usage:" (str dir) u)))
+                              (recur (or u last-usage)))))))
          (.setDaemon true)
          (.start))
        (binding [*out* *err*] (println "Scratch:" (str dir)))
