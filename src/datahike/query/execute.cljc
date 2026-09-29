@@ -2933,11 +2933,27 @@
   (mapv (fn [op]
           (let [f (resolve-pred-fn (:fn-sym op))]
             (when-not f
-              (throw (ex-info (str "Unknown predicate/function '" (:fn-sym op)
-                                   " in " (:clause op))
-                              {:error :query/where
-                               :form (:clause op)
-                               :var (:fn-sym op)})))
+              ;; An AGGREGATE here is a SQL habit, not a typo, and
+              ;; "Unknown predicate/function 'sum" sends the reader
+              ;; looking for a missing require. :where binds values row
+              ;; by row; an aggregate has no value until the rows are
+              ;; grouped, so it belongs in :find.
+              (let [sym (:fn-sym op)
+                    ;; `qr/aggregate-names`, not the aggregate MAP: in
+                    ;; ClojureScript `datahike.query` requires this
+                    ;; namespace, so reaching back for the map would be
+                    ;; circular and the message would be JVM-only.
+                    agg? (contains? qr/aggregate-names sym)]
+                (throw (ex-info (if agg?
+                                  (str "'" sym "' is an aggregate: aggregates go "
+                                       "in :find, not :where -- e.g. "
+                                       "[:find (" sym " ?x) :with ?e :where ...]")
+                                  (str "Unknown predicate/function '" sym
+                                       " in " (:clause op)))
+                                (cond-> {:error :query/where
+                                         :form (:clause op)
+                                         :var sym}
+                                  agg? (assoc :aggregate sym))))))
             f))
         ops))
 

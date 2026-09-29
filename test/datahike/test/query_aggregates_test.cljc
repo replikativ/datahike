@@ -6,6 +6,7 @@
    [datahike.api :as d]
    [datahike.db :as db]
    [datahike.query :as dq]
+   [datahike.query.resolve :as qr]
    [datahike.test.async #?(:clj :refer :cljs :refer-macros) [deftest-async]]))
 
 (defn- connect!
@@ -124,6 +125,39 @@
            (is (double? actual) (str label " must be real-valued"))
            (is (not (double? actual)) (str label " must preserve the input type")))))))
 
+(deftest test-avg-is-the-nearest-double
+  ;; EXACT equality, deliberately: the contract test above compares with
+  ;; a tolerance, and this bug is one unit in the last place.
+  ;;
+  ;; `avg` over longs divided exactly and then called `double` on the
+  ;; Ratio. `Ratio.doubleValue` goes through BigDecimal with DECIMAL64
+  ;; -- sixteen significant digits -- so it is not the nearest double,
+  ;; and the answer disagreed in the last digit with SQLite,
+  ;; PostgreSQL's float8 and plain IEEE division.
+  ;;
+  ;; The values are carried as [index value] pairs with `:with`, because
+  ;; a `[?x ...]` collection binding is a SET: twenty-three copies of
+  ;; 165 collapse to one and the average is of the DISTINCT values.
+  (let [avg-of (fn [xs]
+                 (ffirst (d/q '{:find [(avg ?x)] :in [[[?i ?x] ...]] :with [?i]}
+                              (map-indexed vector xs))))]
+    (doseq [disable-planner? [false true]]
+      (binding [dq/*disable-planner* disable-planner?]
+        (let [label (if disable-planner? " [reference]" " [planner]")]
+          (is (= (/ 4615.0 28)
+                 (avg-of (concat (repeat 23 165) (repeat 5 164))))
+              (str "28 longs summing to 4615" label))
+          (is (= (/ 519.0 203)
+                 (avg-of (concat (repeat 90 2) (repeat 113 3))))
+              (str "203 longs summing to 519" label)))))
+    ;; JVM only: `bigint` is not in cljs.core, and there are no Ratios
+    ;; in ClojureScript for `exact->double` to convert in the first
+    ;; place -- `/` is already double division there. Writing it
+    ;; unguarded in a .cljc file is what turned node-cljs-test red.
+    #?(:clj
+       (testing "a ratio too large for exact doubles still converts"
+         (is (double? (avg-of [(* 3 (bigint 9007199254740993)) 1])))))))
+
 (deftest-async test-aggregates
   (let [monsters [["Cerberus" 3]
                   ["Medusa" 1]
@@ -239,3 +273,63 @@
                             :where [[?e :num/v ?v] [(< ?v 3)]]} db))
             "COUNT with < predicate"))
       (d/release conn))))
+
+(deftest test-aggregate-names-match-the-implementations
+  ;; `qr/aggregate-names` lives away from the map it names, because in
+  ;; ClojureScript `datahike.query` requires `datahike.query.execute`
+  ;; and so `execute` cannot reach back for the map. Two sources of
+  ;; truth drift; this makes the drift fail loudly instead of quietly
+  ;; losing the "that is an aggregate" message for a new aggregate.
+  (is (= (set (keys dq/built-in-aggregates)) qr/aggregate-names)))
+
+(deftest test-an-aggregate-in-where-says-where-it-belongs
+  ;; Writing `[(sum ?c) ?total]` in :where is a SQL habit, not a typo,
+  ;; and `Unknown predicate/function 'sum` sends the reader looking for
+  ;; a missing require. :where binds values row by row; an aggregate has
+  ;; no value until the rows are grouped.
+  (let [msg (try (d/q '{:find [?total]
+                        :in [[[?i ?c] ...]]
+                        :where [[(sum ?c) ?total]]}
+                      [[0 1] [1 2]])
+                 nil
+                 (catch #?(:clj Exception :cljs js/Error) e
+                   #?(:clj (ex-message e) :cljs (.-message e))))]
+    (is (some? msg) "an aggregate in :where must still be an error")
+    (is (re-find #"aggregate" msg) msg)
+    (is (re-find #":find" msg) msg))
+  (testing "a genuinely unknown function keeps its own message"
+    (let [msg (try (d/q '{:find [?t]
+                          :in [[[?i ?c] ...]]
+                          :where [[(no-such-fn ?c) ?t]]}
+                        [[0 1]])
+                   nil
+                   (catch #?(:clj Exception :cljs js/Error) e
+                     #?(:clj (ex-message e) :cljs (.-message e))))]
+      (is (some? msg))
+      (is (re-find #"(?i)unknown" msg) msg))))
+
+(deftest test-order-by-limit-offset-in-the-map-form
+  ;; These already existed and were not discoverable: `q`'s docstring was
+  ;; one line, `:order-by` appeared nowhere, and the only pagination
+  ;; example used the wrapper form. A caller who did not know reached for
+  ;; `(->> (q …) (sort-by …) (take k))` instead, which is where BIRD's
+  ;; Datalog candidate lost answers.
+  ;;
+  ;; The syntax is FLAT -- `[?c :desc]`, not `[[?c :desc]]` -- which is
+  ;; worth a test of its own, and an aggregate is ordered by its column
+  ;; INDEX because it has no variable to name.
+  (let [rows [[0 "a" 30] [1 "b" 10] [2 "c" 20]]
+        q (fn [extra]
+            (d/q (merge '{:find [?n ?c]
+                          :in [[[?e ?n ?c] ...]]
+                          :where []}
+                        extra)
+                 rows))]
+    (is (= [["b" 10] ["c" 20] ["a" 30]] (q '{:order-by ?c})) "bare var is ascending")
+    (is (= [["a" 30]] (q '{:order-by [?c :desc] :limit 1})))
+    (is (= [["c" 20]] (q '{:order-by [?c] :offset 1 :limit 1})))
+    (is (= [["a" 30] ["c" 20] ["b" 10]] (q '{:order-by [1 :desc]}))
+        "a zero-based column index orders the same way")
+    (testing "the nested spelling is refused rather than silently ignored"
+      (is (thrown? #?(:clj Exception :cljs js/Error)
+                   (q '{:order-by [[?c :desc]]}))))))
