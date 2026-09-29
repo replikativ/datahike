@@ -333,3 +333,4 @@
     (testing "the nested spelling is refused rather than silently ignored"
       (is (thrown? #?(:clj Exception :cljs js/Error)
                    (q '{:order-by [[?c :desc]]}))))))
+

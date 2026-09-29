@@ -23,6 +23,7 @@
                                          FindColl FindRel FindScalar FindTuple PlainSymbol Pull
                                          RulesVar SrcVar Variable]])
    [datahike.constants :as const]
+   [datahike.query.cancel :as qcancel]
    [datahike.query.relation :as rel]
    [datahike.query.plan :as plan]
    [datahike.query.analyze :as analyze]
@@ -78,7 +79,10 @@
 
 (def ^:dynamic *query-timeout-ms*
   "The ambient query deadline in milliseconds. nil means no limit. A query's
-   own :timeout may shorten this limit but cannot extend it."
+   own :timeout may shorten this limit but cannot extend it.
+
+   JVM only in practice: on ClojureScript a query runs synchronously, so
+   the `js/setTimeout` below cannot fire before the query returns."
   nil)
 
 (def ^:dynamic ^:private *query-cancel* nil)
@@ -92,6 +96,19 @@
         (newThread [_ runnable]
           (doto (Thread. runnable "datahike-query-timeouts")
             (.setDaemon true)))))))
+
+(defn- cancellation?
+  "Whether an exception is this query being canceled or timing out,
+   rather than an optimisation declining to apply.
+
+   The fast paths below report \"not applicable\" for anything they
+   throw and fall back to the general one. A cancellation raised inside
+   them is not an inapplicability: swallowing it logs `not applicable`
+   and RESTARTS the work the caller just asked to stop."
+  [e]
+  (let [d (ex-data e)]
+    (boolean (or (:datahike/canceled d)
+                 (= :datahike/query-timeout (:type d))))))
 
 (defn- cancellation-value [cancel]
   (when cancel @cancel))
@@ -115,13 +132,28 @@
          :cljs (reify IDeref
                  (-deref [_] (some cancellation-value cancels)))))))
 
-(defn- effective-query-timeout [query]
-  (let [query-timeout (:qtimeout (memoized-parse-query query))
-        limits (remove nil? [*query-timeout-ms* query-timeout])]
+(defn- effective-query-timeout [query-map]
+  (let [;; `:timeout` is an `extra-ks` option now, so normalisation
+        ;; lifts it out of the query and onto the map -- which is how
+        ;; `:limit` and `:order-by` have always worked. `:qtimeout`
+        ;; stays readable for any caller that reaches here with a query
+        ;; that was not normalised.
+        query-timeout (:qtimeout (memoized-parse-query (:query query-map)))
+        map-timeout (:timeout query-map)
+        ;; Validate here. `:timeout` is an `extra-ks` option now, so
+        ;; normalisation strips it before `memoized-parse-query` and the
+        ;; parser's own "Cannot parse :timeout, expected integer" never
+        ;; fires -- `:timeout "abc"` reached `(long …)` and came back as
+        ;; a bare ClassCastException, which the HTTP layer reports as a
+        ;; 500 because it is not an ExceptionInfo.
+        _ (when (and (some? map-timeout) (not (int? map-timeout)))
+            (throw (ex-info "Cannot parse :timeout, expected integer"
+                            {:error :parser/query :value map-timeout})))
+        limits (remove nil? [*query-timeout-ms* query-timeout map-timeout])]
     (when (seq limits) (apply min limits))))
 
 (defn- run-with-query-timeout [query-map f]
-  (let [timeout-ms (effective-query-timeout (:query query-map))
+  (let [timeout-ms (effective-query-timeout query-map)
         timeout-cell (when (some? timeout-ms) (volatile! nil))
         started #?(:clj (System/nanoTime) :cljs (.now js/Date))
         fire! (fn []
@@ -136,7 +168,11 @@
                      :cljs (when timeout-cell (js/setTimeout fire! timeout-ms)))
         cancel (combined-cancel [(:cancel query-map) timeout-cell *query-cancel*])]
     (try
-      (binding [*query-cancel* cancel]
+      (binding [*query-cancel* cancel
+                ;; …and ambiently, for the relational algebra: hash-join
+                ;; is reached as `(reduce rel/hash-join (:rels ctx))`,
+                ;; with no room to pass the context down.
+                qcancel/*cancel* cancel]
         (let [result (f (assoc query-map :cancel cancel))]
           (check-cancel! cancel)
           result))
@@ -529,7 +565,7 @@
          v))))
 
 (def ^:private extra-ks
-  [:offset :limit :order-by :stats? :count-fns? :settings :cancel])
+  [:offset :limit :order-by :stats? :count-fns? :settings :cancel :timeout])
 
 (defn- extras-in-query
   "Pick the non-Datalog options out of a normalized query map. A vector query
@@ -576,6 +612,16 @@
         (merge (extras-in-query query))
         (cond-> (map? query-input)
           (merge (select-keys query-input extra-ks)))
+        ;; …except `:timeout`, where the envelope must not LOOSEN what
+        ;; the query asked for. Every other option is a preference and
+        ;; the envelope wins; a deadline is a limit, and
+        ;; `*query-timeout-ms*` already documents that "a query's own
+        ;; :timeout may shorten this limit but cannot extend it". The
+        ;; plain merge let `{:query '[… :timeout 100] … :timeout 100000}`
+        ;; run to completion.
+        (as-> m (let [a (:timeout (extras-in-query query))
+                      b (when (map? query-input) (:timeout query-input))]
+                  (if (and a b) (assoc m :timeout (min a b)) m)))
         auto-inject-built-in-rules)))
 
 (defn q [query & inputs]
@@ -3007,7 +3053,21 @@
              (recur (for [#?(:cljs t1
                              :clj ^{:tag "[[Ljava.lang.Object;"} t1) acc
                           t2 (:tuples rel)]
-                      (let [res (aclone t1)]
+                      (let [;; THE product loop of the base engine, and the
+                            ;; planner's fallback whenever the cartesian
+                            ;; split declines -- `:keys`, `:with`,
+                            ;; aggregates, pulls. `rel/hash-join` is never
+                            ;; reached for DISJOINT relations, because
+                            ;; `collapse-rels` only joins when the
+                            ;; attributes intersect, so checking there left
+                            ;; the deadline inert on exactly the query
+                            ;; shape that runs away: elapsed was the same
+                            ;; 2.1-2.8s for deadlines of 1000ms, 200ms,
+                            ;; 50ms and none, and the throw came from the
+                            ;; exit check once the product was already
+                            ;; built.
+                            _ (qcancel/check!)
+                            res (aclone t1)]
                         (dotimes [i len]
                           (when-some [idx (aget copy-map i)]
                             (aset res i (get t2 idx))))
@@ -3058,8 +3118,14 @@
         group-fn (fn [tuple]
                    (map #(nth tuple %) group-idxs))
         grouped (group-by group-fn resultset)]
+    ;; Per group. The join can finish inside the deadline and this
+    ;; stage then run unbounded: the deadline was noticed only on the
+    ;; way out of `run-with-query-timeout`, so a single-group aggregate
+    ;; over millions of tuples reported a timeout long after it had
+    ;; already done the work.
     (for [[_ tuples] grouped]
-      (-aggregate find-elements context tuples))))
+      (do (qcancel/check!)
+          (-aggregate find-elements context tuples)))))
 
 (defprotocol IPostProcess
   (-post-process [find tuples]))
@@ -3084,14 +3150,20 @@
                      [(-context-resolve (:source find) context)
                       (dpp/parse-pull
                        (-context-resolve (:pattern find) context))]))]
+    ;; Per tuple. `pull` materialises a map per row, so a
+    ;; `[:find (pull ?e [*])]` over a few million rows exhausts the heap
+    ;; before the exit check ever runs -- 600x600 with a 1000ms deadline
+    ;; took 3270ms, all of it here.
     (for [tuple resultset]
-      (mapv (fn [env el]
-              (if env
-                (let [[src spec] env]
-                  (dpa/pull-spec src spec [el] false))
-                el))
-            resolved
-            tuple))))
+      (do
+        (qcancel/check!)
+        (mapv (fn [env el]
+                (if env
+                  (let [[src spec] env]
+                    (dpa/pull-spec src spec [el] false))
+                  el))
+              resolved
+              tuple)))))
 
 (def ^:private query-cache (volatile! (datahike.lru/lru lru-cache-size)))
 
@@ -3392,7 +3464,9 @@
 (defn convert-to-return-maps [{:keys [mapping-type mapping-keys]} resultset]
   (let [mapping-keys (map #(get % :mapping-key) mapping-keys)
         convert-fn (fn [mkeys]
-                     (mapv #(zipmap mkeys %) resultset))]
+                     ;; Per row: this builds a map per result, so it is
+                     ;; as unbounded as the result set is.
+                     (mapv #(do (qcancel/check!) (zipmap mkeys %)) resultset))]
     (condp = mapping-type
       :keys (convert-fn (map keyword mapping-keys))
       :strs (convert-fn (map str mapping-keys))
@@ -4113,15 +4187,25 @@
 (defn- order-comparator
   "Build a Comparator from parsed order spec [[idx :asc] [idx :desc] ...]."
   ^java.util.Comparator [order-spec]
-  (let [n (count order-spec)]
+  ;; The sort is the other unbounded post-processing stage: a
+  ;; 1200x1200 cross with `:order-by` and a 2000ms deadline spent
+  ;; 3121ms here, all of it after the join had already stopped on time.
+  ;; Checking every 4096th COMPARISON keeps a deref off the inner
+  ;; comparison while still bounding the overshoot: n log n comparisons
+  ;; means thousands of checks for any sort big enough to matter.
+  (let [n (count order-spec)
+        ticks (volatile! 0)
+        tick! (fn [] (let [t (vswap! ticks unchecked-inc)]
+                       (when (zero? (bit-and t 4095)) (qcancel/check!))))]
     (if (== n 1)
       ;; Fast path: single key
       (let [[idx dir] (first order-spec)]
         (if (= dir :asc)
-          (fn [a b] (compare (nth a idx) (nth b idx)))
-          (fn [a b] (compare (nth b idx) (nth a idx)))))
+          (fn [a b] (tick!) (compare (nth a idx) (nth b idx)))
+          (fn [a b] (tick!) (compare (nth b idx) (nth a idx)))))
       ;; Multi-key
       (fn [a b]
+        (tick!)
         (loop [i 0]
           (if (>= i n)
             0
@@ -4581,6 +4665,11 @@
                          ;; Execute uncovered filter patterns via PSS → RoaringBitmap
                          entity-filter (when (seq uncovered-filter-ops)
                                          (reduce (fn [acc sub-op]
+                                                   ;; One full attribute scan per
+                                                   ;; uncovered op, and this whole
+                                                   ;; path ran with no way to
+                                                   ;; interrupt it.
+                                                   (qcancel/check!)
                                                    (let [bs (execute-filter-pattern-via-pss db sub-op)]
                                                      (if acc
                                                        (es/entity-bitset-and acc bs)
@@ -4674,6 +4763,7 @@
                          col-agg-adapter (resolve-stratum-fn 'columnar-aggregate-from-maps)]
                      (col-agg-adapter result-maps group-keys stratum-aggs find-elements))))))))
        (catch Exception e
+         (when (cancellation? e) (throw e))
          (log/warn "secondary-idx-agg not applicable:" (.getMessage e) (pr-str (type e)))
          nil))))
 
@@ -4696,6 +4786,7 @@
                                  (col-agg-fn column-map group-keys agg-specs find-elements))
                                cancel))))))
        (catch Exception e
+         (when (cancellation? e) (throw e))
          (log/debug "columnar-aggregate not applicable:" (.getMessage e))
          nil))))
 
@@ -4962,8 +5053,19 @@
         component-tuples (mapv :tuples component-results)]
     (if (some empty? component-tuples)
       #{}
+      ;; The deadline is checked HERE, per combination. A query whose
+      ;; components share no variable produces the product of their
+      ;; sizes, and this loop built all of it without ever looking:
+      ;; 3000 x 3000 with `:timeout 2000` ran 45 seconds and returned
+      ;; nine million rows.
+      ;;
+      ;; Per combination rather than per N: `check!` is a nil test when
+      ;; no deadline is set, and one volatile deref when there is --
+      ;; against building and hashing a tuple, which this already does
+      ;; for every combination.
       (into #{}
             (map (fn [combo]
+                   (qcancel/check!)
                    (mapv (fn [v]
                            (let [[ci pos] (var-locator v)]
                              (nth (nth combo ci) pos)))
@@ -5169,6 +5271,7 @@
         fused-rel (when (empty? (:rels context-in))
                     (try (exec-direct-rel plan db (:cancel context-in))
                          (catch #?(:clj Exception :cljs :default) e
+                           (when (cancellation? e) (throw e))
                            (log/debug "fused-scan-rel not applicable:" #?(:clj (.getMessage ^Exception e) :cljs (str e)))
                            nil)))
         context-out (if fused-rel
@@ -5526,8 +5629,17 @@
                (let [find-elements (dpip/find-elements qfind)]
                  (when (and (some #(instance? Aggregate %) find-elements)
                             (not (some #(instance? Pull %) find-elements)))
-                   (let [context-in (-> (Context. [] {} built-in-rules {} (merge default-settings nil) nil)
+                   (let [;; The ambient cell, not a hard-wired nil. This
+                         ;; path runs BEFORE `raw-q*` for every aggregate
+                         ;; query on a db with secondary indices, and it
+                         ;; scans an attribute per uncovered filter --
+                         ;; seconds to minutes on a large db, with
+                         ;; nothing to interrupt it.
+                         context-in (-> (Context. [] {} built-in-rules {}
+                                                  (merge default-settings nil)
+                                                  qcancel/*cancel*)
                                         (resolve-ins qin args))
+                         _ (qcancel/check!)
                          clauses (substitute-consts-with-lookup-refs db (:where query) (:consts context-in))
                          bound-vars (context-bound-vars context-in)
                          plan (get-or-create-plan db clauses bound-vars nil (form-memo [::in-cards qin] #(in-card-seed qin)))]
@@ -5584,6 +5696,18 @@
                :miss
                (fn []
                  (let [result (uncached)
+                       ;; BEFORE the put. The deadline used to be noticed
+                       ;; only on the way out of `run-with-query-timeout`,
+                       ;; so a query that ran past it still completed,
+                       ;; cached its full result, and then threw -- and
+                       ;; `:timeout` is not part of the cache key, so the
+                       ;; next caller was served 2.25M rows in 1ms from a
+                       ;; query that had been reported as timed out, with
+                       ;; the whole thing pinned in the LRU. The in-loop
+                       ;; checks make this unreachable for the paths they
+                       ;; cover; this closes the window for any that
+                       ;; remain.
+                       _ (qcancel/check!)
                        where-deps (extract-query-attr-deps (:where query))
                        find-deps  (extract-find-pull-attr-deps
                                    (:qfind (memoized-parse-query query)))
@@ -5593,7 +5717,25 @@
 
 (defn raw-q [query-map]
   (if (or *query-cancel* *query-timeout-ms*
-          (contains? (:query query-map) :timeout))
+          ;; BOTH spellings. `:timeout` was read only from inside the
+          ;; query, so `{:query '[…] :args [db] :timeout 3000}` never
+          ;; entered the timeout path -- no deadline, no error, and a
+          ;; runaway query. Every other option here works in either
+          ;; place (see `extra-ks`), and this one now does too.
+          (some? (:timeout query-map))
+          (some? (:timeout (:query query-map)))
+          ;; …and a caller's own `:cancel` cell, which had the same
+          ;; problem for the same reason: setting it did nothing unless
+          ;; a timeout happened to be set too, because this is what
+          ;; binds the cell the query actually reads.
+          ;; `some?`, not `contains?`. pg-datahike passes `:cancel` on
+          ;; every query and it is nil outside a live connection, so
+          ;; `contains?` sent every such query down the timeout path for
+          ;; a cell that can never fire: +2.3us, +30% on a cached point
+          ;; query. `combined-cancel` drops nil cells anyway, so there
+          ;; was nothing to gain.
+          (some? (:cancel query-map))
+          (some? (:cancel (:query query-map))))
     (run-with-query-timeout query-map raw-q-unbounded)
     (raw-q-unbounded query-map)))
 

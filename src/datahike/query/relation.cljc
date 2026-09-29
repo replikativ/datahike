@@ -5,6 +5,7 @@
   (:require
    [clojure.set :as set]
    [datahike.array :as arr]
+   [datahike.query.cancel :as cancel]
    [datahike.db.utils :as dbu]
    [datahike.tools :as dt]
    [replikativ.logging :as log]
@@ -129,7 +130,17 @@
     (if (< (count tuples1) (count tuples2))
       (let [hash       (hash-attrs key-fn1 tuples1)
             new-tuples (->>
+                        ;; Per OUTER tuple, never per produced tuple. With
+                        ;; no common attribute this join is a Cartesian
+                        ;; product -- `tuple-key-fn` over zero getters
+                        ;; returns one constant key, so every left tuple
+                        ;; matches every right -- and it built all
+                        ;; |left|x|right| of them without ever looking at
+                        ;; the deadline. A 3000x3000 query with
+                        ;; `:timeout 2000` ran 45 seconds and returned
+                        ;; nine million rows.
                         (reduce (fn [acc tuple2]
+                                  (cancel/check!)
                                   (let [key (key-fn2 tuple2)]
                                     (if-some [tuples1 (get hash key)]
                                       (reduce (fn [acc tuple1]
@@ -143,6 +154,7 @@
       (let [hash       (hash-attrs key-fn2 tuples2)
             new-tuples (->>
                         (reduce (fn [acc tuple1]
+                                  (cancel/check!)
                                   (let [key (key-fn1 tuple1)]
                                     (if-some [tuples2 (get hash key)]
                                       (reduce (fn [acc tuple2]
