@@ -1773,8 +1773,20 @@
                 (context-resolve-val context f)
                 (when (or (fn? f) (var? f)) f)
                 (when (nil? (rel-with-attr context f))
-                  (log/raise "Unknown function '" f " in " clause " (see datahike.query.resolve/*symbol-resolver*)"
-                             {:error :query/where, :form clause, :var f})))
+                  ;; An AGGREGATE here is a SQL habit, not a typo, and
+                  ;; "Unknown function 'sum" sends the reader looking for
+                  ;; a missing require or a resolver. Aggregates apply to
+                  ;; the grouped result, so they belong in :find.
+                  (if (contains? built-in-aggregates f)
+                    (log/raise "'" f "' is an aggregate: aggregates go in "
+                               ":find, not :where -- e.g. [:find (" f " ?x) "
+                               ":with ?e :where ...]. :where binds values "
+                               "row by row, and an aggregate has no value "
+                               "until the rows are grouped."
+                               {:error :query/where, :form clause, :var f
+                                :aggregate f})
+                    (log/raise "Unknown function '" f " in " clause " (see datahike.query.resolve/*symbol-resolver*)"
+                               {:error :query/where, :form clause, :var f}))))
         attrs (filter symbol? args)
         [context production] (rel-prod-by-attrs context attrs)
         symbols-with-values (into #{}

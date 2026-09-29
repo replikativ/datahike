@@ -267,3 +267,29 @@
                             :where [[?e :num/v ?v] [(< ?v 3)]]} db))
             "COUNT with < predicate"))
       (d/release conn))))
+
+(deftest test-an-aggregate-in-where-says-where-it-belongs
+  ;; Writing `[(sum ?c) ?total]` in :where is a SQL habit, not a typo,
+  ;; and `Unknown predicate/function 'sum` sends the reader looking for
+  ;; a missing require. :where binds values row by row; an aggregate has
+  ;; no value until the rows are grouped.
+  (let [msg (try (d/q '{:find [?total]
+                        :in [[[?i ?c] ...]]
+                        :where [[(sum ?c) ?total]]}
+                      [[0 1] [1 2]])
+                 nil
+                 (catch #?(:clj Exception :cljs js/Error) e
+                   #?(:clj (ex-message e) :cljs (.-message e))))]
+    (is (some? msg) "an aggregate in :where must still be an error")
+    (is (re-find #"aggregate" msg) msg)
+    (is (re-find #":find" msg) msg))
+  (testing "a genuinely unknown function keeps its own message"
+    (let [msg (try (d/q '{:find [?t]
+                          :in [[[?i ?c] ...]]
+                          :where [[(no-such-fn ?c) ?t]]}
+                        [[0 1]])
+                   nil
+                   (catch #?(:clj Exception :cljs js/Error) e
+                     #?(:clj (ex-message e) :cljs (.-message e))))]
+      (is (some? msg))
+      (is (re-find #"(?i)unknown" msg) msg))))
