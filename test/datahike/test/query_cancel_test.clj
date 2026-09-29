@@ -239,24 +239,33 @@
       (finally (d/release c) (d/delete-database cfg2)))))
 
 (deftest a-timed-out-query-does-not-poison-the-result-cache
-  ;; `:timeout` is not part of the cache key, and the result used to be
-  ;; cached before the deadline was noticed -- so the next caller was
-  ;; served the full result of a query that had been reported as timed
-  ;; out, pinned in the LRU. Cache ON here, deliberately.
-  (let [[cfg2 c] (cross-join-db 1200)]
+  ;; `:timeout` is not part of the cache key, so anything a timed-out
+  ;; query leaves in the LRU is served -- instantly, and with no error --
+  ;; to the next caller of the same query. Cache ON here, deliberately;
+  ;; every other test in this namespace turns it off.
+  ;;
+  ;; What this pins is that the NEXT call is correct and complete. A
+  ;; partial relation cached on the way out would come back here as a
+  ;; short answer with nothing to mark it as short, which is the version
+  ;; of this that corrupts results rather than merely wasting heap.
+  ;;
+  ;; Small on purpose. An earlier version of this test ran a 1200x1200
+  ;; product with the cache on and OOM'd CI, and the OOM left the JVM
+  ;; thrashing so hard that the NEXT test tripped the runner's
+  ;; no-output timeout. 300x300 reaches the same code paths.
+  (let [n 300
+        [cfg2 c] (cross-join-db n)]
     (try
       (binding [q/*disable-planner* false]
         (let [db (d/db c)
-              probe '[:find ?x ?y :where [?x :l/v _] [?y :r/v _] [(identity 7) ?z]]
-              _ (is (= :datahike/query-timeout
-                       (try (count (d/q {:query probe :args [db] :timeout 300}))
-                            (catch clojure.lang.ExceptionInfo e (:type (ex-data e))))))
-              t0 (System/currentTimeMillis)
-              _ (try (d/q {:query probe :args [db]}) (catch Exception _ nil))
-              elapsed (- (System/currentTimeMillis) t0)]
-          (is (> elapsed 300)
-              (str "the next call returned in " elapsed
-                   "ms -- it was served the timed-out query's cached result"))))
+              probe '[:find ?x ?y :where [?x :l/v _] [?y :r/v _]]
+              timed-out (try (count (d/q {:query probe :args [db] :timeout 1}))
+                             (catch clojure.lang.ExceptionInfo e
+                               (:type (ex-data e))))]
+          (is (= :datahike/query-timeout timed-out)
+              "a 1ms deadline over a 90k-tuple product must fire")
+          (is (= (* n n) (count (d/q {:query probe :args [db]})))
+              "the next call was served the timed-out query's leftovers")))
       (finally (d/release c) (d/delete-database cfg2)))))
 
 (deftest timeout-beside-the-query-is-honoured

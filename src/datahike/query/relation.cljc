@@ -128,38 +128,56 @@
         key-fn1      (tuple-key-fn common-gtrs1)
         key-fn2      (tuple-key-fn common-gtrs2)]
     (if (< (count tuples1) (count tuples2))
-      (let [hash       (hash-attrs key-fn1 tuples1)
+      (let [tick       (cancel/ticker)
+            hash       (hash-attrs key-fn1 tuples1)
             new-tuples (->>
-                        ;; Per OUTER tuple, never per produced tuple. With
-                        ;; no common attribute this join is a Cartesian
-                        ;; product -- `tuple-key-fn` over zero getters
-                        ;; returns one constant key, so every left tuple
-                        ;; matches every right -- and it built all
+                        ;; On the OUTER loop, never per produced tuple.
+                        ;; With no common attribute this join is a
+                        ;; Cartesian product -- `tuple-key-fn` over zero
+                        ;; getters returns one constant key, so every left
+                        ;; tuple matches every right -- and it built all
                         ;; |left|x|right| of them without ever looking at
                         ;; the deadline. A 3000x3000 query with
                         ;; `:timeout 2000` ran 45 seconds and returned
                         ;; nine million rows.
+                        ;;
+                        ;; `ticker`, not `check!`: the cancel cell is an
+                        ;; arbitrary caller-supplied `IDeref`, so reading
+                        ;; it once per outer tuple is O(|outer|) calls
+                        ;; into someone else's code. The tick counts the
+                        ;; tuples the pass is about to emit, not the
+                        ;; iteration, so the gap between checks stays
+                        ;; ~512 TUPLES however wide the join is.
                         (reduce (fn [acc tuple2]
-                                  (cancel/check!)
-                                  (let [key (key-fn2 tuple2)]
-                                    (if-some [tuples1 (get hash key)]
+                                  (let [key     (key-fn2 tuple2)
+                                        matches (get hash key)]
+                                    ;; The pass about to run, or 1 for
+                                    ;; the iteration itself -- an outer
+                                    ;; tuple that matches nothing is
+                                    ;; still work, and a join that
+                                    ;; matches nothing at all must not
+                                    ;; run uninterruptible.
+                                    (tick (if matches (count matches) 1))
+                                    (if matches
                                       (reduce (fn [acc tuple1]
                                                 (conj! acc (join-tuples tuple1 keep-idxs1 tuple2 keep-idxs2)))
-                                              acc tuples1)
+                                              acc matches)
                                       acc)))
                                 (transient []) tuples2)
                         (persistent!))]
         (Relation. (zipmap (concat keep-attrs1 keep-attrs2) (range))
                    new-tuples))
-      (let [hash       (hash-attrs key-fn2 tuples2)
+      (let [tick       (cancel/ticker)
+            hash       (hash-attrs key-fn2 tuples2)
             new-tuples (->>
                         (reduce (fn [acc tuple1]
-                                  (cancel/check!)
-                                  (let [key (key-fn1 tuple1)]
-                                    (if-some [tuples2 (get hash key)]
+                                  (let [key     (key-fn1 tuple1)
+                                        matches (get hash key)]
+                                    (tick (if matches (count matches) 1))
+                                    (if matches
                                       (reduce (fn [acc tuple2]
                                                 (conj! acc (join-tuples tuple1 keep-idxs1 tuple2 keep-idxs2)))
-                                              acc tuples2)
+                                              acc matches)
                                       acc)))
                                 (transient []) tuples1)
                         (persistent!))]

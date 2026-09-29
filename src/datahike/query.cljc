@@ -3080,28 +3080,26 @@
            (recur acc (next rels) symbols)
            (let [copy-map (to-array (map #(get keep-attrs %) symbols))
                  len (count symbols)]
-             (recur (for [#?(:cljs t1
-                             :clj ^{:tag "[[Ljava.lang.Object;"} t1) acc
-                          t2 (:tuples rel)]
-                      (let [;; THE product loop of the base engine, and the
-                            ;; planner's fallback whenever the cartesian
-                            ;; split declines -- `:keys`, `:with`,
-                            ;; aggregates, pulls. `rel/hash-join` is never
-                            ;; reached for DISJOINT relations, because
-                            ;; `collapse-rels` only joins when the
-                            ;; attributes intersect, so checking there left
-                            ;; the deadline inert on exactly the query
-                            ;; shape that runs away: elapsed was the same
-                            ;; 2.1-2.8s for deadlines of 1000ms, 200ms,
-                            ;; 50ms and none, and the throw came from the
-                            ;; exit check once the product was already
-                            ;; built.
-                            _ (qcancel/check!)
-                            res (aclone t1)]
-                        (dotimes [i len]
-                          (when-some [idx (aget copy-map i)]
-                            (aset res i (get t2 idx))))
-                        res))
+             ;; THE product loop of the base engine, and the planner's
+             ;; fallback whenever the cartesian split declines --
+             ;; `:keys`, `:with`, aggregates, pulls. `rel/hash-join` is
+             ;; never reached for DISJOINT relations, because
+             ;; `collapse-rels` only joins when the attributes
+             ;; intersect, so checking there left the deadline inert on
+             ;; exactly the query shape that runs away: elapsed was the
+             ;; same 2.1-2.8s for deadlines of 1000ms, 200ms, 50ms and
+             ;; none, and the throw came from the exit check once the
+             ;; product was already built.
+             (recur (let [tick (qcancel/ticker)]
+                      (for [#?(:cljs t1
+                               :clj ^{:tag "[[Ljava.lang.Object;"} t1) acc
+                            t2 (:tuples rel)]
+                        (let [_ (tick)
+                              res (aclone t1)]
+                          (dotimes [i len]
+                            (when-some [idx (aget copy-map i)]
+                              (aset res i (get t2 idx))))
+                          res)))
                     (next rels)
                     symbols)))))
      acc)))
@@ -3495,8 +3493,12 @@
   (let [mapping-keys (map #(get % :mapping-key) mapping-keys)
         convert-fn (fn [mkeys]
                      ;; Per row: this builds a map per result, so it is
-                     ;; as unbounded as the result set is.
-                     (mapv #(do (qcancel/check!) (zipmap mkeys %)) resultset))]
+                     ;; as unbounded as the result set is. A `zipmap` of
+                     ;; a handful of keys is cheap enough that reading
+                     ;; the cancel cell for each one would show up, so
+                     ;; this ticks rather than checking.
+                     (let [tick (qcancel/ticker)]
+                       (mapv #(do (tick) (zipmap mkeys %)) resultset)))]
     (condp = mapping-type
       :keys (convert-fn (map keyword mapping-keys))
       :strs (convert-fn (map str mapping-keys))
@@ -4224,9 +4226,7 @@
   ;; comparison while still bounding the overshoot: n log n comparisons
   ;; means thousands of checks for any sort big enough to matter.
   (let [n (count order-spec)
-        ticks (volatile! 0)
-        tick! (fn [] (let [t (vswap! ticks unchecked-inc)]
-                       (when (zero? (bit-and t 4095)) (qcancel/check!))))]
+        tick! (qcancel/ticker 12)]
     (if (== n 1)
       ;; Fast path: single key
       (let [[idx dir] (first order-spec)]
@@ -5089,18 +5089,20 @@
       ;; 3000 x 3000 with `:timeout 2000` ran 45 seconds and returned
       ;; nine million rows.
       ;;
-      ;; Per combination rather than per N: `check!` is a nil test when
-      ;; no deadline is set, and one volatile deref when there is --
-      ;; against building and hashing a tuple, which this already does
-      ;; for every combination.
-      (into #{}
-            (map (fn [combo]
-                   (qcancel/check!)
-                   (mapv (fn [v]
-                           (let [[ci pos] (var-locator v)]
-                             (nth (nth combo ci) pos)))
-                         target-vars)))
-            (cartesian-product-seq component-tuples)))))
+      ;; One tick per combination, so the deadline is noticed within
+      ;; ~512 of them. A tick is a volatile increment and a compare,
+      ;; against the `mapv` over `var-locator` this already runs for
+      ;; every combination -- and it only reads the cancel cell, which
+      ;; is arbitrary caller-supplied code, once per 512.
+      (let [tick (qcancel/ticker)]
+        (into #{}
+              (map (fn [combo]
+                     (tick)
+                     (mapv (fn [v]
+                             (let [[ci pos] (var-locator v)]
+                               (nth (nth combo ci) pos)))
+                           target-vars)))
+              (cartesian-product-seq component-tuples))))))
 
 (defn- resolve-pred-symbol
   "Resolve a predicate symbol used in a post-filter clause.
@@ -5726,17 +5728,23 @@
                :miss
                (fn []
                  (let [result (uncached)
-                       ;; BEFORE the put. The deadline used to be noticed
-                       ;; only on the way out of `run-with-query-timeout`,
-                       ;; so a query that ran past it still completed,
-                       ;; cached its full result, and then threw -- and
-                       ;; `:timeout` is not part of the cache key, so the
-                       ;; next caller was served 2.25M rows in 1ms from a
-                       ;; query that had been reported as timed out, with
-                       ;; the whole thing pinned in the LRU. The in-loop
-                       ;; checks make this unreachable for the paths they
-                       ;; cover; this closes the window for any that
-                       ;; remain.
+                       ;; BEFORE the put, because `:timeout` is not part
+                       ;; of the cache key: a query that ran past its
+                       ;; deadline, completed anyway and cached its result
+                       ;; would leave that result in the LRU to be served,
+                       ;; instantly and without an error, to the next
+                       ;; caller -- from a query that had been REPORTED as
+                       ;; timed out.
+                       ;;
+                       ;; Defence in depth, not a fix for an observed
+                       ;; case. Every shape tried so far throws from
+                       ;; inside `uncached` well before here: the
+                       ;; per-datom check in `execute-pattern-scan`
+                       ;; covers scan-dominated plans, and the in-loop
+                       ;; checks added alongside this one cover the join,
+                       ;; sort and projection phases that it does not.
+                       ;; This closes the window for whatever neither
+                       ;; reaches.
                        _ (qcancel/check!)
                        where-deps (extract-query-attr-deps (:where query))
                        find-deps  (extract-find-pull-attr-deps
