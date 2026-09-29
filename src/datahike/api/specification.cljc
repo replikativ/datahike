@@ -334,11 +334,38 @@
      :stability :stable
      :supports-remote? true
      :referentially-transparent? true
-     :doc "Executes a datalog query."
+     :doc "Executes a datalog query.
+
+  The MAP form takes `:order-by`, `:limit` and `:offset` alongside
+  `:find`/`:where`, so a \"top k by x\" question is one query rather than
+  a query plus `(->> … (sort-by …) (take k))` in Clojure.
+
+  `:order-by` is FLAT, alternating keys and directions -- `[?c :desc]`,
+  not `[[?c :desc]]`. A key is a `:find` variable or a zero-based column
+  index, and the index is how to order by an AGGREGATE, which has no
+  variable to name:
+
+      :order-by ?c                 ascending, the default
+      :order-by [?c :desc]
+      :order-by [?a :asc ?b :desc] two keys
+      :order-by [1 :desc]          the second :find element
+
+  `:limit` and `:offset` apply after the ordering."
      :examples [{:desc "Query with vector syntax"
                  :code "(q '[:find ?value :where [_ :likes ?value]] db)"}
                 {:desc "Query with map syntax"
                  :code "(q '{:find [?value] :where [[_ :likes ?value]]} db)"}
+                {:desc "Highest cost first, top one"
+                 :code "(q '{:find [?name ?cost]
+                            :where [[?e :member/name ?name] [?e :member/cost ?cost]]
+                            :order-by [?cost :desc]
+                            :limit 1} db)"}
+                {:desc "Order by an aggregate, by its column index"
+                 :code "(q '{:find [?name (sum ?cost)]
+                            :with [?e]
+                            :where [[?e :member/name ?name] [?e :member/cost ?cost]]
+                            :order-by [1 :desc]
+                            :limit 1} db)"}
                 {:desc "Query with pagination"
                  :code "(q {:query '[:find ?value :where [_ :likes ?value]]
                            :args [db]

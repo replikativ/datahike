@@ -293,3 +293,29 @@
                      #?(:clj (ex-message e) :cljs (.-message e))))]
       (is (some? msg))
       (is (re-find #"(?i)unknown" msg) msg))))
+
+(deftest test-order-by-limit-offset-in-the-map-form
+  ;; These already existed and were not discoverable: `q`'s docstring was
+  ;; one line, `:order-by` appeared nowhere, and the only pagination
+  ;; example used the wrapper form. A caller who did not know reached for
+  ;; `(->> (q …) (sort-by …) (take k))` instead, which is where BIRD's
+  ;; Datalog candidate lost answers.
+  ;;
+  ;; The syntax is FLAT -- `[?c :desc]`, not `[[?c :desc]]` -- which is
+  ;; worth a test of its own, and an aggregate is ordered by its column
+  ;; INDEX because it has no variable to name.
+  (let [rows [[0 "a" 30] [1 "b" 10] [2 "c" 20]]
+        q (fn [extra]
+            (d/q (merge '{:find [?n ?c]
+                          :in [[[?e ?n ?c] ...]]
+                          :where []}
+                        extra)
+                 rows))]
+    (is (= [["b" 10] ["c" 20] ["a" 30]] (q '{:order-by ?c})) "bare var is ascending")
+    (is (= [["a" 30]] (q '{:order-by [?c :desc] :limit 1})))
+    (is (= [["c" 20]] (q '{:order-by [?c] :offset 1 :limit 1})))
+    (is (= [["a" 30] ["c" 20] ["b" 10]] (q '{:order-by [1 :desc]}))
+        "a zero-based column index orders the same way")
+    (testing "the nested spelling is refused rather than silently ignored"
+      (is (thrown? #?(:clj Exception :cljs js/Error)
+                   (q '{:order-by [[?c :desc]]}))))))
