@@ -124,6 +124,34 @@
            (is (double? actual) (str label " must be real-valued"))
            (is (not (double? actual)) (str label " must preserve the input type")))))))
 
+(deftest test-avg-is-the-nearest-double
+  ;; EXACT equality, deliberately: the contract test above compares with
+  ;; a tolerance, and this bug is one unit in the last place.
+  ;;
+  ;; `avg` over longs divided exactly and then called `double` on the
+  ;; Ratio. `Ratio.doubleValue` goes through BigDecimal with DECIMAL64
+  ;; -- sixteen significant digits -- so it is not the nearest double,
+  ;; and the answer disagreed in the last digit with SQLite,
+  ;; PostgreSQL's float8 and plain IEEE division.
+  ;;
+  ;; The values are carried as [index value] pairs with `:with`, because
+  ;; a `[?x ...]` collection binding is a SET: twenty-three copies of
+  ;; 165 collapse to one and the average is of the DISTINCT values.
+  (let [avg-of (fn [xs]
+                 (ffirst (d/q '{:find [(avg ?x)] :in [[[?i ?x] ...]] :with [?i]}
+                              (map-indexed vector xs))))]
+    (doseq [disable-planner? [false true]]
+      (binding [dq/*disable-planner* disable-planner?]
+        (let [label (if disable-planner? " [reference]" " [planner]")]
+          (is (= (/ 4615.0 28)
+                 (avg-of (concat (repeat 23 165) (repeat 5 164))))
+              (str "28 longs summing to 4615" label))
+          (is (= (/ 519.0 203)
+                 (avg-of (concat (repeat 90 2) (repeat 113 3))))
+              (str "203 longs summing to 519" label)))))
+    (testing "a ratio too large for exact doubles still converts"
+      (is (double? (avg-of [(* 3 (bigint 9007199254740993)) 1]))))))
+
 (deftest-async test-aggregates
   (let [monsters [["Cerberus" 3]
                   ["Medusa" 1]

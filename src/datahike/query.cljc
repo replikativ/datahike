@@ -1175,16 +1175,44 @@
 ;;                             has no real-valued reading and is returned as is.
 ;;   sum, min, max, count   -> exact / type-preserving.
 ;; Any fast path may only claim an aggregate it provably computes this way.
+(defn- exact->double
+  "The NEAREST double to `x`, which may be an exact Ratio.
+
+   `(double ratio)` is `Ratio.doubleValue`, and that goes through
+   BigDecimal with `MathContext/DECIMAL64` -- sixteen significant
+   digits, not the nearest double:
+
+     (double (/ 4615 28))  =>  164.8214285714286
+     (/ 4615.0 28)         =>  164.82142857142858   <- the nearest double
+
+   So `avg` over longs lost the last digit against every other engine:
+   SQLite, PostgreSQL's float8 and IEEE division all answer the second.
+   Dividing two doubles is correctly rounded by IEEE whenever both are
+   exactly representable, which covers every numerator and denominator
+   up to 2^53; beyond that, forty digits of decimal division make a
+   wrong final rounding practically impossible."
+  [x]
+  #?(:clj
+     (if (ratio? x)
+       (let [n (numerator x) d (denominator x)]
+         (if (and (<= (abs n) 9007199254740992)
+                  (<= (abs d) 9007199254740992))
+           (/ (double n) (double d))
+           (.doubleValue (.divide (bigdec n) (bigdec d)
+                                  (java.math.MathContext. 40)))))
+       (double x))
+     :cljs (double x)))
+
 (def built-in-aggregates
   (letfn [(sum [coll] (reduce + 0 coll))
-          (avg [coll] (double (/ (sum coll) (count coll))))
+          (avg [coll] (exact->double (/ (sum coll) (count coll))))
           (median
             [coll]
             (let [terms (sort coll)
                   size (count coll)
                   med (bit-shift-right size 1)]
               (if (even? size)
-                (double (/ (+ (nth terms (dec med)) (nth terms med)) 2))
+                (exact->double (/ (+ (nth terms (dec med)) (nth terms med)) 2))
                 (let [m (nth terms med)]
                   (if (number? m) (double m) m)))))
           (variance
@@ -1193,7 +1221,7 @@
                   sum (sum (for [x coll
                                  :let [delta (- x mean)]]
                              (* delta delta)))]
-              (double (/ sum (count coll)))))
+              (exact->double (/ sum (count coll)))))
           (stddev
             [coll]
             (#?(:cljs js/Math.sqrt :clj Math/sqrt) (variance coll)))]
