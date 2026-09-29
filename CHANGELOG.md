@@ -6,6 +6,33 @@ When something is added, it's typically marked *Experimental*. When the API cont
 
 ## 0.8
 
+- **`:timeout` stops a running query.** A deadline was checked only once
+  the query had already finished, so a large join ran to completion and
+  *then* reported a timeout — a 3000x3000 cross join with `:timeout 2000`
+  took 45 seconds and returned nine million rows. It is now checked
+  inside the product loops, in `pull`, in aggregation, in return-map
+  conversion and during the sort, so a query stops at roughly its
+  deadline and releases its memory. `:timeout` also works beside
+  `:query` and `:args`, the same way `:limit` and `:offset` do — that
+  spelling previously set no deadline at all and said nothing — and when
+  given in both places the tighter one wins.
+
+- **A caller's `:cancel` cell works on its own.** Setting it did nothing
+  unless a `:timeout` happened to be set too. Cancelling now stops a
+  running join rather than being noticed after it finishes.
+
+- **A timed-out query no longer poisons the result cache.** `:timeout`
+  is not part of the cache key, and the result was cached before the
+  deadline was noticed — so the next caller was served, instantly, the
+  full result of a query that had been reported as timed out.
+
+- **`sum` over floats is order-independent.** Summing doubles naively
+  loses terms that are small beside the running total, and *which* terms
+  are lost depended on the order the query planner produced — so the
+  last digits of an answer varied with the plan. `sum` now uses
+  compensated summation for floats; integers, ratios and BigDecimals are
+  unchanged, being exact already. `avg`, `variance` and `median` follow.
+
 - **Retracted attributes no longer accumulate in the schema.** Retracting an
   attribute entity left an empty `eid -> {}` entry in the schema map, one per
   retraction and never removed, so workloads that create and drop attributes
