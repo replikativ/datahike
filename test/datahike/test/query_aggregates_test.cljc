@@ -6,6 +6,7 @@
    [datahike.api :as d]
    [datahike.db :as db]
    [datahike.query :as dq]
+   [datahike.query.resolve :as qr]
    [datahike.test.async #?(:clj :refer :cljs :refer-macros) [deftest-async]]))
 
 (defn- connect!
@@ -149,8 +150,13 @@
           (is (= (/ 519.0 203)
                  (avg-of (concat (repeat 90 2) (repeat 113 3))))
               (str "203 longs summing to 519" label)))))
-    (testing "a ratio too large for exact doubles still converts"
-      (is (double? (avg-of [(* 3 (bigint 9007199254740993)) 1]))))))
+    ;; JVM only: `bigint` is not in cljs.core, and there are no Ratios
+    ;; in ClojureScript for `exact->double` to convert in the first
+    ;; place -- `/` is already double division there. Writing it
+    ;; unguarded in a .cljc file is what turned node-cljs-test red.
+    #?(:clj
+       (testing "a ratio too large for exact doubles still converts"
+         (is (double? (avg-of [(* 3 (bigint 9007199254740993)) 1])))))))
 
 (deftest-async test-aggregates
   (let [monsters [["Cerberus" 3]
@@ -267,6 +273,14 @@
                             :where [[?e :num/v ?v] [(< ?v 3)]]} db))
             "COUNT with < predicate"))
       (d/release conn))))
+
+(deftest test-aggregate-names-match-the-implementations
+  ;; `qr/aggregate-names` lives away from the map it names, because in
+  ;; ClojureScript `datahike.query` requires `datahike.query.execute`
+  ;; and so `execute` cannot reach back for the map. Two sources of
+  ;; truth drift; this makes the drift fail loudly instead of quietly
+  ;; losing the "that is an aggregate" message for a new aggregate.
+  (is (= (set (keys dq/built-in-aggregates)) qr/aggregate-names)))
 
 (deftest test-an-aggregate-in-where-says-where-it-belongs
   ;; Writing `[(sum ?c) ?total]` in :where is a SQL habit, not a typo,

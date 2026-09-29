@@ -240,3 +240,17 @@
    a function or nil. `permissive-symbol-resolver` on the JVM; the server
    replaces it with `safe-symbol-resolver`."
   #?(:clj permissive-symbol-resolver :cljs safe-symbol-resolver))
+
+(def aggregate-names
+  "The symbols `datahike.query/built-in-aggregates` binds.
+
+   Here, and not beside the implementations, because both places that
+   report an unresolved symbol need it and the dependency runs the
+   other way in ClojureScript: `datahike.query` requires
+   `datahike.query.execute` there, so `execute` cannot reach back.
+
+   `query-aggregates-test` asserts this equals the keys of the map, so
+   adding an aggregate without adding it here fails loudly rather than
+   quietly losing the error message."
+  '#{avg median variance stddev sum min max count count-distinct
+     distinct rand sample})

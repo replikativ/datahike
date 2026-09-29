@@ -2939,10 +2939,11 @@
               ;; by row; an aggregate has no value until the rows are
               ;; grouped, so it belongs in :find.
               (let [sym (:fn-sym op)
-                    agg? #?(:clj (contains? @(requiring-resolve
-                                              'datahike.query/built-in-aggregates)
-                                            sym)
-                            :cljs false)]
+                    ;; `qr/aggregate-names`, not the aggregate MAP: in
+                    ;; ClojureScript `datahike.query` requires this
+                    ;; namespace, so reaching back for the map would be
+                    ;; circular and the message would be JVM-only.
+                    agg? (contains? qr/aggregate-names sym)]
                 (throw (ex-info (if agg?
                                   (str "'" sym "' is an aggregate: aggregates go "
                                        "in :find, not :where -- e.g. "

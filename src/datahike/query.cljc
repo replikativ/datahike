@@ -1777,7 +1777,7 @@
                   ;; "Unknown function 'sum" sends the reader looking for
                   ;; a missing require or a resolver. Aggregates apply to
                   ;; the grouped result, so they belong in :find.
-                  (if (contains? built-in-aggregates f)
+                  (if (contains? qr/aggregate-names f)
                     (log/raise "'" f "' is an aggregate: aggregates go in "
                                ":find, not :where -- e.g. [:find (" f " ?x) "
                                ":with ?e :where ...]. :where binds values "
