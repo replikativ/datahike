@@ -334,3 +334,27 @@
       (is (thrown? #?(:clj Exception :cljs js/Error)
                    (q '{:order-by [[?c :desc]]}))))))
 
+(deftest test-sum-over-floats-is-order-independent
+  ;; `(reduce + 0 coll)` over doubles loses terms that are small beside
+  ;; the running total, and WHICH terms it loses depends on the order
+  ;; the plan produced -- so the last digits of an answer were a
+  ;; property of the query plan. BIRD, which grades on exact equality,
+  ;; marks a correct query wrong for it.
+  ;;
+  ;; Compensated for floats only: integers, ratios and BigDecimals are
+  ;; already exact, and routing them through a double would LOSE
+  ;; precision past 2^53.
+  (let [sum-of (fn [xs]
+                 (ffirst (d/q '{:find [(sum ?x)] :in [[[?i ?x] ...]] :with [?i]}
+                              (map-indexed vector xs))))
+        bird [1.0E16 1.0 1.0 1.0 1.0 -1.0E16]]
+    (testing "the naive total depends on the order; the compensated one does not"
+      (is (= 0.0 (reduce + 0 bird)) "what naive summation answers")
+      (is (= 4.0 (sum-of bird)) "the true total")
+      (is (= 4.0 (sum-of (reverse bird))))
+      (is (= 4.0 (sum-of (shuffle bird)))))
+    (testing "an integer sum stays exact past 2^53"
+      (let [big (inc (long 9007199254740992))]
+        (is (= (+ big big) (sum-of [big big])))))
+    (testing "an ordinary float sum is unchanged"
+      (is (= 1586.05 (sum-of [100.05 200.10 300.15 400.20 500.25 85.30]))))))

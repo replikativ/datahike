@@ -1249,8 +1249,38 @@
        (double x))
      :cljs (double x)))
 
+(defn- neumaier-sum
+  "Kahan-Babuska-Neumaier summation. The running compensation covers the
+   case the plain Kahan form loses, where the next term is larger in
+   magnitude than the accumulator.
+
+   Gives the same double for any permutation of `vs`, which is the
+   point: a query's join order is a property of the PLAN, so a naive
+   float sum makes the last digits of an answer depend on how the
+   planner happened to order the work."
+  ^double [vs]
+  (loop [vs (seq vs) sum 0.0 c 0.0]
+    (if-not vs
+      (+ sum c)
+      (let [v (double (first vs))
+            t (+ sum v)
+            c (+ c (if (>= (Math/abs sum) (Math/abs v))
+                     (+ (- sum t) v)
+                     (+ (- v t) sum)))]
+        (recur (next vs) t c)))))
+
 (def built-in-aggregates
-  (letfn [(sum [coll] (reduce + 0 coll))
+  (letfn [(sum [coll]
+            ;; Compensated for FLOATS, exact for everything else.
+            ;; `(reduce + 0 coll)` over doubles loses terms that are
+            ;; small beside the running total -- summing 1e16 with four
+            ;; 1s answers 1e16 -- and which terms are lost depends on
+            ;; the order the plan produced. Integers, ratios and
+            ;; BigDecimals are already exact and must not be routed
+            ;; through a double, which would lose precision past 2^53.
+            (if (some double? coll)
+              (neumaier-sum coll)
+              (reduce + 0 coll)))
           (avg [coll] (exact->double (/ (sum coll) (count coll))))
           (median
             [coll]
