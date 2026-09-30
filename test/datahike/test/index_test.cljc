@@ -444,15 +444,12 @@
                 "a new collection does not retain a removed root")
             (is (= a (idx/mark-shared before (idx/new-mark-context nil)))
                 "a context belonging to another storage cannot prune this tree")
-            (if (zero? diff-buf)
-              (do
-                (is (> (count a) 1) "exercise interior/shared nodes, not just a leaf")
-                (is (pos? (:pruned @context)))
-                (is (= (count oracle) (:expanded @context)))
-                (is (< (:expanded @context) (+ (count a) (count b)))
-                    "shared structural nodes are expanded once across versions"))
-              (is (zero? (:expanded @context))
-                  "diff-buffer anchors use ordinary full marks"))))
+            (do
+              (is (> (count a) 1) "exercise interior/shared nodes, not just a leaf")
+              (is (pos? (:pruned @context)))
+              (is (= (count oracle) (:expanded @context)))
+              (is (< (:expanded @context) (+ (count a) (count b)))
+                  "shared structural nodes are expanded once across versions, including diff buffers"))))
         (finally
           (d/release conn)
           #?(:clj (d/delete-database cfg) :cljs (<! (d/delete-database cfg))))))))

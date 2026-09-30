@@ -5,6 +5,7 @@
             [datahike.gc :as gc]
             [datahike.gc-roots :as roots]
             [datahike.index.interface :as idx]
+            [datahike.index.persistent-set :as pset]
             [datahike.versioning :as v]
             [konserve.core :as k]
             [konserve.gc :as kgc]
@@ -45,7 +46,12 @@
                          (accessed [_ _] nil)
                          (markFreed [_ _] nil)
                          (isFreed [_ _] false)
-                         (freedInfo [_ _] nil))))
+                         (freedInfo [_ _] nil)
+                         idx/IDurableNodeEdges
+                         (-durable-node-edges [_ a]
+                           (let [{:keys [level addresses]} (get @disk a)]
+                             (when-not (contains? @disk a) (throw (ex-info "Missing node" {:address a})))
+                             {:level level :children (or addresses [])})))))
         cmp (fn [[a av] [b bv]] (let [c (compare a b)] (if (zero? c) (compare av bv) c)))
         cmp-key (fn [[a _] [b _]] (compare a b))
         restore (fn [a storage] (pss/restore-by cmp a storage {:branching-factor 8 :diff-buf-size 1}))
@@ -67,7 +73,9 @@
                          t)) initial (range 4))
         storage (.-_storage ^PersistentSortedSet warm)
         cold (restore (.-_address ^PersistentSortedSet warm) storage)
-        a (idx/-mark warm) b (idx/-mark cold)
+        walk (fn [tree] (let [seen (atom #{})]
+                          (pss/walk-addresses tree (fn [a] (swap! seen conj a) true)) @seen))
+        a (walk warm) b (walk cold)
         context (idx/new-mark-context storage)
         shared (set/union (idx/mark-shared warm context) (idx/mark-shared cold context))
         naive (atom #{})]
@@ -78,8 +86,10 @@
                                  (let [seen? (contains? @naive address)]
                                    (swap! naive conj address) (not seen?)))))
     (is (= 1 (count (set/difference b @naive))) "Naive shared pruning prevents the cold walk recovering it")
-    (is (= (set/union a b) shared) "The diff-buffer fallback retains the complete union")
-    (is (zero? (:expanded @context)))))
+    (is (= b (idx/-mark warm)) "Ordinary durable marking repairs the warm-only omission")
+    (is (= (set/union a b) shared) "Shared durable marking retains the complete union")
+    (is (= (count b) (:expanded @context)))
+    (is (pos? (:pruned @context)))))
 
 (defn- with-db [f]
   (let [id (random-uuid)
@@ -96,16 +106,15 @@
   (with-db
     (fn [conn]
       (d/transact conn (mapv #(hash-map :age %) (range 300)))
-      (let [walk pss/walk-addresses
+      (let [read-edges pset/read-durable-node-edges
             failed (atom false)
             sweep-called (atom false)]
-        (with-redefs [pss/walk-addresses
-                      (fn [tree visitor]
+        (with-redefs [pset/read-durable-node-edges
+                      (fn [storage address]
                         (if (compare-and-set! failed false true)
-                          (walk tree (fn [address]
-                                       (visitor address)
-                                       (throw (AssertionError. "partial expansion"))))
-                          (walk tree visitor)))
+                          (do (read-edges storage address)
+                              (throw (AssertionError. "partial expansion")))
+                          (read-edges storage address)))
                       kgc/sweep! (fn [& _] (reset! sweep-called true) (throw (ex-info "Unexpected sweep" {})))]
           (is (thrown? Exception (<?? S (gc/gc-storage! @conn (Date. 0) {:min-age-ms 0}))))
           (is @failed)
@@ -121,16 +130,14 @@
             entered (promise)
             continue (promise)
             first? (atom true)
-            walk pss/walk-addresses]
-        (with-redefs [pss/walk-addresses
-                      (fn [t visitor]
-                        (walk t (fn [address]
-                                  (let [expand? (visitor address)]
-                                    (when (compare-and-set! first? true false)
-                                      (deliver entered true)
-                                      (when (= ::timeout (deref continue 10000 ::timeout))
-                                        (throw (ex-info "Test schedule timed out" {}))))
-                                    expand?))))]
+            read-edges pset/read-durable-node-edges]
+        (with-redefs [pset/read-durable-node-edges
+                      (fn [storage address]
+                        (when (compare-and-set! first? true false)
+                          (deliver entered true)
+                          (when (= ::timeout (deref continue 10000 ::timeout))
+                            (throw (ex-info "Test schedule timed out" {}))))
+                        (read-edges storage address))]
           (let [a (future (idx/mark-shared tree context))]
             (try
               (is (= true (deref entered 10000 ::timeout)))

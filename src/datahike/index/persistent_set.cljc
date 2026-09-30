@@ -2,6 +2,7 @@
   (:require [clojure.string]
             [konserve.utils :as ku]
             [org.replikativ.persistent-sorted-set :as psset]
+            [org.replikativ.persistent-sorted-set.impl.nodes :as node-codec]
             #?(:cljs [org.replikativ.persistent-sorted-set.btset :refer [BTSet]])
             #?(:cljs [org.replikativ.persistent-sorted-set.branch :as branch :refer [Branch]])
             #?(:cljs [org.replikativ.persistent-sorted-set.leaf :refer [Leaf]])
@@ -240,7 +241,7 @@
                     (index-type->cmp-quick index-type false))
         pset))))
 
-(defn mark [pset]
+(defn- legacy-mark [pset]
   ;; The flushed root address is `_address` on the JVM PersistentSortedSet but
   ;; `address` on the cljs BTSet (see -merkle-root below) — reading the bare
   ;; JVM field on cljs always saw nil and wrongly threw here, so GC never ran
@@ -252,41 +253,117 @@
     (psset/walk-addresses pset (fn [address] (swap! addresses conj address)))
     @addresses))
 
-(defn mark-shared [pset context]
+(defn node-edges
+  "Snapshot structural fields only. A settled Branch's addresses are durable
+   anchors; resident children and logical diff projections are never traversed."
+  [node]
+  (cond
+    (instance? Branch node)
+    (let [level #?(:clj (.level ^Branch node) :cljs (.-level ^Branch node))
+          children #?(:clj (vec (.addresses ^Branch node)) :cljs (vec (.-addresses ^Branch node)))
+          n #?(:clj (.len ^Branch node) :cljs (alength (.-keys ^Branch node)))]
+      (when-not (and (pos-int? level) (= n (count children)) (pos? n) (every? some? children))
+        (throw (ex-info "Invalid durable branch edges; refusing to mark."
+                        {:type :datahike/gc-invalid-node-edges :level level :children children})))
+      {:level level :children children})
+    (instance? Leaf node) {:level 0 :children []}
+    :else (throw (ex-info "Missing or unsupported durable index node; refusing to mark."
+                          {:type :datahike/gc-invalid-node-edges}))))
+
+(defn snapshot-node
+  "Make the exact canonical write representation independent of the live tree.
+   Called by IStorage/store AFTER PSS has settled the node. Snapshots keep no
+   resident children and cannot inherit a transient edit owner."
+  [node]
+  (let [blob (node-codec/node->blob node)
+        ctx (node-codec/reader-context {})]
+    (node-edges node)
+    (if (instance? Branch node)
+      (node-codec/blob->branch ctx blob)
+      (node-codec/blob->leaf ctx blob))))
+
+(defn read-durable-node-edges [storage address]
+  (di/-durable-node-edges storage address))
+
+(defn- claim-address! [context address expected-level inline]
+  (let [[before _]
+        (swap-vals!
+         context
+         (fn [state]
+           (when (and (some? expected-level) (some? (get-in state [:node-levels address]))
+                      (not= expected-level (get-in state [:node-levels address])))
+             (throw (ex-info "Inconsistent durable node levels; refusing to mark."
+                             {:type :datahike/gc-invalid-node-edges :address address})))
+           (when (and inline (contains? (:node-edges state) address)
+                      (not= inline (get-in state [:node-edges address])))
+             (throw (ex-info "Inconsistent fused root edges; refusing to mark."
+                             {:type :datahike/gc-invalid-node-edges :address address})))
+           (cond-> (if (contains? (:addresses state) address)
+                     (update state :pruned inc)
+                     (-> state (update :addresses conj address) (update :expanded inc)))
+             (some? expected-level) (assoc-in [:node-levels address] expected-level)
+             inline (assoc-in [:node-edges address] inline))))]
+    (not (contains? (:addresses before) address))))
+
+(defn- validate-edges! [context address expected-level {:keys [level children] :as edges}]
+  (when-not (and (nat-int? level) (vector? children) (every? some? children)
+                 (if (zero? level) (empty? children) (seq children))
+                 (or (nil? expected-level) (= level expected-level)))
+    (throw (ex-info "Invalid durable node descriptor; refusing to mark."
+                    {:type :datahike/gc-invalid-node-edges :address address :edges edges})))
+  (swap! context
+         (fn [state]
+           (when (or (and (some? (get-in state [:node-levels address]))
+                          (not= level (get-in state [:node-levels address])))
+                     (and (contains? (:node-edges state) address)
+                          (not= edges (get-in state [:node-edges address]))))
+             (throw (ex-info "Conflicting durable node descriptors; refusing to mark."
+                             {:type :datahike/gc-invalid-node-edges :address address})))
+           (-> state
+               (assoc-in [:node-levels address] level)
+               (assoc-in [:node-edges address] edges)))))
+
+(defn- durable-mark [pset context]
   (let [storage #?(:clj (.-_storage ^PersistentSortedSet pset) :cljs (.-storage ^BTSet pset))]
-    ;; Cold buffered projections preserve the anchor's durable address closure.
-    ;; But resident buffered children can still have nil (dirty) addresses: a
-    ;; warm walk then omits anchors a cold walk would visit. Do not let that
-    ;; incomplete expansion prune a later cold walk at the same address.
-    (if (or (not (identical? storage (:storage @context)))
-            (pos? (:diff-buf-size #?(:clj (psset/settings pset) :cljs (.-settings ^BTSet pset)) 0)))
-      (mark pset)
-      (do
-        (when (:failed? @context)
-          (throw (ex-info "A failed mark context cannot be reused." {:type :datahike/gc-mark-context-failed})))
-        (try
-          (when-not #?(:clj (.-_address ^PersistentSortedSet pset) :cljs (.-address ^BTSet pset))
-            (throw (ex-info "Index needs to be properly flushed before marking." {:type :flush-before-marking})))
-          (psset/walk-addresses
-           pset
-           (fn [address]
-             (let [[before _]
-                   (swap-vals! context
-                               (fn [state]
-                                 (if (contains? (:addresses state) address)
-                                   (update state :pruned inc)
-                                   (-> state (update :addresses conj address) (update :expanded inc)))))]
-               (not (contains? (:addresses before) address)))))
-          (:addresses @context)
-          (catch #?(:clj Throwable :cljs :default) e
-            (swap! context assoc :failed? true)
+    (let [address #?(:clj (.-_address ^PersistentSortedSet pset) :cljs (.-address ^BTSet pset))
+          context (if (and context (identical? storage (:storage @context))) context (di/new-mark-context storage))
+          fused-entry (get (meta pset) ::fused-root-edges)
+          fused (when (= address (:address fused-entry)) (:edges fused-entry))]
+      (when (:failed? @context)
+        (throw (ex-info "A failed mark context cannot be reused." {:type :datahike/gc-mark-context-failed})))
+      (when-not address
+        (swap! context assoc :failed? true)
+        (throw (ex-info "Index needs to be properly flushed before marking." {:type :flush-before-marking})))
+      (if-not (satisfies? di/IDurableNodeEdges storage)
+        (if (pos? (:diff-buf-size #?(:clj (psset/settings pset) :cljs (.-settings ^BTSet pset)) 0))
+          (do (swap! context assoc :failed? true)
+              (throw (ex-info "Diff-buffered marking requires durable node edges."
+                              {:type :datahike/gc-durable-edges-unavailable})))
+          (legacy-mark pset))
+        (do
+          (try
+            (loop [pending [[address nil fused]]]
+              (when-let [[address expected-level inline] (peek pending)]
+                (when inline (validate-edges! context address expected-level inline))
+                (let [expand? (claim-address! context address expected-level inline)]
+                  (if-not expand?
+                    (recur (pop pending))
+                    (let [{:keys [level children] :as edges} (or inline (read-durable-node-edges storage address))]
+                      (validate-edges! context address expected-level edges)
+                      (recur (into (pop pending) (map #(vector % (dec level) nil) children))))))))
+            (:addresses @context)
+            (catch #?(:clj Throwable :cljs :default) e
+              (swap! context assoc :failed? true)
             ;; Older go-try- catches Exception only. An Error must be a channel
             ;; result, never a silently closed walker that disappears in merge.
-            (throw #?(:clj (if (instance? Exception e) e
-                               (ex-info "Structural marking failed." {:type :datahike/gc-mark-failed} e))
-                      :cljs (if (instance? js/Error e) e
-                                (ex-info "Structural marking failed."
-                                         {:type :datahike/gc-mark-failed :thrown-value e}))))))))))
+              (throw #?(:clj (if (instance? Exception e) e
+                                 (ex-info "Structural marking failed." {:type :datahike/gc-mark-failed} e))
+                        :cljs (if (instance? js/Error e) e
+                                  (ex-info "Structural marking failed."
+                                           {:type :datahike/gc-mark-failed :thrown-value e})))))))))))
+
+(defn mark [pset] (durable-mark pset nil))
+(defn mark-shared [pset context] (durable-mark pset context))
 
 (extend-type #?(:clj PersistentSortedSet :cljs BTSet)
   di/ISharedMark
@@ -357,14 +434,16 @@
     ;; restoring here: on ClojureScript a sync restore can raise
     ;; :storage/sync-read-unavailable, which would turn a graceful loss of an
     ;; optimisation into a failed commit.
-    #?(:clj  (.root pset)
-       :cljs (.-root pset)))
+    (when-let [root #?(:clj (.root pset) :cljs (.-root ^BTSet pset))]
+      (snapshot-node root)))
   (-seed-root! [^PersistentSortedSet pset root-node]
     ;; Install an inlined (fused) root so root() returns it without a
     ;; storage round-trip; deeper children stay lazy via the set's storage.
     #?(:clj  (set! (.-_root pset) root-node)
        :cljs (set! (.-root pset) root-node))
-    pset))
+    (with-meta pset (assoc (meta pset) ::fused-root-edges
+                           {:address #?(:clj (.-_address ^PersistentSortedSet pset) :cljs (.-address ^BTSet pset))
+                            :edges (node-edges root-node)}))))
 
 (defn- canon
   "Normalize a value for content hashing: Datoms become [e a v tx added] vectors,
@@ -548,11 +627,18 @@
                            (resolve v)))))))
 
 (defrecord CachedStorage [store config cache stats pending-writes freed-addresses freed-set freelist cost-center-fn]
+  di/IDurableNodeEdges
+  (-durable-node-edges [_ address]
+    ;; Bypass the writer's node cache/pending writes. Stored nodes were frozen
+    ;; at IStorage/store; even an identity-preserving frontend receives that
+    ;; snapshot. Inspect its durable fields, never its warmed child objects.
+    (node-edges (k/get store address nil {:sync? true})))
   IStorage
   (store [_ node #?(:cljs opts)]
     (@cost-center-fn :store)
     (swap! stats update :writes inc)
-    (let [;; Only reuse addresses when not using crypto-hash (content-addressed storage
+    (let [node (snapshot-node node)
+          ;; Only reuse addresses when not using crypto-hash (content-addressed storage
           ;; requires the address to match the content)
           reused (when-not (:crypto-hash? config)
                    (freelist-pop! freelist))
@@ -881,7 +967,7 @@
   #?(:clj
      (if (instance? PersistentSortedSet pset)
        (let [^PersistentSortedSet p pset
-             m (meta p)
+             m (dissoc (meta p) ::fused-root-edges)
              cmp (index-type->cmp-quick (:index-type m) false)]
          ;; A detached copy may carry an UNKNOWN cached count (-1) after a
          ;; restore+mutate; that's fine — since PSS 0.4.132 the root write
@@ -893,7 +979,7 @@
        pset)
      :cljs
      (if (instance? BTSet pset)
-       (BTSet. (.-root pset) (.-cnt pset) (.-comparator pset) (.-meta pset)
+       (BTSet. (.-root pset) (.-cnt pset) (.-comparator pset) (dissoc (.-meta pset) ::fused-root-edges)
                nil storage (.-address pset) (.-settings pset))
        pset)))
 

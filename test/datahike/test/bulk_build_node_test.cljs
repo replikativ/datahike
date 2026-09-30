@@ -87,6 +87,8 @@
                                       {:flush-fn (dw/bulk-flush-fn store false)})
                 (fn [bulk]
                   (let [total (- (:writes @stats) writes-before)]
+                    (is (nil? (.-root bulk)) "streaming build leaves the root address-only")
+                    (is (nil? (di/-root-node bulk)) "optional fusion skips an absent resident root")
                     (is (= (count datoms) (count bulk)) "the index is still correct")
                     (is (> total 12)
                         (str "precondition: the build must produce enough nodes ("

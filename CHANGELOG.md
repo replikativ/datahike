@@ -23,6 +23,7 @@ When something is added, it's typically marked *Experimental*. When the API cont
   initialization exposes explicit cleanup confirmation/recovery rather than
   suppressing drain failures.
   See [reconnect lifecycle and limits](doc/kabel-reconnect.md). (0.8.1907, [#1118])
+- **GC marks durable diff-buffer anchors.** Ordinary and shared PSS marking follow published address fields instead of resident buffered children, preserving anchors needed after cold reopen. Settled nodes and fused roots are detached snapshots; missing or inconsistent descriptors abort collection. (0.8, [#1102])
 - **GC aborts on fatal mark errors.** JVM `Error` values from reachability traversal are propagated through the collector channel, and a failed shared mark cannot authorize sweep. (0.8, [#1102])
 
 - **Scalar constants constrain function outputs.** A clause such as
