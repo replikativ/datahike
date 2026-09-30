@@ -6,6 +6,7 @@ When something is added, it's typically marked *Experimental*. When the API cont
 
 ## 0.8
 
+- **GC marks durable diff-buffer anchors.** Ordinary and shared PSS marking follow published address fields instead of resident buffered children, preserving anchors needed after cold reopen. Settled nodes and fused roots are detached snapshots; missing or inconsistent descriptors abort collection. (0.8, [#1102])
 - **GC aborts on fatal mark errors.** JVM `Error` values from reachability traversal are propagated through the collector channel, and a failed shared mark cannot authorize sweep. (0.8, [#1102])
 
 - **GC operating modes are explicit.** `:mode :bounded` names the existing age-floor contract; the reserved `:coordinated` mode is rejected before store access until enforceable coordination is available. (0.8, [#1101])

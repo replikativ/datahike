@@ -62,6 +62,13 @@
    a per-root closure and must never be reused in a later collection."
   (-mark-shared [index context]))
 
+(defprotocol IDurableNodeEdges
+  "Read structural edges from the immutable representation published at address.
+   Never derive them from a projected or resident child. Returns
+   {:level n :children [addresses ...]}; missing or malformed nodes must throw.
+   Reads must not substitute uncommitted nodes from a writer's pending cache."
+  (-durable-node-edges [storage address]))
+
 (defn new-mark-context
   "A collection-local context bound to one storage instance. Other storage
    instances and implementations fall back to their ordinary full mark."
