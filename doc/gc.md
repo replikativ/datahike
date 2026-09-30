@@ -6,6 +6,8 @@ Datahike uses persistent data structures that enable structural sharing—each u
 
 For the memory ownership map, operating modes and proposed coordination work, see the [memory and GC audit](gc-memory-model.md).
 
+The [draft coordination protocol](gc-coordination-protocol.md) specifies non-expiring ownership, publication validation and persistent adjacency recovery. Its schedule tests are an executable model; production coordinated mode remains unavailable.
+
 ## Collector modes
 
 `:mode :bounded` is the default and preserves the existing behavior. Its timestamp floor and process guard do not serialize root publication with deletion. A root published during sweep can name old objects absent from the completed mark; a frozen/resumed collector has the same exposure. Use external coordination when this schedule is possible.
