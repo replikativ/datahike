@@ -4,6 +4,8 @@ Datahike uses persistent data structures that enable structural sharing—each u
 
 **Garbage collection removes old database snapshots from storage while preserving current branch heads.**
 
+During a full collection, primary PSS trees share a structural mark context so unchanged subtrees reached through several roots are expanded once. The context is confined to one storage instance and one collection. Store-reference datoms and secondary generation payloads are still enumerated by their own marker paths. Diff-buffered trees use full marking because a shared anchor address can describe different descendants; collectors with online GC enabled also retain full marking because addresses may be recycled.
+
 ## GC and purging together
 
 Garbage collection and data purging are different operations:

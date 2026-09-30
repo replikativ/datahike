@@ -9,6 +9,9 @@
    [datahike.datom :as dd]
    [datahike.db :as db]
    [datahike.index :as di]
+   [datahike.index.interface :as idx]
+   [datahike.migrate.fs :as fs]
+   [clojure.set :as set]
    [datahike.index.persistent-set :as pset]
    [org.replikativ.persistent-sorted-set :as psset]))
 
@@ -415,3 +418,59 @@
             "Datom [e=1, a=42, v=25] should exist after replacement")
         (is (not (some #(= datom-e1-v100 %) (seq updated)))
             "Old datom [e=1, a=42, v=100] should NOT exist after replacement")))))
+
+(deftest-async shared-mark-context-preserves-the-full-mark-oracle
+  (doseq [diff-buf [0 4]]
+    (let [cfg (-> (rseek-cfg)
+                  (assoc-in [:store :backend] :file)
+                  (assoc-in [:store :path] (fs/temp-store-path! "dh-shared-mark"))
+                  (assoc :index-config {:branching-factor 16 :diff-buf-size diff-buf}))
+          conn #?(:clj (do (d/create-database cfg) (d/connect cfg))
+                  :cljs (do (<! (d/create-database cfg)) (<! (d/connect cfg {:sync? false}))))]
+      (try
+        (<! (d/transact! conn (mapv (fn [i] {:name (str "person-" i) :age i}) (range 600))))
+        (let [before (:eavt @conn)]
+          (<! (d/transact! conn [{:name "new-person" :age 9999}]))
+          (let [after (:eavt @conn)
+                storage (:storage (:store @conn))
+                context (idx/new-mark-context storage)
+                a (idx/-mark before)
+                b (idx/-mark after)
+                oracle (set/union a b)
+                marked-a (idx/mark-shared before context)
+                marked-b (idx/mark-shared after context)]
+            (is (= oracle (set/union marked-a marked-b)))
+            (is (= b (idx/mark-shared after (idx/new-mark-context storage)))
+                "a new collection does not retain a removed root")
+            (is (= a (idx/mark-shared before (idx/new-mark-context nil)))
+                "a context belonging to another storage cannot prune this tree")
+            (if (zero? diff-buf)
+              (do
+                (is (> (count a) 1) "exercise interior/shared nodes, not just a leaf")
+                (is (pos? (:pruned @context)))
+                (is (= (count oracle) (:expanded @context)))
+                (is (< (:expanded @context) (+ (count a) (count b)))
+                    "shared structural nodes are expanded once across versions"))
+              (is (zero? (:expanded @context))
+                  "diff-buffer anchors use ordinary full marks"))))
+        (finally
+          (d/release conn)
+          #?(:clj (d/delete-database cfg) :cljs (<! (d/delete-database cfg))))))))
+
+(deftest-async failed-mark-context-cannot-authorize-a-later-walk
+  (let [cfg (rseek-cfg)
+        conn #?(:clj (do (d/create-database cfg) (d/connect cfg))
+                :cljs (do (<! (d/create-database cfg)) (<! (d/connect cfg {:sync? false}))))]
+    (try
+      (let [context (idx/new-mark-context (:storage (:store @conn)))
+            dirty (:eavt (d/db-with @conn [{:name "not-flushed" :age 1}]))]
+        (is (= :flush-before-marking
+               (try (idx/mark-shared dirty context)
+                    (catch #?(:clj Throwable :cljs :default) e (:type (ex-data e))))))
+        (is (:failed? @context))
+        (is (= :datahike/gc-mark-context-failed
+               (try (idx/mark-shared (:eavt @conn) context)
+                    (catch #?(:clj Throwable :cljs :default) e (:type (ex-data e)))))))
+      (finally
+        (d/release conn)
+        #?(:clj (d/delete-database cfg) :cljs (<! (d/delete-database cfg)))))))
