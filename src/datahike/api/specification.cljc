@@ -962,7 +962,8 @@
 
     gc-storage
     {:args [:function
-            [:=> [:cat :datahike/SConnection :datahike/time-point? [:map [:min-age-ms {:optional true} :int]]] :any]
+            [:=> [:cat :datahike/SConnection :datahike/time-point? [:map [:min-age-ms {:optional true} :int]
+                                                                    [:mode {:optional true} [:enum :bounded :coordinated]]]] :any]
             [:=> [:cat :datahike/SConnection :datahike/time-point?] :any]
             [:=> [:cat :datahike/SConnection] :any]]
      :ret :any
@@ -970,7 +971,7 @@
      :stability :stable
      :supports-remote? true
      :referentially-transparent? false
-     :doc "Invokes garbage collection on connection's store. Removes old snapshots before given time point. `:min-age-ms` spares anything written more recently than that, which is what makes collecting from outside the writer process possible — it must exceed the longest values-then-pointer window any writer can have. When omitted it defaults to 0 under an exclusive local writer (`:writer {:backend :self :writer-ownership :exclusive}`) and to 15 minutes under a shared or remote writer, where another process's commit in flight is invisible to this collector. The default is a bound on one awaited request, not a guarantee: size an explicit value above your longest in-flight window plus the largest clock difference between your processes (the stamps it compares against are each writer's own). Pass `{:min-age-ms 0}` explicitly to sweep without a floor."
+     :doc "Invokes garbage collection on connection's store. Removes old snapshots before given time point. `:min-age-ms` spares anything written more recently than that, which is what makes collecting from outside the writer process possible — it must exceed the longest values-then-pointer window any writer can have. When omitted it defaults to 0 under an exclusive local writer (`:writer {:backend :self :writer-ownership :exclusive}`) and to 15 minutes under a shared or remote writer, where another process's commit in flight is invisible to this collector. The default is a bound on one awaited request, not a guarantee: size an explicit value above your longest in-flight window plus the largest clock difference between your processes (the stamps it compares against are each writer's own). Pass `{:min-age-ms 0}` explicitly to sweep without a floor. `:mode :bounded` is the default; its floor and process-local guard do not prevent old objects from being promoted into a root during sweep or make a suspended collector safe. `:mode :coordinated` is reserved and fails with `:datahike/gc-coordination-unavailable` in this version."
      :examples [{:desc "GC all old snapshots"
                  :code "(gc-storage conn)"}
                 {:desc "GC snapshots before date"

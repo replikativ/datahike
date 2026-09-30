@@ -6,6 +6,8 @@ When something is added, it's typically marked *Experimental*. When the API cont
 
 ## 0.8
 
+- **GC operating modes are explicit.** `:mode :bounded` names the existing age-floor contract; the reserved `:coordinated` mode is rejected before store access until enforceable coordination is available. (0.8, [#1101])
+
 - **Scalar constants constrain function outputs.** A clause such as
   `[(subs ?id 6 7) "4"]` now keeps rows whose function result equals the
   constant. This also works inside rules, disjunctions and negation.
