@@ -275,20 +275,39 @@
   (and (vector? clause)
        (not (seq? (first clause)))))
 
-(defn- where-has-repeated-var?
-  "Cheap pre-scan mirroring `normalize-repeated-var-clause`'s scope."
+(defn- constant-output-clause?
+  "A scalar constant output is an equality constraint. Vectors remain binding
+   forms; quoted collections are constants. Do not walk into call arguments."
+  [clause]
+  (and (sequential? clause) (= 2 (count clause)) (seq? (first clause))
+       (let [out (second clause)]
+         (or (analyze/quote-form? out)
+             (and (not (symbol? out)) (not (sequential? out)))))))
+
+(defn- blank-rule-call?
+  [clause]
+  (when (seq? clause)
+    (let [[head & args] (if (source-prefixed-clause? clause) (rest clause) clause)]
+      (and (symbol? head) (not (analyze/free-var? head))
+           (not (#{'not 'not-join 'and 'or 'or-join} head))
+           (some #{'_} args)))))
+
+(defn- where-needs-normalization?
+  "Cheap pre-scan for repeated pattern vars, constant outputs and blank rule calls."
   [clauses]
   (boolean
    (some (fn [clause]
            (cond
+             (constant-output-clause? clause) true
+             (blank-rule-call? clause) true
              (source-prefixed-clause? clause) (repeated-var-pattern? (vec (rest clause)))
              (data-pattern-clause? clause)    (repeated-var-pattern? clause)
              (and (seq? clause) (#{'not 'and 'or} (first clause)))
-             (where-has-repeated-var? (rest clause))
+             (where-needs-normalization? (rest clause))
              ;; `(not-join [vars] body…)` / `(or-join [vars] branches…)` — the
              ;; second element is the declared var vector, not a clause.
              (and (seq? clause) (#{'not-join 'or-join} (first clause)))
-             (where-has-repeated-var? (drop 2 clause))
+             (where-needs-normalization? (drop 2 clause))
              :else false))
          clauses)))
 
@@ -329,22 +348,32 @@
   (into #{} (comp (filter symbol?) (filter analyze/free-var?))
         (tree-seq coll? seq form)))
 
-(declare normalize-repeated-var-clauses normalize-repeated-var-clause)
+(declare normalize-where-clauses normalize-where-clause)
 
 (defn- normalize-branch
   "Rewrite one branch of an `or` / `or-join`, keeping it a SINGLE form. A branch
    that expands into several clauses is wrapped in `and`, because the elements of
    a disjunction are alternatives, not a conjunction."
   [branch fresh!]
-  (let [out (normalize-repeated-var-clause branch fresh!)]
+  (let [out (normalize-where-clause branch fresh!)]
     (if (= 1 (count out))
       (first out)
       (cons 'and out))))
 
-(defn- normalize-repeated-var-clause
+(defn- normalize-where-clause
   "Returns the SEQ of clauses that replaces `clause`."
   [clause fresh!]
   (cond
+    (constant-output-clause? clause)
+    (let [v (fresh! '?__fn_result)]
+      [[(first clause) v] [(list '= v (second clause))]])
+
+    ;; Each blank argument is independent, but occurrences of its rule-head
+    ;; parameter within the body must still share one existential variable.
+    ;; In particular it must never become a constant `(identity _)` binding.
+    (blank-rule-call? clause)
+    [(apply list (map #(if (= '_ %) (fresh! '?__rule_blank) %) clause))]
+
     (source-prefixed-clause? clause)
     (let [pattern (vec (rest clause))]
       (if (and (data-pattern-clause? pattern) (repeated-var-pattern? pattern))
@@ -358,10 +387,17 @@
         (cons pattern' preds))
       [clause])
 
-    ;; A repeated var inside a negation body is still a self-join. `and` is the
-    ;; grouping form inside or-branches; harmless to recurse through.
-    (and (seq? clause) (#{'not 'and} (first clause)))
-    [(cons (first clause) (normalize-repeated-var-clauses (rest clause) fresh!))]
+    (and (seq? clause) (= 'and (first clause)))
+    [(cons 'and (normalize-where-clauses (rest clause) fresh!))]
+
+    ;; Generated variables are local to the negation. Project them away before
+    ;; subtracting its answers from the surrounding relation.
+    (and (seq? clause) (= 'not (first clause)))
+    (let [body (rest clause)
+          rewritten (normalize-where-clauses body fresh!)]
+      (if (= (vec body) rewritten)
+        [clause]
+        [(concat (list 'not-join (vec (clause-free-vars body))) rewritten)]))
 
     ;; `(not-join [vars] body…)`: the body is a CONJUNCTION, so the rewritten
     ;; pattern and its equality can sit side by side. The declared var vector is
@@ -369,7 +405,7 @@
     ;; it.
     (and (seq? clause) (= 'not-join (first clause)))
     [(concat (take 2 clause)
-             (normalize-repeated-var-clauses (drop 2 clause) fresh!))]
+             (normalize-where-clauses (drop 2 clause) fresh!))]
 
     ;; `(or-join [vars] branches…)`: every element after the vector is a separate
     ;; BRANCH, so a rewritten branch must stay ONE form — appending the equality
@@ -391,8 +427,8 @@
 
     :else [clause]))
 
-(defn- normalize-repeated-var-clauses [clauses fresh!]
-  (into [] (mapcat #(normalize-repeated-var-clause % fresh!)) clauses))
+(defn- normalize-where-clauses [clauses fresh!]
+  (into [] (mapcat #(normalize-where-clause % fresh!)) clauses))
 
 (defn- query-var? [x]
   (and (symbol? x) (= \? (first (name x)))))
@@ -443,13 +479,14 @@
    a constraint between the caller's arguments which the rule-invocation
    machinery already handles. It does not: see `normalize-rule-head`.
 
-   Returns `rules` unchanged (identical object) when nothing repeats a var."
+   Also normalizes constant function outputs and blank rule-call arguments.
+   Returns `rules` unchanged (identical object) when no rewrite is needed."
   [rules taken]
   (if-not (sequential? rules)
     rules
     (let [needs? (some (fn [rule]
                          (and (sequential? rule)
-                              (or (where-has-repeated-var? (rest rule))
+                              (or (where-needs-normalization? (rest rule))
                                   (head-repeats-var? (first rule)))))
                        rules)]
       (if-not needs?
@@ -461,7 +498,7 @@
                                  (normalize-rule-head rule fresh!)
                                  rule)]
                       (into [(first rule)]
-                            (normalize-repeated-var-clauses (rest rule) fresh!)))
+                            (normalize-where-clauses (rest rule) fresh!)))
                     rule))
                 rules))))))
 
@@ -499,15 +536,17 @@
 
 (defn normalize-repeated-vars
   "Rewrite every data pattern that mentions a variable twice into a pattern of
-   distinct variables plus an explicit `=` join predicate. Returns `query`
-   UNCHANGED (identical object) when no pattern repeats a variable, so the plan
+   distinct variables plus an explicit `=` join predicate. Also expands scalar
+   constant function outputs into equality constraints and
+   blank rule-call arguments into fresh existential variables. Returns `query`
+   UNCHANGED (identical object) when no clause needs rewriting, so the plan
    and result caches are not perturbed for queries this does not affect."
   [query]
   (let [where (:where query)]
-    (if (and (seq where) (where-has-repeated-var? where))
+    (if (and (seq where) (where-needs-normalization? where))
       (let [taken  (into #{} (filter symbol?) (tree-seq coll? seq query))
             fresh! (fresh-var-fn taken)]
-        (assoc query :where (normalize-repeated-var-clauses where fresh!)))
+        (assoc query :where (normalize-where-clauses where fresh!)))
       query)))
 
 (defn- normalize-rules-in-args
@@ -1049,6 +1088,11 @@
   (reduce (fn [_a b]
             (if b (reduced b) b)) nil args))
 
+(defn- if-fn
+  "Select between already evaluated values, using Clojure truthiness."
+  ([test then] (if test then nil))
+  ([test then else] (if test then else)))
+
 (defprotocol CollectionOrder
   (-strictly-decreasing? [x more])
   (-decreasing? [x more])
@@ -1176,7 +1220,7 @@
                 '*          *, '/ /, 'quot quot, 'rem rem, 'mod mod, 'inc inc, 'dec dec, 'max -max, 'min -min
                 'zero?      zero?, 'pos? pos?, 'neg? neg?, 'even? even?, 'odd? odd?, 'compare datom/compare-value
                 'rand       rand, 'rand-int rand-int
-                'true?      true?, 'false? false?, 'nil? nil?, 'some? some?, 'not not, 'and and-fn, 'or or-fn
+                'true?      true?, 'false? false?, 'nil? nil?, 'some? some?, 'not not, 'and and-fn, 'or or-fn, 'if if-fn
                 'complement complement, 'identical? identical?
                 'identity   identity, 'meta meta, 'name name, 'namespace namespace, 'type type
                 'vector     vector, 'list list, 'set set, 'hash-map hash-map, 'array-map array-map
@@ -4178,7 +4222,7 @@
           resolve-idx (fn [v]
                         (cond
                           (nat-int? v) (do (when (>= v (count find-vars))
-                                             (throw (ex-info (str ":order-by column index " v " out of bounds, :find has " (count find-vars) " elements")
+                                             (throw (ex-info (str ":order-by column index " v " out of bounds (indices are 0-based), :find has " (count find-vars) " elements")
                                                              {:index v :find-count (count find-vars)})))
                                            v)
                           (symbol? v) (let [idx (let [fv find-vars n (count fv)]

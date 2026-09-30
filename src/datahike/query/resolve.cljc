@@ -12,7 +12,8 @@
    by reflection), since there the query author is the process itself. The
    server binds `*symbol-resolver*` to `safe-symbol-resolver` around every
    client request; that resolver knows `safe-fns`, a curated pure subset of
-   `clojure.core` and all of `clojure.string`, the read-only Datahike
+   `clojure.core`, `clojure.string` and deterministic `clojure.math` functions,
+   the read-only Datahike
    functions (`datahike.api/q` for a subquery, `pull`, `datoms`, …), and
    whatever the process registered with `register-fn!` or `register-ns!`,
    which is how an application exposes its own functions to client queries.
@@ -26,6 +27,7 @@
    This namespace is a leaf so that the transaction path can use it without a
    cycle through `datahike.query`."
   #?(:clj (:require [clojure.string :as str]
+                    [clojure.math]
                     [datahike.db.interface]))
   #?(:clj (:import [clojure.lang IDeref Reflector]
                    [datahike.db.interface IDB]
@@ -96,7 +98,8 @@
 (def safe-fns
   "The functions a query may name without any opt-in, keyed by bare symbol
    (`str`), by qualified core symbol (`clojure.core/str`) and by qualified
-   string symbol (`clojure.string/upper-case`). Each refuses a database,
+   string or math symbol (`clojure.string/upper-case`, `clojure.math/round`).
+   Each refuses a database,
    connection or reference as argument (`guard`)."
   #?(:clj
      (let [core (ns-publics 'clojure.core)
@@ -105,12 +108,15 @@
                                        [sym @v])))
                           safe-core-symbols)
            qualified (fn [ns-sym m] (into {} (map (fn [[k v]] [(symbol (name ns-sym) (name k)) v])) m))
-           string-fns (into {} (map (fn [[k v]] [k @v])) (ns-publics 'clojure.string))]
+           string-fns (into {} (map (fn [[k v]] [k @v])) (ns-publics 'clojure.string))
+           math-fns (into {} (keep (fn [[k v]] (when (fn? @v) [k @v])))
+                          (dissoc (ns-publics 'clojure.math) 'random))]
        (into {}
              (map (fn [[sym f]] [sym (guard sym f)]))
              (merge core-fns
                     (qualified 'clojure.core core-fns)
-                    (qualified 'clojure.string string-fns))))
+                    (qualified 'clojure.string string-fns)
+                    (qualified 'clojure.math math-fns))))
      :cljs {}))
 
 #?(:clj
