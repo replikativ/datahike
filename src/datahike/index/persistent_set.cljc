@@ -254,8 +254,10 @@
 
 (defn mark-shared [pset context]
   (let [storage #?(:clj (.-_storage ^PersistentSortedSet pset) :cljs (.-storage ^BTSet pset))]
-    ;; Diff-buffered variants can share a durable anchor while naming different
-    ;; descendants. Address-only pruning is not valid for those variants.
+    ;; Cold buffered projections preserve the anchor's durable address closure.
+    ;; But resident buffered children can still have nil (dirty) addresses: a
+    ;; warm walk then omits anchors a cold walk would visit. Do not let that
+    ;; incomplete expansion prune a later cold walk at the same address.
     (if (or (not (identical? storage (:storage @context)))
             (pos? (:diff-buf-size #?(:clj (psset/settings pset) :cljs (.-settings ^BTSet pset)) 0)))
       (mark pset)
