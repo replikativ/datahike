@@ -23,7 +23,7 @@ When something is added, it's typically marked *Experimental*. When the API cont
   initialization exposes explicit cleanup confirmation/recovery rather than
   suppressing drain failures.
   See [reconnect lifecycle and limits](doc/kabel-reconnect.md). (0.8.1907, [#1118])
-- **GC aborts on fatal mark errors.** JVM `Error` values from reachability traversal are propagated through the collector channel, and a failed shared mark cannot authorize sweep. (0.8, [#TODO])
+- **GC aborts on fatal mark errors.** JVM `Error` values from reachability traversal are propagated through the collector channel, and a failed shared mark cannot authorize sweep. (0.8, [#1102])
 
 - **Scalar constants constrain function outputs.** A clause such as
   `[(subs ?id 6 7) "4"]` now keeps rows whose function result equals the
