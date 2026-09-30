@@ -1,6 +1,7 @@
 (ns ^:no-doc datahike.schema
   (:require [clojure.spec.alpha :as s]
             [datahike.array :as arr]
+            [datahike.gc-reference :as gc-ref]
             [datahike.datom]
             ;; cljs bigdec values are fress `Bigdec` (unscaled js/BigInt + scale) —
             ;; the same type konserve round-trips via the Fressian BIGDEC (0xC7)
@@ -63,6 +64,7 @@
     :db.type/symbol
     :db.type/uuid
     :db.type/store-ref
+    :db.type/gc-ref
     :db.type/value
     :db.type/tuple
     :db.type/cardinality
@@ -93,6 +95,7 @@
 ;; are already sparse, so you never had to declare your fields — blobbing structured
 ;; data buys no flexibility you did not already have, and costs you the indices.
 (s/def :db.type/store-ref uuid?)
+(s/def :db.type/gc-ref gc-ref/valid-reference?)
 
 (def key-bearing-value-types
   "Value types whose values NAME AN OBJECT in a store, so the collector must mark
@@ -100,8 +103,8 @@
 
    The GC mark scans the datoms of attributes declared with one of these — and ONLY
    those, so a database that uses none pays nothing (`datahike.gc/store-refs`). For
-   every type here the VALUE IS THE KEY; nothing more elaborate has been needed."
-  #{:db.type/store-ref})
+   store-ref values are object keys; gc-ref values describe typed immutable edges."
+  #{:db.type/store-ref :db.type/gc-ref})
 
 ;; TODO: add bytes
 

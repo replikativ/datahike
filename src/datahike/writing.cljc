@@ -5,6 +5,7 @@
             [datahike.dependency-tracking :as tracking]
             [datahike.gc-guard :as guard]
             [datahike.gc-roots :as roots]
+            [datahike.reachability :as reach]
             [datahike.db.transaction :as dbtx]
             #?(:clj [datahike.backfill.capture :as capture])
             #?(:clj [datahike.backfill.admission :as avet-admission])
@@ -1182,6 +1183,13 @@
                         head-write-issued? (atom false)
                         head-published? (atom false)]
                     (try
+                      (when-not (true? (<?- (reach/validate-db-references db {:sync? sync?})))
+                        (throw (ex-info "Reference validation did not complete."
+                                        {:type :datahike/gc-reference-validation-incomplete})))
+                      (when (reach/reference-schema? (:schema db))
+                        ;; Conservatively permanent: historical values may outlive
+                        ;; their current schema. Freed hints cannot reclaim their nodes.
+                        (<?- (k/assoc (:store db) :datahike/gc-reference-values? true {:sync? sync?})))
                       (let [;; Secondary generations become durable before the
                           ;; primary record is serialized.  Their prepared live
                           ;; instances replace the pre-flush values in the db we

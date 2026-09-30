@@ -2,12 +2,11 @@
   (:require [clojure.set :as set]
             [datahike.config :as dc]
             [datahike.constants :as c]
-            [datahike.datom :as dd]
             [datahike.gc-guard :as guard]
             [datahike.gc-roots :as roots]
-            [datahike.index.interface :refer [-mark -seed-root! -slice with-storage mark-shared new-mark-context]]
-            [datahike.index.secondary :as sec]
-            [datahike.schema :as schema]
+            [datahike.gc-reference :as gc-ref]
+            [datahike.index.interface :refer [-seed-root! with-storage new-mark-context]]
+            [datahike.reachability :as reach]
             [datahike.store :as ds]
             [konserve.core :as k]
             [konserve.gc :refer [sweep!]]
@@ -33,275 +32,13 @@
   #?(:clj  (:import [java.util Date])
      :cljs (:require-macros [clojure.core.async :refer [go-loop go]])))
 
-;; meta-data does not get passed in macros
-(defn get-time [d]
-  (.getTime ^Date d))
+(def get-time reach/get-time)
 
-(defn- attr-store-refs
-  "The object ids named by the VALUES of `attr` in the AEVT index `aevt`. For a
-   key-bearing value type THE VALUE IS THE KEY, so this is just the attribute's
-   values.
-
-   Slices exactly the attribute's range, so the cost is O(its datoms), not O(the
-   database)."
-  [aevt attr]
-  (into #{}
-        (map :v)
-        (-slice aevt
-                (dd/datom c/e0 attr nil c/tx0)
-                (dd/datom c/emax attr nil c/txmax)
-                :aevt)))
-
-(defn- store-refs
-  "The object ids this record's datom VALUES name — what a `:db.type/store-ref`
-   keeps alive (`datahike.schema/key-bearing-value-types`).
-
-   THE MARK DOES NOT SEE THESE OTHERWISE. It walks the index TREES and collects
-   node addresses; it never looks inside a datom's value. So an object named only
-   by a value is unreachable from the mark's point of view, and the sweep deletes
-   it. That is the whole reason this exists.
-
-   ZERO COST WHEN UNUSED: if the schema declares no attribute of a key-bearing
-   type — which is every database that does not use the feature — this returns
-   immediately, having sliced nothing.
-
-   Under `:keep-history?` the TEMPORAL index is scanned too: a retracted store-ref
-   datom is still readable `as-of` an earlier tx, so the object it names must
-   outlive the retraction. (`:db/noHistory` attributes are NOT retained there, which
-   is why `schema/key-bearing-misuse` refuses to combine the two.)"
-  [config schema ident-ref-map aevt taevt]
-  (let [attrs (into []
-                    (keep (fn [[ident attr-def]]
-                            (when (contains? schema/key-bearing-value-types
-                                             (:db/valueType attr-def))
-                              ;; With :attribute-refs? the datoms hold the attribute's
-                              ;; EID, not its ident — slice by what is actually stored.
-                              (if (:attribute-refs? config)
-                                (get ident-ref-map ident)
-                                ident))))
-                    schema)]
-    (if (empty? attrs)
-      #{}
-      (reduce (fn [acc attr]
-                (cond-> (set/union acc (attr-store-refs aevt attr))
-                  taevt (set/union (attr-store-refs taevt attr))))
-              #{} attrs))))
-
-(defn- mark-exception [e]
-  #?(:clj (if (instance? Exception e) e
-              (ex-info "Reachability marking failed; refusing to sweep."
-                       {:type :datahike/gc-mark-failed} e))
-     :cljs (if (instance? js/Error e) e
-               (ex-info "Reachability marking failed; refusing to sweep."
-                        {:type :datahike/gc-mark-failed :thrown-value e}))))
-
-(defn- reachable-in-branch [store branch after-date config schema-cache opts]
-  (async+sync
-   (:sync? opts) *default-sync-translation*
-   (go-try-
-    (try
-      (let [head-cid (<?- (k/get-in store [branch :meta :datahike/commit-id] nil opts))]
-        (loop [[to-check & r] [branch]
-               visited        #{}
-               reachable      #{branch head-cid}
-               refs           #{}
-               external-roots #{}
-               building-secondary? false]
-          (if to-check
-            (if (visited to-check) ;; skip
-              (recur r visited reachable refs external-roots building-secondary?)
-              (if-let [record (<?- (k/get store to-check nil opts))]
-                (let [{:keys                         [eavt-key avet-key aevt-key
-                                                      temporal-eavt-key temporal-avet-key temporal-aevt-key
-                                                      eavt-root aevt-root avet-root
-                                                      temporal-eavt-root temporal-aevt-root temporal-avet-root
-                                                      schema-meta-key secondary-index-keys]
-                       {:keys [datahike/parents
-                               datahike/created-at
-                               datahike/updated-at]} :meta}
-                      record
-                    ;; A synthetic checkpoint record may carry no dates; it has
-                    ;; no parents to walk either, so "not in range" is exact.
-                      in-range? (if-let [d (or updated-at created-at)]
-                                  (> (get-time d) (get-time after-date))
-                                  false)]
-                  (let [sec-reachable (when (seq secondary-index-keys)
-                                        (reduce-kv
-                                         (fn [acc _idx-ident key-map]
-                                           (set/union acc (sec/mark-from-key-map key-map store)))
-                                         #{} secondary-index-keys))
-                        sec-external-roots
-                        (when (seq secondary-index-keys)
-                          (into #{}
-                                (keep (fn [[_idx-ident key-map]]
-                                        (sec/external-root-from-key-map key-map)))
-                                secondary-index-keys))
-                          ;; Stored roots are storage-detached; bind them to
-                          ;; this store's storage so -mark can walk the tree.
-                          ;; Root fusion: inlined roots aren't separate konserve
-                          ;; objects, so -mark on the lazy index would try to
-                          ;; restore the root by address and fail. Seed the
-                          ;; inlined root into the with-storage COPY (owned,
-                          ;; unpublished) — never into the stored record's
-                          ;; index, which may be shared through the store's
-                          ;; cache (mirrors stored->db) — so walk-addresses
-                          ;; uses it and only its children are fetched.
-                          ;;
-                          ;; `bind` returns that copy so the SAME seeded instance
-                          ;; serves both -mark (walk the tree) and -slice (read the
-                          ;; datoms, for store-refs) — seeding a second one would
-                          ;; duplicate the work and re-open the shared-record hazard
-                          ;; above.
-                        bind (fn [idx root]
-                               (cond-> (with-storage (:index config) idx (:storage store))
-                                 root (-seed-root! root)))
-                        aevt'  (when aevt-key (bind aevt-key aevt-root))
-                        taevt' (when (and (:keep-history? config) temporal-aevt-key)
-                                 (bind temporal-aevt-key temporal-aevt-root))
-                            ;; The schema names which attributes can hold store-refs.
-                            ;; It is content-addressed and rarely changes, so memoize
-                            ;; it across the whole collection rather than re-reading
-                            ;; it for every commit in the window.
-                        schema-meta (when schema-meta-key
-                                      (if-let [cached (get @schema-cache schema-meta-key)]
-                                        cached
-                                        (let [sm (<?- (k/get store schema-meta-key nil opts))]
-                                          (swap! schema-cache assoc schema-meta-key sm)
-                                          sm)))
-                            ;; Mirror stored->db's schema fallback so gc reads the
-                            ;; schema exactly as the db reconstructs it. This does NOT
-                            ;; guard store-refs: `(:schema record)` is non-nil only for
-                            ;; old inline-schema databases, which predate
-                            ;; :db.type/store-ref and so declare no key-bearing
-                            ;; attribute (store-refs → #{} regardless).
-                        schema (or (:schema schema-meta) (:schema record))
-                      ;; A record that NAMES a schema-meta key and cannot produce
-                      ;; it leaves the mark unable to say which attributes are
-                      ;; key-bearing, so `store-refs` below reports NONE and the
-                      ;; sweep deletes blobs the database still names. The same
-                      ;; nil also makes `head-building-secondary?` false, so a
-                      ;; collection no longer defers to a building secondary
-                      ;; index. Both are the mark quietly reporting less than the
-                      ;; truth, which is exactly what a sweep may not do.
-                      ;;
-                      ;; Conditioned on the KEY, not on the nil schema: a record
-                      ;; with no `:schema-meta-key` is either a pre-out-lining
-                      ;; database (schema inline, so not nil here) or a bulk-import
-                      ;; CHECKPOINT (`datahike.migrate`), which carries no schema by
-                      ;; construction and whose blobs travel in `:datahike.gc/keys`
-                      ;; instead. Refusing on a nil schema alone would break every
-                      ;; index build.
-                        _ (when (and schema-meta-key (nil? schema))
-                            (log/raise "Schema metadata missing from store; cannot determine which attributes hold store-refs, so this collection would under-report what is reachable."
-                                       {:type :schema-meta-missing
-                                        :schema-meta-key schema-meta-key
-                                        :record to-check
-                                        :branch branch}))
-                      ;; Only the seed record is the CURRENT branch/root head.
-                      ;; Historical commits may legitimately contain an old
-                      ;; :building schema after the live head made it :ready;
-                      ;; letting those defer GC would retain forever whenever
-                      ;; history is kept.
-                        head-building-secondary?
-                        (and (= to-check branch)
-                             (or (= :building (get-in record [:avet-build :status]))
-                                 (some (fn [[_ entry]]
-                                         (= :building (:db.secondary/status entry)))
-                                       schema)))
-                            ;; Kept SEPARATE from the node addresses, not folded in.
-                            ;; A store-ref names an object; it does NOT say where the
-                            ;; bytes live. If they are in this konserve store, the
-                            ;; sweep protects and reclaims them (gc-storage! unions
-                            ;; these in). If they are somewhere else — a raw S3 prefix
-                            ;; the browser uploads to directly, a CDN — the sweep here
-                            ;; can do nothing with them, but `reachable-store-refs`
-                            ;; hands the set to the application, which knows how to
-                            ;; delete from wherever it put them.
-                      ;; Literal extra keys a ROOT record may carry
-                      ;; (`:datahike.gc/keys`): blob ids an import restored
-                      ;; before any datom names them, a user upload awaiting its
-                      ;; transaction. Unioned into BOTH sets — the sweep spares
-                      ;; them, and `reachable-store-refs` reports them to the
-                      ;; application's own blob sweep. Ordinary commit records
-                      ;; never carry the field.
-                        extra-keys (set (:datahike.gc/keys record))
-                        record-refs (set/union
-                                     (if (and schema aevt')
-                                       (store-refs config schema
-                                                   (:ident-ref-map schema-meta) aevt' taevt')
-                                       #{})
-                                     extra-keys)
-                        new-reachable (cond-> (set/union reachable #{to-check}
-                                                         extra-keys
-                                                         (when schema-meta-key #{schema-meta-key}))
-                                      ;; A checkpoint record may name only the
-                                      ;; trees built so far; absent families are
-                                      ;; simply not walked. A COMMIT record always
-                                      ;; has all of them.
-                                        eavt-key (set/union (mark-shared (bind eavt-key eavt-root) (:mark-context opts)))
-                                        aevt-key (set/union (mark-shared aevt' (:mark-context opts)))
-                                        avet-key (set/union (mark-shared (bind avet-key avet-root) (:mark-context opts)))
-                                        (and (:keep-history? config) temporal-eavt-key)
-                                        (set/union (mark-shared (bind temporal-eavt-key temporal-eavt-root) (:mark-context opts)))
-                                        (and (:keep-history? config) temporal-aevt-key)
-                                        (set/union (mark-shared taevt' (:mark-context opts)))
-                                        (and (:keep-history? config) temporal-avet-key)
-                                        (set/union (mark-shared (bind temporal-avet-key temporal-avet-root) (:mark-context opts)))
-                                        sec-reachable
-                                        (set/union sec-reachable))]
-                    (recur (concat r (when in-range? parents))
-                           (conj visited to-check)
-                           new-reachable
-                           (set/union refs record-refs)
-                           (set/union external-roots sec-external-roots)
-                           (or building-secondary?
-                               head-building-secondary?))))
-                    ;; Record absent: already swept by an earlier pass with a
-                    ;; narrower window, or the store runs :commit-graph? false
-                    ;; and never persisted it. Lineage ends here — nothing to
-                    ;; mark. (Without this guard the nil destructure NPEs at
-                    ;; get-time.)
-                (recur r (conj visited to-check) reachable refs external-roots
-                       building-secondary?)))
-            {:reachable reachable
-             :store-refs refs
-             :external-secondary-roots external-roots
-             :building-secondary? building-secondary?})))
-      (catch #?(:clj Throwable :cljs :default) e
-        (throw (mark-exception e)))))))
-
-(defn- external-secondary-roots-in-branch
-  "Walk only commit envelopes and external secondary key-maps. Unlike the full
-   primary-store mark, this read-only discovery does not restore or require
-   flushed primary PSS roots."
-  [store branch after-date opts]
-  (async+sync
-   (:sync? opts) *default-sync-translation*
-   (go-try-
-    (loop [[to-check & r] [branch] visited #{} external-roots #{}]
-      (if to-check
-        (if (visited to-check)
-          (recur r visited external-roots)
-          (if-let [record (<?- (k/get store to-check nil opts))]
-            (let [{:keys [secondary-index-keys]}
-                  record
-                  {:keys [datahike/parents
-                          datahike/created-at
-                          datahike/updated-at]}
-                  (:meta record)
-                  in-range? (if-let [d (or updated-at created-at)]
-                              (> (get-time d) (get-time after-date))
-                              false)
-                  record-roots
-                  (into #{}
-                        (keep (fn [[_idx-ident key-map]]
-                                (sec/external-root-from-key-map key-map)))
-                        secondary-index-keys)]
-              (recur (concat r (when in-range? parents))
-                     (conj visited to-check)
-                     (set/union external-roots record-roots)))
-            (recur r (conj visited to-check) external-roots)))
-        external-roots)))))
+;; Compatibility seams for internal callers; implementation lives in the
+;; acyclic read-only graph module so publication validation can reuse it.
+(defn- reachable-in-branch [& args] (apply reach/reachable-in-branch args))
+(defn- external-secondary-roots-in-branch [& args]
+  (apply reach/external-secondary-roots-in-branch args))
 
 (def ^:const DEFAULT_SWEEP_MIN_AGE_MS
   "The floor under an EXCLUSIVE local writer: OFF, so single-process collection
@@ -579,7 +316,7 @@
                                      {:type :datahike/gc-mark-context-failed})))
                  reachable (-> (apply set/union (map :reachable walked))
                                (set/union (apply set/union (map :store-refs walked)))
-                               (conj :branches)
+                               (conj :branches :datahike/gc-reference-values?)
                                (conj roots/registry-key))
                  building-secondary? (boolean (some :building-secondary? walked))]
              (log/trace :datahike/gc-reachable {:reachable-count (count reachable)
@@ -688,7 +425,48 @@
             (set/union
              acc
              (<?- (external-secondary-roots-in-branch
-                   store (first bs) remove-before opts)))))))))))
+                   store (first bs) remove-before (:config db) opts)))))))))))
+
+(defn- record-value-contributions
+  ([store stored-db] (record-value-contributions store stored-db nil))
+  ([store stored-db index-type]
+   (go-try S
+           (try
+             (let [rec-config    (:config stored-db)
+                   index-type    (or index-type (:index rec-config) dc/*default-index*)
+                   schema-meta   (when-let [k (:schema-meta-key stored-db)]
+                                   (<? S (k/get store k)))
+                   schema        (or (:schema schema-meta) (:schema stored-db))
+                 ;; As in `reachable-in-branch`: a named-but-unreadable
+                 ;; schema-meta key means the blobs this head names cannot be
+                 ;; enumerated. Here that is worse than a bad sweep — a sync
+                 ;; walker ships the head's datoms and NOT the blobs they name,
+                 ;; landing a subscriber with live references to objects that
+                 ;; never arrive, which is the blind spot store-refs exists to
+                 ;; close. Records with no key (legacy inline, import
+                 ;; checkpoints) are unaffected.
+                   _             (when (and (:schema-meta-key stored-db) (nil? schema))
+                                   (log/raise "Schema metadata missing from store; cannot determine which attributes hold store-refs for this record."
+                                              {:type :schema-meta-missing
+                                               :schema-meta-key (:schema-meta-key stored-db)
+                                               :commit-id (get-in stored-db [:meta :datahike/commit-id])}))
+                   ident-ref-map (or (:ident-ref-map schema-meta) (:ident-ref-map stored-db))
+                   config        (assoc rec-config :index index-type)
+                   storage       (:storage store)
+                   bind          (fn [idx root]
+                                   (cond-> (with-storage index-type idx storage)
+                                     root (-seed-root! root)))
+                   aevt          (bind (:aevt-key stored-db) (:aevt-root stored-db))
+                   taevt         (when (:temporal-aevt-key stored-db)
+                                   (bind (:temporal-aevt-key stored-db)
+                                         (:temporal-aevt-root stored-db)))]
+               (if schema
+                 (reach/value-references config schema ident-ref-map aevt taevt
+                                         {:store store :config config :discovery-only? false
+                                          :store-id (ds/canonical-store-id store (:store rec-config))})
+                 (gc-ref/merge-contributions)))
+             (catch #?(:clj Throwable :cljs :default) e
+               (throw (reach/mark-failure e)))))))
 
 (defn record-store-refs
   "The store-ref blob keys named by the datom VALUES in a SINGLE stored-db record —
@@ -716,39 +494,23 @@
    retains one. `index-type` overrides the record's index if given."
   ([store stored-db] (record-store-refs store stored-db nil))
   ([store stored-db index-type]
-   (go-try S
-           (let [rec-config    (:config stored-db)
-                 index-type    (or index-type (:index rec-config) dc/*default-index*)
-                 schema-meta   (when-let [k (:schema-meta-key stored-db)]
-                                 (<? S (k/get store k)))
-                 schema        (or (:schema schema-meta) (:schema stored-db))
-                 ;; As in `reachable-in-branch`: a named-but-unreadable
-                 ;; schema-meta key means the blobs this head names cannot be
-                 ;; enumerated. Here that is worse than a bad sweep — a sync
-                 ;; walker ships the head's datoms and NOT the blobs they name,
-                 ;; landing a subscriber with live references to objects that
-                 ;; never arrive, which is the blind spot store-refs exists to
-                 ;; close. Records with no key (legacy inline, import
-                 ;; checkpoints) are unaffected.
-                 _             (when (and (:schema-meta-key stored-db) (nil? schema))
-                                 (log/raise "Schema metadata missing from store; cannot determine which attributes hold store-refs for this record."
-                                            {:type :schema-meta-missing
-                                             :schema-meta-key (:schema-meta-key stored-db)
-                                             :commit-id (get-in stored-db [:meta :datahike/commit-id])}))
-                 ident-ref-map (:ident-ref-map schema-meta)
-                 config        {:index index-type
-                                :attribute-refs? (:attribute-refs? rec-config)}
-                 storage       (:storage store)
-                 bind          (fn [idx root]
-                                 (cond-> (with-storage index-type idx storage)
-                                   root (-seed-root! root)))
-                 aevt          (bind (:aevt-key stored-db) (:aevt-root stored-db))
-                 taevt         (when (:temporal-aevt-key stored-db)
-                                 (bind (:temporal-aevt-key stored-db)
-                                       (:temporal-aevt-root stored-db)))]
-             (if schema
-               (store-refs config schema ident-ref-map aevt taevt)
-               #{})))))
+   (go-try S (:store-refs (<? S (record-value-contributions store stored-db index-type))))))
+
+(defn record-reference-keys
+  "Immutable dependency keys for replication of one record's reference values,
+   including exact snapshot closures. Does not include implicit commit ancestry."
+  [store stored-db]
+  (go-try S
+          (let [edges (<? S (record-value-contributions store stored-db nil))]
+            (loop [[request & pending] (:records edges)
+                   keys (set/union (:reachable edges) (:store-refs edges))]
+              (if request
+                (let [walked (<? S (reach/reachable-in-branch
+                                    store (:key request) (#?(:clj Date. :cljs js/Date.) 0)
+                                    (:config stored-db) (atom {})
+                                    {:sync? false :required-root? true :include-parents? false}))]
+                  (recur pending (set/union keys (:reachable walked) (:store-refs walked))))
+                keys)))))
 
 (defn start-background-gc!
   "Runs `gc-storage!` on `conn`'s database periodically in the background and

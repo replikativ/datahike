@@ -209,7 +209,9 @@
    {:db/id 54
     :db/ident :db.attr/preds
     :db/valueType :db.type/symbol
-    :db/cardinality :db.cardinality/many}])
+    :db/cardinality :db.cardinality/many}
+   ;; Append-only system identity for typed immutable GC edges.
+   {:db/id 55 :db/ident :db.type/gc-ref}])
 
 (def ^:const system-entities
   "Holds the entity IDs of system attributes"
