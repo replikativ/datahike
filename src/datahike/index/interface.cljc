@@ -56,6 +56,30 @@
    An index type that has no node cache, or no way to learn a level's addresses before fetching it, implements this as a NO-OP returning `(zero-warm-report opts)` — the point of the protocol is that such a type stays usable through `datahike.api/warm-db` rather than having to be special-cased there. Clojure protocols have no true defaults, so every implementation must say which it is; a type that omits the method entirely will throw, exactly as it does for `-root-node` and `-has-subtree-counts?`.")
   (-seed-root! [index root-node] "Seeds the in-memory root node after restoring a db-record that inlined it (root fusion). MUTATES the index — call it only on an OWNED, unpublished copy (e.g. the with-storage copy made at attach), never on a stored record's index: records may be shared through the store's cache by every reader of that key. Returns the index."))
 
+(defprotocol ISharedMark
+  "Optional structural marking with a context shared by one full collection.
+   The result includes the context's cumulative structural addresses. It is not
+   a per-root closure and must never be reused in a later collection."
+  (-mark-shared [index context]))
+
+(defprotocol IDurableNodeEdges
+  "Read structural edges from the immutable representation published at address.
+   Never derive them from a projected or resident child. Returns
+   {:level n :children [addresses ...]}; missing or malformed nodes must throw.
+   Reads must not substitute uncommitted nodes from a writer's pending cache."
+  (-durable-node-edges [storage address]))
+
+(defn new-mark-context
+  "A collection-local context bound to one storage instance. Other storage
+   instances and implementations fall back to their ordinary full mark."
+  [storage]
+  (atom {:storage storage :addresses #{} :expanded 0 :pruned 0 :failed? false}))
+
+(defn mark-shared [index context]
+  (if (and context (satisfies? ISharedMark index))
+    (-mark-shared index context)
+    (-mark index)))
+
 (def default-warm-budget
   "EXPERIMENTAL. Nodes a warm may fetch before it stops. See
    `datahike.index.persistent-set.warm` on sizing: the interior of a B-tree is
