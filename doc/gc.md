@@ -4,6 +4,14 @@ Datahike uses persistent data structures that enable structural sharing—each u
 
 **Garbage collection removes old database snapshots from storage while preserving current branch heads.**
 
+For the memory ownership map, operating modes and proposed coordination work, see the [memory and GC audit](gc-memory-model.md).
+
+## Collector modes
+
+`:mode :bounded` is the default and preserves the existing behavior. Its timestamp floor and process guard do not serialize root publication with deletion. A root published during sweep can name old objects absent from the completed mark; a frozen/resumed collector has the same exposure. Use external coordination when this schedule is possible.
+
+`:mode :coordinated` is reserved for enforceable coordination and is rejected before store access in this version. It does not silently fall back to bounded collection. Reader retention still requires durable pins, and discovering external secondary roots is not permission to sweep them.
+
 ## GC and purging together
 
 Garbage collection and data purging are different operations:

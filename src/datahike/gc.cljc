@@ -348,6 +348,23 @@
     DEFAULT_SWEEP_MIN_AGE_MS
     DEFAULT_SHARED_SWEEP_MIN_AGE_MS))
 
+(defn collection-mode
+  "Validate the collector's operating contract before it touches the store.
+
+   :bounded preserves the existing age-floor/process-guard behavior. It does
+   not fence a suspended collector or promotion of old objects during sweep.
+   :coordinated is reserved for a collector that enforces publication exclusion;
+   this version deliberately refuses it instead of silently falling back."
+  [opts]
+  (let [mode (get opts :mode :bounded)]
+    (case mode
+      :bounded mode
+      :coordinated (throw (ex-info "Coordinated collection is not implemented by this version."
+                                   {:type :datahike/gc-coordination-unavailable
+                                    :mode mode}))
+      (throw (ex-info "Unknown garbage collection mode."
+                      {:type :datahike/gc-invalid-mode :mode mode})))))
+
 (defn gc-storage!
   "Invokes garbage collection on the database by whitelisting currently known branches.
   All db snapshots on these branches before remove-before date will also be
@@ -414,9 +431,10 @@
   deferral unnecessary."
   ([db] (gc-storage! db (#?(:clj Date. :cljs js/Date.) 0) nil))
   ([db remove-before] (gc-storage! db remove-before nil))
-  ([db remove-before {:keys [min-age-ms]}]
+  ([db remove-before {:keys [min-age-ms] :as opts}]
    (go-try S
-           (let [{:keys [config store]} db
+           (let [_ (collection-mode opts)
+                 {:keys [config store]} db
                  store-id (ds/canonical-store-id store (:store config))
                  min-age-ms (or min-age-ms (default-min-age-ms config))
                  ;; Cutoff from konserve's monotonic write clock — the SAME
