@@ -108,7 +108,7 @@
   (with-db
     (fn [conn]
       (d/transact conn [{:db/ident :blob :db/valueType :db.type/store-ref
-                        :db/cardinality :db.cardinality/one}])
+                         :db/cardinality :db.cardinality/one}])
       (let [store (:store @conn) blob (random-uuid)]
         (k/assoc store blob :payload {:sync? true})
         (d/transact conn [{:blob blob}])
