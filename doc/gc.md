@@ -12,7 +12,9 @@ For the memory ownership map, operating modes and proposed coordination work, se
 
 `:mode :coordinated` is reserved for enforceable coordination and is rejected before store access in this version. It does not silently fall back to bounded collection. Reader retention still requires durable pins, and discovering external secondary roots is not permission to sweep them.
 
-During a full collection, primary PSS trees share a structural mark context so unchanged subtrees reached through several roots are expanded once. The context is confined to one storage instance and one collection. Store-reference datoms and secondary generation payloads are still enumerated by their own marker paths. Diff-buffered trees use full marking because a shared anchor address can describe different descendants; collectors with online GC enabled also retain full marking because addresses may be recycled.
+During a full collection, primary PSS trees share a structural mark context so unchanged subtrees reached through several roots are expanded once. The context is confined to one storage instance and one collection. Store-reference datoms and secondary generation payloads are still enumerated by their own marker paths. Collectors with online GC enabled retain full marking because addresses may be recycled.
+
+Diff-buffered trees also retain ordinary full marking. Cold projections of one immutable anchor have the same durable structural closure: diffs change content, aggregates and separators, while structural changes and child rewrites force materialization. The fallback protects a different boundary: a warm buffered child can retain nil dirty addresses and omit anchors that a cold walk visits. Recording that incomplete expansion as “seen” could suppress a later complete cold traversal. The fallback prevents this additional pruning hazard; it does not repair a warm-only full walk's existing anchor omission. Optimizing buffered trees requires marking the durable anchor graph independently of resident children, or enforcing a cold-only input contract.
 
 ## GC and purging together
 

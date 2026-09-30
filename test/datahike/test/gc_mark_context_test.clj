@@ -10,7 +10,76 @@
             [konserve.gc :as kgc]
             [org.replikativ.persistent-sorted-set :as pss]
             [superv.async :refer [<?? S]])
-  (:import [java.util Date]))
+  (:import [java.util Date]
+           [org.replikativ.persistent_sorted_set ANode Branch IStorage Leaf PersistentSortedSet Settings Slot]))
+
+(deftest diff-buffer-warm-walk-does-not-poison-a-later-cold-mark
+  ;; Store snapshots of the durable representation, never live node references.
+  ;; A small budget and mixed updates reach a resident buffered child whose
+  ;; address array contains nil while its durable anchor names another blob.
+  (let [disk (atom {})
+        settings (Settings. 8 nil nil nil 1)
+        mk-storage (fn mk-storage []
+                     (let [cache (atom {})]
+                       (reify IStorage
+                         (store [_ node]
+                           (let [^ANode n node a (random-uuid)]
+                             (swap! disk assoc a
+                                    {:level (.level n) :keys (vec (.keys n))
+                                     :addresses (when (instance? Branch n) (vec (.addresses ^Branch n)))
+                                     :slots (when (instance? Branch n) (.slotsForStorage ^Branch n))})
+                             a))
+                         (restore [_ a]
+                           (or (get @cache a)
+                               (let [{:keys [level keys addresses slots]} (get @disk a)
+                                     n (if addresses (Branch. (int level) ^java.util.List keys ^java.util.List addresses settings)
+                                           (Leaf. ^java.util.List keys settings))]
+                                 (when (seq slots)
+                                   (let [arr (object-array (count addresses))]
+                                     (doseq [[i entry] slots]
+                                       (aset arr (int i) (Slot. (:diff entry) (long (:count entry))
+                                                                (:measure entry) (nth addresses (int i)))))
+                                     (.installSlots ^Branch n arr Branch/BUF_LAZY)))
+                                 (swap! cache assoc a n)
+                                 n)))
+                         (accessed [_ _] nil)
+                         (markFreed [_ _] nil)
+                         (isFreed [_ _] false)
+                         (freedInfo [_ _] nil))))
+        cmp (fn [[a av] [b bv]] (let [c (compare a b)] (if (zero? c) (compare av bv) c)))
+        cmp-key (fn [[a _] [b _]] (compare a b))
+        restore (fn [a storage] (pss/restore-by cmp a storage {:branching-factor 8 :diff-buf-size 1}))
+        initial (reduce (fn [t k] (pss/conj t [k 0] cmp))
+                        (pss/sorted-set* {:comparator cmp :storage (mk-storage)
+                                          :branching-factor 8 :diff-buf-size 1}) (range 1024))
+        rng (java.util.Random. 42)
+        warm (reduce (fn [tree cycle]
+                       (let [base (if (zero? (mod cycle 3)) (restore (pss/store tree) (mk-storage)) tree)
+                             t (reduce (fn [t j]
+                                         (let [k (.nextInt rng 1400)
+                                               old (first (pss/slice t [k -1] [k 10000] cmp))]
+                                           (case (mod (+ cycle j) 3)
+                                             0 (if old (pss/replace t old [k (inc cycle)] cmp-key)
+                                                   (pss/conj t [k (inc cycle)] cmp))
+                                             1 (if old (pss/replace t old [k (inc cycle)] cmp-key) t)
+                                             2 (if old (pss/disj t old cmp) t)))) base (range 32))]
+                         (pss/store t)
+                         t)) initial (range 4))
+        storage (.-_storage ^PersistentSortedSet warm)
+        cold (restore (.-_address ^PersistentSortedSet warm) storage)
+        a (idx/-mark warm) b (idx/-mark cold)
+        context (idx/new-mark-context storage)
+        shared (set/union (idx/mark-shared warm context) (idx/mark-shared cold context))
+        naive (atom #{})]
+    (is (= (vec warm) (vec cold)) "The logical contents agree; the difference is address enumeration")
+    (is (= 1 (count (set/difference b a))) "Prove that the fixture reaches an omitted durable anchor")
+    (doseq [tree [warm cold]]
+      (pss/walk-addresses tree (fn [address]
+                                 (let [seen? (contains? @naive address)]
+                                   (swap! naive conj address) (not seen?)))))
+    (is (= 1 (count (set/difference b @naive))) "Naive shared pruning prevents the cold walk recovering it")
+    (is (= (set/union a b) shared) "The diff-buffer fallback retains the complete union")
+    (is (zero? (:expanded @context)))))
 
 (defn- with-db [f]
   (let [id (random-uuid)
