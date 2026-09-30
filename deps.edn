@@ -35,7 +35,7 @@
 
         org.replikativ/superv.async                 {:mvn/version "0.3.51"
                                                      :exclusions [org.clojure/clojurescript]}
-        org.replikativ/datalog-parser               {:mvn/version "0.2.42"}
+        org.replikativ/datalog-parser               {:mvn/version "0.2.43"}
         ;; canonical fressian node+root handlers + MST boundary (0.4.126); diff-buf write-buffering
         ;; (opt-in, Settings diffBufSize); 0.4.132 serializes the CACHED root count (may be -1) so
         ;; writing a storage-detached root never forces a recompute (cures the cljs side too);
