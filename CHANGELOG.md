@@ -6,6 +6,8 @@ When something is added, it's typically marked *Experimental*. When the API cont
 
 ## 0.8
 
+- **GC aborts on fatal mark errors.** JVM `Error` values from reachability traversal are propagated through the collector channel, and a failed shared mark cannot authorize sweep. (0.8, [#TODO])
+
 - **GC operating modes are explicit.** `:mode :bounded` names the existing age-floor contract; the reserved `:coordinated` mode is rejected before store access until enforceable coordination is available. (0.8, [#1101])
 
 - **Scalar constants constrain function outputs.** A clause such as

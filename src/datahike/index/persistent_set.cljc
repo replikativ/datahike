@@ -245,12 +245,50 @@
   ;; `address` on the cljs BTSet (see -merkle-root below) — reading the bare
   ;; JVM field on cljs always saw nil and wrongly threw here, so GC never ran
   ;; on ClojureScript.
-  (when-not #?(:clj (.-_address ^PersistentSortedSet pset) :cljs (.-address pset))
+  (when-not #?(:clj (.-_address ^PersistentSortedSet pset) :cljs (.-address ^BTSet pset))
     (throw (ex-info "Index needs to be properly flushed before marking."
                     {:type :flush-before-marking})))
   (let [addresses (atom #{})]
     (psset/walk-addresses pset (fn [address] (swap! addresses conj address)))
     @addresses))
+
+(defn mark-shared [pset context]
+  (let [storage #?(:clj (.-_storage ^PersistentSortedSet pset) :cljs (.-storage ^BTSet pset))]
+    ;; Diff-buffered variants can share a durable anchor while naming different
+    ;; descendants. Address-only pruning is not valid for those variants.
+    (if (or (not (identical? storage (:storage @context)))
+            (pos? (:diff-buf-size #?(:clj (psset/settings pset) :cljs (.-settings ^BTSet pset)) 0)))
+      (mark pset)
+      (do
+        (when (:failed? @context)
+          (throw (ex-info "A failed mark context cannot be reused." {:type :datahike/gc-mark-context-failed})))
+        (try
+          (when-not #?(:clj (.-_address ^PersistentSortedSet pset) :cljs (.-address ^BTSet pset))
+            (throw (ex-info "Index needs to be properly flushed before marking." {:type :flush-before-marking})))
+          (psset/walk-addresses
+           pset
+           (fn [address]
+             (let [[before _]
+                   (swap-vals! context
+                               (fn [state]
+                                 (if (contains? (:addresses state) address)
+                                   (update state :pruned inc)
+                                   (-> state (update :addresses conj address) (update :expanded inc)))))]
+               (not (contains? (:addresses before) address)))))
+          (:addresses @context)
+          (catch #?(:clj Throwable :cljs :default) e
+            (swap! context assoc :failed? true)
+            ;; Older go-try- catches Exception only. An Error must be a channel
+            ;; result, never a silently closed walker that disappears in merge.
+            (throw #?(:clj (if (instance? Exception e) e
+                               (ex-info "Structural marking failed." {:type :datahike/gc-mark-failed} e))
+                      :cljs (if (instance? js/Error e) e
+                                (ex-info "Structural marking failed."
+                                         {:type :datahike/gc-mark-failed :thrown-value e}))))))))))
+
+(extend-type #?(:clj PersistentSortedSet :cljs BTSet)
+  di/ISharedMark
+  (-mark-shared [pset context] (mark-shared pset context)))
 
 (extend-type #?(:clj PersistentSortedSet :cljs BTSet)
   IIndex
@@ -448,7 +486,7 @@
     ;; hash of its datoms under :crypto-hash?, so the root address
     ;; captures the whole tree. Set by psset/store during -flush.
     ;; Returns nil when unflushed; never throws.
-    #?(:clj (.-_address ^PersistentSortedSet pset) :cljs (.-address pset)))
+    #?(:clj (.-_address ^PersistentSortedSet pset) :cljs (.-address ^BTSet pset)))
   (-recompute-merkle-root [pset]
     ;; Walk the tree from konserve, deserialize each node, and confirm
     ;; its bytes hash back to its address. Konserve does NOT verify
@@ -457,8 +495,8 @@
     ;; look correct. Returns a result map; never throws on mismatch.
     ;; Cross-platform: the walk/recompute (branch-content-uuid + canon +
     ;; uuid) is shared, so hashes match cross-host.
-    (let [address #?(:clj (.-_address ^PersistentSortedSet pset) :cljs (.-address pset))
-          storage #?(:clj (.-_storage ^PersistentSortedSet pset) :cljs (.-storage pset))
+    (let [address #?(:clj (.-_address ^PersistentSortedSet pset) :cljs (.-address ^BTSet pset))
+          storage #?(:clj (.-_storage ^PersistentSortedSet pset) :cljs (.-storage ^BTSet pset))
           store   (some-> storage :store)]
       (cond
         (nil? address)
