@@ -341,7 +341,7 @@
   a query plus `(->> … (sort-by …) (take k))` in Clojure.
 
   `:order-by` is FLAT, alternating keys and directions -- `[?c :desc]`,
-  not `[[?c :desc]]`. A key is a `:find` variable or a zero-based column
+  not `[[?c :desc]]`. A key is a `:find` variable or a 0-based column
   index, and the index is how to order by an AGGREGATE, which has no
   variable to name:
 
@@ -350,7 +350,13 @@
       :order-by [?a :asc ?b :desc] two keys
       :order-by [1 :desc]          the second :find element
 
-  `:limit` and `:offset` apply after the ordering."
+  `:limit` and `:offset` apply after the ordering.
+
+  Function arguments are flat: bind a sub-expression in its own clause.
+  A scalar constant output constrains the result, e.g. `[(subs ?id 6 7) \"4\"]`.
+  `[(if ?condition ?then ?else) ?value]` selects between already evaluated
+  values using Clojure truthiness; it does not short-circuit other clauses.
+  A nil function result discards the row; a thrown exception fails the query."
      :examples [{:desc "Query with vector syntax"
                  :code "(q '[:find ?value :where [_ :likes ?value]] db)"}
                 {:desc "Query with map syntax"

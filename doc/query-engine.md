@@ -423,6 +423,42 @@ Use `d/explain` to see the query plan for any query:
 
 When the query planner encounters an unsupported query shape, it automatically falls back to the relational (base) engine — no error, no configuration needed.
 
+## Function clauses
+
+Function arguments are flat. Bind each sub-expression in its own clause:
+
+```clojure
+[:find ?e :where
+ [?e :item/id ?id]
+ [(subs ?id 6 7) "4"]] ; keep rows whose substring equals "4"
+
+[:find ?e ?score :where
+ [?e :item/active? ?active]
+ [(if ?active 1 0) ?score]]
+```
+
+A scalar constant in the output position is an equality constraint. Vectors
+still describe tuple or collection bindings; quote a vector to compare against
+it as a constant. These constraints work inside rules, disjunctions and negation.
+
+`if` selects between already evaluated values. Only `nil` and `false` are false;
+zero and empty collections are true. The two-argument form defaults to `nil`.
+It does not short-circuit other clauses: compute branch values separately, or
+use disjunctions to express conditional computation.
+
+On the JVM, the safe resolver includes qualified deterministic `clojure.math`
+functions such as `clojure.math/round`, `floor`, `ceil`, `pow` and `sqrt`.
+They retain Clojure's numeric behavior and refuse database or reference arguments,
+like the other curated functions.
+
+A function returning `nil` discards that row; `false` is a valid function result.
+A function or predicate that throws fails the query. Exceptions are not treated
+as missing values or silently discarded rows. For example, `(subs "abc" 7 8)`
+throws; it keeps Clojure semantics rather than SQL's `SUBSTR` semantics. Check
+input bounds or supply an explicitly tolerant application function when needed.
+Nested calls remain rejected; query clauses are not a general Clojure evaluation
+context.
+
 ## ORDER BY
 
 Sort query results with optional offset and limit:
@@ -447,13 +483,14 @@ Sort query results with optional offset and limit:
       :limit 2})
 ;; => [["Alice" 30] ["Charlie" 35]]
 
-;; Column index instead of variable name
+;; 0-based column index instead of variable name
 (d/q {:query '[:find ?n ?a :where [?e :name ?n] [?e :age ?a]]
       :args [@conn]
       :order-by [1 :desc]})  ;; sort by second find-var (age) descending
 ```
 
 Queries with `:order-by` return a vector (ordered). Without `:order-by`, queries return a set.
+Column indices are 0-based: `0` names the first `:find` element, including an aggregate.
 
 ## Query Result Cache
 

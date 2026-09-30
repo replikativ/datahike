@@ -330,6 +330,9 @@
     (is (= [["c" 20]] (q '{:order-by [?c] :offset 1 :limit 1})))
     (is (= [["a" 30] ["c" 20] ["b" 10]] (q '{:order-by [1 :desc]}))
         "a zero-based column index orders the same way")
+    (is (thrown-with-msg? #?(:clj clojure.lang.ExceptionInfo :cljs js/Error)
+                          #"indices are 0-based"
+                          (q '{:order-by [2 :desc]})))
     (testing "the nested spelling is refused rather than silently ignored"
       (is (thrown? #?(:clj Exception :cljs js/Error)
                    (q '{:order-by [[?c :desc]]}))))))

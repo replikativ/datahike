@@ -30,6 +30,7 @@
             [datahike.test.query-or-test]
             [datahike.test.query-aggregates-test]
             [datahike.test.query-rules-test]
+            [datahike.test.query-language-test]
             ;; The binding-seam law. It is .cljc, but a .cljc test only runs on
             ;; cljs if it is listed HERE — and that gap is exactly why a CLJS
             ;; merge kernel kept the pre-law behaviour while every JVM run was
@@ -928,6 +929,7 @@
                'datahike.test.query-or-test
                'datahike.test.query-aggregates-test
                'datahike.test.query-rules-test
+               'datahike.test.query-language-test
                'datahike.test.array-test
                'datahike.test.query-binding-seam-test
                'datahike.test.background-gc-test

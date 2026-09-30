@@ -6,6 +6,18 @@ When something is added, it's typically marked *Experimental*. When the API cont
 
 ## 0.8
 
+- **Scalar constants constrain function outputs.** A clause such as
+  `[(subs ?id 6 7) "4"]` now keeps rows whose function result equals the
+  constant. This also works inside rules, disjunctions and negation.
+- **Query functions include eager `if` and safe math.** `if` selects between
+  already evaluated values; the JVM safe resolver includes deterministic
+  qualified `clojure.math` functions. Nested expressions remain rejected and
+  function exceptions still fail the query. Ordering index errors now say
+  explicitly that indices are 0-based.
+- **Blank rule arguments work with the query planner (#1024).** Each `_` is
+  an independent existential variable, including in nested and recursive rule
+  calls. The planner previously emitted an unresolvable `(identity _)` clause.
+
 - **`:timeout` stops a running query.** A deadline was checked only once
   the query had already finished, so a large join ran to completion and
   *then* reported a timeout — a 3000x3000 cross join with `:timeout 2000`
