@@ -30,9 +30,9 @@
                                    (via `commit-as-db`) — the most precise
                                    record reference; supersedes :tx/:date
                  {:branch \"exp\"}   a branch head
-               A pinned temporal is a RECORD reference — immutable,
-               resolvable forever on stores with `:keep-history? true`;
-               use it for provenance, citation, audit.
+               A pinned temporal is a version selector, not a GC root.
+               History settings alone do not prevent explicit GC from removing
+               its target; retain it with a GC pin or a snapshot reference.
 
    The URI serialization (for text, hyperlinks, logs, export). The
    temporal is a standard URL query string:

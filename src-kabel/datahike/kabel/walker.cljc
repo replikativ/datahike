@@ -136,7 +136,8 @@
    one branch at a time."
   [store stored-db]
   (go-try-
-   (let [collected (atom #{})]
+   (let [collected (atom (if (<?- (k/get store :datahike/gc-reference-values?))
+                           #{:datahike/gc-reference-values?} #{}))]
      (when stored-db
        ;; Main indices. The `*-root` keys carry the INLINED root node under
        ;; datahike's :fuse-index-roots? (absent otherwise) — see
@@ -164,7 +165,7 @@
        ;; value — so a blob would silently never replicate. These are content-
        ;; addressed immutable objects, so they belong in the NODE portion (unioned
        ;; here), ahead of the mutable pointer cells `datahike-walk-fn` appends last.
-       (swap! collected into (<?- (gc/record-store-refs store stored-db))))
+       (swap! collected into (<?- (gc/record-reference-keys store stored-db))))
      @collected)))
 
 (defn datahike-walk-fn

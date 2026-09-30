@@ -18,6 +18,15 @@ Diff-buffered trees use the same shared marking through durable node edges. A co
 
 This path requires a storage implementation that supplies immutable published edges, and synchronous reads on ClojureScript. Unsupported diff-buffer storage fails closed. Custom zero-buffer storage can retain its ordinary marker. The walker validates leaf objects too, so fewer repeated expansions do not imply fewer total backend reads; no overall GC speedup is claimed. The context remains collection-local and does not provide a publication barrier or a persistent mark cache.
 
+## Values that retain other objects
+
+A `:db.type/store-ref` retains one blob key. Experimental `:db.type/gc-ref`
+attributes can hold exact same-store snapshot references whose dependencies are
+marked transitively, including nested references and secondary generations. They
+require immutable crypto addresses, full reachability GC, and publication under
+the existing bounded coordination contract. See [snapshot reference values](gc-reference-values.md)
+for the constructor, retention rules, rollout requirements, and limitations.
+
 ## GC and purging together
 
 Garbage collection and data purging are different operations:

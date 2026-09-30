@@ -918,6 +918,14 @@
   []
   (set (keys @index-types)))
 
+(defn durable-index-type?
+  "Whether a registered adapter requires an immutable generation key-map."
+  [type-keyword]
+  (if-let [adapter (get @index-types type-keyword)]
+    (boolean (:storage-owner adapter))
+    (throw (ex-info "No secondary adapter is registered for this type."
+                    {:type :secondary/missing-generation-adapter :index-type type-keyword}))))
+
 (defn- adapter-for-key-map
   [key-map]
   (or (and (map? key-map) (get @index-types (:type key-map)))
