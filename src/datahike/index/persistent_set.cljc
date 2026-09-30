@@ -345,12 +345,15 @@
             (loop [pending [[address nil fused]]]
               (when-let [[address expected-level inline] (peek pending)]
                 (when inline (validate-edges! context address expected-level inline))
-                (let [expand? (claim-address! context address expected-level inline)]
-                  (if-not expand?
-                    (recur (pop pending))
-                    (let [{:keys [level children] :as edges} (or inline (read-durable-node-edges storage address))]
-                      (validate-edges! context address expected-level edges)
-                      (recur (into (pop pending) (map #(vector % (dec level) nil) children))))))))
+                (let [expand? (claim-address! context address expected-level inline)
+                      read? (and (nil? inline) (not (contains? (:read-addresses @context) address)))
+                      {:keys [level children] :as edges}
+                      (when (or expand? read?) (or inline (read-durable-node-edges storage address)))]
+                  (when (or expand? read?)
+                    (validate-edges! context address expected-level edges)
+                    (when read? (swap! context update :read-addresses (fnil conj #{}) address)))
+                  (recur (cond-> (pop pending)
+                           expand? (into (map #(vector % (dec level) nil) children)))))))
             (:addresses @context)
             (catch #?(:clj Throwable :cljs :default) e
               (swap! context assoc :failed? true)
