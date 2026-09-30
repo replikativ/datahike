@@ -187,3 +187,30 @@
         (is (= #{root child leaf} (idx/mark-shared (restore root) context)))
         (is (thrown? Exception (idx/mark-shared inline context)))
         (is (:failed? @context))))))
+
+(deftest inline-proof-does-not-substitute-for-a-required-stored-child
+  (let [parent (random-uuid) child (random-uuid)]
+    (doseq [present? [false true]]
+      (let [reads (atom [])
+            storage (reify IStorage
+                      (store [_ _] (throw (UnsupportedOperationException.)))
+                      (restore [_ _] (throw (UnsupportedOperationException.)))
+                      (accessed [_ _] nil) (markFreed [_ _] nil)
+                      (isFreed [_ _] false) (freedInfo [_ _] nil)
+                      idx/IDurableNodeEdges
+                      (-durable-node-edges [_ address]
+                        (swap! reads conj address)
+                        (cond (= address parent) {:level 1 :children [child]}
+                              (and present? (= address child)) {:level 0 :children []}
+                              :else (throw (ex-info "Missing physical child" {:address address})))))
+            restore (fn [a] (pss/restore-by compare a storage {:branching-factor 8 :diff-buf-size 4}))
+            inline (with-meta (restore child)
+                     {::pset/fused-root-edges {:address child :edges {:level 0 :children []}}})
+            context (idx/new-mark-context storage)]
+        (is (= #{child} (idx/mark-shared inline context)))
+        (is (empty? @reads))
+        (if present?
+          (is (= #{parent child} (idx/mark-shared (restore parent) context)))
+          (do (is (thrown? Exception (idx/mark-shared (restore parent) context)))
+              (is (:failed? @context))))
+        (is (= [parent child] @reads))))))
