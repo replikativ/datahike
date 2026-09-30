@@ -6,7 +6,7 @@ When something is added, it's typically marked *Experimental*. When the API cont
 
 ## 0.8
 
-- **GC operating modes are explicit.** `:mode :bounded` names the existing age-floor contract; the reserved `:coordinated` mode is rejected before store access until enforceable coordination is available. (0.8, [#TODO])
+- **GC operating modes are explicit.** `:mode :bounded` names the existing age-floor contract; the reserved `:coordinated` mode is rejected before store access until enforceable coordination is available. (0.8, [#1101])
 
 - **Schema-on-read stores retract vector values of any length ([#1105]).**
   An attribute without a declared `:db/valueType` can hold a vector of any
