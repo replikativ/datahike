@@ -1,6 +1,6 @@
 # Memory ownership and garbage collection audit
 
-Audit date: 2026-09-30. This is a map of current behavior and a proposed work sequence, not a claim that the proposed barriers are implemented. Issue scope is all open issues and issues closed since 2026-07-02: 75 open and 18 recently closed. The accompanying [issue inventory](gc-issue-inventory.md) records authors and tracker status. Detailed body/comment review focused on 14 issues in the work-stream table; older inventory entries have not all been reproduced or reviewed in depth. An open tracker entry does not establish that its original bug remains reproducible.
+Audit date: 2026-09-30. This is a map of current behavior and a proposed work sequence, not a claim that the proposed barriers are implemented. Issue scope is all open issues and issues closed since 2026-07-02: 75 open and 18 recently closed. Issue metadata is kept in a local working inventory; the links below identify the reviewed sources. Detailed body/comment review focused on 14 issues in the work-stream table; older inventory entries have not all been reproduced or reviewed in depth. An open tracker entry does not establish that its original bug remains reproducible.
 
 ## Source versions
 
@@ -172,7 +172,7 @@ Extend measurement in two layers. First isolate GC: vary live roots, shared-node
 
 A useful blog topic is **Collecting shared history without deleting live branches**. Explain the ownership graph, a frozen collector counterexample, supported modes, the difference between remembered adjacency and live marks, and backend request costs. Publish performance numbers only once commands and raw artifacts reproduce them; identify remaining distributed limitations explicitly. The first article can teach the current contract without claiming the redesign has shipped.
 
-Suggested initial outreach to the BranchBench authors should ask for workload/retention alignment and an acceptable Datahike backend contribution, rather than lead with an unverified speed comparison. A draft is provided in [the communication plan](gc-communication-plan.md). No outreach or site publication is performed by this audit.
+Suggested initial outreach to the BranchBench authors should ask for workload/retention alignment and an acceptable Datahike backend contribution, rather than lead with an unverified speed comparison. Outreach drafts are kept as local working notes. No outreach or site publication is performed by this audit.
 
 ## Validation status
 
