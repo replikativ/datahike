@@ -6,6 +6,12 @@ When something is added, it's typically marked *Experimental*. When the API cont
 
 ## 0.8
 
+- **Schema-on-read stores retract vector values of any length ([#1105]).**
+  An attribute without a declared `:db/valueType` can hold a vector of any
+  length. `:db/retract`, `:db.fn/retractAttribute` and
+  `:db.fn/retractEntity` failed with "Bad format for value in pattern"
+  unless the vector had exactly two elements, because the pattern check
+  read every other vector as a malformed lookup ref.
 - **Scalar constants constrain function outputs.** A clause such as
   `[(subs ?id 6 7) "4"]` now keeps rows whose function result equals the
   constant. This also works inside rules, disjunctions and negation.
@@ -907,3 +913,4 @@ Thanks to all the contributors and the community for helping on this release. Sp
 [#980]: https://github.com/replikativ/datahike/pull/980
 [#1092]: https://github.com/replikativ/datahike/pull/1092
 [#1090]: https://github.com/replikativ/datahike/pull/1090
+[#1105]: https://github.com/replikativ/datahike/issues/1105
