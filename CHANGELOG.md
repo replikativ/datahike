@@ -6,6 +6,53 @@ When something is added, it's typically marked *Experimental*. When the API cont
 
 ## 0.8
 
+- **A NaN no longer swallows the other values of an attribute.** `compare`
+  ranks numbers with `lt`, which is false in both directions for a NaN, so the
+  index read a NaN as EQUAL TO EVERY NUMBER and a sorted set took each further
+  value for a duplicate: transacting `[##NaN 1.0 2.0]` into one
+  cardinality/many `:db.type/double` attribute stored a single datom, `##NaN`,
+  and lost the rest without an error. The same comparator was not transitive,
+  so a sort over such values could also raise "Comparison method violates its
+  general contract". A NaN now compares equal to itself and greater than every
+  other number, which is `Double/compare`'s total order and the one
+  `:db.type/double-array` values have always had. `-0.0` and `0.0` keep
+  comparing equal, so no index free of NaN changes order -- but an index that
+  already CONTAINS one was written under the old comparator, which gave the
+  NaN no stable position, and should be rebuilt. Such a database has already
+  lost the values the NaN swallowed. ([#1109])
+
+- **Grouping, `min`/`max`, `distinct` and `:order-by` decide by value, as the
+  index does.** Each of these kept its own equality or comparator, and none of
+  them was the index's. `group-by` keyed on `clojure.core/=`, which says a NaN
+  differs from itself and compares an array element by identity, so
+  `:find [?v (count ?e)]` over two entities sharing a NaN answered
+  `[[##NaN 1] [##NaN 1]]` where the index holds one value, and two equal
+  `:db.type/bytes` values did not group. `min`/`max` and `:order-by` used
+  `clojure.core/compare`, which is not a total order over datahike values: it
+  ranks numbers with `lt`, so a NaN compared equal to every number and
+  `(max ?v)` over 1.0 and NaN answered 1.0 -- and an array is not `Comparable`
+  at all, so `(min ?v)` and `:order-by` over a `:db.type/bytes` attribute threw
+  `class [B cannot be cast to class java.lang.Comparable`. A non-transitive
+  comparator could also make the sort raise "Comparison method violates its
+  general contract". `distinct` and `count-distinct` answered 2 for two equal
+  `bytea` values and for two NaNs. All of these now use `compare-value` and
+  `value-key`, the index's own comparator and key. Only the KEY is
+  canonicalised -- no key is visible in query output. ([#1109])
+
+- **`min`, `max` and `:order-by` no longer throw on a mixed-type attribute.**
+  A consequence of the above: `compare-value` is a TOTAL order over the value
+  domain -- it ranks unlike types by type -- where `clojure.core/compare`
+  raises `ClassCastException` on two unlike types. So `(min 2 ?n)` over 42 and
+  `"alice"`, which an attribute with no declared `:db/valueType` can hold, now
+  answers in the index's order instead of raising. This is the order such a
+  database already stores and already returns from an index scan. ([#1109])
+
+- **The columnar aggregate fast path declines a column holding a NaN.** It hands
+  a primitive `double[]` to an external columnar engine, which compares with
+  `<`/`>` -- false in both directions for a NaN -- so a NaN never won and
+  `(max ?v)` answered the largest ordinary number instead. Such a group now
+  falls through to the general path, which answers it. ([#1109])
+
 - **Scalar constants constrain function outputs.** A clause such as
   `[(subs ?id 6 7) "4"]` now keeps rows whose function result equals the
   constant. This also works inside rules, disjunctions and negation.
@@ -907,3 +954,4 @@ Thanks to all the contributors and the community for helping on this release. Sp
 [#980]: https://github.com/replikativ/datahike/pull/980
 [#1092]: https://github.com/replikativ/datahike/pull/1092
 [#1090]: https://github.com/replikativ/datahike/pull/1090
+[#1109]: https://github.com/replikativ/datahike/pull/1109

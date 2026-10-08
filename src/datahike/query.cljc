@@ -8,7 +8,7 @@
    [datahike.db.interface :as dbi]
    [datahike.db.utils :as dbu]
    [datahike.index.interface :as di]
-   [datahike.array :refer [a= wrap-comparable]]
+   [datahike.array :refer [a= value-key wrap-comparable]]
    [datahike.impl.entity :as de]
    [datahike.lru]
    [datahike.metrics :as dhm]
@@ -1162,9 +1162,19 @@
 (defn- greater-equal? [& args]
   (-increasing? (first args) (rest args)))
 
+;; `compare` is the wrong comparator for a datahike VALUE, and these two
+;; aggregates were the last places still using it. It is not a total order over
+;; the value domain: it ranks numbers with `lt`, so a NaN compares EQUAL to
+;; every number and `(max ?v)` over 1.0, NaN, 2.0 answered 2.0 where the index
+;; -- and PostgreSQL -- put the NaN on top; and an array is not Comparable at
+;; all, so `(min ?v)` over `:db.type/bytes` values threw
+;; `class [B cannot be cast to class java.lang.Comparable`.
+;; `compare-value` is the index's own comparator and answers both.
+(def ^:private val-cmp datom/compare-value)
+
 (defn -min
   ([coll] (reduce (fn [acc x]
-                    (if (neg? (compare x acc))
+                    (if (neg? (val-cmp x acc))
                       x acc))
                   (first coll) (next coll)))
   ([n coll]
@@ -1172,15 +1182,15 @@
     (reduce (fn [acc x]
               (cond
                 (< (count acc) n)
-                (sort compare (conj acc x))
-                (neg? (compare x (last acc)))
-                (sort compare (conj (butlast acc) x))
+                (sort val-cmp (conj acc x))
+                (neg? (val-cmp x (last acc)))
+                (sort val-cmp (conj (butlast acc) x))
                 :else acc))
             [] coll))))
 
 (defn -max
   ([coll] (reduce (fn [acc x]
-                    (if (pos? (compare x acc))
+                    (if (pos? (val-cmp x acc))
                       x acc))
                   (first coll) (next coll)))
   ([n coll]
@@ -1188,9 +1198,9 @@
     (reduce (fn [acc x]
               (cond
                 (< (count acc) n)
-                (sort compare (conj acc x))
-                (pos? (compare x (first acc)))
-                (sort compare (conj (next acc) x))
+                (sort val-cmp (conj acc x))
+                (pos? (val-cmp x (first acc)))
+                (sort val-cmp (conj (next acc) x))
                 :else acc))
             [] coll))))
 
@@ -1313,6 +1323,28 @@
                      (+ (- v t) sum)))]
         (recur (next vs) t c)))))
 
+(defn- distinct-values
+  "One representative per VALUE, keeping the originals.
+
+   `distinct` and `set` decide with `clojure.core/=`, which compares an array
+   element by identity and says a NaN differs from itself -- so
+   `(count-distinct ?v)` over two equal `:db.type/bytes` values answered 2, and
+   over two NaNs answered 2, where the index holds one value. Named as not
+   covered when the array rule landed (#965); this is that follow-up."
+  [coll]
+  ;; A PERSISTENT map, deliberately. The transient spelling of this
+  ;; -- `(get m k ::absent)` on a `(transient {})`, because `contains?`
+  ;; refuses a transient on the JVM -- answered every group as EMPTY under
+  ;; ClojureScript, where a transient map does not honour `get`'s not-found
+  ;; argument: the sentinel never came back, so no entry was ever added and
+  ;; `(distinct ?type)` returned `#{}`. One aggregate group is small; this is
+  ;; not the place to spend a portability hazard on allocation.
+  (vals (reduce (fn [m x]
+                  (let [k (value-key x)]
+                    (if (contains? m k) m (assoc m k x))))
+                {}
+                coll)))
+
 (def built-in-aggregates
   (letfn [(sum [coll]
             ;; Compensated for FLOATS, exact for everything else.
@@ -1349,7 +1381,7 @@
      'median         median
      'variance       variance
      'stddev         stddev
-     'distinct       set
+     'distinct       (fn [coll] (set (distinct-values coll)))
      'min            -min
      'max            -max
      'sum            sum
@@ -1359,7 +1391,7 @@
      'sample         (fn [n coll]
                        (vec (take n (shuffle coll))))
      'count          count
-     'count-distinct (fn [coll] (count (distinct coll)))}))
+     'count-distinct (fn [coll] (count (distinct-values coll)))}))
 
 (defn parse-rules [rules]
   (let [rules (if (string? rules) (edn/read-string rules) rules)] ;; for datahike.js interop
@@ -3187,8 +3219,17 @@
 
 (defn aggregate [find-elements context resultset]
   (let [group-idxs (idxs-of (complement #(instance? Aggregate %)) find-elements)
+        ;; `value-key` per group element, not the raw value. `group-by` hashes
+        ;; into a Clojure map, so without it the grouping key carried
+        ;; REFERENCE semantics for an array value and `clojure.core/=`'s NaN
+        ;; (a NaN differs from itself) for a floating one -- and a grouped
+        ;; query answered [[##NaN 1] [##NaN 1]] where the index holds one
+        ;; value and every other engine path, joins included, had already
+        ;; been taught the rule. Only the KEY is canonicalised; the tuples
+        ;; handed to the aggregate functions are untouched, so no wrapper can
+        ;; reach a result.
         group-fn (fn [tuple]
-                   (map #(nth tuple %) group-idxs))
+                   (mapv #(value-key (nth tuple %)) group-idxs))
         grouped (group-by group-fn resultset)]
     ;; Per group. The join can finish inside the deadline and this
     ;; stage then run unbounded: the deadline was noticed only on the
@@ -4274,9 +4315,18 @@
     (if (== n 1)
       ;; Fast path: single key
       (let [[idx dir] (first order-spec)]
+        ;; `val-cmp`, not `compare`: this sorts datahike VALUES, and
+        ;; `compare` is not a total order over them. An array is not
+        ;; Comparable, so `:order-by` over a `:db.type/bytes` attribute threw
+        ;; `class [B cannot be cast to class java.lang.Comparable`; and a NaN
+        ;; compares equal to every number, which is not merely mis-ordered --
+        ;; a non-transitive comparator can make TimSort raise "Comparison
+        ;; method violates its general contract". The index has always used
+        ;; `compare-value`; this is the same comparator, so `:order-by` and
+        ;; the stored order finally agree.
         (if (= dir :asc)
-          (fn [a b] (tick!) (compare (nth a idx) (nth b idx)))
-          (fn [a b] (tick!) (compare (nth b idx) (nth a idx)))))
+          (fn [a b] (tick!) (val-cmp (nth a idx) (nth b idx)))
+          (fn [a b] (tick!) (val-cmp (nth b idx) (nth a idx)))))
       ;; Multi-key
       (fn [a b]
         (tick!)
@@ -4285,8 +4335,8 @@
             0
             (let [[idx dir] (nth order-spec i)
                   c (if (= dir :asc)
-                      (compare (nth a idx) (nth b idx))
-                      (compare (nth b idx) (nth a idx)))]
+                      (val-cmp (nth a idx) (nth b idx))
+                      (val-cmp (nth b idx) (nth a idx)))]
               (if (zero? c)
                 (recur (inc i))
                 c))))))))
