@@ -28,8 +28,9 @@
      :attribute-refs? true databases, nested `q` calls, and any clause form
      not listed in `eval-clause`."
   (:require
-   [datahike.array :refer [a=]]
+   [datahike.array :refer [a= value-key]]
    [datahike.api :as d]
+   [datahike.datom :as datom]
    [datahike.db.interface :as dbi]
    [datahike.db.utils :as dbu]
    [datahike.query :as dq]))
@@ -534,22 +535,43 @@
   (let [mean (double (/ (reduce + 0 coll) (count coll)))]
     (double (/ (reduce + 0 (map #(let [d (- % mean)] (* d d)) coll)) (count coll)))))
 
-(defn- min-n [n coll] (vec (take n (sort compare coll))))
-(defn- max-n [n coll] (vec (take n (sort #(compare %2 %1) coll))))
+;; `compare-value`, not `compare`, for the same reason `unify` uses `a=` and
+;; not `=`: the reference engine has to hold the same value semantics as the
+;; thing it is a reference FOR, and ORDER is one of those semantics. The
+;; index's comparator is a TOTAL order over the value domain -- it ranks
+;; unlike types by type and puts a NaN above every number -- where
+;; `clojure.core/compare` throws on two unlike types, throws on an array
+;; (not `Comparable` at all), and reports a NaN EQUAL to every number. On a
+;; mixed-type attribute, which the generators produce, that difference is
+;; the whole answer: `(min 2 ?n)` over 42 and "alice" raised here and
+;; answered in index order there, and the oracle reported the engine's
+;; correct answer as a divergence.
+(defn- vcmp [a b] (datom/compare-value a b))
+
+(defn- min-n [n coll] (vec (take n (sort vcmp coll))))
+(defn- max-n [n coll] (vec (take n (sort #(vcmp %2 %1) coll))))
+
+;; `value-key`, not the raw value: `distinct` and `set` decide with `=`, which
+;; compares an array by identity and says a NaN differs from itself.
+(defn- distinct-by-value [coll]
+  (vals (reduce (fn [m x]
+                  (let [k (value-key x)]
+                    (if (contains? m k) m (assoc m k x))))
+                {} coll)))
 
 (def ^:private aggregates
   {'count          (fn [coll] (count coll))
-   'count-distinct (fn [coll] (count (distinct coll)))
+   'count-distinct (fn [coll] (count (distinct-by-value coll)))
    'sum            (fn [coll] (reduce + 0 coll))
-   'min            (fn ([coll] (reduce (fn [a x] (if (neg? (compare x a)) x a)) coll))
+   'min            (fn ([coll] (reduce (fn [a x] (if (neg? (vcmp x a)) x a)) coll))
                      ([n coll] (min-n n coll)))
-   'max            (fn ([coll] (reduce (fn [a x] (if (pos? (compare x a)) x a)) coll))
+   'max            (fn ([coll] (reduce (fn [a x] (if (pos? (vcmp x a)) x a)) coll))
                      ([n coll] (max-n n coll)))
    'avg            (fn [coll] (double (/ (reduce + 0 coll) (count coll))))
    'median         agg-median
    'variance       agg-variance
    'stddev         (fn [coll] (Math/sqrt (agg-variance coll)))
-   'distinct       (fn [coll] (set coll))})
+   'distinct       (fn [coll] (set (distinct-by-value coll)))})
 
 (defn- agg-spec
   "(min 2 ?s) -> {:fn <f> :extra [2] :var ?s}"

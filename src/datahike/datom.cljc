@@ -390,6 +390,45 @@
                (array? x)
                (satisfies? IComparable x))))
 
+(defn- nan-value?
+  "Is this value a NaN? `:db.type/double` and `:db.type/float` can both hold
+   one, and `:db.type/number` either."
+  [x]
+  #?(:clj (or (and (instance? Double x) (Double/isNaN ^double x))
+              (and (instance? Float x) (Float/isNaN ^float x)))
+     :cljs (and (number? x) (js/Number.isNaN x))))
+
+(defn- nan-cmp
+  "Order a NaN against a number. NaN is EQUAL TO ITSELF and GREATER THAN every
+   other number — `java.lang.Double/compare`'s total order, and PostgreSQL's
+   (`float8_cmp_internal`).
+
+   `compare` cannot answer this. It ranks numbers with `lt`, which is false in
+   both directions for a NaN, so it reports NaN EQUAL TO EVERY NUMBER:
+
+     (compare ##NaN ##NaN)  => 0
+     (compare ##NaN 1.0)    => 0
+     (compare 1.0 ##NaN)    => 0
+
+   A sorted set reads 0 as \"already present\", so a NaN in a double attribute
+   SWALLOWED every other value: transacting [##NaN 1.0 2.0 ##NaN] into one
+   cardinality/many attribute stored a single datom, ##NaN, and 1.0 and 2.0
+   were lost without an error. The same non-transitive comparator can also make
+   a sort raise \"Comparison method violates its general contract\".
+
+   Only NaN moves. `-0.0` and `0.0` keep comparing EQUAL, as `compare` has them
+   and as `=` and SQL both read them, rather than taking `Double/compare`'s
+   bitwise split — so no existing index that is free of NaN changes order.
+
+   Arrays decided this same question years ago and decided it this way:
+   `compare-arrays` defers to `Arrays/compare`, which is bit-based, so a NaN
+   inside a `:db.type/double-array` has always been equal to itself and above
+   every number. This brings the scalar in line with the array."
+  [v1 v2]
+  (cond
+    (nan-value? v1) (if (nan-value? v2) 0 1)
+    :else -1))
+
 (declare compare-value)
 
 (defn- compare-sequential
@@ -469,6 +508,13 @@
               (and (sequential? v1) (sequential? v2))
               (compare-sequential v1 v2)
 
+            ;; NaN, before `compare` gets to report it equal to everything.
+            ;; Guarded on the OTHER value being a number: a NaN against a
+            ;; string has no numeric order to take, and falls through to the
+            ;; by-type-name tie-break like any other mixed pair.
+              (and (nan-value? v1) (number? v2)) (nan-cmp v1 v2)
+              (and (nan-value? v2) (number? v1)) (nan-cmp v1 v2)
+
             ;; Carries its own order: the ordinary case, and the only one an
             ;; ordinary database ever reaches. `compare` can still throw here
             ;; when the two are Comparable but of DIFFERENT types (a long
@@ -516,6 +562,9 @@
 
          (and (sequential? v1) (sequential? v2))
          (compare-sequential v1 v2)
+
+         (and (nan-value? v1) (number? v2)) (nan-cmp v1 v2)
+         (and (nan-value? v2) (number? v1)) (nan-cmp v1 v2)
 
          (and (comparable? v1) (comparable? v2)) (compare v1 v2)
 

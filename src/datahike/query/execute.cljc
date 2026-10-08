@@ -6845,10 +6845,34 @@
                      numeric-array? (fn [col]
                                       (let [c (.getName (class col))]
                                         (or (= c "[J") (= c "[D"))))
+                  ;; And only over a column with no NaN in it. The columnar
+                  ;; engine is an external library comparing primitive doubles,
+                  ;; and `<`/`>` are FALSE in both directions for a NaN, so a
+                  ;; NaN never won a comparison: `(max ?v)` over 1.0 and two
+                  ;; NaNs answered 1.0 where the index -- and PostgreSQL --
+                  ;; put the NaN on top, and `(min ?v)` answered 1.0 by the
+                  ;; same accident. Which aggregates a plugged-in engine gets
+                  ;; NaN-right is not knowable from here, so the guard covers
+                  ;; every aggregate over a double column rather than the two
+                  ;; that were measured wrong. One pass over an already
+                  ;; materialised primitive array, and only when a value
+                  ;; aggregate is being pushed down at all; a NaN-free column
+                  ;; -- every one in practice -- keeps the fast path.
+                     column-has-nan? (fn [col]
+                                       (and (= "[D" (.getName (class col)))
+                                            (let [^doubles a col
+                                                  n (alength a)]
+                                              (loop [i (int 0)]
+                                                (cond
+                                                  (>= i n) false
+                                                  (Double/isNaN (aget a i)) true
+                                                  :else (recur (unchecked-inc-int i)))))))
                      type-safe? (every? (fn [{:keys [agg-op col-key]}]
                                           (or (nil? col-key)
-                                              (#{:count :count-distinct} agg-op)
-                                              (numeric-array? (get column-map col-key))))
+                                              (let [col (get column-map col-key)]
+                                                (and (not (column-has-nan? col))
+                                                     (or (#{:count :count-distinct} agg-op)
+                                                         (numeric-array? col))))))
                                         agg-cols)
                   ;; An aggregate with a count argument is a different function
                   ;; than its scalar namesake; this path computes only the

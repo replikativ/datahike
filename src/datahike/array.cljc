@@ -286,13 +286,46 @@ compared element-wise; a mismatched pair falls back to a stable class ordering."
 ;; unwrapped, or the wrapper is visible in query output.
 
 (defn value-key
-  "Key for a container that uses Clojure equality (map, set, transient)."
+  "Key for a container that uses Clojure equality (map, set, transient).
+
+   A scalar NaN is canonicalised too, and ONLY here. Clojure `=` is the one
+   equality in play that says a NaN differs from itself: `java.lang.Double`
+   compares bits, so `java.util` containers already agree with the index, and
+   ClojureScript `Map`/`Set` key by SameValueZero, which also reads NaN as
+   equal to itself -- which is why `native-key` below needs no such arm. A
+   Clojure map or set is the odd one out, so a join or a grouping keyed on a
+   NaN put each occurrence in its own bucket while the INDEX, through
+   `compare-value`, had already decided they were one value.
+
+   Arrays containing NaN were brought in line long ago (`canonical-element`,
+   and `Arrays/equals` on the JVM); this is the same rule for the scalar.
+
+   One `getClass` and up to five pointer compares on final classes, so the
+   common non-array, non-floating case -- every long, string and keyword --
+   pays two `identical?` more than it did."
   [x]
-  (if (value-array? x) (wrap-comparable x) x))
+  #?(:clj (if (some? x)
+            (let [c (class x)]
+              (cond
+                (identical? c byte-array-class)   (wrap-comparable x)
+                (identical? c float-array-class)  (wrap-comparable x)
+                (identical? c double-array-class) (wrap-comparable x)
+                (identical? c Double) (if (Double/isNaN ^double x) ::nan x)
+                (identical? c Float)  (if (Float/isNaN ^float x) ::nan x)
+                :else x))
+            x)
+     :cljs (cond
+             (value-array? x) (wrap-comparable x)
+             (and (number? x) (js/Number.isNaN x)) ::nan
+             :else x)))
 
 (defn native-key
   "Key for a java.util or JS container, which compares by identity unless the
    key is a primitive.
+
+   No NaN arm, deliberately: `Double.equals` is bit-based and JS containers key
+   by SameValueZero, so both already read a NaN as equal to itself. See
+   `value-key`, where Clojure equality does not.
 
    The ClojureScript string is built here rather than with `pr-str`, which
    honours `*print-length*` and `*print-level*`: under a caller's
