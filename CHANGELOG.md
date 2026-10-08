@@ -39,6 +39,21 @@ When something is added, it's typically marked *Experimental*. When the API cont
   `value-key`, the index's own comparator and key. Only the KEY is
   canonicalised -- no key is visible in query output. ([#1109])
 
+- **A result set holds one row per value, not one per occurrence.** A Clojure
+  set decides membership with `clojure.core/=`, which compares a `byte[]`,
+  `float[]` or `double[]` element by IDENTITY and says a NaN differs from
+  itself -- so a distinct projection disagreed with the index it read from:
+  `:find [?v]` over 20000 datoms holding 100 distinct `:db.type/bytes` values
+  answered 20000 rows where the index holds 100. Dedup now decides by value,
+  through the index's own key rule. The result set keeps the ORIGINAL tuples,
+  so no key is visible in query output. This also removes a `(set resultset)`
+  fast path taken when the plan reported `:unique-results?`: that flag means
+  one tuple per DATOM, which is not one tuple per RESULT, and the fast path
+  returned three rows for a projection with two members. Measured cost on the
+  dedup step: 1.1-1.3x for an ordinary result, 1.5-1.8x for a single narrow
+  column, where the values it now gets right cost 4.6-6.3x under the first
+  spelling of this. ([#1110])
+
 - **`min`, `max` and `:order-by` no longer throw on a mixed-type attribute.**
   A consequence of the above: `compare-value` is a TOTAL order over the value
   domain -- it ranks unlike types by type -- where `clojure.core/compare`
@@ -955,3 +970,4 @@ Thanks to all the contributors and the community for helping on this release. Sp
 [#1092]: https://github.com/replikativ/datahike/pull/1092
 [#1090]: https://github.com/replikativ/datahike/pull/1090
 [#1109]: https://github.com/replikativ/datahike/pull/1109
+[#1110]: https://github.com/replikativ/datahike/pull/1110

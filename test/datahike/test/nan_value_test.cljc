@@ -79,6 +79,39 @@
     (doseq [v [1.0 -0.0 0 7 "s" :k 'sym ##Inf]]
       (is (identical? (da/value-key v) v) (str "value-key changed " (pr-str v))))))
 
+(deftest test-distinct-tuples-by-value
+  (testing "tuples are duplicates when their VALUES are equal -- a NaN
+            element, and an array element, which `=` compares by identity.
+            The counts are what matters: a canonical-key comparison of the
+            results would collapse the duplicate being looked for"
+    (is (= 2 (count (dq/distinct-tuples [[##NaN] [##NaN] [1.0]]))))
+    (is (= (canon [[##NaN] [1.0]])
+           (canon (dq/distinct-tuples [[##NaN] [##NaN] [1.0]]))))
+    #?(:clj
+       (is (= 2 (count (dq/distinct-tuples [[(byte-array [1 2])]
+                                            [(byte-array [1 2])]
+                                            [(byte-array [3])]])))))
+    (testing "and an ordinary result is untouched, by the same function"
+      (is (= [[3 4]] (dq/distinct-tuples [[3 4] [3 4]])))
+      (is (= [[3 4] [9 7]] (dq/distinct-tuples [[3 4] [9 7] [3 4]]))))))
+
+(deftest test-distinct-tuple-set-by-value
+  (testing "the result-set dedup keeps the ORIGINAL tuples -- no key may
+            reach query output -- while deciding membership by value"
+    (let [s (dq/distinct-tuple-set [[##NaN] [##NaN] [1.0]])]
+      (is (= 2 (count s)))
+      (is (every? #(double? (first %)) s)))
+    #?(:clj
+       (let [s (dq/distinct-tuple-set [[(byte-array [1 2])]
+                                       [(byte-array [1 2])]
+                                       [(byte-array [3])]])]
+         (is (= 2 (count s)))
+         (is (every? #(instance? (Class/forName "[B") (first %)) s)))))
+
+  (testing "a result with nothing to canonicalise is the plain set"
+    (is (= #{[1 2] [3 4]} (dq/distinct-tuple-set [[1 2] [3 4] [1 2]])))
+    (is (= #{} (dq/distinct-tuple-set [])))))
+
 #?(:clj
    (deftest test-nan-in-storage-and-queries
      (let [cfg {:store {:backend :memory :id (java.util.UUID/randomUUID)}
@@ -114,6 +147,12 @@
                              {:db/id 21 :nan/d (fresh-nan) :nan/b (byte-array [1 2])}
                              {:db/id 22 :nan/d 1.0         :nan/b (byte-array [3])}])
            (let [db (d/db conn)]
+             (testing "a distinct projection has one member per VALUE"
+               (is (= 2 (count (d/q '{:find [?v] :where [[?e :nan/d ?v]]} db))))
+               (is (= 2 (count (d/q '{:find [?v] :where [[?e :nan/b ?v]]} db))))
+               (is (= (canon #{[##NaN] [1.0]})
+                      (canon (d/q '{:find [?v] :where [[?e :nan/d ?v]]} db)))))
+
              (testing "and the rows themselves are untouched"
                (is (= 3 (count (d/q '{:find [?e ?v] :where [[?e :nan/d ?v]]} db)))))
 
