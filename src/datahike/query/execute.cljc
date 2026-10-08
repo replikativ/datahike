@@ -3452,6 +3452,64 @@
    {}
    rels))
 
+(defn- tuple-dedup-key
+  "The witness under which two result tuples are the SAME result.
+
+   A transient `#{}` decides that with `clojure.core/=`, which is IDENTITY for
+   an array element and says a NaN differs from itself -- so a query answered
+   one row per OCCURRENCE of such a value where the index holds one per VALUE,
+   and `:find [?v]` over two entities sharing a NaN came back with two rows.
+
+   Returns THE TUPLE ITSELF whenever no element needs canonicalising, which is
+   every tuple of longs, strings, keywords, refs and ordinary numbers: one
+   `value-key` call per element -- a `getClass` and a few pointer compares on
+   final classes -- and no allocation. The replacement vector is built only for
+   a tuple that actually carries an array or a NaN."
+  [t]
+  (let [n (count t)]
+    (loop [i (int 0)]
+      (if (< i n)
+        (let [x (nth t i)]
+          (if (identical? (da/value-key x) x)
+            (recur (unchecked-inc-int i))
+            (mapv da/value-key t)))
+        t))))
+
+(defn- witnessed-dedup
+  "Finish a dedup that has met a value `=` cannot witness.
+
+   Every tuple accepted so far WAS its own key -- that is why the loop got
+   this far -- so the accepted tuples seed the witness unchanged. From here
+   each tuple is witnessed by its KEY while the result set keeps the ORIGINAL
+   tuple, so no key can reach query output.
+
+   One pass, not two. The spelling this replaces finished the set and then
+   rebuilt it through a key map -- three containers for a result carrying a
+   single NaN, measured at 4.6-6.3x the plain dedup where this is 1.7x.
+
+   Two platform spellings, for the reason `witnessed-tuple-set` in
+   `datahike.query` states: a `js/Set` would key a tuple by IDENTITY and dedup
+   nothing, so ClojureScript witnesses with a Clojure map instead."
+  [result-list i0 n accepted]
+  #?(:clj
+     (let [seen (java.util.HashSet.)
+           acc (reduce (fn [acc a] (.add seen a) (conj! acc a))
+                       (transient #{}) accepted)]
+       (loop [i (int i0) acc acc]
+         (if (< i n)
+           (let [t (adopt-vector (result-list-get result-list i))]
+             (recur (unchecked-inc-int i)
+                    (if (.add seen (tuple-dedup-key t)) (conj! acc t) acc)))
+           (persistent! acc))))
+     :cljs
+     (loop [i i0
+            m (reduce (fn [m a] (assoc m a a)) {} accepted)]
+       (if (< i n)
+         (let [t (adopt-vector (result-list-get result-list i))
+               k (tuple-dedup-key t)]
+           (recur (inc i) (if (contains? m k) m (assoc m k t))))
+         (set (vals m))))))
+
 (defn- finalize-direct-result
   "Convert a filled result-list into the final query result under the given
    dedup strategy (:hash, :adjacent, or nil for the no-duplicates fast path)."
@@ -3459,13 +3517,31 @@
   #?(:clj
      (case dedup-strategy
        :hash
+       ;; ONE container in the common case. A tuple of longs, strings,
+       ;; keywords or ordinary numbers is its own dedup key
+       ;; (`tuple-dedup-key` returns it unchanged), so the Clojure set this
+       ;; builds is already the right witness and the only added cost is one
+       ;; walk per tuple to notice that -- measured at 1.2-1.3x of the plain
+       ;; dedup, which is a real cost and not a rounding error: the dedup is a
+       ;; bigger share of a scan query than it looks. The walk cannot be made
+       ;; cheaper. A local `defn-` and a macro that inlined the per-element
+       ;; test both measured the same as the cross-namespace call, so the cost
+       ;; is the TRAVERSAL, not the call. It can only be skipped, which needs
+       ;; to know from the plan that no projected attribute can hold such a
+       ;; value; that narrowing is a follow-up.
+       ;;
+       ;; The first tuple whose key is not itself hands over to
+       ;; `witnessed-dedup`, so a NaN- or array-bearing result pays one more
+       ;; pass rather than the rebuild that measured 4.6-6.3x.
        (let [n (result-list-size result-list)]
-         (persistent!
-          (loop [i (int 0) s (transient #{})]
-            (if (< i n)
-              (recur (unchecked-inc-int i)
-                     (conj! s (adopt-vector (result-list-get result-list i))))
-              s))))
+         (loop [i (int 0) s (transient #{})]
+           (if (< i n)
+             (let [t (adopt-vector (result-list-get result-list i))
+                   k (tuple-dedup-key t)]
+               (if (identical? k t)
+                 (recur (unchecked-inc-int i) (conj! s t))
+                 (witnessed-dedup result-list i n (persistent! s))))
+             (persistent! s))))
 
        :adjacent
        ;; Adjacent dedup: history card-one duplicates are adjacent in scan order.
@@ -3493,12 +3569,16 @@
              (recur (unchecked-inc-int i))))
          (datahike.java.QueryResult. out n)))
      :cljs
+     ;; By value, not by `=` -- see the :clj branch above.
      (let [n (result-list-size result-list)]
-       (persistent!
-        (loop [i 0 s (transient #{})]
-          (if (< i n)
-            (recur (inc i) (conj! s (adopt-vector (result-list-get result-list i))))
-            s))))))
+       (loop [i 0 s (transient #{})]
+         (if (< i n)
+           (let [t (adopt-vector (result-list-get result-list i))
+                 k (tuple-dedup-key t)]
+             (if (identical? k t)
+               (recur (inc i) (conj! s t))
+               (witnessed-dedup result-list i n (persistent! s))))
+           (persistent! s))))))
 
 (defn- direct-group-output-may-duplicate?
   "Whether one entity group can emit the same projected find tuple more than

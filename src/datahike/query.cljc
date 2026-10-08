@@ -814,13 +814,107 @@
 
 ;; Utilities
 
+(defn tuple-value-key
+  "The witness under which two result tuples are the SAME result.
+
+   A tuple of longs, strings, keywords, refs or ordinary numbers IS its own
+   key: returned unchanged, no allocation, so a caller building a Clojure set
+   of tuples needs nothing extra. A key is materialised only for a tuple that
+   actually carries a value a Clojure container decides WRONGLY -- a `byte[]`,
+   `float[]` or `double[]` element, which `=` compares by identity, or a NaN,
+   which `=` says differs from itself. The index had already decided both were
+   one value (`compare-value`), so `:find` disagreed with storage.
+
+   A tuple that is a Java object ARRAY rather than a vector is always
+   materialised: an array in a Clojure container is keyed by reference, so
+   there is nothing cheaper to return.
+
+   NOT covered, and not claimed: a `BigDecimal`, where `=` says 1.0M and 1.00M
+   differ and the index says they are one value, and a tuple-valued attribute
+   whose VECTOR holds a NaN. Both are the same family of defect one level
+   down in `value-key`, which is where they belong."
+  [t]
+  (if (vector? t)
+    (let [n (count t)]
+      (loop [i (int 0)]
+        (if (< i n)
+          (let [x (nth t i)]
+            (if (identical? (value-key x) x)
+              (recur (unchecked-inc-int i))
+              (mapv value-key t)))
+          t)))
+    (mapv value-key t)))
+
+(defn- witnessed-tuple-set
+  "Finish a dedup that has met a value `=` cannot witness.
+
+   Every tuple accepted so far WAS its own key -- that is why the loop got
+   this far -- so the accepted tuples seed the witness unchanged. From here
+   each tuple is witnessed by its KEY while the result keeps the ORIGINAL
+   tuple, so no key can reach query output.
+
+   Two spellings, because the platforms' containers differ in exactly the way
+   `value-key` and `native-key` already document. On the JVM a
+   `java.util.HashSet` asks `equals`/`hashCode`, which a vector of
+   canonicalised elements answers correctly, and it is the cheapest witness
+   available. Under ClojureScript a `js/Set` keys anything that is not a
+   primitive by IDENTITY, so a set of tuple keys would have deduped NOTHING;
+   it uses a Clojure map, which asks `=`, and a transient one is avoided
+   because a transient does not honour `get`'s not-found argument there."
+  [accepted t more]
+  #?(:clj
+     (let [seen (java.util.HashSet.)
+           acc (reduce (fn [acc a] (.add seen a) (conj! acc a))
+                       (transient #{}) accepted)]
+       (loop [ts (cons t more) acc acc]
+         (if-let [ts (seq ts)]
+           (let [x (first ts)]
+             (recur (next ts)
+                    (if (.add seen (tuple-value-key x)) (conj! acc x) acc)))
+           (persistent! acc))))
+     :cljs
+     (loop [ts (cons t more)
+            m (reduce (fn [m a] (assoc m a a)) {} accepted)]
+       (if-let [ts (seq ts)]
+         (let [x (first ts)
+               k (tuple-value-key x)]
+           (recur (next ts) (if (contains? m k) m (assoc m k x))))
+         (set (vals m))))))
+
+(defn distinct-tuple-set
+  "The result set, deduped by VALUE.
+
+   One pass and ONE container in the common case: when no tuple needs a
+   materialised key, each tuple is its own witness, so the Clojure set the
+   result is built in is already correct and nothing else is allocated. The
+   only added cost is the walk that notices this, measured at 1.2-1.3x of the
+   plain dedup -- a real cost, and not reducible: a local `defn-` and a macro
+   that inlined the per-element test both measured the same as the
+   cross-namespace call, so it is the traversal and not the call. Skipping it
+   needs the plan to say that no projected attribute can hold such a value;
+   that narrowing is a follow-up.
+
+   The first tuple whose key is not itself hands over to
+   `witnessed-tuple-set`, so a NaN- or array-bearing result pays one pass
+   rather than the rebuild-through-a-key-map that measured 4.6-6.3x."
+  [resultset]
+  (loop [ts (seq resultset) acc (transient #{})]
+    (if ts
+      (let [t (first ts)
+            k (tuple-value-key t)]
+        (if (identical? k t)
+          (recur (next ts) (conj! acc t))
+          (witnessed-tuple-set (persistent! acc) t (next ts))))
+      (persistent! acc))))
+
 (defn distinct-tuples
-  "Remove duplicates just like `distinct` but with the difference that it only works on values on which `vec` can be applied and two different objects are considered equal if and only if their results after `vec` has been applied are equal. This means that two different Java arrays are considered equal if and only if their elements are equal."
+  "Remove duplicate tuples, deciding duplication by VALUE. See
+   `tuple-value-key` for what that means and why `vec` alone was not it."
   ([tuples]
    (into [] (distinct-tuples) tuples))
   ([]
    (let [step ((distinct) (fn [_ _] true))]
-     (filter #(step false (vec %))))))
+     (filter #(step false (tuple-value-key %))))))
 
 (defn seqable?
   #?@(:clj [^Boolean [x]]
@@ -5405,12 +5499,17 @@
                       (#?(:clj (requiring-resolve 'datahike.query.execute/execute-plan)
                           :cljs execute/execute-plan) plan context-in db))
         resultset (collect context-out all-vars)
-        deduped (if (and (not order-spec)
-                         (:unique-results? context-out)
-                         (not offset)
-                         (or (nil? limit) (neg? limit)))
-                  (set resultset)
-                  (into #{} resultset))
+        ;; By VALUE. A Clojure set decides membership with `=`, which is
+        ;; IDENTITY for an array element and says a NaN differs from itself,
+        ;; so a result set held one row per OCCURRENCE of such a value where
+        ;; the index holds one per VALUE.
+        ;;
+        ;; This also replaces a `(set resultset)` fast path taken when the
+        ;; plan reported `:unique-results?`. That flag means one tuple per
+        ;; DATOM, which is not the same as one tuple per RESULT: `:find [?v]`
+        ;; over `[?e :v/d ?v]` projects three distinct datoms onto two
+        ;; distinct values, and the fast path returned three rows for them.
+        deduped (distinct-tuple-set resultset)
         deduped (if lookup-ref-reverse-map
                   (let [var-vec (vec all-vars)
                         idx-maps (keep-indexed
@@ -5441,7 +5540,8 @@
    order-spec offset limit stats? qreturnmaps]
   (let [context-out (-q context-in (:where query))
         resultset (collect context-out all-vars)
-        deduped (into #{} resultset)]
+        ;; By value, not by `=` -- see the planner path above.
+        deduped (distinct-tuple-set resultset)]
     (with-fn-counts context-out
       (post-process-result deduped context-in context-out query qfind find-elements
                            result-arity order-spec offset limit stats? qreturnmaps))))
