@@ -1,4 +1,20 @@
 {:min-bb-version "0.8.0"
+ ;; babashka >= 1.13.221 resolves dependencies with its OWN resolver instead of
+ ;; tools.deps on a JVM, and that resolver fails on this project's dependency
+ ;; graph with a cold Maven cache:
+ ;;
+ ;;   Coord of unknown type: {:mvn/version "1", :deps/manifest :mvn, ...}
+ ;;
+ ;; It trips on ordinary transitive artifacts — javax.inject 1 under the built-in
+ ;; :deps alias (`bb prep`), transit-java 1.1.406 under :native-cli — so EVERY
+ ;; `(clojure ...)` task here breaks, which is what turned the native-image CD
+ ;; jobs red from 2026-09-19 on (CI installs the latest bb). Bisected locally
+ ;; with a cold cache: 1.13.220 passes, every release from 1.13.221 through
+ ;; 1.13.226 fails, and with this setting 1.13.226 passes. The JVM resolver is
+ ;; what every bb before 1.13.221 used; the same switch is available as
+ ;; BABASHKA_DEPS_RESOLVER=jvm. Needs `java` on PATH, which the build already
+ ;; requires. Older bb ignores the key.
+ :deps-resolver :jvm
  :pods {org.babashka/tools-deps-native {:version "0.1.7"}
         clj-kondo/clj-kondo {:version "2026.01.19"}}
  :deps {datahike/bb {:local/root "bb"}
