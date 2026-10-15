@@ -54,7 +54,8 @@
         ;; `blob->branch` (persistent-sorted-set#27) — the deserialization path,
         ;; so the reflective lookup was paid per node on every cache miss. These
         ;; were the last two reflection warnings left in datahike's native build.
-        org.replikativ/persistent-sorted-set        {:mvn/version "0.5.144"}
+        org.replikativ/persistent-sorted-set        {:mvn/version "0.5.144"
+                                                     :exclusions [is.simm/partial-cps]}
         ;; MAIN deps, not a test alias. `datahike.cbor` is src/, so boring is a
         ;; real runtime dependency: the dump codec and the kabel wire format
         ;; both go through it. It used to be declared only under :test, which
@@ -73,7 +74,10 @@
         ;; show it; `migrate-legacy-golden-test` reads bytes from the real old
         ;; writer, which is what caught it. replikativ/boring#18.
         org.replikativ/boring                       {:mvn/version "0.1.28"}
-        is.simm/partial-cps                         {:mvn/version "0.1.60"}
+        ;; partial-cps moved to org.replikativ (namespaces unchanged:
+        ;; is.simm.partial-cps.*). Dependencies that still pull the old
+        ;; is.simm jar exclude it, so one copy is on the classpath.
+        org.replikativ/partial-cps                  {:mvn/version "0.1.68"}
         nrepl/bencode                               {:mvn/version "1.2.0"}
         org.replikativ/logging                      {:mvn/version "0.1.3"}
         org.replikativ/metrics                      {:mvn/version "0.1.4"}
