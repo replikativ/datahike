@@ -87,6 +87,42 @@
                   taevt (set/union (attr-store-refs taevt attr))))
               #{} attrs))))
 
+(defn- require-branches
+  "The `:branches` set as read from the store, or a refusal to collect.
+
+   A store that holds a database always names at least one branch. Reading back
+   nothing means the READ failed, not that there is nothing to keep — and a
+   collector that proceeded would whitelist only `:branches` itself and delete
+   every head, commit and index node in the store. That is the dev.simm.is
+   system-DB loss (2026-09-29): the read's go block died on a
+   `java.lang.Error`, which `go-try` does not catch, so its channel closed
+   empty and the take returned nil."
+  [branches]
+  (if (and (coll? branches) (seq branches))
+    branches
+    (log/raise "Store names no branches; refusing to collect, as an empty mark would sweep the whole store."
+               {:type :gc-branches-unreadable
+                :branches branches})))
+
+(defn- require-complete-mark
+  "`walked` — one mark per seed, or a refusal to sweep.
+
+   `async/merge` + `<<?` rethrows a seed's walk that RETURNED an exception, but a
+   walk whose go block DIED never returns anything: `go-try` catches `Exception`,
+   not `Error`, so an `AssertionError` (core.async's 1024-pending-takes limit),
+   `StackOverflowError` or `OutOfMemoryError` closes the channel empty and the
+   merge simply yields one result fewer. Unchecked, that seed's whole tree is
+   missing from the whitelist and the sweep deletes it."
+  [seeds walked]
+  (let [walked (vec walked)]
+    (when-not (and (= (count seeds) (count walked))
+                   (every? map? walked))
+      (log/raise "Garbage collection mark is incomplete; refusing to sweep."
+                 {:type :gc-incomplete-mark
+                  :seeds (count seeds)
+                  :walked (count walked)}))
+    walked))
+
 (defn- reachable-in-branch [store branch after-date config schema-cache opts]
   (async+sync
    (:sync? opts) *default-sync-translation*
@@ -252,8 +288,16 @@
                     ;; and never persisted it. Lineage ends here — nothing to
                     ;; mark. (Without this guard the nil destructure NPEs at
                     ;; get-time.)
-              (recur r (conj visited to-check) reachable refs external-roots
-                     building-secondary?)))
+              (if (and (:require-head? opts) (= to-check branch))
+                ;; The SEED of a branch walk is its head, which the branch's
+                ;; existence in `:branches` promises. Absent means the read
+                ;; failed (or the head was lost already); marking only the key
+                ;; itself would let the sweep take the head's whole tree.
+                (log/raise "Branch head unreadable during garbage collection mark; refusing to sweep."
+                           {:type :gc-branch-head-unreadable
+                            :branch branch})
+                (recur r (conj visited to-check) reachable refs external-roots
+                       building-secondary?))))
           {:reachable reachable
            :store-refs refs
            :external-secondary-roots external-roots
@@ -452,7 +496,7 @@
                  ;; per collection, and repairs the key retroactively for every
                  ;; commit naming it if anything outside datahike removed it.
                  _ (sc/forget-schema-meta-durable! store)
-                 branches (<? S (k/get store :branches))
+                 branches (require-branches (<? S (k/get store :branches)))
                  _ (log/trace :datahike/gc-retain-branches {:branches branches})
                  ;; Durable roots (see `datahike.gc-roots`): reap what has expired
                  ;; FIRST so a dead holder's record is not marked in this cycle,
@@ -479,11 +523,18 @@
                  ;; so it takes the channel branch. Passing opts is not optional —
                  ;; omitting it called a 6-arg function with 5 and broke the
                  ;; collector, which is how `background-gc-test` started hanging.
-                 walked (->> (concat branches root-keys)
-                             (map #(reachable-in-branch store % remove-before config
-                                                        schema-cache {:sync? false}))
-                             async/merge
-                             (<<? S))
+                 walked (require-complete-mark
+                         (concat branches root-keys)
+                         (->> (concat
+                               (map #(reachable-in-branch store % remove-before config
+                                                          schema-cache
+                                                          {:sync? false :require-head? true})
+                                    branches)
+                               (map #(reachable-in-branch store % remove-before config
+                                                          schema-cache {:sync? false})
+                                    root-keys))
+                              async/merge
+                              (<<? S)))
                  ;; A root declared AFTER the registry was read above — by this
                  ;; process or another — names objects the mark has not seen,
                  ;; and if it pins an already-unreachable commit the guard cannot
@@ -521,19 +572,23 @@
                               (do (log/warn :datahike/gc-roots-unstable
                                             {:count (count stale-keys)})
                                   (into walked
-                                        (->> stale-keys
-                                             (map #(reachable-in-branch store % remove-before config
-                                                                        schema-cache {:sync? false}))
-                                             async/merge
-                                             (<<? S))))
+                                        (require-complete-mark
+                                         stale-keys
+                                         (->> stale-keys
+                                              (map #(reachable-in-branch store % remove-before config
+                                                                         schema-cache {:sync? false}))
+                                              async/merge
+                                              (<<? S)))))
                               :else
                               (do (log/debug :datahike/gc-late-roots {:count (count stale-keys)})
                                   (recur (into walked
-                                               (->> stale-keys
-                                                    (map #(reachable-in-branch store % remove-before config
-                                                                               schema-cache {:sync? false}))
-                                                    async/merge
-                                                    (<<? S)))
+                                               (require-complete-mark
+                                                stale-keys
+                                                (->> stale-keys
+                                                     (map #(reachable-in-branch store % remove-before config
+                                                                                schema-cache {:sync? false}))
+                                                     async/merge
+                                                     (<<? S))))
                                          current
                                          (inc attempt))))))
                  ;; Store-refs are unioned into the whitelist here. For an object that
@@ -606,7 +661,7 @@
     (:sync? opts) *default-sync-translation*
     (go-try-
      (let [{:keys [config store]} db
-           branches (<?- (k/get store :branches nil opts))
+           branches (require-branches (<?- (k/get store :branches nil opts)))
            ;; A blob named only by a rooted commit is live too: the sweep spares
            ;; it, so the set the application sweeps its own storage against must
            ;; include it. Read-only here — reaping is the collector's job.
@@ -617,9 +672,17 @@
            acc
            (recur (next bs)
                   (set/union acc
-                             (:store-refs (<?- (reachable-in-branch
-                                                store (first bs) remove-before
-                                                config schema-cache opts))))))))))))
+                             (:store-refs
+                              (first
+                               (require-complete-mark
+                                [(first bs)]
+                                (keep identity
+                                      [(<?- (reachable-in-branch
+                                             store (first bs) remove-before
+                                             config schema-cache
+                                             (cond-> opts
+                                               (contains? (set branches) (first bs))
+                                               (assoc :require-head? true))))])))))))))))))
 
 (defn reachable-external-secondary-roots
   "Discover the exact external secondary generations named by every retained
