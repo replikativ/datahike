@@ -227,6 +227,32 @@
                   @conn)))
       (d/release conn))))
 
+(deftest test-retract-vector-value-of-untyped-attribute
+  ;; Beside the #774 tuple tests: both exercise the vector clause of
+  ;; datahike.db.search/validate-pattern.
+  (testing "schema-on-read: retract a vector value of any length"
+    (doseq [v [[] [1] [1 2] [1 2 3] ["a" "b" "c" "d"]]]
+      (let [cfg {:store {:backend :memory :id (random-uuid)}
+                 :schema-flexibility :read
+                 :keep-history? true}
+            _ (d/create-database cfg)
+            conn (d/connect cfg)]
+        (d/transact conn [[:db/add 100 :untyped/v v]])
+        (is (= #{[v]} (d/q '[:find ?v :where [100 :untyped/v ?v]] @conn)))
+        (testing (str ":db/retract " (pr-str v))
+          (is (d/transact conn [[:db/retract 100 :untyped/v v]]))
+          (is (= #{} (d/q '[:find ?v :where [100 :untyped/v ?v]] @conn))))
+        (d/transact conn [[:db/add 100 :untyped/v v]])
+        (testing (str ":db.fn/retractAttribute " (pr-str v))
+          (is (d/transact conn [[:db.fn/retractAttribute 100 :untyped/v]]))
+          (is (= #{} (d/q '[:find ?v :where [100 :untyped/v ?v]] @conn))))
+        (d/transact conn [[:db/add 100 :untyped/v v]])
+        (testing (str ":db.fn/retractEntity " (pr-str v))
+          (is (d/transact conn [[:db.fn/retractEntity 100]]))
+          (is (= #{} (d/q '[:find ?v :where [100 :untyped/v ?v]] @conn))))
+        (d/release conn)
+        (d/delete-database cfg)))))
+
 (deftest test-retract-entity-with-tuples
   (testing "retractEntity with homogeneous tuple (3+ elements)"
     (let [conn (connect)]
