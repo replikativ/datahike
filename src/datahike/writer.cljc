@@ -135,12 +135,29 @@
     (try
       (callback event)
       (catch #?(:clj Throwable :cljs :default) error
-        (log/error :datahike/commit-listener-error
-                   {:key key
-                    ;; DB values and reports can retain indexes and make an
-                    ;; otherwise small listener error enormous.
-                    :event (dissoc event :db-before :db-after :tx-reports)
-                    :error error}))))
+        (try
+          (log/error :datahike/commit-listener-error
+                     {:key key
+                      ;; DB values and reports can retain indexes and make an
+                      ;; otherwise small listener error enormous.
+                      :event (dissoc event :db-before :db-after :tx-reports)
+                      :error error})
+          ;; The synchronous user-configured diagnostic sink cannot veto the
+          ;; commit either, or we would strand its acknowledgement again.
+          (catch #?(:clj Throwable :cljs :default) _ nil)))))
+  nil)
+
+(defn- notify-transaction-listeners!
+  "A transaction listener observes an applied transaction and cannot veto it.
+   In particular its failure must not strand the public transaction promise."
+  [connection report]
+  (doseq [[key callback] (some-> (:listeners (meta connection)) deref)]
+    (try
+      (callback report)
+      (catch #?(:clj Throwable :cljs :default) error
+        (try
+          (log/error :datahike/transaction-listener-error {:key key :error error})
+          (catch #?(:clj Throwable :cljs :default) _ nil)))))
   nil)
 
 (def retryable-ops
@@ -1374,8 +1391,7 @@
                          ;; The build ran in this JVM, so clean it up here.
                          (when (and local-writer? (not (map? install-result)))
                            (w/finish-secondary-index-build! build-result)))))))))
-          (doseq [[_ callback] (some-> (:listeners (meta connection)) (deref))]
-            (callback tx-report)))
+          (notify-transaction-listeners! connection tx-report))
         (#?(:clj deliver :cljs put!) p tx-report)))
     p))
 
@@ -1396,9 +1412,7 @@
                               {:op 'cancel-secondary-index-build!
                                :args [idx-ident building-since-tx]}))]
            (when (map? tx-report)
-             (doseq [[_ callback]
-                     (some-> (:listeners (meta connection)) deref)]
-               (callback tx-report)))
+             (notify-transaction-listeners! connection tx-report))
            (deliver p tx-report)))
        p)))
 
@@ -1413,8 +1427,7 @@
     (go
       (let [tx-report (<! (dispatch! writer {:op op :args args}))]
         (when (instance? TxReport tx-report)
-          (doseq [[_ callback] (some-> (:listeners (meta connection)) deref)]
-            (callback tx-report)))
+          (notify-transaction-listeners! connection tx-report))
         (#?(:clj deliver :cljs put!) p tx-report)))
     p))
 
@@ -1464,8 +1477,7 @@
                                      {:op 'merge!
                                       :args [arg-map]}))]
         (when (map? tx-report)
-          (doseq [[_ callback] (some-> (:listeners (meta connection)) (deref))]
-            (callback tx-report)))
+          (notify-transaction-listeners! connection tx-report))
         (#?(:clj deliver :cljs put!) p tx-report)))
     p))
 
