@@ -45,10 +45,29 @@ gate stays held until construction finishes: a late topic-only request must not
 interleave with a replacement subscription.
 
 Writer shutdown fences publication synchronously and returns a channel joining
-subscription cleanup. Existing generic `d/release` does **not** await asynchronous
+subscription cleanup. In-flight and successful closes share one result; a failed
+physical drain can be explicitly retried. Only the attached controller owns a
+physical strategy: a manually constructed writer does not unsubscribe whatever
+currently occupies its topic. Neither writer shutdown nor failed construction
+unregisters PSS reconstruction storage by UUID, because branches share that
+registration. As with generic release, the bounded entry remains until reconnect
+overwrites it; exact last-owner reclamation is a separate concern.
+
+Failed construction fences initial callbacks and joins its captured strategy's
+guarded drain **before** releasing the store. `cleanup-confirmed?` reports whether
+its local exception positively confirms completed cleanup. On uncertainty,
+`recover-connect!` retries only the exact captured cleanup, never construction or
+writes. Failed-connect exceptions can carry native retry functions: keep them
+local, do not serialize them or treat them as transport data. Unknown failures
+do not prove clean completion. Callers must serialize constructors and retirement
+for each physical local store; this API does not make overlapping constructors
+safe. Initial connection no longer steals an existing topic as a recovery step.
+
+Existing generic `d/release` does **not** await asynchronous
 writer shutdown before closing a store. Callers needing a physical drain barrier
 must join `datahike.writer/shutdown` before release; this experimental API does
-not repair that separate generic release seam. Late publication also uses a
+not repair that separate generic release seam or provide arbitrary-backend
+store-close completion. Late publication also uses a
 compare-and-set guard so it cannot resurrect a released connection.
 
 A different principal or peer is a new session, not a resubscription. Prepare

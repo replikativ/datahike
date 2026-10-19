@@ -17,9 +17,12 @@
    Caller supplies the exact sync-store, branch walker and publication callback
    already used to open the replica. A serialized physical operation gate avoids
    an older pending subscribe stealing a newer epoch's topic."
-  [{:keys [peer topic] :as opts}]
+  [{:keys [peer topic strategy] :as opts}]
+  (when-not (and strategy (identical? strategy (:strategy (pubsub/subscription peer topic))))
+    (throw (ex-info "Initial replica subscription is no longer owned"
+                    {:type :datahike.kabel/subscription-conflict :topic topic})))
   (let [gate (chan 1)
-        state (atom {:owned (:strategy (pubsub/subscription peer topic))})]
+        state (atom {:owned strategy})]
     (put! gate true)
     (assoc opts :gate gate :state state :lock (or (:lock opts) state))))
 
@@ -150,15 +153,27 @@
            result))))))
 
 (defn close!
-  "Fence callbacks synchronously, then join physical subscription cleanup."
+  "Fence synchronously, share in-flight/successful cleanup, and retry failures.
+   A completed old close cannot later retire a replacement topic owner."
   [{:keys [state gate retire-initial!] :as controller}]
-  (locked controller
-          #(do (retire-initial!)
-               (swap! state assoc :closed? true)
-               (when-let [result (get-in @state [:operation :result])]
-                 (put! result (cancelled)))))
-  (go-try-
-   (<?- gate)
-   (try (<?- (release-owned! controller 30000))
-        (finally (put! gate true)))
-   true))
+  (locked
+   controller
+   (fn []
+     (retire-initial!)
+     (swap! state assoc :closed? true)
+     (when-let [result (get-in @state [:operation :result])] (put! result (cancelled)))
+     (if (#{:pending :closed} (get-in @state [:close :phase]))
+       (get-in @state [:close :result])
+       (let [result (promise-chan)]
+         (swap! state assoc :close {:phase :pending :result result})
+         (go-try-
+          (<?- gate)
+          (try
+            (<?- (release-owned! controller 30000))
+            (locked controller #(swap! state assoc-in [:close :phase] :closed))
+            (put! result true)
+            (catch #?(:clj Throwable :cljs :default) error
+              (locked controller #(swap! state assoc-in [:close :phase] :error))
+              (put! result error))
+            (finally (put! gate true))))
+         result)))))

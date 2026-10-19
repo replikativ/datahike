@@ -25,17 +25,28 @@
       (kw/on-db-sync! conn {:head :late})
       (is (= :released @wrapped)))))
 
-(deftest subscription-shutdown-fences-before-drain-and-keeps-registry-through-drain
+(deftest subscription-shutdown-fences-before-drain-and-never-unregisters-shared-storage
   (let [stopped (promise-chan) events (atom [])
         writer (assoc (kw/kabel-writer test-peer-id test-store-id nil)
                       :store-config {:id test-store-id}
                       :sync-close! (fn [] (swap! events conj :fenced) stopped))]
-    (with-redefs [cbor/unregister-store! (fn [_] (swap! events conj :unregistered))]
+    (with-redefs [cbor/unregister-store! (fn [_] (throw (AssertionError. "Writer cannot unregister branch-shared storage")))]
       (let [closed (writer/shutdown writer)]
         (is (= [:fenced] @events))
         (clojure.core.async/put! stopped true)
         (is (true? (<!! closed)))
-        (is (= [:fenced :unregistered] @events))))))
+        (is (= [:fenced] @events))))))
+
+(deftest standalone-writer-does-not-retire-a-replacement-or-unregister-sibling-storage
+  (let [config {:id (random-uuid)} replacement (Object.)
+        w (kw/kabel-writer test-peer-id :local-peer (:id config) :db config)]
+    (cbor/register-store! config replacement)
+    (try
+      (with-redefs [pubsub/unsubscribe! (fn [& _] (throw (AssertionError. "Writer has no ownership of today's topic")))]
+        (is (true? (<!! (writer/shutdown w))))
+        (is (true? (<!! (writer/shutdown w))))
+        (is (identical? replacement (cbor/get-store config))))
+      (finally (cbor/unregister-store! config)))))
 
 (deftest failed-drain-keeps-registry-for-cleanup-retry
   (let [stopped (promise-chan) error (ex-info "Drain unavailable" {})

@@ -11,10 +11,12 @@
             [datahike.cbor :as dcbor]
             [datahike.kabel.writer :as kw]
             [datahike.kabel.subscription :as subscription]
+            [datahike.kabel.cleanup :as cleanup]
             [datahike.store :as ds]
             [datahike.writer :as w]
             [datahike.writing :as dw]
-            [konserve-sync.transport.kabel-pubsub :as kp]
+            [kabel.pubsub :as pubsub]
+            [konserve-sync.pubsub :as sync]
             [konserve-sync.walkers.datahike :as dh-walker]
             [konserve.core :as k]
             [konserve.store :as ks]
@@ -121,7 +123,8 @@
          conn-id [(ds/store-identity (:store config)) (or (:branch config) :db)]
          lease (reserve-connection! conn-id)
          ;; What this connect has set up so far, for a failure to undo.
-         opened (atom {})]
+         cleanup-owner (cleanup/owner)
+         opened (:state cleanup-owner)]
      (try
        (let [;; Normalize config with defaults (cache sizes, etc.)
              config (dissoc (dc/load-config raw-config) :initial-tx :remote-peer :name)
@@ -163,6 +166,7 @@
                  (log/raise "Failed to create/connect store." {:type :store-creation-failed
                                                                :backend (:backend store-config)
                                                                :id (:id store-config)}))
+             _ (swap! opened assoc :store raw-store :store-config store-config)
              store (ds/add-cache-and-handlers raw-store config)
              _ (swap! opened assoc :store store :store-config store-config)
              _ (log/trace "Store ready, adding handlers...")
@@ -197,7 +201,6 @@
           ;; The registry belongs to persistent-sorted-set and is not tied to a
           ;; serialization format.
              _ (dcbor/register-store! store-config store)
-             _ (swap! opened assoc :registered store-config)
              _ (log/trace "Store registered for index reconstruction")
 
           ;; 1d. Check if we already have the branch key in cache (for tiered stores)
@@ -217,49 +220,51 @@
              stored-db-atom (atom cached-stored-db)  ;; Pre-fill with cached value if available
              conn-atom (atom nil)  ;; Set after connection is created
              initial-active? (atom true)
+             _ (swap! opened assoc :retire-initial!
+                      #(with-initial-lock initial-active? (fn [] (reset! initial-active? false))))
          ;; Use UUID directly as topic (kabel pubsub supports any EDN value)
              store-topic store-id
              _ (log/trace "Subscribing to store topic" {:store-topic store-topic})
 
-         ;; A previous connection on this peer may still hold the topic (its
-         ;; release unsubscribes asynchronously); kabel refuses a duplicate,
-         ;; so hand the topic over first.
-             _ (<?- (kw/await-topic-release! local-peer store-topic 30000))
-             _ (log/trace "Calling subscribe-store!")
-             sub-result (<?- (kp/subscribe-store!
-                              local-peer store-topic sync-store
-                              {;; Inventory only this branch's reachable local keys.
+         ;; Never steal today's subscription to repair an earlier asynchronous
+         ;; release. The caller owns store-level serialization; duplicate topic
+         ;; ownership is refused rather than silently cancelling another user.
+             initial-strategy (sync/store-sync-strategy
+                               sync-store
+                               {;; Inventory only this branch's reachable local keys.
                            ;; A durable browser cache may contain many abandoned
                            ;; fork nodes; enumerating all of IndexedDB here blocks
                            ;; the handshake before the server sees the request.
-                               :walk-fn (branch-walk-fn branch)
-                               :on-key-update
-                               (fn [key value _op]
-                                 (with-initial-lock initial-active? (fn []
-                                                                      (when (and @initial-active? (= key branch))
+                                :walk-fn (branch-walk-fn branch)
+                                :on-key-update
+                                (fn [key value _op]
+                                  (with-initial-lock initial-active? (fn []
+                                                                       (when (and @initial-active? (= key branch))
                                ;; Replace server config with client config in synced stored-db
                                ;; The server's stored-db contains :backend :file which doesn't exist in browser
-                                                                        (let [value-with-client-config (assoc value :config config)]
-                                                                          (reset! stored-db-atom value-with-client-config)
-                                                                          (if-let [conn @conn-atom]
+                                                                         (let [value-with-client-config (assoc value :config config)]
+                                                                           (reset! stored-db-atom value-with-client-config)
+                                                                           (if-let [conn @conn-atom]
                                    ;; Connection ready - use ongoing sync handler
-                                                                            (do
-                                                                              (log/trace "Ongoing sync update" {:branch branch :max-tx (:max-tx value)})
-                                                                              (kw/on-db-sync! conn value-with-client-config))
+                                                                             (do
+                                                                               (log/trace "Ongoing sync update" {:branch branch :max-tx (:max-tx value)})
+                                                                               (kw/on-db-sync! conn value-with-client-config))
                                    ;; Initial sync — stash the head. Exposure is gated on
                                    ;; :on-complete (full handshake drain), not on this: the
                                    ;; head alone says nothing about the nodes it points at.
-                                                                            (do
-                                                                              (log/trace "Initial branch received via sync" {:branch branch
-                                                                                                                             :max-tx (:max-tx value)})
-                                                                              (reset! stored-db-atom value-with-client-config))))))))
-                               :on-complete
-                           ;; Fired once the initial handshake has fully drained:
-                           ;; every reachable index node, then the :db head, applied.
-                               (fn [] (put! handshake-complete-ch :handshake-done))}))
+                                                                             (do
+                                                                               (log/trace "Initial branch received via sync" {:branch branch
+                                                                                                                              :max-tx (:max-tx value)})
+                                                                               (reset! stored-db-atom value-with-client-config))))))))})
+             _ (swap! opened assoc :topic store-topic :peer local-peer :strategy initial-strategy)
+             sub-result (<?- (pubsub/subscribe!
+                              local-peer #{store-topic}
+                              {:strategies {store-topic initial-strategy}
+                               :on-handshake-complete
+                               (fn [topic]
+                                 (when (= topic store-topic)
+                                   (put! handshake-complete-ch :handshake-done)))}))
              _ (log/trace "subscribe-store! returned" {:subscribed? (some? sub-result)})
-             _ (when-not (:error sub-result)
-                 (swap! opened assoc :topic store-topic :peer local-peer))
          ;; A refused subscription (a duplicate on this topic, a closed peer)
          ;; never completes a handshake, so waiting for one would hang forever.
              _ (when-let [error (:error sub-result)]
@@ -346,6 +351,7 @@
              sync-controller
              (subscription/controller
               {:peer local-peer :topic store-topic :store sync-store :branch branch
+               :strategy initial-strategy
            ;; One monitor for initial and reconnect publication: DB watches may
            ;; synchronously request resubscription while publishing an initial
            ;; head. Two nested monitors would invert their acquisition order.
@@ -393,20 +399,21 @@
          conn)
        (catch #?(:clj Exception :cljs :default) e
          (abandon-reservation! conn-id lease)
-        ;; Undo what was set up before the failure: the subscription (a later
-        ;; connect would otherwise be refused as a duplicate), the codec
-        ;; registration, and the open store (an IndexedDB handle in a browser).
-         (let [{:keys [store store-config registered topic peer]} @opened]
-           (when topic
-             (try (<?- (kw/await-topic-release! peer topic 5000))
-                  (catch #?(:clj Exception :cljs :default) _ nil)))
-           (when registered
-             (try (dcbor/unregister-store! registered)
-                  (catch #?(:clj Exception :cljs :default) _ nil)))
-           (when store
-             (try (<?- (ks/release-store store-config store opts))
-                  (catch #?(:clj Exception :cljs :default) _ nil))))
-         (throw e))))))
+         ;; Fence callbacks, join only the captured strategy, THEN release its
+         ;; store. Failed cleanup retains a local retry capability, not a false
+         ;; signal that another constructor may safely overlap these resources.
+         (<?- (cleanup/failure! cleanup-owner e)))))))
+
+(defn cleanup-confirmed?
+  "Does this local failed-connect result positively confirm native cleanup?"
+  [error]
+  (cleanup/confirmed? error))
+
+(defn recover-connect!
+  "Retry ONLY the exact resources retained by a failed constructor. Local-only:
+   failed-connect exceptions may carry native functions; do not serialize them."
+  [error]
+  (cleanup/retry! error))
 
 (defn resubscribe!
   "Refresh an existing Kabel replica after transport authentication.

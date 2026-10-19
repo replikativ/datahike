@@ -23,6 +23,7 @@
                                         (a/go {:ok topics})))]
       (let [controller (sub/controller
                         {:peer :peer :topic :topic :store store :branch :db :walk-fn identity
+                         :strategy (get-in @registry [:topic :strategy])
                          :retire-initial! #(reset! retired true)
                          :publish! #(swap! published conj %)
                          :release! (fn [_ _]
@@ -32,6 +33,43 @@
         (try (f {:controller controller :started started :published published
                  :registry registry :releases releases :retired retired :store store})
              (finally (take! (sub/close! controller))))))))
+
+(deftest controller-never-adopts-a-replacement-between-initial-drain-and-handoff
+  (let [original (Object.) replacement (Object.)]
+    (with-redefs [pubsub/subscription (fn [& _] {:strategy replacement})]
+      (is (= :datahike.kabel/subscription-conflict
+             (:type (ex-data
+                     (try (sub/controller {:peer :peer :topic :topic :strategy original})
+                          (catch clojure.lang.ExceptionInfo error error)))))))))
+
+(deftest shutdown-joins-once-and-never-acts-on-a-later-replacement
+  (fixture
+   (fn [{:keys [controller registry releases]}]
+     (let [closed (sub/close! controller)]
+       (is (identical? closed (sub/close! controller)))
+       (is (true? (take! closed)))
+       (let [replacement (Object.)]
+         (swap! registry assoc :topic {:strategy replacement :generation (random-uuid)})
+         (is (identical? closed (sub/close! controller)))
+         (is (true? (take! (sub/close! controller))))
+         (is (= 1 @releases))
+         (is (identical? replacement (get-in @registry [:topic :strategy]))))))))
+
+(deftest failed-shutdown-drain-can-be-explicitly-retried
+  (fixture
+   (fn [{:keys [controller registry]}]
+     (let [attempts (atom 0) error (ex-info "Temporary drain failure" {})
+           controller (assoc controller :release! (fn [_ _]
+                                                    (if (= 1 (swap! attempts inc))
+                                                      (a/go error)
+                                                      (do (swap! registry dissoc :topic) (a/go true)))))
+           failed (sub/close! controller)]
+       (is (= (ex-message error) (ex-message (take! failed))))
+       (let [retried (sub/close! controller)]
+         (is (not (identical? failed retried)))
+         (is (true? (take! retried)))
+         (is (identical? retried (sub/close! controller))))
+       (is (= 2 @attempts))))))
 
 (defn- head! [op head]
   ((get-in op [:strategy :opts :on-key-update]) :db head :assoc))

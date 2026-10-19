@@ -16,7 +16,6 @@
             [datahike.writing :as dw]
             [datahike.connections :refer [invalidate-store-connections!]]
             [datahike.store :as dstore]
-            [datahike.cbor :as dcbor]
             [datahike.tools :refer [throwable-promise]]
             [kabel.pubsub :as pubsub]
             [kabel.remote :as remote]
@@ -109,7 +108,7 @@
             local-peer     ; the local kabel peer connected to it, or nil
             store-id       ; UUID identifying the store/database (from store :id)
             branch         ; branch whose head this writer advances
-            store-config   ; Store config for index-registry cleanup on shutdown
+            store-config   ; Store identity/configuration; registry lifetime is branch-shared
             pending-txs    ; atom: {request-id -> {:expected-max-tx ... :tx-report ... :ch promise-chan}}
             current-max-tx ; atom: current synced max-tx from konserve-sync
             listeners      ; atom: set of listen! callbacks to fire on tx completion
@@ -199,43 +198,19 @@
     true)
 
   (-shutdown [this]
-    ;; Cancel all pending waiters with shutdown error
-    (let [;; Fence subscription callbacks synchronously BEFORE removing the
-          ;; index registry or connection resources. Physical cleanup is joined
-          ;; by the returned channel, as required by PWriter.
-          subscription-close (when-let [close! (:sync-close! this)] (close!))
+    ;; Publication is fenced synchronously. Only the attached subscription
+    ;; controller owns physical cleanup; a manually constructed writer has no
+    ;; authority to unsubscribe somebody else's current strategy on this topic.
+    (let [subscription-close (when-let [close! (:sync-close! this)] (close!))
           shutdown-error (ex-info "Writer shutdown" {:type :writer-shutdown})]
-      (doseq [[_ {:keys [ch]}] @pending-txs]
-        (put! ch shutdown-error))
+      (doseq [[_ {:keys [ch]}] @pending-txs] (put! ch shutdown-error))
       (reset! pending-txs {})
-      ;; Drop the store from the index-reconstruction registry
-      (when (and store-config (not subscription-close))
-        (dcbor/unregister-store! store-config))
-      ;; Release the store subscription this connection held on the peer. A
-      ;; later connect on the same peer and store would otherwise be refused
-      ;; as a duplicate subscription.
+      ;; PSS reconstruction storage is shared by branch connections. A writer
+      ;; cannot unregister by UUID: even once could remove a sibling/replacement.
+      ;; Match generic release's bounded registry lifetime; reconnect overwrites.
       (if subscription-close
-        (go
-          (let [result (clojure.core.async/<! subscription-close)]
-            ;; Accepted frames may still need the registry to reconstruct
-            ;; index roots while unsubscribe drains. Keep it until that join.
-            (if (true? result)
-              (do (when store-config (dcbor/unregister-store! store-config)) true)
-              ;; A refused/timed-out drain does not prove frames stopped using
-              ;; this registry. Keep it for cleanup retry instead of breaking
-              ;; index decoding while returning the failure to the caller.
-              (or result (ex-info "Subscription shutdown closed without a result"
-                                  {:type :datahike.kabel/unsubscribe-failed})))))
-        (if local-peer
-          (go
-            (try
-              (<?- (await-topic-release! local-peer store-id 30000))
-              (catch #?(:clj Exception :cljs js/Error) e
-                (log/warn "Store unsubscribe on writer shutdown failed" {:store-id store-id :error (ex-message e)})))
-            true)
-          (let [ch (promise-chan)]
-            (put! ch true)
-            ch))))))
+        subscription-close
+        (doto (promise-chan) (put! true))))))
 
 ;; =============================================================================
 ;; Connection Reference
@@ -341,7 +316,7 @@
    - peer-id: UUID of the remote peer that owns the database
    - store-id: UUID identifying the store/database (extracted from store :id)
    - branch: branch whose head the remote writer must advance (default :db)
-   - store-config: Store config for index-registry cleanup on shutdown
+   - store-config: Store identity/configuration (registry lifetime is branch-shared)
 
    Returns a KabelWriter instance."
   ([peer-id store-id store-config]
