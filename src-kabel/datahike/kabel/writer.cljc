@@ -205,9 +205,9 @@
           shutdown-error (ex-info "Writer shutdown" {:type :writer-shutdown})]
       (doseq [[_ {:keys [ch]}] @pending-txs] (put! ch shutdown-error))
       (reset! pending-txs {})
-      ;; PSS reconstruction storage is shared by branch connections. A writer
-      ;; cannot unregister by UUID: even once could remove a sibling/replacement.
-      ;; Match generic release's bounded registry lifetime; reconnect overwrites.
+      ;; Connection retirement owns the reconstruction lease and native store.
+      ;; A standalone writer cannot unregister by UUID: that could remove a
+      ;; sibling or replacement. Shutdown alone joins only its subscription.
       (if subscription-close
         subscription-close
         (doto (promise-chan) (put! true))))))

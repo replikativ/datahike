@@ -87,6 +87,13 @@
   wrapping it in a test-local fn would only hide which format is under test."
   ch/datahike-cbor-middleware)
 
+(defn- release-replica! [conn]
+  (release conn)
+  (let [result (<!! (connector/await-release! conn))]
+    (when-not (true? result)
+      (throw (if (instance? Throwable result) result
+                 (ex-info "Replica retirement did not complete" {}))))))
+
 ;; =============================================================================
 ;; Schema
 ;; =============================================================================
@@ -171,8 +178,7 @@
         (finally
           (when-let [view @overlay] (optimistic/close! view))
           (when-let [conn @client]
-            (when-let [writer (:writer @conn)] (<!! (datahike.writer/shutdown writer)))
-            (release conn))
+            (release-replica! conn))
           (doseq [p (reverse @peers)] (<?? S (peer/stop p)))
           (release server)
           (d/delete-database config)
@@ -326,7 +332,7 @@
       ;; CLEANUP
       ;; =====================================================================
 
-      (release client-conn)
+      (release-replica! client-conn)
       (<!! (kw/await-topic-release! client-peer store-topic 10000))
       (handlers/unregister-store-for-remote-access! store-id server-peer)
       (<?? S (peer/stop server-peer))
@@ -403,7 +409,7 @@
           (is (= 5 (count people)) "All 5 people should exist on server")))
 
       ;; Cleanup
-      (release client-conn)
+      (release-replica! client-conn)
       (<!! (kw/await-topic-release! client-peer store-topic 10000))
       (handlers/unregister-store-for-remote-access! store-id server-peer)
       (<?? S (peer/stop server-peer))
@@ -481,7 +487,7 @@
 
       ;; Cleanup
       (d/unlisten client-conn listener-key)
-      (release client-conn)
+      (release-replica! client-conn)
       (<!! (kw/await-topic-release! client-peer store-topic 10000))
       (handlers/unregister-store-for-remote-access! store-id server-peer)
       (<?? S (peer/stop server-peer))
@@ -581,10 +587,8 @@
       ;; =====================================================================
       ;; DISCONNECT FIRST CLIENT - keep server running for reconnect test
       ;; =====================================================================
-      (<!! (kw/await-topic-release! client-peer-1 store-topic 10000))
-      (Thread/sleep 200)  ;; Allow pending callbacks to complete
+      (release-replica! client-conn-1)
       (<?? S (peer/stop client-peer-1))
-      (release client-conn-1)
 
       ;; NOTE: Skip server transact here - there's a race condition between
       ;; unsubscribe and write-hook publish that blocks the server transact.
@@ -636,12 +640,10 @@
           (is (some #(= ["Carol" 35] %) all-people) "Carol should exist from cache"))
 
         ;; Cleanup second connection
-        (<!! (kw/await-topic-release! client-peer-2 store-topic 10000))
-        (Thread/sleep 100)
-        (<?? S (peer/stop client-peer-2))
-        (release client-conn-2))
+        (release-replica! client-conn-2)
+        (<?? S (peer/stop client-peer-2)))
 
-      ;; =====================================================================
+;; =====================================================================
       ;; FINAL CLEANUP
       ;; =====================================================================
       (handlers/unregister-store-for-remote-access! store-id server-peer)
@@ -804,7 +806,7 @@
       (testing "REMOTE WRITE: a fork client dispatches to the fork writer, not trunk"
         ;; A konserve-sync subscription is store-topic scoped, so hand it from
         ;; the trunk connection to the fork connection before reconnecting.
-        (release client-conn)
+        (release-replica! client-conn)
         ;; Await the drain: a subscribe on the same topic before the old one has
         ;; been released is refused as a duplicate.
         (<!! (kw/await-topic-release! client-peer store-topic 10000))
@@ -828,7 +830,7 @@
                              [?e :person/age ?a]]
                            @server-conn))
                 "trunk remains unchanged"))
-          (release fork-client)
+          (release-replica! fork-client)
           (<!! (kw/await-topic-release! client-peer store-topic 10000))))
 
       ;; cleanup
@@ -934,7 +936,7 @@
                           (d/db server-conn)))
               "a's friend must be d")))
 
-      (release client-conn)
+      (release-replica! client-conn)
       (<!! (kw/await-topic-release! client-peer store-topic 10000))
       (handlers/unregister-store-for-remote-access! store-id server-peer)
       (<?? S (peer/stop server-peer))

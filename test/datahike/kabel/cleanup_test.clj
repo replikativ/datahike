@@ -6,6 +6,12 @@
             [datahike.kabel.connector :as connector]
             [datahike.cbor :as cbor]
             [datahike.store :as datahike-store]
+            [datahike.store-registry :as registry]
+            [org.replikativ.persistent-sorted-set.impl.nodes :as nodes]
+            [datahike.connections :as connections]
+            [datahike.connector :as native-connector]
+            [konserve-sync.pubsub :as sync]
+            [kabel.pubsub :as pubsub]
             [konserve.store :as store]))
 
 (defn- ready [value]
@@ -22,6 +28,7 @@
         error (ex-info "Constructor failed" {:type :fixture})
         drain-error (ex-info "Drain unavailable" {}) attempts (atom 0) events (atom [])]
     (swap! (:state owner) assoc :strategy strategy :store native-store :store-config {:backend :memory}
+           :drain! #(writer/await-topic-release! :peer :topic 5000 strategy)
            :peer :peer :topic :topic :retire-initial! #(swap! events conj :fenced))
     (with-redefs [writer/await-topic-release! (fn [peer topic timeout-ms expected]
                                                 (is (= [:peer :topic 5000] [peer topic timeout-ms]))
@@ -47,6 +54,7 @@
   (let [owner (cleanup/owner) drains (atom 0) releases (atom 0)
         failure (ex-info "Store release failed" {})]
     (swap! (:state owner) assoc :strategy :original :peer :peer :topic :topic :store :store :store-config {})
+    (swap! (:state owner) assoc :drain! #(writer/await-topic-release! :peer :topic 5000 :original))
     (with-redefs [writer/await-topic-release! (fn [& _] (swap! drains inc) (ready true))
                   store/release-store (fn [& _] (ready (when (= 1 (swap! releases inc)) failure)))]
       (let [error (take! (cleanup/failure! owner (ex-info "Open failed" {})))]
@@ -64,6 +72,157 @@
   {:store {:backend :memory :id (random-uuid)}
    :writer {:backend :kabel :local-peer (atom {}) :peer-id (random-uuid)}
    :schema-flexibility :write :keep-history? true})
+
+(deftest registration-and-native-close-follow-exact-drain
+  (let [id (random-uuid) store-object (Object.) owner (cleanup/owner)
+        lease (registry/acquire! id store-object) drain (a/promise-chan)
+        failed (ex-info "Drain failed" {}) next-drain (atom drain) events (atom [])]
+    (swap! (:state owner) assoc :registration lease :store store-object :store-config {:id id}
+           :drain! #(do (swap! events conj :fenced) @next-drain))
+    (with-redefs [store/release-store (fn [& _]
+                                        (is (nil? (nodes/registered-storage id)))
+                                        (swap! events conj :closed) (ready nil))]
+      (let [result (cleanup/cleanup! owner)]
+        (is (identical? result (cleanup/cleanup! owner)))
+        (is (identical? store-object (nodes/registered-storage id)))
+        (is (= [:fenced] @events))
+        (a/put! drain failed)
+        (is (= (ex-message failed) (ex-message (take! result))))
+        (is (identical? store-object (nodes/registered-storage id)))
+        (is (not-any? #{:closed} @events))
+        (reset! next-drain (ready true))
+        (is (true? (take! (cleanup/cleanup! owner))))
+        (is (nil? (nodes/registered-storage id)))
+        (is (= [:fenced :fenced :closed] @events))
+        (is (true? (take! (cleanup/cleanup! owner))))
+        (is (= [:fenced :fenced :closed] @events))
+        (is (nil? (:store @(:state owner))))))))
+
+(deftest synchronous-fencing-errors-are-delivered-and-retryable
+  (doseq [callback [:retire-initial! :drain!]]
+    (let [owner (cleanup/owner) calls (atom 0) failure (ex-info "Synchronous fence failure" {})]
+      (swap! (:state owner) assoc callback
+             #(if (= 1 (swap! calls inc)) (throw failure) (ready true)))
+      (let [result (cleanup/cleanup! owner)]
+        (is (identical? failure (take! result)))
+        (is (= :error (get-in @(:state owner) [:cleanup :phase])))
+        (is (true? (take! (cleanup/cleanup! owner))))
+        (is (= 2 @calls))))))
+
+(deftest false-and-closed-drains-do-not-release-registration-or-store
+  (doseq [unconfirmed [nil false]]
+    (let [id (random-uuid) object (Object.) owner (cleanup/owner)
+          lease (registry/acquire! id object)]
+      (swap! (:state owner) assoc :registration lease :store object :store-config {:id id}
+             :drain! #(ready unconfirmed))
+      (with-redefs [store/release-store (fn [& _] (throw (AssertionError. "Unconfirmed store close")))]
+        (is (= :datahike.kabel/unconfirmed-drain
+               (:type (ex-data (take! (cleanup/cleanup! owner))))))
+        (is (identical? object (nodes/registered-storage id))))
+      (swap! (:state owner) assoc :drain! #(ready true))
+      (with-redefs [store/release-store (fn [& _] (ready nil))]
+        (is (true? (take! (cleanup/cleanup! owner))))))))
+
+(deftest malformed-synchronous-drain-results-fail-closed
+  (doseq [unconfirmed [nil false true (Object.)]]
+    (let [id (random-uuid) object (Object.) owner (cleanup/owner)]
+      (swap! (:state owner) assoc :registration (registry/acquire! id object)
+             :store object :store-config {:id id} :drain! (constantly unconfirmed))
+      (with-redefs [store/release-store (fn [& _] (throw (AssertionError. "Unconfirmed store close")))]
+        (is (= :datahike.kabel/unconfirmed-drain
+               (:type (ex-data (take! (cleanup/cleanup! owner))))))
+        (is (identical? object (nodes/registered-storage id))))
+      (swap! (:state owner) assoc :drain! #(ready true))
+      (with-redefs [store/release-store (fn [& _] (ready nil))]
+        (is (true? (take! (cleanup/cleanup! owner))))))))
+
+(deftest one-throwing-watch-cannot-strand-other-invalidated-owners
+  (binding [connections/*connections* (atom {})]
+    (let [id (random-uuid) calls (atom #{})
+          conns (mapv (fn [branch]
+                        (let [state (atom {:branch branch}) conn (native-connector/->Connection state)]
+                          (alter-meta! state assoc :datahike/retire!
+                                       #(do (swap! calls conj branch) (ready true)))
+                          (add-watch state ::broken-observer
+                                     (fn [& _] (throw (ex-info "Broken observation watch" {}))))
+                          (swap! connections/*connections* assoc [id branch] {:conn conn :count 1})
+                          conn))
+                      [:a :b])]
+      (is (= :datahike/retirement-errors
+             (:type (ex-data (try (connections/invalidate-store-connections! id)
+                                  (catch Exception error error))))))
+      (is (= #{:a :b} @calls))
+      (is (every? #(= :released @(:wrapped-atom %)) conns))
+      (is (empty? @connections/*connections*)))))
+
+(deftest failed-constructor-releases-its-registration-after-pre-subscribe-failure
+  (let [config (fixture-config) id (get-in config [:store :id]) object (Object.) releases (atom 0)]
+    (with-redefs [store/store-exists? (fn [& _] (ready false))
+                  store/create-store (fn [& _] (ready object))
+                  datahike-store/add-cache-and-handlers (fn [& _] object)
+                  datahike-store/ready-store (fn [& _] (ready true))
+                  sync/store-sync-strategy (fn [& _]
+                                             (is (identical? object (nodes/registered-storage id)))
+                                             (throw (ex-info "Strategy setup failed" {:type ::strategy-failed})))
+                  store/release-store (fn [& _]
+                                        (is (nil? (nodes/registered-storage id)))
+                                        (swap! releases inc) (ready nil))]
+      (let [failure (take! (connector/connect-kabel config {:sync? false}))]
+        (is (= ::strategy-failed (:type (ex-data failure))))
+        (is (connector/cleanup-confirmed? failure))
+        (is (= 1 @releases))
+        (is (nil? (nodes/registered-storage id)))))))
+
+(deftest refused-initial-subscription-drains-only-its-captured-strategy
+  (let [config (fixture-config) id (get-in config [:store :id]) object (Object.)
+        strategy (Object.) drained (atom [])]
+    (with-redefs [store/store-exists? (fn [& _] (ready false))
+                  store/create-store (fn [& _] (ready object))
+                  datahike-store/add-cache-and-handlers (fn [& _] object)
+                  datahike-store/ready-store (fn [& _] (ready true))
+                  sync/store-sync-strategy (fn [& _] strategy)
+                  pubsub/subscribe! (fn [& _] (ready {:error (ex-info "Subscription refused" {:type ::refused})}))
+                  writer/await-topic-release! (fn [_ topic _ expected]
+                                                (is (= id topic))
+                                                (is (identical? strategy expected))
+                                                (is (identical? object (nodes/registered-storage id)))
+                                                (swap! drained conj expected) (ready true))
+                  store/release-store (fn [& _]
+                                        (is (nil? (nodes/registered-storage id))) (ready nil))]
+      (let [failure (take! (connector/connect-kabel config {:sync? false}))]
+        (is (= ::refused (:type (ex-data failure))))
+        (is (connector/cleanup-confirmed? failure))
+        (is (= [strategy] @drained))
+        (is (nil? (nodes/registered-storage id)))))))
+
+(deftest deletion-and-invalidation-retire-the-exact-connection-owner
+  (doseq [invalidate? [false true]]
+    (binding [connections/*connections* (atom {})]
+      (let [id (random-uuid) conn-id [id :db] state (atom {:config {:store {:id id}}})
+            conn (native-connector/->Connection state) calls (atom 0)]
+        (alter-meta! state assoc :datahike/retire!
+                     #(do (is (= :released @state)) (swap! calls inc) (ready true)))
+        (swap! connections/*connections* assoc conn-id {:conn conn :count 1})
+        (if invalidate?
+          (connections/invalidate-store-connections! id)
+          (connections/delete-connection! conn-id))
+        (is (= 1 @calls))
+        (is (= :released @state))
+        (connections/delete-connection! conn-id)
+        (is (= 1 @calls))))))
+
+(deftest generic-release-never-closes-a-kabel-store-before-owned-cleanup
+  (binding [connections/*connections* (atom {})]
+    (let [id (random-uuid) config {:backend :memory :id id}
+          conn-id [(datahike-store/store-identity config) :db]
+          state (atom {:config {:store config :branch :db} :store :native-store})
+          conn (native-connector/->Connection state) retired (a/promise-chan) calls (atom 0)]
+      (alter-meta! state assoc :datahike/retire! #(do (swap! calls inc) retired))
+      (swap! connections/*connections* assoc conn-id {:conn conn :count 1})
+      (with-redefs [store/release-store (fn [& _] (throw (AssertionError. "Premature native close")))]
+        (is (nil? (native-connector/release conn)))
+        (is (= 1 @calls))
+        (is (identical? retired (connector/await-release! conn)))))))
 
 (deftest constructor-captures-raw-resource-before-handler-wrapping
   (let [config (fixture-config) raw-store (Object.) released (atom [])

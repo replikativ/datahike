@@ -8,7 +8,7 @@
             [datahike.connections :refer [add-connection! abandon-reservation!
                                           reserve-connection!]]
             [datahike.connector :refer [->Connection]]
-            [datahike.cbor :as dcbor]
+            [datahike.store-registry :as registry]
             [datahike.kabel.writer :as kw]
             [datahike.kabel.subscription :as subscription]
             [datahike.kabel.cleanup :as cleanup]
@@ -200,7 +200,8 @@
           ;; than nodes, and a root resolves its storage by :pss/storage-id.
           ;; The registry belongs to persistent-sorted-set and is not tied to a
           ;; serialization format.
-             _ (dcbor/register-store! store-config store)
+             registration (registry/acquire! (:id store-config) store)
+             _ (swap! opened assoc :registration registration)
              _ (log/trace "Store registered for index reconstruction")
 
           ;; 1d. Check if we already have the branch key in cache (for tiered stores)
@@ -256,7 +257,8 @@
                                                                                (log/trace "Initial branch received via sync" {:branch branch
                                                                                                                               :max-tx (:max-tx value)})
                                                                                (reset! stored-db-atom value-with-client-config))))))))})
-             _ (swap! opened assoc :topic store-topic :peer local-peer :strategy initial-strategy)
+             _ (swap! opened assoc :topic store-topic :peer local-peer :strategy initial-strategy
+                      :drain! #(kw/await-topic-release! local-peer store-topic 5000 initial-strategy))
              sub-result (<?- (pubsub/subscribe!
                               local-peer #{store-topic}
                               {:strategies {store-topic initial-strategy}
@@ -328,6 +330,7 @@
                    (log/warn (str "Stored index does not match configuration. Using stored: " stored-index))
                    (let [config (assoc config :index stored-index)
                          store (ds/add-cache-and-handlers raw-store config)
+                         _ (registry/replace! registration store)
                          _ (swap! opened assoc :store store :store-config store-config)]
                      [config store processed]))
                  [config store processed]))
@@ -367,6 +370,9 @@
              writer (assoc (w/create-writer writer-config conn)
                            :sync-subscription sync-controller
                            :sync-close! #(subscription/close! sync-controller))
+             _ (swap! opened assoc :drain! #(w/shutdown writer))
+             _ (alter-meta! (:wrapped-atom conn) assoc
+                            :datahike/retire! #(cleanup/cleanup! cleanup-owner))
              _ (log/trace "Writer created")
              _ (swap! (:wrapped-atom conn) assoc :writer writer :store store)
              _ (log/trace "Writer attached to connection")
@@ -408,6 +414,18 @@
   "Does this local failed-connect result positively confirm native cleanup?"
   [error]
   (cleanup/confirmed? error))
+
+(defn await-release!
+  "After d/release has retired a Kabel connection, join its complete resource
+   cleanup (subscription, reconstruction lease, native store). d/release keeps
+   its nil-return contract. A later explicit call retries unfinished cleanup
+   after failure; never reconnect until this channel yields true."
+  [conn]
+  (if (and (= :released @(:wrapped-atom conn)) (:datahike/retire! (meta conn)))
+    ((:datahike/retire! (meta conn)))
+    (go-try-
+     (throw (ex-info "Connection has not been retired as a Kabel replica"
+                     {:type :datahike.kabel/not-retired})))))
 
 (defn recover-connect!
   "Retry ONLY the exact resources retained by a failed constructor. Local-only:

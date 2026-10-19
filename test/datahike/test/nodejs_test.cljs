@@ -43,6 +43,8 @@
             ;; :db.type/store-ref — blob GC contract, content-addressing, external
             ;; blobs (mark-without-sweep). Exercises with-unreferenced-writes on cljs.
             [datahike.test.store-ref-test]
+            [datahike.test.store-registry-test]
+            [datahike.kabel.cleanup-async-test]
             [datahike.test.async-storage-test]
             ;; konserve-sync reachability walker — follows store-ref values so a
             ;; referenced blob replicates (a browser subscriber walks the same way).
@@ -935,6 +937,8 @@
                'datahike.test.background-gc-test
                'datahike.test.metrics-test
                'datahike.test.store-ref-test
+               'datahike.test.store-registry-test
+               'datahike.kabel.cleanup-async-test
                'datahike.test.async-storage-test
                'datahike.kabel.walker-test
                'datahike.test.experimental-diff-portable-test

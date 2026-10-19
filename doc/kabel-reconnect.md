@@ -48,10 +48,13 @@ Writer shutdown fences publication synchronously and returns a channel joining
 subscription cleanup. In-flight and successful closes share one result; a failed
 physical drain can be explicitly retried. Only the attached controller owns a
 physical strategy: a manually constructed writer does not unsubscribe whatever
-currently occupies its topic. Neither writer shutdown nor failed construction
-unregisters PSS reconstruction storage by UUID, because branches share that
-registration. As with generic release, the bounded entry remains until reconnect
-overwrites it; exact last-owner reclamation is a separate concern.
+currently occupies its topic. Each constructor owns a reconstruction registration
+lease, rather than unregistering by UUID. Retirement restores the newest remaining
+live sibling registration; the last lease removes its entry. Explicit unmanaged
+`register-store!` registrations still require explicit `unregister-store!`, and
+are preserved even when re-registering the same store object. Direct PSS registry
+mutation is outside this ownership protocol: a different replacement is preserved,
+but same-object re-registration must use the Datahike API to convey new ownership.
 
 Failed construction fences initial callbacks and joins its captured strategy's
 guarded drain **before** releasing the store. `cleanup-confirmed?` reports whether
@@ -63,12 +66,27 @@ do not prove clean completion. Callers must serialize constructors and retiremen
 for each physical local store; this API does not make overlapping constructors
 safe. Initial connection no longer steals an existing topic as a recovery step.
 
-Existing generic `d/release` does **not** await asynchronous
-writer shutdown before closing a store. Callers needing a physical drain barrier
-must join `datahike.writer/shutdown` before release; this experimental API does
-not repair that separate generic release seam or provide arbitrary-backend
-store-close completion. Late publication also uses a
-compare-and-set guard so it cannot resurrect a released connection.
+For Kabel connections, `d/release` synchronously marks the connection released
+and starts its connection-owned retirement: fence publication, join the exact
+subscription drain, release its reconstruction lease, then close the native store.
+Deletion/invalidation invokes the same captured owner. The public release call
+still returns nil. Before reusing the local store, join the complete lifecycle:
+
+```clojure
+(d/release conn)
+(let [result (<! (kabel/await-release! conn))]
+  ;; Only literal true confirms that native resources are retired.
+  ...)
+```
+
+Pending and successful retirement share one result. An explicit later
+`await-release!` retries unfinished phases after failure, without replaying
+construction or writes. Failed drain retains the registration and native handle;
+failed native close does not drain an already retired subscription again. These
+capabilities remain in connection metadata after invalidation. This ordering is
+specific to owned Kabel replicas, not a new arbitrary-backend close guarantee.
+Late publication also uses a compare-and-set guard so it cannot resurrect a
+released connection.
 
 A different principal or peer is a new session, not a resubscription. Prepare
 only authorized already-open stores after reconnect; do not eagerly open every

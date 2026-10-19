@@ -11,7 +11,9 @@ When something is added, it's typically marked *Experimental*. When the API cont
   catches up the existing connection without discarding its store, listeners
   or optimistic overlay. Readiness requires a fresh branch head and complete
   index synchronization; stale or released callbacks cannot revive the replica.
-  Shutdown retains branch-shared reconstruction registrations and failed native
+  Retirement releases leased reconstruction registrations after subscription
+  drain, preserving live sibling registrations; `await-release!` joins native
+  cleanup after `release`. Failed native
   initialization exposes explicit cleanup confirmation/recovery rather than
   suppressing drain failures.
   See [reconnect lifecycle and limits](doc/kabel-reconnect.md). (0.8.1907, [#1118])
