@@ -90,7 +90,9 @@
         com.github.pkpkpk/cljs-cache                {:mvn/version "1.0.21"}
         org.roaringbitmap/RoaringBitmap             {:mvn/version "1.6.20"}}
 
- :paths ["src" "target/classes" "resources"]
+ ;; These optional namespaces are also shipped in the release jar. Make them
+ ;; visible to Git consumers without requiring their engines or dependencies.
+ :paths ["src" "src-kabel" "src-secondary" "target/classes" "resources"]
 
  :deps/prep-lib {:ensure "target/classes"
                  :alias :build
