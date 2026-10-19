@@ -193,7 +193,7 @@
      :stability :stable
      :supports-remote? true
      :referentially-transparent? false
-     :doc "Releases a database connection."
+     :doc "Releases a database connection. Returns nil. Kabel replicas retire resources asynchronously; use datahike.kabel.connector/await-release! after the final release to join cleanup before reconnecting."
      :examples [{:desc "Release connection"
                  :code "(release conn)"}]
      :impl datahike.connector/release}

@@ -8,11 +8,65 @@
             [datahike.writing :as dw]
             [datahike.writer :as writer]
             [datahike.connections :as connections]
+            [datahike.cbor :as cbor]
             [kabel.remote :as remote]
+            [kabel.pubsub :as pubsub]
             [clojure.core.async :refer [<!! go timeout alts!! promise-chan]]))
 
 (def test-peer-id #uuid "10000000-0000-0000-0000-000000000001")
 (def test-store-id #uuid "20000000-0000-0000-0000-000000000002")
+
+(deftest sync-cannot-resurrect-a-released-connection
+  (let [wrapped (atom {:store :fixture-store}) conn {:wrapped-atom wrapped}]
+    (with-redefs [dw/stored->db (fn [_ _] (reset! wrapped :released) {:max-tx 9})]
+      (kw/on-db-sync! conn {:head :racing-release})
+      (is (= :released @wrapped)))
+    (with-redefs [dw/stored->db (fn [& _] (throw (AssertionError. "Released replica reconstructed a head")))]
+      (kw/on-db-sync! conn {:head :late})
+      (is (= :released @wrapped)))))
+
+(deftest subscription-shutdown-fences-before-drain-and-never-unregisters-shared-storage
+  (let [stopped (promise-chan) events (atom [])
+        writer (assoc (kw/kabel-writer test-peer-id test-store-id nil)
+                      :store-config {:id test-store-id}
+                      :sync-close! (fn [] (swap! events conj :fenced) stopped))]
+    (with-redefs [cbor/unregister-store! (fn [_] (throw (AssertionError. "Writer cannot unregister branch-shared storage")))]
+      (let [closed (writer/shutdown writer)]
+        (is (= [:fenced] @events))
+        (clojure.core.async/put! stopped true)
+        (is (true? (<!! closed)))
+        (is (= [:fenced] @events))))))
+
+(deftest standalone-writer-does-not-retire-a-replacement-or-unregister-sibling-storage
+  (let [config {:id (random-uuid)} replacement (Object.)
+        w (kw/kabel-writer test-peer-id :local-peer (:id config) :db config)]
+    (cbor/register-store! config replacement)
+    (try
+      (with-redefs [pubsub/unsubscribe! (fn [& _] (throw (AssertionError. "Writer has no ownership of today's topic")))]
+        (is (true? (<!! (writer/shutdown w))))
+        (is (true? (<!! (writer/shutdown w))))
+        (is (identical? replacement (cbor/get-store config))))
+      (finally (cbor/unregister-store! config)))))
+
+(deftest failed-drain-keeps-registry-for-cleanup-retry
+  (let [stopped (promise-chan) error (ex-info "Drain unavailable" {})
+        w (assoc (kw/kabel-writer test-peer-id test-store-id nil)
+                 :store-config {:id test-store-id} :sync-close! (constantly stopped))]
+    (with-redefs [cbor/unregister-store! (fn [_] (throw (AssertionError. "Failed drain discarded index registry")))]
+      (let [closed (writer/shutdown w)]
+        (clojure.core.async/put! stopped error)
+        (is (identical? error (<!! closed)))))))
+
+(deftest guarded-release-forwards-owner-and-does-not-swallow-conflict-after-replacement
+  (let [owned (Object.) generation (atom (random-uuid)) seen (atom nil)
+        error (ex-info "Replacement owner" {:type :kabel.pubsub/subscription-owner-conflict})]
+    (with-redefs [pubsub/subscription (fn [& _] {:generation @generation})
+                  pubsub/unsubscribe! (fn [peer topics opts]
+                                        (reset! seen [peer topics opts])
+                                        (reset! generation (random-uuid))
+                                        (go {:error error}))]
+      (is (identical? error (<!! (kw/await-topic-release! :peer :topic 1000 owned))))
+      (is (= [:peer #{:topic} {:expected-strategies {:topic owned}}] @seen)))))
 
 (deftest test-kabel-writer-construction
   (testing "kabel-writer creates proper instance"

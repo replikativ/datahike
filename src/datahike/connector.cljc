@@ -537,12 +537,13 @@
                     (try (.close ^java.io.Closeable idx)
                          (catch Exception e
                            (log/warn :datahike/secondary-index-close-failed {:error (.getMessage e)}))))))
-             (w/shutdown (:writer db))
+             (if (:datahike/retire! (meta connection))
+               ;; Kabel owns fence -> subscription drain -> registry lease ->
+               ;; native close. Never close its store before asynchronous drain.
+               nil
+               (do
+                 (w/shutdown (:writer db))
              ;; Release the underlying store to clean up resources (memory registry, etc.).
-             ;; NB: we do NOT unregister the PSS storage here — multiple connections (branches)
-             ;; share ONE store-id, so releasing one must not drop the storage a sibling still
-             ;; uses for root reads. A reconnect overwrites the entry; a never-reconnected store
-             ;; leaves one bounded entry (keyed by the stable store UUID). TODO: ref-counted
-             ;; unregister on the last release.
-             (ks/release-store (get-in db [:config :store]) (:store db))
-             nil)))))))
+             ;; Native store decoders are lexical and own no wire-registry lease.
+                 (ks/release-store (get-in db [:config :store]) (:store db))
+                 nil)))))))))
