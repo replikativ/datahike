@@ -10,6 +10,7 @@
             [datahike.connector :refer [->Connection]]
             [datahike.cbor :as dcbor]
             [datahike.kabel.writer :as kw]
+            [datahike.kabel.subscription :as subscription]
             [datahike.store :as ds]
             [datahike.writer :as w]
             [datahike.writing :as dw]
@@ -34,6 +35,10 @@
   [branch]
   (fn [store opts]
     (dh-walker/datahike-walk-fn store (assoc opts :branches branch))))
+
+(defn- with-initial-lock [state f]
+  #?(:clj (locking state (f))
+     :cljs (f)))
 
 (defn- make-branch-walk-fn
   "Create a walk function for perform-walk-sync that walks a specific branch.
@@ -118,49 +123,49 @@
          ;; What this connect has set up so far, for a failure to undo.
          opened (atom {})]
      (try
-      (let [;; Normalize config with defaults (cache sizes, etc.)
-         config (dissoc (dc/load-config raw-config) :initial-tx :remote-peer :name)
-         store-config (:store config)
-         store-id (ds/store-identity store-config)
-         branch (or (:branch config) :db)
-         conn-id [store-id branch]
+       (let [;; Normalize config with defaults (cache sizes, etc.)
+             config (dissoc (dc/load-config raw-config) :initial-tx :remote-peer :name)
+             store-config (:store config)
+             store-id (ds/store-identity store-config)
+             branch (or (:branch config) :db)
+             conn-id [store-id branch]
          ;; Extract store UUID for kabel topic from store config
-         store-id (:id store-config)
-         {:keys [peer-id local-peer]} (:writer config)
-         is-tiered? (= :tiered (:backend store-config))
-         _ (log/trace "Connecting via KabelWriter" {:store-id store-id
-                                                    :peer-id peer-id
-                                                    :branch branch
-                                                    :tiered? is-tiered?})
+             store-id (:id store-config)
+             {:keys [peer-id local-peer]} (:writer config)
+             is-tiered? (= :tiered (:backend store-config))
+             _ (log/trace "Connecting via KabelWriter" {:store-id store-id
+                                                        :peer-id peer-id
+                                                        :branch branch
+                                                        :tiered? is-tiered?})
 
           ;; Validate required kabel config
-         _ (when-not local-peer
-             (log/raise "KabelWriter requires :local-peer in writer config"
-                        {:type :kabel-missing-local-peer
-                         :config (:writer config)}))
-         _ (when-not store-id
-             (log/raise "KabelWriter requires :id in store config"
-                        {:type :kabel-missing-store-id
-                         :store-config store-config}))
+             _ (when-not local-peer
+                 (log/raise "KabelWriter requires :local-peer in writer config"
+                            {:type :kabel-missing-local-peer
+                             :config (:writer config)}))
+             _ (when-not store-id
+                 (log/raise "KabelWriter requires :id in store config"
+                            {:type :kabel-missing-store-id
+                             :store-config store-config}))
 
           ;; 1. Create or connect to store with Datahike handlers
           ;; For initial connection, store may not exist yet (create-store)
           ;; For reconnection after release, store exists (connect-store)
-         _ (log/trace "Checking if store exists..." {:backend (:backend store-config)
-                                                     :id (:id store-config)})
-         store-exists? (<?- (ks/store-exists? store-config opts))
-         _ (log/trace "Store exists?" {:exists store-exists?})
-         raw-store (if store-exists?
-                     (<?- (ks/connect-store store-config opts))
-                     (<?- (ks/create-store store-config opts)))
-         _ (log/trace "Store ready" {:raw-store (some? raw-store)})
-         _ (when-not raw-store
-             (log/raise "Failed to create/connect store." {:type :store-creation-failed
-                                                           :backend (:backend store-config)
-                                                           :id (:id store-config)}))
-         store (ds/add-cache-and-handlers raw-store config)
-         _ (swap! opened assoc :store store :store-config store-config)
-         _ (log/trace "Store ready, adding handlers...")
+             _ (log/trace "Checking if store exists..." {:backend (:backend store-config)
+                                                         :id (:id store-config)})
+             store-exists? (<?- (ks/store-exists? store-config opts))
+             _ (log/trace "Store exists?" {:exists store-exists?})
+             raw-store (if store-exists?
+                         (<?- (ks/connect-store store-config opts))
+                         (<?- (ks/create-store store-config opts)))
+             _ (log/trace "Store ready" {:raw-store (some? raw-store)})
+             _ (when-not raw-store
+                 (log/raise "Failed to create/connect store." {:type :store-creation-failed
+                                                               :backend (:backend store-config)
+                                                               :id (:id store-config)}))
+             store (ds/add-cache-and-handlers raw-store config)
+             _ (swap! opened assoc :store store :store-config store-config)
+             _ (log/trace "Store ready, adding handlers...")
 
           ;; The store konserve-sync applies pushed nodes to — and dedups against.
           ;; For a :frontend-only tiered store the backend is a SHARED, read-only
@@ -173,93 +178,96 @@
           ;; in — and existence is checked against — the local cache. Other tiered
           ;; modes (e.g. {memory, indexeddb} write-through, where the backend IS the
           ;; local durable tier) keep subscribing the whole store.
-         sync-store (if (and is-tiered?
-                             (= :frontend-only (:write-policy store-config)))
-                      (:frontend-store store)
-                      store)
+             sync-store (if (and is-tiered?
+                                 (= :frontend-only (:write-policy store-config)))
+                          (:frontend-store store)
+                          store)
 
           ;; 1b. For tiered stores, populate memory from backend BEFORE sync
           ;; This ensures sync handshake sends accurate timestamps for cached keys
           ;; For non-tiered stores, just call ready-store normally
-         _ (if is-tiered?
-             (<?- (populate-tiered-from-cache! store store-config branch opts))
-             (<?- (ds/ready-store (assoc store-config :opts opts) store)))
-         _ (log/trace "Store handlers ready" {:tiered? is-tiered?})
+             _ (if is-tiered?
+                 (<?- (populate-tiered-from-cache! store store-config branch opts))
+                 (<?- (ds/ready-store (assoc store-config :opts opts) store)))
+             _ (log/trace "Store handlers ready" {:tiered? is-tiered?})
 
           ;; 1c. Register the store for BTSet reconstruction. Needed BEFORE
           ;; subscribing, because sync messages carry BTSet addresses rather
           ;; than nodes, and a root resolves its storage by :pss/storage-id.
           ;; The registry belongs to persistent-sorted-set and is not tied to a
           ;; serialization format.
-         _ (dcbor/register-store! store-config store)
-         _ (swap! opened assoc :registered store-config)
-         _ (log/trace "Store registered for index reconstruction")
+             _ (dcbor/register-store! store-config store)
+             _ (swap! opened assoc :registered store-config)
+             _ (log/trace "Store registered for index reconstruction")
 
           ;; 1d. Check if we already have the branch key in cache (for tiered stores)
           ;; If so, we can use it immediately instead of waiting for sync
           ;; Replace server config with client config in cached value
-         cached-stored-db (when is-tiered?
-                            (when-let [cached (<?- (k/get store branch))]
-                              (assoc cached :config config)))
-         _ (when cached-stored-db
-             (log/trace "Found cached branch key" {:branch branch
-                                                   :max-tx (:max-tx cached-stored-db)}))
+             cached-stored-db (when is-tiered?
+                                (when-let [cached (<?- (k/get store branch))]
+                                  (assoc cached :config config)))
+             _ (when cached-stored-db
+                 (log/trace "Found cached branch key" {:branch branch
+                                                       :max-tx (:max-tx cached-stored-db)}))
 
           ;; 2. Set up sync subscription and wait for initial :db
           ;; Use a single subscription that handles both initial sync and ongoing updates
           ;; The conn-atom switches behavior after connection is set up
-         handshake-complete-ch (promise-chan)  ;; fires when the initial sync has FULLY applied
-         stored-db-atom (atom cached-stored-db)  ;; Pre-fill with cached value if available
-         conn-atom (atom nil)  ;; Set after connection is created
+             handshake-complete-ch (promise-chan)  ;; fires when the initial sync has FULLY applied
+             stored-db-atom (atom cached-stored-db)  ;; Pre-fill with cached value if available
+             conn-atom (atom nil)  ;; Set after connection is created
+             initial-active? (atom true)
          ;; Use UUID directly as topic (kabel pubsub supports any EDN value)
-         store-topic store-id
-         _ (log/trace "Subscribing to store topic" {:store-topic store-topic})
+             store-topic store-id
+             _ (log/trace "Subscribing to store topic" {:store-topic store-topic})
 
          ;; A previous connection on this peer may still hold the topic (its
          ;; release unsubscribes asynchronously); kabel refuses a duplicate,
          ;; so hand the topic over first.
-         _ (<?- (kw/await-topic-release! local-peer store-topic 30000))
-         _ (log/trace "Calling subscribe-store!")
-         sub-result (<?- (kp/subscribe-store!
-                          local-peer store-topic sync-store
-                          {;; Inventory only this branch's reachable local keys.
+             _ (<?- (kw/await-topic-release! local-peer store-topic 30000))
+             _ (log/trace "Calling subscribe-store!")
+             sub-result (<?- (kp/subscribe-store!
+                              local-peer store-topic sync-store
+                              {;; Inventory only this branch's reachable local keys.
                            ;; A durable browser cache may contain many abandoned
                            ;; fork nodes; enumerating all of IndexedDB here blocks
                            ;; the handshake before the server sees the request.
-                           :walk-fn (branch-walk-fn branch)
-                           :on-key-update
-                           (fn [key value _op]
-                             (when (= key branch)
+                               :walk-fn (branch-walk-fn branch)
+                               :on-key-update
+                               (fn [key value _op]
+                                 (with-initial-lock initial-active? (fn []
+                                                                      (when (and @initial-active? (= key branch))
                                ;; Replace server config with client config in synced stored-db
                                ;; The server's stored-db contains :backend :file which doesn't exist in browser
-                               (let [value-with-client-config (assoc value :config config)]
-                                 (if-let [conn @conn-atom]
+                                                                        (let [value-with-client-config (assoc value :config config)]
+                                                                          (reset! stored-db-atom value-with-client-config)
+                                                                          (if-let [conn @conn-atom]
                                    ;; Connection ready - use ongoing sync handler
-                                   (do
-                                     (log/trace "Ongoing sync update" {:branch branch :max-tx (:max-tx value)})
-                                     (kw/on-db-sync! conn value-with-client-config))
+                                                                            (do
+                                                                              (log/trace "Ongoing sync update" {:branch branch :max-tx (:max-tx value)})
+                                                                              (kw/on-db-sync! conn value-with-client-config))
                                    ;; Initial sync — stash the head. Exposure is gated on
                                    ;; :on-complete (full handshake drain), not on this: the
                                    ;; head alone says nothing about the nodes it points at.
-                                   (do
-                                     (log/trace "Initial branch received via sync" {:branch branch
-                                                                                    :max-tx (:max-tx value)})
-                                     (reset! stored-db-atom value-with-client-config))))))
-                           :on-complete
+                                                                            (do
+                                                                              (log/trace "Initial branch received via sync" {:branch branch
+                                                                                                                             :max-tx (:max-tx value)})
+                                                                              (reset! stored-db-atom value-with-client-config))))))))
+                               :on-complete
                            ;; Fired once the initial handshake has fully drained:
                            ;; every reachable index node, then the :db head, applied.
-                           (fn [] (put! handshake-complete-ch :handshake-done))}))
-         _ (log/trace "subscribe-store! returned" {:subscribed? (some? sub-result)})
-         _ (when-not (:error sub-result)
-             (swap! opened assoc :topic store-topic :peer local-peer))
+                               (fn [] (put! handshake-complete-ch :handshake-done))}))
+             _ (log/trace "subscribe-store! returned" {:subscribed? (some? sub-result)})
+             _ (when-not (:error sub-result)
+                 (swap! opened assoc :topic store-topic :peer local-peer))
          ;; A refused subscription (a duplicate on this topic, a closed peer)
          ;; never completes a handshake, so waiting for one would hang forever.
-         _ (when-let [error (:error sub-result)]
-             (throw (if (instance? #?(:clj Throwable :cljs js/Error) error)
-                      error
-                      (ex-info "Store subscription refused"
-                               {:type :datahike.kabel/subscribe-failed
-                                :store-id store-id :error error}))))
+             _ (when-let [error (:error sub-result)]
+                 (throw (if (instance? #?(:clj Throwable :cljs js/Error) error)
+                          error
+                          (ex-info "Store subscription refused"
+                                   {:type :datahike.kabel/subscribe-failed
+                                    :store-id store-id :error error}))))
 
           ;; 3. Gate db exposure on the FULL handshake drain (konserve-sync :on-complete):
           ;; every reachable index node applied, THEN the :db head. This is the guarantee we
@@ -279,103 +287,145 @@
           ;;
           ;; Requires kabel with the per-subscription :on-handshake-complete fix — before it,
           ;; subscribe! dropped the callback and this signal could never arrive.
-         _ (when-not sub-result
-             (log/raise "KabelWriter store subscription failed — no handshake will arrive"
-                        {:type :kabel-subscribe-failed :store-id store-id :branch branch}))
-         _ (log/trace "Waiting for handshake to fully drain...")
+             _ (when-not sub-result
+                 (log/raise "KabelWriter store subscription failed — no handshake will arrive"
+                            {:type :kabel-subscribe-failed :store-id store-id :branch branch}))
+             _ (log/trace "Waiting for handshake to fully drain...")
          ;; Bounded: a handshake the server retired (kabel logs
          ;; :pubsub/subscription-retired-before-ready) never completes, and a
          ;; connect must fail then, not wait forever.
-         handshake-timeout-ms (or (:handshake-timeout-ms opts) 120000)
-         [_ port] (alts! [handshake-complete-ch (timeout handshake-timeout-ms)])
-         _ (when (not= port handshake-complete-ch)
-             (log/raise "KabelWriter store handshake did not complete in time"
-                        {:type :kabel-handshake-timeout :store-id store-id :branch branch
-                         :timeout-ms handshake-timeout-ms}))
-         stored-db (or @stored-db-atom
-                       (log/raise "Handshake drained but no :db head is present"
-                                  {:type :kabel-no-head :store-id store-id :branch branch}))
-         _ (log/trace "Handshake drained — indices complete" {:max-tx (:max-tx stored-db)})
+             handshake-timeout-ms (or (:handshake-timeout-ms opts) 120000)
+             [_ port] (alts! [handshake-complete-ch (timeout handshake-timeout-ms)])
+             _ (when (not= port handshake-complete-ch)
+                 (log/raise "KabelWriter store handshake did not complete in time"
+                            {:type :kabel-handshake-timeout :store-id store-id :branch branch
+                             :timeout-ms handshake-timeout-ms}))
+             stored-db (or @stored-db-atom
+                           (log/raise "Handshake drained but no :db head is present"
+                                      {:type :kabel-no-head :store-id store-id :branch branch}))
+             _ (log/trace "Handshake drained — indices complete" {:max-tx (:max-tx stored-db)})
 
           ;; 4. Reconstruct deferred indexes and create connection
-         _ (log/trace "Stored-db received" {:key-count (count (keys stored-db))
-                                            :has-eavt? (some? (:eavt-key stored-db))})
+             _ (log/trace "Stored-db received" {:key-count (count (keys stored-db))
+                                                :has-eavt? (some? (:eavt-key stored-db))})
          ;; Index roots arrive EAGER (the canonical wire read handler reconstructs them, resolving
          ;; storage by :pss/storage-id from the registry — the store was registered above), so there are
          ;; no deferred maps to convert.
-         processed stored-db
-         _ (log/trace "Indexes reconstructed" {:has-eavt? (some? (:eavt-key processed))})
+             processed stored-db
+             _ (log/trace "Indexes reconstructed" {:has-eavt? (some? (:eavt-key processed))})
 
           ;; Handle index from synced db
-         [config store stored-db]
-         (let [intended-index (:index config)
-               stored-index (get-in processed [:config :index])]
-           (if (and intended-index stored-index (not= intended-index stored-index))
-             (do
-               (log/warn (str "Stored index does not match configuration. Using stored: " stored-index))
-               (let [config (assoc config :index stored-index)
-                     store (ds/add-cache-and-handlers raw-store config)
-         _ (swap! opened assoc :store store :store-config store-config)]
+             [config store stored-db]
+             (let [intended-index (:index config)
+                   stored-index (get-in processed [:config :index])]
+               (if (and intended-index stored-index (not= intended-index stored-index))
+                 (do
+                   (log/warn (str "Stored index does not match configuration. Using stored: " stored-index))
+                   (let [config (assoc config :index stored-index)
+                         store (ds/add-cache-and-handlers raw-store config)
+                         _ (swap! opened assoc :store store :store-config store-config)]
+                     [config store processed]))
                  [config store processed]))
-             [config store processed]))
 
           ;; Create connection - equivalent to conn-from-db but avoiding circular dep
           ;; The stored-db now has client config (replaced in on-key-update callback)
-         _ (log/info "Creating connection with config"
-                     {:store-backend (get-in config [:store :backend])
-                      :writer-backend (get-in config [:writer :backend])})
-         live-db (dw/stored->db stored-db store)
-         _ (log/info "Connection created, checking db config"
-                     {:db-store-backend (get-in live-db [:config :store :backend])})
-         conn (->Connection (atom live-db :meta {:listeners (atom {})}))
+             _ (log/info "Creating connection with config"
+                         {:store-backend (get-in config [:store :backend])
+                          :writer-backend (get-in config [:writer :backend])})
+             live-db (dw/stored->db stored-db store)
+             _ (log/info "Connection created, checking db config"
+                         {:db-store-backend (get-in live-db [:config :store :backend])})
+             conn (->Connection (atom live-db :meta {:listeners (atom {})}))
 
           ;; 5. Create writer and wire up ongoing sync
           ;; Pass store-config for cleanup on shutdown
-         _ (log/trace "Creating KabelWriter" {:peer-id peer-id :store-id store-id})
-         writer-config (assoc (:writer config)
-                              :store-config store-config
-                              :branch branch)
-         writer (w/create-writer writer-config conn)
-         _ (log/trace "Writer created")
-         _ (swap! (:wrapped-atom conn) assoc :writer writer :store store)
-         _ (log/trace "Writer attached to connection")
+             _ (log/trace "Creating KabelWriter" {:peer-id peer-id :store-id store-id})
+             writer-config (assoc (:writer config)
+                                  :store-config store-config
+                                  :branch branch)
+             sync-controller
+             (subscription/controller
+              {:peer local-peer :topic store-topic :store sync-store :branch branch
+           ;; One monitor for initial and reconnect publication: DB watches may
+           ;; synchronously request resubscription while publishing an initial
+           ;; head. Two nested monitors would invert their acquisition order.
+               :lock initial-active?
+               :retire-initial! #(with-initial-lock initial-active? (fn [] (reset! initial-active? false)))
+               :release! #(kw/await-topic-release! local-peer store-topic %1 %2)
+           ;; Force the server to confirm the mutable head, even if our cached
+           ;; timestamp matches. Immutable inventory remains branch-scoped.
+               :walk-fn (fn [store opts]
+                          (go-try-
+                           (vec (remove #{branch} (<?- ((branch-walk-fn branch) store opts))))))
+               :publish! #(kw/on-db-sync! conn (assoc % :config config))})
+             writer (assoc (w/create-writer writer-config conn)
+                           :sync-subscription sync-controller
+                           :sync-close! #(subscription/close! sync-controller))
+             _ (log/trace "Writer created")
+             _ (swap! (:wrapped-atom conn) assoc :writer writer :store store)
+             _ (log/trace "Writer attached to connection")
 
           ;; Set connection reference in writer (for tx-report reconstruction)
-         _ (kw/set-connection! writer conn)
+             _ (kw/set-connection! writer conn)
 
           ;; 6. Switch the subscription callback to use on-db-sync! for ongoing updates
           ;; By setting conn-atom, the on-key-update callback now calls on-db-sync!
           ;; instead of just stashing the head for the initial handshake
-         _ (reset! conn-atom conn)
-         _ (log/trace "Connection atom set, ongoing sync enabled")]
+         ;; A live head may arrive between the initial drain and attaching the
+         ;; connection. Do not lose it in that window.
+             _ (with-initial-lock initial-active?
+                 (fn []
+                   (reset! conn-atom conn)
+                   (when-not (= stored-db @stored-db-atom)
+                     (kw/on-db-sync! conn @stored-db-atom))))
+             _ (log/trace "Connection atom set, ongoing sync enabled")]
 
       ;; 7. Register connection
-     (when-not (add-connection! conn-id lease conn)
-       (w/shutdown writer)
-       (reset! conn :released)
-       (log/raise "Database was deleted while connecting."
-                  {:type :database-deleted-during-connect
-                   :config config}))
+         (when-not (add-connection! conn-id lease conn)
+           (w/shutdown writer)
+           (reset! conn :released)
+           (log/raise "Database was deleted while connecting."
+                      {:type :database-deleted-during-connect
+                       :config config}))
 
-     (log/info "KabelWriter connection complete" {:store-id store-id :max-tx (:max-tx stored-db)})
+         (log/info "KabelWriter connection complete" {:store-id store-id :max-tx (:max-tx stored-db)})
       ;; Return connection - caller must take from channel
-       conn)
-      (catch #?(:clj Exception :cljs :default) e
-        (abandon-reservation! conn-id lease)
+         conn)
+       (catch #?(:clj Exception :cljs :default) e
+         (abandon-reservation! conn-id lease)
         ;; Undo what was set up before the failure: the subscription (a later
         ;; connect would otherwise be refused as a duplicate), the codec
         ;; registration, and the open store (an IndexedDB handle in a browser).
-        (let [{:keys [store store-config registered topic peer]} @opened]
-          (when topic
-            (try (<?- (kw/await-topic-release! peer topic 5000))
-                 (catch #?(:clj Exception :cljs :default) _ nil)))
-          (when registered
-            (try (dcbor/unregister-store! registered)
-                 (catch #?(:clj Exception :cljs :default) _ nil)))
-          (when store
-            (try (<?- (ks/release-store store-config store opts))
-                 (catch #?(:clj Exception :cljs :default) _ nil))))
-        (throw e))))))
+         (let [{:keys [store store-config registered topic peer]} @opened]
+           (when topic
+             (try (<?- (kw/await-topic-release! peer topic 5000))
+                  (catch #?(:clj Exception :cljs :default) _ nil)))
+           (when registered
+             (try (dcbor/unregister-store! registered)
+                  (catch #?(:clj Exception :cljs :default) _ nil)))
+           (when store
+             (try (<?- (ks/release-store store-config store opts))
+                  (catch #?(:clj Exception :cljs :default) _ nil))))
+         (throw e))))))
+
+(defn resubscribe!
+  "Refresh an existing Kabel replica after transport authentication.
+
+   Pass {:epoch authenticated-connection-id}; calls for the same epoch share
+   one result channel. Success {:status :ready :epoch ...} follows full sync
+   drain and a newly confirmed branch head, NOT merely sending subscribe.
+   Errors are delivered on the channel, retaining the last known DB. A new
+   epoch can retry. Optional :handshake-timeout-ms defaults to 120000.
+
+   Keeps the exact connection, writer, store, listeners and optimistic overlay;
+   never retries remote transactions. Caller must first prepare/authorize the
+   server's store topic. A new principal/peer requires session replacement."
+  [conn opts]
+  (if-let [controller (:sync-subscription (:writer @(:wrapped-atom conn)))]
+    (subscription/subscribe! controller opts)
+    (go-try-
+     (throw (ex-info "Connection has no live Kabel subscription owner"
+                     {:type :datahike.kabel/no-subscription})))))
 
 ;; =============================================================================
 ;; Multimethod Integration

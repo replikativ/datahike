@@ -110,7 +110,7 @@
                                ;; 0.1.39+: all 45 reflective S3 calls hinted
                                ;; (konserve-s3#19).
                                org.replikativ/konserve-s3 {:mvn/version "0.1.42"}}
-                               
+
                   :extra-paths ["test"]}
 
            ;; konserve-s3 too, for the two-JVM race over :global (dev/ only).
@@ -158,7 +158,7 @@
                                                                            io.replikativ/konserve]}
 
                                ;; http server
-                                      io.github.whilo/eacl {:git/url "https://github.com/whilo/eacl.git"
+                               io.github.whilo/eacl {:git/url "https://github.com/whilo/eacl.git"
                                                      :git/sha "c11c3f855a5f795a2b66a0293a64dde7fe82d898"
                                                      :deps/root "modules/eacl-datahike"
                                                      ;; The fork's source-only datahike backend, until
@@ -185,7 +185,7 @@
                                ;; longer duplicated here: it is a main dep now,
                                ;; because declaring it twice is precisely how the
                                ;; tested and shipped versions came apart.
-                               org.replikativ/kabel          {:mvn/version "0.3.137"}
+                               org.replikativ/kabel          {:mvn/version "0.3.141"}
                                org.replikativ/konserve-sync  {:mvn/version "0.1.40"}
                                org.replikativ/geheimnis      {:mvn/version "0.2.40"
                                                               :exclusions [org.clojure/clojurescript]}
@@ -194,7 +194,7 @@
                                ;; :http-server below: tests load the same registration namespace
                                ;; that the shipped server does.
                                org.replikativ/konserve-s3    {:mvn/version "0.1.42"
-                                                               :exclusions [com.amazonaws/aws-xray-recorder-sdk-aws-sdk-v2]}
+                                                              :exclusions [com.amazonaws/aws-xray-recorder-sdk-aws-sdk-v2]}
                                org.replikativ/konserve-jdbc  {:mvn/version "0.2.101"}
                                org.replikativ/konserve-dynamodb
                                {:mvn/version "0.1.33"
@@ -206,8 +206,7 @@
                                {:mvn/version "0.1.5"}
                                org.postgresql/postgresql     {:mvn/version "42.7.13"}
                                org.replikativ/pg-datahike    {:mvn/version "0.1.252"
-                                                               :exclusions [org.replikativ/datahike]}
-                               http-kit/http-kit             {:mvn/version "2.8.1"}}}
+                                                              :exclusions [org.replikativ/datahike]}}}
 
            ;; Datomic Pro peer API, for `datahike.migrate.datomic` and its
            ;; integration test. datahike itself takes NO Datomic dependency —
@@ -243,12 +242,12 @@
                                          {:mvn/version "1.0.21"
                                           :exclusions [org.clojure/clojurescript]}}
                          :extra-deps {io.github.whilo/eacl {:git/url "https://github.com/whilo/eacl.git"
-                                                     :git/sha "c11c3f855a5f795a2b66a0293a64dde7fe82d898"
-                                                     :deps/root "modules/eacl-datahike"
+                                                            :git/sha "c11c3f855a5f795a2b66a0293a64dde7fe82d898"
+                                                            :deps/root "modules/eacl-datahike"
                                                      ;; The fork's source-only datahike backend, until
                                                      ;; upstream dev.eacl/eacl-datahike ships a jar that
                                                      ;; is not AOT-compiled for a newer JDK.
-                                                     :exclusions [org.replikativ/datahike]}
+                                                            :exclusions [org.replikativ/datahike]}
                                       ;; Direct declarations make the vendored
                                       ;; source-only eacl modules' runtime graph
                                       ;; representable in datahike-http-server's
@@ -265,11 +264,10 @@
                                       nrepl/nrepl             {:mvn/version "1.7.0"}
                                       org.clojure/tools.cli   {:mvn/version "1.4.256"}
                                       ch.qos.logback/logback-classic {:mvn/version "1.5.32"}
-                                      org.replikativ/kabel          {:mvn/version "0.3.137"}
+                                      org.replikativ/kabel          {:mvn/version "0.3.141"}
                                       org.replikativ/konserve-sync  {:mvn/version "0.1.40"}
                                       org.replikativ/geheimnis      {:mvn/version "0.2.40"
                                                                      :exclusions [org.clojure/clojurescript]}
-                                      http-kit/http-kit             {:mvn/version "2.8.1"}
 
                                       ;; Batteries included for the standalone server. File,
                                       ;; memory and tiered ship with Konserve itself. Cloud SDK
@@ -337,7 +335,7 @@
                                     "-o dthk"]
                         :jvm-opts  ["-Dclojure.compiler.direct-linking=true"]
                         :extra-deps
-                         {clj.native-image/clj.native-image
+                        {clj.native-image/clj.native-image
                          {:git/url "https://github.com/taylorwood/clj.native-image.git"
                           :sha     "4604ae76855e09cdabc0a2ecc5a7de2cc5b775d6"}
                          ;; S3 in the binary. 0.1.40 or newer is REQUIRED, for two
@@ -368,10 +366,8 @@
            :pod {:extra-deps {com.cognitect/transit-clj {:mvn/version "1.1.363"}
                               babashka/pods             {:git/url "https://github.com/babashka/pods"
                                                          :git/sha "ed5e1f3390b9dfca564f66b6e79c739c3cd82d78"}}}
-                                    
-                              
 
-           ;; Checks
+;; Checks
 
            :benchmark {:extra-paths ["benchmark/src"]
                        :extra-deps {clj-http/clj-http {:mvn/version "3.13.1"}
@@ -403,8 +399,7 @@
                                         org.replikativ/stratum {:mvn/version "0.3.84"
                                                                 :exclusions [org.slf4j/slf4j-reload4j
                                                                              ch.qos.reload4j/reload4j]}
-                                        com.clojure-goes-fast/clj-async-profiler {:mvn/version "1.8.0"}
-                                        }}
+                                        com.clojure-goes-fast/clj-async-profiler {:mvn/version "1.8.0"}}}
 
            :bench-sql {:extra-paths ["benchmark/src"]
                        :extra-deps {org.postgresql/postgresql {:mvn/version "42.7.13"}

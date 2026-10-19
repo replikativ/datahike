@@ -6,6 +6,13 @@ When something is added, it's typically marked *Experimental*. When the API cont
 
 ## 0.8
 
+- **Existing Kabel replicas can resubscribe (experimental).** After an
+  authenticated transport reconnect, `datahike.kabel.connector/resubscribe!`
+  catches up the existing connection without discarding its store, listeners
+  or optimistic overlay. Readiness requires a fresh branch head and complete
+  index synchronization; stale or released callbacks cannot revive the replica.
+  See [reconnect lifecycle and limits](doc/kabel-reconnect.md). (0.8, [#TODO])
+
 - **Scalar constants constrain function outputs.** A clause such as
   `[(subs ?id 6 7) "4"]` now keeps rows whose function result equals the
   constant. This also works inside rules, disjunctions and negation.
