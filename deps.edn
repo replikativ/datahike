@@ -309,36 +309,19 @@
                                       {:mvn/version "0.1.42"
                                        :exclusions [com.amazonaws/aws-xray-recorder-sdk-aws-sdk-v2]}}}
 
-           :native-cli {:main-opts ["-e" "(set! *warn-on-reflection* true)"
-                                    "-m" "clj.native-image" "datahike.cli"
-                                    "--initialize-at-build-time"
-                                    "--no-fallback"
-                                    ;; The S3 endpoint rules engine resolves an
-                                    ;; endpoint through `RuleUrl.parse`, which calls
-                                    ;; `new java.net.URL(..)`. A native image
-                                    ;; registers no URL protocol handlers by default,
-                                    ;; so that throws MalformedURLException and the
-                                    ;; SDK reports it as "Custom endpoint <uri> was
-                                    ;; not a valid URI" -- which reads like a bad
-                                    ;; config rather than a missing handler.
-                                    "--enable-url-protocols=http,https"
-                                    "-H:IncludeResources=DATAHIKE_VERSION"
-                                    "-H:IncludeResources=DATAHIKE_GIT_SHA"
-                                    ; "--future-defaults=all"
-                                    ;; 5g, not 4g: pulling in konserve-s3 brings the
-                                    ;; AWS SDK with it, and the analysis then needs
-                                    ;; more than 4g. It does not fail cleanly at that
-                                    ;; budget -- the builder thrashes and the deadlock
-                                    ;; watchdog aborts it, which reads like a hang
-                                    ;; rather than OOM.
-                                    "-J-Xmx5g"
-                                    "-o dthk"]
-                        :jvm-opts  ["-Dclojure.compiler.direct-linking=true"]
-                        :extra-deps
-                        {clj.native-image/clj.native-image
-                         {:git/url "https://github.com/taylorwood/clj.native-image.git"
-                          :sha     "4604ae76855e09cdabc0a2ecc5a7de2cc5b775d6"}
-                         ;; S3 in the binary. 0.1.40 or newer is REQUIRED, for two
+           ;; The dependencies the `dthk` binary ships — nothing else. The BUILD
+           ;; is `bb ni-cli` (bb.edn), which AOT-compiles `config.edn`'s
+           ;; `:native-cli :src-dirs` into an uber jar against this alias's basis
+           ;; and hands it to `native-image -jar`, on every platform. It used to
+           ;; be clj.native-image on POSIX, which compiles every namespace under
+           ;; the PROJECT `:paths` it reads from deps.edn itself — so exposing
+           ;; the optional `src-kabel` / `src-secondary` sources to Git consumers
+           ;; (#1119) made it compile `datahike.kabel.*` into dthk, which needs
+           ;; kabel and failed ("Could not locate kabel/middleware/cbor"). That
+           ;; was #822 again (reverted in 93f04bfa). The explicit `:src-dirs`
+           ;; cannot be widened by a `:paths` change.
+           :native-cli {:extra-deps
+                        {;; S3 in the binary. 0.1.40 or newer is REQUIRED, for two
                          ;; separate reasons: before 0.1.39 every S3 call resolved
                          ;; reflectively, which a native image cannot do unless the
                          ;; target was registered at build time (the image built and

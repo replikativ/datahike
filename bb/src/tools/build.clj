@@ -47,12 +47,30 @@
                           "-Xlint:deprecation"]})
    (println "Done.")))
 
-(defn compile-clojure [{:keys [class-dir src-dirs] :as project-config}]
+(defn compile-clojure [{:keys [class-dir src-dirs compile-opts] :as project-config}]
   (print (str "Compiling Clojure namespaces saving them to '" class-dir "'..."))
-  (b/compile-clj {:src-dirs src-dirs
-                  :class-dir class-dir
-                  :basis (basis project-config)})
+  (b/compile-clj (cond-> {:src-dirs src-dirs
+                          :class-dir class-dir
+                          :basis (basis project-config)}
+                   compile-opts (assoc :compile-opts compile-opts)))
   (println "Done."))
+
+(defn native-image-bin
+  "The `native-image` program the build will run, or nil.
+
+   GRAALVM_HOME first, then PATH, and `native-image.cmd` on Windows. `ni-check`
+   and `ni-cli` both resolve it through here: checking for the program one way
+   and running it another is how a check once passed on a runner that then could
+   not build."
+  []
+  (let [windows? (str/starts-with? (System/getProperty "os.name") "Windows")
+        filename (if windows? "native-image.cmd" "native-image")
+        home (System/getenv "GRAALVM_HOME")
+        candidates (concat (when home
+                             [(fs/path home "bin" filename)
+                              (fs/path home filename)])
+                           (when-let [w (fs/which filename)] [w]))]
+    (some-> (first (filter fs/exists? candidates)) str)))
 
 (defn pom-path [{:keys [class-dir lib] :as _project-config}]
   (b/pom-path {:lib lib
