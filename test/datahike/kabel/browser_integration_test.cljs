@@ -14,9 +14,10 @@
    - JVM test server must be running on ws://localhost:47296
    - Start with: clj -M:test -m datahike.kabel.browser-test-server/start-test-server!"
   (:require [cljs.test :refer [deftest is testing async use-fixtures]]
-            [clojure.core.async :refer [<! timeout alts!] :refer-macros [go]]
+            [clojure.core.async :refer [<! timeout alts! promise-chan put! poll!] :refer-macros [go]]
+            [clojure.core.async.impl.protocols :as async-protocols]
             [datahike.api :as d]
-            [datahike.kabel.connector]  ;; registers -connect* :kabel multimethod
+            [datahike.kabel.connector :as connector]  ;; registers -connect* :kabel multimethod
             [datahike.kabel.writer]     ;; registers create-database/delete-database :kabel multimethods
             [datahike.kabel.cbor-handlers :refer [datahike-cbor-middleware]]
             [kabel.remote :as remote]
@@ -38,6 +39,42 @@
 ;; =============================================================================
 
 (defonce client-peer (atom nil))
+
+(defn- release-replica!
+  "These tests own their replicas singly. Join the full captured retirement,
+   including registry withdrawal and native close, before reusing storage."
+  [conn]
+  (let [release! d/release
+        await! connector/await-release!]
+    (go-try S
+            (release! conn)
+            (let [joined (<? S (await! conn))]
+              (when-not (true? joined)
+                (throw (ex-info "Replica retirement did not confirm native cleanup" {}))))
+            true)))
+
+(deftest ^:browser replica-retirement-waits-for-physical-drain
+  (async done
+         (go
+           (let [drain (promise-chan)
+                 waiting (promise-chan)
+                 joined-drain (reify async-protocols/ReadPort
+                                (take! [_ handler]
+                                  (let [pending (async-protocols/take! drain handler)]
+                                    (put! waiting true)
+                                    pending)))
+                 released? (atom false)
+                 conn (atom {})
+                 retiring (with-redefs [d/release (fn [_] (reset! released? true))
+                                        connector/await-release! (fn [_] joined-drain)]
+                            (release-replica! conn))]
+             (<! waiting)
+             (is (nil? (poll! retiring)))
+             (is @released? "Logical release starts native retirement")
+             (put! drain true)
+             (is (true? (<! retiring)))
+             (is @released?))
+           (done))))
 
 (defn setup-client-peer!
   "Create and start Kabel client peer for tests."
@@ -231,12 +268,13 @@
 
                           ;; Step 8: Release connection
                                  (js/console.log "\n[TEST] Step 8: Releasing connection...")
-                                 (d/release conn)
+                                 (<? S (release-replica! conn))
                                  (js/console.log "[TEST] Connection released")
 
                           ;; Step 9: Reconnect to verify persistence
                                  (js/console.log "\n[TEST] Step 9: Reconnecting to verify persistence...")
                                  (let [conn2 (<! (d/connect config {:sync? false}))]
+                                   (when (instance? js/Error conn2) (throw conn2))
                                    (is (some? conn2) "Reconnected successfully")
                                    (let [db2 (d/db conn2)
                                          query-result2 (d/q '[:find ?name ?age
@@ -249,7 +287,7 @@
                                      (js/console.log "[TEST] Reconnected and verified" (count query-result2) "persisted entities")
 
                               ;; Release second connection
-                                     (d/release conn2)
+                                     (<? S (release-replica! conn2))
 
                               ;; Step 10: Delete database
                                      (js/console.log "\n[TEST] Step 10: Deleting database...")
@@ -319,7 +357,7 @@
                            (js/console.log "[TEST-MULTI] ✅ Multiple transactions test passed!")
 
                       ;; Cleanup
-                           (d/release conn)
+                           (<? S (release-replica! conn))
                            (<! (d/delete-database config)))))))
 
                  (catch js/Error e

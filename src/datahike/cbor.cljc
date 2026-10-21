@@ -68,6 +68,7 @@
             [datahike.datom :as dd]
             [datahike.db.utils :as dbu]
             [datahike.writing :as dw]
+            [datahike.store-registry :as store-registry]
             [org.replikativ.persistent-sorted-set.cbor :as pss-cbor]
             [org.replikativ.persistent-sorted-set.impl.nodes :as pss-nodes]
             #?(:cljs [datahike.db :refer [DB TxReport]]))
@@ -116,8 +117,8 @@
 ;; pulls (:storage store) out of it. Any codec that reads PSS roots shares it.
 ;; ---------------------------------------------------------------------------
 
-(defn register-store!   [store-config store] (pss-nodes/register-storage! (:id store-config) store))
-(defn unregister-store! [store-config] (pss-nodes/unregister-storage! (:id store-config)))
+(defn register-store!   [store-config store] (store-registry/register! (:id store-config) store))
+(defn unregister-store! [store-config] (store-registry/unregister! (:id store-config)))
 (defn get-store         [store-config] (pss-nodes/registered-storage (:id store-config)))
 
 (defn- reconstruct-db

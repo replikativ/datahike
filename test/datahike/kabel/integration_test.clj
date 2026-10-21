@@ -15,7 +15,8 @@
   (:require [clojure.test :refer [deftest testing is]]
             [clojure.java.io :as io]
             [datahike.api :as d]
-            [datahike.kabel.connector]  ;; registers -connect* :kabel multimethod
+            [datahike.kabel.connector :as connector]  ;; registers -connect* :kabel multimethod
+            [datahike.optimistic :as optimistic]
             [datahike.migrate :as dm]
             [datahike.kabel.writer :as kw]
             [datahike.connector :refer [release]]
@@ -86,6 +87,13 @@
   wrapping it in a test-local fn would only hide which format is under test."
   ch/datahike-cbor-middleware)
 
+(defn- release-replica! [conn]
+  (release conn)
+  (let [result (<!! (connector/await-release! conn))]
+    (when-not (true? result)
+      (throw (if (instance? Throwable result) result
+                 (ex-info "Replica retirement did not complete" {}))))))
+
 ;; =============================================================================
 ;; Schema
 ;; =============================================================================
@@ -101,6 +109,81 @@
 ;; =============================================================================
 ;; Integration Tests
 ;; =============================================================================
+
+(deftest resubscribe-retains-live-replica-and-pending-overlay-after-missed-writes
+  (let [port (get-free-port) url (str "ws://localhost:" port)
+        store-id (random-uuid)
+        server-path (create-temp-dir "resubscribe-server")
+        client-path (create-temp-dir "resubscribe-client")
+        config {:store {:backend :file :path server-path :id store-id}
+                :schema-flexibility :write :keep-history? false}
+        client (atom nil) overlay (atom nil) peers (atom [])]
+    (d/create-database config)
+    (let [server (d/connect config)]
+      (try
+        (d/transact server test-schema)
+        (let [handler (create-http-kit-handler! S url server-id)
+              server-peer (peer/server-peer S handler server-id
+                                            (comp (sync/server-middleware) remote/middleware)
+                                            datahike-serialization-middleware)]
+          (swap! peers conj server-peer)
+          (<?? S (peer/start server-peer))
+          (remote/serve server-peer)
+          (handlers/register-global-handlers! server-peer)
+          (handlers/register-store-for-remote-access! store-id server server-peer)
+          (let [client-peer (peer/client-peer S (random-uuid)
+                                              (comp (sync/client-middleware) remote/middleware)
+                                              datahike-serialization-middleware)]
+            (swap! peers conj client-peer)
+            (remote/serve client-peer)
+            (<?? S (remote/connect S client-peer url))
+            (let [conn (within 15000 "Initial replica sync"
+                               #(<!! (d/connect
+                                      {:store {:backend :file :path client-path :id store-id}
+                                       :schema-flexibility :write :keep-history? false
+                                       :writer {:backend :kabel :peer-id server-id :local-peer client-peer}}
+                                      {:sync? false})))
+                  _ (when (instance? Throwable conn) (throw conn))
+                  _ (reset! client conn)
+                  writer (:writer @conn) store (:store @conn)
+                  view (optimistic/open conn {:prediction-timeout-ms nil :reconciliation-timeout-ms nil})
+                  _ (reset! overlay view)
+                  prediction (optimistic/predict! view [{:db/id -1 :person/name "Draft" :person/age 7}]
+                                                  (constantly false))
+                  changes (atom 0)]
+              (add-watch conn ::resubscribe (fn [& _] (swap! changes inc)))
+              (is (= 1 (count (optimistic/pending view))))
+              ;; Simulate loss of the physical subscription, as Kabel does on
+              ;; socket disposal. The next writes cannot reach this warm conn.
+              (is (true? (<!! (kw/await-topic-release! client-peer store-id 5000))))
+              (d/transact server [{:person/name "Offline evidence" :person/age 42}])
+              (is (nil? (d/q '[:find ?age . :where [?e :person/name "Offline evidence"]
+                               [?e :person/age ?age]] @conn)))
+              (let [epoch (random-uuid) result (connector/resubscribe! conn {:epoch epoch})]
+                (is (identical? result (connector/resubscribe! conn {:epoch epoch})))
+                (is (= {:status :ready :epoch epoch}
+                       (within 15000 "Replica resubscription" #(<!! result)))))
+              (is (identical? writer (:writer @conn)))
+              (is (identical? store (:store @conn)))
+              (is (identical? conn (:conn view)))
+              (is (pos? @changes))
+              (is (= 42 (d/q '[:find ?age . :where [?e :person/name "Offline evidence"]
+                               [?e :person/age ?age]] @conn)))
+              (is (= #{"Draft" "Offline evidence"}
+                     (set (d/q '[:find [?name ...] :where [_ :person/name ?name]] (optimistic/db view)))))
+              (is (= [(:ov-id prediction)] (mapv :ov-id (optimistic/pending view))))
+              ;; Even a fully current cache must confirm its fresh mutable head.
+              (is (= :ready (:status (within 15000 "Unchanged replica handshake"
+                                             #(<!! (connector/resubscribe! conn {:epoch (random-uuid)})))))))))
+        (finally
+          (when-let [view @overlay] (optimistic/close! view))
+          (when-let [conn @client]
+            (release-replica! conn))
+          (doseq [p (reverse @peers)] (<?? S (peer/stop p)))
+          (release server)
+          (d/delete-database config)
+          (delete-dir-recursive server-path)
+          (delete-dir-recursive client-path))))))
 
 (deftest test-full-flow-with-official-api
   (testing "Full flow: d/connect with KabelWriter, d/transact routed to server"
@@ -249,7 +332,7 @@
       ;; CLEANUP
       ;; =====================================================================
 
-      (release client-conn)
+      (release-replica! client-conn)
       (<!! (kw/await-topic-release! client-peer store-topic 10000))
       (handlers/unregister-store-for-remote-access! store-id server-peer)
       (<?? S (peer/stop server-peer))
@@ -326,7 +409,7 @@
           (is (= 5 (count people)) "All 5 people should exist on server")))
 
       ;; Cleanup
-      (release client-conn)
+      (release-replica! client-conn)
       (<!! (kw/await-topic-release! client-peer store-topic 10000))
       (handlers/unregister-store-for-remote-access! store-id server-peer)
       (<?? S (peer/stop server-peer))
@@ -404,7 +487,7 @@
 
       ;; Cleanup
       (d/unlisten client-conn listener-key)
-      (release client-conn)
+      (release-replica! client-conn)
       (<!! (kw/await-topic-release! client-peer store-topic 10000))
       (handlers/unregister-store-for-remote-access! store-id server-peer)
       (<?? S (peer/stop server-peer))
@@ -504,10 +587,8 @@
       ;; =====================================================================
       ;; DISCONNECT FIRST CLIENT - keep server running for reconnect test
       ;; =====================================================================
-      (<!! (kw/await-topic-release! client-peer-1 store-topic 10000))
-      (Thread/sleep 200)  ;; Allow pending callbacks to complete
+      (release-replica! client-conn-1)
       (<?? S (peer/stop client-peer-1))
-      (release client-conn-1)
 
       ;; NOTE: Skip server transact here - there's a race condition between
       ;; unsubscribe and write-hook publish that blocks the server transact.
@@ -559,12 +640,10 @@
           (is (some #(= ["Carol" 35] %) all-people) "Carol should exist from cache"))
 
         ;; Cleanup second connection
-        (<!! (kw/await-topic-release! client-peer-2 store-topic 10000))
-        (Thread/sleep 100)
-        (<?? S (peer/stop client-peer-2))
-        (release client-conn-2))
+        (release-replica! client-conn-2)
+        (<?? S (peer/stop client-peer-2)))
 
-      ;; =====================================================================
+;; =====================================================================
       ;; FINAL CLEANUP
       ;; =====================================================================
       (handlers/unregister-store-for-remote-access! store-id server-peer)
@@ -727,7 +806,7 @@
       (testing "REMOTE WRITE: a fork client dispatches to the fork writer, not trunk"
         ;; A konserve-sync subscription is store-topic scoped, so hand it from
         ;; the trunk connection to the fork connection before reconnecting.
-        (release client-conn)
+        (release-replica! client-conn)
         ;; Await the drain: a subscribe on the same topic before the old one has
         ;; been released is refused as a duplicate.
         (<!! (kw/await-topic-release! client-peer store-topic 10000))
@@ -751,7 +830,7 @@
                              [?e :person/age ?a]]
                            @server-conn))
                 "trunk remains unchanged"))
-          (release fork-client)
+          (release-replica! fork-client)
           (<!! (kw/await-topic-release! client-peer store-topic 10000))))
 
       ;; cleanup
@@ -857,7 +936,7 @@
                           (d/db server-conn)))
               "a's friend must be d")))
 
-      (release client-conn)
+      (release-replica! client-conn)
       (<!! (kw/await-topic-release! client-peer store-topic 10000))
       (handlers/unregister-store-for-remote-access! store-id server-peer)
       (<?? S (peer/stop server-peer))

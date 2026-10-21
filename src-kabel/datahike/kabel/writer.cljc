@@ -16,7 +16,6 @@
             [datahike.writing :as dw]
             [datahike.connections :refer [invalidate-store-connections!]]
             [datahike.store :as dstore]
-            [datahike.cbor :as dcbor]
             [datahike.tools :refer [throwable-promise]]
             [kabel.pubsub :as pubsub]
             [kabel.remote :as remote]
@@ -75,22 +74,29 @@
    joined, not repeated), so this only has to be pinned to the subscription's
    generation: a newer subscription made meanwhile on the same topic is left
    alone. Yields an exception after `timeout-ms` or on a refused unsubscribe."
-  [peer topic timeout-ms]
-  (go
-    (let [generation (:generation (pubsub/subscription peer topic))]
-      (if (nil? generation)
-        true
-        (let [[v _] (clojure.core.async/alts! [(kp/unsubscribe-store! peer topic)
-                                               (timeout timeout-ms)])]
-          (cond
-            (not= generation (:generation (pubsub/subscription peer topic))) true
-            (and (map? v) (:error v)) (let [e (:error v)]
-                                        (if (instance? #?(:clj Throwable :cljs js/Error) e)
-                                          e
-                                          (ex-info "Store unsubscribe refused"
-                                                   {:type :datahike.kabel/unsubscribe-failed :topic topic :error e})))
-            :else (ex-info "Store subscription did not release in time"
-                           {:type :datahike.kabel/unsubscribe-timeout :topic topic})))))))
+  ([peer topic timeout-ms] (await-topic-release! peer topic timeout-ms nil))
+  ([peer topic timeout-ms expected-strategy]
+   (let [generation (:generation (pubsub/subscription peer topic))
+         ;; The expected owner is checked by Kabel in the SAME transition that
+         ;; claims cancellation, not by an asynchronous read before unsubscribe.
+         result (when generation
+                  (if expected-strategy
+                    (pubsub/unsubscribe! peer #{topic} {:expected-strategies {topic expected-strategy}})
+                    (kp/unsubscribe-store! peer topic)))]
+     (go
+       (if (nil? generation)
+         true
+         (let [[v _] (clojure.core.async/alts! [result
+                                                (timeout timeout-ms)])]
+           (cond
+             (and (map? v) (:error v)) (let [e (:error v)]
+                                         (if (instance? #?(:clj Throwable :cljs js/Error) e)
+                                           e
+                                           (ex-info "Store unsubscribe refused"
+                                                    {:type :datahike.kabel/unsubscribe-failed :topic topic :error e})))
+             (not= generation (:generation (pubsub/subscription peer topic))) true
+             :else (ex-info "Store subscription did not release in time"
+                            {:type :datahike.kabel/unsubscribe-timeout :topic topic}))))))))
 
 (def default-sync-timeout-ms
   "How long a write waits for its own effect to replicate back before it
@@ -102,7 +108,7 @@
             local-peer     ; the local kabel peer connected to it, or nil
             store-id       ; UUID identifying the store/database (from store :id)
             branch         ; branch whose head this writer advances
-            store-config   ; Store config for index-registry cleanup on shutdown
+            store-config   ; Store identity/configuration; registry lifetime is branch-shared
             pending-txs    ; atom: {request-id -> {:expected-max-tx ... :tx-report ... :ch promise-chan}}
             current-max-tx ; atom: current synced max-tx from konserve-sync
             listeners      ; atom: set of listen! callbacks to fire on tx completion
@@ -191,28 +197,20 @@
     ;; KabelWriter streams updates via konserve-sync
     true)
 
-  (-shutdown [_]
-    ;; Cancel all pending waiters with shutdown error
-    (let [shutdown-error (ex-info "Writer shutdown" {:type :writer-shutdown})]
-      (doseq [[_ {:keys [ch]}] @pending-txs]
-        (put! ch shutdown-error))
+  (-shutdown [this]
+    ;; Publication is fenced synchronously. Only the attached subscription
+    ;; controller owns physical cleanup; a manually constructed writer has no
+    ;; authority to unsubscribe somebody else's current strategy on this topic.
+    (let [subscription-close (when-let [close! (:sync-close! this)] (close!))
+          shutdown-error (ex-info "Writer shutdown" {:type :writer-shutdown})]
+      (doseq [[_ {:keys [ch]}] @pending-txs] (put! ch shutdown-error))
       (reset! pending-txs {})
-      ;; Drop the store from the index-reconstruction registry
-      (when store-config
-        (dcbor/unregister-store! store-config))
-      ;; Release the store subscription this connection held on the peer. A
-      ;; later connect on the same peer and store would otherwise be refused
-      ;; as a duplicate subscription.
-      (if local-peer
-        (go
-          (try
-            (<?- (await-topic-release! local-peer store-id 30000))
-            (catch #?(:clj Exception :cljs js/Error) e
-              (log/warn "Store unsubscribe on writer shutdown failed" {:store-id store-id :error (ex-message e)})))
-          true)
-        (let [ch (promise-chan)]
-          (put! ch true)
-          ch)))))
+      ;; Connection retirement owns the reconstruction lease and native store.
+      ;; A standalone writer cannot unregister by UUID: that could remove a
+      ;; sibling or replacement. Shutdown alone joins only its subscription.
+      (if subscription-close
+        subscription-close
+        (doto (promise-chan) (put! true))))))
 
 ;; =============================================================================
 ;; Connection Reference
@@ -265,29 +263,32 @@
    - stored-db: The stored db value from konserve-sync (may be nil for deletes)"
   [conn stored-db]
   (when stored-db
-    (let [wrapped-atom (:wrapped-atom conn)
-          current-state @wrapped-atom
-          writer (:writer current-state)
+    (let [wrapped-atom (:wrapped-atom conn)]
+      (loop []
+        (let [current-state @wrapped-atom]
+          (when-not (= :released current-state)
+            (let [writer (:writer current-state)
           ;; Get the prepared store and storage from the connection
-          conn-store (:store current-state)
+                  conn-store (:store current-state)
           ;; Convert stored format to live DB (roots already EAGER from the canonical read handler)
-          live-db (dw/stored->db stored-db conn-store)
+                  live-db (dw/stored->db stored-db conn-store)
           ;; Do not propagate the old query-cache bucket. A synchronized
           ;; snapshot may combine our pending reports with foreign writes, so
           ;; their tx-data is not a complete old->new change set. Selective
           ;; propagation with an incomplete set can retain stale results; the
           ;; new DB key safely starts cold instead.
           ;; Merge new db with connection state (preserve writer, store, etc.)
-          new-state (assoc live-db
-                           :store conn-store
-                           :writer writer)]
+                  new-state (assoc live-db
+                                   :store conn-store
+                                   :writer writer)]
       ;; Update connection
-      (reset! wrapped-atom new-state)
-      (log/trace "Updated connection db via sync" {:max-tx (:max-tx live-db)})
-
-      ;; Notify writer of sync (resolves pending transactions)
-      (when writer
-        (on-sync-update! writer (:max-tx live-db))))))
+          ;; release may fence this connection while reconstructing the head.
+          ;; Never reset a released connection back to a live DB.
+              (if (compare-and-set! wrapped-atom current-state new-state)
+                (do
+                  (log/trace "Updated connection db via sync" {:max-tx (:max-tx live-db)})
+                  (when writer (on-sync-update! writer (:max-tx live-db))))
+                (recur)))))))))
 
 ;; =============================================================================
 ;; Listener Management
@@ -315,7 +316,7 @@
    - peer-id: UUID of the remote peer that owns the database
    - store-id: UUID identifying the store/database (extracted from store :id)
    - branch: branch whose head the remote writer must advance (default :db)
-   - store-config: Store config for index-registry cleanup on shutdown
+   - store-config: Store identity/configuration (registry lifetime is branch-shared)
 
    Returns a KabelWriter instance."
   ([peer-id store-id store-config]

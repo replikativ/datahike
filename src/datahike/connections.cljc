@@ -143,10 +143,19 @@
                            m)))]
     (identical? conn (get-in entries [conn-id :conn]))))
 
+(defn- retire-connection! [conn]
+  ;; Capture the local resource owner before invalidation discards the DB.
+  ;; Opaque hook avoids coupling this leaf namespace to writer backends.
+  (let [retire! (:datahike/retire! (meta conn))]
+    (try
+      (reset! conn :released)
+      ;; A throwing observation watch must not strand an already-removed owner.
+      (finally (when retire! (retire!))))))
+
 (defn delete-connection! [conn-id]
   (let [[before _] (swap-vals! *connections* dissoc conn-id)]
     (when-let [conn (get-in before [conn-id :conn])]
-      (reset! conn :released))))
+      (retire-connection! conn))))
 
 (defn invalidate-store-connections!
   "Remove every local connection for `store-id` from the registry.
@@ -169,6 +178,17 @@
                               m (keys m))))]
     ;; Reset only connections removed by the same atomic operation. A later
     ;; connection can neither be reset here nor publish with one of these leases.
-    (doseq [[conn-id {:keys [conn]}] (filter (comp mine? key) before)]
-      (log/warn :datahike/delete-unreleased-connections {:connection conn-id})
-      (when conn (reset! conn :released)))))
+    (let [failures
+          (reduce (fn [errors [conn-id {:keys [conn]}]]
+                    (try
+                      (when conn (retire-connection! conn))
+                      (log/warn :datahike/delete-unreleased-connections {:connection conn-id})
+                      errors
+                      (catch #?(:clj Throwable :cljs :default) error
+                        (conj errors error))))
+                  [] (filter (comp mine? key) before))]
+      (when (seq failures)
+        (throw (ex-info "Connection invalidation encountered retirement errors"
+                        {:type :datahike/retirement-errors
+                         :errors (mapv ex-message failures)}
+                        (first failures)))))))

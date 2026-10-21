@@ -43,6 +43,8 @@
             ;; :db.type/store-ref — blob GC contract, content-addressing, external
             ;; blobs (mark-without-sweep). Exercises with-unreferenced-writes on cljs.
             [datahike.test.store-ref-test]
+            [datahike.test.store-registry-test]
+            [datahike.kabel.cleanup-async-test]
             [datahike.test.async-storage-test]
             ;; konserve-sync reachability walker — follows store-ref values so a
             ;; referenced blob replicates (a browser subscriber walks the same way).
@@ -69,6 +71,7 @@
             ;; and an async enforcement test below.
             [datahike.test.attr-preds-test]
             [datahike.test.tx-preds-test]
+            [datahike.test.listener-ack-test]
             ;; Dump digests. A dump written on the JVM is verified here, so the
             ;; SHA-256 and the xor64+sum64 semantic digest must come out
             ;; bit-identical — and 64-bit arithmetic is exactly what cljs does
@@ -935,6 +938,8 @@
                'datahike.test.background-gc-test
                'datahike.test.metrics-test
                'datahike.test.store-ref-test
+               'datahike.test.store-registry-test
+               'datahike.kabel.cleanup-async-test
                'datahike.test.async-storage-test
                'datahike.kabel.walker-test
                'datahike.test.experimental-diff-portable-test
@@ -944,4 +949,5 @@
                'datahike.test.lru-weighted-test
                'datahike.test.lru-weighted-property-test
                'datahike.test.attr-preds-test
-               'datahike.test.tx-preds-test))
+               'datahike.test.tx-preds-test
+               'datahike.test.listener-ack-test))
