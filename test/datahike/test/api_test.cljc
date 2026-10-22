@@ -799,8 +799,8 @@
         schema-count 11                                     ;; amount of user schema datoms in temporal eavt index
         temporal-count 10                                   ;; amount of user data datoms in temporal eavt index when using schema-on-write
         temporal-avet-count 9                               ;; amount of user data datoms in temporal avet index when using schema-on write
-        sys-attr-count 114                                  ;; system schema datoms in temporal eavt index under attribute-refs = main's 108 (:db.secondary/* + :dh.ref/* + :db.type/store-ref) + 6 for :db/maxLength & :db.attr/preds (3 full-spec datoms each)
-        sys-attr-avet-count 64                              ;; temporal avet index = main's 62 + 2 for the :db/ident datoms of :db/maxLength & :db.attr/preds
+        sys-attr-count 120                                  ;; system schema datoms in temporal eavt index under attribute-refs = main's 108 (:db.secondary/* + :dh.ref/* + :db.type/store-ref) + 6 for :db/maxLength & :db.attr/preds + 6 for :db.entity/attrs & :db.entity/preds (3 full-spec datoms each)
+        sys-attr-avet-count 66                              ;; temporal avet index = main's 62 + 2 for the :db/ident datoms of :db/maxLength & :db.attr/preds + 2 for :db.entity/attrs & :db.entity/preds
         update-for-schema-on-write
         (fn [metrics]
           (-> (update metrics :count #(+ % 11))
