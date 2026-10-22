@@ -16,7 +16,7 @@ When something is added, it's typically marked *Experimental*. When the API cont
   only for `:db/valueType`, `:db/cardinality` and `:db/unique`. The map form
   `{:db/id aid :db/ident :new}` is accepted as a rename, like the vector form.
   A query result cached before an ident was renamed or reused is no longer
-  served afterwards. (0.8, [#TODO])
+  served afterwards. (0.8, [#1126])
 - **Schema-on-read stores retract vector values of any length ([#1105]).**
   An attribute without a declared `:db/valueType` can hold a vector of any
   length. `:db/retract`, `:db.fn/retractAttribute` and
@@ -936,3 +936,4 @@ Thanks to all the contributors and the community for helping on this release. Sp
 [#1092]: https://github.com/replikativ/datahike/pull/1092
 [#1090]: https://github.com/replikativ/datahike/pull/1090
 [#1105]: https://github.com/replikativ/datahike/issues/1105
+[#1126]: https://github.com/replikativ/datahike/pull/1126
