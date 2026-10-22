@@ -6,8 +6,8 @@ When something is added, it's typically marked *Experimental*. When the API cont
 
 ## 0.8
 
-- **Import moves a tuple's ref elements with their entities** — a ref inside a tuple (`:db/tupleTypes [:db.type/ref …]`, or a composite `:db/tupleAttrs` with a ref component) was imported verbatim, so a restore that renumbered entities (`:eids :allocate` into a populated target, `:offset`, a mapping) left the tuple naming whatever entity held the source's number, and a lookup by the composite found nothing. Both import paths (streaming and `:build-indexes?`) now allocate and remap them like any ref value. (0.8, [#TODO])
-- **`verify-against` passes on `:attribute-refs?` restores** — tier 3 compared the raw system-entity ids a dump stores for `:db/valueType`, `:db/cardinality` and `:db/unique` with what `pull` returns, so every schema entity was a `:field-mismatch` and no attribute-refs import could verify. Those values are now compared by ident, through the dump's own `:system-idents`. Tiers 2 and 3 also leave a tuple's ref elements out of the value comparison (the ids a restore may move), and tier 3 no longer reports a unique value that a later transaction replaced as `:missing-in-live`. (0.8, [#TODO])
+- **Import moves a tuple's ref elements with their entities** — a ref inside a tuple (`:db/tupleTypes [:db.type/ref …]`, or a composite `:db/tupleAttrs` with a ref component) was imported verbatim, so a restore that renumbered entities (`:eids :allocate` into a populated target, `:offset`, a mapping) left the tuple naming whatever entity held the source's number, and a lookup by the composite found nothing. Both import paths (streaming and `:build-indexes?`) now allocate and remap them like any ref value. (0.8, [#1125])
+- **`verify-against` passes on `:attribute-refs?` restores** — tier 3 compared the raw system-entity ids a dump stores for `:db/valueType`, `:db/cardinality` and `:db/unique` with what `pull` returns, so every schema entity was a `:field-mismatch` and no attribute-refs import could verify. Those values are now compared by ident, through the dump's own `:system-idents`. Tiers 2 and 3 also leave a tuple's ref elements out of the value comparison (the ids a restore may move), and tier 3 no longer reports a unique value that a later transaction replaced as `:missing-in-live`. (0.8, [#1125])
 - **Schema-on-read stores retract vector values of any length ([#1105]).**
   An attribute without a declared `:db/valueType` can hold a vector of any
   length. `:db/retract`, `:db.fn/retractAttribute` and
@@ -927,4 +927,4 @@ Thanks to all the contributors and the community for helping on this release. Sp
 [#1092]: https://github.com/replikativ/datahike/pull/1092
 [#1090]: https://github.com/replikativ/datahike/pull/1090
 [#1105]: https://github.com/replikativ/datahike/issues/1105
-[#TODO]: https://github.com/replikativ/datahike/pull/TODO
+[#1125]: https://github.com/replikativ/datahike/pull/1125
