@@ -76,7 +76,11 @@
                                            (throw (AssertionError. "No more than 1024 pending takes are allowed on a single channel."))
                                            (apply orig store ks more)))]
                   (gc-error conn))]
-          (assert-untouched cfg conn before e :gc-incomplete-mark))
+          ;; The walk catches the Error itself and returns it as a refusal,
+          ;; with the original Error as cause; `require-complete-mark` stays
+          ;; as the backstop for a walk that closes without any result.
+          (assert-untouched cfg conn before e :datahike/gc-mark-failed)
+          (is (some #(instance? AssertionError %) (take-while some? (iterate ex-cause e)))))
         (finally (d/release conn))))))
 
 (deftest unreadable-branches-do-not-sweep
