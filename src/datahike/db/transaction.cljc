@@ -45,8 +45,12 @@
                {:error :transact/syntax, :value v, :context at}))
   (let [{:keys [attribute-refs? schema-flexibility]} config
         a-ident (if (and attribute-refs? (number? a)) (dbi/ident-for db a :error-on-missing) a)
+        ;; Only a :db/systemAttribRef attribute (:db/valueType, :db/cardinality,
+        ;; :db/unique) holds a system entity as its value. Deciding by the
+        ;; attribute being a SYSTEM entity read `:db/maxLength 50` as the
+        ;; system entity 50.
         v-ident (if (and attribute-refs?
-                         (contains? (dbi/-system-entities db) a)
+                         (dbu/system-attrib-ref? db a)
                          (not (nil? (ref-ident-map v))))
                   (ref-ident-map v)
                   v)]
@@ -104,7 +108,9 @@
         a (.-a datom)
         v (.-v datom)
         a-ident (if attribute-refs? (dbi/ident-for db a :error-on-missing) a)
-        v-ident (if (and attribute-refs? (contains? (dbi/-system-entities db) v))
+        v-ident (if (and attribute-refs?
+                         (dbu/system-attrib-ref? db a)
+                         (contains? (dbi/-system-entities db) v))
                   (dbi/ident-for db v :error-on-missing)
                   v)]
     (when (and attribute-refs? (contains? (dbi/-system-entities db) e))
@@ -379,7 +385,9 @@
         a (.-a datom)
         v (.-v datom)
         a-ident (if attribute-refs? (dbi/ident-for db a :error-on-missing) a)
-        v-ident (if (and attribute-refs? (contains? (dbi/-system-entities db) v))
+        v-ident (if (and attribute-refs?
+                         (dbu/system-attrib-ref? db a)
+                         (contains? (dbi/-system-entities db) v))
                   (dbi/ident-for db v :error-on-missing)
                   v)]
     (when (and attribute-refs? (contains? (dbi/-system-entities db) e))
@@ -1364,7 +1372,13 @@
     (when-let [why (ds/key-bearing-misuse entity)]
       (log/raise why {:error :transact/schema :entity entity}))
     (if-let [attr-name (get-in db [:schema new-eid])]
-      (when-let [invalid-updates (ds/find-invalid-schema-updates entity (get-in db [:schema attr-name]))]
+      ;; Under :attribute-refs? a :db/ident change is a RENAME: datoms hold the
+      ;; attribute's entity id, so the data follows it. Same as the vector form
+      ;; [:db/add aid :db/ident :new]; `validate-ident-renames!` decides.
+      (when-let [invalid-updates (ds/find-invalid-schema-updates
+                                  (cond-> entity
+                                    (get-in db [:config :attribute-refs?]) (dissoc :db/ident))
+                                  (get-in db [:schema attr-name]))]
         (when-not (empty? invalid-updates)
           (log/raise "Update not supported for these schema attributes"
                      {:error :transact/schema :entity entity :invalid-updates invalid-updates})))
@@ -1621,7 +1635,7 @@
 
       :db.ensure/attrs (let [{:keys [tx-data]} report
                              asserting-datoms (filter (fn [^Datom d] (= e (.-e d))) tx-data)
-                             asserting-attributes (map (fn [^Datom d] (.-a d)) asserting-datoms)
+                             asserting-attributes (map (fn [^Datom d] (dbu/attr-ident db (.-a d))) asserting-datoms)
                              diff (clojure.set/difference (set v) (set asserting-attributes))]
                          (if (empty? diff)
                            [report []]
