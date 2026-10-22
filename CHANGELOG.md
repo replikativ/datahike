@@ -6,6 +6,17 @@ When something is added, it's typically marked *Experimental*. When the API cont
 
 ## 0.8
 
+- **`:attribute-refs?` databases accept entity specs, map-form renames and long schema values** —
+  `:db.entity/attrs` / `:db.entity/preds` had no system entity, so a spec could
+  not be transacted (attribute `nil`) and `:db/ensure` checked nothing; they are
+  now system attributes 55/56 of *new* databases. `:db/ensure` compared datom
+  attribute ids against idents and always reported every attribute missing. A
+  long such as `:db/maxLength 50` that equals a system entity id was read as that
+  system entity ("Bad entity value :dh.ref/temporal"); a value is a system ref
+  only for `:db/valueType`, `:db/cardinality` and `:db/unique`. The map form
+  `{:db/id aid :db/ident :new}` is accepted as a rename, like the vector form.
+  A query result cached before an ident was renamed or reused is no longer
+  served afterwards. (0.8, [#TODO])
 - **Schema-on-read stores retract vector values of any length ([#1105]).**
   An attribute without a declared `:db/valueType` can hold a vector of any
   length. `:db/retract`, `:db.fn/retractAttribute` and
