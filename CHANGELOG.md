@@ -6,6 +6,12 @@ When something is added, it's typically marked *Experimental*. When the API cont
 
 ## 0.8
 
+- **Offline GC keeps what a buffered index needs ([#1123]).** With
+  `:diff-buf-size`, `gc-storage!` marked the index nodes the connection held
+  in memory, not the ones the stored head names. A buffered slot is rebuilt
+  on a cold read from the node it was stored against, which the in-memory
+  walk never visits, so GC could delete it and a reopened database failed
+  with "Node not found". The mark now follows the stored nodes. Fixes [#1112].
 - **Schema-on-read stores retract vector values of any length ([#1105]).**
   An attribute without a declared `:db/valueType` can hold a vector of any
   length. `:db/retract`, `:db.fn/retractAttribute` and
@@ -924,4 +930,6 @@ Thanks to all the contributors and the community for helping on this release. Sp
 [#980]: https://github.com/replikativ/datahike/pull/980
 [#1092]: https://github.com/replikativ/datahike/pull/1092
 [#1090]: https://github.com/replikativ/datahike/pull/1090
+[#1123]: https://github.com/replikativ/datahike/pull/1123
+[#1112]: https://github.com/replikativ/datahike/issues/1112
 [#1105]: https://github.com/replikativ/datahike/issues/1105
