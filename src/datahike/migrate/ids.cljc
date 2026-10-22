@@ -75,6 +75,45 @@
   [schema a]
   (= :db.type/ref (:db/valueType (get schema a))))
 
+(defn tuple-ref-slots
+  "For a tuple attribute with ref elements, a vector with one boolean per
+   element, true where that element is an entity id; nil for any other
+   attribute.
+
+   A ref inside a tuple is an id exactly like a ref attribute's value, so it has
+   to move with the entity it names. Two schemas put one there:
+
+     :db/tupleTypes [:db.type/ref …]   heterogeneous, declared per element
+     :db/tupleAttrs [:some-ref …]      composite, derived from its components —
+                                       the stored value holds the component's
+                                       eid, not a lookup ref
+
+   A homogeneous `:db/tupleType :db.type/ref` is not covered: the transactor
+   files such an attribute under `:db.type/ref` and reads its value as a lookup
+   ref, so no database holds one to export.
+
+   `schema` is ident-keyed, as both a dump's manifest and a live db's
+   `-schema` are."
+  [schema a]
+  (let [m (get schema a)
+        slots (cond
+                (:db/tupleTypes m) (mapv #(= :db.type/ref %) (:db/tupleTypes m))
+                (:db/tupleAttrs m) (mapv #(ref-attr? schema %) (:db/tupleAttrs m)))]
+    (when (some true? slots) slots)))
+
+(defn tuple-refs
+  "The ids in tuple `v` at its ref `slots`, skipping nil (an unset component)."
+  [slots v]
+  (when (vector? v)
+    (into [] (keep-indexed (fn [i x] (when (and (get slots i) (some? x)) x))) v)))
+
+(defn map-tuple-refs
+  "`v` with `f` applied to each non-nil element at a ref slot."
+  [slots f v]
+  (if (vector? v)
+    (into [] (map-indexed (fn [i x] (if (and (get slots i) (some? x)) (f x) x))) v)
+    v))
+
 (defn build-mapping
   "Scan every record once and return the COMPLETE id mapping.
 
@@ -98,7 +137,8 @@
      t  transaction, always
      v  when the attribute is a ref — a ref value may point FORWARD to an entity
         whose own datoms appear later, so it must allocate on sight rather than
-        waiting to encounter it as an `e`"
+        waiting to encounter it as an `e`; and each ref element of a tuple,
+        for the same reason (`tuple-ref-slots`)"
   [{:keys [schema system-entities max-eid max-tx]} reduce-records]
   (let [sys (set system-entities)]
     (reduce-records
@@ -132,6 +172,14 @@
              acc (if (and (ref-attr? schema a) (number? v)
                           (not (contains? (:tids acc) v)))
                    (alloc-e acc v)
+                   acc)
+             ;; the same for each ref element of a tuple
+             acc (if-let [slots (tuple-ref-slots schema a)]
+                   (reduce (fn [acc x]
+                             (if (and (number? x) (not (contains? (:tids acc) x)))
+                               (alloc-e acc x)
+                               acc))
+                           acc (tuple-refs slots v))
                    acc)]
          acc))
      {:eids (into {} (map (fn [e] [e e])) sys)
@@ -152,9 +200,12 @@
         ;; structural, matching `build-mapping`: e names the transaction iff e = t
         e' (if (= e t) (lookup-id tids e e) (lookup-id eids e e))
         ;; a ref may point at a transaction, so :tids is consulted as a fallback
+        ref' (fn [x] (if (number? x) (lookup-id eids x (lookup-id tids x x)) x))
         v' (if (and (ref-attr? schema a) (number? v))
-             (lookup-id eids v (lookup-id tids v v))
-             v)
+             (ref' v)
+             (if-let [slots (tuple-ref-slots schema a)]
+               (map-tuple-refs slots ref' v)
+               v))
         t' (lookup-id tids t t)]
     [e' a v' t' op]))
 

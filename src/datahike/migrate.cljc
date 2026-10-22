@@ -3365,6 +3365,38 @@
 ;; ---------------------------------------------------------------------------
 ;; verify
 
+(defn- id-free-value
+  "`(fn [a v] -> v')`: a value as verify compares it, with the ids that may
+   legitimately differ between a dump and its restore taken out. Two kinds:
+
+     a schema value naming a system entity — `:db/valueType`, `:db/cardinality`,
+       `:db/unique` under `:attribute-refs?` hold that entity's id, and a dump
+       holds the SOURCE's, while `pull` answers `{:db/id … :db/ident …}`.
+       `sys-ident` turns an id into the ident: for the dump
+       side through the dump's own `:system-idents` (never the target's — a
+       database created before #828 numbers them differently), for the live
+       side through the live db. Compared raw, every schema entity was a tier-3
+       `:field-mismatch` against `pull`'s keyword.
+     a tuple's ref elements — ids, which a restore is free to move exactly like
+       a ref attribute's value (which verify already leaves out of the value
+       comparison). Masked, so the rest of the tuple is still compared."
+  [schema sys-ident]
+  (fn [a v]
+    (let [vt (:db/valueType (get schema a))]
+      (cond
+        (#{:db.type/valueType :db.type/cardinality :db.type/unique} vt)
+        (cond (number? v) (or (sys-ident v) v)
+              ;; how `pull` answers it under attribute-refs
+              (map? v)    (or (:db/ident v) v)
+              :else       v)
+
+        (= :db.type/tuple vt)
+        (if-let [slots (ids/tuple-ref-slots schema a)]
+          (ids/map-tuple-refs slots (constantly ::ref) v)
+          v)
+
+        :else v))))
+
 (defn- fp-init [] {:acc (dig/accumulator) :refc {} :outd {}})
 (defn- fp-step [fp [e a v op] ref?]
   (if (ref? a)
@@ -3408,11 +3440,15 @@
 (defn- verify-sample
   "Tier 3 — sampled structural diff. Pick up to `n` entities by a `:db.unique`
    attribute, reconstruct their non-ref attributes from the dump, and diff against
-   `pull '[*]'` on the live db."
-  [manifest reduce-source db ref? n]
+   `pull '[*]'` on the live db. `dump-v`/`live-v` are each side's
+   `id-free-value`."
+  [manifest reduce-source db ref? dump-v live-v n]
   (let [schema (:schema manifest)
+        ;; not a tuple with ref elements: its value holds source ids, so it
+        ;; cannot be looked up in a restore that moved them
         uniq   (set (for [[a m] schema
-                          :when (#{:db.unique/identity :db.unique/value} (:db/unique m))] a))]
+                          :when (and (#{:db.unique/identity :db.unique/value} (:db/unique m))
+                                     (not (ids/tuple-ref-slots schema a)))] a))]
     (if (empty? uniq)
       {:sampled 0 :ok? true :note "no :db.unique attrs — content covered by tiers 1–2"}
       (let [picks (reduce-source
@@ -3428,7 +3464,7 @@
                    (fn [acc record]
                      (let [[e a v _t op] record]
                        (if (and (contains? pick-es e) (not (ref? a)))
-                         (update-in acc [e a] (fnil (if op conj disj) #{}) (norm-val v))
+                         (update-in acc [e a] (fnil (if op conj disj) #{}) (norm-val (dump-v a v)))
                          acc)))
                    {})
             recon (into {} (for [[e am] recon
@@ -3436,7 +3472,12 @@
                                  :when (seq am)] [e am]))
             diffs (reduce
                    (fn [ds [[a v] e]]
-                     (if-let [cur (get recon e)]
+                     (if-let [cur (and
+                                   ;; the picked value may have been replaced
+                                   ;; later in the history; then it names
+                                   ;; nothing live, and is not a failure
+                                   (contains? (get-in recon [e a]) (norm-val (dump-v a v)))
+                                   (get recon e))]
                        (let [live (api/q '[:find (pull ?e [*]) . :in $ ?a ?v :where [?e ?a ?v]] db a v)]
                          (if (nil? live)
                            (conj ds {:unique [a v] :error :missing-in-live})
@@ -3448,8 +3489,8 @@
                                  live-attrs (into {} (for [[la lv] (dissoc live :db/id)
                                                            :when (not (ref? la))]
                                                        [la (if (many? la)
-                                                             (set (map norm-val lv))
-                                                             #{(norm-val lv)})]))]
+                                                             (set (map #(norm-val (live-v la %)) lv))
+                                                             #{(norm-val (live-v la lv))})]))]
                              (if (= live-attrs cur) ds
                                  (conj ds {:unique [a v] :error :field-mismatch})))))
                        ds)) ;; entity net-retracted — not current, not a failure
@@ -3830,6 +3871,9 @@
        (let [schema (:schema manifest)
              ref?   (fn [a] (= :db.type/ref (:db/valueType (get schema a))))
              hist?  (boolean (:history? manifest))
+             sidents (:system-idents manifest)
+             dump-v (id-free-value schema #(get sidents %))
+             live-v (id-free-value schema #(dbi/-ident-for db %))
                ;; tier 1 — counts
              dump-count (long (or (:count (:semantic-digest manifest)) 0))
              live-count (long (user-datom-count db hist?))
@@ -3849,19 +3893,20 @@
                                         v (if (and op (sec-only? a))
                                             (dbt/secondary-only-hash v)
                                             v)]
-                                    (fp-step fp [e a v op] ref?)))
+                                    (fp-step fp [e a (dump-v a v) op] ref?)))
                                 (fp-init)))
              src     (if hist? (api/history db) db)
              live-fp (fp-final (reduce (fn [fp dm]
                                          (if (> (d/datom-tx dm) c/tx0)
-                                           (fp-step fp [(nth dm 0) (a-ident db (nth dm 1)) (nth dm 2) (nth dm 4)] ref?)
+                                           (let [a (a-ident db (nth dm 1))]
+                                             (fp-step fp [(nth dm 0) a (live-v a (nth dm 2)) (nth dm 4)] ref?))
                                            fp))
                                        (fp-init) (api/datoms src :eavt)))
              t2-ok  (and (= (:digest dump-fp) (:digest live-fp))
                          (= (:ref-counts dump-fp) (:ref-counts live-fp))
                          (= (:out-degree dump-fp) (:out-degree live-fp)))
                ;; tier 3 — sampled structural diff
-             t3     (verify-sample manifest reduce-source db ref? 25)
+             t3     (verify-sample manifest reduce-source db ref? dump-v live-v 25)
                ;; blobs — same tier as the chunks, and part of :ok?
              blobs  (verify-blobs manifest source)]
          {:ok? (and (= dump-count live-count) t2-ok (:ok? t3) (:ok? blobs))

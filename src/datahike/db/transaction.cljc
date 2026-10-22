@@ -2257,6 +2257,19 @@
                   (log/raise "Configuration mismatch: import data with attribute references can not be imported into a database with no attribute references."
                              {:error :import/mismatch :data entity})
                   a-ident))
+            ;; A ref ELEMENT of a tuple is an id like a ref attribute's value and
+            ;; is translated the same way: allocated on first sight (the branch
+            ;; below), then rewritten here. It used to be stored verbatim, so a
+            ;; restore that moved ids left the tuple naming whatever entity held
+            ;; the source's number. Composite tuples are not re-derived by this
+            ;; path, so they need it too.
+            slots (mids/tuple-ref-slots (dbi/-schema db) a-ident)
+            unmapped-slot (when slots
+                            (some #(when (nil? (migrated-eid migration-state %)) %)
+                                  (mids/tuple-refs slots v)))
+            v (if (and slots (nil? unmapped-slot))
+                (mids/map-tuple-refs slots #(migrated-eid migration-state %) v)
+                v)
             max-eid (next-eid db)
             max-tid (inc (get-in report [:db-after :max-tx]))]
         (cond
@@ -2283,6 +2296,10 @@
           ;; ref not added yet
           (and (dbu/ref? db a) (nil? (migrated-eid migration-state v)))
           (recur (allocate-eid report max-eid) es (remember-eid migration-state v max-eid))
+
+          ;; a tuple's ref element not added yet — one per pass, as above
+          (some? unmapped-slot)
+          (recur (allocate-eid report max-eid) es (remember-eid migration-state unmapped-slot max-eid))
 
           :else
           (let [new-datom ^Datom (dd/datom
