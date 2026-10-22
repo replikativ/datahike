@@ -954,8 +954,14 @@
                            ^PersistentSortedSet pss-b
                            index-type db scan-attr]
      (let [keep-history? (dbi/-keep-history? db)
+           ;; Superseded-only stores keep a live datom out of the temporal tree
+           ;; entirely, so EVERY live datom has to reach the history stream —
+           ;; the card-one skip below would drop exactly the current value.
+           ;; See datahike.db.utils/superseded-only-temporal?.
+           superseded-only? (dbu/superseded-only-temporal? db)
            scan-attr-current-ok? (if scan-attr
-                                   (or (not keep-history?)
+                                   (or superseded-only?
+                                       (not keep-history?)
                                        (dbu/no-history? db scan-attr)
                                        (dbu/multival? db scan-attr))
                                    true)]
@@ -980,7 +986,8 @@
                    result (java.util.ArrayList. 4096)]
                (while (.hasNext iter-a)
                  (let [^Datom d (.next iter-a)]
-                   (when (or (not keep-history?)
+                   (when (or superseded-only?
+                             (not keep-history?)
                              scan-attr
                              (dbu/no-history? db (.-a d))
                              (dbu/multival? db (.-a d)))
@@ -999,7 +1006,8 @@
                    ^java.util.Iterator iter-b (.iterator ^Iterable slice-b)
                    result (java.util.ArrayList. 4096)]
                (letfn [(current-ok? [^Datom d]
-                         (or scan-attr
+                         (or superseded-only?
+                             scan-attr
                              (not keep-history?)
                              (dbu/no-history? db (.-a d))
                              (dbu/multival? db (.-a d))))
@@ -2449,10 +2457,17 @@
                                                    added)))
                                              merge-ops)))
         temporal-eavt-pss (when (= temporal-type :historical) (:temporal-eavt index-db))
+        ;; "Read the temporal tree ALONE for this merge" — sound only while a
+        ;; live cardinality-one datom is also copied into that tree. A
+        ;; superseded-only store keeps it out, so the same shortcut would drop
+        ;; the current value from every history merge. Same reasoning as the
+        ;; card-one skip in `fast-merge-scan` above.
+        superseded-only-temporal? (dbu/superseded-only-temporal? index-db)
         merge-temporal-only (when temporal
                               (to-array (mapv (fn [op]
                                                 (and (= temporal-type :historical)
                                                      (some? temporal-eavt-pss)
+                                                     (not superseded-only-temporal?)
                                                      (get-in op [:schema-info :card-one?] true)
                                                      (not (dbu/no-history? index-db
                                                                            (let [ma (second (:clause op))]

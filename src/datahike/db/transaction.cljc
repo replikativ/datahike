@@ -720,6 +720,36 @@
                     (dd/datom e a nil txmax)
                     :eavt)))
 
+(defn- temporal-upsert-index
+  "The history write of ONE cardinality-one upsert, applied to one temporal tree.
+
+   LEGACY layout: `di/-temporal-upsert`, which conj's the NEW assertion into
+   history as well — the reason a temporal tree is a full copy of its live twin
+   for cardinality-one attributes.
+
+   SUPERSEDED-ONLY layout: history receives only what the live tree stops
+   holding, which for an upsert over a DIFFERENT value is exactly two datoms —
+   the ORIGINAL assertion at its ORIGINAL tx (`old-datom`, read straight out of
+   the live EAVT index by `current-datom-for-ea`, so its tx is the real one) and
+   the retraction that ends it at THIS tx. A first assertion, and a restatement
+   of the same value, write nothing at all: the live tree still holds the datom
+   and the history view unions it back in.
+
+   Expressed with `-temporal-insert` rather than a new index operation on
+   purpose — it is the same primitive the RETRACTION path already uses
+   (`with-datom` below writes `removing` + `prim` there), it needs no protocol
+   change, and it therefore works for every index backend."
+  [idx ^Datom datom index-type op-count ^Datom old-datom superseded-only?]
+  (if-not superseded-only?
+    (di/-temporal-upsert idx datom index-type op-count old-datom)
+    (if (and old-datom (not= (.-v old-datom) (.-v datom)))
+      (-> idx
+          (di/-temporal-insert old-datom index-type op-count)
+          (di/-temporal-insert (dd/datom (.-e datom) (.-a datom) (.-v old-datom)
+                                         (.-tx datom) false)
+                               index-type (inc op-count)))
+      idx)))
+
 (defn- with-datom-upsert
   "`old-datom` is the current `[e a]` datom. `transact-add` has already looked it
    up to decide whether this assertion is redundant or a supersession, so it is
@@ -740,6 +770,7 @@
          op-count      (:op-count db)
          has-secondary? (seq (get-in db [:rschema :db.secondary/index a-ident]))
          secondary-only? (dbu/secondary-only? db a-ident)
+         superseded-only? (dbu/superseded-only-temporal? db)
         ;; primary indexes hold the content hash for :db.secondary/only attrs;
         ;; the full value goes only to the secondary index (`datom` below).
          prim ^Datom (project-primary secondary-only? datom)]
@@ -759,15 +790,15 @@
 
        true (tracking/changed a-ident (or schema? (ds/entity-spec-attr? a-ident)))
 
-       keep-history? (update-in [:temporal-eavt] #(di/-temporal-upsert % prim :eavt op-count old-datom))
+       keep-history? (update-in [:temporal-eavt] #(temporal-upsert-index % prim :eavt op-count old-datom superseded-only?))
        (and keep-history? (effects/enabled? db)) (effects/emit a-ident :temporal :temporal-upsert prim old-datom)
        true          (update-in [:eavt] #(di/-upsert % prim :eavt op-count old-datom))
        (effects/enabled? db) (effects/emit a-ident :current :upsert prim old-datom)
 
-       keep-history? (update-in [:temporal-aevt] #(di/-temporal-upsert % prim :aevt op-count old-datom))
+       keep-history? (update-in [:temporal-aevt] #(temporal-upsert-index % prim :aevt op-count old-datom superseded-only?))
        true          (update-in [:aevt] #(di/-upsert % prim :aevt op-count old-datom))
 
-       (and keep-history? indexing?) (update-in [:temporal-avet] #(di/-temporal-upsert % prim :avet op-count old-datom))
+       (and keep-history? indexing?) (update-in [:temporal-avet] #(temporal-upsert-index % prim :avet op-count old-datom superseded-only?))
        indexing?                     (update-in [:avet] #(di/-upsert % prim :avet op-count old-datom))
 
       ;; Secondary indices: retract old, assert new (full value)

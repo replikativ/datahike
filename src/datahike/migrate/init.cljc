@@ -300,8 +300,14 @@
     (go-try-
      (let [no-history (set (:db/noHistory rschema))
            multival   (set (:db.cardinality/many rschema))
-          ;; the two classes a live datom of which never reaches temporal
-           excluded?  (fn [a] (or (contains? no-history a) (contains? multival a)))
+          ;; the two classes a live datom of which never reaches temporal —
+          ;; unless the target store is SUPERSEDED-ONLY, where that is true of
+          ;; EVERY attribute and the live record of each `[e a v]` run is
+          ;; dropped from the temporal build outright. See
+          ;; `datahike.db.utils/superseded-only-temporal?`.
+           excluded?  (if (:temporal-superseded-only? index-config)
+                        (constantly true)
+                        (fn [a] (or (contains? no-history a) (contains? multival a))))
            ;; SEQUENTIAL, and not merely for tidiness: both builds write nodes
            ;; through the same `pending-writes` buffer and the same `:flush-fn`,
            ;; which is not written to be entered twice concurrently.
