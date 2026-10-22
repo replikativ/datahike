@@ -439,21 +439,42 @@
    forward refs allocate on first sight, and ids remap consistently. The one shape
    this does NOT preserve is a *same-transaction* card-one replacement (retract +
    re-assert of the same [e a] in one tx), which the sorting exporter orders
-   explicitly; if a history has those, use the default (sorted) export."
+   explicitly; if a history has those, use the default (sorted) export.
+
+   ## Schema datoms are emitted in TRANSACTION order, not EAVT order
+
+   The exception is the schema itself, which is replayed into a live database
+   and so MUST arrive in the order it happened. EAVT orders one attribute's
+   history by VALUE: a one→many change is `[a :db/cardinality :many t3 true]`
+   before `[a :db/cardinality :one t1 true]` and `[… :one t3 false]`, because
+   `:db.cardinality/many` sorts before `:db.cardinality/one` (and, under
+   `:attribute-refs?`, by the two idents' entity ids). Replayed in that order
+   `:db/cardinality` — itself card-one — upserts `:many` away when `:one`
+   arrives, then the retraction of `:one` leaves the attribute with no
+   cardinality at all, i.e. card-one. Every card-many value then overwrites its
+   predecessor, and the import fails verification with phantom retractions.
+
+   So the schema datoms are buffered and sorted by `(t, op)` — retractions first,
+   as in the source transaction — with EAVT kept within that (the sort is
+   stable). Buffering is bounded by the SCHEMA's history, not the data's; the
+   tx-entity datoms, one per transaction, still stream."
   [db {:keys [history?]}]
   (let [src      (if history? (api/history db) db)
         sys-ents (if (attribute-refs? db) (dbi/-system-entities db) #{})
         sidents  (system-idents db)
         user?    (fn [dm] (> (d/datom-tx dm) c/tx0))
-        schema-or-meta? (fn [dm]
-                          (let [a (a-ident db (nth dm 1))]
-                            (or (ds/schema-attr? a) (ds/meta-attr? a))))
+        schema?  (fn [dm] (ds/schema-attr? (a-ident db (nth dm 1))))
+        meta?    (fn [dm] (ds/meta-attr? (a-ident db (nth dm 1))))
         sec-read (secondary-only-reader db)
         renamed  (not-empty (set (keys (ident-timeline db))))
         make     (fn [dm] (datom->record db sys-ents sidents sec-read renamed dm))]
     (concat
-     (->> (api/datoms src :eavt) (filter user?) (filter schema-or-meta?) (map make))
-     (->> (api/datoms src :eavt) (filter user?) (remove schema-or-meta?) (map make)))))
+     (lazy-seq
+      (->> (api/datoms src :eavt) (filter user?) (filter schema?)
+           (sort-by (fn [dm] [(d/datom-tx dm) (d/datom-added dm)]))
+           (map make)))
+     (->> (api/datoms src :eavt) (filter user?) (filter meta?) (map make))
+     (->> (api/datoms src :eavt) (filter user?) (remove schema?) (remove meta?) (map make)))))
 
 (defn ident-schema
   "The user schema as an ident->attr-map, keyed by keyword ident only (drops the
