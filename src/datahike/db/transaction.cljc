@@ -2288,9 +2288,27 @@
           (let [new-datom ^Datom (dd/datom
                                   (or (migrated-eid migration-state e) max-eid)
                                   a
-                                  (if (dbu/ref? db a)
+                                  (cond
+                                    (dbu/ref? db a)
                                     (migrated-eid migration-state v)
-                                    v)
+                                    ;; `:db/valueType`, `:db/cardinality`, … name
+                                    ;; a SYSTEM entity, in the source's numbering.
+                                    ;; A source that declared that numbering is
+                                    ;; translated by it alone: an id it does not
+                                    ;; cover would otherwise land as a target id,
+                                    ;; or go through an `:offset` policy.
+                                    (and (number? v) (dbu/system-attrib-ref? db a))
+                                    (if-let [seed (:system-seed migration-state)]
+                                      (or (get seed v)
+                                          (log/raise (str "The source names system entity " v
+                                                          " as the value of " a-ident
+                                                          ", but its :system-idents does not"
+                                                          " list it or this database does not"
+                                                          " have it.")
+                                                     {:error :import/unknown-system-entity
+                                                      :value v :attribute a-ident :data entity}))
+                                      (or (migrated-eid migration-state v) v))
+                                    :else v)
                                   (get-in migration-state [:tids t])
                                   op)
                 upsert? (and (not (dbu/multival? db a-ident))

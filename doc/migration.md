@@ -159,11 +159,11 @@ flowchart TD
         │  fail ─► throw :import/{format-version,config-mismatch,
         │                         non-empty-target,checksum-failed}
         ▼ ok
-  attribute-refs? ─ yes ─► seed :migration system identity  (#508 translate)
+  attribute-refs? ─ yes ─► seed :migration source→target system ids by ident (#508, #1122)
         │
         ▼
   STREAM record lines  (fs: scoped readers │ store: whole-chunk values)
-        │   resolve #datahike/sysref → target system eid
+        │   resolve #datahike/sysref → source system id (the seed translates it)
         ▼
   tx-aligned batcher ─► @(load-entities conn batch)   remap e/tx ids; max-tx
         │   ▲   (tx never split; a tx spanning chunks stays whole)
