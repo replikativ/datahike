@@ -1160,13 +1160,84 @@
 ;; ---------------------------------------------------------------------------
 ;; import
 
+(defn- system-ids
+  "How this import names system entities: `{:resolve :seed :renumbered?}`.
+
+   A record's ids are SOURCE ids until the id mapping translates them, so a
+   `#datahike/sysref` has to become a source id too. It used to become the
+   TARGET's eid, seeded `{eid eid}` into the mapping — which put target ids into
+   the source id space. Wherever the two databases number their system entities
+   differently, a source USER entity that shares a number with a target system
+   entity was then mapped onto it. Every attribute-refs database created before
+   the system schema last grew is such a source: its user ids start where the
+   current system schema still runs.
+
+     :resolve    ident -> the id a record carries for that system entity
+     :seed       {that id -> the target's eid}, merged into the id mapping
+     :strict?    the seed is the source's own numbering, so a system id it does
+                 not cover is an error rather than a target id
+     :overlaps?  some target system entity is not a system entity in the source,
+                 i.e. its id may be a source USER id; preserving source ids would
+                 then collide with it. Conservative: a source that numbers the
+                 same system ids differently is still safe, and is not flagged.
+
+   A source that does not declare its numbering (`:system-idents`) keeps the old
+   behaviour: target ids, seeded to themselves."
+  [db source-idents]
+  (when-not (every? integer? (keys source-idents))
+    (throw (ex-info ":system-idents must map integer source ids to idents."
+                    {:error :import/bad-system-idents
+                     :keys (vec (remove integer? (keys source-idents)))})))
+  (cond
+    (not (attribute-refs? db))
+    {:resolve #(dbi/-ref-for db %) :seed nil :strict? false :overlaps? false}
+
+    (empty? source-idents)
+    {:resolve #(dbi/-ref-for db %)
+     :seed (into {} (map (fn [e] [e e])) (dbi/-system-entities db))
+     :strict? false
+     :overlaps? false}
+
+    :else
+    (let [source (into {} (map (fn [[e i]] [(long e) i])) source-idents)
+          by-ident (into {} (map (fn [[e i]] [i e])) source)]
+      {:resolve (fn [ident]
+                  (let [e (get by-ident ident)]
+                    (when (or (nil? e) (nil? (dbi/-ref-for db ident)))
+                      (throw (ex-info (str "The dump refers to system entity " ident
+                                           ", which "
+                                           (if (nil? e)
+                                             "its manifest's :system-idents does not list."
+                                             "this database does not have."))
+                                      {:error :import/unknown-system-entity
+                                       :ident ident})))
+                    e))
+       ;; idents only, not `-ref-for`: that warns for each ident this target
+       ;; lacks, and a newer source naming one is only an error if a record
+       ;; actually uses it
+       :seed (let [target (into {} (map (fn [[e i]] [i e])) (system-idents db))]
+               (into {} (keep (fn [[e i]] (when-let [t (get target i)] [e t]))) source))
+       :strict? true
+       :overlaps? (not-every? #(contains? source %) (keys (system-idents db)))})))
+
 (defn- resolve-sysrefs
-  "Replace any SysRef value in a record with the target's system-entity eid."
-  [db record]
+  "Replace any SysRef value in a record with the id `system-ids` gives it."
+  [sids record]
   (let [v (nth record 2)]
     (if (mcbor/sysref? v)
-      (assoc record 2 (dbi/-ref-for db (:ident v)))
+      (assoc record 2 ((:resolve sids) (:ident v)))
       record)))
+
+(defn- refuse-preserve-renumbered!
+  "`:eids :preserve` keeps source ids, so it cannot be right for a source whose
+   system entities are numbered differently: its user ids overlap the target's
+   system entities."
+  [sids]
+  (when (:overlaps? sids)
+    (throw (ex-info (str ":eids :preserve cannot import this dump: it numbers its system"
+                         " entities differently from this database, so its entity ids"
+                         " overlap this database's system entities. Use :eids :allocate.")
+                    {:error :import/preserve-renumbered-system}))))
 
 (defn- resolve-attr-refs
   "Replace an `AttrRef` in a record's attribute slot with the ident this TARGET
@@ -1214,12 +1285,6 @@
                            :attribute-entity e :t (nth record 3)
                            :timeline entries})))
         (assoc record 1 ident)))))
-
-(defn- system-eid-seed
-  "Identity seed {eid eid} for every target system entity, so refs resolved to a
-   system entity are not re-allocated by load-entities (#508)."
-  [db]
-  (into {} (map (fn [e] [e e])) (dbi/-system-entities db)))
 
 (defn- user-datom-count
   "Count user-transaction datoms (tx > tx0), i.e. everything an export writes. With
@@ -1633,6 +1698,8 @@
       (throw (ex-info (str "Unsupported dump format-version " fv)
                       {:error :import/format-version :version fv}))))
   (config-compat! manifest conn)
+  (when (= :preserve (:eids opts))
+    (refuse-preserve-renumbered! (system-ids @conn (:system-idents manifest))))
   ;; ---- machine-local paths inside a portable dump ----
   ;; Secondary indexes ARE recreated automatically on import: their declaration
   ;; lives in the schema, the schema datoms are replayed like any others, and
@@ -1751,7 +1818,10 @@
    ;; Present only for a dump that renamed an attribute; see
    ;; `manifest/ident-timeline`. A source that is not a dump has none, and
    ;; `resolve-attr-refs` is then a type check that never fires.
-   :ident-timeline (:ident-timeline manifest)})
+   :ident-timeline (:ident-timeline manifest)
+   ;; {source eid -> ident} for the source's system entities, so a #sysref
+   ;; resolves within the source's own id space; see `system-ids`.
+   :system-idents  (:system-idents manifest)})
 
 (defn- dangling-refs
   "Ref values in `db` that name an entity holding no datoms.
@@ -1883,17 +1953,20 @@
                           (long (user-datom-count db (boolean (:history? source-meta))))
                           0)
             max-eid-before (:max-eid db)
-          ;; system-entity identity, so refs to a system entity are TRANSLATED
-          ;; rather than re-allocated (#508)
-            sys (when (attribute-refs? db) (system-eid-seed db))
+          ;; system entities are TRANSLATED, never re-allocated (#508), and
+          ;; from the source's own numbering — see `system-ids`
+            sids (system-ids db (:system-idents source-meta))
+            sys (:seed sids)
+            _ (when (= :preserve (:eids opts)) (refuse-preserve-renumbered! sids))
             policy (eid-policy (:eids opts) db)
             eids (cond
                  ;; A policy is about the caller's OWN entities. System entities
-                 ;; keep their identity regardless, or `:offset` would shift the
+                 ;; are translated regardless, or `:offset` would shift the
                  ;; targets of system refs and break them.
-                   (and (fn? policy) (seq sys)) (fn [e] (if (contains? sys e) e (policy e)))
+                   (and (fn? policy) (seq sys)) (fn [e] (if-some [t (get sys e)] t (policy e)))
                    (fn? policy) policy
-                   (and policy (seq sys)) (merge sys policy)
+                   ;; the seed wins here too, as in the function case above
+                   (and policy (seq sys)) (merge policy sys)
                    policy policy
                    (seq sys) sys)
           ;; THE id mapping for this import, owned here and threaded through the
@@ -1904,7 +1977,8 @@
           ;; the writer's own loop), and putting it there cost three bugs.
           ;; Owning it here also means it needs no clearing: it goes out of
           ;; scope when this function returns.
-            migration0 (if eids {:eids eids} {})]
+            migration0 (cond-> (if eids {:eids eids} {})
+                         (:strict? sids) (assoc :system-seed sys))]
     ;; ---- stream records through a tx-aligned batcher (bounded memory) ----
     ;; System-entity idents are stable across the import, so resolve #sysref
     ;; against a captured db value.
@@ -1967,7 +2041,7 @@
                         :else (do (run! mman/validate-record! rs) rs)))
               prepare (fn [records]
                         (let [tl (:ident-timeline source-meta)
-                              rs (mapv #(->> % (resolve-sysrefs sref-db)
+                              rs (mapv #(->> % (resolve-sysrefs sids)
                                              (resolve-attr-refs sref-db tl))
                                        records)]
                           (if step
@@ -2003,7 +2077,7 @@
                              (if (nil? rs)
                                acc
                            ;; Already resolved and transformed by `prepare`. The
-                           ;; xform sees a plain [e a v t op] with real ids and
+                           ;; xform sees a plain [e a v t op] with source ids and
                            ;; never an internal SysRef; dropping is expressed by
                            ;; emitting nothing.
                                (let [rec (first rs)]
@@ -2316,6 +2390,9 @@
    (:sync? opts) *default-sync-translation*
    (go-try-
     (let [read-chunk (:read chunk-src)
+          ;; the index-build path refuses :attribute-refs?, so this resolves
+          ;; against the target exactly as before
+          sids (system-ids sref-db nil)
           step (when-let [xf (:xform opts)] (xf conj))
           ;; wrapped ONCE, around `rf` — so it covers the transducer's output and
           ;; the completion arity's residue without a second call site to forget
@@ -2334,7 +2411,7 @@
                                        "a dump chunk could not be read")]
             (recur (next cs)
                    (reduce (fn [a record]
-                             (let [r (->> record (resolve-sysrefs sref-db)
+                             (let [r (->> record (resolve-sysrefs sids)
                                           (resolve-attr-refs sref-db (:ident-timeline opts)))]
                                (when counter (vswap! counter inc))
                                (if step
@@ -2975,7 +3052,8 @@
    Everything `import-db` takes (`:batch-size` `:xform` `:eids` `:merge?`
    `:build-indexes?` `:on-error` `:sync?` …) plus:
 
-     :source-meta  {:history? :expected-count :max-tx :ident-timeline}, all
+     :source-meta  {:history? :expected-count :max-tx :ident-timeline
+                    :system-idents}, all
                    OPTIONAL. Absent `:expected-count` only means the count check
                    has nothing to compare against; absent `:max-tx` only means no
                    drift warning. A source that knows none of them passes none.
@@ -2987,6 +3065,12 @@
                    `manifest/ident-timeline`; `resolve-attr-refs` then picks the
                    name this target needs, which differs by `:attribute-refs?`.
                    A source that names attributes by keyword needs none of it.
+
+                   `:system-idents` is `{source-eid ident}` for the source's
+                   system entities, as a dump's manifest carries it. With it, a
+                   SysRef and a schema value name system entities in the
+                   source's own numbering, and the import translates them by
+                   ident. Without it, they must already be the target's ids.
      :schema       source schema map, index-build path only (ref detection).
 
    ## Verification is DECLINED, not defaulted away
@@ -3087,8 +3171,9 @@
                              database that came out of it.
      :on-error     :abort    :abort | :collect  (never silently skip)
      :xform        nil       a TRANSDUCER over records. Each record is
-                             `[e a v t op]` with real ids — it runs after
-                             sysref resolution, so a user function never sees an
+                             `[e a v t op]` with the SOURCE's ids, system
+                             entities included — it runs after sysref
+                             resolution, so a user function never sees an
                              internal SysRef. One input may produce zero or more
                              outputs; producing none drops it.
 

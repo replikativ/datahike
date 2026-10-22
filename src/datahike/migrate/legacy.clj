@@ -72,6 +72,26 @@
                       {:error :import/not-a-dump :source (str path)}
                       e)))))
 
+(defn- system-overlap-hint
+  "A legacy dump carries raw ids and no record of how its source numbered its
+   system entities. From an attribute-refs database created before the system
+   schema last grew, its user entities land on this database's newer system
+   entities, and the transactor refuses that with a message about the SCHEMA.
+   Say what actually happened and what works: exporting the source again with
+   this version writes a dump that records its numbering."
+  [conn e]
+  (let [{:keys [entity-id]} (ex-data e)]
+    (if (and entity-id (:attribute-refs? (:config @conn))
+             (contains? (:system-entities @conn) entity-id))
+      (ex-info (str "This legacy dump's entity " entity-id " is a system entity in this"
+                    " database: the dump comes from an attribute-refs database that"
+                    " numbered its system entities differently, and the legacy format"
+                    " cannot say how. Export the source database again with this"
+                    " version of datahike and import that dump instead.")
+               {:error :import/legacy-system-overlap :entity-id entity-id}
+               e)
+      e)))
+
 (defn import-db-legacy
   "Legacy import of an old flat CBOR dump via api/transact (unchanged behaviour).
 
@@ -105,7 +125,10 @@
         n-tx (reduce (fn [n batch]
                        (let [batch (vec batch)]
                          (swap! conn update-max-tx batch)
-                         (api/transact conn batch)
+                         (try
+                           (api/transact conn batch)
+                           (catch clojure.lang.ExceptionInfo e
+                             (throw (system-overlap-hint conn e))))
                          (inc n)))
                      0
                      batches)]
