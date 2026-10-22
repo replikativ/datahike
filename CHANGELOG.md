@@ -23,8 +23,7 @@ When something is added, it's typically marked *Experimental*. When the API cont
   initialization exposes explicit cleanup confirmation/recovery rather than
   suppressing drain failures.
   See [reconnect lifecycle and limits](doc/kabel-reconnect.md). (0.8.1907, [#1118])
-- **GC marks durable diff-buffer anchors.** Ordinary and shared PSS marking follow published address fields instead of resident buffered children, preserving anchors needed after cold reopen. Settled nodes and fused roots are detached snapshots; missing or inconsistent descriptors abort collection. (0.8, [#1102])
-- **GC aborts on fatal mark errors.** JVM `Error` values from reachability traversal are propagated through the collector channel, and a failed shared mark cannot authorize sweep. (0.8, [#1102])
+- **GC validates every stored index node before it sweeps.** Hardening on top of the #1112 fix: the mark reads and checks every node it keeps, leaves and fused roots included, and walks structure shared by several roots once per collection. A missing, malformed or conflicting node aborts the collection (`:datahike/gc-invalid-node-edges`) instead of sweeping, as does a diff-buffered index on storage that cannot supply durable node edges; an `Error` thrown during the mark is reported as `:datahike/gc-mark-failed`. Index nodes are snapshotted when written, so a stored node never shares children with the live tree. (0.8, [#1102])
 
 - **Scalar constants constrain function outputs.** A clause such as
   `[(subs ?id 6 7) "4"]` now keeps rows whose function result equals the
