@@ -6,11 +6,11 @@ When something is added, it's typically marked *Experimental*. When the API cont
 
 ## 0.8
 
-- **The JDBC backend connects again ([#TODO]).** konserve-jdbc 0.2.101,
+- **The JDBC backend connects again ([#1133]).** konserve-jdbc 0.2.101,
   as pinned, did not implement the `-store-exists?` probe konserve 0.9.385+
   makes on every connect, so creating or connecting a `:backend :jdbc` database
   failed with `AbstractMethodError: JDBCTable._store_exists_QMARK_`. Bumped to
-  konserve-jdbc 0.2.102 (replikativ/konserve-jdbc#43).
+  konserve-jdbc 0.2.102 (replikativ/konserve-jdbc#43, [#1133]).
 - **Schema-on-read stores retract vector values of any length ([#1105]).**
   An attribute without a declared `:db/valueType` can hold a vector of any
   length. `:db/retract`, `:db.fn/retractAttribute` and
@@ -930,3 +930,4 @@ Thanks to all the contributors and the community for helping on this release. Sp
 [#1092]: https://github.com/replikativ/datahike/pull/1092
 [#1090]: https://github.com/replikativ/datahike/pull/1090
 [#1105]: https://github.com/replikativ/datahike/issues/1105
+[#1133]: https://github.com/replikativ/datahike/pull/1133
