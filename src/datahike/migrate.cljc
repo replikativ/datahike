@@ -3398,15 +3398,28 @@
         :else v))))
 
 (defn- fp-init [] {:acc (dig/accumulator) :refc {} :outd {}})
-(defn- fp-step [fp [e a v op] ref?]
+(defn- fp-ref [fp k e]
+  (-> fp (update-in [:refc k] (fnil inc 0)) (update-in [:outd e] (fnil inc 0))))
+(defn- fp-step
+  "`norm` is the side's `id-free-value`; `slots-of` answers an attribute's
+   tuple ref slots (`ids/tuple-ref-slots`) or nil."
+  [fp [e a v op] ref? norm slots-of]
   (if (ref? a)
-    (-> fp (update-in [:refc a] (fnil inc 0)) (update-in [:outd e] (fnil inc 0)))
+    (fp-ref fp a e)
     ;; Hash the CBOR encoding of the normalised tuple rather than its `pr-str`.
     ;; This fingerprint compares a DUMP against a LIVE database, so it must be a
     ;; function of the values alone — and `:archival` gives that by construction,
     ;; where `pr-str` does not: it renders a Double and a Float identically and
     ;; differs between JVM and ClojureScript for several types.
-    (update fp :acc dig/add-record (mcbor/encode-record [a (norm-val v) op]))))
+    (let [fp (update fp :acc dig/add-record (mcbor/encode-record [a (norm-val (norm a v)) op]))]
+      ;; A tuple's ref elements are masked out of the digest, so they get the
+      ;; structural check a plain ref gets instead: counted per [attribute
+      ;; slot], and into the entity's out-degree.
+      (if-let [slots (and (vector? v) (slots-of a))]
+        (reduce (fn [fp i] (fp-ref fp [a i] e))
+                fp
+                (keep-indexed (fn [i x] (when (and (get slots i) (number? x)) i)) v))
+        fp))))
 (defn- fp-final [fp]
   {:digest (dig/finalize (:acc fp))
    :ref-counts (:refc fp)
@@ -3439,27 +3452,47 @@
 
 (defn- verify-sample
   "Tier 3 — sampled structural diff. Pick up to `n` entities by a `:db.unique`
-   attribute, reconstruct their non-ref attributes from the dump, and diff against
-   `pull '[*]'` on the live db. `dump-v`/`live-v` are each side's
-   `id-free-value`."
+   attribute value that is CURRENT in the dump, reconstruct their non-ref
+   attributes from the dump, and diff against `pull '[*]'` on the live db.
+   `dump-v`/`live-v` are each side's `id-free-value`.
+
+   `:sampled` is the number of entities actually compared. A history dump holds
+   unique values that later transactions replaced or retracted; those name
+   nothing live, so they are not candidates. Candidates are the first `8n`
+   distinct asserted `[a v e]`, netted (asserts minus retracts) over the whole
+   dump — bounded memory, and order-independent within the dump."
   [manifest reduce-source db ref? dump-v live-v n]
   (let [schema (:schema manifest)
-        ;; not a tuple with ref elements: its value holds source ids, so it
-        ;; cannot be looked up in a restore that moved them
+        ;; Not a ref (recon leaves refs out, so it could never compare one), and
+        ;; not a tuple with ref elements (its value holds source ids, so it
+        ;; cannot be looked up in a restore that moved them).
         uniq   (set (for [[a m] schema
                           :when (and (#{:db.unique/identity :db.unique/value} (:db/unique m))
-                                     (not (ids/tuple-ref-slots schema a)))] a))]
+                                     (not (ref? a))
+                                     (not (ids/tuple-ref-slots schema a)))] a))
+        budget (* 8 n)]
     (if (empty? uniq)
       {:sampled 0 :ok? true :note "no :db.unique attrs — content covered by tiers 1–2"}
-      (let [picks (reduce-source
-                   (fn [acc record]
-                     (let [[e a v _t op] record]
-                       (if (and op (uniq a) (< (count acc) n) (not (contains? acc [a v])))
-                         (assoc acc [a v] e) acc)))
-                   {})
-            pick-es (set (vals picks))
-            ;; net *current* state per picked entity: asserts add, retracts remove,
-            ;; so a fully-retracted entity nets to empty (and is not compared).
+      (let [cands (reduce-source
+                   (fn [{:keys [net] :as acc} record]
+                     (let [[e a v _t op] record
+                           k [a v e]]
+                       (cond
+                         (not (uniq a)) acc
+                         (contains? net k) (update-in acc [:net k] (if op inc dec))
+                         (and op (< (count net) budget))
+                         (-> acc (assoc-in [:net k] 1) (update :order conj k))
+                         :else acc)))
+                   {:net {} :order []})
+            picks (->> (:order cands)
+                       (filter #(pos? (long (get-in cands [:net %]))))
+                       (reduce (fn [acc [a v e]]
+                                 (if (or (>= (count acc) n) (some #(= e (second %)) acc))
+                                   acc
+                                   (conj acc [[a v] e])))
+                               []))
+            pick-es (set (map second picks))
+            ;; net *current* state per picked entity: asserts add, retracts remove
             recon (reduce-source
                    (fn [acc record]
                      (let [[e a v _t op] record]
@@ -3470,30 +3503,23 @@
             recon (into {} (for [[e am] recon
                                  :let [am (into {} (remove (comp empty? val) am))]
                                  :when (seq am)] [e am]))
+            many? (fn [la] (= :db.cardinality/many (:db/cardinality (get schema la))))
             diffs (reduce
                    (fn [ds [[a v] e]]
-                     (if-let [cur (and
-                                   ;; the picked value may have been replaced
-                                   ;; later in the history; then it names
-                                   ;; nothing live, and is not a failure
-                                   (contains? (get-in recon [e a]) (norm-val (dump-v a v)))
-                                   (get recon e))]
-                       (let [live (api/q '[:find (pull ?e [*]) . :in $ ?a ?v :where [?e ?a ?v]] db a v)]
-                         (if (nil? live)
-                           (conj ds {:unique [a v] :error :missing-in-live})
-                           ;; pull returns a vector for card-many AND for a tuple
-                           ;; value — disambiguate by declared cardinality, never
-                           ;; by value shape (a tuple is ONE value).
-                           (let [many? (fn [la] (= :db.cardinality/many
-                                                   (:db/cardinality (get schema la))))
-                                 live-attrs (into {} (for [[la lv] (dissoc live :db/id)
-                                                           :when (not (ref? la))]
-                                                       [la (if (many? la)
-                                                             (set (map #(norm-val (live-v la %)) lv))
-                                                             #{(norm-val (live-v la lv))})]))]
-                             (if (= live-attrs cur) ds
-                                 (conj ds {:unique [a v] :error :field-mismatch})))))
-                       ds)) ;; entity net-retracted — not current, not a failure
+                     (let [cur  (get recon e)
+                           live (api/q '[:find (pull ?e [*]) . :in $ ?a ?v :where [?e ?a ?v]] db a v)]
+                       (if (nil? live)
+                         (conj ds {:unique [a v] :error :missing-in-live})
+                         ;; pull returns a vector for card-many AND for a tuple
+                         ;; value — disambiguate by declared cardinality, never
+                         ;; by value shape (a tuple is ONE value).
+                         (let [live-attrs (into {} (for [[la lv] (dissoc live :db/id)
+                                                         :when (not (ref? la))]
+                                                     [la (if (many? la)
+                                                           (set (map #(norm-val (live-v la %)) lv))
+                                                           #{(norm-val (live-v la lv))})]))]
+                           (if (= live-attrs cur) ds
+                               (conj ds {:unique [a v] :error :field-mismatch}))))))
                    [] picks)]
         {:sampled (count picks) :ok? (empty? diffs) :diffs (vec (take 5 diffs))}))))
 
@@ -3874,6 +3900,21 @@
              sidents (:system-idents manifest)
              dump-v (id-free-value schema #(get sidents %))
              live-v (id-free-value schema #(dbi/-ident-for db %))
+             slots-of (memoize #(ids/tuple-ref-slots schema %))
+             ;; A renamed attribute's records name it by entity (`AttrRef`); the
+             ;; live side and the manifest schema use its CURRENT ident, which
+             ;; is the timeline's last entry.
+             timeline (:ident-timeline manifest)
+             reduce-source (if (empty? timeline)
+                             reduce-source
+                             (fn [rf init]
+                               (reduce-source
+                                (fn [acc record]
+                                  (let [a (nth record 1)]
+                                    (rf acc (if (mcbor/attr-ref? a)
+                                              (assoc record 1 (or (second (last (get timeline (:eid a)))) a))
+                                              record))))
+                                init)))
                ;; tier 1 — counts
              dump-count (long (or (:count (:semantic-digest manifest)) 0))
              live-count (long (user-datom-count db hist?))
@@ -3893,13 +3934,13 @@
                                         v (if (and op (sec-only? a))
                                             (dbt/secondary-only-hash v)
                                             v)]
-                                    (fp-step fp [e a (dump-v a v) op] ref?)))
+                                    (fp-step fp [e a v op] ref? dump-v slots-of)))
                                 (fp-init)))
              src     (if hist? (api/history db) db)
              live-fp (fp-final (reduce (fn [fp dm]
                                          (if (> (d/datom-tx dm) c/tx0)
                                            (let [a (a-ident db (nth dm 1))]
-                                             (fp-step fp [(nth dm 0) a (live-v a (nth dm 2)) (nth dm 4)] ref?))
+                                             (fp-step fp [(nth dm 0) a (nth dm 2) (nth dm 4)] ref? live-v slots-of))
                                            fp))
                                        (fp-init) (api/datoms src :eavt)))
              t2-ok  (and (= (:digest dump-fp) (:digest live-fp))

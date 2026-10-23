@@ -2263,7 +2263,8 @@
             ;; restore that moved ids left the tuple naming whatever entity held
             ;; the source's number. Composite tuples are not re-derived by this
             ;; path, so they need it too.
-            slots (mids/tuple-ref-slots (dbi/-schema db) a-ident)
+            slots (when (contains? (dbi/-attrs-by db :db.type/tuple) a-ident)
+                    (mids/tuple-ref-slots (dbi/-schema db) a-ident))
             unmapped-slot (when slots
                             (some #(when (nil? (migrated-eid migration-state %)) %)
                                   (mids/tuple-refs slots v)))

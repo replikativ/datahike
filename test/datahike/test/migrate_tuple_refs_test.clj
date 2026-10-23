@@ -210,3 +210,97 @@
         (is (:ok? (:tier3 r)) (pr-str (:tier3 r)))
         (is (:ok? r)))
       (teardown src) (teardown tgt))))
+
+(deftest non-id-values-in-a-ref-slot-are-carried-unchanged
+  (testing "the transactor's :db.type/id spec lets a keyword or a string into a
+            tuple's ref slot. Neither names an entity: it must not allocate a
+            fresh empty entity (:allocate), throw (:offset), or be rewritten —
+            the tuple is carried as the source holds it"
+    (doseq [ar? [false true]]
+      (let [src (source-conn ar?)
+            _ (d/transact src [{:name "k" :pt [:some/kw 8]} {:name "s" :pt ["str" 9]}])
+            path (export! src)
+            odd (fn [db] (into {} (d/q '[:find ?n ?t :where [?e :name ?n] [?e :pt ?t]
+                                         [(contains? #{"k" "s"} ?n)]] db)))]
+        (is (= {"k" [:some/kw 8] "s" ["str" 9]} (odd @src)) "precondition")
+        (doseq [policy [:allocate :offset :preserve]]
+          (let [tgt (utils/setup-db (mem-cfg {:attribute-refs? ar?}))]
+            ;; :preserve keeps source ids, so it goes into a fresh target
+            (if (= :preserve policy)
+              (m/import-db tgt path {:eids policy})
+              (do (populate! tgt)
+                  (m/import-db tgt path {:merge? true :eids policy})))
+            (is (= {"k" [:some/kw 8] "s" ["str" 9]} (odd @tgt)) (str policy " ar=" ar?))
+            (assert-tuple-refs-follow @tgt (str policy " ar=" ar?))
+            (teardown tgt)))
+        (testing "and the index-build path likewise"
+          (when-not ar?
+            (let [tgt (utils/setup-db (mem-cfg {}))]
+              (m/import-db tgt path {:build-indexes? true})
+              (is (= {"k" [:some/kw 8] "s" ["str" 9]} (odd @tgt)))
+              (is (:ok? (m/verify-against @tgt path)))
+              (teardown tgt))))
+        (teardown src)))))
+
+(deftest tier-3-compares-current-entities-and-says-how-many
+  (testing "every unique value was replaced later in the history. Tier 3 used to
+            pick the replaced values, skip them all and report `:sampled 25`
+            having compared nothing — so a corrupted restore passed"
+    (let [src (utils/setup-db (mem-cfg {}))
+          _ (d/transact src [{:db/ident :name :db/valueType :db.type/string
+                              :db/cardinality :db.cardinality/one
+                              :db/unique :db.unique/identity}
+                             {:db/ident :age :db/valueType :db.type/long
+                              :db/cardinality :db.cardinality/one}
+                             ;; a unique REF: never comparable, must not use up the budget
+                             {:db/ident :buddy :db/valueType :db.type/ref
+                              :db/cardinality :db.cardinality/one
+                              :db/unique :db.unique/value}])
+          _ (d/transact src (vec (for [i (range 30)] {:name (str "x" i) :age i})))
+          _ (d/transact src (vec (for [i (range 29)]
+                                   {:db/id [:name (str "x" i)] :buddy [:name (str "x" (inc i))]})))
+          _ (d/transact src (vec (for [i (range 30)] {:db/id [:name (str "x" i)] :name (str "y" i)})))
+          path (export! src)
+          tgt (utils/setup-db (mem-cfg {}))]
+      (m/import-db tgt path)
+      (let [t3 (:tier3 (m/verify-against @tgt path))]
+        (is (:ok? t3) (pr-str t3))
+        (is (= 25 (:sampled t3)) "25 current entities actually compared"))
+      (d/transact tgt (vec (for [i (range 30)] {:db/id [:name (str "y" i)] :age (+ 100 i)})))
+      (let [t3 (:tier3 (m/verify-against @tgt path))]
+        (is (not (:ok? t3)) "the corruption is seen")
+        (is (= :field-mismatch (:error (first (:diffs t3))))))
+      (teardown src) (teardown tgt))))
+
+(deftest tier-2-counts-tuple-ref-slots-structurally
+  (testing "masked out of the digest, a tuple's ref elements are counted per
+            [attribute slot] and into out-degree, like a plain ref"
+    (let [schema {:pt {:db/valueType :db.type/tuple
+                       :db/tupleTypes [:db.type/ref :db.type/long]}}
+          slots-of #(ids/tuple-ref-slots schema %)
+          norm (fn [_ v] v)
+          step #(#'m/fp-step %1 %2 (constantly false) norm slots-of)
+          fp (-> (#'m/fp-init) (step [10 :pt [5 1] true]) (step [11 :pt [:kw 2] true]))]
+      (is (= {[:pt 0] 1} (:refc fp)) "the keyword is not an id")
+      (is (= {10 1} (:outd fp))))))
+
+(deftest verify-against-a-renamed-attribute-under-attribute-refs
+  (testing "records of a renamed attribute name it by entity (AttrRef); verify
+            reads them under the attribute's current ident"
+    (let [src (utils/setup-db (mem-cfg {:attribute-refs? true}))
+          _ (d/transact src [{:db/ident :name :db/valueType :db.type/string
+                              :db/cardinality :db.cardinality/one
+                              :db/unique :db.unique/identity}
+                             {:db/ident :old :db/valueType :db.type/long
+                              :db/cardinality :db.cardinality/one}])
+          _ (d/transact src [{:name "x" :old 1}])
+          aid (:db/id (d/entity @src :old))
+          ;; retract-then-add: the spelling that retires the old ident (#966)
+          _ (d/transact src [[:db/retract aid :db/ident :old] [:db/add aid :db/ident :new]])
+          _ (d/transact src [{:db/id [:name "x"] :new 2}])
+          path (export! src)
+          tgt (utils/setup-db (mem-cfg {:attribute-refs? true}))]
+      (m/import-db tgt path)
+      (let [r (m/verify-against @tgt path)]
+        (is (:ok? r) (pr-str (select-keys r [:tier1 :tier2 :tier3]))))
+      (teardown src) (teardown tgt))))

@@ -13,7 +13,7 @@ When something is added, it's typically marked *Experimental*. When the API cont
   unless the vector had exactly two elements, because the pattern check
   read every other vector as a malformed lookup ref.
 - **Import moves a tuple's ref elements with their entities** — a ref inside a tuple (`:db/tupleTypes [:db.type/ref …]`, or a composite `:db/tupleAttrs` with a ref component) was imported verbatim, so a restore that renumbered entities (`:eids :allocate` into a populated target, `:offset`, a mapping) left the tuple naming whatever entity held the source's number, and a lookup by the composite found nothing. Both import paths (streaming and `:build-indexes?`) now allocate and remap them like any ref value. (0.8, [#1125])
-- **`verify-against` passes on `:attribute-refs?` restores** — tier 3 compared the raw system-entity ids a dump stores for `:db/valueType`, `:db/cardinality` and `:db/unique` with what `pull` returns, so every schema entity was a `:field-mismatch` and no attribute-refs import could verify. Those values are now compared by ident, through the dump's own `:system-idents`. Tiers 2 and 3 also leave a tuple's ref elements out of the value comparison (the ids a restore may move), and tier 3 no longer reports a unique value that a later transaction replaced as `:missing-in-live`. (0.8, [#1125])
+- **`verify-against` passes on `:attribute-refs?` restores** — tier 3 compared the raw system-entity ids a dump stores for `:db/valueType`, `:db/cardinality` and `:db/unique` with what `pull` returns, so every schema entity was a `:field-mismatch` and no attribute-refs import could verify. Those values are now compared by ident, through the dump's own `:system-idents`. Tiers 2 and 3 also leave a tuple's ref elements out of the value comparison (the ids a restore may move) and count them structurally instead, as for plain refs. Tier 3 now samples only unique values still current in the dump, so it no longer reports a replaced one as `:missing-in-live`, and `:sampled` is the number of entities actually compared — it used to count picks it then skipped, and could pass having compared nothing. (0.8, [#1125])
 - **Existing Kabel replicas can resubscribe (experimental).** After an
   authenticated transport reconnect, `datahike.kabel.connector/resubscribe!`
   catches up the existing connection without discarding its store, listeners
@@ -921,10 +921,10 @@ Thanks to all the contributors and the community for helping on this release. Sp
 [#983]: https://github.com/replikativ/datahike/pull/983
 [#985]: https://github.com/replikativ/datahike/pull/985
 [#987]: https://github.com/replikativ/datahike/pull/987
-[#1125]: https://github.com/replikativ/datahike/pull/1125
 [#989]: https://github.com/replikativ/datahike/pull/989
 [#990]: https://github.com/replikativ/datahike/pull/990
 [#980]: https://github.com/replikativ/datahike/pull/980
 [#1092]: https://github.com/replikativ/datahike/pull/1092
 [#1090]: https://github.com/replikativ/datahike/pull/1090
 [#1105]: https://github.com/replikativ/datahike/issues/1105
+[#1125]: https://github.com/replikativ/datahike/pull/1125
