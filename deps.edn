@@ -195,7 +195,7 @@
                                ;; that the shipped server does.
                                org.replikativ/konserve-s3    {:mvn/version "0.1.42"
                                                               :exclusions [com.amazonaws/aws-xray-recorder-sdk-aws-sdk-v2]}
-                               org.replikativ/konserve-jdbc  {:mvn/version "0.2.101"}
+                               org.replikativ/konserve-jdbc  {:mvn/version "0.2.102"}
                                org.replikativ/konserve-dynamodb
                                {:mvn/version "0.1.33"
                                 :exclusions [com.amazonaws/aws-xray-recorder-sdk-aws-sdk-v2]}
@@ -277,7 +277,7 @@
                                       {:mvn/version "0.1.42"
                                        :exclusions [com.amazonaws/aws-xray-recorder-sdk-aws-sdk-v2]}
                                       org.replikativ/konserve-jdbc
-                                      {:mvn/version "0.2.101"}
+                                      {:mvn/version "0.2.102"}
                                       org.replikativ/konserve-dynamodb
                                       {:mvn/version "0.1.33"
                                        :exclusions [com.amazonaws/aws-xray-recorder-sdk-aws-sdk-v2]}
