@@ -6,6 +6,13 @@ When something is added, it's typically marked *Experimental*. When the API cont
 
 ## 0.8
 
+- **A computed `:eids` mapping keeps the streaming import's id state bounded
+  ([#1127]).** Under `:offset`, `:preserve`, a caller's `ILookup` or a caller's
+  function, `import-db`/`import-source` remembered every id the mapping had
+  already answered for — one entry per source entity and per transaction —
+  rebuilding the O(entities) table these mappings exist to avoid. Only ids the
+  importer allocates itself (those a partial mapping leaves unnamed) are
+  remembered now. Regression from #970.
 - **Schema-on-read stores retract vector values of any length ([#1105]).**
   An attribute without a declared `:db/valueType` can hold a vector of any
   length. `:db/retract`, `:db.fn/retractAttribute` and
@@ -925,3 +932,4 @@ Thanks to all the contributors and the community for helping on this release. Sp
 [#1092]: https://github.com/replikativ/datahike/pull/1092
 [#1090]: https://github.com/replikativ/datahike/pull/1090
 [#1105]: https://github.com/replikativ/datahike/issues/1105
+[#1127]: https://github.com/replikativ/datahike/pull/1127
