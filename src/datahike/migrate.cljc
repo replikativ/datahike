@@ -1633,6 +1633,23 @@
       (throw (ex-info (str "Unsupported dump format-version " fv)
                       {:error :import/format-version :version fv}))))
   (config-compat! manifest conn)
+  ;; ---- a history source into a target that keeps none ----
+  ;; A dump says this through `config-compat!` (`:keep-history?` is in
+  ;; `config-must-match`); a record source has no manifest and says it only as
+  ;; `:source-meta {:history? true}`. Unchecked, the import wrote every record —
+  ;; retractions applied, so the current state even came out right — and then
+  ;; threw "history is only allowed on temporal indexed databases" from the
+  ;; report's count, which reads the history the target does not have. The data
+  ;; was committed and the report lost. Refused here, before anything is
+  ;; written, the same way the dump path refuses it.
+  (when (and (:history? (:source-meta opts))
+             (not (dbi/-keep-history? @conn)))
+    (throw (ex-info (str "The source carries history (:source-meta {:history? true}) but the target"
+                         " database does not keep history (:keep-history? false). Import into a"
+                         " database created with :keep-history? true, or supply a source of"
+                         " current datoms only.")
+                    {:error :import/config-mismatch :key :keep-history?
+                     :expected true :actual false})))
   ;; ---- machine-local paths inside a portable dump ----
   ;; Secondary indexes ARE recreated automatically on import: their declaration
   ;; lives in the schema, the schema datoms are replayed like any others, and
