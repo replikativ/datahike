@@ -31,6 +31,17 @@
      order. `tx-order` now sorts retraction before assertion, which both makes
      the fold deterministic and matches datahike, where the datom ends up
      present.
+   - **...and retraction-first is only half the story.** The same pair arises the
+     other way round: `[[:db/add 100 :tag :x] [:db/retract 100 :tag :x]]` on an
+     entity WITHOUT `:x` also records both, and there the datom ends up ABSENT.
+     So does a cardinality-one attribute set twice in one transaction — `25` then
+     `21` over `24` records `[24 false] [25 true] [25 false] [21 true]`, and `25`
+     is not current. No order of the two records answers both cases, because the
+     history does not record which came first. What it does fix is the OUTCOME:
+     an `[e a v]` asserted AND retracted in one transaction is exactly as present
+     after it as before it (re-assert: present -> present; transient value:
+     absent -> absent). That is the rule `run-current` folds, per transaction, and
+     it needs no order within one.
    - **Cardinality is irrelevant here.** It matters to the transactor, which
      decides whether to emit the retraction; by the time we see history, that
      decision is already recorded.
@@ -52,17 +63,43 @@
    records: transacting `[[:db/retract 100 :tag :x] [:db/add 100 :tag :x]]`
    yields BOTH `[100 :tag :x t false]` and `[100 :tag :x t true]`. Fed in one
    order the fold answered `#{}`, in the other `#{[100 :tag :x]}` — for the same
-   multiset. datahike says the datom is present, so retraction must sort first
-   and the assertion wins."
+   multiset. The fold no longer depends on it (`tx-groups-current` reads a
+   transaction's records as a set), but a stable order keeps the output stable."
   [datom]
   [(nth datom 3) (nth datom 0) (str (nth datom 1)) (str (nth datom 2))
    (if (nth datom 4) 1 0)])
+
+(defn- tx-groups-current
+  "The asserting record left current by the records of ONE `[e a v]`, given in
+   transaction order, or nil when the datom is not current.
+
+   Folded per TRANSACTION, not per record: within one transaction an assertion
+   only sets the datom, a retraction only clears it, and BOTH leave it as it was —
+   see the namespace doc for why no record order can decide that case. On a
+   re-assertion the current record is the new assertion, so the restored datom
+   carries the transaction that asserted it last, as datahike's does."
+  [run]
+  (reduce (fn [cur group]
+            (let [asserted (some #(when (nth % 4) %) group)
+                  retracted? (some #(not (nth % 4)) group)]
+              (cond (and asserted retracted?) (when cur asserted)
+                    asserted asserted
+                    :else nil)))
+          nil
+          (partition-by #(nth % 3) run)))
+
+(defn- current-records
+  "Every currently-true record of `history-records`, in any order. Not memory
+   bounded: groups the whole input."
+  [history-records]
+  (keep (fn [[_ run]] (tx-groups-current (sort-by tx-order run)))
+        (group-by (fn [r] [(nth r 0) (nth r 1) (nth r 2)]) history-records)))
 
 (defn derive-current
   "The set of `[e a v]` triples currently true, given `history-records` as
    `[e a v t added]` tuples.
 
-   NOT MEMORY BOUNDED — it sorts the whole input and accumulates a set of every
+   NOT MEMORY BOUNDED — it groups the whole input and accumulates a set of every
    live datom. That is fine for a test or a small database and wrong for the case
    a bulk build exists to serve. `current-from-eavt-sorted` is the streaming
    version; this one stays because it is the obvious, order-independent statement
@@ -73,11 +110,7 @@
    they were asserted. Callers that need the asserting transaction should take it
    from the matching history record."
   [history-records]
-  (reduce (fn [acc record]
-            (let [k [(nth record 0) (nth record 1) (nth record 2)]]
-              (if (nth record 4) (conj acc k) (disj acc k))))
-          #{}
-          (sort-by tx-order history-records)))
+  (into #{} (map (fn [r] [(nth r 0) (nth r 1) (nth r 2)])) (current-records history-records)))
 
 (defn- eav-runs
   "Group records sorted by `[e a v t]` into consecutive runs sharing `[e a v]`.
@@ -104,11 +137,7 @@
    `[e a v]`. That is an external sort the import already performs to feed the
    index builders, so it costs nothing extra."
   [sorted-records]
-  (keep (fn [run]
-          ;; last record for this [e a v] wins; current iff it asserted
-          (let [final (last run)]
-            (when (nth final 4) final)))
-        (eav-runs sorted-records)))
+  (keep tx-groups-current (eav-runs sorted-records)))
 
 (defn temporal-from-eavt-sorted
   "STREAMING: given records sorted by `[e a v t]`, the subset the TEMPORAL trees
@@ -132,16 +161,19 @@
    `(current filtered to no-history? OR multival?)` — the union exists to put
    those two classes back.
 
-   Only the FINAL record of each run is dropped, never every assertion in it.
+   Only the LIVE record of each run is dropped, never every assertion in it —
+   and only when there is one: a value asserted and retracted in one transaction
+   ends its run with an assertion that is NOT live (see `tx-groups-current`), and
+   both of its records stay in temporal, as datahike keeps them.
    The difference is reachable: a card-many value retracted and then re-asserted
    has an EARLIER assertion which datahike does keep in temporal (the retraction
    put it there). Dropping every live-keyed assertion loses it — measured, on a
    database carrying that shape, as one missing datom out of 37."
   [exclude-attr? sorted-records]
   (mapcat (fn [run]
-            (let [final (last run)]
-              (if (and (nth final 4) (exclude-attr? (nth final 1)))
-                (butlast run)
+            (let [live (tx-groups-current run)]
+              (if (and live (exclude-attr? (nth live 1)))
+                (remove #(identical? % live) run)
                 run)))
           (eav-runs sorted-records)))
 
@@ -159,18 +191,9 @@
    that ASSERTED it (the latest assertion, since a later retraction would have
    removed the key).
 
-   NOT MEMORY BOUNDED — it builds on `derive-current` and materialises both
+   NOT MEMORY BOUNDED — it groups the whole input and materialises both
    halves. Kept for tests and small inputs; the import path composes
    `current-from-eavt-sorted` with an external sort instead."
   [history-records]
-  (let [current (derive-current history-records)
-        ;; latest assertion per key — later transactions overwrite earlier ones
-        asserted (reduce (fn [acc record]
-                           (let [k [(nth record 0) (nth record 1) (nth record 2)]]
-                             (if (and (nth record 4) (contains? current k))
-                               (assoc acc k record)
-                               acc)))
-                         {}
-                         (sort-by tx-order history-records))]
-    {:current (vec (vals asserted))
-     :history (vec history-records)}))
+  {:current (vec (current-records history-records))
+   :history (vec history-records)})

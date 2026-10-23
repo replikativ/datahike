@@ -2174,6 +2174,71 @@
   ([initial-report initial-es tx-options]
    (transact-tx-data-internal initial-report initial-es tx-options nil)))
 
+(defn- pair-same-tx-assert-retract
+  "Collect every `[e a v]` that `records` both ASSERT and RETRACT in one
+   transaction into ONE `{::pairs [[assertion retraction] ...]}` marker per
+   `[t e a]`, placed just before the first assertion of that `[t e a]`; every
+   other record is left where it is.
+
+   A history holds such pairs, and datahike's own transactor writes them:
+   `[[:db/add e :tag :x] [:db/retract e :tag :x]]`, or a cardinality-one
+   attribute set twice in one transaction (`25` then `21` over `24` records
+   `[24 false] [25 true] [25 false] [21 true]`). The history does not say which
+   of the two came first, and which came first decides the outcome: retract
+   then re-assert leaves the datom current, assert then retract leaves it gone.
+   Replayed in the source order — retraction first — a passing value was
+   resurrected: the retraction of the not-yet-present `25` was dropped, then `25`
+   upserted over `21`, so the restore answered `25` where the source answers `21`
+   and the history lost a datom (95 of 3,000,032 on a synthetic history).
+
+   The order is recovered from the one thing that does know it, the target's
+   state before the transaction: see the `pairs` branch of
+   `transact-entities-directly`. Records arrive `(t, e, a, op)`-ordered with
+   retraction first, so the marker's position is after the other retractions of
+   its `[e a]` and before every assertion of it, which a cardinality-one value
+   that survives the transaction needs to not be superseded by one that did not.
+   One marker per `[t e a]` rather than per pair because the pairs of one
+   cardinality-one attribute order against each other too: `25` then `24` over
+   `24` re-asserts `24` and passes through `25`, and only retracting `24`, then
+   passing `25` through, then asserting `24` rebuilds that."
+  [records]
+  (let [retractions (persistent!
+                     (reduce (fn [m r]
+                               (let [[e a v t op] r]
+                                 (if op m (assoc! m [t e a v] r))))
+                             (transient {})
+                             records))]
+    (if (zero? (count retractions))
+      records
+      (let [;; [t e a] -> its [assertion retraction] pairs
+            pairs (reduce (fn [m r]
+                            (let [[e a v t op] r]
+                              (if (and op (contains? retractions [t e a v])
+                                       (not-any? #(= v (nth (first %) 2)) (get m [t e a])))
+                                (update m [t e a] (fnil conj []) [r (get retractions [t e a v])])
+                                m)))
+                          {}
+                          records)]
+        (if (empty? pairs)
+          records
+          (loop [[r & more :as rs] (seq records) emitted #{} out (transient [])]
+            (if (empty? rs)
+              (persistent! out)
+              (let [[e a v t op] r
+                    group (get pairs [t e a])]
+                (cond
+                  (nil? group) (recur more emitted (conj! out r))
+                  ;; the retraction of a pair travels inside the marker
+                  (not op) (recur more emitted
+                                  (if (some #(identical? r (second %)) group) out (conj! out r)))
+                  ;; the FIRST assertion of [t e a] brings the group's marker
+                  ;; ahead of itself: a cardinality-one value that survives the
+                  ;; transaction must not be superseded by one that did not
+                  :else
+                  (let [out (if (contains? emitted [t e a]) out (conj! out {::pairs group}))]
+                    (recur more (conj emitted [t e a])
+                           (if (some #(= v (nth (first %) 2)) group) out (conj! out r)))))))))))))
+
 (defn transact-entities-directly
   "Load `initial-es` (raw `[e a v t op]` records) into `(:db-after
    initial-report)`, remapping source ids to target ones.
@@ -2200,7 +2265,7 @@
   (loop [report (-> initial-report
                     (update :datahike/tx-ops #(or % #{}))
                     (update :db-after transient))
-         es initial-es
+         es (pair-same-tx-assert-retract initial-es)
          migration-state (or (:migration initial-report) {})]
     (if (empty? es)
       ;; NO `max-tx` bump here. One call is one BATCH, not one transaction, and
@@ -2223,7 +2288,8 @@
           (update :db-after #(tracking/schema-transition (:db-before initial-report) %)))
       (let [[entity & entities] es
             {:keys [config] :as db} (:db-after report)
-            [e a v t op] entity
+            pairs (when (map? entity) (::pairs entity))
+            [e a v t op] (if pairs (ffirst pairs) entity)
             a-ident (if (and (number? a) (:attribute-refs? config))
                       (dbi/-ident-for db a)
                       a)
@@ -2260,6 +2326,28 @@
             max-eid (next-eid db)
             max-tid (inc (get-in report [:db-after :max-tx]))]
         (cond
+          ;; [e a v]s asserted and retracted in one transaction — see
+          ;; `pair-same-tx-assert-retract`. One present now was retracted and
+          ;; re-asserted; one absent was asserted and retracted. Either way it
+          ;; ends as it was. Replayed as: the re-asserted ones' retractions, then
+          ;; each passing value's assertion and retraction, then the
+          ;; re-assertions — so no value of the group is upserted over another.
+          pairs
+          (let [te (migrated-eid migration-state e)
+                ref? (dbu/ref? db a)
+                present? (fn [[asserted _]]
+                           (let [v (nth asserted 2)
+                                 tv (if ref? (migrated-eid migration-state v) v)]
+                             (and (some? te) (some? tv)
+                                  (some? (first (dbi/search db [te a tv]))))))
+                {reasserted true passing false} (group-by (comp boolean present?) pairs)]
+            (recur report
+                   (concat (map second reasserted)
+                           (mapcat identity passing)
+                           (map first reasserted)
+                           entities)
+                   migration-state))
+
           (= :db.install/attribute a-ident)
           (recur report entities migration-state)
 
