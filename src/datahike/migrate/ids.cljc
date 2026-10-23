@@ -112,7 +112,13 @@
              ;; [tx :author "x"] mapped through :eids — splitting one entity in
              ;; two and orphaning the metadata onto an id nothing else references.
              ;; Comparing e to t is structural and needs no schema.
-             tx-entity? (= e t)
+             ;;
+             ;; Or an EARLIER transaction: a fact written later about a past
+             ;; transaction (Datomic allows `[:db/add old-tx :tx/note "x"]`)
+             ;; names it in `e`. Records arrive in `t` order, so it is already in
+             ;; `:tids`, and allocating it as an entity would put the fact on a
+             ;; new entity nothing else references.
+             tx-entity? (or (= e t) (contains? (:tids acc) e))
              alloc-e (fn [acc id]
                        (if (or (contains? (:eids acc) id) (contains? sys id))
                          acc
@@ -149,8 +155,11 @@
    shape of the number."
   [{:keys [eids tids]} schema record]
   (let [[e a v t op] record
-        ;; structural, matching `build-mapping`: e names the transaction iff e = t
-        e' (if (= e t) (lookup-id tids e e) (lookup-id eids e e))
+        ;; structural, matching `build-mapping`: e names a transaction iff e = t,
+        ;; or e is an earlier transaction :tids knows
+        e' (if (or (= e t) (some? (lookup-id tids e nil)))
+             (lookup-id tids e e)
+             (lookup-id eids e e))
         ;; a ref may point at a transaction, so :tids is consulted as a fallback
         v' (if (and (ref-attr? schema a) (number? v))
              (lookup-id eids v (lookup-id tids v v))

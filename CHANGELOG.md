@@ -9,13 +9,19 @@ When something is added, it's typically marked *Experimental*. When the API cont
 - **`import-from-datomic!` builds indexes directly (experimental) ([#1129]).**
   `{:build-indexes? true}` now works for a Datomic source end to end: the
   ident-keyed `:schema` is derived from Datomic, and the entity ids default to
-  the new `dtm/partition-mapping`, a computed mapping. It packs each partition's
-  history-wide `[min max]` id range below `tx0`, refuses ids outside it, and
-  round-trips through EDN (`mapping-params` / `params->mapping`) for resumed
-  and incremental imports. A caller mapping that leaves a negative id unnamed is
-  refused on that path (`:import/eid-below-e0`) instead of being written as is.
-- **A Datomic ref to a transaction follows its transaction ([#1129]).** It was
-  remapped like an entity id and named a phantom entity on import.
+  the new `dtm/partition-mapping`. It packs every source id exactly (the k-th id
+  of a partition gets the k-th id of its region), so the id space equals the
+  number of distinct source ids however the partitions interleave, and holds
+  about 1–2 bytes per id instead of a per-entity map. The import reads the
+  source at one basis-t (`{:basis-t t}` for an earlier one), and a mapping
+  passed in is checked against it, against the source's id bounds and against
+  the target's ids before anything is scanned or written. A caller mapping that
+  leaves a negative id unnamed is refused on that path
+  (`:import/eid-below-e0`) instead of being written as is.
+- **Datomic transaction ids follow their transaction ([#1129]).** A ref to a
+  transaction, and a fact written later about a past transaction, used to land
+  on a phantom entity on import (the bulk path aborted on the second). The
+  generic index-build `:allocate` mapping also put such facts on a new entity.
 - **Schema-on-read stores retract vector values of any length ([#1105]).**
   An attribute without a declared `:db/valueType` can hold a vector of any
   length. `:db/retract`, `:db.fn/retractAttribute` and
