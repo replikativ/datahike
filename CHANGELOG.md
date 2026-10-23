@@ -23,8 +23,7 @@ When something is added, it's typically marked *Experimental*. When the API cont
   initialization exposes explicit cleanup confirmation/recovery rather than
   suppressing drain failures.
   See [reconnect lifecycle and limits](doc/kabel-reconnect.md). (0.8.1907, [#1118])
-- **GC validates every stored index node before it sweeps.** Hardening on top of the #1112 fix: the mark reads and checks every node it keeps, leaves and fused roots included, and walks structure shared by several roots once per collection. A missing, malformed or conflicting node aborts the collection (`:datahike/gc-invalid-node-edges`) instead of sweeping, as does a diff-buffered index on storage that cannot supply durable node edges; an `Error` thrown during the mark is reported as `:datahike/gc-mark-failed`. Index nodes are snapshotted when written, so a stored node never shares children with the live tree. (0.8, [#1102])
-
+- **GC validates the stored index nodes it keeps.** Hardening on top of the #1112 fix: the mark reads and checks every stored branch and fused root, walks structure shared by several roots once per collection, and runs its blocking reads off the core.async dispatch pool. A missing, malformed or conflicting branch or fused-root descriptor aborts the collection (`:datahike/gc-invalid-node-edges`) instead of sweeping, as does a diff-buffered index on storage that cannot supply durable node edges; an `Error` thrown during the mark is reported as `:datahike/gc-mark-failed`. Index nodes are snapshotted when written, so a stored node never shares children with the live tree. `reachable-store-refs` no longer walks the index trees. (0.8, [#1102])
 - **Scalar constants constrain function outputs.** A clause such as
   `[(subs ?id 6 7) "4"]` now keeps rows whose function result equals the
   constant. This also works inside rules, disjunctions and negation.
@@ -924,6 +923,7 @@ Thanks to all the contributors and the community for helping on this release. Sp
 [#989]: https://github.com/replikativ/datahike/pull/989
 [#990]: https://github.com/replikativ/datahike/pull/990
 [#980]: https://github.com/replikativ/datahike/pull/980
+[#1102]: https://github.com/replikativ/datahike/pull/1102
 [#1092]: https://github.com/replikativ/datahike/pull/1092
 [#1090]: https://github.com/replikativ/datahike/pull/1090
 [#1105]: https://github.com/replikativ/datahike/issues/1105

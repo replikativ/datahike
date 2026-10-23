@@ -54,12 +54,13 @@
   (-warm! [index opts] "EXPERIMENTAL. Prefetch this index's upper levels into whatever node cache it keeps, breadth-first, so a cold reader does not discover them one blocking round trip at a time. See `datahike.index.persistent-set.warm` for the rationale and the option map, and `datahike.warm` for the db-level entry points.
 
    An index type that has no node cache, or no way to learn a level's addresses before fetching it, implements this as a NO-OP returning `(zero-warm-report opts)` — the point of the protocol is that such a type stays usable through `datahike.api/warm-db` rather than having to be special-cased there. Clojure protocols have no true defaults, so every implementation must say which it is; a type that omits the method entirely will throw, exactly as it does for `-root-node` and `-has-subtree-counts?`.")
-  (-seed-root! [index root-node] "Seeds the in-memory root node after restoring a db-record that inlined it (root fusion). MUTATES the index — call it only on an OWNED, unpublished copy (e.g. the with-storage copy made at attach), never on a stored record's index: records may be shared through the store's cache by every reader of that key. Returns the index."))
+  (-seed-root! [index root-node] "Seeds the in-memory root node after restoring a db-record that inlined it (root fusion). MUTATES the index — call it only on an OWNED, unpublished copy (e.g. the with-storage copy made at attach), never on a stored record's index: records may be shared through the store's cache by every reader of that key. Returns the seeded index, which may be a new instance carrying metadata about the fused root (the persistent-set implementation returns a copy with the root's descriptor in its metadata), so callers must use the return value."))
 
 (defprotocol ISharedMark
   "Optional structural marking with a context shared by one full collection.
-   The result includes the context's cumulative structural addresses. It is not
-   a per-root closure and must never be reused in a later collection."
+   Returns only the addresses this call claimed; the union over every call of
+   one collection is the complete structural mark. It is not a per-root closure
+   and the context must never be reused in a later collection."
   (-mark-shared [index context]))
 
 (defprotocol IDurableNodeEdges
@@ -73,7 +74,8 @@
   "A collection-local context bound to one storage instance. Other storage
    instances and implementations fall back to their ordinary full mark."
   [storage]
-  (atom {:storage storage :addresses #{} :expanded 0 :pruned 0 :failed? false}))
+  (atom {:storage storage :addresses #{} :inline {} :inline-unread #{}
+         :expanded 0 :pruned 0 :failed? false}))
 
 (defn mark-shared [index context]
   (if (and context (satisfies? ISharedMark index))

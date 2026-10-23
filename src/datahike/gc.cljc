@@ -131,6 +131,20 @@
                (ex-info "Reachability marking failed; refusing to sweep."
                         {:type :datahike/gc-mark-failed :thrown-value e}))))
 
+(defn- off-dispatch
+  "Run `f` — synchronous work that blocks on storage reads — without holding a
+   core.async dispatch thread. Synchronous callers get the value; asynchronous
+   callers get a channel with the value, or with the failure as an exception.
+   Eight dispatch threads serve the whole JVM: a collector parking them on
+   blocking reads stalls every go block, the pattern behind #1117."
+  [sync? f]
+  (if sync?
+    (f)
+    #?(:clj (async/thread (try (f) (catch Throwable e (mark-exception e))))
+       :cljs (let [ch (async/promise-chan)]
+               (async/put! ch (try (f) (catch :default e (mark-exception e))))
+               ch))))
+
 (defn- reachable-in-branch [store branch after-date config schema-cache opts]
   (async+sync
    (:sync? opts) *default-sync-translation*
@@ -161,7 +175,8 @@
                       in-range? (if-let [d (or updated-at created-at)]
                                   (> (get-time d) (get-time after-date))
                                   false)]
-                  (let [sec-reachable (when (seq secondary-index-keys)
+                  (let [sec-reachable (when (and (seq secondary-index-keys)
+                                                 (not (:store-refs-only? opts)))
                                         (reduce-kv
                                          (fn [acc _idx-ident key-map]
                                            (set/union acc (sec/mark-from-key-map key-map store)))
@@ -267,24 +282,33 @@
                                                    (:ident-ref-map schema-meta) aevt' taevt')
                                        #{})
                                      extra-keys)
-                        new-reachable (cond-> (set/union reachable #{to-check}
-                                                         extra-keys
-                                                         (when schema-meta-key #{schema-meta-key}))
-                                      ;; A checkpoint record may name only the
-                                      ;; trees built so far; absent families are
-                                      ;; simply not walked. A COMMIT record always
-                                      ;; has all of them.
-                                        eavt-key (set/union (mark-shared (bind eavt-key eavt-root) (:mark-context opts)))
-                                        aevt-key (set/union (mark-shared aevt' (:mark-context opts)))
-                                        avet-key (set/union (mark-shared (bind avet-key avet-root) (:mark-context opts)))
-                                        (and (:keep-history? config) temporal-eavt-key)
-                                        (set/union (mark-shared (bind temporal-eavt-key temporal-eavt-root) (:mark-context opts)))
-                                        (and (:keep-history? config) temporal-aevt-key)
-                                        (set/union (mark-shared taevt' (:mark-context opts)))
-                                        (and (:keep-history? config) temporal-avet-key)
-                                        (set/union (mark-shared (bind temporal-avet-key temporal-avet-root) (:mark-context opts)))
-                                        sec-reachable
-                                        (set/union sec-reachable))]
+                        ;; Structural marks do blocking storage reads, so on
+                        ;; the async path they run off the core.async dispatch
+                        ;; pool. `reachable-store-refs` needs none of them.
+                        ;; A checkpoint record may name only the trees built so
+                        ;; far; absent families are simply not walked. A COMMIT
+                        ;; record always has all of them.
+                        structural (when-not (:store-refs-only? opts)
+                                     (<?- (off-dispatch
+                                           (:sync? opts)
+                                           (fn []
+                                             (let [ctx (:mark-context opts)
+                                                   history? (:keep-history? config)]
+                                               (cond-> #{}
+                                                 eavt-key (into (mark-shared (bind eavt-key eavt-root) ctx))
+                                                 aevt-key (into (mark-shared aevt' ctx))
+                                                 avet-key (into (mark-shared (bind avet-key avet-root) ctx))
+                                                 (and history? temporal-eavt-key)
+                                                 (into (mark-shared (bind temporal-eavt-key temporal-eavt-root) ctx))
+                                                 (and history? temporal-aevt-key)
+                                                 (into (mark-shared taevt' ctx))
+                                                 (and history? temporal-avet-key)
+                                                 (into (mark-shared (bind temporal-avet-key temporal-avet-root) ctx))))))))
+                        new-reachable (set/union reachable #{to-check}
+                                                 extra-keys
+                                                 (when schema-meta-key #{schema-meta-key})
+                                                 structural
+                                                 sec-reachable)]
                     (recur (concat r (when in-range? parents))
                            (conj visited to-check)
                            new-reachable
@@ -697,7 +721,7 @@
                                       [(<?- (reachable-in-branch
                                              store (first bs) remove-before
                                              config schema-cache
-                                             (cond-> opts
+                                             (cond-> (assoc opts :store-refs-only? true)
                                                (contains? (set branches) (first bs))
                                                (assoc :require-head? true))))])))))))))))))
 

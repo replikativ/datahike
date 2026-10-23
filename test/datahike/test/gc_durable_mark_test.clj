@@ -117,9 +117,14 @@
         (let [store (:store @conn) record (k/get store :db nil {:sync? true})
               root-address (audit/-merkle-root (:eavt-key record))
               addresses (raw-closure store root-address nil)
-              leaf-address (first (filter #(instance? Leaf (k/get store % nil {:sync? true})) addresses))]
-          (is (some? leaf-address))
-          (doseq [address [root-address leaf-address]]
+              inner-address (first (filter #(and (not= % root-address)
+                                                  (instance? Branch (k/get store % nil {:sync? true})))
+                                            addresses))]
+          ;; Branches are read and validated. Leaves are named by their parent
+          ;; and not read (as on main and in #1123), so a missing leaf is not
+          ;; detected by the mark.
+          (is (some? inner-address))
+          (doseq [address [root-address inner-address]]
             (let [saved (k/get store address nil {:sync? true})
                   swept (atom false)]
               (k/dissoc store address {:sync? true})
@@ -210,7 +215,83 @@
         (is (= #{child} (idx/mark-shared inline context)))
         (is (empty? @reads))
         (if present?
-          (is (= #{parent child} (idx/mark-shared (restore parent) context)))
+          (do (is (= #{parent} (idx/mark-shared (restore parent) context))
+                  "a call returns only what it claimed; the inline call claimed child")
+              (is (= #{parent child} (:addresses @context))))
           (do (is (thrown? Exception (idx/mark-shared (restore parent) context)))
               (is (:failed? @context))))
         (is (= [parent child] @reads))))))
+
+(defn- read-recorder
+  "Wraps the durable-edge reader; returns [levels-read-atom redef-fn]."
+  []
+  (let [reads (atom []) orig pset/read-durable-node-edges]
+    [reads (fn [storage address]
+             (let [edges (orig storage address)] (swap! reads conj (:level edges)) edges))]))
+
+(defn- small-history-db [cfg]
+  (d/create-database cfg)
+  (let [conn (d/connect cfg)]
+    (d/transact conn [{:db/ident :value :db/valueType :db.type/long :db/cardinality :db.cardinality/one}])
+    (dotimes [i 30] (d/transact conn (mapv #(hash-map :value (+ (* i 40) %)) (range 40))))
+    conn))
+
+(deftest reachable-store-refs-walks-no-index-nodes
+  ;; Review guard: without a shared context every commit's trees were read in
+  ;; full from disk (454 ms on main became 78 s). Store-refs come from the aevt
+  ;; slice and the schema; the structural mark is not needed at all.
+  (let [id (random-uuid)
+        cfg {:store {:backend :file :id id :path (str "/tmp/dh-store-refs-cost-" id)}
+             :keep-history? true :schema-flexibility :write
+             :index-config {:branching-factor 8 :diff-buf-size 4}}
+        conn (small-history-db cfg)]
+    (try
+      (let [[reads recorder] (read-recorder)
+            marks (atom 0)
+            mark-shared idx/mark-shared]
+        (with-redefs [pset/read-durable-node-edges recorder
+                      idx/mark-shared (fn [i c] (swap! marks inc) (mark-shared i c))]
+          (is (= #{} (<?? S (gc/reachable-store-refs @conn (Date. 0))))))
+        (is (zero? @marks))
+        (is (empty? @reads)))
+      (finally (d/release conn) (d/delete-database cfg)))))
+
+(deftest gc-with-online-gc-reads-branches-only
+  (let [id (random-uuid)
+        cfg {:store {:backend :file :id id :path (str "/tmp/dh-online-gc-mark-" id)}
+             :keep-history? false :schema-flexibility :write
+             :index-config {:branching-factor 8}
+             :online-gc {:enabled? true :grace-period-ms 0 :max-batch 1000}}
+        conn (small-history-db cfg)]
+    (try
+      (let [[reads recorder] (read-recorder)
+            expected (d/q '[:find (count ?e) . :where [?e :value]] @conn)]
+        (with-redefs [pset/read-durable-node-edges recorder]
+          (<?? S (gc/gc-storage! @conn (Date.) {:min-age-ms 0})))
+        (is (seq @reads))
+        ;; Only a root can be read at level 0 (its level is not known before
+        ;; the read); the head commit has three trees without history.
+        (is (<= (count (filter zero? @reads)) 3)
+            "leaves are named by their parent, not read")
+        (is (some pos? @reads))
+        (d/release conn)
+        (let [reopened (d/connect cfg)]
+          (try (is (= expected (d/q '[:find (count ?e) . :where [?e :value]] @reopened)))
+               (finally (d/release reopened)))))
+      (finally (d/release conn) (d/delete-database cfg)))))
+
+(deftest buffered-mark-without-durable-edges-fails-closed
+  (let [storage (reify IStorage
+                  (store [_ _] (throw (UnsupportedOperationException.)))
+                  (restore [_ _] (throw (UnsupportedOperationException. "must not walk")))
+                  (accessed [_ _] nil) (markFreed [_ _] nil)
+                  (isFreed [_ _] false) (freedInfo [_ _] nil))
+        tree (pss/restore-by compare (random-uuid) storage {:branching-factor 8 :diff-buf-size 4})
+        context (idx/new-mark-context storage)]
+    (is (= :datahike/gc-durable-edges-unavailable
+           (try (idx/mark-shared tree context) nil
+                (catch clojure.lang.ExceptionInfo e (:type (ex-data e))))))
+    (is (:failed? @context))
+    (is (= :datahike/gc-durable-edges-unavailable
+           (try (idx/-mark tree) nil
+                (catch clojure.lang.ExceptionInfo e (:type (ex-data e))))))))
