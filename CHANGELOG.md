@@ -6,7 +6,7 @@ When something is added, it's typically marked *Experimental*. When the API cont
 
 ## 0.8
 
-- **A history restore keeps a value asserted and retracted in one transaction as it was ([#TODO]).**
+- **A history restore keeps a value asserted and retracted in one transaction as it was ([#1132]).**
   datahike writes such pairs itself — a cardinality-one attribute set twice in
   one transaction records the first value's assertion and retraction. The
   default streaming `import-db` (and `import-source`) replayed them
@@ -935,3 +935,4 @@ Thanks to all the contributors and the community for helping on this release. Sp
 [#1092]: https://github.com/replikativ/datahike/pull/1092
 [#1090]: https://github.com/replikativ/datahike/pull/1090
 [#1105]: https://github.com/replikativ/datahike/issues/1105
+[#1132]: https://github.com/replikativ/datahike/pull/1132
