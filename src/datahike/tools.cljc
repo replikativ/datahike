@@ -122,22 +122,50 @@
        (throw-if-exception- x))))
 
 #?(:clj
+   (defn error->ex-info
+     "Wrap a JVM `Error` (any non-`Exception` Throwable) in an `ex-info` that
+      carries it as its cause; return anything else unchanged.
+
+      superv.async's `<?`/`<?-` rethrow `Exception`s only (#971). An `Error`
+      put on a channel therefore comes out of `<?-` as a VALUE, and a `go-try-`
+      block that rethrows it by hand does not catch it either — the go block
+      dies and its channel closes empty. Wrapped, it travels the channel as an
+      ordinary failure and `<?-` raises it with the `Error` as its cause."
+     [x]
+     (if (and (instance? Throwable x) (not (instance? Exception x)))
+       (ex-info (str "An Error was raised: " x)
+                {:error :async/error :class (.getName (class x))}
+                x)
+       x)))
+
+#?(:clj
    (defn throwable-promise
      "Returns a promise object that can be read with deref/@, and set, once only, with deliver. Calls to deref/@ prior to delivery will block, unless the variant of deref with timeout is used. All subsequent derefs will return the same delivered value without blocking. Exceptions delivered to the promise will throw on deref. 
    
-      Also supports core.async take! to optionally consume values without blocking the reader thread."
+      Also supports core.async take! to optionally consume values without blocking the reader thread.
+
+      A JVM `Error` delivered to it is rethrown as itself by `deref`, but put on
+      the CHANNEL side wrapped by `error->ex-info`: superv.async's `<?-` would
+      otherwise hand it to the taker as a value (#971)."
      []
      (let [cf (CompletableFuture.)
-           p (async/promise-chan)]
+           p (async/promise-chan)
+           timed-out (Object.)]
        (reify
          clojure.lang.IDeref
          (deref [_] (throw-if-throwable- (try (.get cf) (catch Throwable t (unwrap-execution t)))))
          clojure.lang.IBlockingDeref
          (deref [_ timeout-ms timeout-val]
-           (if-let [v (try (.get cf timeout-ms java.util.concurrent.TimeUnit/MILLISECONDS)
-                           (catch Throwable t (unwrap-execution t)))]
-             (throw-if-throwable- v)
-             timeout-val))
+           ;; A timeout is `timeout-val`, as `IBlockingDeref` promises — not an
+           ;; exception. `.get` signals it with `TimeoutException`, which the
+           ;; Throwable catch below used to hand to `throw-if-throwable-`, so a
+           ;; timed deref THREW on timeout instead of returning. A sentinel, not
+           ;; truthiness: a promise delivered `nil` or `false` must return that,
+           ;; not the timeout value.
+           (let [v (try (.get cf timeout-ms java.util.concurrent.TimeUnit/MILLISECONDS)
+                        (catch java.util.concurrent.TimeoutException _ timed-out)
+                        (catch Throwable t (unwrap-execution t)))]
+             (if (identical? timed-out v) timeout-val (throw-if-throwable- v))))
          clojure.lang.IPending
          (isRealized [_] (.isDone cf))
          clojure.lang.IFn
@@ -145,7 +173,7 @@
            (if (instance? Throwable x)
              (.completeExceptionally cf x)
              (.complete cf x))
-           (if-not (nil? x) (async/put! p x) (async/close! p))
+           (if-not (nil? x) (async/put! p (error->ex-info x)) (async/close! p))
            this)
          async-impl/ReadPort
          (take! [_this handler] (async-impl/take! p handler))
@@ -154,7 +182,7 @@
            (if (instance? Throwable val)
              (.completeExceptionally cf val)
              (.complete cf val))
-           (async-impl/put! p val handler)))))
+           (async-impl/put! p (error->ex-info val) handler)))))
    :cljs (def throwable-promise async/promise-chan))
 
 (defn delivered!

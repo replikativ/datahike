@@ -155,6 +155,40 @@ Memory hierarchy (e.g., Memory → IndexedDB for browsers):
          ;; All :id values must match for konserve validation
 ```
 
+By default a tiered store copies **every** backend key into its frontend when it
+connects, so the frontend is a mirror of the whole store and must be sized to
+hold all of it. Under the default `:read-policy :frontend-first` a key missing
+from the frontend is still read from the backend, so a missing key is a slow
+read, not a wrong answer; under `:read-policy :frontend-only` it reads as absent.
+
+On the JVM, `:populate-on-connect? false` skips the copy. The frontend then
+fills by read-through: under `:read-policy :frontend-first` a miss reads the
+backend and caches the value.
+
+```clojure
+{:store {:backend :tiered :id id
+         :populate-on-connect? false
+         :frontend-config {:backend :memory :id id}
+         :backend-config {:backend :file :path "/var/db" :id id}}}
+```
+
+This makes connecting cheap; it does **not** bound the frontend. No konserve
+frontend evicts on its own, every value read stays cached, and a full GC mark
+reads every live node, so after a collection the frontend holds the whole live
+store again. Use it to avoid the connect-time copy, and size the frontend as
+you would without it. A frontend that bounds itself (a Redis with an eviction
+policy, say) is safe under `:frontend-first` as long as the backend holds every
+write (`:write-through`, the default): an evicted key is read through again.
+Under `:write-behind` a key evicted before it reached the backend is lost.
+
+The option must be `true` or `false`. It is refused on ClojureScript, because
+the synchronous engine cannot read through to an asynchronous backend there;
+with `:read-policy :frontend-only`, under which a key the frontend lacks reads
+as absent; and on a kabel-synced tiered store, whose sync handshake depends on
+the connect-time walk. When another writer moves the branch head on a legacy
+(non-persistent-set) index, the full frontend refresh is skipped as well, and
+the new nodes read through.
+
 For complete backend options and selection guidance, see [Storage Backends](./storage-backends.md).
 
 

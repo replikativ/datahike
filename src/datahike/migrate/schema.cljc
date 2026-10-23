@@ -108,7 +108,9 @@
                  [:count-source?    {:optional true} :boolean]
                  [:max-pending      {:optional true} pos-int?]
                  [:spool-chunk-size {:optional true} pos-int?]
-                 [:spool-codec      {:optional true} :keyword]])))
+                 [:spool-codec      {:optional true} :keyword]
+                 ;; bound every wait on the writer; nil waits forever
+                 [:writer-timeout-ms {:optional true} pos-int?]])))
 
 (def EstimateOpts
   (into [:map] [[:batch-size {:optional true} pos-int?]]))

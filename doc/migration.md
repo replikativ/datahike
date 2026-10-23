@@ -401,6 +401,7 @@ Options:
 | `:dangling-sample` | 10 | how many dangling refs `:check-refs?` includes in its report |
 | `:allow-partial?` | `false` | import a dump with an unexplained shortfall anyway |
 | `:progress-fn` | — | called with `{:phase … :datoms …}` (see below) |
+| `:writer-timeout-ms` | — (unbounded) | fail with `:import/apply-failed` / `:writer/timeout` when the writer does not answer a batch (or the index build's publish) in time, instead of waiting forever. The clock includes time queued behind other transactions on the connection. The write in flight may still land: release the connection and reconnect before resuming or retrying |
 
 `:progress-fn` receives `{:phase … :datoms …}`, where `:datoms` means one of two
 things and `:phase` tells you which:

@@ -63,6 +63,17 @@
    avoiding syncing old/garbage data."
   [store store-config branch opts]
   (go-try-
+   ;; `:populate-on-connect? false` is REFUSED here rather than ignored. This
+   ;; walk is not only a cache warm-up: the sync handshake that follows sends
+   ;; the frontend's timestamps, and under `:write-policy :frontend-only` the
+   ;; subscription writes into the frontend directly, so a cold frontend would
+   ;; be refilled with the branch's whole reachable state by the sync anyway —
+   ;; over the network instead of from the local backend.
+   (when (false? (:populate-on-connect? store-config))
+     (throw (ex-info (str ":populate-on-connect? false is not supported on a kabel-synced tiered "
+                          "store: the frontend is populated by the branch walk that the sync "
+                          "handshake depends on. Remove the option.")
+                     {:type :store/tiered-populate-required :writer :kabel})))
    ;; TieredStore record uses :frontend-store/:backend-store field names
    ;; Config uses :frontend-config/:backend-config (avoids collision with :backend :tiered)
    (let [frontend (:frontend-store store)
