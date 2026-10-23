@@ -414,6 +414,10 @@
       ;; pass it as `:source-meta`, which is where a source's format-level facts
       ;; belong; a caller driving `source` directly can do the same.
       :ident-timeline timeline
+      ;; What a `:resume? true` import checks a resumed run against: the same
+      ;; log range read the same way. A restore of the same backup gives the
+      ;; same answer; a live database that moved on does not.
+      :source-id {:datomic/log [from to] :window window :provenance? provenance?}
       :read   (fn [{f :from t :to} _opts]
                 (let [rs (into []
                                (mapcat (fn [{:keys [t] :as tx}]
@@ -458,8 +462,17 @@
      (throw (ex-info (str "{:eids :preserve} cannot be honoured for a Datomic source: Datomic entity "
                           "ids (~1.76e13) exceed datahike's emax (" const/emax "). datahike does not "
                           "range-check them, it silently reallocates, so preserving them is not "
-                          "merely unsupported but unobservable. Use the default :allocate.")
+                          "merely unsupported but unobservable. Use the default :allocate, or a "
+                          "computed mapping that packs Datomic's partitions below tx0.")
                      {:error :datomic/eids-preserve-unsupported :emax const/emax})))
+   ;; `:offset` adds a constant to ids that are already ~1.76e13, so EVERY entity
+   ;; lands above tx0. Refused here, by name, rather than at the first datom.
+   (when (= :offset (:eids opts))
+     (throw (ex-info (str "{:eids :offset} cannot be honoured for a Datomic source: it shifts Datomic's "
+                          "entity ids (~1.76e13) by a constant, which puts every entity above datahike's "
+                          "tx0 (" const/tx0 "). Use the default :allocate, or a computed mapping that "
+                          "packs Datomic's partitions below tx0.")
+                     {:error :datomic/eids-offset-unsupported :tx0 const/tx0})))
    (let [src   (source dtm-conn opts)
          n     (when count? (record-count dtm-conn opts))
 ]
@@ -475,7 +488,8 @@
                              ;; working as designed. Measured on 3000
                              ;; transactions. The `:datomic/t` provenance datoms
                              ;; carry the real correspondence.
-                             {:source-meta (cond-> {:history? true}
+                             {:source-meta (cond-> {:history? true
+                                                    :source-id (:source-id src)}
                                              n (assoc :expected-count n)
                                              (seq (:ident-timeline src))
                                              (assoc :ident-timeline
