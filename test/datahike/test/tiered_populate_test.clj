@@ -79,7 +79,7 @@
   (is (= :store/invalid-populate-on-connect
          (try (ds/tiered-populate-on-connect? {:populate-on-connect? "no"}) nil
               (catch Exception e (:type (ex-data e))))))
-  (let [c (assoc-in (cfg false) [:store :populate-on-connect?] nil)]
+  (let [c (assoc-in (cfg false) [:store :populate-on-connect?] "no")]
     (is (= :store/invalid-populate-on-connect
            (try (d/create-database c) (d/connect c) nil
                 (catch Exception e (or (:type (ex-data e))

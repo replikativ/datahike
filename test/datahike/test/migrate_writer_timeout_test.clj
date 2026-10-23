@@ -122,9 +122,11 @@
             _ (deliver! p (AssertionError. "injected"))
             r (async/<!! (async/go (try (<?- p) :returned-a-value
                                         (catch Exception e e))))]
+        ;; superv.async rewraps an Exception on the way out of `<?-`, so the
+        ;; Error is further down the chain than one `ex-cause`.
         (is (instance? clojure.lang.ExceptionInfo r) (str "got " (pr-str r)))
-        (is (= :async/error (:error (ex-data r))))
-        (is (instance? AssertionError (ex-cause r))))
+        (is (= :async/error (dt/ex-error r)))
+        (is (some #(instance? AssertionError %) (cause-chain r))))
       (testing "and `deref` still throws the Error itself"
         (let [p (dt/throwable-promise)]
           (deliver! p (AssertionError. "injected"))
@@ -147,7 +149,9 @@
                                 (let [p (dt/throwable-promise)]
                                   (deliver held [c fields p])
                                   p))]
-                  (bounded 30000 #(import! conn {:sync? true :build-indexes? true
+                  ;; `:schema {}`: the records carry their own schema datoms
+                  ;; and no refs; the build path refuses without one.
+                  (bounded 30000 #(import! conn {:sync? true :build-indexes? true :schema {}
                                                  :writer-timeout-ms 300})))]
           (is (instance? clojure.lang.ExceptionInfo r) (str "got " (pr-str r)))
           (is (= :import/apply-failed (:error (ex-data r))) "a publish timeout is an apply failure")
@@ -157,8 +161,10 @@
           ;; A collector runs while the publish is pending.
           (async/<!! (d/gc-storage conn (java.util.Date.) {:min-age-ms 0}))
           ;; The late publish lands.
-          (let [[c fields p] @held]
-            (p (deref (orig c fields) 20000 ::late-publish-hung)))
+          (let [h (deref held 1000 nil)]
+            (is h "the import reached the publish")
+            (when-let [[c fields p] h]
+              (p (deref (orig c fields) 20000 ::late-publish-hung))))
           (is (= 200 (count (d/q '[:find ?e :where [?e :name _]] @conn)))
               "the late publish names trees the collector spared")
           (let [deadline (+ (System/currentTimeMillis) 10000)]

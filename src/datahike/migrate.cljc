@@ -2867,9 +2867,9 @@
                     ;; cannot park inside a `catch`). Every publish failure is
                     ;; the store's or the writer's, never a record's, so it is
                     ;; `:import/apply-failed` — a timeout included.
-                    pr       (try {:rep (<?- (await-writer p opts {:op :publish-built-db}))}
+                    pub      (try {:rep (<?- (await-writer p opts {:op :publish-built-db}))}
                                   (catch #?(:clj Exception :cljs :default) e {:ex e}))
-                    _        (when-let [e (:ex pr)]
+                    _        (when-let [e (:ex pub)]
                                (throw (ex-info (str "Import aborted: publishing the built indexes failed — "
                                                     (ex-message e)
                                                     (when (= :writer/timeout (dt/ex-error e))
@@ -2880,7 +2880,7 @@
                                                 :cause-error (dt/ex-error e)
                                                 :op :publish-built-db}
                                                e)))
-                    report   (:rep pr)
+                    report   (:rep pub)
                     _        (when (instance? #?(:clj Throwable :cljs js/Error) report)
                                (throw #?(:clj (dt/error->ex-info report) :cljs report)))
                     live (long (user-datom-count @conn (boolean (:history? source-meta))))
