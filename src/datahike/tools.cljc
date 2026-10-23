@@ -134,9 +134,14 @@
          (deref [_] (throw-if-throwable- (try (.get cf) (catch Throwable t (unwrap-execution t)))))
          clojure.lang.IBlockingDeref
          (deref [_ timeout-ms timeout-val]
+           ;; A timeout is `timeout-val`, as `IBlockingDeref` promises — not an
+           ;; exception. `.get` signals it with `TimeoutException`, which the
+           ;; Throwable catch below used to hand to `throw-if-throwable-`, so a
+           ;; timed deref THREW on timeout instead of returning.
            (if-let [v (try (.get cf timeout-ms java.util.concurrent.TimeUnit/MILLISECONDS)
+                           (catch java.util.concurrent.TimeoutException _ ::timed-out)
                            (catch Throwable t (unwrap-execution t)))]
-             (throw-if-throwable- v)
+             (if (= ::timed-out v) timeout-val (throw-if-throwable- v))
              timeout-val))
          clojure.lang.IPending
          (isRealized [_] (.isDone cf))

@@ -1282,6 +1282,45 @@
   [db]
   (boolean (some #(> (d/datom-tx %) c/tx0) (api/datoms db :eavt))))
 
+(defn- await-writer
+  "Wait for writer promise `p` — sync or async per `opts`, bounded by
+   `:writer-timeout-ms` when given. `async+sync`.
+
+   The bound exists because a writer can fail without answering: a JVM `Error`
+   inside the commit pipeline escapes its go blocks without reaching the
+   callback (`.internal/ASYNC_WRITER_ERROR_HANG`), and the caller's wait then
+   never returns. An import that runs for hours should fail loudly instead,
+   with `:writer/timeout` (under `:import/apply-failed` for a batch). Batches
+   the writer answered are committed; the one in flight may or may not be.
+
+   Unbounded by default — a slow but healthy commit must not be cut off by a
+   guess."
+  [p opts what]
+  (let [ms (:writer-timeout-ms opts)
+        timeout! (fn []
+                   (throw (ex-info (str "The writer did not answer within " ms " ms (" (:op what)
+                                        "). It may have died on an Error; the import is stopped. "
+                                        "Batches it answered are committed; the one in flight may or may not be.")
+                                   (merge {:error :writer/timeout :timeout-ms ms} what))))]
+    (async+sync
+     (:sync? opts) *default-sync-translation*
+     (go-try-
+      #?(:clj (if (:sync? opts)
+                (if ms
+                  (let [v (deref p ms ::timeout)]
+                    (if (= ::timeout v) (timeout!) v))
+                  @p)
+                (if ms
+                  (let [[v port] (async/alts! [p (async/timeout ms)])]
+                    (if (= port p) v (timeout!)))
+                  (async/<! p)))
+         ;; ClojureScript has no blocking deref, and `:sync? true` is refused
+         ;; there by `assert-sync-supported!` at the entry points.
+         :cljs (if ms
+                 (let [[v port] (async/alts! [p (async/timeout ms)])]
+                   (if (= port p) v (timeout!)))
+                 (async/<! p)))))))
+
 (defn- load-batch!
   "One `load-entities` call, awaited. `async+sync`: yields the tx-report in sync
    mode, a channel of it otherwise.
@@ -1305,11 +1344,14 @@
     ;; the sake of an internal one. The tx-report carries the UPDATED mapping
     ;; back out; see `transact-entities-directly` for why it does not live on
     ;; the database value.
-    (let [p (dwriter/load-entities-migrating conn batch migration)]
-      ;; ClojureScript has no blocking deref, and `:sync? true` is refused there
-      ;; by `assert-sync-supported!` at the entry points.
-      #?(:clj (if (:sync? opts) @p (<?- p))
-         :cljs (<?- p))))))
+    (let [p (dwriter/load-entities-migrating conn batch migration)
+          r (<?- (await-writer p opts {:op :load-entities :batch-size (count batch)}))]
+      ;; A JVM `Error` the writer delivered arrives as a VALUE through `<?-`:
+      ;; superv.async rethrows only `Exception`s (#971). Treating it as the
+      ;; batch's report would continue the import on a dead writer and end in a
+      ;; successful-looking report.
+      (when (instance? #?(:clj Throwable :cljs js/Error) r) (throw r))
+      r))))
 
 (defn- verification-result
   "Decide, ONCE, whether an import verified — for both import paths.
@@ -2782,8 +2824,7 @@
                                                        "If verification fails below, re-run the import."))))
                                 :cljs nil)
                     p        (dwriter/publish-built-db! conn fields)
-                    report   #?(:clj (if (:sync? opts) @p (<?- p))
-                                :cljs (<?- p))
+                    report   (<?- (await-writer p opts {:op :publish-built-db}))
                     _        (when (instance? #?(:clj Throwable :cljs js/Error) report)
                                (throw report))
                     live (long (user-datom-count @conn (boolean (:history? source-meta))))

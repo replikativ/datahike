@@ -6,6 +6,17 @@ When something is added, it's typically marked *Experimental*. When the API cont
 
 ## 0.8
 
+- **An import's waits on the writer can be bounded, and an `Error` from the
+  writer fails it ([#1131]).** `:writer-timeout-ms` turns a writer that never
+  answers into `:writer/timeout` (under `:import/apply-failed`). That happens
+  when an `Error` in the commit pipeline is lost before the callback. Before,
+  the import waited forever. Separately, an `Error` the writer *did* deliver
+  passed through the async import as a batch report and ended in a
+  successful-looking report (#971); it now fails the import. A timed `deref` of
+  datahike's promises now returns its timeout value instead of throwing.
+- **A tiered store's frontend can be a cache (JVM) ([#1131]).**
+  `:populate-on-connect? false` skips the full backend-to-frontend copy at
+  connect; misses read through under `:read-policy :frontend-first`.
 - **Schema-on-read stores retract vector values of any length ([#1105]).**
   An attribute without a declared `:db/valueType` can hold a vector of any
   length. `:db/retract`, `:db.fn/retractAttribute` and
@@ -787,6 +798,7 @@ Thanks to all the contributors and the community for helping on this release. Sp
 - generalize interface to indices
 - integration factui/reactive?
 
+[#1131]: https://github.com/replikativ/datahike/pull/1131
 [#232]: https://github.com/replikativ/datahike/pull/232
 [#337]: https://github.com/replikativ/datahike/pull/337
 [#566]: https://github.com/replikativ/datahike/pull/566

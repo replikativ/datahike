@@ -155,6 +155,25 @@ Memory hierarchy (e.g., Memory → IndexedDB for browsers):
          ;; All :id values must match for konserve validation
 ```
 
+By default a tiered store copies **every** backend key into its frontend when it
+connects, so the frontend is a mirror of the whole store. Size it for that, and
+turn eviction off: a key evicted from the frontend is a hole, not a slow read.
+On the JVM, `:populate-on-connect? false` skips the copy. The frontend then fills
+by read-through: under the default `:read-policy :frontend-first`, a miss reads
+the backend and caches the value, so the frontend can be sized as a cache:
+
+```clojure
+{:store {:backend :tiered :id id
+         :populate-on-connect? false
+         :frontend-config {:backend :memory :id id}
+         :backend-config {:backend :file :path "/var/db" :id id}}}
+```
+
+The option is refused on ClojureScript, because the synchronous engine cannot
+read through to an asynchronous backend there. It is also refused with
+`:read-policy :frontend-only`, under which a key the frontend lacks reads as
+absent.
+
 For complete backend options and selection guidance, see [Storage Backends](./storage-backends.md).
 
 
