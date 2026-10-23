@@ -111,7 +111,7 @@
             twice or traversed twice. This is the property that stopped being
             structural when the record seq moved to its point of use, and the
             reason `export-record-seq` documents `:xform` as PURE: under
-            `:sort? false` it makes two passes over `:eavt`."
+            `:sort? false` it reads the database in three parts."
     (let [conn (populate! (fresh-conn))
           vs   (sink-values conn (tag-ordinal))]
       (is (= 3 (count vs)))
