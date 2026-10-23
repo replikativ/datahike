@@ -4,6 +4,12 @@ Datahike uses persistent data structures that enable structural sharing—each u
 
 **Garbage collection removes old database snapshots from storage while preserving current branch heads.**
 
+During a full collection, primary PSS trees share a structural mark context so unchanged subtrees reached through several roots are expanded once. The context is confined to one storage instance and one collection. Store-reference datoms and secondary generation payloads are still enumerated by their own marker paths. Collectors with online GC enabled retain full marking because addresses may be recycled.
+
+Diff-buffered trees use the same shared marking through durable node edges. A cold projection of an immutable anchor preserves its structural closure, but a warm buffered child can retain nil dirty addresses and omit an anchor during a logical PSS walk. Both ordinary and shared marking therefore follow the published node's address fields, never resident children or diff projections. Datahike snapshots settled nodes before caching or publishing them, including fused roots; fused descriptors are bound to the committed root address and checked against any descriptor already encountered in the cycle. Missing nodes, malformed or conflicting descriptors, and traversal errors abort before sweep.
+
+This path requires a storage implementation that supplies immutable published edges, and synchronous reads on ClojureScript. Unsupported diff-buffer storage fails closed. Custom zero-buffer storage can retain its ordinary marker. The walker reads and validates every stored branch; leaves are named by their parent and not read, except a fused root's stored copy, which is read the first time a parent names it. A missing leaf is therefore not detected by the mark. The reads block, so on the JVM the asynchronous collector runs them on a separate thread rather than a core.async dispatch thread. `reachable-store-refs` does not walk the index trees at all. The context remains collection-local and does not provide a publication barrier or a persistent mark cache.
+
 ## GC and purging together
 
 Garbage collection and data purging are different operations:
