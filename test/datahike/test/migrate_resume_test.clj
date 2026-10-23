@@ -349,7 +349,7 @@
                               [":on-error :collect"
                                {:eids :preserve :on-error :collect} :import/resume-collect-unsupported]
                               [":build-indexes?"
-                               {:eids :preserve :build-indexes? true} :import/resume-unsupported-on-index-build]]]
+                               {:eids :preserve :build-indexes? true} :import/resume-needs-scratch-dir]]]
       (testing label
         (let [conn (create! (mem-cfg))]
           (is (= err (refusal #(m/import-db conn dump (merge base-opts opts {:resume? true})))))

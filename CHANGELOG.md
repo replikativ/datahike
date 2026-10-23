@@ -6,6 +6,14 @@ When something is added, it's typically marked *Experimental*. When the API cont
 
 ## 0.8
 
+- **Resumable index build (experimental) ([#1130]).** `{:build-indexes? true
+  :resume? true :scratch-dir dir}` checkpoints the build in a durable GC root
+  whose id is derived from the source and options: one checkpoint per finished
+  tree, plus a spool manifest with per-file SHA-256s and a digest. An
+  interrupted build resumes with the same call, rebuilding only the missing
+  trees, and reuses the spool when it still verifies. Each family's sorted file
+  is deleted once its trees are checkpointed. `abandon-import!` releases a
+  build's checkpoint and deletes its scratch.
 - **Resumable import (experimental) ([#1128]).** `import-db`, `import-source`
   and `import-from-datomic!` take `:resume? true`: each batch commits a small
   cursor in the same commit as its datoms (compare-and-set against the previous
@@ -950,3 +958,4 @@ Thanks to all the contributors and the community for helping on this release. Sp
 [#1105]: https://github.com/replikativ/datahike/issues/1105
 [#1127]: https://github.com/replikativ/datahike/pull/1127
 [#1128]: https://github.com/replikativ/datahike/pull/1128
+[#1130]: https://github.com/replikativ/datahike/pull/1130

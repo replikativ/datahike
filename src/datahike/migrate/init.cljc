@@ -302,6 +302,12 @@
            multival   (set (:db.cardinality/many rschema))
           ;; the two classes a live datom of which never reaches temporal
            excluded?  (fn [a] (or (contains? no-history a) (contains? multival a)))
+           ;; A RESUMED build hands in the trees an earlier run checkpointed
+           ;; (`:prebuilt {[family :current] tree …}`), and is told of each tree
+           ;; as it completes (`:on-tree-built`) so it can checkpoint it. Both
+           ;; are optional; a plain build passes neither.
+           prebuilt   (:prebuilt index-config)
+           tree-built (or (:on-tree-built index-config) (fn [_ _ _] nil))
            ;; SEQUENTIAL, and not merely for tidiness: both builds write nodes
            ;; through the same `pending-writes` buffer and the same `:flush-fn`,
            ;; which is not written to be entered twice concurrently.
@@ -318,17 +324,23 @@
            ;; an async `:build-indexes?` import held the whole current index, as
            ;; records and as Datoms, per index family. `temporal` below already
            ;; built its seq inline; the asymmetry was an oversight, not a choice.
-           current (<?- (build-index! index-name store
-                                      (->> (msort/read-sorted-file sorted-file)
-                                           mh/current-from-eavt-sorted
-                                           (map record->datom))
-                                      index-type index-config sync?))
+           current (or (get prebuilt [index-type :current])
+                       (let [t (<?- (build-index! index-name store
+                                                  (->> (msort/read-sorted-file sorted-file)
+                                                       mh/current-from-eavt-sorted
+                                                       (map record->datom))
+                                                  index-type index-config sync?))]
+                         ;; the callback may hand back the tree it checkpointed
+                         ;; (flushed), which is the one to publish
+                         (or (tree-built index-type :current t) t)))
            temporal (when temporal?
-                      (<?- (build-index! index-name store
-                                         (->> (msort/read-sorted-file sorted-file)
-                                              (mh/temporal-from-eavt-sorted excluded?)
-                                              (map record->datom))
-                                         index-type index-config sync?)))]
+                      (or (get prebuilt [index-type :temporal])
+                          (let [t (<?- (build-index! index-name store
+                                                     (->> (msort/read-sorted-file sorted-file)
+                                                          (mh/temporal-from-eavt-sorted excluded?)
+                                                          (map record->datom))
+                                                     index-type index-config sync?))]
+                            (or (tree-built index-type :temporal t) t))))]
        (cond-> {:current current}
          temporal? (assoc :temporal temporal)))))))
 
@@ -485,6 +497,11 @@
          (if (nil? families)
            acc
            (let [family (first families)
+                 prebuilt (:prebuilt index-config)
+                 ;; Every tree of this family checkpointed by an earlier run: no
+                 ;; sort at all, the trees are the checkpoint's.
+                 done? (and (contains? prebuilt [family :current])
+                            (or (not keep-history?) (contains? prebuilt [family :temporal])))
                  ;; The record seq is built INSIDE the sort-family! call and never
                  ;; bound. `sort-family!` drains it synchronously, but binding it
                  ;; would still pin it: `build-family!` below parks, which
@@ -496,13 +513,22 @@
                  ;; family — contradicting this fn's own docstring, which says a
                  ;; seq held across all three would pin the dump. It held it for
                  ;; one at a time. See `migrate/sorted-record-seq` for the rule.
-                 f (sort-family! (if (= family :avet)
-                                   (filter #(contains? indexed (nth % 1)) (records-fn))
-                                   (records-fn))
-                                 family run-size tmp-dir)
+                 f (when-not done?
+                     (sort-family! (if (= family :avet)
+                                     (filter #(contains? indexed (nth % 1)) (records-fn))
+                                     (records-fn))
+                                   family run-size tmp-dir))
                  {:keys [current temporal]}
-                 (<?- (build-family! store index-name family f index-config rschema
-                                     (boolean keep-history?) sync?))
+                 (if done?
+                   {:current (get prebuilt [family :current])
+                    :temporal (get prebuilt [family :temporal])}
+                   (<?- (build-family! store index-name family f index-config rschema
+                                       (boolean keep-history?) sync?)))
+                 ;; The family's trees are built (and, on a resumable build,
+                 ;; checkpointed): its sorted file has served both and is never
+                 ;; read again. Deleting it now keeps the scratch peak at the
+                 ;; spool plus ONE sorted file, not three.
+                 _ (when f (fs/delete! f))
                  ;; Checkpoint seam: a completed family is hours of work whose
                  ;; nodes nothing names until the publishing commit. The caller
                  ;; may record it in a durable GC root here. Synchronous and

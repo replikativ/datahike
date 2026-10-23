@@ -403,7 +403,8 @@ Options:
 | `:progress-fn` | — | called with `{:phase … :datoms …}` (see below) |
 | `:resume?` | `false` | make the import resumable, and continue an interrupted one — see below |
 | `:xform-stateless?` | `false` | declare that `:xform` keeps no state across records (required with `:resume?`) |
-| `:scratch-dir` | system temp | where `:build-indexes?` puts its spool and sort runs |
+| `:scratch-dir` | system temp | where `:build-indexes?` puts its spool and sort runs (required to resume one) |
+| `:checkpoint-ttl-ms` | 1 week | how long a resumable index build's checkpoint outlives it |
 
 `:progress-fn` receives `{:phase … :datoms …}`, where `:datoms` means one of two
 things and `:phase` tells you which:
@@ -506,7 +507,7 @@ be resumable writes no cursor and cannot be continued. Then:
   (`:import/resume-mismatch`). `:batch-size` may change.
 - **A stateless `:xform` only**, declared with `:xform-stateless? true`.
 - **Not with `:on-error :collect`**, whose per-transaction retries are several
-  commits for one batch.
+  commits for one batch. `:build-indexes?` resumes differently, see below.
 - **Not from a `{:sort? false}` dump.** Its transactions arrive in two passes,
   so a position in it does not say which are complete
   (`:import/resume-unordered-source`; such dumps now say `:unordered? true` in
@@ -522,6 +523,57 @@ once the database has been written to since. The cursor stays in the
 database's metadata afterwards. It is a few hundred bytes of digests and
 counters, carried by later commits. A finished cursor from another source does
 not block a later resumable `:merge?` import.
+
+#### Resuming an index build (`:build-indexes? true :resume? true`)
+
+The index build publishes once, at the end, so it has no committed batches to
+resume from. Its checkpoint is a durable GC root instead, named by an id that
+is **derived** from the dump and the options. A second run finds it without
+being told:
+
+- **The spool.** When pass 2 finishes, it writes a manifest to the scratch
+  directory, listing every spool file with its SHA-256. A resume reuses the
+  spool only if every file still checks out and the spool's digest equals the
+  one the checkpoint recorded. Otherwise it spools again.
+- **The trees.** Each of the six trees is flushed to the store when it
+  completes and named in the checkpoint. A resume builds only the missing ones.
+  If the spool had to be redone and its digest changed, the checkpointed trees
+  describe other data and are dropped.
+- **Scratch.** A family's sorted file is deleted as soon as both its trees are
+  checkpointed, so peak scratch is the spool plus one sorted file.
+
+```clojure
+(def opts {:build-indexes? true :resume? true :scratch-dir "/data/scratch"})
+(m/import-db conn "/backups/mydb" opts)            ; dies building :aevt
+(m/import-db (d/connect cfg) "/backups/mydb" opts)
+;; => {:resumed? true :spool-reused? true :trees-reused 2 :verified? true …}
+```
+
+`:scratch-dir` is required, because the spool must live somewhere a second run
+will find it. The build's directory there is named after the build **and** the
+target store, so two targets imported from one dump keep separate spools. It is
+locked while a build runs, and a second build of the same target is refused
+(`:import/scratch-in-use`).
+
+**The same source and options**, as for the streaming path. The build id is a
+SHA-256 over the source, the `:eids` (a map's content, or `:resume-key` for a
+function or `ILookup`), the `:xform` (by `:resume-key`), the schema and the
+spool codec. A build whose options changed derives another id, and is refused
+while the old one's checkpoint lives (`:import/resume-mismatch`). Resume it with
+its own options, or give it up.
+
+**On failure** the root and the scratch are **kept**, and the error
+(`:import/build-interrupted`) carries the `:import-id`. A failure **after** the
+publishing commit, such as verification or the dangling-ref check, is reported
+as itself, and the root and scratch are released. The root's lease runs for
+`:checkpoint-ttl-ms`, a week by default (a value given on resume applies from
+then on). A collector reaps it one more lease-length after it expires, so about
+two weeks, and the next `gc-storage` sweeps the unpublished trees.
+`(m/abandon-import! conn {:import-id id :scratch-dir dir})` gives the build up
+at once. The publishing commit carries a complete cursor: calling again after
+success only re-verifies, and releases whatever an interrupted cleanup left
+behind. A crash in the middle of pass 2 re-spools from the source. This works
+on the JVM only.
 
 ### Entity-id headroom: `tx0`, not `emax`
 
