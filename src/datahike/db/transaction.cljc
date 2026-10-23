@@ -860,6 +860,14 @@
       ;; for the ids it skips have to be remembered somewhere it can be written to.
       (get (:allocated migration-state) e)))
 
+(defn- eid-table?
+  "Is `:eids` the import's own id table — absent (`:allocate`) or a map — rather
+   than a computed mapping? Only a table can hold memoised entries; a computed
+   mapping's allocations go to `:allocated` (see `remember-eid`)."
+  [migration-state]
+  (let [m (:eids migration-state)]
+    (or (nil? m) (map? m))))
+
 (defn- remember-eid
   "Record source eid `e` -> `new-e`, in whichever table can hold it.
 
@@ -886,10 +894,9 @@
    partial map, which is the only defensible answer: both are the caller naming
    some ids and not others."
   [migration-state e new-e]
-  (let [m (:eids migration-state)]
-    (if (or (nil? m) (map? m))
-      (assoc-in migration-state [:eids e] new-e)
-      (assoc-in migration-state [:allocated e] new-e))))
+  (if (eid-table? migration-state)
+    (assoc-in migration-state [:eids e] new-e)
+    (assoc-in migration-state [:allocated e] new-e)))
 
 (defn- transact-report
   ([report datom] (transact-report report datom false))
@@ -2272,9 +2279,13 @@
             (recur (-> (transact-report report new-datom upsert?)
                        (assoc-in [:db-after :max-tx] max-tid))
                    entities
-                   (-> migration-state
-                       (assoc-in [:tids e] new-e)
-                       (remember-eid e new-e))))
+                   ;; `:tids` already answers for `e` (`migrated-eid` reads it
+                   ;; first), so the alias into `:eids` is kept only where `:eids`
+                   ;; IS the id table (`:allocate`, a caller map). Under a computed
+                   ;; mapping it went to `:allocated` instead — one entry per
+                   ;; transaction, for nothing.
+                   (cond-> (assoc-in migration-state [:tids e] new-e)
+                     (eid-table? migration-state) (remember-eid e new-e))))
 
           ;; tx not added yet
           (nil? (get-in migration-state [:tids t]))
@@ -2285,8 +2296,9 @@
           (recur (allocate-eid report max-eid) es (remember-eid migration-state v max-eid))
 
           :else
-          (let [new-datom ^Datom (dd/datom
-                                  (or (migrated-eid migration-state e) max-eid)
+          (let [mapped (migrated-eid migration-state e)
+                new-datom ^Datom (dd/datom
+                                  (or mapped max-eid)
                                   a
                                   (if (dbu/ref? db a)
                                     (migrated-eid migration-state v)
@@ -2295,4 +2307,13 @@
                                   op)
                 upsert? (and (not (dbu/multival? db a-ident))
                              op)]
-            (recur (transact-report report new-datom upsert?) entities (remember-eid migration-state e (.-e new-datom)))))))))
+            ;; Remember ONLY what was allocated here. An id the mapping already
+            ;; answered for needs no memo — `migrated-eid` will answer again —
+            ;; and memoising it anyway turned every computed mapping (`:offset`,
+            ;; `:preserve`, a caller's ILookup or function) back into the
+            ;; O(entities) table it exists to avoid: one `:allocated` entry per
+            ;; source entity.
+            (recur (transact-report report new-datom upsert?) entities
+                   (if mapped
+                     migration-state
+                     (remember-eid migration-state e (.-e new-datom))))))))))
