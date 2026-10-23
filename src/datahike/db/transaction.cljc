@@ -1384,7 +1384,7 @@
           (when (and (get-in db [:config :attribute-refs?])
                      (not= new-ident attr-name)
                      (get-in db [:schema new-ident]))
-            (log/raise (str "Schema with attribute " new-ident " already exists")
+            (log/raise "Schema with attribute " new-ident " already exists"
                        {:error :transact/schema :attribute new-ident})))
         (when-let [invalid-updates (ds/find-invalid-schema-updates
                                     (cond-> entity
