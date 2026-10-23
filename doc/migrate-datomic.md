@@ -146,6 +146,103 @@ by definition.
 importing the same Datomic database twice adds the entities twice rather than
 upserting onto the existing ones.
 
+## Building the database directly (`:build-indexes? true`)
+
+For a large database, replaying the log one transaction at a time is the slow
+path. `{:build-indexes? true}` instead sorts the records and builds the index
+trees from sorted input, writing each node once:
+
+```clojure
+(dtm/import-from-datomic! dh-conn dtm-conn {:build-indexes? true
+                                            :scratch-dir "/data/scratch"})
+```
+
+That path needs final entity ids before it sorts. `import-from-datomic!`
+supplies them by default with `dtm/partition-mapping`, a computed mapping that
+holds no per-entity map entry:
+
+- Datomic ids are `(partition << 42) | n`, and `n` comes from one counter
+  shared by transactions and every partition. A partition's ids are therefore
+  spread over everything minted while it was in use, and a layout of one
+  `[min max]` range per partition can need many times the ids it has entities
+  (three partitions written alternately need about three times).
+- So the mapping is by **rank**: the k-th distinct id of a partition becomes
+  its region's start + k. The target id space is exactly the number of distinct
+  source ids. The ids are every entity in the history EAVT index and every id a
+  ref names in the history VAET index, so a ref to an id with no datoms of its
+  own (never minted, excised, or in a partition holding nothing else) is
+  covered too.
+- Building it reads both history indexes once, partition by partition. They
+  arrive sorted, so nothing is sorted or spilled.
+- Each partition keeps the smallest of three encodings of its id set: a plain
+  range (contiguous ids, no memory), a rank bitmap (span/8 bytes plus 6 %), or
+  a block table of varint gaps (about 1.2 bytes per id when gaps are below
+  128). `(dtm/mapping-bytes pm)` reports the total. Measured on a synthetic
+  layout shaped like a 110 M-entity database (~155 M counter values, ~45 M of
+  them transactions, 39 partitions): 140 MB (1.27 bytes per id) with all 39
+  partitions fully interleaved, 60 MB when one partition holds 80 % of the
+  entities. A `[min max]` layout of the same ids would have needed 6.0 billion
+  target ids, eleven times what fits below `tx0`. A per-entity `:allocate`
+  map would be several gigabytes.
+- An id it was not built from throws. It is never passed through.
+- The layout must end below `tx0` = 536 870 912, where datahike's transaction
+  ids begin. Because the packing is exact, this is a limit on the number of
+  distinct source ids, and a database over it is refused when the mapping is
+  built.
+
+The import reads the source at one basis-t. The mapping, the record count and
+the log replay all use it, so a Datomic database that keeps taking writes is
+imported as of the start of the call. `{:basis-t t}` imports as of an earlier
+`t`.
+
+A mapping can be built yourself and passed in, e.g. to run the same ids
+through both paths, or to merge into a populated target from a `:base` above
+its ids:
+
+```clojure
+(def pm (dtm/partition-mapping dtm-conn {:base (inc (:max-eid @dh-conn))}))
+(dtm/import-from-datomic! dh-conn dtm-conn {:eids pm :merge? true})  ; streaming
+(spit "mapping.edn" (pr-str (dtm/mapping-params pm)))
+(dtm/params->mapping (clojure.edn/read-string (slurp "mapping.edn")) dtm-conn)
+```
+
+`mapping-params` is EDN: the layout, each partition's encoding, bounds, count
+and a digest, and the basis-t it was built at. The id sets themselves are not
+in it, so `params->mapping` re-reads them from the Datomic database at that
+basis-t and refuses if they do not match. Before anything is scanned or
+written, `import-from-datomic!` refuses a mapping whose basis-t is not the
+import's (`:datomic/partition-mapping-stale`; pass `{:basis-t t}` to import as
+of the mapping), whose per-partition bounds do not cover the source's, or
+whose `:base` overlaps the target's ids.
+
+What a saved mapping does **not** give you: a resumable import or an
+incremental one. An import on this path is not resumable, `source` replays the
+whole log every time, and a mapping only knows the ids that existed at its
+basis-t.
+
+On this path transaction ids are `tx0 + t`, the source's own `t` offset into
+datahike's range. On the streaming path, and on the bulk path with
+`{:eids :allocate}`, they are sequential. `:datomic/t` records the
+correspondence on all of them. The ident-keyed `:schema` the bulk path needs,
+to tell a ref value from a number, is derived from the Datomic database
+(`dtm/attribute-schema`); an explicit `{:schema nil}` is refused, since it
+would turn ref remapping off. The derived schema carries tuple declarations
+(`:db/tupleAttrs`, `:db/tupleTypes`) too.
+
+An id in the transaction partition follows its transaction on both paths: a
+ref to a transaction (an attribute pointing at a tx entity) names it, and a
+fact written later about a past transaction (`[:db/add old-tx :tx/note "x"]`)
+lands on it. Both used to name a phantom entity, and the bulk path aborted on
+the second.
+
+Ref **elements** inside tuples (a ref component of a composite
+`:db/tupleAttrs`, a `:db.type/ref` slot of `:db/tupleTypes`) are remapped by
+datahike's importer once [#1125] is in, on both paths: the streaming path reads
+the tuple declarations from the target's schema, the bulk path from the derived
+`:schema` above. Without it they are imported as raw Datomic ids.
+
+[#1125]: https://github.com/replikativ/datahike/pull/1125
+
 ## Memory
 
 Descriptors are `t` *windows*, not records, and `:read` fetches one window at a

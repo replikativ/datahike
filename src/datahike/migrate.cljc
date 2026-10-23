@@ -2369,6 +2369,11 @@
      :cljs (.add counter t))
   nil)
 
+(defn- tx-seen? [counter t]
+  #?(:clj (and (<= (long c/tx0) (long t) (long c/txmax))
+               (.get ^java.util.BitSet counter (int (- (long t) (long c/tx0)))))
+     :cljs (.has counter t)))
+
 (defn- tx-cardinality [counter]
   #?(:clj (.cardinality ^java.util.BitSet counter)
      :cljs (.-size counter)))
@@ -2647,17 +2652,45 @@
                                        ;; Sizing a mapping against `emax` rather than `tx0`
                                        ;; is the easy way to get here — it looks like four
                                        ;; times the room — so it is checked, not documented.
+                                       ;;
+                                       ;; One entity above the line is legitimate: a
+                                       ;; transaction this import has already seen. A
+                                       ;; source may write a fact LATER about a past
+                                       ;; transaction (Datomic allows
+                                       ;; `[:db/add old-tx :tx/note "x"]`), and its `e`
+                                       ;; is that transaction's id. Records arrive in `t`
+                                       ;; order, so a past transaction is always seen
+                                       ;; before such a fact.
                                        (when (and caller-mapping
                                                   (not= (long e) (long t))
-                                                  (>= (long e) (long c/tx0)))
+                                                  (>= (long e) (long c/tx0))
+                                                  (not (tx-seen? txs e)))
                                          (throw (ex-info
                                                  (str "The :eids mapping put entity " e
-                                                      " at or above tx0 (" c/tx0 "). Entity ids"
+                                                      " at or above tx0 (" c/tx0 "), and it is"
+                                                      " not a transaction seen earlier. Entity ids"
                                                       " must stay below it — that is where"
                                                       " transaction ids begin, and an entity"
                                                       " there is indistinguishable from one.")
                                                  {:error :import/eid-above-tx0 :entity-id e
                                                   :tx0 c/tx0 :record record})))
+                                       ;; Below `e0` is no entity id at all. A caller
+                                       ;; mapping that does not name an id passes it
+                                       ;; through unchanged on this path, and a source
+                                       ;; may use negative ids for entities it only needs
+                                       ;; to be DISTINCT (the Datomic source's provenance
+                                       ;; schema does) — written as is, they would be
+                                       ;; datoms on a negative entity.
+                                       (when (and caller-mapping
+                                                  (or (neg? (long e))
+                                                      (and (ref? a) (number? v) (neg? (long v)))))
+                                         (throw (ex-info
+                                                 (str "The :eids mapping left a negative id in record "
+                                                      (pr-str r) ". On the index-build path an id the"
+                                                      " mapping does not name is written as is; the"
+                                                      " mapping must name every id, negative ones"
+                                                      " included.")
+                                                 {:error :import/eid-below-e0 :record record})))
                                        ((:add! spool) r)
                                        (when (>= (long t) (long c/tx0))
                                          (tx-seen! txs t))
