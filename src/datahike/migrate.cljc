@@ -1539,26 +1539,43 @@
                                                      :tx-size (count tx-group)}))
               (if tx-rep
                 (recur (next groups) errs (:migration tx-rep))
-                (let [[errs' m'] (loop [ds (seq tx-group) errs errs m m]
-                                   (if (nil? ds)
+                ;; Narrow to `[e a]` runs before single datoms: `load-entities`
+                ;; resolves a value asserted and retracted in one transaction per
+                ;; run (`mark-same-tx-pairs`), so only a run that itself fails is
+                ;; split further, record by record.
+                (let [[errs' m'] (loop [runs (seq (partition-by (fn [d] [(nth d 0) (nth d 1)]) tx-group))
+                                        errs errs m m]
+                                   (if (nil? runs)
                                      [errs m]
-                                     (let [d (first ds)
-                                           r (try {:rep (<?- (load-batch! conn [d] m opts))}
-                                                  (catch #?(:clj Exception :cljs :default) e {:ex e}))]
-                                       (when (and (:ex r) (not (record-fault? (:ex r))))
-                                         (abort-not-a-record-fault! (:ex r) {:datom d}))
-                                       (recur (next ds)
-                                              (if-let [ex (:ex r)]
-                                                ;; `dt/ex-error`, not `(:error (ex-data ex))`:
-                                                ;; the writer boundary wraps twice, so the
-                                                ;; latter is nil even for a `:transact/unique`
-                                                ;; that said exactly what was wrong — which is
-                                                ;; how every collected error came back labelled
-                                                ;; `:import/corrupt-datom`.
-                                                (conj errs {:error (or (dt/ex-error ex) :import/corrupt-datom)
-                                                            :datom d :message (ex-message ex)})
-                                                errs)
-                                              (if (:ex r) m (:migration (:rep r)))))))]
+                                     (let [run (vec (first runs))
+                                           rr (try {:rep (<?- (load-batch! conn run m opts))}
+                                                   (catch #?(:clj Exception :cljs :default) e {:ex e}))
+                                           run-rep (:rep rr)]
+                                       (when (and (:ex rr) (not (record-fault? (:ex rr))))
+                                         (abort-not-a-record-fault! (:ex rr) {:run-size (count run)}))
+                                       (if run-rep
+                                         (recur (next runs) errs (:migration run-rep))
+                                         (let [[errs m] (loop [ds (seq run) errs errs m m]
+                                                          (if (nil? ds)
+                                                            [errs m]
+                                                            (let [d (first ds)
+                                                                  r (try {:rep (<?- (load-batch! conn [d] m opts))}
+                                                                         (catch #?(:clj Exception :cljs :default) e {:ex e}))]
+                                                              (when (and (:ex r) (not (record-fault? (:ex r))))
+                                                                (abort-not-a-record-fault! (:ex r) {:datom d}))
+                                                              (recur (next ds)
+                                                                     (if-let [ex (:ex r)]
+                                                                       ;; `dt/ex-error`, not `(:error (ex-data ex))`:
+                                                                       ;; the writer boundary wraps twice, so the
+                                                                       ;; latter is nil even for a `:transact/unique`
+                                                                       ;; that said exactly what was wrong — which is
+                                                                       ;; how every collected error came back labelled
+                                                                       ;; `:import/corrupt-datom`.
+                                                                       (conj errs {:error (or (dt/ex-error ex) :import/corrupt-datom)
+                                                                                   :datom d :message (ex-message ex)})
+                                                                       errs)
+                                                                     (if (:ex r) m (:migration (:rep r)))))))]
+                                           (recur (next runs) errs m))))))]
                   (recur (next groups) errs' m')))))))))))
 
 (defn- flush-batch!
@@ -2028,9 +2045,24 @@
                                          ;; which is threaded across calls, so both
                                          ;; halves land on ONE transaction with order
                                          ;; and grouping intact.
+                                         ;;
+                                         ;; ...but never INSIDE one `[t e a]`. A value
+                                         ;; asserted and retracted in one transaction
+                                         ;; is resolved per `[t e a]` run by
+                                         ;; `load-entities` (`mark-same-tx-pairs`), and
+                                         ;; a run split across two calls resurrected the
+                                         ;; passing value (`{:batch-size 1}` restored
+                                         ;; `25` for `21`). So the backstop waits for the
+                                         ;; run to end; one `[e a]` holding more than
+                                         ;; `hard-max` values in a single transaction
+                                         ;; can therefore exceed it.
+                                         last-rec (:last-rec acc)
                                          acc (if (or (and (>= (long (:n acc)) batch-size)
                                                           (not= t (:last-t acc)))
-                                                     (>= (long (:n acc)) hard-max))
+                                                     (and (>= (long (:n acc)) hard-max)
+                                                          (not (and (= t (nth last-rec 3))
+                                                                    (= (nth rec 0) (nth last-rec 0))
+                                                                    (= (nth rec 1) (nth last-rec 1))))))
                                                (let [r (<?- (flush-batch! conn (:batch acc)
                                                                           on-error (:migration acc)
                                                                           progress opts))]
@@ -2043,7 +2075,7 @@
                                             (-> acc
                                                 (update :batch conj rec)
                                                 (update :n inc)
-                                                (assoc :last-t t))))
+                                                (assoc :last-t t :last-rec rec))))
                                    (recur (next rs) (update acc :dropped inc))))))))))
           ;; The completion arity, once, after the last chunk. A transducer
           ;; holding a partial group — `partition-all`, or a custom one buffering
