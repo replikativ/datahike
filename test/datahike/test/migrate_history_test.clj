@@ -31,13 +31,19 @@
 (defn- actual-current [db]
   (set (map (juxt :e :a :v) (d/datoms db :eavt))))
 
+(defn- card-many?
+  "The cardinality the folds need, read from `db`'s schema."
+  [db]
+  (let [schema (d/schema db)]
+    (fn [a] (= :db.cardinality/many (get-in schema [a :db/cardinality])))))
+
 (defn- agrees?
   "Does the derivation match datahike's own current set? Takes a CONN and derefs —
    `d/history` needs a db value, and passing the connection fails deep inside the
    IDB protocol rather than at the call site."
   [conn]
   (let [db @conn]
-    (= (mh/derive-current (records db)) (actual-current db))))
+    (= (mh/derive-current (card-many? db) (records db)) (actual-current db))))
 
 ;; ---------------------------------------------------------------------------
 
@@ -72,8 +78,6 @@
               [[[:db/retract [:name "c"] :score 3]] [{:db/id [:name "c"] :score 3}]]]
              ["retract then RE-ASSERT the same value in ONE transaction"
               [[[:db/retract [:name "a"] :tag :x] [:db/add [:name "a"] :tag :x]]]]
-             ["assert then retract a value in ONE transaction — it never becomes current"
-              [[[:db/add [:name "a"] :tag :q] [:db/retract [:name "a"] :tag :q]]]]
              ["card-one set twice in ONE transaction — the first value passes through"
               [[[:db/add [:name "a"] :score 25] [:db/add [:name "a"] :score 21]]]]
              ["card-one set away and back in ONE transaction"
@@ -163,17 +167,6 @@
 ;; ---------------------------------------------------------------------------
 ;; the STREAMING variant — what the bulk path actually uses
 
-(def ^:private same-tx-pair-shapes
-  "Transactions that ASSERT and RETRACT one `[e a v]` together. The history
-   records both and not their order, and the order decides the outcome — so no
-   rule of the form `retraction first` (or `assertion first`) gets them all."
-  [["re-assert in one tx" [[:db/retract [:name "a"] :tag :x] [:db/add [:name "a"] :tag :x]]]
-   ["passing card-many value" [[:db/add [:name "a"] :tag :q] [:db/retract [:name "a"] :tag :q]]]
-   ["card-one set twice" [[:db/add [:name "a"] :score 25] [:db/add [:name "a"] :score 21]]]
-   ["card-one set thrice" [[:db/add [:name "a"] :score 25] [:db/add [:name "a"] :score 26]
-                           [:db/add [:name "a"] :score 21]]]
-   ["card-one away and back" [[:db/add [:name "a"] :score 25] [:db/add [:name "a"] :score 1]]]])
-
 (defn- eavt-sorted
   "Records sorted by [e a v t], the order `current-from-eavt-sorted` requires.
    Uses datahike's own temporal eavt comparator, which is exactly that order —
@@ -190,7 +183,7 @@
             `derive-current` sorts its whole input and accumulates — fine for a
             test, useless on a real history. The streaming version relies on the
             sort order instead: `[e a v t]` puts every record for one datom
-            adjacent, so only the last of each run matters."
+            adjacent, so each run is folded on its own."
     (let [c (seeded)]
       (d/transact c [{:db/id [:name "a"] :score 10}])
       (d/transact c [{:db/id [:name "a"] :score 100}])
@@ -201,12 +194,46 @@
       (d/transact c [[:db/retractEntity [:name "c"]]])
       (let [db @c
             triple (fn [r] [(nth r 0) (nth r 1) (nth r 2)])
-            streaming (set (map triple (mh/current-from-eavt-sorted (eavt-sorted db))))
-            setwise (mh/derive-current (records db))
+            streaming (set (map triple (mh/current-from-eavt-sorted (card-many? db) (eavt-sorted db))))
+            setwise (mh/derive-current (card-many? db) (records db))
             actual (actual-current db)]
         (is (= streaming setwise) "streaming agrees with the set version")
         (is (= streaming actual) "…and both agree with datahike"))
       (teardown c))))
+
+(def ^:private same-tx-pair-shapes
+  "Transactions that ASSERT and RETRACT one `[e a v]` together, whose outcome
+   the history DOES determine. Entity \"a\" starts with `:score 1` and `:tag :x`."
+  [["re-assert in one tx" [[:db/retract [:name "a"] :tag :x] [:db/add [:name "a"] :tag :x]]]
+   ["card-many add, retract, add" [[:db/add [:name "a"] :tag :q] [:db/retract [:name "a"] :tag :q]
+                                   [:db/add [:name "a"] :tag :q]]]
+   ["card-one set twice" [[:db/add [:name "a"] :score 25] [:db/add [:name "a"] :score 21]]]
+   ["card-one set thrice" [[:db/add [:name "a"] :score 25] [:db/add [:name "a"] :score 26]
+                           [:db/add [:name "a"] :score 21]]]
+   ["card-one away and back" [[:db/add [:name "a"] :score 25] [:db/add [:name "a"] :score 1]]]
+   ["card-one revisit, then move on" [[:db/add [:name "a"] :score 25] [:db/add [:name "a"] :score 1]
+                                      [:db/add [:name "a"] :score 21]]]
+   ["card-one revisit a passing value" [[:db/add [:name "a"] :score 25] [:db/add [:name "a"] :score 21]
+                                        [:db/add [:name "a"] :score 25]]]])
+
+(def ^:private ambiguous-shapes
+  "Shapes whose history is IDENTICAL to one of a different outcome — the history
+   is a set, so `add, retract` and `add, retract, add` record the same datoms.
+   The restore picks one reading (see `datahike.migrate.history`); these pin
+   which, as `[label tx restored-score restored-tags source-score source-tags]`
+   for entity \"a\" (`:score 1`, `:tag :x` before the transaction)."
+  [["card-many add, retract — read as add, retract, add"
+    [[:db/add [:name "a"] :tag :q] [:db/retract [:name "a"] :tag :q]]
+    #{1} #{:x :q} #{1} #{:x}]
+   ["card-many retract, add, retract — read as retract, add"
+    [[:db/retract [:name "a"] :tag :x] [:db/add [:name "a"] :tag :x] [:db/retract [:name "a"] :tag :x]]
+    #{1} #{:x} #{1} #{}]
+   ["card-one 25, 21, retract 21 — read as 25, 21, 25"
+    [[:db/add [:name "a"] :score 25] [:db/add [:name "a"] :score 21] [:db/retract [:name "a"] :score 21]]
+    #{25} #{:x} #{} #{:x}]
+   ["card-one 25, retract 25 — read as 25, retract, 25"
+    [[:db/add [:name "a"] :score 25] [:db/retract [:name "a"] :score 25]]
+    #{25} #{:x} #{} #{:x}]])
 
 (deftest streaming-currentness-on-same-transaction-pairs
   (testing "an [e a v] asserted and retracted in one transaction ends as it was.
@@ -222,12 +249,30 @@
           (let [db @c
                 triple (fn [r] [(nth r 0) (nth r 1) (nth r 2)])]
             (is (= (actual-current db)
-                   (set (map triple (mh/current-from-eavt-sorted (eavt-sorted db)))))
+                   (set (map triple (mh/current-from-eavt-sorted (card-many? db) (eavt-sorted db)))))
                 "streaming")
-            (is (= (actual-current db) (mh/derive-current (records db))) "set version")
+            (is (= (actual-current db) (mh/derive-current (card-many? db) (records db))) "set version")
             (is (= (actual-current db)
-                   (set (map triple (:current (mh/split-current (records db))))))
+                   (set (map triple (:current (mh/split-current (card-many? db) (records db))))))
                 "split-current"))
+          (teardown c))))))
+
+(deftest ambiguous-same-transaction-shapes-are-pinned
+  (testing "where the history cannot tell two outcomes apart, the fold picks the
+            documented one — never more than one cardinality-one value, and the
+            same answer from the streaming fold and the set version"
+    (doseq [[label tx r-score r-tags s-score s-tags] ambiguous-shapes]
+      (testing label
+        (let [c (seeded)]
+          (d/transact c tx)
+          (let [db @c
+                vals (fn [triples a] (into #{} (keep (fn [[e a' v]] (when (and (= a a') (= e (:db/id (d/entity db [:name "a"])))) v))) triples))
+                triple (fn [r] [(nth r 0) (nth r 1) (nth r 2)])
+                streaming (set (map triple (mh/current-from-eavt-sorted (card-many? db) (eavt-sorted db))))]
+            (is (= [s-score s-tags] [(vals (actual-current db) :score) (vals (actual-current db) :tag)])
+                "precondition: what datahike holds")
+            (is (= [r-score r-tags] [(vals streaming :score) (vals streaming :tag)]) "streaming fold")
+            (is (= streaming (mh/derive-current (card-many? db) (records db))) "set version agrees"))
           (teardown c))))))
 
 (deftest streaming-currentness-on-randomised-histories
@@ -250,7 +295,7 @@
               (catch Exception _ nil))))
         (let [db @c
               triple (fn [r] [(nth r 0) (nth r 1) (nth r 2)])
-              streaming (set (map triple (mh/current-from-eavt-sorted (eavt-sorted db))))]
+              streaming (set (map triple (mh/current-from-eavt-sorted (card-many? db) (eavt-sorted db))))]
           (is (= streaming (actual-current db))
               (str "streaming currentness disagrees, seed " (+ 900 iteration))))
         (teardown c)))))

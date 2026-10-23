@@ -138,8 +138,9 @@
       (teardown src) (teardown tgt))))
 
 (deftest a-value-asserted-and-retracted-in-one-transaction-round-trips
-  (testing "an [e a v] asserted AND retracted in one transaction is restored as
-            it was, on both import paths.
+  (testing "an [e a v] asserted AND retracted in one transaction is restored
+            faithfully, on both import paths, whenever the history determines the
+            outcome.
 
             datahike writes such pairs itself — a cardinality-one attribute set
             twice in one transaction records the first value's assertion and
@@ -151,29 +152,76 @@
             synthetic history). The index-build path kept the passing value
             current alongside the survivor."
     (let [src (build-adversarial-db! (utils/setup-db (mem-cfg)))]
+      (d/transact src [{:db/ident :blob :db/valueType :db.type/bytes
+                        :db/cardinality :db.cardinality/many}])
       ;; set twice: 25 passes through, 21 survives
       (d/transact src [[:db/add [:name "a"] :score 25] [:db/add [:name "a"] :score 21]])
       ;; away and back: 26 passes through, 21 is re-asserted
       (d/transact src [[:db/add [:name "a"] :score 26] [:db/add [:name "a"] :score 21]])
-      ;; a card-many value that passes through, and one retracted and re-asserted
-      (d/transact src [[:db/add [:name "b"] :tag :q] [:db/retract [:name "b"] :tag :q]])
+      ;; revisit then move on: 21 -> 25 -> 21 -> 30
+      (d/transact src [[:db/add [:name "a"] :score 25] [:db/add [:name "a"] :score 21]
+                       [:db/add [:name "a"] :score 30]])
+      ;; revisit a passing value: 30 -> 40 -> 35 -> 40
+      (d/transact src [[:db/add [:name "a"] :score 40] [:db/add [:name "a"] :score 35]
+                       [:db/add [:name "a"] :score 40]])
+      ;; card-many: retracted and re-asserted; added, retracted, added
       (d/transact src [[:db/retract [:name "b"] :tag :z] [:db/add [:name "b"] :tag :z]])
+      (d/transact src [[:db/add [:name "b"] :tag :q] [:db/retract [:name "b"] :tag :q]
+                       [:db/add [:name "b"] :tag :q]])
+      ;; bytes: a decoded byte array compares by identity, so its pair must be
+      ;; keyed by contents to be recognised at all
+      (d/transact src [[:db/add [:name "b"] :blob (byte-array [1 2 3])]])
+      (d/transact src [[:db/retract [:name "b"] :blob (byte-array [1 2 3])]
+                       [:db/add [:name "b"] :blob (byte-array [1 2 3])]])
       (let [path (str (System/getProperty "java.io.tmpdir") "/dh-fid-pair-" (utils/get-time))
             _ (m/export-db @src path {:history? true})
-            hist (fn [db] (set (map (juxt :e :a :v :added) (d/datoms (d/history db) :eavt))))
-            cur (fn [db] (set (map (juxt :e :a :v) (d/datoms db :eavt))))]
+            bkey (fn [v] (if (bytes? v) (vec v) v))
+            hist (fn [db] (set (map (juxt :e :a (comp bkey :v) :added) (d/datoms (d/history db) :eavt))))
+            cur (fn [db] (set (map (juxt :e :a (comp bkey :v)) (d/datoms db :eavt))))]
+        (doseq [[label opts] [["streaming" {}]
+                              ["streaming, one record per batch" {:batch-size 1}]
+                              ["streaming, :on-error :collect" {:on-error :collect}]
+                              ["index build" {:build-indexes? true}]]]
+          (testing label
+            (let [tgt (utils/setup-db (mem-cfg))
+                  rep (m/import-db tgt path opts)]
+              (is (:verified? rep))
+              (is (= #{[40]} (d/q '[:find ?s :where [?e :name "a"] [?e :score ?s]] @tgt))
+                  "the value that survived, and only it")
+              (is (= #{[:z] [:q]} (d/q '[:find ?t :where [?e :name "b"] [?e :tag ?t]] @tgt)))
+              (is (= (cur @src) (cur @tgt)) "current datoms")
+              (is (= (hist @src) (hist @tgt)) "history")
+              (is (empty? (select-keys (compare-records @src @tgt) index-fields))
+                  "all six indexes")
+              (teardown tgt)))))
+      (teardown src))))
+
+(deftest an-ambiguous-same-transaction-history-restores-the-documented-reading
+  (testing "`add, retract` and `add, retract, add` record the SAME history, so a
+            restore must pick a reading. It is the one the import made before
+            same-transaction pairs were handled (see `datahike.migrate.history`):
+            the value is current. Pinned here on both paths, with the history
+            itself restored exactly."
+    (let [src (build-adversarial-db! (utils/setup-db (mem-cfg)))]
+      (d/transact src [[:db/add [:name "b"] :tag :q] [:db/retract [:name "b"] :tag :q]])
+      (d/transact src [[:db/add [:name "a"] :score 25] [:db/retract [:name "a"] :score 25]])
+      (let [path (str (System/getProperty "java.io.tmpdir") "/dh-fid-amb-" (utils/get-time))
+            _ (m/export-db @src path {:history? true})
+            hist (fn [db] (set (map (juxt :e :a :v :added) (d/datoms (d/history db) :eavt))))]
+        ;; `d/datoms`, not `d/q`: the restore carries the source's `:hash` (the
+        ;; histories are equal), and a query result cached for the source would
+        ;; be served for the target
+        (is (empty? (d/datoms @src :eavt (:db/id (d/entity @src [:name "a"])) :score)) "precondition")
         (doseq [[label opts] [["streaming" {}] ["index build" {:build-indexes? true}]]]
           (testing label
             (let [tgt (utils/setup-db (mem-cfg))
                   rep (m/import-db tgt path opts)]
               (is (:verified? rep))
-              (is (= #{[21]} (d/q '[:find ?s :where [?e :name "a"] [?e :score ?s]] @tgt))
-                  "the value that survived, and only it")
-              (is (= #{[:z]} (d/q '[:find ?t :where [?e :name "b"] [?e :tag ?t]] @tgt)))
-              (is (= (cur @src) (cur @tgt)) "current datoms")
-              (is (= (hist @src) (hist @tgt)) "history")
-              (is (empty? (select-keys (compare-records @src @tgt) index-fields))
-                  "all six indexes")
+              (is (= (hist @src) (hist @tgt)) "the history is exact")
+              (is (= #{[:z] [:q]} (d/q '[:find ?t :where [?e :name "b"] [?e :tag ?t]] @tgt))
+                  "card-many: read as add, retract, add")
+              (is (= #{[25]} (d/q '[:find ?s :where [?e :name "a"] [?e :score ?s]] @tgt))
+                  "card-one: read as 25, retract 25, 25 — and only one value")
               (teardown tgt)))))
       (teardown src))))
 

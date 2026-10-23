@@ -300,8 +300,19 @@
     (go-try-
      (let [no-history (set (:db/noHistory rschema))
            multival   (set (:db.cardinality/many rschema))
-          ;; the two classes a live datom of which never reaches temporal
-           excluded?  (fn [a] (or (contains? no-history a) (contains? multival a)))
+           no-history? #(contains? no-history %)
+           card-many? #(contains? multival %)
+           ;; The cardinality-one values a same-transaction pair leaves NOT
+           ;; current (`history/card-one-losers`). Deciding that needs an
+           ;; attribute's other values, which are adjacent in eavt and aevt but
+           ;; not in avet — so `build-indexes!` computes it from the first family
+           ;; and hands it on. A direct caller of an eavt/aevt family gets it
+           ;; computed here.
+           losers (or (::card-one-losers index-config)
+                      (if (#{:eavt :aevt} index-type)
+                        (mh/card-one-losers card-many? (msort/read-sorted-file sorted-file))
+                        #{}))
+           index-config (dissoc index-config ::card-one-losers)
            ;; SEQUENTIAL, and not merely for tidiness: both builds write nodes
            ;; through the same `pending-writes` buffer and the same `:flush-fn`,
            ;; which is not written to be entered twice concurrently.
@@ -320,16 +331,16 @@
            ;; built its seq inline; the asymmetry was an oversight, not a choice.
            current (<?- (build-index! index-name store
                                       (->> (msort/read-sorted-file sorted-file)
-                                           mh/current-from-eavt-sorted
+                                           (mh/current-from-eavt-sorted card-many? losers)
                                            (map record->datom))
                                       index-type index-config sync?))
            temporal (when temporal?
                       (<?- (build-index! index-name store
                                          (->> (msort/read-sorted-file sorted-file)
-                                              (mh/temporal-from-eavt-sorted excluded?)
+                                              (mh/temporal-from-eavt-sorted no-history? card-many? losers)
                                               (map record->datom))
                                          index-type index-config sync?)))]
-       (cond-> {:current current}
+       (cond-> {:current current ::card-one-losers losers}
          temporal? (assoc :temporal temporal)))))))
 
 ;; ---------------------------------------------------------------------------
@@ -483,7 +494,7 @@
      (let [indexed (:indexed index-config)]
        (loop [families (seq index-families) acc {}]
          (if (nil? families)
-           acc
+           (dissoc acc ::card-one-losers)
            (let [family (first families)
                  ;; The record seq is built INSIDE the sort-family! call and never
                  ;; bound. `sort-family!` drains it synchronously, but binding it
@@ -500,9 +511,12 @@
                                    (filter #(contains? indexed (nth % 1)) (records-fn))
                                    (records-fn))
                                  family run-size tmp-dir)
-                 {:keys [current temporal]}
-                 (<?- (build-family! store index-name family f index-config rschema
-                                     (boolean keep-history?) sync?))
+                 {:keys [current temporal] :as built}
+                 (<?- (build-family! store index-name family f
+                                     (cond-> index-config
+                                       (::card-one-losers acc)
+                                       (assoc ::card-one-losers (::card-one-losers acc)))
+                                     rschema (boolean keep-history?) sync?))
                  ;; Checkpoint seam: a completed family is hours of work whose
                  ;; nodes nothing names until the publishing commit. The caller
                  ;; may record it in a durable GC root here. Synchronous and
@@ -510,7 +524,8 @@
                  _ (when-let [cb (:on-family-built index-config)]
                      (cb family current temporal))]
              (recur (next families)
-                    (cond-> (assoc acc family current)
+                    (cond-> (assoc acc family current
+                                   ::card-one-losers (::card-one-losers built))
                       keep-history? (assoc (temporal-key family) temporal)))))))))))
 
 (defn hash-of-records
