@@ -30,6 +30,7 @@
             [datahike.migrate.compress :as mz]
             [datahike.migrate.store :as mstore]
             [clojure.edn :as edn]
+            [clojure.spec.alpha :as s]
             #?(:clj [datahike.tools :as dt])))
 
 (def format-version 1)
@@ -427,54 +428,174 @@
          (filter (fn [dm] (> (d/datom-tx dm) c/tx0)))
          (map (fn [dm] (datom->record db sys-ents sidents sec-read renamed dm))))))
 
+(def ^:private streaming-schema-attrs
+  "The schema attributes that are actually stored as datoms (`::ds/schema-attribute`
+   less `:db/id` and the reverse `:db.install/_attribute`)."
+  (disj (s/form ::ds/schema-attribute) :db/id :db.install/_attribute))
+
+(def ^:private streaming-meta-attrs (s/form ::ds/meta-attribute))
+
+(defn- attr-key
+  "How datoms of attribute `ident` name it in this database: the keyword, or its
+   ref under `:attribute-refs?` (nil when the ref is not installed).
+
+   Reads the ident→ref map directly rather than through `-ref-for`, which logs a
+   warning for every ident not installed — and several meta attributes
+   (`:db/retracted`, `:db/noCommit`) never are. The map lives on the underlying
+   db, so a history/as-of view is unwrapped first."
+  [db ident]
+  (if (attribute-refs? db)
+    (get (:ident-ref-map (loop [d db] (if-let [o (or (:origin-db d) (:unfiltered-db d))] (recur o) d))) ident)
+    ident))
+
+(defn- user-datoms-of
+  "User-transaction datoms of the attributes `idents`, read through AEVT — one
+   slice per attribute, never a scan of the whole index."
+  [db src idents]
+  (->> idents
+       (keep #(attr-key db %))
+       (mapcat #(api/datoms src :aevt %))
+       (filter (fn [dm] (> (d/datom-tx dm) c/tx0)))))
+
+(defn- schema-datoms-in-tx-order
+  "Every user schema datom, in TRANSACTION order (retractions first within one
+   transaction, entity then attribute after that) — the order the schema
+   happened in. See `export-records-streaming` for why EAVT order is wrong."
+  [db src]
+  (sort-by (fn [dm] [(d/datom-tx dm) (d/datom-added dm) (:e dm) (:a dm)])
+           (user-datoms-of db src streaming-schema-attrs)))
+
+(def ^:private replay-safe-schema-attrs
+  "Schema attributes whose LATER change cannot alter how earlier data replays:
+   none of them is consulted by `load-entities` when it applies a data datom."
+  #{:db/doc :db/index :db/isComponent})
+
+(defn streaming-replay-hazards
+  "Schema changes a `:sort? false` export cannot carry faithfully.
+
+   That export emits the whole schema history first and the data after it, so an
+   import replays EVERY historical data datom against the FINAL schema. That is
+   only right when no schema change made after some data on an attribute alters
+   how that data replays. Returns one map per change that does — an attribute
+   renamed or its ident moved (the earlier datoms name an attribute that is no
+   longer installed under that name), `:db/unique` added after a since-retracted
+   duplicate, a change to `:db.cardinality/one` (earlier card-many values would
+   replay as overwrites), `:db/noHistory`, tuple or value-type properties. Empty
+   when the export is safe.
+
+   Safe, and so never reported: `:db/doc`, `:db/index`, `:db/isComponent`, and
+   any change ending at `:db.cardinality/many` (history holds every card-one-era
+   retraction explicitly). Installation is never a hazard either — no data on an
+   attribute can predate the transaction that installed it — so only changes
+   AFTER an entity's first schema transaction are checked, and each such check
+   stops at the first earlier data datom it finds."
+  [db]
+  (let [src     (api/history db)
+        ar?     (attribute-refs? db)
+        sds     (schema-datoms-in-tx-order db src)
+        ident-of (fn [e] (let [p (get (dbi/-schema db) e)] (when (keyword? p) p)))
+        a-of    (fn [dm] (a-ident db (:a dm)))
+        first-tx (reduce (fn [m dm] (if (contains? m (:e dm)) m (assoc m (:e dm) (d/datom-tx dm))))
+                         {} sds)
+        ;; every name an attribute entity has had: keyword dbs store data under
+        ;; the ident, so a rename leaves earlier data under the earlier name
+        names   (reduce (fn [m dm]
+                          (if (= :db/ident (a-of dm)) (update m (:e dm) (fnil conj #{}) (:v dm)) m))
+                        {} sds)
+        safe?   (fn [dm]
+                  (let [a (a-of dm)]
+                    (or (contains? replay-safe-schema-attrs a)
+                        (and (= :db/cardinality a)
+                             (when-let [i (ident-of (:e dm))] (dbu/multival? db i))))))
+        data-before? (fn [e t]
+                       (some (fn [k] (some #(< (d/datom-tx %) t) (api/datoms src :aevt k)))
+                             (if ar? [e] (get names e))))]
+    (into []
+          (comp (filter #(> (d/datom-tx %) (get first-tx (:e %))))
+                (remove safe?)
+                (filter #(data-before? (:e %) (d/datom-tx %)))
+                (map (fn [dm] {:attribute (or (ident-of (:e dm)) (:e dm))
+                               :schema-attribute (a-of dm)
+                               :tx (d/datom-tx dm)
+                               :added (d/datom-added dm)})))
+          sds)))
+
+(defn refuse-streaming-hazards!
+  "Raise `:export/unsorted-schema-history` when a `:sort? false` export of `db`
+   with `{:history? true}` could not be imported faithfully — see
+   `streaming-replay-hazards`. Called before anything is written, so a refused
+   export leaves no partial dump behind.
+
+   Refuses rather than warns: the failure it prevents surfaces at RESTORE time,
+   as an import that aborts (an ident no longer installed, a unique conflict) or
+   — worse — one that completes with overwritten values. A backup that is known
+   not to restore should not be written. The default `:sort? true` export
+   replays transactions in order and handles all of these."
+  [db {:keys [history?]}]
+  (when history?
+    (when-let [hz (seq (streaming-replay-hazards db))]
+      (throw (ex-info (str "Cannot export with {:sort? false}: the schema changed after data was "
+                           "written on " (vec (distinct (map :attribute hz))) " ("
+                           (vec (distinct (map :schema-attribute hz))) "). Without the sort, an "
+                           "import replays all history against the final schema, which would not "
+                           "reproduce this database. Use the default {:sort? true}.")
+                      {:error :export/unsorted-schema-history
+                       :hazards (vec (take 20 hz))})))))
+
 (defn export-records-streaming
   "Lazy seq of encoded records for `db` in a load-safe order WITHOUT sorting (so
-   export needs no scratch space — for hard read-only / diskless targets). Two lazy
-   passes over `:eavt`: first schema/ident and tx-entity (`meta-attr?`) datoms — so
-   schema precedes the data that uses it (#262) and every tx entity (with its
-   `:db/txInstant`) exists before any data datom — then the data datoms. Emits only
-   user-transaction datoms (tx > tx0).
+   export needs no scratch space — for hard read-only / diskless targets).
+
+   Three parts, in this order: the schema datoms, then the tx-entity
+   (`meta-attr?`) datoms — so schema precedes the data that uses it (#262) and
+   every tx entity (with its `:db/txInstant`) exists before any data datom — then
+   the data datoms. The first two are read through AEVT, one slice per schema or
+   meta attribute, so only the data part walks `:eavt`: ONE full pass over the
+   index, not one per part. Emits only user-transaction datoms (tx > tx0).
 
    Load-entities tolerates the remaining EAVT ordering: cross-tx and intra-tx
-   forward refs allocate on first sight, and ids remap consistently. The one shape
-   this does NOT preserve is a *same-transaction* card-one replacement (retract +
-   re-assert of the same [e a] in one tx), which the sorting exporter orders
-   explicitly; if a history has those, use the default (sorted) export.
+   forward refs allocate on first sight, and ids remap consistently. The one data
+   shape this does NOT preserve is a *same-transaction* card-one replacement
+   (retract + re-assert of the same [e a] in one tx), which the sorting exporter
+   orders explicitly; if a history has those, use the default (sorted) export.
+
+   ## All data replays against the FINAL schema
+
+   Every data datom is imported after every schema datom, so a schema change
+   made after data on its attribute applies to that data retroactively. Most
+   such changes are harmless; those that are not — renames, ident moves, a later
+   `:db/unique`, a change to card-one — make `export-db` refuse `:sort? false`
+   up front (`refuse-streaming-hazards!`).
 
    ## Schema datoms are emitted in TRANSACTION order, not EAVT order
 
-   The exception is the schema itself, which is replayed into a live database
-   and so MUST arrive in the order it happened. EAVT orders one attribute's
-   history by VALUE: a one→many change is `[a :db/cardinality :many t3 true]`
-   before `[a :db/cardinality :one t1 true]` and `[… :one t3 false]`, because
-   `:db.cardinality/many` sorts before `:db.cardinality/one` (and, under
-   `:attribute-refs?`, by the two idents' entity ids). Replayed in that order
-   `:db/cardinality` — itself card-one — upserts `:many` away when `:one`
-   arrives, then the retraction of `:one` leaves the attribute with no
-   cardinality at all, i.e. card-one. Every card-many value then overwrites its
-   predecessor, and the import fails verification with phantom retractions.
-
-   So the schema datoms are buffered and sorted by `(t, op)` — retractions first,
-   as in the source transaction — with EAVT kept within that (the sort is
-   stable). Buffering is bounded by the SCHEMA's history, not the data's; the
-   tx-entity datoms, one per transaction, still stream."
+   The schema is replayed into a live database, so it must arrive in the order
+   it happened. EAVT orders one attribute's history by VALUE: a one→many change
+   is `[a :db/cardinality :many t3 true]` before `[a :db/cardinality :one t1
+   true]` and `[… :one t3 false]`, because `:db.cardinality/many` sorts before
+   `:db.cardinality/one`. Replayed in that order `:db/cardinality` — itself
+   card-one — upserts `:many` away when `:one` arrives, then the retraction of
+   `:one` leaves the attribute with no cardinality, i.e. card-one: every
+   card-many value then overwrites its predecessor. So the schema datoms are
+   sorted by `(t, op, e, a)` — retractions first, as in the source transaction.
+   That buffers the SCHEMA's history, not the data's; the rest streams."
   [db {:keys [history?]}]
   (let [src      (if history? (api/history db) db)
         sys-ents (if (attribute-refs? db) (dbi/-system-entities db) #{})
         sidents  (system-idents db)
-        user?    (fn [dm] (> (d/datom-tx dm) c/tx0))
-        schema?  (fn [dm] (ds/schema-attr? (a-ident db (nth dm 1))))
-        meta?    (fn [dm] (ds/meta-attr? (a-ident db (nth dm 1))))
         sec-read (secondary-only-reader db)
         renamed  (not-empty (set (keys (ident-timeline db))))
+        ;; compared against the datom's raw `a`, so the data pass resolves no
+        ;; idents at all
+        skip-a   (into #{} (keep #(attr-key db %)) (concat streaming-schema-attrs streaming-meta-attrs))
         make     (fn [dm] (datom->record db sys-ents sidents sec-read renamed dm))]
     (concat
-     (lazy-seq
-      (->> (api/datoms src :eavt) (filter user?) (filter schema?)
-           (sort-by (fn [dm] [(d/datom-tx dm) (d/datom-added dm)]))
-           (map make)))
-     (->> (api/datoms src :eavt) (filter user?) (filter meta?) (map make))
-     (->> (api/datoms src :eavt) (filter user?) (remove schema?) (remove meta?) (map make)))))
+     (lazy-seq (map make (schema-datoms-in-tx-order db src)))
+     (lazy-seq (map make (user-datoms-of db src streaming-meta-attrs)))
+     (->> (api/datoms src :eavt)
+          (filter (fn [dm] (> (d/datom-tx dm) c/tx0)))
+          (remove (fn [dm] (contains? skip-a (:a dm))))
+          (map make)))))
 
 (defn ident-schema
   "The user schema as an ident->attr-map, keyed by keyword ident only (drops the

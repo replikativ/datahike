@@ -341,7 +341,8 @@
    than needing adjustment afterwards.
 
    ONE instance for the whole export, so a stateful transducer sees one stream.
-   It must be PURE: `:sort? false` makes two passes over `:eavt`.
+   It must be PURE: `:sort? false` reads the database in three parts (schema,
+   tx entities, data) rather than in one ordered stream.
 
    That \"one instance\" is why the application lives in one place. `export-db`
    also applied it at its call site after this helper was extracted, so every
@@ -466,7 +467,8 @@
 
                                 One instance for the whole export, so a stateful
                                 transducer sees one stream. It must be PURE:
-                                `:sort? false` makes two passes over `:eavt`.
+                                `:sort? false` reads the database in three
+                                parts (schema, tx entities, data).
    `target` may be a filesystem path/dir OR a konserve store (S3 / S3-compatible /
    JDBC / mem). Returns the manifest map.
 
@@ -477,7 +479,14 @@
    `:eavt` order straight to the target. This relaxes the global tx ordering — it is
    safe for the common case (load-entities remaps ids and allocates forward refs),
    but does not preserve a *same-transaction* card-one replacement; keep the default
-   sort if your history has those.
+   sort if your history has those. Because every historical data datom then
+   imports after the whole schema, a `{:history? true :sort? false}` export is
+   REFUSED (`:export/unsorted-schema-history`, before anything is written) when
+   the schema changed after data on that attribute in a way the final schema
+   cannot replay: a rename or ident move, `:db/unique`, a change to card-one,
+   `:db/noHistory`, tuple/type properties. `:db/doc`, `:db/index`,
+   `:db/isComponent` and changes to card-many are fine. See
+   `datahike.migrate.manifest/streaming-replay-hazards`.
 
    The manifest is written LAST as the commit marker.
 
@@ -614,7 +623,9 @@
                           :sort? true}
                          opts)
          progress (or (:progress-fn opts) (constantly nil))
-         _        (assert-codec-supported! opts)]
+         _        (assert-codec-supported! opts)
+         ;; Before the blob copy or any chunk: a refused export writes nothing.
+         _        (when-not (:sort? opts) (mman/refuse-streaming-hazards! db opts))]
      (async+sync
       (:sync? opts) *default-sync-translation*
       (go-try-
@@ -658,7 +669,9 @@
          ;; The records to write. `:sort? true` spills sorted runs to local temp
          ;; files and k-way merges them; `:sort? false` needs no scratch at all
          ;; but cannot order a same-transaction card-one replacement, because it
-         ;; makes two passes over `:eavt` instead of sorting.
+         ;; emits schema, tx entities and data as three parts instead of sorting
+         ;; — and it is refused up front (`refuse-streaming-hazards!`) when the
+         ;; schema changed in a way replaying against the final schema breaks.
          ;;
          ;; Both are portable now. The sort was JVM-only while it spoke
          ;; `java.io.File` and `java.util.PriorityQueue`; the seq-over-open-files
@@ -741,7 +754,7 @@
    a transaction lands in many chunks. Measured on a database where entity order
    and transaction order disagree, `:chunk-size 40`: `:sort? true` split nothing
    across 9 chunks, while `:sort? false` put TWO transactions in all nine. It is
-   not the two-pass meta/data split alone — merging those would not fix it.
+   not the schema/meta/data split alone — merging those would not fix it.
 
    The cost is real and worth naming: `:sort? false` exists for hard read-only
    and diskless targets, and this is the only diskless route to a non-dump
@@ -1913,8 +1926,9 @@
     ;; records is never split — including across a chunk or file boundary, since
     ;; the batcher state carries over. That is not the same as "a transaction is
     ;; never split", which this used to claim: under `:sort? false` a
-    ;; transaction's records arrive in two separate runs (schema/meta in the
-    ;; first :eavt pass, data in the second) and a flush can land between them.
+    ;; transaction's records arrive in separate runs (its schema, its tx
+    ;; entity, its data — three parts of the stream) and a flush can land
+    ;; between them.
     ;; Harmless for content — the id-remap maps a source `t` to the same target
     ;; transaction whichever call it arrives in — but it is why the transaction
     ;; count is taken from the id map rather than from the batcher.
@@ -2085,9 +2099,9 @@
           ;; between adjacent `t` values, which equals the transaction count only
           ;; when every transaction's records are contiguous — true for a sorted
           ;; dump and false for `:sort? false`, where `export-records-streaming`
-          ;; makes two passes over :eavt and emits a transaction's schema/meta
-          ;; datoms in the first and its data datoms in the second. Measured: a
-          ;; 13-transaction database reported 25.
+          ;; emits a transaction's schema, tx-entity and data datoms in three
+          ;; separate parts of the stream. Measured: a 13-transaction database
+          ;; reported 25.
               tx-count (count (:tids migration))]
       ;; Same cljs hazards as the heap warning above — `*err*` and `format` exist
       ;; on neither path — and this one had no guard at all. Left as-is until the
