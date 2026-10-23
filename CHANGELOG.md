@@ -6,7 +6,7 @@ When something is added, it's typically marked *Experimental*. When the API cont
 
 ## 0.8
 
-- **`import-source` refuses a history source into a target without history up front ([#TODO]).**
+- **`import-source` refuses a history source into a target without history up front ([#1134]).**
   `:source-meta {:history? true}` into a `:keep-history? false` database
   wrote every record and only then threw "history is only allowed on temporal
   indexed databases", with the data committed and the report lost. It is now
@@ -931,3 +931,4 @@ Thanks to all the contributors and the community for helping on this release. Sp
 [#1092]: https://github.com/replikativ/datahike/pull/1092
 [#1090]: https://github.com/replikativ/datahike/pull/1090
 [#1105]: https://github.com/replikativ/datahike/issues/1105
+[#1134]: https://github.com/replikativ/datahike/pull/1134
