@@ -88,7 +88,11 @@
             It used to write every record and then throw \"history is only
             allowed on temporal indexed databases\" from the report's count, with
             the data committed and the report lost."
-    (doseq [opts [{} {:build-indexes? true}]]
+    ;; `:schema` on the index-build half, which otherwise refuses for lacking
+    ;; one — and would pass this test without ever reaching the history check
+    (doseq [opts [{} {:build-indexes? true
+                      :schema {:person/name {:db/valueType :db.type/string
+                                             :db/cardinality :db.cardinality/one}}}]]
       (testing (pr-str opts)
         (let [conn (utils/setup-db {:store {:backend :memory :id (java.util.UUID/randomUUID)}
                                     :keep-history? false

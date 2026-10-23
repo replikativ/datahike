@@ -1642,7 +1642,10 @@
   ;; report's count, which reads the history the target does not have. The data
   ;; was committed and the report lost. Refused here, before anything is
   ;; written, the same way the dump path refuses it.
-  (when (and (:history? (:source-meta opts))
+  ;; Manifest-less only: a dump answers this through `config-compat!` above, and
+  ;; a stray `:source-meta` passed to `import-db` must not refuse it.
+  (when (and (nil? manifest)
+             (:history? (:source-meta opts))
              (not (dbi/-keep-history? @conn)))
     (throw (ex-info (str "The source carries history (:source-meta {:history? true}) but the target"
                          " database does not keep history (:keep-history? false). Import into a"
