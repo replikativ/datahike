@@ -1,14 +1,15 @@
 (ns datahike.test.tiered-populate-test
-  "`:populate-on-connect? false`: a tiered store whose frontend is a CACHE, not
-   a mirror.
+  "`:populate-on-connect? false`: a tiered store that skips the connect-time
+   copy and fills its frontend by read-through.
 
    By default `ready-store :tiered` copies every backend key into the frontend
-   on connect, so a frontend has to be sized for the whole store (with eviction
-   off: an evicted key used to be a hole). On the JVM every konserve backend can
-   be read synchronously, and under `:read-policy :frontend-first` a frontend
-   miss reads through to the backend — so the copy is optional there."
+   on connect. On the JVM every konserve backend can be read synchronously, and
+   under `:read-policy :frontend-first` a frontend miss reads through to the
+   backend — so the copy is optional there. (It does not bound the frontend:
+   what is read stays cached.)"
   (:require [clojure.test :refer [deftest is]]
             [datahike.api :as d]
+            [datahike.store :as ds]
             [datahike.migrate.fs :as fs]
             [konserve.core :as k]
             [konserve.store :as ks]))
@@ -67,6 +68,19 @@
 (deftest frontend-only-reads-refuse-the-opt-out
   (let [c (assoc-in (cfg false) [:store :read-policy] :frontend-only)]
     (is (= :store/tiered-populate-required
+           (try (d/create-database c) (d/connect c) nil
+                (catch Exception e (or (:type (ex-data e))
+                                       (:type (ex-data (ex-cause e))))))))
+    (try (d/delete-database c) (catch Exception _ nil))))
+
+(deftest the-option-must-be-a-boolean
+  (is (true? (ds/tiered-populate-on-connect? {})))
+  (is (false? (ds/tiered-populate-on-connect? {:populate-on-connect? false})))
+  (is (= :store/invalid-populate-on-connect
+         (try (ds/tiered-populate-on-connect? {:populate-on-connect? "no"}) nil
+              (catch Exception e (:type (ex-data e))))))
+  (let [c (assoc-in (cfg false) [:store :populate-on-connect?] nil)]
+    (is (= :store/invalid-populate-on-connect
            (try (d/create-database c) (d/connect c) nil
                 (catch Exception e (or (:type (ex-data e))
                                        (:type (ex-data (ex-cause e))))))))

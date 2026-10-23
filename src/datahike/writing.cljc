@@ -944,7 +944,13 @@
                                       (get-in old [:config :index])))
                             (<?- (hydrate-moved-head old stored store sync?))
                             (do
-                              (<?- (ds/refresh-tiered-frontend store {:sync? sync?}))
+                              ;; A frontend that is a read-through cache
+                              ;; (`:populate-on-connect? false`, JVM only) must
+                              ;; not be filled with the whole backend here
+                              ;; either: the new head's nodes read through on
+                              ;; demand, like every other miss.
+                              (when (ds/tiered-populate-on-connect? (get-in old [:config :store]))
+                                (<?- (ds/refresh-tiered-frontend store {:sync? sync?})))
                               (stored->db (assoc stored :config (:config old)) store))))]
                     (reload-head old stored store revision materialized)))))))
 

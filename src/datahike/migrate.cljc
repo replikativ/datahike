@@ -1286,30 +1286,49 @@
   "Wait for writer promise `p` — sync or async per `opts`, bounded by
    `:writer-timeout-ms` when given. `async+sync`.
 
-   The bound exists because a writer can fail without answering: a JVM `Error`
-   inside the commit pipeline escapes its go blocks without reaching the
-   callback (`.internal/ASYNC_WRITER_ERROR_HANG`), and the caller's wait then
-   never returns. An import that runs for hours should fail loudly instead,
-   with `:writer/timeout` (under `:import/apply-failed` for a batch). Batches
-   the writer answered are committed; the one in flight may or may not be.
+   The bound exists because a writer can fail without answering — a JVM `Error`
+   lost inside the commit pipeline's go blocks never reaches the callback, and
+   the caller's wait then never returns. An import that runs for hours should
+   fail loudly instead, with `:writer/timeout`. The clock covers the whole
+   wait, INCLUDING time queued behind other transactions on the same
+   connection; size it for that.
+
+   A timeout does NOT mean the write was dropped: it may still be queued, and
+   land later. So the promise is recorded in `opts`'s `::pending-write` atom,
+   and the callers' cleanups (`release-when-landed!`) keep their GC protection
+   until it resolves. A resume on the same connection could re-send the batch
+   and apply it twice — release and reconnect first; the error says so.
+
+   A JVM `Error` from the writer is raised wrapped (`dt/error->ex-info`) on
+   both paths, so the import classifies it as `:import/apply-failed` instead of
+   letting a bare `Error` escape every `Exception` handler on the way out.
 
    Unbounded by default — a slow but healthy commit must not be cut off by a
    guess."
   [p opts what]
   (let [ms (:writer-timeout-ms opts)
         timeout! (fn []
-                   (throw (ex-info (str "The writer did not answer within " ms " ms (" (:op what)
-                                        "). It may have died on an Error; the import is stopped. "
-                                        "Batches it answered are committed; the one in flight may or may not be.")
+                   (when-let [a (::pending-write opts)] (reset! a p))
+                   (throw (ex-info (str "The writer did not answer within " ms " ms (" (name (:op what))
+                                        "; the wait includes queueing behind other transactions). "
+                                        "It may have died on an Error, or still be working: the write "
+                                        "in flight may yet land. The import is stopped. Release this "
+                                        "connection and reconnect before resuming or retrying, or the "
+                                        "write in flight may be applied twice.")
                                    (merge {:error :writer/timeout :timeout-ms ms} what))))]
     (async+sync
      (:sync? opts) *default-sync-translation*
      (go-try-
       #?(:clj (if (:sync? opts)
-                (if ms
-                  (let [v (deref p ms ::timeout)]
-                    (if (= ::timeout v) (timeout!) v))
-                  @p)
+                (try
+                  (if ms
+                    (let [v (deref p ms ::timeout)]
+                      (if (= ::timeout v) (timeout!) v))
+                    @p)
+                  ;; `deref` rethrows a delivered `Error` as itself; wrap it so
+                  ;; it is classified like the channel side's (see
+                  ;; `dt/throwable-promise`).
+                  (catch Error e (throw (dt/error->ex-info e))))
                 (if ms
                   (let [[v port] (async/alts! [p (async/timeout ms)])]
                     (if (= port p) v (timeout!)))
@@ -1320,6 +1339,20 @@
                  (let [[v port] (async/alts! [p (async/timeout ms)])]
                    (if (= port p) v (timeout!)))
                  (async/<! p)))))))
+
+(defn- release-when-landed!
+  "Run `release!` — the cleanup that drops an import's GC protection — now, or,
+   if a wait on the writer timed out (`await-writer`), once that write resolves.
+
+   A timed-out write may still be queued. Releasing the guard and the root while
+   it can land lets a concurrent collector delete what it is about to name: the
+   late commit then points the head at swept nodes. If the writer never answers
+   at all, the protection stays until the process ends (the guard) or the lease
+   lapses after the connection is released (the root)."
+  [opts release!]
+  (if-let [p (some-> (::pending-write opts) deref)]
+    (async/take! p (fn [_] #?(:clj (future (release!)) :cljs (release!))))
+    (release!)))
 
 (defn- load-batch!
   "One `load-entities` call, awaited. `async+sync`: yields the tx-report in sync
@@ -1346,11 +1379,14 @@
     ;; the database value.
     (let [p (dwriter/load-entities-migrating conn batch migration)
           r (<?- (await-writer p opts {:op :load-entities :batch-size (count batch)}))]
-      ;; A JVM `Error` the writer delivered arrives as a VALUE through `<?-`:
-      ;; superv.async rethrows only `Exception`s (#971). Treating it as the
-      ;; batch's report would continue the import on a dead writer and end in a
-      ;; successful-looking report.
-      (when (instance? #?(:clj Throwable :cljs js/Error) r) (throw r))
+      ;; A JVM `Error` the writer delivered used to arrive here as a VALUE:
+      ;; superv.async rethrows only `Exception`s (#971). `throwable-promise`
+      ;; now wraps it on the channel side and `await-writer` on the deref side,
+      ;; so this is a backstop. It throws an `ex-info`, never the raw `Error`:
+      ;; `go-try-` catches only `Exception`, and a raw `Error` thrown here would
+      ;; kill the go block and close its channel empty.
+      (when (instance? #?(:clj Throwable :cljs js/Error) r)
+        (throw #?(:clj (dt/error->ex-info r) :cljs r)))
       r))))
 
 (defn- verification-result
@@ -2504,7 +2540,10 @@
   ;; restore that reproduces its source's ids exactly. `:allocate` remains
   ;; available for a caller who wants the dump renumbered densely.
   (let [opts       (merge {:verify? true :on-error :abort :sync? true
-                           :eids :preserve}
+                           :eids :preserve
+                           ;; see `await-writer` / `release-when-landed!`;
+                           ;; `import-db` passes its own
+                           ::pending-write (atom nil)}
                           opts)
         opts       (update opts :eids #(or % :preserve))
         ;; `reduce-source-records` reads the timeline from `opts`; it arrives in
@@ -2824,9 +2863,26 @@
                                                        "If verification fails below, re-run the import."))))
                                 :cljs nil)
                     p        (dwriter/publish-built-db! conn fields)
-                    report   (<?- (await-writer p opts {:op :publish-built-db}))
+                    ;; Captured and rethrown outside the handler (core.async
+                    ;; cannot park inside a `catch`). Every publish failure is
+                    ;; the store's or the writer's, never a record's, so it is
+                    ;; `:import/apply-failed` — a timeout included.
+                    pr       (try {:rep (<?- (await-writer p opts {:op :publish-built-db}))}
+                                  (catch #?(:clj Exception :cljs :default) e {:ex e}))
+                    _        (when-let [e (:ex pr)]
+                               (throw (ex-info (str "Import aborted: publishing the built indexes failed — "
+                                                    (ex-message e)
+                                                    (when (= :writer/timeout (dt/ex-error e))
+                                                      (str " This import keeps its GC root and guard until "
+                                                           "the publish resolves, so a late publish cannot "
+                                                           "name swept nodes.")))
+                                               {:error :import/apply-failed
+                                                :cause-error (dt/ex-error e)
+                                                :op :publish-built-db}
+                                               e)))
+                    report   (:rep pr)
                     _        (when (instance? #?(:clj Throwable :cljs js/Error) report)
-                               (throw report))
+                               (throw #?(:clj (dt/error->ex-info report) :cljs report)))
                     live (long (user-datom-count @conn (boolean (:history? source-meta))))
                     ;; NET removed by the transducer, exactly as `run-import`
                     ;; counts it — a transducer may expand as well as filter, so
@@ -2880,12 +2936,18 @@
               ;; the guard and the scratch — same posture as import's cleanup.
               (catch #?(:clj Throwable :cljs :default) e e))]
         ;; The guard closes and the scratch goes away on BOTH paths, here rather
-        ;; than in a `finally` — see the docstring. The guard must outlive the
-        ;; publish, and it does: `publish-built-db!`'s promise resolves only after
-        ;; the writer has committed and `reset!` the connection.
-        #?(:clj (when stop-capture! (stop-capture!)) :cljs nil)
-        (quiet-release-root! @conn build-root stop-build-renewal!)
-        (guard/done! store-id token)
+        ;; than in a `finally` — see the docstring. The guard and the root must
+        ;; outlive the publish. Awaited, they do: `publish-built-db!`'s promise
+        ;; resolves only after the writer has committed and `reset!` the
+        ;; connection. A publish that TIMED OUT has not resolved and may still
+        ;; land, so `release-when-landed!` defers the release until it does.
+        ;; The spool is local scratch the publish never reads; it goes now.
+        (release-when-landed!
+         opts
+         (fn []
+           #?(:clj (when stop-capture! (stop-capture!)) :cljs nil)
+           (quiet-release-root! @conn build-root stop-build-renewal!)
+           (guard/done! store-id token)))
         (doseq [n (or (fs/list-names tmp) [])] (fs/delete! (fs/join tmp n)))
         (fs/delete! tmp)
         (if (instance? #?(:clj Throwable :cljs js/Error) res) (throw res) res))))))
@@ -3261,7 +3323,11 @@
    (assert-sync-supported! opts)
    (assert-sizes-positive! opts)
    (msch/validate-opts! msch/ImportOpts opts "import-db")
-   (let [opts (merge {:sync? default-sync?} opts)
+   (let [opts (merge {:sync? default-sync?
+                      ;; A write that timed out (`await-writer`) is recorded
+                      ;; here, so the blob root and guard below outlive it.
+                      ::pending-write (atom nil)}
+                     opts)
          batch-size (get opts :batch-size default-batch-size)]
      (async+sync
       (:sync? opts) *default-sync-translation*
@@ -3350,8 +3416,11 @@
            (when-not (instance? #?(:clj Throwable :cljs js/Error) res)
              (assert-root-kept! blob-lost "import")
              (when blob-root (roots/assert-live! @conn blob-root nil {:sync? true})))
-           (quiet-release-root! @conn blob-root stop-blob-renewal!)
-           (guard/done! gc-sid gc-token)
+           ;; Deferred past a timed-out write that may still land and name a
+           ;; carried blob (`release-when-landed!`).
+           (release-when-landed! opts (fn []
+                                        (quiet-release-root! @conn blob-root stop-blob-renewal!)
+                                        (guard/done! gc-sid gc-token)))
            (<?- (mstore/close m opts))
            (if (instance? #?(:clj Throwable :cljs js/Error) res) (throw res) res))
          (let [dump (open-dump source opts)]
@@ -3399,8 +3468,9 @@
                  (when-not (instance? #?(:clj Throwable :cljs js/Error) res)
                    (assert-root-kept! blob-lost "import")
                    (when blob-root (roots/assert-live! @conn blob-root nil {:sync? true})))
-                 (quiet-release-root! @conn blob-root stop-blob-renewal!)
-                 (guard/done! gc-sid gc-token)
+                 (release-when-landed! opts (fn []
+                                              (quiet-release-root! @conn blob-root stop-blob-renewal!)
+                                              (guard/done! gc-sid gc-token)))
                  (if (instance? #?(:clj Throwable :cljs js/Error) res) (throw res) res)))))))))))
 
 ;; ---------------------------------------------------------------------------

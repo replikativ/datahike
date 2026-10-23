@@ -90,8 +90,40 @@
   (async+sync (:sync? opts) *default-sync-translation*
               (go-try- true)))
 
-(defmethod ready-store :tiered [{:keys [opts frontend-config backend-config populate-on-connect?]
-                                 :or {populate-on-connect? true}}
+(defn tiered-populate-on-connect?
+  "Whether tiered store config `store-config` copies the backend into its
+   frontend on connect (the default) — and refuse `:populate-on-connect?` where
+   it cannot be honored.
+
+   `false` (JVM only) makes the frontend fill by READ-THROUGH instead: under
+   `:read-policy :frontend-first` (the default) a key missing from the frontend
+   is read from the backend and cached. That is sound wherever the backend can
+   be read synchronously, which on the JVM every konserve backend can. It is
+   refused on ClojureScript, where the synchronous engine must never fall
+   through to an asynchronous backend, and with `:read-policy :frontend-only`,
+   under which a key missing from the frontend reads as absent.
+
+   The policy is read from the CONFIG, the source of truth, not from the
+   cache-wrapped store record."
+  [store-config]
+  (let [v (get store-config :populate-on-connect? true)]
+    (when-not (boolean? v)
+      (throw (ex-info (str ":populate-on-connect? must be true or false; got " (pr-str v) ".")
+                      {:type :store/invalid-populate-on-connect :value v})))
+    (when-not v
+      #?(:cljs (throw (ex-info (str "A :tiered store must populate its frontend on connect on "
+                                    "ClojureScript: the synchronous engine cannot read through to "
+                                    "an asynchronous backend. Remove :populate-on-connect? false.")
+                               {:type :store/tiered-populate-required}))
+         :clj (when (= :frontend-only (:read-policy store-config))
+                (throw (ex-info (str ":populate-on-connect? false needs :read-policy :frontend-first: "
+                                     "under :frontend-only a key the frontend does not hold reads "
+                                     "as absent.")
+                                {:type :store/tiered-populate-required
+                                 :read-policy (:read-policy store-config)})))))
+    v))
+
+(defmethod ready-store :tiered [{:keys [opts frontend-config backend-config] :as store-config}
                                 store]
   "Populate tiered store frontend from backend and sync on connect.
 
@@ -99,35 +131,18 @@
    1. Memory frontend has cached data for immediate queries
    2. Subsequent sync handshakes send accurate timestamps (only fetch newer keys)
 
-   `:populate-on-connect? false` (JVM only) skips the full copy. The frontend
-   then fills by READ-THROUGH: under `:read-policy :frontend-first` (the
-   default) a key missing from the frontend is read from the backend and
-   cached. That is sound wherever the backend can be read synchronously, which
-   on the JVM every konserve backend can, so the frontend can be sized as a
-   CACHE rather than as a mirror of the whole store. It is refused on
-   ClojureScript, where the synchronous engine must never fall through to an
-   asynchronous backend, and with `:read-policy :frontend-only`, under which a
-   key missing from the frontend reads as absent."
+   `:populate-on-connect? false` (JVM only) skips the full copy; see
+   `tiered-populate-on-connect?`."
   (async+sync (:sync? (or opts {:sync? true})) *default-sync-translation*
               (go-try-
-               (when-not populate-on-connect?
-                 #?(:cljs (throw (ex-info (str "A :tiered store must populate its frontend on connect on "
-                                               "ClojureScript: the synchronous engine cannot read through to "
-                                               "an asynchronous backend. Remove :populate-on-connect? false.")
-                                          {:type :store/tiered-populate-required}))
-                    :clj (when (= :frontend-only (:read-policy store))
-                           (throw (ex-info (str ":populate-on-connect? false needs :read-policy :frontend-first: "
-                                                "under :frontend-only a key the frontend does not hold reads "
-                                                "as absent.")
-                                           {:type :store/tiered-populate-required
-                                            :read-policy (:read-policy store)})))))
-               ;; Config uses :frontend-config/:backend-config (avoids collision with :backend :tiered)
-               ;; Store record uses :frontend-store/:backend-store (field names in TieredStore)
-               (<?- (ready-store (assoc frontend-config :opts opts) (:frontend-store store)))
-               (<?- (ready-store (assoc backend-config :opts opts) (:backend-store store)))
-               (when populate-on-connect?
-                 (<?- (kt/sync-on-connect store kt/populate-missing-strategy opts)))
-               true)))
+               (let [populate? (tiered-populate-on-connect? store-config)]
+                 ;; Config uses :frontend-config/:backend-config (avoids collision with :backend :tiered)
+                 ;; Store record uses :frontend-store/:backend-store (field names in TieredStore)
+                 (<?- (ready-store (assoc frontend-config :opts opts) (:frontend-store store)))
+                 (<?- (ready-store (assoc backend-config :opts opts) (:backend-store store)))
+                 (when populate?
+                   (<?- (kt/sync-on-connect store kt/populate-missing-strategy opts)))
+                 true))))
 
 (defn refresh-tiered-frontend
   "Materialize every backend key that is still missing from a tiered frontend.
