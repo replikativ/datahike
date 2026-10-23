@@ -3487,7 +3487,12 @@
   [parent-db child-db modified-attrs]
   (let [parent-key (db-cache-key parent-db)
         child-key  (db-cache-key child-db)]
-    (when-not (= parent-key child-key)
+    (when (and (not= parent-key child-key)
+               ;; An ident that now names another attribute (a rename, or an
+               ;; old name reused) changes what a query MEANS without a datom
+               ;; of the queried attribute changing, so selective invalidation
+               ;; cannot see it. Rare (schema transactions only): start cold.
+               (= (:ident-ref-map parent-db) (:ident-ref-map child-db)))
       ;; Only propagate if we have user-visible modified attrs for selective invalidation.
       ;; If modified-attrs is empty or only has system attrs (e.g. purge ops where
       ;; tx-data doesn't list affected user attrs), skip propagation entirely —
