@@ -600,7 +600,11 @@
     ;; keyword-attribute dump, where `ident-timeline` is empty by construction —
     ;; see its docstring on why applying one there would be wrong).
      (let [tl (ident-timeline db)]
-       (cond-> {} (seq tl) (assoc :ident-timeline tl))))))
+       (cond-> {} (seq tl) (assoc :ident-timeline tl)))
+    ;; Also appended only when true: a `:sort? false` export interleaves its
+    ;; transactions (schema/meta in one `:eavt` pass, data in another), which a
+    ;; RESUMABLE import cannot continue from a position — so it refuses one.
+     (when (false? (:sort? opts)) {:unordered? true}))))
 
 ;; ---------------------------------------------------------------------------
 ;; sizes and names

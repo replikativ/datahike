@@ -850,6 +850,15 @@
    that `e`."
   [migration-state e]
   (or (get (:tids migration-state) e)
+      ;; A RESUMABLE import keeps the source's transaction ids (`:tx-floor`
+      ;; present), so a source id in the transaction range IS its target id —
+      ;; whether its `:tids` entry was made in this process or died with an
+      ;; earlier one. That is what lets a resumed import translate a ref to a
+      ;; transaction committed before the interruption, identically to an
+      ;; uninterrupted run. See `datahike.migrate/run-import`, "Resuming".
+      (when (and (:tx-floor migration-state) (integer? e)
+                 (<= (long tx0) (long e) (long txmax)))
+        e)
       ;; `mids/lookup-id` rather than a local branch: the bulk-index path reads the
       ;; SAME `:eids` through `ids/apply-mapping`, and when the two spelled the rule
       ;; out separately they disagreed — a function was called here and `get`-ed
@@ -2181,6 +2190,45 @@
   ([initial-report initial-es tx-options]
    (transact-tx-data-internal initial-report initial-es tx-options nil)))
 
+(defn- source-tid
+  "The target transaction for source transaction `t` seen for the first time:
+   the next free id, or — in a RESUMABLE import (`:tx-floor`) — `t` itself,
+   which must lie above the floor (the target's `:max-tx` when the import
+   began) or it would land on a transaction that was already there."
+  [migration-state t max-tid]
+  (if-let [floor (:tx-floor migration-state)]
+    (do (when (<= (long t) (long floor))
+          (log/raise (str "Source transaction " t " is at or below the target's :max-tx when this "
+                          "resumable import began (" floor "). A resumable import keeps the source's "
+                          "transaction ids, so it cannot add a source whose ids the target already uses.")
+                     {:error :import/resume-tx-collision :t t :tx-floor floor}))
+        t)
+    max-tid))
+
+(defn- unnamed!
+  "A resumable import's mapping must name every id: what the importer would
+   allocate for an unnamed one exists only in this process, so a resume could
+   not reproduce it."
+  [e]
+  (log/raise (str "The :eids mapping names no target id for source id " e ". A resumable import "
+                  "needs a mapping that names every id (allocations for unnamed ones would not "
+                  "survive a resume).")
+             {:error :import/resume-partial-mapping :source-id e}))
+
+(defn- check-named!
+  "A caller mapping named `mapped` for source id `e` — an id the importer had
+   already ALLOCATED to a different, unnamed source id. Left alone, the two
+   entities merge into one."
+  [migration-state e mapped]
+  (when-let [owner (get (:allocated-for migration-state) mapped)]
+    (when (not= owner e)
+      (log/raise (str "The :eids mapping assigns target id " mapped " to source id " e
+                      ", which the import already allocated to source id " owner
+                      " (an id the mapping did not name). A partial mapping must not name ids"
+                      " in the range the importer allocates from; name every id, or none above"
+                      " the target's :max-eid.")
+                 {:error :import/eid-collision :source-id e :target-id mapped :allocated-to owner}))))
+
 (defn transact-entities-directly
   "Load `initial-es` (raw `[e a v t op]` records) into `(:db-after
    initial-report)`, remapping source ids to target ones.
@@ -2272,12 +2320,12 @@
 
           ;; meta entity
           (ds/meta-attr? a-ident)
-          (let [new-t (get-in migration-state [:tids t] max-tid)
+          (let [new-t (or (get-in migration-state [:tids t]) (source-tid migration-state t max-tid))
                 new-datom (dd/datom new-t a v new-t op)
                 new-e (.-e new-datom)
                 upsert? (not (dbu/multival? db a-ident))]
             (recur (-> (transact-report report new-datom upsert?)
-                       (assoc-in [:db-after :max-tx] max-tid))
+                       (update-in [:db-after :max-tx] #(max (long %) (long new-t))))
                    entities
                    ;; `:tids` already answers for `e` (`migrated-eid` reads it
                    ;; first), so the alias into `:eids` is kept only where `:eids`
@@ -2289,14 +2337,39 @@
 
           ;; tx not added yet
           (nil? (get-in migration-state [:tids t]))
-          (recur (update-in report [:db-after :max-tx] inc) es (assoc-in migration-state [:tids t] max-tid))
+          (let [tid (source-tid migration-state t max-tid)]
+            (recur (update-in report [:db-after :max-tx] #(max (long %) (long tid)))
+                   es (assoc-in migration-state [:tids t] tid)))
 
           ;; ref not added yet
           (and (dbu/ref? db a) (nil? (migrated-eid migration-state v)))
-          (recur (allocate-eid report max-eid) es (remember-eid migration-state v max-eid))
+          (do (when (:require-total? migration-state) (unnamed! v))
+              (recur (allocate-eid report max-eid) es
+                     (cond-> (remember-eid migration-state v max-eid)
+                       (:caller-mapping? migration-state)
+                       (assoc-in [:allocated-for max-eid] v))))
 
           :else
           (let [mapped (migrated-eid migration-state e)
+                _ (cond
+                    (nil? mapped)
+                    (when (:require-total? migration-state) (unnamed! e))
+                    ;; An ENTITY id at or above tx0 is indistinguishable from a
+                    ;; transaction. `:offset` over ids that are already huge (a
+                    ;; Datomic source) lands every entity there; the index-build
+                    ;; path refuses that, and so does this one now — before, the
+                    ;; datoms were dropped without a word and only the count check
+                    ;; noticed.
+                    ;; (a SOURCE id in [tx0, txmax] names a transaction, and
+                    ;; maps to one by design)
+                    (and (not (and (integer? e) (<= (long tx0) (long e) (long txmax))))
+                         (>= (long mapped) (long tx0)))
+                    (log/raise (str "The :eids mapping put entity " e " at " mapped ", at or above tx0 ("
+                                    tx0 "). Entity ids must stay below it — that is where transaction"
+                                    " ids begin.")
+                               {:error :import/eid-above-tx0 :entity-id e :mapped mapped :tx0 tx0})
+                    (seq (:allocated-for migration-state))
+                    (check-named! migration-state e mapped))
                 new-datom ^Datom (dd/datom
                                   (or mapped max-eid)
                                   a
@@ -2316,4 +2389,6 @@
             (recur (transact-report report new-datom upsert?) entities
                    (if mapped
                      migration-state
-                     (remember-eid migration-state e (.-e new-datom))))))))))
+                     (cond-> (remember-eid migration-state e (.-e new-datom))
+                       (:caller-mapping? migration-state)
+                       (assoc-in [:allocated-for (.-e new-datom)] e))))))))))

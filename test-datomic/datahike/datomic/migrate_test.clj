@@ -742,3 +742,10 @@
                         "and none left under the retired name")
                     (finally (d/release conn) (d/delete-database cfg)))))))
           (finally (dt/release c) (dt/delete-database uri)))))))
+
+(deftest offset-is-refused-for-a-datomic-source
+  (testing "`:offset` shifts ids that are already ~1.76e13: every entity would
+            land above tx0, and the streaming path used to drop them silently"
+    (is (= :datomic/eids-offset-unsupported
+           (try (dtm/import-from-datomic! *dh* *dtm* {:eids :offset}) nil
+                (catch Exception e (:error (ex-data e))))))))

@@ -49,6 +49,7 @@
             [datahike.migrate.ids :as ids]
             [datahike.migrate.init :as init]
             [datahike.migrate.digest :as dig]
+            [datahike.array :as da]
             [datahike.migrate.compress :as mz]
             [datahike.migrate.fs :as fs]
             ;; JVM-only by nature: a legacy single-file dump can only have been
@@ -1295,21 +1296,27 @@
    and on ClojureScript is a `promise-chan`. So the same object can be `@`-ed or
    parked on; the only platform difference is that cljs has no blocking deref,
    and `:sync? true` is refused there at the public entry points."
-  [conn batch migration opts]
-  (async+sync
-   (:sync? opts) *default-sync-translation*
-   (go-try-
+  ([conn batch migration opts] (load-batch! conn batch migration opts nil))
+  ([conn batch migration opts cursor]
+   (async+sync
+    (:sync? opts) *default-sync-translation*
+    (go-try-
     ;; `load-entities-migrating` rather than `api/load-entities`, because the id
     ;; mapping travels WITH the call and `load-entities` is a published 2-arity
     ;; function — widening it in place would have changed a public contract for
     ;; the sake of an internal one. The tx-report carries the UPDATED mapping
     ;; back out; see `transact-entities-directly` for why it does not live on
     ;; the database value.
-    (let [p (dwriter/load-entities-migrating conn batch migration)]
+    ;; `cursor` (a resumable import only) is a function of the batch's
+    ;; resulting mapping; the writer applies it and stores the result in the
+    ;; commit's `:meta`. See `run-import`, "Resuming".
+     (let [p (if cursor
+               (dwriter/load-entities-migrating conn batch migration cursor)
+               (dwriter/load-entities-migrating conn batch migration))]
       ;; ClojureScript has no blocking deref, and `:sync? true` is refused there
       ;; by `assert-sync-supported!` at the entry points.
-      #?(:clj (if (:sync? opts) @p (<?- p))
-         :cljs (<?- p))))))
+       #?(:clj (if (:sync? opts) @p (<?- p))
+          :cljs (<?- p)))))))
 
 (defn- verification-result
   "Decide, ONCE, whether an import verified — for both import paths.
@@ -1565,18 +1572,20 @@
   "Apply one tx-aligned batch via load-entities. Under :on-error :abort a failure
    throws; under :collect the offending datoms are skipped and returned as errors
    (per-datom granularity, see `collect-apply!`)."
-  [conn batch on-error migration progress opts]
-  (async+sync
-   (:sync? opts) *default-sync-translation*
-   (go-try-
-    (if (seq batch)
-      (if (= :collect on-error)
-        (<?- (collect-apply! conn batch migration progress opts))
+  ([conn batch on-error migration progress opts]
+   (flush-batch! conn batch on-error migration progress opts nil))
+  ([conn batch on-error migration progress opts cursor]
+   (async+sync
+    (:sync? opts) *default-sync-translation*
+    (go-try-
+     (if (seq batch)
+       (if (= :collect on-error)
+         (<?- (collect-apply! conn batch migration progress opts))
         ;; the failure is captured and RETHROWN outside the handler: core.async
         ;; cannot park inside a `catch`, and the throw has to follow the await
-        (let [r (try {:rep (<?- (load-batch! conn batch migration opts))}
-                     (catch #?(:clj Exception :cljs :default) e {:ex e}))]
-          (if-let [ex (:ex r)]
+         (let [r (try {:rep (<?- (load-batch! conn batch migration opts cursor))}
+                      (catch #?(:clj Exception :cljs :default) e {:ex e}))]
+           (if-let [ex (:ex r)]
             ;; `:import/corrupt-datom` only when the failure IS about a record.
             ;; The old spelling was `(merge (ex-data ex) {:error :import/corrupt-datom})`,
             ;; which stamps that label over whatever the failure actually said —
@@ -1584,28 +1593,28 @@
             ;; label was ALWAYS the answer. A store outage aborted the import
             ;; with `:error :import/corrupt-datom`, sending an operator to look
             ;; at their dump.
-            (throw (if (record-fault? ex)
-                     (ex-info (str "Import aborted: " (ex-message ex))
-                              (merge (ex-data ex) {:error :import/corrupt-datom
-                                                   :cause-error (dt/ex-error ex)})
-                              ex)
-                     (ex-info (str "Import aborted: " (ex-message ex))
-                              (merge (ex-data ex) {:error :import/apply-failed
-                                                   :cause-error (dt/ex-error ex)
-                                                   :batch-size (count batch)})
-                              ex)))
+             (throw (if (record-fault? ex)
+                      (ex-info (str "Import aborted: " (ex-message ex))
+                               (merge (ex-data ex) {:error :import/corrupt-datom
+                                                    :cause-error (dt/ex-error ex)})
+                               ex)
+                      (ex-info (str "Import aborted: " (ex-message ex))
+                               (merge (ex-data ex) {:error :import/apply-failed
+                                                    :cause-error (dt/ex-error ex)
+                                                    :batch-size (count batch)})
+                               ex)))
             ;; A nil `rep` has no `:ex`, so without this the batch reports SUCCESS
             ;; — `progress` fires with its full count and `:migration` becomes
             ;; nil, which restarts the id map and leaves DANGLING REFS in the
             ;; restored database. Guarded outside the `try` so it is not
             ;; misfiled as `:import/corrupt-datom`: the datoms were fine, the
             ;; writer did not answer.
-            (let [rep (dt/delivered! (:rep r)
-                                     {:op :load-entities :batch-size (count batch)}
-                                     "a batch was applied but the writer returned no report")]
-              (progress {:phase :batch :datoms (count batch)})
-              {:errors [] :migration (:migration rep)}))))
-      {:errors [] :migration migration}))))
+             (let [rep (dt/delivered! (:rep r)
+                                      {:op :load-entities :batch-size (count batch)}
+                                      "a batch was applied but the writer returned no report")]
+               (progress {:phase :batch :datoms (count batch)})
+               {:errors [] :migration (:migration rep)}))))
+       {:errors [] :migration migration})))))
 
 (defn- config-compat! [manifest conn]
   (let [tgt (dbi/-config @conn)
@@ -1616,6 +1625,13 @@
                              ": dump=" (get src k) " target=" (get tgt k))
                         {:error :import/config-mismatch :key k
                          :expected (get src k) :actual (get tgt k)}))))))
+
+(defn- import-cursor
+  "The resumable-import cursor the head commit of `db` carries, or nil. Written
+   by every batch of a `:resume? true` import, atomically with that batch's
+   datoms (see `run-import`, \"Resuming\")."
+  [db]
+  (get-in db [:meta :datahike.import/cursor]))
 
 (defn- check-target!
   "Refuse an import this target cannot accept — BEFORE anything is written.
@@ -1666,12 +1682,24 @@
                 " :preserve refuses instead; :offset cannot collide by construction.")))
   ;; The format and config checks above are about COMPATIBILITY and apply
   ;; whatever the target holds. Only emptiness is negotiable.
-  (when-not (:merge? opts)
+  ;; A target holding a resumable import's cursor is not "non-empty" in the
+  ;; sense this guards: its data is the import's own, and `run-import` decides
+  ;; — against the cursor — whether this call may continue it.
+  (when-not (or (:merge? opts)
+                (and (:resume? opts) (import-cursor @conn)))
     (when (has-user-datoms? @conn)
-      (throw (ex-info (str "Target database is not empty; import is not resumable — "
-                           "recreate and restart, or pass `:merge? true` to ADD this "
+      (throw (ex-info (str "Target database is not empty"
+                           (if (:resume? opts)
+                             " and holds no resumable import (an import is resumable only when its first run already passed `:resume? true`)"
+                             "")
+                           " — recreate and restart, or pass `:merge? true` to ADD this "
                            "dump to what is already there (append-only; see `import-db`).")
                       {:error :import/non-empty-target})))))
+
+(defn- offset-delta
+  "`:eids :offset`'s shift for `db`: everything lands above its current ids."
+  [db]
+  (- (long (:max-eid db)) (long c/e0)))
 
 (defn- eid-policy
   "Resolve the `:eids` option into what `:migration`'s `:eids` slot should hold,
@@ -1701,36 +1729,44 @@
    Transaction ids are NOT covered. They keep their existing allocation, which
    starts above the target's `:max-tx`; preserving source tx ids into a
    populated database is a different problem with its own collision rules."
-  [eids db]
-  (cond
-    (nil? eids) nil
-    (= :allocate eids) nil
-    (= :preserve eids)
-    (do (when (> (long (:max-eid db)) (long c/e0))
+  ([eids db] (eid-policy eids db nil))
+  ([eids db resumed-delta]
+   (cond
+     (nil? eids) nil
+     (= :allocate eids) nil
+     (= :preserve eids)
+    ;; Not on a RESUMED import: the entities above `e0` are the ones this import
+    ;; wrote before it was interrupted, not a collision risk.
+     (do (when (and (nil? resumed-delta) (> (long (:max-eid db)) (long c/e0)))
           ;; A WARNING, not a refusal. `:preserve` is the caller asserting that
           ;; the source ids are correct for this target, and only they can know
           ;; that. Refusing on `max-eid > e0` would reject every
           ;; `:schema-flexibility :write` database, since schema attributes are
           ;; entities and occupy ids — i.e. the common case — while still not
           ;; proving anything about whether the ranges actually overlap.
-          (warn! (str "[datahike.migrate] :eids :preserve into a target that has "
-                      "allocated entities already (max-eid " (:max-eid db)
-                      "). Source ids are used as-is, so any that collide will "
-                      "MERGE with the existing entity rather than being added. "
-                      "Use :offset if the two id spaces are meant to be disjoint.")))
-        identity)
-    (= :offset eids)
-    (let [delta (- (long (:max-eid db)) (long c/e0))]
-      (fn [e] (+ (long e) delta)))
+           (warn! (str "[datahike.migrate] :eids :preserve into a target that has "
+                       "allocated entities already (max-eid " (:max-eid db)
+                       "). Source ids are used as-is, so any that collide will "
+                       "MERGE with the existing entity rather than being added. "
+                       "Use :offset if the two id spaces are meant to be disjoint.")))
+         identity)
+    ;; The delta is taken from `:max-eid` when the import STARTS. A resumed one
+    ;; must reuse that delta — by then `:max-eid` has moved past its own
+    ;; entities — so it arrives from the cursor (`offset-delta`).
+     (= :offset eids)
+     (let [delta (if resumed-delta
+                   (long resumed-delta)
+                   (offset-delta db))]
+       (fn [e] (+ (long e) delta)))
     ;; A map, a function, or any `ILookup` — see `ids/lookup-id`, which is what
     ;; both import paths read a mapping through. `ILookup` is the COMPUTED case:
     ;; a mapping with a handful of entries instead of one per entity, which is
     ;; the whole point for a source whose id space is dense and huge.
-    (or (map? eids) (fn? eids)
-        (instance? #?(:clj clojure.lang.ILookup :cljs ILookup) eids)) eids
-    :else (throw (ex-info (str "Unknown :eids strategy " (pr-str eids)
-                               ". Expected :allocate, :offset, :preserve, a map or a function.")
-                          {:error :import/bad-eid-strategy :value eids}))))
+     (or (map? eids) (fn? eids)
+         (instance? #?(:clj clojure.lang.ILookup :cljs ILookup) eids)) eids
+     :else (throw (ex-info (str "Unknown :eids strategy " (pr-str eids)
+                                ". Expected :allocate, :offset, :preserve, a map or a function.")
+                           {:error :import/bad-eid-strategy :value eids})))))
 
 (defn- manifest->source-meta
   "The three things `run-import` needs from a dump's manifest.
@@ -1746,7 +1782,12 @@
    which is right for any source that has no retractions."
   [manifest]
   {:history?       (boolean (:history? manifest))
+   ;; What a resumed import is checked against: the same dump, chunk for chunk.
+   :source-id      {:semantic-digest (:semantic-digest manifest)
+                    :chunks (mapv (juxt :file :sha256) (:chunks manifest))}
    :expected-count (:count (:semantic-digest manifest))
+   ;; a `:sort? false` export: refused by a resumable import
+   :unordered?     (boolean (:unordered? manifest))
    :max-tx         (:max-tx (:stats manifest))
    ;; Present only for a dump that renamed an attribute; see
    ;; `manifest/ident-timeline`. A source that is not a dump has none, and
@@ -1796,6 +1837,130 @@
             {:count 0 :sample []}
             ref-attrs)))
 
+(defn- canonical
+  "A value with every map and set put in a stable order and every byte array
+   spelled out, so `pr-str` of it is the same bytes for the same content — on
+   every JVM and on ClojureScript. Clojure's `hash` is neither: it is 32 bits,
+   it differs between the runtimes, and it hashes a byte array by IDENTITY."
+  [x]
+  (cond
+    (da/bytes? x) [::bytes (dig/hex (dig/sha256-bytes x))]
+    (map? x) (into [::map] (sort-by first (map (fn [[k v]] [(pr-str (canonical k)) (canonical v)]) x)))
+    (set? x) (into [::set] (sort (map #(pr-str (canonical %)) x)))
+    (sequential? x) (mapv canonical x)
+    (inst? x) [::inst (inst-ms x)]
+    :else x))
+
+(defn- digest-of
+  "SHA-256 over `canonical` — the identity digests a resumed import is checked
+   against."
+  [x]
+  (dig/sha256-hex (pr-str (canonical x))))
+
+(defn- resume-identity
+  "What a resumed import must agree on with the run it continues, as two
+   SHA-256 digests.
+
+   `:source-id` digests the SOURCE's own statement of identity (`:source-meta
+   :source-id`; a dump's manifest supplies its digest and chunk list) or, absent
+   one, the descriptor list itself — exact for `records->chunk-src`, whose
+   descriptors ARE the records.
+
+   `:opts-digest` digests what decides WHAT lands: the actual `:eids` (a map's
+   content, a policy keyword, or for a function or an ILookup the caller's
+   `:resume-key`), the `:xform` (by `:resume-key`), `:merge?` and history. Not
+   `:batch-size`: transaction ids do not depend on it, so a resume may change
+   it."
+  [source-meta chunk-src opts]
+  {:source-id (digest-of (or (:source-id source-meta) [:chunks (vec (:chunks chunk-src))]))
+   :opts-digest (digest-of {:eids (let [e (:eids opts)]
+                                    (cond (nil? e) :allocate
+                                          (keyword? e) e
+                                          (map? e) [:map e]
+                                          :else [:key (:resume-key opts)]))
+                            :xform (when (:xform opts) [:key (:resume-key opts)])
+                            :merge? (boolean (:merge? opts))
+                            :history? (boolean (:history? source-meta))})})
+
+(defn- resume-refuse! [msg data]
+  (throw (ex-info (str "Cannot make this import resumable: " msg) data)))
+
+(defn- cursor-pos
+  "Where `cursor` says its import stands — what the next batch's commit
+   compare-and-sets against (`writing/load-entities-migrating`)."
+  [cursor]
+  (when cursor [(:import-id cursor) (:status cursor) (:chunk cursor) (:offset cursor)]))
+
+(defn- resume-cursor!
+  "Refuse what a resumable import cannot honour, then return the cursor to
+   continue from — nil for a fresh start. Runs before anything is written."
+  [db ident source-meta opts]
+  (let [eids (:eids opts)]
+    (when (or (nil? eids) (= :allocate eids))
+      (resume-refuse!
+       (str ":eids :allocate keeps its source->target id map in memory only, so an "
+            "interrupted import cannot be continued — the ids it handed out are gone. "
+            "Use :preserve (a dump into an empty target), a map, or a computed mapping "
+            "(an ILookup or a function) that names EVERY id.")
+       {:error :import/resume-needs-deterministic-mapping :eids (or eids :allocate)}))
+    (when (and (:xform opts) (not (:xform-stateless? opts)))
+      (resume-refuse!
+       (str "an :xform may hold state across records (dedupe, partition-all), and that "
+            "state cannot be restored at the resume point. Pass :xform-stateless? true "
+            "if this one keeps none.")
+       {:error :import/resume-stateful-xform}))
+    (when (and (or (:xform opts) (not (or (keyword? eids) (map? eids))))
+               (not (string? (:resume-key opts))))
+      (resume-refuse!
+       (str "a function, an ILookup or an :xform cannot be compared between runs, so a "
+            "resume could not tell whether it is the same one. Pass :resume-key, a string "
+            "you change whenever the mapping or the transform changes.")
+       {:error :import/resume-needs-key}))
+    (when (= :collect (:on-error opts))
+      (resume-refuse!
+       (str ":on-error :collect retries a failed batch as several commits, which leaves "
+            "no single position to resume from. Use :on-error :abort.")
+       {:error :import/resume-collect-unsupported}))
+    (when (:unordered? source-meta)
+      (resume-refuse!
+       (str "this dump was exported with {:sort? false}, which interleaves its "
+            "transactions across two passes; a position in it does not say which "
+            "transactions are complete. Re-export with the default {:sort? true}.")
+       {:error :import/resume-unordered-source})))
+  (when-let [cursor (import-cursor db)]
+    (let [same? (every? #(= (get cursor %) (get ident %)) [:source-id :opts-digest])]
+      (cond
+        ;; A FINISHED import of something else is history, not a claim on the
+        ;; target: ignore it (`check-target!` still refuses a non-empty target
+        ;; without :merge?).
+        (and (= :complete (:status cursor)) (not same?))
+        (if (:merge? opts)
+          nil
+          (throw (ex-info "Target database is not empty; it holds a finished import of another source."
+                          {:error :import/non-empty-target})))
+
+        (not same?)
+        (throw (ex-info (str "Cannot resume: the target's import cursor was written for a different "
+                             "source or different options than this call's. Resume with the same "
+                             "source and options, or recreate the target.")
+                        {:error :import/resume-mismatch
+                         :fields (vec (remove #(= (get cursor %) (get ident %)) [:source-id :opts-digest]))
+                         :import-id (:import-id cursor)}))
+
+        ;; Something else wrote to the target since the cursor's commit: its
+        ;; transaction ids would collide with the source's, which a resumable
+        ;; import keeps.
+        (and (= :in-progress (:status cursor))
+             (:max-tx cursor) (not= (long (:max-tx db)) (long (:max-tx cursor))))
+        (throw (ex-info (str "Cannot resume: the target was written to after the interrupted import's "
+                             "last batch (max-tx " (:max-tx db) ", the import left " (:max-tx cursor)
+                             "). Recreate the target.")
+                        {:error :import/resume-target-changed
+                         :import-id (:import-id cursor)
+                         :max-tx (:max-tx db) :expected-max-tx (:max-tx cursor)}))
+
+        :else cursor))))
+
 (defn- run-import
   "Medium-agnostic import core.
    `chunk-src` yields the dump's records a CHUNK at a time:
@@ -1833,7 +1998,42 @@
 
    The dump-specific checks stay with the CALLER — `check-capabilities!`,
    `config-compat!` and `restore-blobs!` each already no-op on an absent
-   manifest, so a non-dump caller simply does not call them."
+   manifest, so a non-dump caller simply does not call them.
+
+   ## Resuming (`:resume? true`)
+
+   The database is the checkpoint. Every batch of a resumable import commits a
+   CURSOR in the commit's `:meta` (`:datahike.import/cursor`), in the same head
+   write as the batch's datoms, so after a crash the head names exactly the
+   batches that landed and the position after them. A later call with
+   `:resume? true` reads the cursor and continues:
+
+     :chunk/:offset   the next RAW record (before the `:xform`); a batch only
+                      ends on a raw-record boundary
+     :chunk-desc      digest of the descriptor there, re-checked on resume
+     :source-id       digests (SHA-256 over a canonical encoding) of the source
+     :opts-digest     and of what decides what lands — see `resume-identity`
+     :tx-floor        the target's :max-tx when the import began; the import
+                      KEEPS the source's transaction ids above it, so neither a
+                      split transaction nor a ref to an earlier one needs the
+                      O(transactions) source->target map that lives in memory
+     :max-tx          the head's :max-tx after the batch: a resume refuses a
+                      target something else has written to since
+     :t-split         the backstop split the last transaction across batches
+     :offset-delta    `:offset`'s shift, frozen when the import began
+     :counts          dropped, removed, tx-count, and the target as the FIRST
+                      run found it — what verification compares against
+
+   No per-entity or per-transaction state: the cursor is a few hundred bytes,
+   and every later commit carries it. The mapping must therefore name EVERY id
+   (`:import/resume-partial-mapping` otherwise). Each batch compare-and-sets the
+   cursor's position (`:resume/conflict`), so two resumers cannot both apply
+   one batch. The last batch commits `:status :complete`; resuming a complete
+   import only verifies. Refused up front, before any write: `:eids
+   :allocate`, a function/ILookup/`:xform` without `:resume-key`, an `:xform`
+   not declared `:xform-stateless?`, `:on-error :collect`, and a
+   `{:sort? false}` dump (`:unordered?` in its manifest; an older one is caught
+   when its transactions go backwards)."
   [conn source-meta mem chunk-src opts]
   (let [opts     (merge {:batch-size default-batch-size :verify? true
                          :on-error :abort :sync? true} opts)
@@ -1873,20 +2073,45 @@
     ;; That is also why the attribute-refs system seed moved here — it had the
     ;; same exposure, silently.
       (let [db @conn
+            ;; ---- resumable import: identity, refusals, the cursor to continue ----
+            ;; Before ANY write, so a refused resume touches nothing.
+            resumable? (boolean (:resume? opts))
+            ident    (when resumable? (resume-identity source-meta chunk-src opts))
+            ;; any cursor on the head, ours or a finished foreign one: the
+            ;; first batch compare-and-sets against it
+            head-cursor (import-cursor db)
+            cursor0  (when resumable? (resume-cursor! db ident source-meta opts))
+            counts0  (:counts cursor0)
+            done?    (= :complete (:status cursor0))
+            ;; A resumable import KEEPS the source's transaction ids (the
+            ;; index-build path does too): ids above `tx-floor`, the target's
+            ;; `:max-tx` when the import started, are this import's own. That is
+            ;; what makes a resume exact without the source->target tx map,
+            ;; which is O(transactions) and lives only in memory — a ref to an
+            ;; earlier transaction resolves to the same id in both runs.
+            tx-floor (when resumable? (long (if cursor0 (:tx-floor cursor0) (:max-tx db))))
           ;; Under `:merge?` the count check has to be a DELTA: `expected` is a
           ;; property of the SOURCE, while the live count is a property of the
           ;; whole database. Taken before anything is written, and only when it
           ;; will be used — on an empty target it is 0 and the scan is free,
           ;; but on a populated one it is a full index read and paying for it
           ;; when `:verify? false` would be waste.
-            live-before (if (and (:merge? opts) (:verify? opts))
+          ;;
+          ;; A RESUMED import takes both from the cursor: they describe the
+          ;; target as the FIRST run found it, which is what the report and the
+          ;; count check are about.
+            live-before (cond
+                          cursor0 (long (:live-before counts0))
+                          (and (:merge? opts) (:verify? opts))
                           (long (user-datom-count db (boolean (:history? source-meta))))
-                          0)
-            max-eid-before (:max-eid db)
+                          :else 0)
+            max-eid-before (if cursor0 (long (:max-eid-before counts0)) (:max-eid db))
+            off-delta (when (= :offset (:eids opts))
+                        (if cursor0 (:offset-delta cursor0) (offset-delta db)))
           ;; system-entity identity, so refs to a system entity are TRANSLATED
           ;; rather than re-allocated (#508)
             sys (when (attribute-refs? db) (system-eid-seed db))
-            policy (eid-policy (:eids opts) db)
+            policy (eid-policy (:eids opts) db (when cursor0 (or off-delta 0)))
             eids (cond
                  ;; A policy is about the caller's OWN entities. System entities
                  ;; keep their identity regardless, or `:offset` would shift the
@@ -1904,7 +2129,22 @@
           ;; the writer's own loop), and putting it there cost three bugs.
           ;; Owning it here also means it needs no clearing: it goes out of
           ;; scope when this function returns.
-            migration0 (if eids {:eids eids} {})]
+            migration0 (cond-> (if eids {:eids eids} {})
+                         ;; resumable: source tx ids kept, and every id named by
+                         ;; the mapping (what the importer would allocate for an
+                         ;; unnamed one exists only in this process)
+                         resumable? (assoc :tx-floor tx-floor :require-total? true)
+                         ;; a caller's mapping: allocations for ids it does not
+                         ;; name are checked against the ids it does
+                         (and policy (not resumable?)) (assoc :caller-mapping? true))
+            ;; transactions counted before the resume point; the split one is
+            ;; counted again by this run's `:tids`
+            tx-base (if cursor0
+                      (- (long (:tx-count counts0)) (if (:t-split cursor0) 1 0))
+                      0)
+            import-id (or (:import-id cursor0) (when resumable? (str (random-uuid))))
+            start-chunk (long (or (:chunk cursor0) 0))
+            start-offset (long (or (:offset cursor0) 0))]
     ;; ---- stream records through a tx-aligned batcher (bounded memory) ----
     ;; System-entity idents are stable across the import, so resolve #sysref
     ;; against a captured db value.
@@ -1936,7 +2176,7 @@
           ;; becoming three makes it -2, which raises the expectation, which is
           ;; right. Counted here because `prepare` is where records disappear —
           ;; the batching loop never sees them.
-              removed (volatile! 0)
+              removed (volatile! (long (or (:removed counts0) 0)))
               ;; A VALUE, not a boolean — `:validate-records? :skip`, the way
               ;; `:checksums :skip` is spelled. An opt-out that costs 0.3% should
               ;; not be reachable by a stray `true` or a typo'd key.
@@ -1965,22 +2205,57 @@
                                                     true))))
                                        rs)
                         :else (do (run! mman/validate-record! rs) rs)))
-              prepare (fn [records]
-                        (let [tl (:ident-timeline source-meta)
-                              rs (mapv #(->> % (resolve-sysrefs sref-db)
-                                             (resolve-attr-refs sref-db tl))
-                                       records)]
-                          (if step
-                            (let [out (into [] (mapcat (fn [r]
-                                                         (let [o (step [] r)]
-                                                           (if (reduced? o) @o o))))
-                                            rs)]
-                              (vswap! removed + (- (count rs) (count out)))
-                              ;; AFTER the transducer, so an `:xform` can repair a
-                              ;; malformed record before it is judged — and so a
-                              ;; transducer that PRODUCES one is caught.
-                              (check out))
-                            (check rs))))
+              ;; ONE RAW RECORD at a time, so the batching loop below knows
+              ;; which raw record each output came from: a resumable import's
+              ;; cursor is a RAW position, taken before the `:xform`, because
+              ;; that is what can be skipped on a re-read.
+              tl (:ident-timeline source-meta)
+              prepare-one (fn [record]
+                            (let [r (->> record (resolve-sysrefs sref-db)
+                                         (resolve-attr-refs sref-db tl))]
+                              (if step
+                                (let [o (step [] r)
+                                      out (if (reduced? o) @o o)]
+                                  (vswap! removed + (- 1 (count out)))
+                                  ;; AFTER the transducer, so an `:xform` can repair a
+                                  ;; malformed record before it is judged — and so a
+                                  ;; transducer that PRODUCES one is caught.
+                                  (check out))
+                                (check [r]))))
+              ;; The cursor a batch commits WITH. A function of the mapping the
+              ;; batch produces, applied by the writer, because two of its fields
+              ;; are only known once the batch has been applied: what a partial
+              ;; mapping allocated, and the target ids of the batch's
+              ;; transactions.
+              ;; The cursor a batch commits WITH. A function of the mapping the
+              ;; batch produces, applied by the writer: the transaction count is
+              ;; only known once the batch has been applied. SMALL on purpose —
+              ;; every later commit carries it in `:meta`: digests, a position,
+              ;; counters, and no per-entity or per-transaction state. `:prev`
+              ;; is the position the head must still be at for this batch to
+              ;; land (compare-and-set in `writing/load-entities-migrating`);
+              ;; the writer drops it before storing.
+              cursor-fn (fn [status ci desc pos snap split? batch-ts t-upto prev]
+                          (fn [m]
+                            (cond-> {:import-id import-id
+                                     :status status
+                                     :source-id (:source-id ident)
+                                     :opts-digest (:opts-digest ident)
+                                     :chunk ci
+                                     :chunk-desc (when desc (digest-of desc))
+                                     :offset pos
+                                     :tx-floor tx-floor
+                                     ;; the head's :max-tx once this batch lands
+                                     ;; (source ids are kept), so a resume can tell
+                                     ;; whether anything else wrote since
+                                     :max-tx (reduce max (long t-upto) batch-ts)
+                                     :counts (assoc snap
+                                                    :live-before live-before
+                                                    :max-eid-before max-eid-before
+                                                    :tx-count (+ (long tx-base) (count (:tids m))))
+                                     :prev prev}
+                              off-delta (assoc :offset-delta off-delta)
+                              split? (assoc :t-split true))))
           ;; TWO NESTED LOOPS, not a reduce. The outer reads one chunk, the inner
           ;; batches its records and flushes — and both the read and the flush are
           ;; awaits, which must sit at statement positions the `go` state machine
@@ -1988,63 +2263,124 @@
           ;;
           ;; Memory is unchanged: one chunk (bounded by `:chunk-size`) plus one
           ;; batch (bounded by `:batch-size`), exactly as before.
-              final (loop [cs (seq (:chunks chunk-src))
-                           acc {:batch [] :n 0 :last-t ::start :errors [] :dropped 0
-                                :migration migration0}]
+              ;; The batch's distinct source transactions, for the cursor's
+              ;; `:max-tx`. Records of one `t` are contiguous, so `dedupe`.
+              batch-ts (fn [batch] (into [] (comp (map #(nth % 3)) (dedupe)) batch))
+              final (loop [cs (seq (drop start-chunk (:chunks chunk-src)))
+                           ci start-chunk
+                           skip start-offset
+                           acc {:batch [] :n 0 :last-t ::start :errors []
+                                :dropped (long (or (:dropped counts0) 0))
+                                :migration migration0
+                                ;; the highest source tx committed so far
+                                :t-upto (long (or (:max-tx cursor0) tx-floor 0))
+                                ;; the head position the next batch must find
+                                :prev (cursor-pos head-cursor)}]
                       (if (nil? cs)
-                        acc
-                        (let [records (prepare (dt/delivered!
-                                                (<?- ((:read chunk-src) (first cs) opts))
-                                                {:op :read-chunk :chunk (first cs)}
-                                                "a dump chunk could not be read"))]
+                        (assoc acc :chunk ci)
+                        (let [desc (first cs)
+                              ;; The descriptor the cursor names must be the one
+                              ;; this source hands back at that position, or the
+                              ;; offset means nothing.
+                              _ (when (and cursor0 (= ci start-chunk) (:chunk-desc cursor0)
+                                           (not= (digest-of desc) (:chunk-desc cursor0)))
+                                  (throw (ex-info (str "Cannot resume: chunk " ci " of this source is not the chunk the "
+                                                       "interrupted import was reading. The source changed.")
+                                                  {:error :import/resume-mismatch :field :chunk-desc :chunk ci})))
+                              raw (vec (dt/delivered!
+                                        (<?- ((:read chunk-src) desc opts))
+                                        {:op :read-chunk :chunk desc}
+                                        "a dump chunk could not be read"))
+                              n-raw (count raw)]
                           (recur
                            (next cs)
-                           (loop [rs (seq records) acc acc]
-                             (if (nil? rs)
+                           (inc ci)
+                           0
+                           ;; raw records [skip, n-raw) of this chunk
+                           (loop [ri (long skip) acc acc]
+                             (if (>= ri n-raw)
                                acc
-                           ;; Already resolved and transformed by `prepare`. The
-                           ;; xform sees a plain [e a v t op] with real ids and
-                           ;; never an internal SysRef; dropping is expressed by
-                           ;; emitting nothing.
-                               (let [rec (first rs)]
-                                 (if rec
-                                   (let [t (nth rec 3)
-                                         ;; Flush at a TRANSACTION boundary once the
-                                         ;; batch is full — but never wait forever for
-                                         ;; one. A stream whose records all carry the
-                                         ;; same `t` (a database built by ONE large
-                                         ;; `transact`, or by `load-entities`, exported
-                                         ;; and re-imported) never satisfies
-                                         ;; `(not= t last-t)`, so without the second
-                                         ;; clause nothing flushes and the whole dump
-                                         ;; accumulates here — defeating the
-                                         ;; `:chunk-size` + `:batch-size` bound this
-                                         ;; loop exists to provide, on exactly the
-                                         ;; databases big enough to need it.
-                                         ;;
-                                         ;; Splitting a transaction across two
-                                         ;; `load-entities` calls is safe: the target
-                                         ;; tx id lives in `migration-state[:tids]`,
-                                         ;; which is threaded across calls, so both
-                                         ;; halves land on ONE transaction with order
-                                         ;; and grouping intact.
-                                         acc (if (or (and (>= (long (:n acc)) batch-size)
-                                                          (not= t (:last-t acc)))
-                                                     (>= (long (:n acc)) hard-max))
-                                               (let [r (<?- (flush-batch! conn (:batch acc)
-                                                                          on-error (:migration acc)
-                                                                          progress opts))]
-                                                 (-> acc
-                                                     (update :errors into (:errors r))
-                                                     (assoc :migration (:migration r))
-                                                     (assoc :batch [] :n 0)))
-                                               acc)]
-                                     (recur (next rs)
-                                            (-> acc
-                                                (update :batch conj rec)
-                                                (update :n inc)
-                                                (assoc :last-t t))))
-                                   (recur (next rs) (update acc :dropped inc))))))))))
+                               (let [;; counters as they stand BEFORE this raw record:
+                                     ;; what a cursor taken at its first output covers
+                                     snap {:dropped (:dropped acc) :removed @removed}
+                                     outs (prepare-one (nth raw ri))]
+                                 (recur
+                                  (inc ri)
+                                  (loop [os (seq outs) first? true acc acc]
+                                    (if (nil? os)
+                                      acc
+                                      ;; Already resolved and transformed by `prepare-one`.
+                                      ;; The xform sees a plain [e a v t op] with real ids
+                                      ;; and never an internal SysRef; dropping is
+                                      ;; expressed by emitting nothing.
+                                      (let [rec (first os)]
+                                        (if rec
+                                          (let [t (nth rec 3)
+                                                ;; A position in a stream means "everything
+                                                ;; before it" only when transactions arrive
+                                                ;; in order; a resumable import refuses one
+                                                ;; whose `t` goes backwards (an old
+                                                ;; `:sort? false` dump that predates the
+                                                ;; manifest's `:unordered?`).
+                                                _ (when (and resumable? (number? (:last-t acc))
+                                                             (< (long t) (long (:last-t acc))))
+                                                    (throw (ex-info (str "Cannot import this source resumably: its transactions "
+                                                                         "arrive out of order (t " t " after " (:last-t acc)
+                                                                         "), as a {:sort? false} dump does. Re-export it "
+                                                                         "with {:sort? true}, or import without :resume?.")
+                                                                    {:error :import/resume-unordered-source
+                                                                     :t t :after (:last-t acc)})))
+                                                ;; Flush at a TRANSACTION boundary once the
+                                                ;; batch is full — but never wait forever for
+                                                ;; one. A stream whose records all carry the
+                                                ;; same `t` (a database built by ONE large
+                                                ;; `transact`, or by `load-entities`, exported
+                                                ;; and re-imported) never satisfies
+                                                ;; `(not= t last-t)`, so without the second
+                                                ;; clause nothing flushes and the whole dump
+                                                ;; accumulates here — defeating the
+                                                ;; `:chunk-size` + `:batch-size` bound this
+                                                ;; loop exists to provide, on exactly the
+                                                ;; databases big enough to need it.
+                                                ;;
+                                                ;; Splitting a transaction across two
+                                                ;; `load-entities` calls is safe: the target
+                                                ;; tx id lives in `migration-state[:tids]`,
+                                                ;; which is threaded across calls, so both
+                                                ;; halves land on ONE transaction with order
+                                                ;; and grouping intact.
+                                                ;;
+                                                ;; A resumable import flushes only at the
+                                                ;; FIRST output of a raw record, so a batch
+                                                ;; always ends on a raw-record boundary —
+                                                ;; the only kind of position a cursor can
+                                                ;; name.
+                                                acc (if (and (or first? (not resumable?))
+                                                             (or (and (>= (long (:n acc)) batch-size)
+                                                                      (not= t (:last-t acc)))
+                                                                 (>= (long (:n acc)) hard-max)))
+                                                      (let [b (:batch acc)
+                                                            bts (batch-ts b)
+                                                            cur (when resumable?
+                                                                  (cursor-fn :in-progress ci desc ri snap
+                                                                             (= t (:last-t acc))
+                                                                             bts (:t-upto acc) (:prev acc)))
+                                                            r (<?- (flush-batch! conn b
+                                                                                 on-error (:migration acc)
+                                                                                 progress opts cur))]
+                                                        (-> acc
+                                                            (update :errors into (:errors r))
+                                                            (assoc :migration (:migration r))
+                                                            (assoc :t-upto (reduce max (long (:t-upto acc)) bts))
+                                                            (assoc :prev [import-id :in-progress ci ri])
+                                                            (assoc :batch [] :n 0)))
+                                                      acc)]
+                                            (recur (next os) false
+                                                   (-> acc
+                                                       (update :batch conj rec)
+                                                       (update :n inc)
+                                                       (assoc :last-t t))))
+                                          (recur (next os) false (update acc :dropped inc))))))))))))))
           ;; The completion arity, once, after the last chunk. A transducer
           ;; holding a partial group — `partition-all`, or a custom one buffering
           ;; until some boundary — emits it here and nowhere else; without this
@@ -2054,9 +2390,17 @@
           ;; reduce the net-removed count.
               residue (if step (vec (step [])) [])
               _ (vswap! removed - (count residue))
-              last-flush (<?- (flush-batch! conn (into (:batch final) residue)
+              last-batch (into (:batch final) residue)
+              ;; The last batch commits the cursor as COMPLETE, so a run
+              ;; interrupted after it resumes straight into verification.
+              last-flush (<?- (flush-batch! conn last-batch
                                             on-error (:migration final)
-                                            progress opts))
+                                            progress opts
+                                            (when resumable?
+                                              (cursor-fn :complete (:chunk final) nil 0
+                                                         {:dropped (:dropped final) :removed @removed}
+                                                         false (batch-ts last-batch)
+                                                         (:t-upto final) (:prev final)))))
               errors (-> (into (:errors final) (:errors last-flush))
                          (into @bad))
           ;; the mapping the whole import built — the `:tids` half is where the
@@ -2073,9 +2417,16 @@
           ;; that should have landed and did not are still caught) instead of
           ;; either failing spuriously or being switched off, which is how people
           ;; learn to ignore verification output.
-              vres (verification-result {:verify? (:verify? opts)
-                                         :source-count (:expected-count source-meta)
-                                         :dropped dropped :live live :on-error on-error})
+              ;; A FINISHED import whose target has been written to since can no
+              ;; longer be counted against its source: the count would be the
+              ;; import's plus everything after it. Say so instead of failing.
+              vres (if (and done? (not= (long (:max-tx @conn)) (long (:max-tx cursor0))))
+                     {:verified? nil
+                      :verification {:status :skipped :reason :target-changed-since-import
+                                     :actual live}}
+                     (verification-result {:verify? (:verify? opts)
+                                           :source-count (:expected-count source-meta)
+                                           :dropped dropped :live live :on-error on-error}))
               verified? (:verified? vres)
           ;; The EXACT number of source transactions, taken from the id mapping's
           ;; `:tids` — one entry per distinct source `t`, already in hand, so
@@ -2088,7 +2439,7 @@
           ;; makes two passes over :eavt and emits a transaction's schema/meta
           ;; datoms in the first and its data datoms in the second. Measured: a
           ;; 13-transaction database reported 25.
-              tx-count (count (:tids migration))]
+              tx-count (+ (long tx-base) (count (:tids migration)))]
       ;; Same cljs hazards as the heap warning above — `*err*` and `format` exist
       ;; on neither path — and this one had no guard at all. Left as-is until the
       ;; move to .cljc, where both warnings become one portable helper rather
@@ -2152,7 +2503,11 @@
                      :verification (:verification vres)
                      :recommended-heap (:recommended-heap mem)
                      :errors      errors}
-              refs (assoc :dangling-refs refs)))))))))
+              refs (assoc :dangling-refs refs)
+              resumable? (assoc :import-id import-id
+                                :resumed? (boolean cursor0)
+                                :resumed-from (when cursor0
+                                                (select-keys cursor0 [:status :chunk :offset])))))))))))
 
 ;; ---------------------------------------------------------------------------
 ;; the index-build path (opt-in, `:build-indexes? true`)
@@ -2511,7 +2866,9 @@
     (async+sync
      (:sync? opts) *default-sync-translation*
      (go-try-
-      (let [tmp   (fs/temp-dir! "dh-index-build")
+      (let [tmp   (if-let [d (:scratch-dir opts)]
+                    (fs/temp-dir-under! d "dh-index-build")
+                    (fs/temp-dir! "dh-index-build"))
             token (guard/writing! store-id)
             ;; A build writes trees for hours that nothing names until the
             ;; publishing commit. The checkpoint root starts empty and gains
@@ -2849,12 +3206,24 @@
         (fs/delete! tmp)
         (if (instance? #?(:clj Throwable :cljs js/Error) res) (throw res) res))))))
 
+(defn- refuse-resumable-index-build!
+  "`:resume?` is implemented for the streaming import only. The index-build path
+   publishes in ONE commit at the end, so there is no committed batch to resume
+   from; its checkpoints are a separate design."
+  [opts]
+  (when (and (:resume? opts) (:build-indexes? opts))
+    (throw (ex-info (str "{:resume? true} is not supported with {:build-indexes? true} yet: the "
+                         "index build publishes in one commit at the end, so there is no "
+                         "committed batch to resume from. Use the streaming import to resume.")
+                    {:error :import/resume-unsupported-on-index-build}))))
+
 (defn- import-via
   "Pick the import path. `:build-indexes? true` REFUSES rather than falls back: silently
    taking the slow path when the caller asked for the fast one turns a
    configuration mistake into a mysterious performance report, and every reason
    in `build-indexes-refusal` is something the caller can act on."
   [conn manifest mem chunk-src opts]
+  (refuse-resumable-index-build! opts)
   (if (:build-indexes? opts)
     (if-let [why (build-indexes-refusal conn manifest opts)]
       (throw (ex-info why {:error :import/build-indexes-refused :reason why}))
@@ -3024,6 +3393,7 @@
                           "so a malformed record is written into the index and reported as no "
                           "error at all. Use the streaming import to collect faults.")
                      {:error :import/collect-unsupported-on-index-build})))
+   (refuse-resumable-index-build! opts)
    (let [smeta (:source-meta opts)
          opts (merge {:sync? default-sync?} opts)]
      (async+sync
@@ -3186,6 +3556,25 @@
                              No speedup figure is quoted here on purpose — the
                              earlier one was withdrawn as unsound and has not
                              been re-measured end to end.
+     :scratch-dir  nil       where `:build-indexes?` puts its spool and sort
+                             runs; the system temp directory when nil
+     :resume?      false     make the import RESUMABLE, and continue an
+                             interrupted one. Pass it on the FIRST run too: each
+                             batch then commits a cursor with its datoms, and a
+                             later call with the same dump and options continues
+                             after the last batch that landed. Keeps the
+                             source's transaction ids. Needs an `:eids` that names
+                             every id (`:preserve`, `:offset`, a map, or a
+                             computed mapping with `:resume-key` — not
+                             `:allocate`); refuses an `:xform` unless
+                             `:xform-stateless? true` (and `:resume-key`),
+                             `:on-error :collect`, a `{:sort? false}` dump and
+                             `:build-indexes?`. See `run-import`, \"Resuming\".
+                             Adds `:import-id`, `:resumed?` and `:resumed-from`
+                             to the report.
+     :resume-key   nil       a string naming the mapping function/ILookup and the
+                             `:xform`, which cannot be compared between runs;
+                             change it whenever either changes
      :progress-fn  nil
    RETURNS a report map — always, whichever format `source` turned out to be.
    Always present:
@@ -3212,8 +3601,8 @@
 
    Prints a heap warning if the current -Xmx looks too small for the id-remap
    map (see `estimate-import-memory`).
-   Refuses a non-empty target unless `:merge? true` (above); an interrupted
-   import is not resumable either way — recreate and restart."
+   Refuses a non-empty target unless `:merge? true` (above) or it holds a
+   resumable import's cursor and `:resume? true` (above)."
   ([conn source] (import-db conn source {}))
   ([conn source opts]
    (mman/ensure-conn conn "import-db")

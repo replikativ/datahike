@@ -166,6 +166,18 @@
                 prefix (make-array java.nio.file.attribute.FileAttribute 0)))
      :cljs (str (.mkdtempSync (fs) (join (.tmpdir (os*)) prefix)))))
 
+(defn temp-dir-under!
+  "Create a fresh directory under `parent` (created if absent) and return its
+   path. For scratch that must not land in the system temp location — a small
+   disk, or a tmpfs, which is memory."
+  [parent prefix]
+  #?(:clj (let [p (java.nio.file.Paths/get (str parent) (make-array String 0))]
+            (Files/createDirectories p (make-array java.nio.file.attribute.FileAttribute 0))
+            (str (Files/createTempDirectory
+                  p prefix (make-array java.nio.file.attribute.FileAttribute 0))))
+     :cljs (do (.mkdirSync (fs) (str parent) #js {:recursive true})
+               (str (.mkdtempSync (fs) (join (str parent) prefix))))))
+
 (defonce ^:private store-root
   ;; ONE created directory per process, under which every `temp-store-path!`
   ;; is a not-yet-existing child. A fresh `temp-dir!` per call gave each store

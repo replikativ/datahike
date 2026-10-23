@@ -2149,59 +2149,83 @@
    changes `load-entities`' BEHAVIOUR (transaction ids no longer vary with
    `:batch-size`). One change to a stable function is a documented bug fix; two
    is a habit."
-  [old entities migration]
-  (log/debug :datahike/load-entities-migrating {:entity-count (count entities)})
-  ;; A dump may put several source transactions in one import batch. If one of
-  ;; those transactions declares a secondary index and a later one contains
-  ;; :db.secondary/only values, applying the whole batch as one pure step would
-  ;; instantiate the index only at the very end. The primary would have to
-  ;; discard the values before an authoritative secondary existed.
-  ;;
-  ;; Checkpoint the PURE in-memory replay after each transaction that declares
-  ;; a secondary. Nothing is published between segments: complete-db-update is
-  ;; still called exactly once below. The checkpoint merely lets
-  ;; finalize-secondary-indices create the fully configured, empty generation
-  ;; before later source transactions feed values into it. Transaction groups
-  ;; without a declaration stay coalesced, so ordinary import throughput is
-  ;; unchanged.
-  (let [secondary-declaration?
-        (fn [records]
-          (some (fn [record]
-                  (contains? #{:db.secondary/type :db.secondary/attrs}
-                             (nth record 1)))
-                records))
-        segments
-        (loop [tx-groups (seq (partition-by #(nth % 3) entities))
-               current []
-               result []]
-          (if-let [group (first tx-groups)]
-            (let [current (into current group)]
-              (if (secondary-declaration? group)
-                (recur (next tx-groups) [] (conj result current))
-                (recur (next tx-groups) current result)))
-            (cond-> result (seq current) (conj current))))
-        report
-        (loop [remaining (seq segments)
-               db old
-               migration migration
-               tx-data []
-               tempids {}]
-          (if-let [segment (first remaining)]
-            (let [segment-report
-                  (binding [sec/*durable-secondary-write-context* :commit]
-                    (core/load-entities-with db segment nil migration))]
-              (recur (next remaining)
-                     (:db-after segment-report)
-                     (:migration segment-report)
-                     (into tx-data (:tx-data segment-report))
-                     (merge tempids (:tempids segment-report))))
-            {:db-before old
-             :db-after db
-             :tx-data tx-data
-             :tempids tempids
-             :tx-meta nil
-             :migration migration}))]
-    (complete-db-update old report)))
+  ([old entities migration] (load-entities-migrating old entities migration nil))
+  ([old entities migration cursor]
+   (log/debug :datahike/load-entities-migrating {:entity-count (count entities)})
+   ;; A dump may put several source transactions in one import batch. If one of
+   ;; those transactions declares a secondary index and a later one contains
+   ;; :db.secondary/only values, applying the whole batch as one pure step would
+   ;; instantiate the index only at the very end. The primary would have to
+   ;; discard the values before an authoritative secondary existed.
+   ;;
+   ;; Checkpoint the PURE in-memory replay after each transaction that declares
+   ;; a secondary. Nothing is published between segments: complete-db-update is
+   ;; still called exactly once below. The checkpoint merely lets
+   ;; finalize-secondary-indices create the fully configured, empty generation
+   ;; before later source transactions feed values into it. Transaction groups
+   ;; without a declaration stay coalesced, so ordinary import throughput is
+   ;; unchanged.
+   (let [secondary-declaration?
+         (fn [records]
+           (some (fn [record]
+                   (contains? #{:db.secondary/type :db.secondary/attrs}
+                              (nth record 1)))
+                 records))
+         segments
+         (loop [tx-groups (seq (partition-by #(nth % 3) entities))
+                current []
+                result []]
+           (if-let [group (first tx-groups)]
+             (let [current (into current group)]
+               (if (secondary-declaration? group)
+                 (recur (next tx-groups) [] (conj result current))
+                 (recur (next tx-groups) current result)))
+             (cond-> result (seq current) (conj current))))
+         report
+         (loop [remaining (seq segments)
+                db old
+                migration migration
+                tx-data []
+                tempids {}]
+           (if-let [segment (first remaining)]
+             (let [segment-report
+                   (binding [sec/*durable-secondary-write-context* :commit]
+                     (core/load-entities-with db segment nil migration))]
+               (recur (next remaining)
+                      (:db-after segment-report)
+                      (:migration segment-report)
+                      (into tx-data (:tx-data segment-report))
+                      (merge tempids (:tempids segment-report))))
+             {:db-before old
+              ;; A resumable import's CURSOR rides in the commit's `:meta`, so
+              ;; it becomes durable in the same head write as the datoms it
+              ;; describes — the two cannot disagree after a crash. See
+              ;; `datahike.migrate/run-import`, "Resuming".
+              :db-after (if cursor
+                          (let [c (if (fn? cursor) (cursor migration) cursor)
+                                head (get-in old [:meta :datahike.import/cursor])
+                                head-pos (when head [(:import-id head) (:status head)
+                                                     (:chunk head) (:offset head)])]
+                            ;; COMPARE-AND-SET on the import's position: the
+                            ;; batch was cut from the position `:prev` names, and
+                            ;; lands only if the head is still there. Two resumers
+                            ;; of one import otherwise both apply the same batch.
+                            ;; This runs inside the writer, against the db every
+                            ;; commit of this connection is built on.
+                            (when (not= (:prev c) head-pos)
+                              (throw (ex-info (str "Another import moved this database on since this batch "
+                                                   "was cut (expected position " (pr-str (:prev c))
+                                                   ", found " (pr-str head-pos) "). Two resumers "
+                                                   "of one import are running; this one stops.")
+                                              {:error :resume/conflict
+                                               :expected (:prev c) :found head-pos})))
+                            (assoc-in db [:meta :datahike.import/cursor] (dissoc c :prev)))
+                          db)
+              :tx-data tx-data
+              :tempids tempids
+              :tx-meta nil
+              :migration migration}))]
+     (complete-db-update old report))))
 
 (defn publish-built-db!
   "Replace `old`'s indexes and derived fields wholesale with ones built OUTSIDE

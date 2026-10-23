@@ -146,6 +146,21 @@ by definition.
 importing the same Datomic database twice adds the entities twice rather than
 upserting onto the existing ones.
 
+## Resuming
+
+`{:resume? true}` makes the import resumable: a crash, or a storage restart,
+costs the batch in flight rather than the whole run. Run again with the same
+Datomic database (the same restored backup) and the same options. A resumable
+import keeps Datomic's own `t`, offset into datahike's transaction range
+(`tx0 + t`), as `:build-indexes?` does.
+
+It needs a mapping that names **every** id: a computed one (an `ILookup` or a
+function) that packs Datomic's partitions below `tx0` (536 870 912), with a
+`:resume-key`. The default `:allocate` cannot be resumed, and **`:offset` is
+refused for a Datomic source**: it shifts ids that are already ~1.76e13, which
+puts every entity above `tx0`. See
+[Resuming an interrupted import](migration.md#resuming-an-interrupted-import).
+
 ## Memory
 
 Descriptors are `t` *windows*, not records, and `:read` fetches one window at a
