@@ -374,9 +374,9 @@ the dump's `:source-config` (the manifest records it). Import:
   below is the exception: from a `:history? true` dump it reproduces the
   source's ids and `:max-tx` exactly, because it allocates the mapping up front
   and never transacts.)
-- **refuses a non-empty target** (`:import/non-empty-target`). Import is **not
-  resumable** (the id-remap is in-memory only); if an import is interrupted,
-  delete the target and start over;
+- **refuses a non-empty target** (`:import/non-empty-target`), unless it holds
+  an interrupted `:resume? true` import of the same dump — see
+  [Resuming an interrupted import](#resuming-an-interrupted-import);
 - **refuses a dump that holds fewer records than its source did, with nothing to
   explain the gap** (`:import/incomplete-dump`, carrying `:missing`) — see
   [Detecting an incomplete dump](#detecting-an-incomplete-dump) below;
@@ -401,6 +401,10 @@ Options:
 | `:dangling-sample` | 10 | how many dangling refs `:check-refs?` includes in its report |
 | `:allow-partial?` | `false` | import a dump with an unexplained shortfall anyway |
 | `:progress-fn` | — | called with `{:phase … :datoms …}` (see below) |
+| `:resume?` | `false` | make the import resumable, and continue an interrupted one — see below |
+| `:xform-stateless?` | `false` | declare that `:xform` keeps no state across records (required with `:resume?`) |
+| `:scratch-dir` | system temp | where `:build-indexes?` puts its spool and sort runs (required to resume one) |
+| `:checkpoint-ttl-ms` | 1 week | how long a resumable index build's checkpoint outlives it |
 
 `:progress-fn` receives `{:phase … :datoms …}`, where `:datoms` means one of two
 things and `:phase` tells you which:
@@ -447,6 +451,139 @@ Anything else — a store outage, a shut-down writer — aborts with
 `:import/apply-failed`, carrying the original exception as its cause. It is not
 filed against your data, and the import does not continue retrying records one
 at a time against something that cannot accept any of them.
+
+### Resuming an interrupted import
+
+A large import can take hours, and a store restart in the middle of it used to
+mean starting again from zero. With `:resume? true` the database itself is the
+checkpoint:
+
+```clojure
+(def opts {:resume? true :eids :preserve})
+(m/import-db conn "/backups/mydb" opts)
+;; … the process dies at 57% …
+(m/import-db (d/connect cfg) "/backups/mydb" opts)   ; same dump, same options
+;; => {:resumed? true :resumed-from {:status :in-progress :chunk 412 :offset 3100}
+;;     :verified? true …}
+```
+
+Every batch commits a small cursor in the commit's metadata, **in the same
+commit as the batch's datoms**. After a crash, the head commit therefore names
+exactly the batches that landed and the position after them; the two cannot
+disagree. A commit that failed halfway (a PostgreSQL restart in the middle of a
+konserve-jdbc transaction, a torn write to S3) never moved the head, so it is
+simply redone. A commit that landed but whose reply was lost is not redone: the
+cursor already moved past it. Each batch also compare-and-sets the cursor's
+position, so a second resumer running at the same time stops with
+`:resume/conflict` instead of applying a batch twice.
+
+**What a resumable import does differently.** It keeps the **source's
+transaction ids**, as `:build-indexes?` does, instead of numbering transactions
+afresh. That is what makes a resume exact without remembering a
+source-to-target transaction map, which would be O(transactions): a ref to an
+earlier transaction resolves to the same id before and after a resume. For a
+dump into an empty target the numbering is the same as a non-resumable import's.
+A source whose transaction ids the target already uses is refused
+(`:import/resume-tx-collision`). The resumed import ends identical to an
+**uninterrupted resumable** import of the same source with the same options:
+datom for datom, entity and transaction ids included. It verifies against the
+same count.
+
+Pass `:resume? true` on the **first** run as well: an import that did not ask to
+be resumable writes no cursor and cannot be continued. Then:
+
+- **The mapping must name every id.** Use `:preserve` (the natural choice for a
+  dump into an empty target), a map, or a computed mapping (an `ILookup` or a
+  function). What the importer would allocate for an unnamed id exists only in
+  memory, so an unnamed id stops the import (`:import/resume-partial-mapping`),
+  and `:allocate` (the default) is refused up front
+  (`:import/resume-needs-deterministic-mapping`).
+- **The same source and the same options.** The cursor records SHA-256 digests
+  of the source (the dump's digest and chunk list, or `:source-meta :source-id`
+  for `import-source`) and of what decides what lands: the `:eids` map's content
+  or policy, `:merge?`, history. A function, an `ILookup` or an `:xform` cannot be
+  compared, so it needs a `:resume-key` string that you change whenever it
+  changes (`:import/resume-needs-key`). A mismatch is refused
+  (`:import/resume-mismatch`). `:batch-size` may change.
+- **A stateless `:xform` only**, declared with `:xform-stateless? true`.
+- **Not with `:on-error :collect`**, whose per-transaction retries are several
+  commits for one batch. `:build-indexes?` resumes differently, see below.
+- **Not from a `{:sort? false}` dump.** Its transactions arrive in two passes,
+  so a position in it does not say which are complete
+  (`:import/resume-unordered-source`; such dumps now say `:unordered? true` in
+  their manifest, and an older one is caught when its first transaction arrives
+  out of order).
+- **Nothing else writes to the target** until the import completes. A resume
+  refuses a target whose `:max-tx` moved since the cursor's commit
+  (`:import/resume-target-changed`).
+
+The last batch marks the cursor `:complete`. Calling again only re-verifies, or
+reports `:verification {:status :skipped :reason :target-changed-since-import}`
+once the database has been written to since. The cursor stays in the
+database's metadata afterwards. It is a few hundred bytes of digests and
+counters, carried by later commits. A finished cursor from another source does
+not block a later resumable `:merge?` import.
+
+#### Resuming an index build (`:build-indexes? true :resume? true`)
+
+The index build publishes once, at the end, so it has no committed batches to
+resume from. Its checkpoint is a durable GC root instead, named by an id that
+is **derived** from the dump and the options. A second run finds it without
+being told:
+
+- **The spool.** When pass 2 finishes, it writes a manifest to the scratch
+  directory, listing every spool file with its SHA-256. A resume reuses the
+  spool only if every file still checks out and the spool's digest equals the
+  one the checkpoint recorded. Otherwise it spools again.
+- **The trees.** Each of the six trees is flushed to the store when it
+  completes and named in the checkpoint. A resume builds only the missing ones.
+  If the spool had to be redone and its digest changed, the checkpointed trees
+  describe other data and are dropped.
+- **Scratch.** A family's sorted file is deleted as soon as both its trees are
+  checkpointed, so peak scratch is the spool plus one sorted file.
+
+```clojure
+(def opts {:build-indexes? true :resume? true :scratch-dir "/data/scratch"})
+(m/import-db conn "/backups/mydb" opts)            ; dies building :aevt
+(m/import-db (d/connect cfg) "/backups/mydb" opts)
+;; => {:resumed? true :spool-reused? true :trees-reused 2 :verified? true …}
+```
+
+`:scratch-dir` is required, because the spool must live somewhere a second run
+will find it. The build's directory there is named after the build **and** the
+target store, so two targets imported from one dump keep separate spools. It is
+locked while a build runs, and a second build of the same target is refused
+(`:import/scratch-in-use`).
+
+**The same source and options**, as for the streaming path. The build id is a
+SHA-256 over the source, the `:eids` (a map's content, or `:resume-key` for a
+function or `ILookup`), the `:xform` (by `:resume-key`), the schema and the
+spool codec. A build whose options changed derives another id, and is refused
+while the old one's checkpoint lives (`:import/resume-mismatch`). Resume it with
+its own options, or give it up.
+
+**On failure** the root and the scratch are **kept**, and the error
+(`:import/build-interrupted`) carries the `:import-id`. A failure **after** the
+publishing commit, such as verification or the dangling-ref check, is reported
+as itself, and the root and scratch are released. The root's lease runs for
+`:checkpoint-ttl-ms`, a week by default (a value given on resume applies from
+then on). A collector reaps it one more lease-length after it expires, so about
+two weeks, and the next `gc-storage` sweeps the unpublished trees.
+`(m/abandon-import! conn {:import-id id :scratch-dir dir})` gives the build up
+at once. The publishing commit carries a complete cursor: calling again after
+success only re-verifies, and releases whatever an interrupted cleanup left
+behind. A crash in the middle of pass 2 re-spools from the source. This works
+on the JVM only.
+
+### Entity-id headroom: `tx0`, not `emax`
+
+Entity ids and transaction ids share one 31-bit space, split at
+`tx0` = `0x20000000` = **536 870 912**: entities below it, transactions at or
+above. So when you size an `:eids` mapping, the limit is `tx0`, not
+`emax` = 2 147 483 647. An import that would place an entity at or above `tx0`
+is refused (`:import/eid-above-tx0`) on both paths; on the streaming path it used
+to drop such datoms and fail only the count check. The 0.9 format step moves to a Datomic-like
+53-bit layout with a 42-bit `t`, which removes this squeeze.
 
 ### Detecting an incomplete dump
 
@@ -757,6 +894,49 @@ a dump chunk is a byte range whose reader reassembles the stream.)
 `:close` runs on the failure path as well, and receives the latest context. A
 `{:sort? false}` export is refused here, because without the sort a transaction
 is split across many chunks and the alignment guarantee cannot hold.
+
+## Laying out large replicas
+
+**One database per tenant.** A store per tenant (with konserve-jdbc, one table
+per store id — the table is the store identity boundary, so two stores must not
+share one) keeps each database's id space, index depth and import time small.
+Tenants import in parallel, and a failure in one stays confined to that tenant. A
+query that spans tenants takes each database as its own input:
+
+```clojure
+;; people who appear in both tenants, joined on email
+(d/q '[:find ?name
+       :in $acme $globex
+       :where [$acme ?a :person/email ?mail]
+              [$globex ?g :person/email ?mail]
+              [$acme ?a :person/name ?name]]
+     @acme @globex)
+```
+
+**A tiered store is a mirror, not a cache.** A `:tiered` store fills its frontend
+with every backend key when it connects, because datahike's engine is
+synchronous and must never fall through to an asynchronous backend. Size the
+frontend (a Redis in front of S3, say) for the **whole** store, with eviction
+off. An evicted key is a hole, not a slow read.
+
+**Peers that read the store directly, and GC.** Online GC deletes, or recycles,
+index nodes once they are older than `:grace-period-ms`. A peer that reads a
+snapshot from the store for longer than that loses nodes under it. With
+`:crypto-hash? false` it is worse than a missing node: online GC puts freed
+addresses on a freelist, so a later write can **reuse an address with different
+content**, and a slow reader can then read the wrong node rather than fail. For
+peers that read the store directly:
+
+- prefer `:crypto-hash? true`, where addresses are content hashes and are never
+  reused, so a deleted node is a loud miss, not a silent wrong answer; or
+- keep online GC off and run `d/gc-storage` periodically with `:min-age-ms`
+  above your longest read; or
+- have each long reader hold a durable `:pin` root on its snapshot
+  (`datahike.gc-roots`). Online GC pauses while any root is live, and offline GC
+  spares what a root names.
+
+Keep-history stores also accumulate one commit record per commit until a
+`gc-storage` run with a `remove-before` cutoff removes them. Schedule one.
 
 ## PostgreSQL
 

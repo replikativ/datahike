@@ -108,7 +108,19 @@
                  [:count-source?    {:optional true} :boolean]
                  [:max-pending      {:optional true} pos-int?]
                  [:spool-chunk-size {:optional true} pos-int?]
-                 [:spool-codec      {:optional true} :keyword]])))
+                 [:spool-codec      {:optional true} :keyword]
+                 ;; continue an interrupted streaming import from the cursor its
+                 ;; last committed batch recorded (`run-import`, "Resuming")
+                 [:resume?          {:optional true} :boolean]
+                 [:xform-stateless? {:optional true} :boolean]
+                 ;; names a function/ILookup :eids and an :xform for the resume
+                 ;; digest, which cannot compare them
+                 [:resume-key       {:optional true} :string]
+                 ;; where the index build's spool and sort runs go, instead of
+                 ;; the system temp directory
+                 [:scratch-dir      {:optional true} :string]
+                 ;; how long a resumable index build's checkpoint outlives it
+                 [:checkpoint-ttl-ms {:optional true} pos-int?]])))
 
 (def EstimateOpts
   (into [:map] [[:batch-size {:optional true} pos-int?]]))

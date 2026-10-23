@@ -6,6 +6,37 @@ When something is added, it's typically marked *Experimental*. When the API cont
 
 ## 0.8
 
+- **Resumable index build (experimental) ([#1130]).** `{:build-indexes? true
+  :resume? true :scratch-dir dir}` checkpoints the build in a durable GC root
+  whose id is derived from the source and options: one checkpoint per finished
+  tree, plus a spool manifest with per-file SHA-256s and a digest. An
+  interrupted build resumes with the same call, rebuilding only the missing
+  trees, and reuses the spool when it still verifies. Each family's sorted file
+  is deleted once its trees are checkpointed. `abandon-import!` releases a
+  build's checkpoint and deletes its scratch.
+- **Resumable import (experimental) ([#1128]).** `import-db`, `import-source`
+  and `import-from-datomic!` take `:resume? true`: each batch commits a small
+  cursor in the same commit as its datoms (compare-and-set against the previous
+  position), and a later call with the same source and options continues after
+  the last batch that landed. A resumable import keeps the source's transaction
+  ids and needs a mapping that names every id (not `:allocate`); a function,
+  `ILookup` or `:xform` needs a `:resume-key`. Refused for `:on-error :collect`,
+  `{:sort? false}` dumps and a target written to since the interruption.
+  `:scratch-dir` moves the index build's spool and sort runs off the system
+  temp directory. See [Resuming an interrupted import](doc/migration.md#resuming-an-interrupted-import).
+- **The streaming import refuses an entity mapped at or above `tx0`
+  ([#1128]).** `:offset` over Datomic-sized ids dropped every entity datom
+  silently; it is now `:import/eid-above-tx0`, as on the index-build path, and
+  `import-from-datomic!` refuses `:offset` by name. A partial `:eids` mapping that
+  assigns an id the importer had already allocated to another entity is refused
+  (`:import/eid-collision`) instead of merging the two.
+- **A computed `:eids` mapping keeps the streaming import's id state bounded
+  ([#1127]).** Under `:offset`, `:preserve`, a caller's `ILookup` or a caller's
+  function, `import-db`/`import-source` remembered every id the mapping had
+  already answered for — one entry per source entity and per transaction —
+  rebuilding the O(entities) table these mappings exist to avoid. Only ids the
+  importer allocates itself (those a partial mapping leaves unnamed) are
+  remembered now. Regression from #970.
 - **Schema-on-read stores retract vector values of any length ([#1105]).**
   An attribute without a declared `:db/valueType` can hold a vector of any
   length. `:db/retract`, `:db.fn/retractAttribute` and
@@ -925,3 +956,6 @@ Thanks to all the contributors and the community for helping on this release. Sp
 [#1092]: https://github.com/replikativ/datahike/pull/1092
 [#1090]: https://github.com/replikativ/datahike/pull/1090
 [#1105]: https://github.com/replikativ/datahike/issues/1105
+[#1127]: https://github.com/replikativ/datahike/pull/1127
+[#1128]: https://github.com/replikativ/datahike/pull/1128
+[#1130]: https://github.com/replikativ/datahike/pull/1130

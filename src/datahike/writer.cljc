@@ -1446,8 +1446,13 @@
    left the separation cosmetic — one dispatch path, two argument counts, and
    nothing on the receiving end able to tell which contract it was being held
    to."
-  [connection entities migration]
-  (dispatch-load! connection 'load-entities-migrating [entities migration]))
+  ([connection entities migration]
+   (dispatch-load! connection 'load-entities-migrating [entities migration]))
+  ([connection entities migration cursor]
+   ;; The cursor is only sent when there is one, so a writer that predates it
+   ;; still receives the arity it knows for every non-resumable import.
+   (dispatch-load! connection 'load-entities-migrating
+                   (if cursor [entities migration cursor] [entities migration]))))
 
 (defn publish-built-db!
   "Publish a bulk-built database through the writer.
