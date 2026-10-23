@@ -2658,6 +2658,23 @@
                                                       " there is indistinguishable from one.")
                                                  {:error :import/eid-above-tx0 :entity-id e
                                                   :tx0 c/tx0 :record record})))
+                                       ;; Below `e0` is no entity id at all. A caller
+                                       ;; mapping that does not name an id passes it
+                                       ;; through unchanged on this path, and a source
+                                       ;; may use negative ids for entities it only needs
+                                       ;; to be DISTINCT (the Datomic source's provenance
+                                       ;; schema does) — written as is, they would be
+                                       ;; datoms on a negative entity.
+                                       (when (and caller-mapping
+                                                  (or (neg? (long e))
+                                                      (and (ref? a) (number? v) (neg? (long v)))))
+                                         (throw (ex-info
+                                                 (str "The :eids mapping left a negative id in record "
+                                                      (pr-str r) ". On the index-build path an id the"
+                                                      " mapping does not name is written as is; the"
+                                                      " mapping must name every id, negative ones"
+                                                      " included.")
+                                                 {:error :import/eid-below-e0 :record record})))
                                        ((:add! spool) r)
                                        (when (>= (long t) (long c/tx0))
                                          (tx-seen! txs t))

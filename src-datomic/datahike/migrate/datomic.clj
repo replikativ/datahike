@@ -189,6 +189,149 @@
     t'))
 
 ;; ---------------------------------------------------------------------------
+;; partition-mapping: a COMPUTED :eids mapping for a Datomic source
+
+(def ^:private ^:const part-bits
+  "A Datomic entity id is `(partition << 42) | sequence`."
+  42)
+
+(defn- part-of ^long [^long e] (bit-shift-right e part-bits))
+
+(defn- first-eid-at-or-after
+  "The smallest entity id >= `from` that has any datom in history, or nil."
+  [hdb ^long from]
+  (when-let [^Datom d (first (dt/seek-datoms hdb :eavt from))]
+    (long (.e d))))
+
+(defn- max-eid-below
+  "The largest entity id in `[lo, hi)` with any datom in history, given that `lo`
+   has one. Binary search on \"is there a datom at or after x, below hi\" — about
+   42 seeks, not a scan."
+  [hdb ^long lo ^long hi]
+  (loop [lo lo hi hi]                   ; invariant: P(lo) true, P(hi) false
+    (if (<= (- hi lo) 1)
+      lo
+      (let [mid (+ lo (quot (- hi lo) 2))
+            e (first-eid-at-or-after hdb mid)]
+        (if (and e (< (long e) hi))
+          (recur mid hi)
+          (recur lo mid))))))
+
+(defn partition-extents
+  "`{partition [min-eid max-eid]}` over the WHOLE history of `db`, for every
+   partition but the transaction partition. Discovered by seeking, partition by
+   partition: O(partitions × 42) index seeks, not a log scan.
+
+   Min AND max, not just the top: Datomic reserves ids at the bottom of each
+   partition, so sizing a region from its top sequence number over-counts by
+   that much — on a 39-partition database, enough to push the layout past
+   `tx0`."
+  [db]
+  (let [hdb (dt/history db)
+        tx-part (part-of (dt/t->tx 1))]
+    (loop [from 0 acc (sorted-map)]
+      (if-let [e (first-eid-at-or-after hdb from)]
+        (let [p (part-of e)
+              hi (bit-shift-left (inc p) part-bits)
+              mx (max-eid-below hdb e hi)]
+          (recur hi (if (= p tx-part) acc (assoc acc p [e mx]))))
+        acc))))
+
+(deftype PartitionMapping [params regions]
+  clojure.lang.ILookup
+  (valAt [this k] (.valAt this k nil))
+  (valAt [_ k nf]
+    (cond
+      (not (integer? k)) nf
+      ;; datahike transaction ids: a rewritten tx-entity `e` or a ref to one.
+      ;; Answering "not mine" hands them to the import's own `:tids`.
+      (<= (long const/tx0) (long k) (long const/txmax)) nf
+      ;; the source's provenance schema (`provenance-schema`), at -1, -2 …
+      (neg? (long k))
+      (let [i (dec (- (long k)))]
+        (when (>= i (long (:reserved params)))
+          (throw (ex-info (str "Negative source id " k " is outside the " (:reserved params)
+                               " ids partition-mapping reserves for them.")
+                          {:error :datomic/eid-outside-mapping :eid k})))
+        (+ (long (:base params)) i))
+      :else
+      (let [k (long k)
+            [lo start size] (get regions (part-of k))]
+        (when-not lo
+          (throw (ex-info (str "Datomic entity " k " is in partition " (part-of k)
+                               ", which this partition-mapping was not built for. Rebuild it"
+                               " from the database being imported.")
+                          {:error :datomic/eid-outside-mapping :eid k :partition (part-of k)})))
+        (let [off (- k (long lo))]
+          (when-not (< -1 off (long size))
+            (throw (ex-info (str "Datomic entity " k " falls outside its partition's region ("
+                                 size " ids from " lo "). The database has grown past the"
+                                 " headroom this mapping was built with; rebuild it with a"
+                                 " larger :headroom.")
+                            {:error :datomic/eid-outside-mapping :eid k :partition (part-of k)
+                             :region {:min lo :size size}})))
+          (+ (long start) off)))))
+  Object
+  (toString [_] (str "#datahike.migrate.datomic/partition-mapping " (pr-str params))))
+
+(defn mapping-params
+  "The serialisable description of a `partition-mapping` — plain EDN. Save it
+   with the import; `params->mapping` rebuilds the same mapping, which is what a
+   resumed or incremental import must use."
+  [^PartitionMapping m]
+  (.-params m))
+
+(defn params->mapping
+  "Rebuild a `partition-mapping` from `mapping-params`."
+  [{:keys [regions] :as params}]
+  (when (> (long (:end params)) (long const/tx0))
+    (throw (ex-info (str "This partition-mapping needs ids up to " (:end params)
+                         ", above tx0 (" const/tx0 "), where datahike's transaction ids begin."
+                         " Lower :headroom, or split the database.")
+                    {:error :datomic/partition-mapping-exceeds-tx0
+                     :end (:end params) :tx0 const/tx0})))
+  (->PartitionMapping params
+                      (into {} (map (fn [{:keys [partition min start size]}]
+                                      [partition [min start size]]))
+                            regions)))
+
+(defn partition-mapping
+  "A COMPUTED `:eids` mapping for `import-from-datomic!`: Datomic's sparse
+   `(partition << 42) | seq` ids packed into dense datahike entity ids, one
+   region per partition, with a handful of entries instead of one per entity.
+
+   Each partition's `[min max]` comes from `partition-extents` (index seeks over
+   history, no log scan). Regions are laid out from `:base` in partition order,
+   each `(max - min + 1) × :headroom` ids long, after `:reserved` ids for the
+   source's own negative provenance ids. An id outside its region, or in a
+   partition the mapping was not built for, THROWS — it never passes through,
+   because on the index-build path an unmapped id would be written as is.
+
+   Opts:
+     :base      first target id (default: just above datahike's system entities)
+     :headroom  region size factor (default 1.0). Above 1 leaves room for an
+                incremental import of ids the source allocates later.
+     :reserved  ids for negative source ids (default 16)
+
+   Refused when the layout reaches `tx0` (536 870 912), where transaction ids
+   begin. `mapping-params` / `params->mapping` round-trip it."
+  ([db-or-conn] (partition-mapping db-or-conn {}))
+  ([db-or-conn {:keys [base headroom reserved]
+                :or {base (inc (long const/ue0)) headroom 1.0 reserved 16}}]
+   (let [db (if (instance? datomic.Connection db-or-conn) (dt/db db-or-conn) db-or-conn)
+         extents (partition-extents db)
+         [regions end] (reduce (fn [[rs start] [p [mn mx]]]
+                                 (let [size (long (Math/ceil (* (double headroom)
+                                                                (double (inc (- (long mx) (long mn)))))))]
+                                   [(conj rs {:partition p :min mn :max mx :start start :size size})
+                                    (+ (long start) size)]))
+                               [[] (+ (long base) (long reserved))]
+                               extents)]
+     (params->mapping {:base base :reserved reserved :headroom headroom
+                       :regions regions :end end
+                       :basis-t (dt/basis-t db)}))))
+
+;; ---------------------------------------------------------------------------
 ;; Datomic -> records
 
 (defn- ident-map [db]
@@ -281,6 +424,15 @@
                                ;; have an ident" — see the docstring.
                                (and (schema-defining-attrs a) (refs a) (idents v))
                                (idents v)
+                               ;; a ref to a TRANSACTION. Its target is a tx
+                               ;; entity, whose `e` is rewritten to `dh-t` below;
+                               ;; the ref has to follow, or it is remapped as an
+                               ;; ordinary entity id and names a phantom entity
+                               ;; (streaming) or one outside every region
+                               ;; (`partition-mapping`).
+                               (and (refs a) (integer? v)
+                                    (= (part-of (long v)) (part-of (dt/t->tx 1))))
+                               (datomic-t->dh-t (dt/tx->t v))
                                ;; :db.type/uri has no datahike type; carry the string
                                (instance? java.net.URI v) (str v)
                                :else v)
@@ -314,6 +466,19 @@
          ;; reason all along; this sort claimed to implement that order and did not.
          (sort-by (fn [[e a _ _ op]] [(if (= a :db/txInstant) 0 1) e (str a) (if op 1 0)]))
          vec)))
+
+(defn attribute-schema
+  "`{ident {:db/valueType … :db/cardinality …}}` for every attribute of `db`:
+   the ident-keyed schema the index-build path reads to tell a ref VALUE from a
+   number. Keyed on the CURRENT ident, which is what a renamed attribute's
+   datoms are resolved to before they are read."
+  [db]
+  (into {}
+        (map (fn [[i vt c]] [i {:db/valueType vt :db/cardinality c}]))
+        (dt/q '[:find ?i ?vt ?c
+                :where [?a :db/ident ?i] [?a :db/valueType ?v] [?v :db/ident ?vt]
+                [?a :db/cardinality ?cc] [?cc :db/ident ?c]]
+              db)))
 
 (defn- provenance-schema
   "Schema datoms for the two provenance attributes, at eids that cannot collide.
@@ -451,7 +616,22 @@
    Opts are `import-source`'s, plus `:window`. `:count?` (default true) does the
    extra log scan that makes verification possible; `{:count? false}` skips it and
    then requires `{:verify? false}`, so an unverified import is always something
-   the caller asked for."
+   the caller asked for.
+
+   `{:build-indexes? true}` builds the database from sorted input instead of
+   replaying it (see `datahike.migrate/import-db`). What that path needs from a
+   Datomic source is supplied here:
+
+     :schema   derived from the Datomic database (ident -> valueType and
+               cardinality), so ref values are remapped; pass your own to
+               override
+     :eids     defaults to `(partition-mapping dtm-conn)` — final ids known
+               before the sort, with no per-entity map. A caller mapping must
+               be TOTAL: on this path an id it does not name is written as is.
+
+   Transaction ids are datahike's `tx0 + t` on that path (the source's `t`,
+   offset), and sequential on the streaming one; `:datomic/t` records the
+   correspondence either way."
   ([dh-conn dtm-conn] (import-from-datomic! dh-conn dtm-conn {}))
   ([dh-conn dtm-conn {:keys [count?] :or {count? true} :as opts}]
    (when (= :preserve (:eids opts))
@@ -462,7 +642,20 @@
                      {:error :datomic/eids-preserve-unsupported :emax const/emax})))
    (let [src   (source dtm-conn opts)
          n     (when count? (record-count dtm-conn opts))
-]
+         bulk? (:build-indexes? opts)
+         opts  (cond-> opts
+                 (and bulk? (not (contains? opts :schema)))
+                 (assoc :schema (attribute-schema (dt/db dtm-conn)))
+                 (and bulk? (nil? (:eids opts)))
+                 (assoc :eids (partition-mapping dtm-conn)))]
+     (when-let [pm (and (instance? PartitionMapping (:eids opts)) (:eids opts))]
+       (let [floor (inc (long (:max-eid @dh-conn)))]
+         (when (< (long (:base (mapping-params pm))) floor)
+           (throw (ex-info (str "This partition-mapping starts at " (:base (mapping-params pm))
+                                ", inside ids the target already uses (up to " (dec floor)
+                                "). Build it with {:base " floor "} or more.")
+                           {:error :datomic/partition-mapping-overlaps-target
+                            :base (:base (mapping-params pm)) :target-max-eid (dec floor)})))))
      (m/import-source dh-conn src
                       (merge (dissoc opts :count? :window :provenance?)
                              ;; NO `:max-tx`. It is a drift CHECK — "the restore

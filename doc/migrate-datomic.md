@@ -146,6 +146,50 @@ by definition.
 importing the same Datomic database twice adds the entities twice rather than
 upserting onto the existing ones.
 
+## Building the database directly (`:build-indexes? true`)
+
+For a large database, replaying the log one transaction at a time is the slow
+path. `{:build-indexes? true}` instead sorts the records and builds the index
+trees from sorted input, writing each node once:
+
+```clojure
+(dtm/import-from-datomic! dh-conn dtm-conn {:build-indexes? true
+                                            :scratch-dir "/data/scratch"})
+```
+
+That path needs final entity ids before it sorts. `import-from-datomic!`
+supplies them by default with `dtm/partition-mapping`, a computed mapping. It
+does not keep an entry per entity:
+
+- Datomic ids are `(partition << 42) | sequence`. The mapping finds each
+  partition's smallest and largest id over the whole history, using index seeks
+  rather than a log scan.
+- It packs the partitions into dense regions, one after another. Smallest and
+  largest are both needed: Datomic reserves ids at the bottom of each partition.
+- An id outside its region throws. It is never passed through.
+- The layout must end below `tx0` = 536 870 912, where datahike's transaction
+  ids begin. A database that does not fit is refused when the mapping is built.
+
+```clojure
+(def pm (dtm/partition-mapping dtm-conn {:headroom 2.0}))   ; room to grow
+(spit "mapping.edn" (pr-str (dtm/mapping-params pm)))       ; keep it with the import
+(dtm/params->mapping (clojure.edn/read-string (slurp "mapping.edn")))
+```
+
+Save the parameters. A resumed or incremental import must use the **same**
+mapping, and `:headroom` above 1 leaves room for ids the source allocates later.
+The same mapping works on the streaming path too: `{:eids pm}`.
+
+On this path transaction ids are `tx0 + t`, the source's own `t` offset into
+datahike's range. On the streaming path they are sequential. `:datomic/t`
+records the correspondence on both. The ident-keyed `:schema` the bulk path
+needs, to tell a ref value from a number, is derived from the Datomic database
+(`dtm/attribute-schema`).
+
+A ref **to a transaction** (an attribute pointing at a tx entity) follows its
+transaction on both paths. It used to be remapped like an entity id, which left
+it naming a phantom entity.
+
 ## Memory
 
 Descriptors are `t` *windows*, not records, and `:read` fetches one window at a
