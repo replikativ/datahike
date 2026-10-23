@@ -70,6 +70,14 @@
               [[[:db/retract [:name "b"] :tag :y]]]]
              ["retract then RE-ASSERT the same value"
               [[[:db/retract [:name "c"] :score 3]] [{:db/id [:name "c"] :score 3}]]]
+             ["retract then RE-ASSERT the same value in ONE transaction"
+              [[[:db/retract [:name "a"] :tag :x] [:db/add [:name "a"] :tag :x]]]]
+             ["assert then retract a value in ONE transaction — it never becomes current"
+              [[[:db/add [:name "a"] :tag :q] [:db/retract [:name "a"] :tag :q]]]]
+             ["card-one set twice in ONE transaction — the first value passes through"
+              [[[:db/add [:name "a"] :score 25] [:db/add [:name "a"] :score 21]]]]
+             ["card-one set away and back in ONE transaction"
+              [[[:db/add [:name "a"] :score 25] [:db/add [:name "a"] :score 1]]]]
              ["retract entity"
               [[[:db/retractEntity [:name "c"]]]]]
              ["ref to an entity retracted later"
@@ -155,6 +163,17 @@
 ;; ---------------------------------------------------------------------------
 ;; the STREAMING variant — what the bulk path actually uses
 
+(def ^:private same-tx-pair-shapes
+  "Transactions that ASSERT and RETRACT one `[e a v]` together. The history
+   records both and not their order, and the order decides the outcome — so no
+   rule of the form `retraction first` (or `assertion first`) gets them all."
+  [["re-assert in one tx" [[:db/retract [:name "a"] :tag :x] [:db/add [:name "a"] :tag :x]]]
+   ["passing card-many value" [[:db/add [:name "a"] :tag :q] [:db/retract [:name "a"] :tag :q]]]
+   ["card-one set twice" [[:db/add [:name "a"] :score 25] [:db/add [:name "a"] :score 21]]]
+   ["card-one set thrice" [[:db/add [:name "a"] :score 25] [:db/add [:name "a"] :score 26]
+                           [:db/add [:name "a"] :score 21]]]
+   ["card-one away and back" [[:db/add [:name "a"] :score 25] [:db/add [:name "a"] :score 1]]]])
+
 (defn- eavt-sorted
   "Records sorted by [e a v t], the order `current-from-eavt-sorted` requires.
    Uses datahike's own temporal eavt comparator, which is exactly that order —
@@ -188,6 +207,28 @@
         (is (= streaming setwise) "streaming agrees with the set version")
         (is (= streaming actual) "…and both agree with datahike"))
       (teardown c))))
+
+(deftest streaming-currentness-on-same-transaction-pairs
+  (testing "an [e a v] asserted and retracted in one transaction ends as it was.
+
+            Both variants answered by the LAST record of a run, retraction sorted
+            first, so a value that only passed through a transaction came out
+            current: `25` then `21` over `1` left BOTH `25` and `21` current on a
+            cardinality-one attribute."
+    (doseq [[label tx] same-tx-pair-shapes]
+      (testing label
+        (let [c (seeded)]
+          (d/transact c tx)
+          (let [db @c
+                triple (fn [r] [(nth r 0) (nth r 1) (nth r 2)])]
+            (is (= (actual-current db)
+                   (set (map triple (mh/current-from-eavt-sorted (eavt-sorted db)))))
+                "streaming")
+            (is (= (actual-current db) (mh/derive-current (records db))) "set version")
+            (is (= (actual-current db)
+                   (set (map triple (:current (mh/split-current (records db))))))
+                "split-current"))
+          (teardown c))))))
 
 (deftest streaming-currentness-on-randomised-histories
   (testing "the same agreement across randomised histories — the streaming

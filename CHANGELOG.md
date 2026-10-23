@@ -6,6 +6,16 @@ When something is added, it's typically marked *Experimental*. When the API cont
 
 ## 0.8
 
+- **A history restore keeps a value asserted and retracted in one transaction as it was ([#TODO]).**
+  datahike writes such pairs itself — a cardinality-one attribute set twice in
+  one transaction records the first value's assertion and retraction. The
+  default streaming `import-db` (and `import-source`) replayed them
+  retraction-first, so the passing value was resurrected over the one that
+  survived: the restore answered the wrong current value and lost a history
+  datom (95 of 3,000,032 on a synthetic history, failing verification; on
+  other shapes the count matched and verification passed). `:build-indexes?
+  true` kept the passing value current alongside the survivor. Both paths now
+  restore the source's current state and history exactly.
 - **Schema-on-read stores retract vector values of any length ([#1105]).**
   An attribute without a declared `:db/valueType` can hold a vector of any
   length. `:db/retract`, `:db.fn/retractAttribute` and

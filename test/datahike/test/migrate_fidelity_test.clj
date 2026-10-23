@@ -137,6 +137,46 @@
       (is (= (hist @src) (hist @tgt)))
       (teardown src) (teardown tgt))))
 
+(deftest a-value-asserted-and-retracted-in-one-transaction-round-trips
+  (testing "an [e a v] asserted AND retracted in one transaction is restored as
+            it was, on both import paths.
+
+            datahike writes such pairs itself — a cardinality-one attribute set
+            twice in one transaction records the first value's assertion and
+            retraction — and the history does not say which of the two came
+            first. The streaming path replayed them retraction-first: the
+            retraction of a not-yet-present value was dropped and the value then
+            upserted over the one that survived, so the restore answered `25`
+            where the source answers `21` and lost a datom (95 of 3,000,032 on a
+            synthetic history). The index-build path kept the passing value
+            current alongside the survivor."
+    (let [src (build-adversarial-db! (utils/setup-db (mem-cfg)))]
+      ;; set twice: 25 passes through, 21 survives
+      (d/transact src [[:db/add [:name "a"] :score 25] [:db/add [:name "a"] :score 21]])
+      ;; away and back: 26 passes through, 21 is re-asserted
+      (d/transact src [[:db/add [:name "a"] :score 26] [:db/add [:name "a"] :score 21]])
+      ;; a card-many value that passes through, and one retracted and re-asserted
+      (d/transact src [[:db/add [:name "b"] :tag :q] [:db/retract [:name "b"] :tag :q]])
+      (d/transact src [[:db/retract [:name "b"] :tag :z] [:db/add [:name "b"] :tag :z]])
+      (let [path (str (System/getProperty "java.io.tmpdir") "/dh-fid-pair-" (utils/get-time))
+            _ (m/export-db @src path {:history? true})
+            hist (fn [db] (set (map (juxt :e :a :v :added) (d/datoms (d/history db) :eavt))))
+            cur (fn [db] (set (map (juxt :e :a :v) (d/datoms db :eavt))))]
+        (doseq [[label opts] [["streaming" {}] ["index build" {:build-indexes? true}]]]
+          (testing label
+            (let [tgt (utils/setup-db (mem-cfg))
+                  rep (m/import-db tgt path opts)]
+              (is (:verified? rep))
+              (is (= #{[21]} (d/q '[:find ?s :where [?e :name "a"] [?e :score ?s]] @tgt))
+                  "the value that survived, and only it")
+              (is (= #{[:z]} (d/q '[:find ?t :where [?e :name "b"] [?e :tag ?t]] @tgt)))
+              (is (= (cur @src) (cur @tgt)) "current datoms")
+              (is (= (hist @src) (hist @tgt)) "history")
+              (is (empty? (select-keys (compare-records @src @tgt) index-fields))
+                  "all six indexes")
+              (teardown tgt)))))
+      (teardown src))))
+
 (deftest no-history-attribute-accumulates-nothing
   (testing ":db/noHistory means the temporal indexes must not collect it — on
             BOTH sides. A restore that quietly starts keeping history for such an
