@@ -45,10 +45,7 @@
                {:error :transact/syntax, :value v, :context at}))
   (let [{:keys [attribute-refs? schema-flexibility]} config
         a-ident (if (and attribute-refs? (number? a)) (dbi/ident-for db a :error-on-missing) a)
-        ;; Only a :db/systemAttribRef attribute (:db/valueType, :db/cardinality,
-        ;; :db/unique) holds a system entity as its value. Deciding by the
-        ;; attribute being a SYSTEM entity read `:db/maxLength 50` as the
-        ;; system entity 50.
+        ;; Only a :db/systemAttribRef attribute holds a system entity as value.
         v-ident (if (and attribute-refs?
                          (dbu/system-attrib-ref? db a)
                          (not (nil? (ref-ident-map v))))
@@ -406,8 +403,8 @@
               (prune-retracted-schema-entry e)))
         (if-let [schema-entry (schema e)]
           (if (schema schema-entry)
-            (if (= a-ident :db.attr/preds)
-            ;; many-valued: drop just the retracted predicate, keep the rest
+            (if (contains? #{:db.attr/preds :db.entity/attrs :db.entity/preds} a-ident)
+              ;; many-valued: drop just the retracted value, keep the rest
               (update-in db [:schema schema-entry a-ident]
                          (fn [old] (vec (remove #{v-ident} old))))
               (update-in db [:schema schema-entry] #(dissoc % a-ident)))
@@ -1062,6 +1059,13 @@
                              straight-a (if attribute-refs?
                                           (dbi/-ref-for db straight-a-ident) ;; translation to datom format
                                           straight-a-ident)
+                             _ (when (and attribute-refs? (nil? straight-a)
+                                          (#{:db.entity/attrs :db.entity/preds} straight-a-ident))
+                                 (log/raise "This :attribute-refs? database predates entity specs: its system schema has no "
+                                            straight-a-ident " attribute. Databases created since then have it; to"
+                                            " use entity specs here, export-db this database and import-db it into a new one."
+                                            {:error :transact/schema :attribute straight-a-ident
+                                             :context {:db/id eid, a-ident vs}}))
                              _ (when (and reverse? (not (dbu/ref? db straight-a-ident)))
                                  (log/raise "Bad attribute " a-ident ": reverse attribute name requires {:db/valueType :db.type/ref} in schema"
                                             {:error :transact/syntax, :attribute a-ident, :context {:db/id eid, a-ident vs}}))]
@@ -1375,13 +1379,20 @@
       ;; Under :attribute-refs? a :db/ident change is a RENAME: datoms hold the
       ;; attribute's entity id, so the data follows it. Same as the vector form
       ;; [:db/add aid :db/ident :new]; `validate-ident-renames!` decides.
-      (when-let [invalid-updates (ds/find-invalid-schema-updates
-                                  (cond-> entity
-                                    (get-in db [:config :attribute-refs?]) (dissoc :db/ident))
-                                  (get-in db [:schema attr-name]))]
-        (when-not (empty? invalid-updates)
-          (log/raise "Update not supported for these schema attributes"
-                     {:error :transact/schema :entity entity :invalid-updates invalid-updates})))
+      (do
+        (when-let [new-ident (:db/ident entity)]
+          (when (and (get-in db [:config :attribute-refs?])
+                     (not= new-ident attr-name)
+                     (get-in db [:schema new-ident]))
+            (log/raise (str "Schema with attribute " new-ident " already exists")
+                       {:error :transact/schema :attribute new-ident})))
+        (when-let [invalid-updates (ds/find-invalid-schema-updates
+                                    (cond-> entity
+                                      (get-in db [:config :attribute-refs?]) (dissoc :db/ident))
+                                    (get-in db [:schema attr-name]))]
+          (when-not (empty? invalid-updates)
+            (log/raise "Update not supported for these schema attributes"
+                       {:error :transact/schema :entity entity :invalid-updates invalid-updates}))))
       (when (= :write (get-in db [:config :schema-flexibility]))
         ;; Secondary index entities only need :db/ident + :db.secondary/type + :db.secondary/attrs
         (if (ds/secondary-index-entity? entity)
@@ -1633,9 +1644,12 @@
                                  (log/raise "Purge entity is only available in temporal databases."
                                             {:error :transact/purge :operation op :tx-data op-vec}))
 
-      :db.ensure/attrs (let [{:keys [tx-data]} report
-                             asserting-datoms (filter (fn [^Datom d] (= e (.-e d))) tx-data)
-                             asserting-attributes (map (fn [^Datom d] (dbu/attr-ident db (.-a d))) asserting-datoms)
+      ;; The ENTITY must have every attribute after the transaction, as in
+      ;; Datomic — not this transaction's datoms, which miss values the entity
+      ;; already has and count retractions as present.
+      :db.ensure/attrs (let [{:keys [db-after]} report
+                             asserting-datoms (dbi/datoms db-after :eavt [e])
+                             asserting-attributes (map (fn [^Datom d] (dbu/attr-ident db-after (.-a d))) asserting-datoms)
                              diff (clojure.set/difference (set v) (set asserting-attributes))]
                          (if (empty? diff)
                            [report []]
