@@ -6,6 +6,12 @@ When something is added, it's typically marked *Experimental*. When the API cont
 
 ## 0.8
 
+- **`import-source` refuses a history source into a target without history up front ([#1134]).**
+  `:source-meta {:history? true}` into a `:keep-history? false` database
+  wrote every record and only then threw "history is only allowed on temporal
+  indexed databases", with the data committed and the report lost. It is now
+  refused before anything is written (`:import/config-mismatch` on
+  `:keep-history?`), as `import-db` already refuses such a dump.
 - **Schema-on-read stores retract vector values of any length ([#1105]).**
   An attribute without a declared `:db/valueType` can hold a vector of any
   length. `:db/retract`, `:db.fn/retractAttribute` and
@@ -925,3 +931,4 @@ Thanks to all the contributors and the community for helping on this release. Sp
 [#1092]: https://github.com/replikativ/datahike/pull/1092
 [#1090]: https://github.com/replikativ/datahike/pull/1090
 [#1105]: https://github.com/replikativ/datahike/issues/1105
+[#1134]: https://github.com/replikativ/datahike/pull/1134

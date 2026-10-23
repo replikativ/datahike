@@ -80,6 +80,40 @@
           "the SOURCE's transaction times, not the import's")
       (teardown conn))))
 
+(deftest a-history-source-into-a-target-without-history-is-refused-up-front
+  (testing "`:source-meta {:history? true}` into a `:keep-history? false` target
+            is refused BEFORE anything is written — as the dump path refuses it
+            through `:keep-history?` in the manifest's config.
+
+            It used to write every record and then throw \"history is only
+            allowed on temporal indexed databases\" from the report's count, with
+            the data committed and the report lost."
+    ;; `:schema` on the index-build half, which otherwise refuses for lacking
+    ;; one — and would pass this test without ever reaching the history check
+    (doseq [opts [{} {:build-indexes? true
+                      :schema {:person/name {:db/valueType :db.type/string
+                                             :db/cardinality :db.cardinality/one}}}]]
+      (testing (pr-str opts)
+        (let [conn (utils/setup-db {:store {:backend :memory :id (java.util.UUID/randomUUID)}
+                                    :keep-history? false
+                                    :schema-flexibility :write})
+              max-tx-before (:max-tx @conn)
+              datoms-before (count (d/datoms @conn :eavt))
+              recs (records)
+              err (try (m/import-source conn (m/records->chunk-src recs 3)
+                                        (merge {:source-meta {:history? true
+                                                              :expected-count (count recs)
+                                                              :max-tx t3}}
+                                               opts))
+                       nil
+                       (catch clojure.lang.ExceptionInfo e e))]
+          (is (some? err) "refused")
+          (is (= :import/config-mismatch (:error (ex-data err))))
+          (is (= :keep-history? (:key (ex-data err))))
+          (is (= max-tx-before (:max-tx @conn)) "no transaction was written")
+          (is (= datoms-before (count (d/datoms @conn :eavt))) "no datom was written")
+          (teardown conn))))))
+
 (deftest the-async-path-works
   (testing "`:read` is `<?-`'d, so under `:sync? false` it must return a channel.
             `default-sync?` is FALSE on ClojureScript, so a `:read` returning the
