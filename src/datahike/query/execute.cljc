@@ -142,13 +142,14 @@
    values for seeks."
   [capacity]
   #?(:clj  (ProbeSet. (java.util.HashSet. (int capacity)) (java.util.ArrayList. (int capacity)))
-     :cljs (ProbeSet. (js/Set.) (array))))
+     :cljs (ProbeSet. (volatile! (transient #{})) (array))))
 
-;; THE key rule lives in datahike.array — see `native-key` there, and its twin
-;; `value-key` for the relational engine's Clojure containers. These probe
-;; structures are `java.util.HashSet`/`HashMap` and `js/Set`/`js/Map`, which
-;; compare by identity unless the key is a primitive, so this is the native one.
-(def ^:private probe-key da/native-key)
+;; JVM containers compare scalar values with equals/hashCode; ClojureScript's
+;; local transient containers use Clojure value equality too. Native JS Map/Set
+;; would distinguish separately allocated equal keywords, symbols and vectors,
+;; so a value self-join could silently return only its diagonal. Array values
+;; still need the content wrapper appropriate to each container.
+(def ^:private probe-key #?(:clj da/native-key :cljs da/value-key))
 
 (defn- probe-set-add
   "Add `x` — its content key for membership, and the raw value for seeks.
@@ -163,19 +164,19 @@
   (let [k (probe-key x)]
     #?(:clj  (when (.add ^java.util.HashSet (.-members s) k)  ; true iff new
                (.add ^java.util.ArrayList (.-seekvals s) x))
-       :cljs (let [ms (.-members s)
-                   n (.-size ms)]
-               (.add ms k)
-               (when (> (.-size ms) n) (.push (.-seekvals s) x))))))
+       :cljs (let [ms (.-members s)]
+               (when-not (contains? @ms k)
+                 (vswap! ms conj! k)
+                 (.push (.-seekvals s) x))))))
 
 (defn- probe-set-contains? [^ProbeSet s x]
   (let [k (probe-key x)]
     #?(:clj  (.contains ^java.util.HashSet (.-members s) k)
-       :cljs (.has (.-members s) k))))
+       :cljs (contains? @(.-members s) k))))
 
 (defn- probe-set-size [^ProbeSet s]
   #?(:clj  (.size ^java.util.HashSet (.-members s))
-     :cljs (.-size (.-members s))))
+     :cljs (count @(.-members s))))
 
 (defn- probe-set-seek-vals
   "The RAW values, for index seeks only. Call sites: the two seek paths, and
@@ -202,7 +203,7 @@
   "Create a mutable map for hash-probe joins with value propagation."
   [capacity]
   #?(:clj  (java.util.HashMap. (int capacity))
-     :cljs (js/Map.)))
+     :cljs (volatile! (transient {}))))
 
 (defn- probe-map-add
   "Add a producer find-var tuple to the probe-map under the given probe-value.
@@ -214,17 +215,17 @@
                (.add existing v)
                (.put ^java.util.HashMap m k (doto (java.util.ArrayList. 4) (.add v)))))
      :cljs (let [k (probe-key k)
-                 existing (.get m k)]
+                 existing (get @m k)]
              (if existing
                (.push existing v)
-               (.set m k #js [v])))))
+               (vswap! m assoc! k #js [v])))))
 
 (defn- probe-map-get
   "Get the list of producer find-var tuples for a probe-value, or nil."
   [m k]
   (let [k (probe-key k)]
     #?(:clj  (.get ^java.util.HashMap m k)
-       :cljs (.get m k))))
+       :cljs (get @m k))))
 
 (defn- probe-map-entry-size [entry]
   #?(:clj  (.size ^java.util.ArrayList entry)
@@ -4263,7 +4264,7 @@
       (let [consts (if (seq rel-consts) (merge base-consts rel-consts) base-consts)
             ckeys (into #{} (keys consts))
             prog (direct-program plan find-vars ckeys)]
-        (if (and (not (identical? ::none prog))
+        (if (and (not= ::none prog)
                  (pss-instance? (:avet db))
                  (pss-instance? (:eavt db))
                  #?(:clj (not (:attribute-refs? (dbi/-config db))) :cljs true))
