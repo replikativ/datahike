@@ -135,20 +135,33 @@
 ;; two unrelated guards in two files, and it was already incomplete — a RAW set
 ;; from `pattern-probe-set` was handed to `scan-filter`, which wraps its
 ;; argument, so the hazard ran in both directions and only one had a guard.
-(deftype ProbeSet [members seekvals])
+(deftype ProbeSet [members seekvals account])
+
+(defn- bounded-probe-capacity
+  "Clamp an advisory initial capacity to affordable logical entries.
+   This does not account for native collection load factors or allocator bytes."
+  [capacity slots-per-entry]
+  (if-some [limit resource/*max-intermediate-slots*]
+    (min capacity (quot limit slots-per-entry))
+    capacity))
 
 (defn- make-probe-set
   "A mutable probe set for hash-probe joins: content keys for membership, raw
    values for seeks."
   [capacity]
-  #?(:clj  (ProbeSet. (java.util.HashSet. (int capacity)) (java.util.ArrayList. (int capacity)))
-     :cljs (ProbeSet. (volatile! (transient #{})) (array))))
+  (let [account (resource/account :probe-set)
+        capacity (bounded-probe-capacity capacity 2)]
+    #?(:clj (ProbeSet. (java.util.HashSet. (int capacity))
+                       (java.util.ArrayList. (int capacity)) account)
+       :cljs (ProbeSet. (volatile! (transient #{})) (array) account))))
 
 ;; JVM containers compare scalar values with equals/hashCode; ClojureScript's
 ;; local transient containers use Clojure value equality too. Native JS Map/Set
 ;; would distinguish separately allocated equal keywords, symbols and vectors,
 ;; so a value self-join could silently return only its diagonal. Array values
-;; still need the content wrapper appropriate to each container.
+;; still need the content wrapper appropriate to each container. Canonicalizing
+;; an array key may copy its payload; scalar payload allocation is outside this
+;; structural reference policy, which is not a general heap-size bound.
 (def ^:private probe-key #?(:clj da/native-key :cljs da/value-key))
 
 (defn- probe-set-add
@@ -161,12 +174,22 @@
    `probe-set-size` — which is the K in the cost threshold — equal to the
    number of seeks the decision is actually buying."
   [^ProbeSet s x]
-  (let [k (probe-key x)]
-    #?(:clj  (when (.add ^java.util.HashSet (.-members s) k)  ; true iff new
-               (.add ^java.util.ArrayList (.-seekvals s) x))
-       :cljs (let [ms (.-members s)]
-               (when-not (contains? @ms k)
-                 (vswap! ms conj! k)
+  (let [k (probe-key x)
+        account (.-account s)]
+    #?(:clj (let [^java.util.HashSet members (.-members s)]
+              (if account
+                (when-not (.contains members k)
+                  ;; Membership and raw seek entries are admitted together,
+                  ;; before either container mutates. Duplicates retain neither.
+                  (resource/reserve! account 2)
+                  (.add members k)
+                  (.add ^java.util.ArrayList (.-seekvals s) x))
+                (when (.add members k)
+                  (.add ^java.util.ArrayList (.-seekvals s) x))))
+       :cljs (let [members (.-members s)]
+               (when-not (contains? @members k)
+                 (resource/reserve! account 2)
+                 (vswap! members conj! k)
                  (.push (.-seekvals s) x))))))
 
 (defn- probe-set-contains? [^ProbeSet s x]
@@ -191,7 +214,11 @@
       moves backwards. Never the members: an ArrayKey is not the stored value
       and is not Comparable."
      ^objects [^ProbeSet s]
-     (let [vs (sort datom/compare-value (vec (probe-set-seek-vals s)))]
+     ;; Every copy below holds exactly N raw references: vec, sort's array and
+     ;; the returned array. Admit their known size before constructing any one.
+     (let [n (probe-set-size s)
+           _ (resource/check-size! :probe-seek-copy n)
+           vs (sort datom/compare-value (vec (probe-set-seek-vals s)))]
        (assert (not-any? da/array-key? vs)
                "a wrapped key reached an index seek")
        (object-array vs))))
@@ -199,33 +226,46 @@
 ;; Probe-map: HashMap<probe-value → ArrayList<Object[]>> for producer find-var propagation.
 ;; Each key is a probe-value (join-var), each value is a list of producer find-var tuples.
 
+(deftype ProbeMap [buckets account])
+
 (defn- make-probe-map
-  "Create a mutable map for hash-probe joins with value propagation."
+  "Own one value-propagating join index and its account across every bucket."
   [capacity]
-  #?(:clj  (java.util.HashMap. (int capacity))
-     :cljs (volatile! (transient {}))))
+  (let [account (resource/account :probe-map)
+        capacity (bounded-probe-capacity capacity 4)]
+    (ProbeMap. #?(:clj (java.util.HashMap. (int capacity))
+                  :cljs (volatile! (transient {})))
+               account)))
 
 (defn- probe-map-add
-  "Add a producer find-var tuple to the probe-map under the given probe-value.
-   Supports multiple producer tuples per probe-value (card-many joins)."
-  [m k v]
-  #?(:clj  (let [k (probe-key k)
-                 ^java.util.ArrayList existing (.get ^java.util.HashMap m k)]
-             (if existing
-               (.add existing v)
-               (.put ^java.util.HashMap m k (doto (java.util.ArrayList. 4) (.add v)))))
-     :cljs (let [k (probe-key k)
-                 existing (get @m k)]
-             (if existing
-               (.push existing v)
-               (vswap! m assoc! k #js [v])))))
+  "Retain a producer tuple reference. A new scalar key costs one key cell,
+   two key/bucket entries and the tuple reference (four slots); another tuple
+   in an existing bucket costs one slot. Values inside keys are not weighed."
+  [^ProbeMap m k v]
+  (let [k (probe-key k)
+        buckets (.-buckets m)
+        account (.-account m)]
+    #?(:clj (let [^java.util.HashMap buckets buckets
+                  ^java.util.ArrayList existing (.get buckets k)]
+              (when account (resource/reserve! account (if existing 1 4)))
+              (if existing
+                (.add existing v)
+                (.put buckets k (doto (java.util.ArrayList.
+                                       (int (bounded-probe-capacity 4 1)))
+                                  (.add v)))))
+       :cljs (let [existing (get @buckets k)]
+               (when account (resource/reserve! account (if existing 1 4)))
+               (if existing
+                 (.push existing v)
+                 (vswap! buckets assoc! k #js [v]))))))
 
 (defn- probe-map-get
-  "Get the list of producer find-var tuples for a probe-value, or nil."
-  [m k]
-  (let [k (probe-key k)]
-    #?(:clj  (.get ^java.util.HashMap m k)
-       :cljs (get @m k))))
+  "Return a producer bucket, keeping the index's owner representation private."
+  [^ProbeMap m k]
+  (let [k (probe-key k)
+        buckets (.-buckets m)]
+    #?(:clj (.get ^java.util.HashMap buckets k)
+       :cljs (get @buckets k))))
 
 (defn- probe-map-entry-size [entry]
   #?(:clj  (.size ^java.util.ArrayList entry)
@@ -660,14 +700,27 @@
                (let [ai (get (:attrs rel) a)
                      vi (get (:attrs rel) v)]
                  (when (and ai vi)
-                   (let [seen (java.util.HashSet.)
+                   (let [account (resource/account :avet-probe-pairs)
+                         seen (if account
+                                (java.util.HashSet. (int (bounded-probe-capacity 16 3)))
+                                (java.util.HashSet.))
                          aborted (reduce (fn [_ t]
                                            (let [pa (cell t ai) pv (cell t vi)]
-                                             (when (and (some? pa) (some? pv)) (.add seen [pa pv])))
+                                             (when (and (some? pa) (some? pv))
+                                               (when account (resource/check-size! :avet-probe-pair 2))
+                                               (let [pair [pa pv]]
+                                                 (if account
+                                                   (when-not (.contains seen pair)
+                                                     (resource/reserve! account 3)
+                                                     (.add seen pair))
+                                                   (.add seen pair)))))
                                            (if (>= (.size seen) scan-n) (reduced true) nil))
                                          nil (:tuples rel))]
                      (when (and (not (true? aborted)) (pos? (.size seen)))
-                       (let [ps (vec seen)]
+                       (let [_ (when account
+                                 (resource/check-size! :avet-probe-pairs-copy
+                                                       (resource/rows-slots (.size seen) 2)))
+                             ps (vec seen)]
                          (when (and (< (* (long (count ps)) (long probe-driven-threshold)) scan-n)
                                     (every? (fn [[pa _]] (dbu/indexing? db pa)) ps))
                            ps)))))))
@@ -735,6 +788,18 @@
            (full)))
        :cljs (full))))
 
+(defn- scan-datom-tuple
+  "Copy one physical datom after its owning scan has admitted the six slots."
+  [^Datom d]
+  #?(:clj [(.-e d) (.-a d) (.-v d) (.-tx d) (datom/datom-added d)]
+     :cljs (let [t (make-array 5)]
+             (aset t 0 (.-e d))
+             (aset t 1 (.-a d))
+             (aset t 2 (.-v d))
+             (aset t 3 (.-tx d))
+             (aset t 4 (datom/datom-added d))
+             t)))
+
 (defn- execute-pattern-scan [db op cancel rels]
   (let [{:keys [clause index pushdown-preds]} op
         pushdown-bounds (when (seq pushdown-preds) (plan/pushdown-to-bounds pushdown-preds))
@@ -746,23 +811,20 @@
                         (let [pushdown-var (first (keep :var pushdown-preds))]
                           (when pushdown-var
                             (build-strict-filter strict (get scan-var-map pushdown-var)))))
+        account (resource/account :pattern-scan-output)
         tuples (into []
                      (comp (if ground-filter (filter ground-filter) identity)
                            (if strict-filter (filter strict-filter) identity)
                            (map (fn [^Datom d]
                                   (check-cancel! cancel)
+                                  ;; Five physical datom cells plus their retained
+                                  ;; output entry, before the vector/array constructor.
+                                  (when account (resource/reserve! account 6))
                                   ;; 5th component is the datom's actual added flag, NOT a
                                   ;; hardcoded true — history/temporal scans emit retraction
                                   ;; datoms whose op-var (e.g. [?e :age ?a ?t ?op]) must bind
                                   ;; false. Mirrors the fused path's find-src-scan-added slot.
-                                  #?(:clj  [(.-e d) (.-a d) (.-v d) (.-tx d) (datom/datom-added d)]
-                                     :cljs (let [t (make-array 5)]
-                                             (aset t 0 (.-e d))
-                                             (aset t 1 (.-a d))
-                                             (aset t 2 (.-v d))
-                                             (aset t 3 (.-tx d))
-                                             (aset t 4 (datom/datom-added d))
-                                             t)))))
+                                  (scan-datom-tuple d))))
                      datoms)]
     (rel/->Relation var-map tuples)))
 
