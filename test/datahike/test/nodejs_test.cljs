@@ -42,6 +42,8 @@
             [datahike.test.query-resource-integration-test]
             [datahike.test.query-resource-additional-test]
             [datahike.test.query-probe-value-test]
+            [datahike.test.query-scan-resource-test]
+            [datahike.test.query-lookup-resource-test]
             ;; Background GC (start-background-gc! / gc-storage!) — portable smoke.
             [datahike.test.background-gc-test]
             [datahike.test.metrics-test]
@@ -945,6 +947,8 @@
                'datahike.test.query-resource-integration-test
                'datahike.test.query-resource-additional-test
                'datahike.test.query-probe-value-test
+               'datahike.test.query-scan-resource-test
+               'datahike.test.query-lookup-resource-test
                'datahike.test.background-gc-test
                'datahike.test.metrics-test
                'datahike.test.store-ref-test

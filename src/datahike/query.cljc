@@ -815,13 +815,63 @@
 
 ;; Utilities
 
+(defn- guarded-tuple-width
+  "Width of one engine-copied tuple. Non-counted inputs are inspected only up
+   to the structural limit, before an array or vector of that width is made."
+  [operator tuple]
+  (if (or (counted? tuple) (da/array? tuple))
+    (let [width (count tuple)]
+      (resource/check-size! operator (resource/tuple-slots width))
+      width)
+    (loop [xs (seq tuple), width 0]
+      (if xs
+        (let [width (inc width)]
+          (resource/check-size! operator (resource/tuple-slots width))
+          (recur (next xs) width))
+        width))))
+
+(defn- retaining-tuples-xform
+  "Guard one retained output. Policy and mutable state belong to reducing-fn
+   application, so a reusable xform never captures another execute's policy.
+   Duplicate filtering belongs before this sink when the output is distinct."
+  [operator]
+  (fn [rf]
+    (if-not resource/*max-intermediate-slots*
+      rf
+      (let [account (resource/account operator)]
+        (fn
+          ([] (rf))
+          ([result] (rf result))
+          ([result tuple]
+           (resource/reserve! account
+                              (resource/tuple-slots (guarded-tuple-width operator tuple)))
+           (rf result tuple)))))))
+
 (defn distinct-tuples
-  "Remove duplicates just like `distinct` but with the difference that it only works on values on which `vec` can be applied and two different objects are considered equal if and only if their results after `vec` has been applied are equal. This means that two different Java arrays are considered equal if and only if their elements are equal."
+  "Remove tuples equal after `vec`, preserving their original representation."
   ([tuples]
-   (into [] (distinct-tuples) tuples))
+   (into [] (comp (distinct-tuples)
+                  (retaining-tuples-xform :distinct-tuples-output)) tuples))
   ([]
-   (let [step ((distinct) (fn [_ _] true))]
-     (filter #(step false (vec %))))))
+   (fn [rf]
+     (if-not resource/*max-intermediate-slots*
+       ;; Like a standard stateful transducer, own the set per application,
+       ;; rather than letting a reusable xform retain the previous run's keys.
+       (let [step ((distinct) (fn [_ _] true))]
+         ((filter #(step false (vec %))) rf))
+       (let [seen (volatile! #{})
+             account (resource/account :distinct-tuples-seen)]
+         (fn
+           ([] (rf))
+           ([result] (rf result))
+           ([result tuple]
+            (let [width (guarded-tuple-width :distinct-tuple-key tuple)
+                  key (vec tuple)]
+              (if (contains? @seen key)
+                result
+                (do (resource/reserve! account (resource/tuple-slots width))
+                    (vswap! seen conj key)
+                    (rf result tuple)))))))))))
 
 (defn seqable?
   #?@(:clj [^Boolean [x]]
@@ -1517,6 +1567,8 @@
 
   BindScalar
   (in->rel [binding value]
+    (when resource/*max-intermediate-slots*
+      (resource/check-size! :input-scalar (resource/tuple-slots 1)))
     (rel/->Relation {(get-in binding [:variable :symbol]) 0} [(into-array [value])]))
 
   BindColl
@@ -1528,9 +1580,37 @@
       (empty? coll)
       (empty-rel binding)
       :else
-      (->> coll
-           (map #(in->rel (:binding binding) %))
-           (reduce sum-rel))))
+      (if-not resource/*max-intermediate-slots*
+        (->> coll
+             (map #(in->rel (:binding binding) %))
+             (reduce sum-rel))
+        ;; A collection is a bag, including duplicate input rows. Append once
+        ;; rather than repeatedly copying its already retained prefix via union.
+        (let [account (resource/account :input-collection)
+              child (:binding binding)]
+          (if (instance? BindScalar child)
+            ;; The common scalar collection has known width, so admission can
+            ;; precede even the candidate tuple's allocation.
+            (rel/->Relation
+             {(get-in child [:variable :symbol]) 0}
+             (into [] (map (fn [value]
+                             (resource/reserve! account (resource/tuple-slots 1))
+                             (into-array [value]))) coll))
+            (loop [xs (seq coll), attrs nil, tuples (transient [])]
+              (if xs
+                (let [part (in->rel child (first xs))
+                      attrs (or attrs (:attrs part))
+                      part (if (= attrs (:attrs part))
+                             part
+                             (sum-rel (rel/->Relation attrs []) part))
+                      tuples (reduce (fn [out tuple]
+                                       (resource/reserve!
+                                        account (resource/tuple-slots
+                                                 (guarded-tuple-width :input-tuple tuple)))
+                                       (conj! out tuple))
+                                     tuples (:tuples part))]
+                  (recur (next xs) attrs tuples))
+                (rel/->Relation attrs (persistent! tuples)))))))))
 
   BindTuple
   (in->rel [binding coll]
@@ -1538,12 +1618,20 @@
       (not (seqable? coll))
       (log/raise "Cannot bind value " coll " to tuple " (dpi/get-source binding)
                  {:error :query/binding, :value coll, :binding (dpi/get-source binding)})
-      (< (count coll) (count (:bindings binding)))
-      (log/raise "Not enough elements in a collection " coll " to bind tuple " (dpi/get-source binding)
-                 {:error :query/binding, :value coll, :binding (dpi/get-source binding)})
       :else
-      (reduce prod-rel
-              (map #(in->rel %1 %2) (:bindings binding) coll)))))
+      (let [bindings (:bindings binding)
+            ;; Only the required prefix participates in a tuple binding. Avoid
+            ;; counting an arbitrary lazy tail solely to validate its arity.
+            values (if resource/*max-intermediate-slots*
+                     (do (resource/check-size! :input-tuple-prefix
+                                               (resource/tuple-slots (count bindings)))
+                         (vec (take (count bindings) coll)))
+                     coll)]
+        (when (< (count values) (count bindings))
+          (log/raise "Not enough elements in a collection " coll " to bind tuple " (dpi/get-source binding)
+                     {:error :query/binding, :value coll, :binding (dpi/get-source binding)}))
+        (reduce prod-rel
+                (map #(in->rel %1 %2) bindings values))))))
 
 (def ^:dynamic *fold-scalar-ins*
   "When true (default), a scalar :in binding becomes a constant folded
@@ -1654,11 +1742,15 @@
                               {}
                               attr->idx)]
     (when (seq idx->const)
-      (rel/->Relation attr->idx (map #(reduce (fn [datom [k v]]
-                                                (assoc datom k v))
-                                              (vec (seq %))
-                                              idx->const)
-                                     datoms)))))
+      (let [rewrite (fn [tuple]
+                      (reduce (fn [datom [k v]] (assoc datom k v))
+                              (vec (seq tuple)) idx->const))]
+        (rel/->Relation attr->idx
+                        (if resource/*max-intermediate-slots*
+                          (eduction (map (fn [tuple]
+                                           (guarded-tuple-width :constant-tuple tuple)
+                                           (rewrite tuple))) datoms)
+                          (map rewrite datoms)))))))
 
 (defn replace-symbols-by-nil [pattern]
   (mapv #(if (symbol? %) nil %) pattern))
@@ -1672,41 +1764,63 @@
       search-pattern)))
 
 (defn relation-from-datoms-xform []
-  (comp (map #?(:cljs (fn [datom]
-                        (if (and (some? datom)
-                                 (or (instance? datahike.datom/Datom datom)
-                                     (.-e datom)))
-                          (let [e (.-e ^datahike.datom.Datom datom)
-                                a (.-a ^datahike.datom.Datom datom)
-                                a-kw (keyword (.-fqn ^clj a))  ; Extract from Keyword object
-                                v (.-v ^datahike.datom.Datom datom)]
+  (fn [rf]
+    (let [convert #?(:cljs (fn [datom]
+                             (if (and (some? datom)
+                                      (or (instance? datahike.datom/Datom datom)
+                                          (.-e datom)))
+                               (let [e (.-e ^datahike.datom.Datom datom)
+                                     a (.-a ^datahike.datom.Datom datom)
+                                     a-kw (keyword (.-fqn ^clj a))  ; Extract from Keyword object
+                                     v (.-v ^datahike.datom.Datom datom)]
                             ;; tx is sign-encoded with the added flag (retraction => negative
                             ;; raw .-tx). Project the ABS tx (datom-tx) and read added from the
                             ;; sign (datom-added) — using raw .-tx would give retractions a
                             ;; negative ?t that no [?t :db/txInstant] join could ever match.
-                            #js [e a-kw v (datom/datom-tx datom) (datom/datom-added datom)])  ; JS array for goog.array/get
-                          datom))
-                :clj (fn [[e a v tx added?]]
-                       [e a v tx added?])))
-        (distinct-tuples)))
+                                 #js [e a-kw v (datom/datom-tx datom) (datom/datom-added datom)])  ; JS array for goog.array/get
+                               datom))
+                     :clj (fn [[e a v tx added?]]
+                            [e a v tx added?]))
+          convert (if resource/*max-intermediate-slots*
+                    (fn [datom]
+                      (resource/check-size! :datom-tuple (resource/tuple-slots 5))
+                      (convert datom))
+                    convert)]
+      ((comp (map convert) (distinct-tuples)) rf))))
 
 (defn relation-from-datoms [context orig-pattern datoms]
   (or (map-consts context orig-pattern datoms)
-      #?(:cljs (let [converted (mapv (fn [d]
-                                       (if (and (some? d)
-                                                (or (instance? datahike.datom/Datom d)
-                                                    (.-e d)))
-                                         (let [a (.-a ^datahike.datom.Datom d)
-                                               a-kw (keyword (.-fqn ^clj a))]
+      #?(:cljs (let [convert (fn [d]
+                               (if (and (some? d)
+                                        (or (instance? datahike.datom/Datom d)
+                                            (.-e d)))
+                                 (let [a (.-a ^datahike.datom.Datom d)
+                                       a-kw (keyword (.-fqn ^clj a))]
                                            ;; abs tx + sign-derived added — see
                                            ;; relation-from-datoms-xform.
-                                           #js [(.-e ^datahike.datom.Datom d)
-                                                a-kw
-                                                (.-v ^datahike.datom.Datom d)
-                                                (datom/datom-tx d)
-                                                (datom/datom-added d)])
-                                         d))
-                                     datoms)]
+                                   #js [(.-e ^datahike.datom.Datom d)
+                                        a-kw
+                                        (.-v ^datahike.datom.Datom d)
+                                        (datom/datom-tx d)
+                                        (datom/datom-added d)])
+                                 d))
+                     converted (if-not resource/*max-intermediate-slots*
+                                 (mapv convert datoms)
+                                 (let [account (resource/account :relation-output)]
+                                   (into []
+                                         (map (fn [tuple]
+                                                (let [datom? (and (some? tuple)
+                                                                  (or (instance? datahike.datom/Datom tuple)
+                                                                      (.-e tuple)))
+                                                      width (if datom?
+                                                              5
+                                                              (guarded-tuple-width :relation-tuple tuple))]
+                                                  ;; This copy has no duplicate candidates:
+                                                  ;; admit the retained row before conversion,
+                                                  ;; including its attribute-key/array creation.
+                                                  (resource/reserve! account (resource/tuple-slots width))
+                                                  (convert tuple))))
+                                         datoms)))]
                  (rel/->Relation (var-mapping orig-pattern (range))
                                  converted))
          :clj (rel/->Relation (var-mapping orig-pattern (range))
@@ -1726,7 +1840,18 @@
 (defn lookup-pattern-coll [coll pattern orig-pattern]
   (let [attr->idx (var-mapping orig-pattern (range))
         data (filter #(matches-pattern? pattern %) coll)]
-    (rel/->Relation attr->idx (mapv to-array data))))            ;; FIXME to-array
+    (rel/->Relation
+     attr->idx
+     (if-not resource/*max-intermediate-slots*
+       (mapv to-array data)
+       (let [account (resource/account :collection-scan-output)]
+         (into []
+               (map (fn [tuple]
+                      (resource/reserve!
+                       account (resource/tuple-slots
+                                (guarded-tuple-width :collection-scan-tuple tuple)))
+                      (to-array tuple)))
+               data))))))
 
 (defn collapse-rels [rels new-rel]
   (loop [rels rels
@@ -2496,7 +2621,12 @@
                 ~(mapv (fn [index i] `(~replacer ~index (nth ~tuple ~i)))
                        pinds
                        (range))
-                (catch ~ex-sym# e# nil))))))))
+                (catch ~ex-sym# e#
+                  (when (or (resource/limit-exceeded? e#)
+                            (:datahike/canceled (ex-data e#))
+                            (= :datahike/query-timeout (:type (ex-data e#))))
+                    (throw e#))
+                  nil))))))))
 
 (def vec-lookup-ref-replacer (make-vec-lookup-ref-replacer 5))
 
@@ -2590,17 +2720,36 @@
         ;; https://gitlab.com/arbetsformedlingen/taxonomy-dev/backend/experimental/datahike-benchmark/
         ;; In other words, there is no use writing imperative code here
         ;; with Java mutable collections.
+        pair-account (resource/account :substitution-pairs)
+        ;; The pair retains its two references and the structural cells of the
+        ;; generated pattern/filter key. Scalar value payloads are not weighed.
+        pair-slots (when pair-account
+                     (resource/tuple-slots
+                      (resource/checked-add 2
+                                            (resource/checked-add
+                                             (count substitution-pattern-element-inds)
+                                             (count pattern-filter-inds)))))
+        make-pair (fn [tuple]
+                    (let [feature (feature-extractor tuple)]
+                      (when (good-lookup-refs? feature)
+                        (when-let [k (-> tuple
+                                         select-pattern-substitution-inds
+                                         pattern-from-tuple)]
+                          [k feature]))))
         substituted-pattern-and-filter-feature-pairs
-        (into []
-              (keep
-               (fn [tuple]
-                 (let [feature (feature-extractor tuple)]
-                   (when (good-lookup-refs? feature)
-                     (when-let [k (-> tuple
-                                      select-pattern-substitution-inds
-                                      pattern-from-tuple)]
-                       [k feature])))))
-              tuples)
+        (if-not pair-account
+          (into [] (keep make-pair) tuples)
+          (into []
+                (keep (fn [tuple]
+                        (resource/check-size! :substitution-pair pair-slots)
+                        (let [feature (feature-extractor tuple)]
+                          (when (good-lookup-refs? feature)
+                            (when-let [k (-> tuple
+                                             select-pattern-substitution-inds
+                                             pattern-from-tuple)]
+                              (resource/reserve! pair-account pair-slots)
+                              [k feature])))))
+                tuples))
 
         filter-feature-extractor (index-feature-extractor
                                   (map :pattern-element-index filtered-vars)
@@ -2680,9 +2829,19 @@
                     pos-inds (map :pattern-element-index filtered-vars)
                     tup-inds (map :tuple-element-index filtered-vars)
                     tuple-feature-extractor (index-feature-extractor tup-inds true)
-                    features (into #{}
-                                   (map tuple-feature-extractor)
-                                   tuples)
+                    features (if-not resource/*max-intermediate-slots*
+                               (into #{} (map tuple-feature-extractor) tuples)
+                               (let [account (resource/account :filter-features)
+                                     slots (resource/tuple-slots (count tup-inds))]
+                                 (persistent!
+                                  (reduce (fn [features tuple]
+                                            (resource/check-size! :filter-feature slots)
+                                            (let [feature (tuple-feature-extractor tuple)]
+                                              (if (contains? features feature)
+                                                features
+                                                (do (resource/reserve! account slots)
+                                                    (conj! features feature)))))
+                                          (transient #{}) tuples))))
                     datom-feature-extractor
                     (index-feature-extractor pos-inds false)]
                 (extend-predicate predicate
@@ -2796,7 +2955,8 @@
                         filter-xform
 
                         ;; Apply the provided datom-xform on the returned datoms
-                        datom-xform)
+                        datom-xform
+                        (retaining-tuples-xform :batch-scan-output))
                        init-coll)]
       result)))
 
@@ -2849,6 +3009,8 @@
                       (di/-lookup (:avet source)
                                   (datom/datom 0 a v 0)
                                   datom/cmp-datoms-av-only)))
+        _ (when (and found resource/*max-intermediate-slots*)
+            (resource/check-size! :ground-lookup-output (resource/tuple-slots 5)))
         tuples (if found
                  (let [d found]
                    (case lookup-type
