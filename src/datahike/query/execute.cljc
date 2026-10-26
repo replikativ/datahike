@@ -13,6 +13,7 @@
    [datahike.query.analyze :as analyze]
    [datahike.query.plan :as plan]
    [datahike.query.relation :as rel]
+   [datahike.query.resource :as resource]
    [datahike.query.resolve :as qr]
    #?(:clj [datahike.index.secondary :as sec])
    #?(:clj [datahike.index.entity-set :as es])
@@ -3008,7 +3009,13 @@
                           (if (try (apply f argv)
                                    #?(:clj (catch ClassCastException _ false))
                                    #?(:clj (catch IllegalArgumentException _ false)
-                                      :cljs (catch :default _ false)))
+                                      :cljs (catch :default e
+                                              (let [d (ex-data e)]
+                                                (if (or (resource/limit-exceeded? e)
+                                                        (:datahike/canceled d)
+                                                        (= :datahike/query-timeout (:type d)))
+                                                  (throw e)
+                                                  false)))))
                             (recur (inc pi))
                             false))))]
           (if pass?
@@ -3645,7 +3652,10 @@
   [plan db find-vars max-results consts cancel outer-ctx]
   (let [ops (:ops plan)
         temporal (temporal-info db)]
-    (when (and (not (:has-passthrough? plan))
+    ;; Fused mutable sinks are outside the internal guard. Decline through the
+    ;; normal relation fallback instead of executing an unguarded join.
+    (when (and (nil? resource/*max-intermediate-slots*)
+               (not (:has-passthrough? plan))
                ;; Fast structural pre-check from IR pipeline (when available)
                (if (contains? plan :structurally-fusable?)
                  (:structurally-fusable? plan)
@@ -4248,7 +4258,8 @@
    shape must fall back to the relation engine."
   [plan db find-vars rels base-consts max-results cancel outer-ctx]
   (let [rel-consts (when (seq rels) (single-tuple-rel-consts rels))]
-    (when (or (empty? rels) (seq rel-consts))
+    (when (and (nil? resource/*max-intermediate-slots*)
+               (or (empty? rels) (seq rel-consts)))
       (let [consts (if (seq rel-consts) (merge base-consts rel-consts) base-consts)
             ckeys (into #{} (keys consts))
             prog (direct-program plan find-vars ckeys)]
@@ -4284,7 +4295,8 @@
     ;; this in a broad catch that turns any exception into "not fusable", so a
     ;; throw here is indistinguishable from a genuine fused-scan failure — which
     ;; would then surface as an unexplained slowdown instead of an error.
-    (when (and (not (:has-passthrough? plan))
+    (when (and (nil? resource/*max-intermediate-slots*)
+               (not (:has-passthrough? plan))
                ;; direct-rel only handles pure group plans — no predicates/functions
                ;; (unlike execute-plan-direct which has post-filter machinery)
                (seq ops)
@@ -5609,7 +5621,8 @@
                                   ;; stricter `delta-driven-sound?`. Unlike the
                                   ;; magic-set use, this one bites with NO ground
                                   ;; argument.
-                                           use-delta-driven? (and #?(:cljs false :clj base-scan-attr)
+                                           use-delta-driven? (and (nil? resource/*max-intermediate-slots*)
+                                                                  #?(:cljs false :clj base-scan-attr)
                                                                   delta-driven-sound?
                                                                   rec-has-db-pattern?
                                                                   rec-shape-simple?
@@ -6149,7 +6162,10 @@
   [op-db op ctx]
   (case (:op op)
     :pattern-scan (count (:tuples (execute-pattern-scan op-db op (:cancel ctx) (:rels ctx))))
-    :entity-group (ctx-total-tuples (first (execute-fused-scan-rel op-db (:scan-op op) (:merge-ops op) ctx)))
+    ;; A cost probe materializes the same fused join as execution. Do not
+    ;; bypass the guard merely to measure a candidate before dispatch.
+    :entity-group (when (nil? resource/*max-intermediate-slots*)
+                    (ctx-total-tuples (first (execute-fused-scan-rel op-db (:scan-op op) (:merge-ops op) ctx))))
     nil))
 
 (defn- probe-candidate?
@@ -6272,11 +6288,14 @@
               ;; filter via context, not index structure, so fused scan would bypass filters)
                 :entity-group
                 (let [ti (temporal-info op-db)]
+                  ;; Under the internal size policy, keep planner ordering but
+                  ;; let per-pattern lookup reach the guarded relation joins.
                   (cond
                 ;; Single temporal wrapper over a PSS-backed origin — stay on the
                 ;; FUSED path (temporal-aware execute-group-direct + SIP probe)
                 ;; rather than the per-clause legacy lookup-batch-search fallback.
-                    (and (some? ti) (pss-instance? (:eavt (:origin-db ti))))
+                    (and (nil? resource/*max-intermediate-slots*)
+                         (some? ti) (pss-instance? (:eavt (:origin-db ti))))
                     (let [[ctx' _] (execute-temporal-group-rel op-db op ctx ti)
                           actual-card (ctx-total-tuples ctx')
                       ;; Re-plan cardinality estimation reads index subtree counts
@@ -6290,7 +6309,8 @@
                                   plan)]
                       (recur ctx' plan' (inc idx)))
 
-                    (pss-instance? (:eavt op-db))
+                    (and (nil? resource/*max-intermediate-slots*)
+                         (pss-instance? (:eavt op-db)))
                     (let [[ctx' consumed] (execute-fused-scan-rel op-db (:scan-op op) (:merge-ops op) ctx)
                           actual-card (ctx-total-tuples ctx')
                           plan' (if (and (> (- (count (:ops plan)) idx) 2)
@@ -6435,7 +6455,8 @@
                     (if (not (pss-instance? (:eavt op-db)))
                       (let [ti (temporal-info op-db)
                             scan-attr (second (:clause op))]
-                        (if (and (some? ti)
+                        (if (and (nil? resource/*max-intermediate-slots*)
+                                 (some? ti)
                                  (pss-instance? (:eavt (:origin-db ti)))
                                  (not (:optional? op))
                                  (some? scan-attr) (not (symbol? scan-attr)))
@@ -6474,7 +6495,8 @@
                             all-ops (:ops plan)
                             e-var (first (:clause op))
                             op-source (:source op)
-                            fusable (when (and (= :scan (:join-method op)) (empty? (:rels ctx)))
+                            fusable (when (and (nil? resource/*max-intermediate-slots*)
+                                               (= :scan (:join-method op)) (empty? (:rels ctx)))
                                       (loop [j (inc idx) fused []]
                                         (if (>= j (count all-ops))
                                           fused
@@ -6632,7 +6654,8 @@
    plan, db: as usual"
      [plan db find-elements aggregate-fn cancel]
      (let [ops (:ops plan)]
-       (when (and (not (:has-passthrough? plan))
+       (when (and (nil? resource/*max-intermediate-slots*)
+                  (not (:has-passthrough? plan))
                   (seq ops)
                   (every? #(#{:entity-group :pattern-scan} (:op %)) ops)
                   (not-any? :source ops)

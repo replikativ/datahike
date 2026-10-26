@@ -6,6 +6,7 @@
    [clojure.set :as set]
    [datahike.array :as arr]
    [datahike.query.cancel :as cancel]
+   [datahike.query.resource :as resource]
    [datahike.db.utils :as dbu]
    [datahike.tools :as dt]
    [replikativ.logging :as log]
@@ -87,15 +88,30 @@
         (list* #?(:cljs (.map getters #(join-key (% tuple)))
                   :clj (to-array (map #(join-key (% tuple)) getters))))))))
 
-(defn hash-attrs [key-fn tuples]
-  ;; Equivalent to group-by except that it uses a list instead of a vector.
-  (loop [tuples tuples
-         hash-table (transient {})]
-    (if-some [tuple (first tuples)]
-      (let [key (key-fn tuple)]
-        (recur (next tuples)
-               (assoc! hash-table key (conj (get hash-table key '()) tuple))))
-      (persistent! hash-table))))
+(defn hash-attrs
+  "Index tuple references by join key. The optional key width counts structural
+   key cells, not the size of values stored in them. One account spans every
+   bucket: a tuple reference costs one slot, and a new key/bucket costs its key
+   width plus two container references. Input tuples themselves are shared."
+  ([key-fn tuples] (hash-attrs key-fn tuples 1))
+  ([key-fn tuples key-width]
+   (let [account (resource/account :join-index)
+         tick (when cancel/*cancel* (cancel/ticker))]
+     ;; Check the temporary key's known width before invoking its constructor.
+     ;; Custom key functions and the values inside keys are not allocator-owned.
+     (when (and account (seq tuples))
+       (resource/check-size! :join-key key-width))
+     (loop [tuples tuples
+            hash-table (transient {})]
+       (if-some [tuple (first tuples)]
+         (let [_ (when tick (tick))
+               key (key-fn tuple)
+               bucket (get hash-table key)]
+           (when account
+             (resource/reserve! account (if bucket 1 (resource/checked-add key-width 3))))
+           (recur (next tuples)
+                  (assoc! hash-table key (conj (or bucket '()) tuple))))
+         (persistent! hash-table))))))
 
 (defn join-tuples [t1 #?(:cljs idxs1
                          :clj ^{:tag "[[Ljava.lang.Object;"} idxs1)
@@ -126,11 +142,17 @@
         keep-idxs1   (to-array (map attrs1 keep-attrs1))
         keep-idxs2   (to-array (map attrs2 keep-attrs2))
         key-fn1      (tuple-key-fn common-gtrs1)
-        key-fn2      (tuple-key-fn common-gtrs2)]
-    (if (< (count tuples1) (count tuples2))
-      (let [tick       (cancel/ticker)
-            hash       (hash-attrs key-fn1 tuples1)
-            new-tuples (->>
+        key-fn2      (tuple-key-fn common-gtrs2)
+        output-account (resource/account :join-output)
+        output-slots (when output-account
+                       (resource/tuple-slots (+ (alength keep-idxs1)
+                                                (alength keep-idxs2))))]
+    (if (or (empty? tuples1) (empty? tuples2))
+      (Relation. (zipmap (concat keep-attrs1 keep-attrs2) (range)) [])
+      (if (< (count tuples1) (count tuples2))
+        (let [tick       (cancel/ticker)
+              hash       (hash-attrs key-fn1 tuples1 (count common-attrs))
+              new-tuples (->>
                         ;; On the OUTER loop, never per produced tuple.
                         ;; With no common attribute this join is a
                         ;; Cartesian product -- `tuple-key-fn` over zero
@@ -148,48 +170,68 @@
                         ;; tuples the pass is about to emit, not the
                         ;; iteration, so the gap between checks stays
                         ;; ~512 TUPLES however wide the join is.
-                        (reduce (fn [acc tuple2]
-                                  (let [key     (key-fn2 tuple2)
-                                        matches (get hash key)]
+                          (reduce (fn [acc tuple2]
+                                    (let [key     (key-fn2 tuple2)
+                                          matches (get hash key)]
                                     ;; The pass about to run, or 1 for
                                     ;; the iteration itself -- an outer
                                     ;; tuple that matches nothing is
                                     ;; still work, and a join that
                                     ;; matches nothing at all must not
                                     ;; run uninterruptible.
-                                    (tick (if matches (count matches) 1))
-                                    (if matches
-                                      (reduce (fn [acc tuple1]
-                                                (conj! acc (join-tuples tuple1 keep-idxs1 tuple2 keep-idxs2)))
-                                              acc matches)
-                                      acc)))
-                                (transient []) tuples2)
-                        (persistent!))]
-        (Relation. (zipmap (concat keep-attrs1 keep-attrs2) (range))
-                   new-tuples))
-      (let [tick       (cancel/ticker)
-            hash       (hash-attrs key-fn2 tuples2)
-            new-tuples (->>
-                        (reduce (fn [acc tuple1]
-                                  (let [key     (key-fn1 tuple1)
-                                        matches (get hash key)]
-                                    (tick (if matches (count matches) 1))
-                                    (if matches
-                                      (reduce (fn [acc tuple2]
-                                                (conj! acc (join-tuples tuple1 keep-idxs1 tuple2 keep-idxs2)))
-                                              acc matches)
-                                      acc)))
-                                (transient []) tuples1)
-                        (persistent!))]
-        (Relation. (zipmap (concat keep-attrs1 keep-attrs2) (range))
-                   new-tuples)))))
+                                      (tick (if matches (count matches) 1))
+                                      (if matches
+                                        (reduce (fn [acc tuple1]
+                                                  (when output-account
+                                                    (resource/reserve! output-account output-slots))
+                                                  (conj! acc (join-tuples tuple1 keep-idxs1 tuple2 keep-idxs2)))
+                                                acc matches)
+                                        acc)))
+                                  (transient []) tuples2)
+                          (persistent!))]
+          (Relation. (zipmap (concat keep-attrs1 keep-attrs2) (range))
+                     new-tuples))
+        (let [tick       (cancel/ticker)
+              hash       (hash-attrs key-fn2 tuples2 (count common-attrs))
+              new-tuples (->>
+                          (reduce (fn [acc tuple1]
+                                    (let [key     (key-fn1 tuple1)
+                                          matches (get hash key)]
+                                      (tick (if matches (count matches) 1))
+                                      (if matches
+                                        (reduce (fn [acc tuple2]
+                                                  (when output-account
+                                                    (resource/reserve! output-account output-slots))
+                                                  (conj! acc (join-tuples tuple1 keep-idxs1 tuple2 keep-idxs2)))
+                                                acc matches)
+                                        acc)))
+                                  (transient []) tuples1)
+                          (persistent!))]
+          (Relation. (zipmap (concat keep-attrs1 keep-attrs2) (range))
+                     new-tuples))))))
+
+(defn- append-shared-tuples!
+  "Copy tuple references into a guarded output. Count the actual retained tuple
+   width, including unused physical cells, rather than only projected attrs."
+  [account output tuples]
+  (reduce (fn [output tuple]
+            (resource/reserve! account (resource/tuple-slots (count tuple)))
+            (conj! output tuple))
+          output tuples))
 
 (defn sum-rel [a b]
   (let [{attrs-a :attrs, tuples-a :tuples} a
-        {attrs-b :attrs, tuples-b :tuples} b]
+        {attrs-b :attrs, tuples-b :tuples} b
+        output (resource/account :union-output)]
     (cond
       (= attrs-a attrs-b)
-      (Relation. attrs-a (into (vec tuples-a) tuples-b))
+      (Relation. attrs-a
+                 (if output
+                   (persistent!
+                    (append-shared-tuples! output
+                                           (append-shared-tuples! output (transient []) tuples-a)
+                                           tuples-b))
+                   (into (vec tuples-a) tuples-b)))
 
       (not (same-keys? attrs-a attrs-b))
       (log/raise "Can't sum relations with different attrs: " attrs-a " and " attrs-b
@@ -199,14 +241,18 @@
       (let [idxb->idxa (vec (for [[sym idx-b] attrs-b]
                               [idx-b (attrs-a sym)]))
             tlen (->> (vals attrs-a) (reduce max) (inc))
+            slots (when output (resource/tuple-slots tlen))
             tuples' (persistent!
                      (reduce
                       (fn [acc tuple-b]
+                        (when output (resource/reserve! output slots))
                         (let [tuple' (da/make-array tlen)]
                           (doseq [[idx-b idx-a] idxb->idxa]
                             (aset tuple' idx-a (get tuple-b idx-b)))
                           (conj! acc tuple')))
-                      (transient (vec tuples-a))
+                      (if output
+                        (append-shared-tuples! output (transient []) tuples-a)
+                        (transient (vec tuples-a)))
                       tuples-b))]
         (Relation. attrs-a tuples'))
 
@@ -222,7 +268,7 @@
         attrs (intersect-keys attrs-a attrs-b)
         getters-b (map #(getter-fn attrs-b %) attrs)
         key-fn-b (tuple-key-fn getters-b)
-        hash (hash-attrs key-fn-b tuples-b)
+        hash (hash-attrs key-fn-b tuples-b (count attrs))
         getters-a (map #(getter-fn attrs-a %) attrs)
         key-fn-a (tuple-key-fn getters-a)]
     (assoc a
