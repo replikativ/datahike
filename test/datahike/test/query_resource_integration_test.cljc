@@ -52,14 +52,17 @@
           (is (= expected (binding [resource/*max-intermediate-slots* 5000]
                             (d/q query db)))))))))
 
-(deftest lazy-projection-does-not-charge-discarded-duplicates
+(deftest materialized-scan-is-bounded-before-distinct-projection
   (let [db (fixture)]
     (doseq [legacy? [false true]]
-      (binding [q/*disable-planner* legacy?
-                resource/*max-intermediate-slots* 4]
-        ;; One output tuple, twenty visited scan tuples. No join state grows.
+      (binding [q/*disable-planner* legacy?]
+        ;; DISTINCT keeps one result, but this executor first retains the scan.
+        (is (= :query/intermediate-limit
+               (:error (binding [resource/*max-intermediate-slots* 4]
+                         (failure-data #(d/q '[:find ?k :where [?e :bucket ?k]] db))))))
         (is (= #{[:same]}
-               (d/q '[:find ?k :where [?e :bucket ?k]] db)))))))
+               (binding [resource/*max-intermediate-slots* 200]
+                 (d/q '[:find ?k :where [?e :bucket ?k]] db))))))))
 
 (deftest prepared-reexecution-uses-fresh-builders
   (let [db (fixture)
