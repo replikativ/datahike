@@ -38,6 +38,10 @@
             [datahike.test.array-test]
             [datahike.test.query-binding-seam-test]
             [datahike.test.query-collection-binding-test]
+            [datahike.test.query-resource-test]
+            [datahike.test.query-join-resource-test]
+            [datahike.test.query-resource-integration-test]
+            [datahike.test.query-resource-additional-test]
             ;; Background GC (start-background-gc! / gc-storage!) — portable smoke.
             [datahike.test.background-gc-test]
             [datahike.test.metrics-test]
@@ -937,6 +941,10 @@
                'datahike.test.array-test
                'datahike.test.query-binding-seam-test
                'datahike.test.query-collection-binding-test
+               'datahike.test.query-resource-test
+               'datahike.test.query-join-resource-test
+               'datahike.test.query-resource-integration-test
+               'datahike.test.query-resource-additional-test
                'datahike.test.background-gc-test
                'datahike.test.metrics-test
                'datahike.test.store-ref-test
