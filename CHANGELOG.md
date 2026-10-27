@@ -6,7 +6,7 @@ When something is added, it's typically marked *Experimental*. When the API cont
 
 ## 0.8
 
-- **The HTTP client accepts `:headers-fn` in `:remote-peer` and `:writer` ([#TODO]).**
+- **The HTTP client accepts `:headers-fn` in `:remote-peer` and `:writer` ([#1139]).**
   A function of no arguments that returns extra request headers, run on every
   request. It lets a client reach a server behind a gateway that wants its own
   credential, for example an identity token for Cloud Run IAM sent in
@@ -936,6 +936,7 @@ Thanks to all the contributors and the community for helping on this release. Sp
 [#980]: https://github.com/replikativ/datahike/pull/980
 [#1092]: https://github.com/replikativ/datahike/pull/1092
 [#1090]: https://github.com/replikativ/datahike/pull/1090
+[#1139]: https://github.com/replikativ/datahike/pull/1139
 [#1123]: https://github.com/replikativ/datahike/pull/1123
 [#1112]: https://github.com/replikativ/datahike/issues/1112
 [#1105]: https://github.com/replikativ/datahike/issues/1105
