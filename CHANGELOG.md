@@ -6,6 +6,13 @@ When something is added, it's typically marked *Experimental*. When the API cont
 
 ## 0.8
 
+- **The JVM HTTP client no longer sends a body with a GET ([#TODO]).**
+  A read went out as a GET with its arguments in the body. Google's front end
+  (Cloud Run, load balancers) answers that with a 400 or closes the stream, and
+  a proxy or cache may drop the body, so no read could reach a server behind
+  one. Arguments that fit `url-args-limit` (2048 bytes) now go in the URL's
+  `args` parameter, as the ClojureScript client already sends them, and larger
+  ones go by POST. The server accepts both and is unchanged.
 - **The HTTP client accepts `:headers-fn` in `:remote-peer` and `:writer` ([#1139]).**
   A function of no arguments that returns extra request headers, run on every
   request. It lets a client reach a server behind a gateway that wants its own
