@@ -40,10 +40,27 @@
 
 (def ^:private cbor-registry (delay (rcbor/client-registry)))
 
+(defn request-headers
+  "The headers of one request to `remote-peer`, as a map of lower-case string
+   names, in order of precedence: the peer's `:headers-fn`, then `base`, then
+   the `authorization` its `:token` asks for.
+
+   `:headers-fn` takes no arguments and returns a map of extra headers. It runs
+   on every request, so a short-lived credential, such as an identity token for
+   a gateway in front of the server, is fetched fresh each time. A header it
+   names that `base` also names loses to `base`, and the peer's `:token` keeps
+   `authorization` to itself; without a `:token`, `:headers-fn` may set
+   `authorization`. Names are compared case-insensitively."
+  [{:keys [token headers-fn]} base]
+  (let [lower (fn [m] (into {} (map (fn [[k v]] [(str/lower-case (name k)) v])) m))]
+    (merge (when headers-fn (lower (headers-fn)))
+           (lower base)
+           (when token {"authorization" (str "token " token)}))))
+
 #?(:clj
    (do
      (defn request-edn [method end-point remote-peer data]
-       (let [{:keys [url token]} remote-peer
+       (let [{:keys [url]} remote-peer
              fmt                 "application/edn"
              url                 (str url "/" end-point)
              body                (remote/edn-replace-remote-literals (pr-str data))
@@ -53,10 +70,8 @@
                (http/request (merge
                               {:uri     url
                                :method  method
-                               :headers (merge {:content-type fmt
-                                                :accept       fmt}
-                                               (when token
-                                                 {:authorization (str "token " token)}))
+                               :headers (request-headers remote-peer {:content-type fmt
+                                                                      :accept       fmt})
                                :body    body}
                               (when (= method :get)
                                 {:query-params {"args-id" (uuid data)}})))
@@ -76,7 +91,7 @@
                          remote/transit-read-handlers
                          remote/transit-write-handlers))
        ([method end-point remote-peer data read-handlers write-handlers]
-        (let [{:keys [url token max-output-buffer-size]}
+        (let [{:keys [url max-output-buffer-size]}
               remote-peer
               fmt      "application/transit+json"
               url      (str url "/" end-point)
@@ -89,11 +104,8 @@
                 (http/request (merge
                                {:method method
                                 :uri    url
-                                :headers
-                                (merge {:content-type fmt
-                                        :accept       fmt}
-                                       (when token
-                                         {:authorization (str "token " token)}))
+                                :headers (request-headers remote-peer {:content-type fmt
+                                                                       :accept       fmt})
                                 :as     :stream
                                 :body   (.toByteArray out)}
                                (when (= method :get)
@@ -141,7 +153,7 @@
        ([method end-point remote-peer data]
         (request-cbor method end-point remote-peer data @cbor-registry))
        ([method end-point remote-peer data registry]
-        (let [{:keys [url token]} remote-peer
+        (let [{:keys [url]} remote-peer
               fmt      "application/cbor"
               url      (str url "/" end-point)
               out      (boring/encode data (rcbor/encode-opts registry))
@@ -151,10 +163,8 @@
                 (http/request (merge
                                {:method  method
                                 :uri     url
-                                :headers (merge {:content-type fmt
-                                                 :accept       fmt}
-                                                (when token
-                                                  {:authorization (str "token " token)}))
+                                :headers (request-headers remote-peer {:content-type fmt
+                                                                       :accept       fmt})
                                 :as      :bytes
                                 :body    out}
                                (when (= method :get)
@@ -179,7 +189,7 @@
        ([method end-point remote-peer data]
         (request-json method end-point remote-peer data remote/json-mapper))
        ([method end-point remote-peer data mapper]
-        (let [{:keys [url token]}
+        (let [{:keys [url]}
               remote-peer
               fmt      "application/json"
               url      (str url "/" end-point)
@@ -190,11 +200,8 @@
                 (http/request (merge
                                {:method method
                                 :uri    url
-                                :headers
-                                (merge {:content-type fmt
-                                        :accept       fmt}
-                                       (when token
-                                         {:authorization (str "token " token)}))
+                                :headers (request-headers remote-peer {:content-type fmt
+                                                                       :accept       fmt})
                                 :as     :stream
                                 :body   out}
                                (when (= method :get)
@@ -215,7 +222,7 @@
           response)))
 
      (defn request-json-raw [method end-point remote-peer data]
-       (let [{:keys [url token]}
+       (let [{:keys [url]}
              remote-peer
              fmt      "application/json"
              url      (str url "/" end-point)
@@ -225,11 +232,8 @@
              (http/request (merge
                             {:method method
                              :uri    url
-                             :headers
-                             (merge {:content-type fmt
-                                     :accept       fmt}
-                                    (when token
-                                      {:authorization (str "token " token)}))
+                             :headers (request-headers remote-peer {:content-type fmt
+                                                                    :accept       fmt})
                              :as     :stream
                              :body   out}
                             (when (= method :get)
@@ -286,16 +290,16 @@
      ([method end-point remote-peer data]
       (request-cbor method end-point remote-peer data @cbor-registry))
      ([method end-point remote-peer data registry]
-      (let [{:keys [url token]} remote-peer
+      (let [{:keys [url]} remote-peer
             fmt      "application/cbor"
             body     (boring/encode data (rcbor/encode-opts registry))
             as-get?  (and (= method :get) (<= (.-length body) url-args-limit))
             target   (if as-get?
                        (str url "/" end-point "?args=" (base64url body) "&f=cbor")
                        (str url "/" end-point))
-            headers  (cond-> {"accept" fmt}
-                       (not as-get?) (assoc "content-type" fmt)
-                       token (assoc "authorization" (str "token " token)))
+            headers  (request-headers remote-peer
+                                      (cond-> {"accept" fmt}
+                                        (not as-get?) (assoc "content-type" fmt)))
             init     (cond-> {:method (if as-get? "GET" "POST") :headers headers}
                        (not as-get?) (assoc :body body))
             out      (async/promise-chan)
@@ -342,13 +346,13 @@
 (defn- without-credentials
   "The arguments as sent: a config's `:remote-peer` and `:writer` name how to
    reach a server, and their tokens belong in the authorization header, not
-   the body."
+   the body. Their `:headers-fn` is a function and stays on the client."
   [args]
   (mapv (fn [a]
           (if (map? a)
             (cond-> a
-              (map? (:remote-peer a)) (update :remote-peer dissoc :token)
-              (map? (:writer a))      (update :writer dissoc :token))
+              (map? (:remote-peer a)) (update :remote-peer dissoc :token :headers-fn)
+              (map? (:writer a))      (update :writer dissoc :token :headers-fn))
             a))
         args))
 
@@ -475,11 +479,10 @@
 
      (defn- listen-once! [{:keys [conn stream] :as listener}]
        (let [{:keys [url query-params]} (listen-target listener)
-             {:keys [token]} (:remote-peer conn)
              response (http/get url
                                 {:query-params query-params
-                                 :headers (cond-> {"accept" "text/event-stream"}
-                                            token (assoc "authorization" (str "token " token)))
+                                 :headers (request-headers (:remote-peer conn)
+                                                           {"accept" "text/event-stream"})
                                  :as :stream
                                  :throw false})
              status (:status response)
@@ -784,11 +787,10 @@
      (defn- connect-listener!
        [{:keys [conn controller] :as listener}]
        (when (active-listener? listener)
-         (let [{:keys [token]} (:remote-peer conn)
-               abort (js/AbortController.)
+         (let [abort (js/AbortController.)
                target (listen-url listener)
-               headers (cond-> {"accept" "text/event-stream"}
-                         token (assoc "authorization" (str "token " token)))]
+               headers (request-headers (:remote-peer conn)
+                                        {"accept" "text/event-stream"})]
            (reset! controller abort)
            (trace :datahike/http-listen {:url target})
            (-> (js/fetch target

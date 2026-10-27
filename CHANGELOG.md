@@ -6,6 +6,12 @@ When something is added, it's typically marked *Experimental*. When the API cont
 
 ## 0.8
 
+- **The HTTP client accepts `:headers-fn` in `:remote-peer` and `:writer` ([#TODO]).**
+  A function of no arguments that returns extra request headers, run on every
+  request. It lets a client reach a server behind a gateway that wants its own
+  credential, for example an identity token for Cloud Run IAM sent in
+  `X-Serverless-Authorization`, while `authorization` still carries the
+  server's `:token`. The function is never sent to the server.
 - **Offline GC keeps what a buffered index needs ([#1123]).** With
   `:diff-buf-size`, `gc-storage!` marked the index nodes the connection held
   in memory, not the ones the stored head names. A buffered slot is rebuilt
