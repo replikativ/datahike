@@ -14,7 +14,6 @@
             #?@(:clj [[babashka.http-client :as http]
                       [cognitect.transit :as transit]
                       [jsonista.core :as j]
-                      [hasch.core :refer [uuid]]
                       [clojure.edn :as edn]
                       [datahike.datom :as dd]
                       [datahike.impl.entity :as de]]
@@ -40,26 +39,75 @@
 
 (def ^:private cbor-registry (delay (rcbor/client-registry)))
 
+(defn request-headers
+  "The headers of one request to `remote-peer`, as a map of lower-case string
+   names, in order of precedence: the peer's `:headers-fn`, then `base`, then
+   the `authorization` its `:token` asks for.
+
+   `:headers-fn` takes no arguments and returns a map of extra headers. It runs
+   on every request, so a short-lived credential, such as an identity token for
+   a gateway in front of the server, is fetched fresh each time. A header it
+   names that `base` also names loses to `base`, and the peer's `:token` keeps
+   `authorization` to itself; without a `:token`, `:headers-fn` may set
+   `authorization`. Names are compared case-insensitively."
+  [{:keys [token headers-fn]} base]
+  (let [lower (fn [m] (into {} (map (fn [[k v]] [(str/lower-case (name k)) v])) m))]
+    (merge (when headers-fn (lower (headers-fn)))
+           (lower base)
+           (when token {"authorization" (str "token " token)}))))
+
+(def url-args-limit
+  "Encoded arguments up to this many bytes travel in a GET's URL; beyond it
+   the call is a POST. Well under every intermediary's line limit."
+  2048)
+
+#?(:clj
+   (defn- call-arguments
+     "How a call's arguments travel, as the method, query parameters and body of
+      the request. A read is a GET, and a GET must not carry a body: Google's
+      front end (Cloud Run, load balancers) answers one with a 400 or closes the
+      stream, and a proxy or cache may drop it. So arguments that fit
+      `url-args-limit` go in the URL's `args` parameter, base64url-encoded in the
+      format `f` names, which the server reads in place of a body, and larger
+      ones go by POST. Any other method sends the body as it is."
+     [method f ^bytes encoded]
+     (if (= method :get)
+       (if (<= (alength encoded) url-args-limit)
+         {:method       :get
+          :query-params {"args" (.encodeToString (.withoutPadding (java.util.Base64/getUrlEncoder))
+                                                 encoded)
+                         "f"    f}}
+         {:method :post :body encoded})
+       {:method method :body encoded})))
+
+#?(:clj
+   (defn- call-request
+     "The request map for one call: the URL, the `request-headers`, the
+      arguments as `call-arguments` sends them, and `extra`. `content-type` names
+      the body's format, so it goes only when there is a body: a GET whose
+      arguments are in the URL has none, and a server that reads the header
+      would try to decode an empty body."
+     [remote-peer f mime method url encoded extra]
+     (let [args (call-arguments method f encoded)]
+       (merge {:uri     url
+               :headers (request-headers remote-peer
+                                         (cond-> {:accept mime}
+                                           (:body args) (assoc :content-type mime)))}
+              extra
+              args))))
+
 #?(:clj
    (do
      (defn request-edn [method end-point remote-peer data]
-       (let [{:keys [url token]} remote-peer
+       (let [{:keys [url]} remote-peer
              fmt                 "application/edn"
              url                 (str url "/" end-point)
              body                (remote/edn-replace-remote-literals (pr-str data))
              _                   (log/trace :datahike/http-request {:url url :end-point end-point})
              response
              (try
-               (http/request (merge
-                              {:uri     url
-                               :method  method
-                               :headers (merge {:content-type fmt
-                                                :accept       fmt}
-                                               (when token
-                                                 {:authorization (str "token " token)}))
-                               :body    body}
-                              (when (= method :get)
-                                {:query-params {"args-id" (uuid data)}})))
+               (http/request (call-request remote-peer "edn" fmt method url
+                                           (.getBytes ^String body "UTF-8") {}))
                (catch Exception e
                  (let [msg  (ex-message e)
                        data (ex-data e)
@@ -76,7 +124,7 @@
                          remote/transit-read-handlers
                          remote/transit-write-handlers))
        ([method end-point remote-peer data read-handlers write-handlers]
-        (let [{:keys [url token max-output-buffer-size]}
+        (let [{:keys [url max-output-buffer-size]}
               remote-peer
               fmt      "application/transit+json"
               url      (str url "/" end-point)
@@ -86,18 +134,8 @@
               _        (log/trace :datahike/http-request {:url url :end-point end-point})
               response
               (try
-                (http/request (merge
-                               {:method method
-                                :uri    url
-                                :headers
-                                (merge {:content-type fmt
-                                        :accept       fmt}
-                                       (when token
-                                         {:authorization (str "token " token)}))
-                                :as     :stream
-                                :body   (.toByteArray out)}
-                               (when (= method :get)
-                                 {:query-params {"args-id" (uuid data)}})))
+                (http/request (call-request remote-peer "transit" fmt method url
+                                            (.toByteArray out) {:as :stream}))
                 (catch Exception e
              ;; read exception
                   (let [msg  (ex-message e)
@@ -141,24 +179,15 @@
        ([method end-point remote-peer data]
         (request-cbor method end-point remote-peer data @cbor-registry))
        ([method end-point remote-peer data registry]
-        (let [{:keys [url token]} remote-peer
+        (let [{:keys [url]} remote-peer
               fmt      "application/cbor"
               url      (str url "/" end-point)
               out      (boring/encode data (rcbor/encode-opts registry))
               _        (log/trace :datahike/http-request {:url url :end-point end-point})
               response
               (try
-                (http/request (merge
-                               {:method  method
-                                :uri     url
-                                :headers (merge {:content-type fmt
-                                                 :accept       fmt}
-                                                (when token
-                                                  {:authorization (str "token " token)}))
-                                :as      :bytes
-                                :body    out}
-                               (when (= method :get)
-                                 {:query-params {"args-id" (uuid data)}})))
+                (http/request (call-request remote-peer "cbor" fmt method url
+                                            out {:as :bytes}))
                 (catch Exception e
              ;; A datahike error body is CBOR, decoded with the same registry so
              ;; ex-data carrying a Datom or a DB handle survives the trip.
@@ -179,7 +208,7 @@
        ([method end-point remote-peer data]
         (request-json method end-point remote-peer data remote/json-mapper))
        ([method end-point remote-peer data mapper]
-        (let [{:keys [url token]}
+        (let [{:keys [url]}
               remote-peer
               fmt      "application/json"
               url      (str url "/" end-point)
@@ -187,18 +216,8 @@
               _        (log/trace :datahike/http-request {:url url :end-point end-point})
               response
               (try
-                (http/request (merge
-                               {:method method
-                                :uri    url
-                                :headers
-                                (merge {:content-type fmt
-                                        :accept       fmt}
-                                       (when token
-                                         {:authorization (str "token " token)}))
-                                :as     :stream
-                                :body   out}
-                               (when (= method :get)
-                                 {:query-params {"args-id" (uuid data)}})))
+                (http/request (call-request remote-peer "json" fmt method url
+                                            out {:as :stream}))
                 (catch Exception e
              ;; read exception
                   (let [msg  (if-let [m (ex-message e)] m "Nothing returned. Is the server reachable?")
@@ -215,25 +234,15 @@
           response)))
 
      (defn request-json-raw [method end-point remote-peer data]
-       (let [{:keys [url token]}
+       (let [{:keys [url]}
              remote-peer
              fmt      "application/json"
              url      (str url "/" end-point)
              out      data
              _        (log/trace :datahike/http-request {:url url :end-point end-point})
              response
-             (http/request (merge
-                            {:method method
-                             :uri    url
-                             :headers
-                             (merge {:content-type fmt
-                                     :accept       fmt}
-                                    (when token
-                                      {:authorization (str "token " token)}))
-                             :as     :stream
-                             :body   out}
-                            (when (= method :get)
-                              {:query-params {"args-id" (uuid data)}})))
+             (http/request (call-request remote-peer "json" fmt method url
+                                         (.getBytes ^String out "UTF-8") {:as :stream}))
              response (slurp (:body response))]
          (log/trace :datahike/http-response {:end-point end-point})
          response))))
@@ -244,12 +253,6 @@
      [event data]
      (when (some-> js/globalThis .-datahike_http_client_trace)
        (js/console.debug (str event) (clj->js data)))))
-
-#?(:cljs
-   (def url-args-limit
-     "Encoded arguments up to this many bytes travel in a GET's URL; beyond it
-      the call is a POST. Well under every intermediary's line limit."
-     2048))
 
 #?(:cljs
    (defn- base64url
@@ -286,16 +289,16 @@
      ([method end-point remote-peer data]
       (request-cbor method end-point remote-peer data @cbor-registry))
      ([method end-point remote-peer data registry]
-      (let [{:keys [url token]} remote-peer
+      (let [{:keys [url]} remote-peer
             fmt      "application/cbor"
             body     (boring/encode data (rcbor/encode-opts registry))
             as-get?  (and (= method :get) (<= (.-length body) url-args-limit))
             target   (if as-get?
                        (str url "/" end-point "?args=" (base64url body) "&f=cbor")
                        (str url "/" end-point))
-            headers  (cond-> {"accept" fmt}
-                       (not as-get?) (assoc "content-type" fmt)
-                       token (assoc "authorization" (str "token " token)))
+            headers  (request-headers remote-peer
+                                      (cond-> {"accept" fmt}
+                                        (not as-get?) (assoc "content-type" fmt)))
             init     (cond-> {:method (if as-get? "GET" "POST") :headers headers}
                        (not as-get?) (assoc :body body))
             out      (async/promise-chan)
@@ -342,13 +345,13 @@
 (defn- without-credentials
   "The arguments as sent: a config's `:remote-peer` and `:writer` name how to
    reach a server, and their tokens belong in the authorization header, not
-   the body."
+   the body. Their `:headers-fn` is a function and stays on the client."
   [args]
   (mapv (fn [a]
           (if (map? a)
             (cond-> a
-              (map? (:remote-peer a)) (update :remote-peer dissoc :token)
-              (map? (:writer a))      (update :writer dissoc :token))
+              (map? (:remote-peer a)) (update :remote-peer dissoc :token :headers-fn)
+              (map? (:writer a))      (update :writer dissoc :token :headers-fn))
             a))
         args))
 
@@ -475,11 +478,10 @@
 
      (defn- listen-once! [{:keys [conn stream] :as listener}]
        (let [{:keys [url query-params]} (listen-target listener)
-             {:keys [token]} (:remote-peer conn)
              response (http/get url
                                 {:query-params query-params
-                                 :headers (cond-> {"accept" "text/event-stream"}
-                                            token (assoc "authorization" (str "token " token)))
+                                 :headers (request-headers (:remote-peer conn)
+                                                           {"accept" "text/event-stream"})
                                  :as :stream
                                  :throw false})
              status (:status response)
@@ -784,11 +786,10 @@
      (defn- connect-listener!
        [{:keys [conn controller] :as listener}]
        (when (active-listener? listener)
-         (let [{:keys [token]} (:remote-peer conn)
-               abort (js/AbortController.)
+         (let [abort (js/AbortController.)
                target (listen-url listener)
-               headers (cond-> {"accept" "text/event-stream"}
-                         token (assoc "authorization" (str "token " token)))]
+               headers (request-headers (:remote-peer conn)
+                                        {"accept" "text/event-stream"})]
            (reset! controller abort)
            (trace :datahike/http-listen {:url target})
            (-> (js/fetch target
