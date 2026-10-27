@@ -280,6 +280,24 @@ The remote API has the same call signatures as `datahike.api` and is located in 
                       :token   "securerandompassword"}}
 ```
 
+When a gateway in front of the server wants its own credential, such as an
+identity token for a Cloud Run service behind IAM, add `:headers-fn`. It takes
+no arguments, returns a map of extra headers, and runs on every request, so a
+short-lived token is fetched fresh each time:
+
+```clojure
+:remote-peer {:backend    :datahike-server
+              :url        "https://datahike.example.com"
+              :token      "securerandompassword"
+              :headers-fn (fn [] {"X-Serverless-Authorization"
+                                  (str "Bearer " (fetch-identity-token))})}
+```
+
+The `:token` keeps the `authorization` header to itself; without a `:token`,
+`:headers-fn` may set `authorization`. A header the client sets itself, such as
+`content-type`, wins over `:headers-fn`. The function stays on the client and
+is never sent to the server.
+
 The API will return lightweight remote pointers that follow the same semantics
 as `datahike.api`, but do not support any of Datahike's local functionality,
 i.e. you can only use them with this API.
