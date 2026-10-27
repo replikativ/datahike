@@ -6,7 +6,7 @@ When something is added, it's typically marked *Experimental*. When the API cont
 
 ## 0.8
 
-- **The JVM HTTP client no longer sends a body with a GET ([#TODO]).**
+- **The JVM HTTP client no longer sends a body with a GET ([#1141]).**
   A read went out as a GET with its arguments in the body. Google's front end
   (Cloud Run, load balancers) answers that with a 400 or closes the stream, and
   a proxy or cache may drop the body, so no read could reach a server behind
@@ -943,6 +943,7 @@ Thanks to all the contributors and the community for helping on this release. Sp
 [#980]: https://github.com/replikativ/datahike/pull/980
 [#1092]: https://github.com/replikativ/datahike/pull/1092
 [#1090]: https://github.com/replikativ/datahike/pull/1090
+[#1141]: https://github.com/replikativ/datahike/pull/1141
 [#1139]: https://github.com/replikativ/datahike/pull/1139
 [#1123]: https://github.com/replikativ/datahike/pull/1123
 [#1112]: https://github.com/replikativ/datahike/issues/1112
