@@ -597,6 +597,42 @@
     (dd/datom (.-e datom) (.-a datom) (secondary-only-hash (.-v datom)) (.-tx datom) (datom-added datom))
     datom))
 
+(declare schema-attr-current-datoms)
+
+(defn- historize-on-card-one
+  "Keep the history complete when attribute `e` stops being cardinality-many.
+
+   The two cardinalities keep history differently. A card-one assertion is
+   written to the temporal indexes when it is MADE (`temporal-upsert`), so an
+   overwrite only has to add the retraction of the old value. A card-many
+   assertion goes to the current indexes alone and moves into the temporal ones
+   when it is retracted (`with-datom`). After a many→one change the values still
+   current were asserted the card-many way, and the first card-one overwrite of
+   one of them recorded only its retraction: the assertion vanished from
+   history, which then held a retraction of a fact it never asserted.
+
+   So at the transition, which happens at most once per change, the attribute's
+   current datoms are written into the temporal indexes, restoring the card-one
+   precondition. Re-inserting a datom already there is idempotent. `db-before`
+   is the value before the schema datom applied, `db` the value after it."
+  [db db-before ^Datom datom]
+  (let [ident (let [p (get (dbi/-schema db-before) (.-e datom))] (when (keyword? p) p))]
+    (if (and ident
+             (dbi/-keep-history? db)
+             (not (dbu/no-history? db ident))
+             (dbu/multival? db-before ident)
+             (not (dbu/multival? db ident)))
+      (let [indexing? (dbu/indexing? db ident)]
+        (reduce (fn [db ^Datom d]
+                  (let [op-count (:op-count db)]
+                    (cond-> db
+                      true      (update :temporal-eavt #(di/-temporal-insert % d :eavt op-count))
+                      true      (update :temporal-aevt #(di/-temporal-insert % d :aevt op-count))
+                      indexing? (update :temporal-avet #(di/-temporal-insert % d :avet op-count))
+                      true      (update :op-count inc))))
+                db (schema-attr-current-datoms db ident)))
+      db)))
+
 (defn- with-datom [db ^Datom datom tx-meta]
   (validate-datom db datom)
   (let [{a-ident :ident} (dbu/attr-info db (.-a datom) :error-on-missing)
@@ -629,6 +665,7 @@
         true (update :hash + (hash prim))
         schema? (-> (update-schema datom)
                     update-rschema)
+        (= :db/cardinality a-ident) (historize-on-card-one db datom)
         true (update :op-count inc))
 
       (if-some [removing ^Datom (first (dbi/search db [(.-e prim) (.-a prim) (.-v prim)]))]
@@ -641,6 +678,7 @@
           has-secondary? (update-secondary-indices a-ident datom false tx-meta)
           true (update :hash - (hash removing))
           schema? (-> (remove-schema datom) update-rschema)
+          (= :db/cardinality a-ident) (historize-on-card-one db datom)
           keep-history? (update-in [:temporal-eavt] #(di/-temporal-insert % removing :eavt op-count))
           keep-history? (update-in [:temporal-eavt] #(di/-temporal-insert % prim :eavt (inc op-count)))
           (and keep-history? (effects/enabled? db)) (effects/emit a-ident :temporal :temporal-insert removing nil)
@@ -799,7 +837,8 @@
        (update :hash - (hash old-datom))
        true    (update :hash + (hash prim))
        schema? (-> (update-schema datom)
-                   update-rschema)))))
+                   update-rschema)
+       (= :db/cardinality a-ident) (historize-on-card-one db datom)))))
 
 (defn- vt-mode-attr?
   "True when a covering secondary index is in valid-time (SCD2) mode — i.e. keys
