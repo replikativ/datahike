@@ -542,7 +542,8 @@
 
 ;; ---------------------------------------------------------------------------
 ;; No-scratch streaming export (:sort? false) — for hard read-only / diskless
-;; targets. Two lazy :eavt passes, no temp files, straight to the target.
+;; targets. Schema and tx entities via AEVT, then one :eavt pass for the data;
+;; no temp files, straight to the target.
 
 (deftest no-scratch-streaming-export-test
   (testing ":sort? false round-trips (file + store) with no scratch"
@@ -871,10 +872,9 @@
             It used to be the number of TRANSITIONS between adjacent `t` values
             in the record stream, which equals the transaction count only when
             every transaction's records are contiguous. Under `:sort? false`
-            they are not: `export-records-streaming` makes two passes over
-            :eavt, emitting a transaction's schema/meta datoms in the first and
-            its data datoms in the second. Measured before the fix: 25 reported
-            for 13 actual.
+            they are not: `export-records-streaming` emits a transaction's
+            schema, tx-entity and data datoms in three separate parts of the
+            stream. Measured before the fix: 25 reported for 13 actual.
 
             The count now comes from the id-remap's `:tids`, which holds one
             entry per distinct source `t` and is already in memory."

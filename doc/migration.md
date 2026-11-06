@@ -54,7 +54,7 @@ flowchart TD
     E3["src = current db"]
     E4{":sort?"}
     E5["sorted (default): stream :eavt, encode by class,<br/>spill runs to /tmp, k-way merge<br/>(bounded memory, needs scratch)"]
-    E6["no-scratch (:sort? false): two :eavt passes —<br/>schema+tx-entity, then data<br/>(zero temp files, diskless)"]
+    E6["no-scratch (:sort? false): schema (tx order),<br/>tx entities, then data in one :eavt pass<br/>(zero temp files, diskless)"]
     E7["stream records → chunks<br/>per-chunk SHA-256 + semantic digest"]
     E8{"target"}
     E9["filesystem<br/>datoms-NNNNNN.cbor.gz"]
@@ -117,9 +117,9 @@ flowchart TD
   │  :sort? true (default)          :sort? false (no-scratch)     │
   │  needs writable scratch         zero temp files               │
   │        │                              │                       │
-  │  stream (datoms :eavt)          two lazy :eavt passes:        │
-  │  encode by CLASS (#633)          pass1 schema + tx-entity     │
-  │  spill runs → /tmp               pass2 data                   │
+  │  stream (datoms :eavt)          AEVT: schema (tx order),      │
+  │  encode by CLASS (#633)            then tx entities           │
+  │  spill runs → /tmp               one :eavt pass: data         │
   │  k-way merge (bounded)           (schema-before-data)         │
   │  → t-ordered lines               → :eavt-ordered lines        │
   │        └──────────────┬───────────────┘                       │
@@ -279,6 +279,14 @@ ordering; it is safe for the common case (`load-entities` remaps ids and allocat
 forward refs on sight), but does **not** preserve a *same-transaction* card-one
 replacement (retract + re-assert of the same `[e a]` in one tx). If your history
 has those, keep the default sorted export and give it a writable scratch path.
+
+Every historical data datom imports after the whole schema, i.e. against the
+**final** schema. So with `:history? true` the export is **refused** up front
+(`:export/unsorted-schema-history`, nothing written) when the schema changed after
+data on that attribute in a way that matters: an ident rename or move, `:db/unique`
+added, a change to `:db.cardinality/one`, `:db/noHistory`, tuple or value-type
+properties. Changes to `:db/doc`, `:db/index`, `:db/isComponent` and to
+`:db.cardinality/many` are fine.
 
 > **Do not run datahike GC during a long export** on a lazy-loading backend. GC
 > marks reachability from branch heads only and does not pin a reader-held
