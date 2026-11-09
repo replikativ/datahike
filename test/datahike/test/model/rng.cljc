@@ -58,6 +58,10 @@
   [rng coll]
   (nth coll (next-int rng (count coll))))
 
+(defmacro random-branch [rng & branches]
+  `(case (next-int ~rng ~(count branches))
+     ~@(into [] (comp (map-indexed vector) cat) branches)))
+
 (defn weighted-sample-rng
   [rng pairs]
   (let [sum (transduce (map second) + pairs)
