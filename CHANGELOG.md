@@ -6,7 +6,7 @@ When something is added, it's typically marked *Experimental*. When the API cont
 
 ## 0.8
 
-- **A call written as a vector works in every clause position ([#1149]).**
+- **A function or predicate call written as a vector is read as a call ([#1149]).**
   CBOR and JSON have no list type, so a query sent in either format arrives
   with `(count ?v)` as `[count ?v]`, and the datalog parser accepts that
   spelling in-process too. The planner read a one-argument call such as
