@@ -888,3 +888,93 @@
                     [(u ?head ?link ?budget) [(dec ?budget) ?b2]
                      [?prev :next ?link] (u ?head ?prev ?b2)]]
                   [1 9]))))))
+
+(defn- on-both-engines
+  "Assert `expected` from the base engine AND the planner. An absolute answer
+   rather than engine agreement: several cases below were wrong on BOTH."
+  [expected query & inputs]
+  (doseq [disable? [true false]]
+    (is (= expected
+           (binding [dq/*disable-planner* disable?
+                     dq/*query-result-cache?* false]
+             (set (apply d/q query inputs))))
+        (if disable? "base engine" "planner"))))
+
+(deftest test-variable-passed-twice-to-a-rule-call
+  ;; Passing one variable in two argument positions, `(selfie ?e ?e)`, says the
+  ;; two arguments are EQUAL. Both engines substitute the call's arguments for
+  ;; the head parameters, so the body's distinct `[?a :friend ?b]` became
+  ;; `[?e :friend ?e]` — a pattern with a repeated variable, which nothing
+  ;; unifies once the query-level rewrite has already run. The planner answered
+  ;; "every entity with a friend", the base engine too whenever ?e was unbound
+  ;; at the call.
+  ;;
+  ;; Only Ivan is his own friend. Bob and Carl are each other's, so they reach
+  ;; themselves through the recursive rule. Oleg is his own ENEMY.
+  (let [db (d/db-with (db/empty-db {:friend {:db/valueType :db.type/ref
+                                             :db/cardinality :db.cardinality/many}
+                                    :enemy {:db/valueType :db.type/ref
+                                            :db/cardinality :db.cardinality/many}})
+                      [{:db/id 1 :name "Ivan" :tag "x" :friend 1}
+                       {:db/id 2 :name "Oleg" :tag "x" :friend 3 :enemy 2}
+                       {:db/id 3 :name "Petr" :tag "y" :friend 5}
+                       {:db/id 4 :name "Bob" :tag "x" :friend 5}
+                       {:db/id 5 :name "Carl" :friend 4}])
+        rules '[[(selfie ?a ?b) [?a :friend ?b]]
+                [(selfie2 ?a ?b) (selfie ?a ?b)]
+                [(tagged ?a ?t ?b) [?a :friend ?b] [?a :tag ?t]]
+                [(reach ?a ?b) [?a :friend ?b]]
+                [(reach ?a ?b) [?a :friend ?c] (reach ?c ?b)]
+                [(fe ?a ?b) (or-join [?a ?b] [?a :friend ?b] [?a :enemy ?b])]
+                [(nf ?a ?b) [?a :name] [?b :name] (not-join [?a ?b] [?a :friend ?b])]
+                [(blank3 ?a ?b ?c) [?a :friend ?b] [?a :tag ?c]]]
+        everyone #{1 2 3 4 5}]
+    (testing "a non-recursive rule"
+      (on-both-engines #{1} '[:find [?e ...] :in $ % :where (selfie ?e ?e)] db rules)
+      (on-both-engines #{1} '[:find [?e ...] :in $ % :where [?e :name] (selfie ?e ?e)] db rules)
+      (on-both-engines #{1} '[:find [?e ...] :in $ % ?e :where (selfie ?e ?e)] db rules 1)
+      (on-both-engines #{} '[:find [?e ...] :in $ % ?e :where (selfie ?e ?e)] db rules 4))
+    (testing "mixed with a constant, a fresh variable and a blank"
+      (on-both-engines #{1} '[:find [?e ...] :in $ % :where (tagged ?e "x" ?e)] db rules)
+      (on-both-engines #{[1 "x"]} '[:find ?e ?t :in $ % :where (tagged ?e ?t ?e)] db rules)
+      (on-both-engines #{1} '[:find [?e ...] :in $ % :where (blank3 ?e ?e _)] db rules))
+    (testing "through a nested rule call"
+      (on-both-engines #{1} '[:find [?e ...] :in $ % :where (selfie2 ?e ?e)] db rules))
+    (testing "a recursive rule"
+      (on-both-engines #{1 4 5} '[:find [?e ...] :in $ % :where (reach ?e ?e)] db rules)
+      (on-both-engines #{1 4 5} '[:find [?e ...] :in $ % :where [?e :name] (reach ?e ?e)] db rules)
+      ;; With nothing bound, neither the rule nor the appended equality is
+      ;; runnable, and the planner emitted whichever a hash set listed first.
+      ;; The identity first raised "Cannot resolve any more clauses". Op hashes
+      ;; depend on variable names, so try a few spellings.
+      (doseq [v '[?a ?b ?c ?d ?x ?y ?z ?p ?q ?r ?s ?t]]
+        (on-both-engines #{1 4 5} [:find [v '...] :in '$ '% :where (list 'reach v v)] db rules)))
+    (testing "a rule whose body is a disjunction or a negation"
+      (on-both-engines #{1 2} '[:find [?e ...] :in $ % :where (fe ?e ?e)] db rules)
+      (on-both-engines #{2 3 4 5} '[:find [?e ...] :in $ % :where (nf ?e ?e)] db rules))
+    (testing "a call inside not, not-join and or"
+      (on-both-engines #{2 3 4 5}
+                       '[:find [?e ...] :in $ % :where [?e :name] (not (selfie ?e ?e))] db rules)
+      (on-both-engines #{2 3 4 5}
+                       '[:find [?e ...] :in $ % :where [?e :name] (not-join [?e] (selfie ?e ?e))]
+                       db rules)
+      (on-both-engines #{2 3}
+                       '[:find [?e ...] :in $ % :where [?e :name] (not (reach ?e ?e))] db rules)
+      (on-both-engines #{1 3}
+                       '[:find [?e ...] :in $ % :where [?e :name] (or (selfie ?e ?e) [?e :tag "y"])]
+                       db rules))
+    (testing "an equality written out after a call inside a negation"
+      ;; The planner ordered the identity ahead of the rule call that binds ?e,
+      ;; which is fine where the negation is seeded with the outer ?e but not on
+      ;; the fused path, which runs it unseeded: "Cannot resolve any more clauses".
+      ;; The pattern has to bind ?n for this query to take that path.
+      (on-both-engines #{["Oleg"] ["Petr"] ["Bob"] ["Carl"]}
+                       '[:find ?n :in $ % :where
+                         [?e :name ?n] (not-join [?e] (selfie ?e ?f) [(identity ?e) ?f])]
+                       db rules))
+    (testing "rules and calls spelled as vectors, as CBOR and JSON clients send them"
+      (on-both-engines #{1} '[:find [?e ...] :in $ % :where [selfie ?e ?e]] db rules)
+      (on-both-engines everyone '[:find [?e ...] :in $ % :where [selfie ?e _]] db rules)
+      (on-both-engines (into #{} (map (fn [e] [e e])) everyone)
+                       '[:find ?x ?y :in $ % :where [?x :name] [?y :name] (same ?x ?y)]
+                       db '[[[same ?a ?a] [?a :name]]]))))
