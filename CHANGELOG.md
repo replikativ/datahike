@@ -6,6 +6,17 @@ When something is added, it's typically marked *Experimental*. When the API cont
 
 ## 0.8
 
+- **A variable passed twice to a rule call makes the two arguments equal
+  ([#TODO]).** `(selfie ?e ?e)` with the rule `[(selfie ?a ?b) [?a :friend ?b]]`
+  should match only the entities that are their own friend. It matched every
+  entity that had a friend. The planner got this wrong in every query shape
+  tested, and the base engine got it wrong whenever `?e` was unbound at the
+  call. The fix covers recursive rules, nested calls, constant arguments, and
+  calls inside `not`, `not-join` and `or`. Two cases in the vector spelling
+  that CBOR and JSON clients send are also fixed: a rule head `[same ?a ?a]`
+  that repeats a variable now constrains both arguments on both engines, and
+  the planner no longer raises on a blank in a vector call `[r ?e _]`. Fixes
+  [#1150].
 - **A proximum `knn` after clauses that match nothing returns no rows
   ([#1148]).** When the clauses before `knn` bound no entity, the empty entity
   filter reached Proximum as `nil`. A top-k search threw "search-filtered
@@ -972,5 +983,6 @@ Thanks to all the contributors and the community for helping on this release. Sp
 [#1123]: https://github.com/replikativ/datahike/pull/1123
 [#1112]: https://github.com/replikativ/datahike/issues/1112
 [#1105]: https://github.com/replikativ/datahike/issues/1105
+[#1150]: https://github.com/replikativ/datahike/issues/1150
 [#1148]: https://github.com/replikativ/datahike/pull/1148
 [#1144]: https://github.com/replikativ/datahike/issues/1144
