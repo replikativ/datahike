@@ -942,7 +942,13 @@
       (on-both-engines #{1} '[:find [?e ...] :in $ % :where (selfie2 ?e ?e)] db rules))
     (testing "a recursive rule"
       (on-both-engines #{1 4 5} '[:find [?e ...] :in $ % :where (reach ?e ?e)] db rules)
-      (on-both-engines #{1 4 5} '[:find [?e ...] :in $ % :where [?e :name] (reach ?e ?e)] db rules))
+      (on-both-engines #{1 4 5} '[:find [?e ...] :in $ % :where [?e :name] (reach ?e ?e)] db rules)
+      ;; With nothing bound, neither the rule nor the appended equality is
+      ;; runnable, and the planner emitted whichever a hash set listed first.
+      ;; The identity first raised "Cannot resolve any more clauses". Op hashes
+      ;; depend on variable names, so try a few spellings.
+      (doseq [v '[?a ?b ?c ?d ?x ?y ?z ?p ?q ?r ?s ?t]]
+        (on-both-engines #{1 4 5} [:find [v '...] :in '$ '% :where (list 'reach v v)] db rules)))
     (testing "a rule whose body is a disjunction or a negation"
       (on-both-engines #{1 2} '[:find [?e ...] :in $ % :where (fe ?e ?e)] db rules)
       (on-both-engines #{2 3 4 5} '[:find [?e ...] :in $ % :where (nf ?e ?e)] db rules))
