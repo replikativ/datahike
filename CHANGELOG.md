@@ -7,7 +7,7 @@ When something is added, it's typically marked *Experimental*. When the API cont
 ## 0.8
 
 - **A variable passed twice to a rule call makes the two arguments equal
-  ([#TODO]).** `(selfie ?e ?e)` with the rule `[(selfie ?a ?b) [?a :friend ?b]]`
+  ([#1151]).** `(selfie ?e ?e)` with the rule `[(selfie ?a ?b) [?a :friend ?b]]`
   should match only the entities that are their own friend. It matched every
   entity that had a friend. The planner got this wrong in every query shape
   tested, and the base engine got it wrong whenever `?e` was unbound at the
@@ -983,6 +983,7 @@ Thanks to all the contributors and the community for helping on this release. Sp
 [#1123]: https://github.com/replikativ/datahike/pull/1123
 [#1112]: https://github.com/replikativ/datahike/issues/1112
 [#1105]: https://github.com/replikativ/datahike/issues/1105
+[#1151]: https://github.com/replikativ/datahike/pull/1151
 [#1150]: https://github.com/replikativ/datahike/issues/1150
 [#1148]: https://github.com/replikativ/datahike/pull/1148
 [#1144]: https://github.com/replikativ/datahike/issues/1144
