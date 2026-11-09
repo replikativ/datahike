@@ -6,7 +6,7 @@ When something is added, it's typically marked *Experimental*. When the API cont
 
 ## 0.8
 
-- **A call written as a vector works in every clause position ([#TODO]).**
+- **A call written as a vector works in every clause position ([#1149]).**
   CBOR and JSON have no list type, so a query sent in either format arrives
   with `(count ?v)` as `[count ?v]`, and the datalog parser accepts that
   spelling in-process too. The planner read a one-argument call such as
@@ -975,4 +975,5 @@ Thanks to all the contributors and the community for helping on this release. Sp
 [#1123]: https://github.com/replikativ/datahike/pull/1123
 [#1112]: https://github.com/replikativ/datahike/issues/1112
 [#1105]: https://github.com/replikativ/datahike/issues/1105
+[#1149]: https://github.com/replikativ/datahike/pull/1149
 [#1145]: https://github.com/replikativ/datahike/issues/1145
