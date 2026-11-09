@@ -75,8 +75,8 @@
         ;; 0.1.31 writes a seq as the tag-27 marker `clojure/seq` under the
         ;; default and `:archival` profiles. A reader older than 0.1.31 does not
         ;; know that name: the remote CBOR codec refuses it (`:on-unknown-record
-        ;; :error`), kabel and dump imports decode it SILENTLY as an
-        ;; UnknownRecord. Both ends of a CBOR wire must be on 0.1.31+.
+        ;; :error`), kabel and dump imports decode it SILENTLY as a tagged
+        ;; literal. Both ends of a CBOR wire must be on 0.1.31+.
         org.replikativ/boring                      {:mvn/version "0.1.31"}
         ;; partial-cps moved to org.replikativ (namespaces unchanged:
         ;; is.simm.partial-cps.*).

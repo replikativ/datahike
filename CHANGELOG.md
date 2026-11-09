@@ -22,8 +22,9 @@ When something is added, it's typically marked *Experimental*. When the API cont
   values are byte-identical to before. **Upgrade every CBOR peer together, the
   server and any peer that reads dumps first.** A reader on an older boring
   does not know the marker: the HTTP CBOR client and server reject it with an
-  error, while a kabel peer or an import decodes it SILENTLY as an
-  `UnknownRecord`. Transit, edn and json are unaffected.
+  error, while a kabel peer or an import decodes it SILENTLY as a
+  `#clojure/seq [...]` tagged literal, which is not `=` to the seq. Transit,
+  edn and json are unaffected.
 - **A proximum `knn` after clauses that match nothing returns no rows
   ([#1148]).** When the clauses before `knn` bound no entity, the empty entity
   filter reached Proximum as `nil`. A top-k search threw "search-filtered
