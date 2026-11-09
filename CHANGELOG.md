@@ -15,8 +15,12 @@ When something is added, it's typically marked *Experimental*. When the API cont
   calls inside `not`, `not-join` and `or`. Two cases in the vector spelling
   that CBOR and JSON clients send are also fixed: a rule head `[same ?a ?a]`
   that repeats a variable now constrains both arguments on both engines, and
-  the planner no longer raises on a blank in a vector call `[r ?e _]`. Fixes
-  [#1150].
+  the planner no longer raises on a blank in a vector call `[r ?e _]`. The
+  planner also no longer raises "Cannot resolve any more clauses" in two
+  shapes: a negation whose body follows a rule call with a function clause
+  over that call's output, and a function clause over the output of a
+  recursive rule when nothing is bound before the call, where the error used
+  to depend on the variable names. Fixes [#1150].
 - **A proximum `knn` after clauses that match nothing returns no rows
   ([#1148]).** When the clauses before `knn` bound no entity, the empty entity
   filter reached Proximum as `nil`. A top-k search threw "search-filtered
