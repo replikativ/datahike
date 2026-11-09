@@ -46,4 +46,8 @@
  [{:label "w2-def-g3x" :workload :w2 :gc :g3 :config {:exclusive? true} :gc-opts {:interval-ms 15000 :history-window-ms 60000} :wl {:seed-entities 360000 :commits 120 :sample-every 10}}
   {:label "w2-kh0-g0" :workload :w2 :gc :g0 :config {:keep-history? false} :wl {:seed-entities 360000 :commits 120 :sample-every 10}}]
 
+
+ :w1-e
+ [{:label "w1-kh0-g3x-r2" :workload :w1 :gc :g3 :config {:keep-history? false :exclusive? true} :gc-opts {:interval-ms 15000 :history-window-ms 60000} :wl {:seed-entities 40000 :commits 3000 :sample-every 250}}
+  {:label "w1-def-g3x-r2" :workload :w1 :gc :g3 :config {:exclusive? true} :gc-opts {:interval-ms 15000 :history-window-ms 60000} :wl {:seed-entities 40000 :commits 3000 :sample-every 250}}]
 }
