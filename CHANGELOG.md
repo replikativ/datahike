@@ -6,16 +6,21 @@ When something is added, it's typically marked *Experimental*. When the API cont
 
 ## 0.8
 
-- **A function or predicate call written as a vector is read as a call ([#1149]).**
-  CBOR and JSON have no list type, so a query sent in either format arrives
-  with `(count ?v)` as `[count ?v]`, and the datalog parser accepts that
-  spelling in-process too. The planner read a one-argument call such as
-  `[[count ?v] ?c]` or `[[some? ?n]]` as a data pattern with an inline lookup
-  ref and raised "Invalid entid", and read an `or` branch `[[= ?n "Ivan"]]` as a
-  branch holding the pattern `[= ?n "Ivan"]`, which answered wrongly. A
-  constant output `[[count ?n] 4]` failed to parse on both engines. Because
-  the two spellings share one cache entry, whichever ran first in a process
-  decided how the other was read. Fixes [#1145].
+- **JSON clients keep the lists in a query, and a call spelled as a vector
+  fails with a clear error ([#1149]).** JSON has no list type, so the JVM
+  client sent the call `(count ?v)` as the vector `[count ?v]`. The planner
+  read a one-argument call as an inline lookup ref ("Invalid entid") and an
+  `or` of predicates as data patterns, which answered wrongly without an
+  error. Datahike's tagged JSON now writes lists as `["!list", [...]]`. Lazy
+  seqs, which most results are, stay plain arrays. A call, rule call or
+  `not`/`or`/`and` clause written as a vector now raises an `ex-info` of
+  `:type :datahike.query/vector-call` that names the clause, wherever it
+  stands and whichever spelling ran first in the process; send such a query
+  as EDN or in a format that keeps lists. Upgrade the server before JSON
+  clients: an older server reads the tag as the vector `["!list" [...]]` and
+  raises, for example "Lookup ref attribute should be marked as :db/unique:
+  ["!list" [count ?v]]". CBOR is fixed by the boring 0.1.31 bump. Fixes
+  [#1145].
 - **A proximum `knn` after clauses that match nothing returns no rows
   ([#1148]).** When the clauses before `knn` bound no entity, the empty entity
   filter reached Proximum as `nil`. A top-k search threw "search-filtered

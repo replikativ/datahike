@@ -466,10 +466,7 @@
                    :schema-flexibility :read
                    :remote-peer        client-config})
             conn (api/connect cfg)]
-        (api/transact conn [{:db/ident :friend :db/valueType :db.type/ref
-                             :db/cardinality :db.cardinality/many}])
-        (api/transact conn [{:db/id -1 :name "Ivan" :age 15 :friend -1}
-                            {:db/id -2 :name "Oleg" :age 37 :friend -1}])
+        (api/transact conn [{:name "Ivan" :age 15} {:name "Oleg" :age 37}])
         (let [db @conn]
           (is (= 4 (api/q '[:find ?c1145 . :in $ ?v1145 :where [(count ?v1145) ?c1145]]
                           db [1 2 3 4]))
@@ -487,9 +484,9 @@
               "predicates as or branches")
           (is (= #{["Ivan"] ["Oleg"]}
                  (api/q '[:find ?r1145 :in $ %
-                          :where [?k1145 :name ?r1145] (friendly ?k1145 _) (same ?k1145 ?k1145)]
+                          :where [?k1145 :name ?r1145] (aged ?k1145 _) (same ?k1145 ?k1145)]
                         db
-                        '[[(friendly ?a ?b) [?a :friend ?b]]
+                        '[[(aged ?a ?b) [?a :age ?b]]
                           [(same ?a ?a) [?a :name _]]]))
               "a rule with a repeated head var and a blank rule-call argument")
           (is (thrown-with-msg? Exception #"must be a list, not a vector"
