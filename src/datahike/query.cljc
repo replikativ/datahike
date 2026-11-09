@@ -273,13 +273,15 @@
    clause `[(f ?x) ?y]` has a seq head and is excluded."
   [clause]
   (and (vector? clause)
-       (not (seq? (first clause)))))
+       (not (seq? (first clause)))
+       (not (analyze/vector-call-form? (first clause)))))
 
 (defn- constant-output-clause?
   "A scalar constant output is an equality constraint. Vectors remain binding
    forms; quoted collections are constants. Do not walk into call arguments."
   [clause]
-  (and (sequential? clause) (= 2 (count clause)) (seq? (first clause))
+  (and (sequential? clause) (= 2 (count clause))
+       (or (seq? (first clause)) (analyze/vector-call-form? (first clause)))
        (let [out (second clause)]
          (or (analyze/quote-form? out)
              (and (not (symbol? out)) (not (sequential? out)))))))
@@ -3669,7 +3671,7 @@
                   (#{'not 'and} h) (boolean (some scan-clause (rest c)))
                   (#{'not-join 'or-join} h) (boolean (some scan-clause (drop 2 c)))
                   (= 'or h) (boolean (some (fn [b]
-                                             (if (and (sequential? b) (sequential? (first b)))
+                                             (if (analyze/multi-clause-branch? b)
                                                (some scan-clause b)
                                                (scan-clause b)))
                                            (rest c)))
@@ -3735,8 +3737,11 @@
 
               ;; Data pattern where first elem is a lookup ref
               ;; e.g., [[:name "Ivan"] :age ?v]
+               ;; A lookup ref never starts with a symbol: `[[count ?v] ?c]` is
+               ;; the call `(count ?v)` written as a vector (#1145).
                (and (vector? clause) (vector? (first clause))
-                    (= 2 (count (first clause))))
+                    (= 2 (count (first clause)))
+                    (not (symbol? (ffirst clause))))
               ;; Inline lookup refs use strict resolution (should throw on missing entities)
                (resolve-pattern-lookup-refs resolve-db clause)
 
@@ -3753,14 +3758,14 @@
                     (#{'or 'or-join} (first clause)))
                (if (= 'or (first clause))
                  (cons 'or (map (fn [branch]
-                                  (if (and (sequential? branch) (sequential? (first branch)))
+                                  (if (analyze/multi-clause-branch? branch)
                                     (mapv (partial resolve-clause resolve-db) branch)
                                     (resolve-clause resolve-db branch)))
                                 (rest clause)))
                  (let [[_ join-vars & branches] clause]
                    (list* 'or-join join-vars
                           (map (fn [branch]
-                                 (if (and (sequential? branch) (sequential? (first branch)))
+                                 (if (analyze/multi-clause-branch? branch)
                                    (mapv (partial resolve-clause resolve-db) branch)
                                    (resolve-clause resolve-db branch)))
                                branches))))
@@ -3871,7 +3876,7 @@
       :function      (analyze/extract-vars (:binding ci))
       :and           (into #{} (mapcat clause-output-vars) (:sub-clauses ci))
       :or            (into #{} (mapcat (fn [b]
-                                         (if (and (sequential? b) (sequential? (first b)))
+                                         (if (analyze/multi-clause-branch? b)
                                            (into #{} (mapcat clause-output-vars) b)
                                            (clause-output-vars b))))
                            (:branches ci))
@@ -3883,7 +3888,7 @@
 (defn- branch-clauses
   "A branch of an or/or-join is either a single clause or a seq of them."
   [b]
-  (if (and (sequential? b) (sequential? (first b))) (vec b) [b]))
+  (if (analyze/multi-clause-branch? b) (vec b) [b]))
 
 (defn- validate-clause-bindings
   "Raise if a predicate references a var nothing can bind, or a negation

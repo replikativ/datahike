@@ -6,6 +6,16 @@ When something is added, it's typically marked *Experimental*. When the API cont
 
 ## 0.8
 
+- **A call written as a vector works in every clause position ([#TODO]).**
+  CBOR and JSON have no list type, so a query sent in either format arrives
+  with `(count ?v)` as `[count ?v]`, and the datalog parser accepts that
+  spelling in-process too. The planner read a one-argument call such as
+  `[[count ?v] ?c]` or `[[some? ?n]]` as a data pattern with an inline lookup
+  ref and raised "Invalid entid", and read an `or` branch `[[= ?n "Ivan"]]` as a
+  branch holding the pattern `[= ?n "Ivan"]`, which answered wrongly. A
+  constant output `[[count ?n] 4]` failed to parse on both engines. Because
+  the two spellings share one cache entry, whichever ran first in a process
+  decided how the other was read. Fixes [#1145].
 - **The JVM HTTP client no longer sends a body with a GET ([#1141]).**
   A read went out as a GET with its arguments in the body. Google's front end
   (Cloud Run, load balancers) answers that with a 400 or closes the stream, and
@@ -965,3 +975,4 @@ Thanks to all the contributors and the community for helping on this release. Sp
 [#1123]: https://github.com/replikativ/datahike/pull/1123
 [#1112]: https://github.com/replikativ/datahike/issues/1112
 [#1105]: https://github.com/replikativ/datahike/issues/1105
+[#1145]: https://github.com/replikativ/datahike/issues/1145

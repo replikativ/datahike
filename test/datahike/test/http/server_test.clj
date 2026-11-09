@@ -446,3 +446,50 @@
             (api/delete-database cfg))
           (finally
             (stop-server server)))))))
+
+(deftest test-call-clauses-over-cbor-and-json
+  ;; CBOR and JSON have no list type, so the call `(count ?v)` reaches the
+  ;; server as the vector `[count ?v]`. The planner read a one-argument call
+  ;; as a data pattern with an inline lookup ref and raised "Invalid entid"
+  ;; (#1145). The variable names are unique to this test: the server shares
+  ;; this process's normalized-query memo, where a list spelling sent earlier
+  ;; would decide how the vector spelling is read.
+  (doseq [fmt [:cbor :json]]
+    (testing (str (name fmt) " binding")
+      (let [server (start-server {:port 0 :join? false :dev-mode false
+                                  :token "securerandompassword"})
+            client-config {:backend :datahike-server
+                           :url     (str "http://localhost:" (local-port server))
+                           :token   "securerandompassword"
+                           :format  fmt}]
+        (try
+          (let [cfg  (api/create-database
+                      {:store              {:backend :memory :id (random-uuid)}
+                       :schema-flexibility :read
+                       :remote-peer        client-config})
+                conn (api/connect cfg)]
+            (api/transact conn [{:name "Ivan" :age 15} {:name "Oleg" :age 37}])
+            (let [db @conn]
+              (is (= 4 (api/q '[:find ?c1145 . :in $ ?v1145 :where [(count ?v1145) ?c1145]]
+                              db [1 2 3 4]))
+                  "one-argument function")
+              (is (= #{["Ivan"] ["Oleg"]}
+                     (api/q '[:find ?n1145 :where [?e1145 :name ?n1145] [(some? ?n1145)]] db))
+                  "one-argument predicate")
+              (is (= 1.0 (api/q '[:find ?g1145 . :in $ ?w1145 :where [(get ?w1145 0) ?g1145]]
+                                db [1.0 2.0]))
+                  "two-argument function")
+              (is (= #{["Oleg"]}
+                     (api/q '[:find ?m1145 :where [?f1145 :name ?m1145]
+                              (not [(clojure.string/starts-with? ?m1145 "I")])]
+                            db))
+                  "predicate inside not")
+              (is (= #{["Ivan"] ["Oleg"]}
+                     (api/q '[:find ?o1145 :where [?h1145 :name ?o1145]
+                              (or [(= ?o1145 "Ivan")] [(= ?o1145 "Oleg")])]
+                            db))
+                  "predicates as or branches"))
+            (api/release conn)
+            (api/delete-database cfg))
+          (finally
+            (stop-server server)))))))

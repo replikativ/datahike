@@ -31,6 +31,31 @@
   [x]
   (and (seq? x) (= 'quote (first x)) (= 2 (count x))))
 
+(defn vector-call-form?
+  "Is `x` a function or predicate call written as a vector, `[f arg…]`?
+
+   CBOR and JSON have no list type, so a query sent in either format arrives
+   with `(count ?v)` as `[count ?v]`, and the datalog parser accepts that
+   spelling too. Only a plain symbol in head position makes a call: a lookup
+   ref starts with an attribute, and a data pattern with a variable, `_`, a
+   `$source` or a constant (#1145)."
+  [x]
+  (and (vector? x)
+       (let [h (first x)]
+         (and (symbol? h)
+              (not (free-var? h))
+              (not= '_ h)
+              (not= \$ (first (name h)))))))
+
+(defn multi-clause-branch?
+  "Is the `or` / `or-join` branch `b` a vector of clauses, `[[?e :a ?v] [(> ?v 5)]]`,
+   rather than one clause? A vector call such as `[[= ?n \"Ivan\"]]` is one
+   predicate clause, not a branch holding the pattern `[= ?n \"Ivan\"]`."
+  [b]
+  (and (sequential? b)
+       (sequential? (first b))
+       (not (vector-call-form? (first b)))))
+
 (defn nested-expr-arg?
   "A seq (list) argument to a function/predicate clause, other than (quote x).
 
