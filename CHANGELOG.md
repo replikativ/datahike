@@ -6,6 +6,12 @@ When something is added, it's typically marked *Experimental*. When the API cont
 
 ## 0.8
 
+- **A remote query on the head commit reuses the connection's database
+  ([#1147]).** The server rebuilt a database argument from the store on every
+  request, restoring every secondary index, even when it named the commit the
+  connection already holds; with five `:proximum` indexes a trivial query took
+  seconds. The head commit now resolves to the connection's database; any
+  other commit is read from the store as before. Fixes [#1146].
 - **Offline GC keeps what a buffered index needs ([#1123]).** With
   `:diff-buf-size`, `gc-storage!` marked the index nodes the connection held
   in memory, not the ones the stored head names. A buffered slot is rebuilt
@@ -930,6 +936,8 @@ Thanks to all the contributors and the community for helping on this release. Sp
 [#980]: https://github.com/replikativ/datahike/pull/980
 [#1092]: https://github.com/replikativ/datahike/pull/1092
 [#1090]: https://github.com/replikativ/datahike/pull/1090
+[#1147]: https://github.com/replikativ/datahike/pull/1147
+[#1146]: https://github.com/replikativ/datahike/issues/1146
 [#1123]: https://github.com/replikativ/datahike/pull/1123
 [#1112]: https://github.com/replikativ/datahike/issues/1112
 [#1105]: https://github.com/replikativ/datahike/issues/1105
