@@ -153,20 +153,28 @@
        #'gc/gc-storage!
        (fn [_]
          (fn [& args]
-           (swap! gc-stats update :inflight inc)
-           (let [t0 (System/nanoTime)
-                 ch (apply orig-gc args)]
-             (async/go
-               (let [r (async/<! ch)
-                     dt (/ (- (System/nanoTime) t0) 1e6)]
-                 (swap! gc-stats #(-> %
-                                      (update :inflight dec)
-                                      (update :cycles conj
-                                              {:t (System/currentTimeMillis) :ms dt
-                                               :swept (if (coll? r) (count r) -1)
-                                               :error (when (instance? Throwable r)
-                                                        (.getMessage ^Throwable r))})))
-                 r))))))
+           ;; gc-storage!'s 1- and 2-arities re-enter through this var with 3
+           ;; args, so only the 3-arity call is a cycle; the others pass through
+           ;; (counting both double-counted every background cycle).
+           (if (not= 3 (count args))
+             (apply orig-gc args)
+             (do
+               (swap! gc-stats update :inflight inc)
+               (let [t0 (System/nanoTime)
+                     start (System/currentTimeMillis)
+                     ch (apply orig-gc args)]
+                 (async/go
+                   (let [r (async/<! ch)
+                         dt (/ (- (System/nanoTime) t0) 1e6)]
+                     (swap! gc-stats #(-> %
+                                          (update :inflight dec)
+                                          (update :cycles conj
+                                                  {:start start :t (System/currentTimeMillis) :ms dt
+                                                   :remove-before (.getTime ^Date (second args))
+                                                   :swept (if (coll? r) (count r) -1)
+                                                   :error (when (instance? Throwable r)
+                                                            (.getMessage ^Throwable r))})))
+                     r))))))))
       (alter-var-root
        #'online-gc/online-gc!
        (fn [_]
@@ -424,6 +432,13 @@
                             :history_window_ms :interval_ms]]
           (spit csv-file (str (str/join "," (map name csv-cols)) "\n"
                               (str/join "\n" (map csv-line @rows)) "\n"))
+          (spit (io/file out-dir (str label "-gc.csv"))
+                (str "start_ms,end_ms,ms,remove_before_ms,swept,error\n"
+                     (str/join "\n" (map (fn [{:keys [start t ms remove-before swept error]}]
+                                           (str/join "," [start t (format "%.0f" (double ms)) remove-before swept
+                                                          (str/replace (str error) "," ";")]))
+                                         (:cycles @gc-stats)))
+                     "\n"))
           (when-not (.exists summary-file)
             (spit summary-file (str (str/join "," (map name summary-cols)) "\n")))
           (spit summary-file (str (str/join "," (map #(let [v (get summary %)]
