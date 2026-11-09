@@ -91,60 +91,60 @@
    :decode-key-fn true
    :modules       [(tagged-module
                     (merge
-                      json-base-handlers
-                      {datahike.connector.Connection
-                       {:tag    "!datahike/Connection"
-                        :encode (write-to-generator #(config->store-id (:config @(:wrapped-atom %))))
-                        :decode datahike.readers/connection-from-reader}
+                     json-base-handlers
+                     {datahike.connector.Connection
+                      {:tag    "!datahike/Connection"
+                       :encode (write-to-generator #(config->store-id (:config @(:wrapped-atom %))))
+                       :decode datahike.readers/connection-from-reader}
 
-                       datahike.datom.Datom
-                       {:tag    "!datahike/Datom"
-                        :encode (write-to-generator
-                                 (fn [^Datom d]
-                                   [(.-e d) (.-a d) (.-v d) (dd/datom-tx d) (dd/datom-added d)]))
-                        :decode datahike.readers/datom-from-reader}
+                      datahike.datom.Datom
+                      {:tag    "!datahike/Datom"
+                       :encode (write-to-generator
+                                (fn [^Datom d]
+                                  [(.-e d) (.-a d) (.-v d) (dd/datom-tx d) (dd/datom-added d)]))
+                       :decode datahike.readers/datom-from-reader}
 
-                       datahike.db.TxReport
-                       {:tag    "!datahike/TxReport"
-                        :encode (write-to-generator #(into {} %))
-                        :decode datahike.db/map->TxReport}
+                      datahike.db.TxReport
+                      {:tag    "!datahike/TxReport"
+                       :encode (write-to-generator #(into {} %))
+                       :decode datahike.db/map->TxReport}
 
-                       datahike.db.DB
-                       {:tag    "!datahike/DB"
-                        :encode (write-to-generator db->map)
-                        :decode datahike.readers/db-from-reader}
+                      datahike.db.DB
+                      {:tag    "!datahike/DB"
+                       :encode (write-to-generator db->map)
+                       :decode datahike.readers/db-from-reader}
 
-                       datahike.db.HistoricalDB
-                       {:tag    "!datahike/HistoricalDB"
-                        :encode (write-to-generator
-                                 (fn [{:keys [origin-db]}]
-                                   {:origin origin-db}))
-                        :decode datahike.readers/history-from-reader}
+                      datahike.db.HistoricalDB
+                      {:tag    "!datahike/HistoricalDB"
+                       :encode (write-to-generator
+                                (fn [{:keys [origin-db]}]
+                                  {:origin origin-db}))
+                       :decode datahike.readers/history-from-reader}
 
-                       datahike.db.SinceDB
-                       {:tag    "!datahike/SinceDB"
-                        :encode (write-to-generator
-                                 (fn [{:keys [origin-db time-point]}]
-                                   {:origin     origin-db
-                                    :time-point time-point}))
-                        :decode datahike.readers/since-from-reader}
+                      datahike.db.SinceDB
+                      {:tag    "!datahike/SinceDB"
+                       :encode (write-to-generator
+                                (fn [{:keys [origin-db time-point]}]
+                                  {:origin     origin-db
+                                   :time-point time-point}))
+                       :decode datahike.readers/since-from-reader}
 
-                       datahike.db.AsOfDB
-                       {:tag    "!datahike/AsOfDB"
-                        :encode (write-to-generator
-                                 (fn [{:keys [origin-db time-point]}]
-                                   {:origin     origin-db
-                                    :time-point time-point}))
-                        :decode datahike.readers/as-of-from-reader}
+                      datahike.db.AsOfDB
+                      {:tag    "!datahike/AsOfDB"
+                       :encode (write-to-generator
+                                (fn [{:keys [origin-db time-point]}]
+                                  {:origin     origin-db
+                                   :time-point time-point}))
+                       :decode datahike.readers/as-of-from-reader}
 
-                       datahike.impl.entity.Entity
-                       {:tag    "!datahike/Entity"
-                        :encode (write-to-generator
-                                 (fn [^Entity e]
-                                   (assoc (into {} e)
-                                          :db (.-db e)
-                                          :eid (.-eid e))))
-                        :decode datahike.readers/entity-from-reader}}))]})
+                      datahike.impl.entity.Entity
+                      {:tag    "!datahike/Entity"
+                       :encode (write-to-generator
+                                (fn [^Entity e]
+                                  (assoc (into {} e)
+                                         :db (.-db e)
+                                         :eid (.-eid e))))
+                       :decode datahike.readers/entity-from-reader}}))]})
 
 (def mapper (j/object-mapper mapper-opts))
 
