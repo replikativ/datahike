@@ -21,7 +21,7 @@
                  :commit-graph? bool    ; false => :commit-graph? false
                  :exclusive? bool}      ; :writer-ownership :exclusive (GC floor 0)
      :gc        :g0 none | :g1 online | :g2 background full | :g3 background
-                full with history window | :g4 g1+g2
+                full with history window | :g4 g1+g2 | :g4w g1+g3
                 (every run additionally ends with the G5 one-off collections, see
                 below, so G5 needs no run of its own)
      :gc-opts   {:interval-ms 15000 :history-window-ms 60000}
@@ -130,7 +130,7 @@
     fuse? (assoc :fuse-index-roots? true)
     (false? commit-graph?) (assoc :commit-graph? false)
     exclusive? (assoc :writer {:backend :self :writer-ownership :exclusive})
-    (#{:g1 :g4} gc) (assoc :online-gc {:enabled? true :grace-period-ms 0})))
+    (#{:g1 :g4 :g4w} gc) (assoc :online-gc {:enabled? true :grace-period-ms 0})))
 
 ;; ---------------------------------------------------------------------------
 ;; instrumentation
@@ -275,7 +275,7 @@
   (let [wl (merge (default-workloads workload) wl)
         {:keys [seed-entities seed-tx-entities commits sample-every]} wl
         {:keys [interval-ms history-window-ms] :or {interval-ms 15000}} gc-opts
-        history-window-ms (if (= gc :g3) (or history-window-ms 60000) nil)
+        history-window-ms (if (#{:g3 :g4w} gc) (or history-window-ms 60000) nil)
         label (or label (str (name workload) "-" (config-label config) "-" (name gc)))
         path (str store-root "/" label)
         csv-file (io/file out-dir (str label ".csv"))
@@ -314,7 +314,7 @@
               _ (d/transact conn schema)
               ;; background full GC (G2/G3/G4) starts before the seed, like a
               ;; deployment that runs it from day one
-              bg-stop (when (#{:g2 :g3 :g4} gc)
+              bg-stop (when (#{:g2 :g3 :g4 :g4w} gc)
                         (gc/start-background-gc! conn {:interval-ms interval-ms
                                                        :history-window-ms history-window-ms}))
               tx-ns (atom 0)
