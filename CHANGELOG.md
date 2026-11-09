@@ -7,12 +7,12 @@ When something is added, it's typically marked *Experimental*. When the API cont
 ## 0.8
 
 - **A proximum `knn` filtered after retractions finds every survivor
-  ([#TODO]).** Proximum built the filter for a top-k search with room for only
+  ([#1152]).** Proximum built the filter for a top-k search with room for only
   as many vectors as were LIVE, but vector ids are never reused, so after
   deletes a surviving entity's id could fall outside it and never match: with
   100 vectors and the 60 oldest retracted, a `knn` restricted to the newest
   three returned nothing. Fixed in proximum 0.1.39.
-- **Seqs survive CBOR as seqs ([#TODO]).** With boring 0.1.31, a list, lazy
+- **Seqs survive CBOR as seqs ([#1152]).** With boring 0.1.31, a list, lazy
   seq or cons is written as the tag-27 `clojure/seq` marker on the HTTP CBOR
   wire, on the kabel wire and in export dumps, and reads back as a seq rather
   than a vector. A query's call forms such as `(count ?v)` now reach the server
@@ -993,3 +993,4 @@ Thanks to all the contributors and the community for helping on this release. Sp
 [#1105]: https://github.com/replikativ/datahike/issues/1105
 [#1148]: https://github.com/replikativ/datahike/pull/1148
 [#1144]: https://github.com/replikativ/datahike/issues/1144
+[#1152]: https://github.com/replikativ/datahike/pull/1152
