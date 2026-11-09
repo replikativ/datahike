@@ -6,6 +6,13 @@ When something is added, it's typically marked *Experimental*. When the API cont
 
 ## 0.8
 
+- **A proximum `knn` after clauses that match nothing returns no rows
+  ([#TODO]).** When the clauses before `knn` bound no entity, the empty entity
+  filter reached Proximum as `nil`. A top-k search threw "search-filtered
+  requires a predicate fn, Set, or ArrayBitSet", for both the `[?e ...]` and
+  `[[?e ?d]]` binding forms and in a database with no entities. A candidate
+  scan read `nil` as no filter and returned unfiltered candidates. Both now
+  return an empty result without calling Proximum. Fixes [#1144].
 - **The JVM HTTP client no longer sends a body with a GET ([#1141]).**
   A read went out as a GET with its arguments in the body. Google's front end
   (Cloud Run, load balancers) answers that with a 400 or closes the stream, and
@@ -965,3 +972,4 @@ Thanks to all the contributors and the community for helping on this release. Sp
 [#1123]: https://github.com/replikativ/datahike/pull/1123
 [#1112]: https://github.com/replikativ/datahike/issues/1112
 [#1105]: https://github.com/replikativ/datahike/issues/1105
+[#1144]: https://github.com/replikativ/datahike/issues/1144
