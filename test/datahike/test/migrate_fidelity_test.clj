@@ -271,3 +271,29 @@
         (is (= (vec (:eavt @src)) (vec (:eavt @tgt))))
         (is (= (vec (:temporal-eavt @src)) (vec (:temporal-eavt @tgt)))))
       (teardown src) (teardown tgt))))
+
+(deftest seq-values-come-back-as-seqs
+  (testing "Under :schema-flexibility :read a value may be any collection. A
+            list or lazy seq used to come back from a dump as a VECTOR -- equal
+            under `=`, but no longer `seq?`. boring 0.1.31 marks seqs in the
+            :archival profile, so the restored value is a seq again."
+    (let [cfg {:store {:backend :memory :id (java.util.UUID/randomUUID)}
+               :keep-history? true :schema-flexibility :read}
+          src (utils/setup-db cfg)
+          _ (d/transact src [{:db/id 1 :v/vec [1 2 3]}])
+          _ (d/transact src [[:db/add 1 :v/list (list 4 5 6)]
+                             [:db/add 1 :v/lazy (map inc [1 2])]
+                             [:db/add 1 :v/map {:k (list 7 8)}]])
+          path (str (System/getProperty "java.io.tmpdir") "/dh-fid-seq-" (utils/get-time))
+          _ (m/export-db @src path {:history? true})
+          tgt (utils/setup-db (assoc-in cfg [:store :id] (java.util.UUID/randomUUID)))]
+      (m/import-db tgt path {})
+      (let [e (d/pull @tgt '[*] 1)]
+        (is (= {:db/id 1 :v/vec [1 2 3] :v/list '(4 5 6) :v/lazy '(2 3)
+                :v/map {:k '(7 8)}}
+               e))
+        (is (vector? (:v/vec e)))
+        (is (seq? (:v/list e)))
+        (is (seq? (:v/lazy e)))
+        (is (seq? (get-in e [:v/map :k]))))
+      (teardown src) (teardown tgt))))
