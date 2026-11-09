@@ -13,7 +13,7 @@ GCS) every object is a separate network round-trip and a separate billed
 request, so the number of objects per commit — the *write amplification* — is the
 dominant cost and the dominant latency.
 
-This page describes three independent, composable options that reduce that
+This page describes four independent, composable options that reduce that
 object count. They matter most for small, frequent commits against object
 storage; on a local filesystem they change little and can be left off.
 
@@ -22,6 +22,7 @@ storage; on a local filesystem they change little and can be left off.
 | Diff buffering | `:index-config {:diff-buf-size N}` | the interior/leaf node PUTs of a small commit |
 | Root fusion | `:fuse-index-roots? true` | one root-node PUT per index (and one GET on cold open) |
 | Commit-graph opt-out | `:commit-graph? false` | the per-commit provenance record |
+| Superseded-only history | `:index-config {:temporal-superseded-only? true}` | the three temporal root PUTs of an append-only commit, and half the stored bytes |
 
 With all three enabled on a small commit, the write collapses toward a **single
 object write** — the new branch-head record — which is the round-trip floor for a
@@ -109,6 +110,49 @@ fusion inlines the entire index — the commit collapses to just its records.
   reference. The root is still inlined in the record (saving the cold-open GET);
   it is simply also written as an object. Without crypto-hash, addresses are
   unique per node and the root PUT is dropped outright.
+
+## Superseded-only history
+
+```clojure
+{:store {:backend :file ...}
+ :keep-history? true
+ :index-config {:temporal-superseded-only? true}}   ;; default false
+```
+
+With `:keep-history? true` a database keeps three temporal indexes next to the live
+ones. By default a **cardinality-one** assertion is written to both: the temporal
+indexes are a full copy of the live ones plus everything that was ever superseded. For
+append-only data (logs, conversations, ledgers, events) nothing is ever superseded, so
+the copy carries no information, yet every commit rewrites six index roots instead of
+three and the store is twice the size.
+
+Under this option the temporal indexes hold **only what the live indexes no longer
+hold**: when a value is superseded or retracted, its original assertion (with its
+original transaction) and the retraction move into history; a value that is still
+current lives in the live index alone. `history`, `as-of` and `since` read the union of
+both, which is what they already do for cardinality-many and `:db/noHistory`
+attributes; this option extends that layout to cardinality-one.
+
+Measured on a file store with `:diff-buf-size 128`, 40k datoms, no retractions: a
+one-row commit goes from 7 objects / 80 KB to **4 objects / 41 KB**, the store from
+42.5 MB to **21.2 MB**.
+
+**Tradeoffs and behaviour**
+
+- **Same answers.** `history`, `as-of` at every transaction, `since`, history queries and
+  purge are tested to agree with the default layout over asserts, supersedes, retracts,
+  re-asserts (including of a previously held value), cardinality-many, `:db/noHistory`,
+  same-transaction assert+retract and `retractEntity`.
+- **History reads merge two slices** where a cardinality-one read used one. Point lookups
+  and range scans over current data are unaffected.
+- **Create-time-fixed, and one-way.** The flag is adopted from the store on reconnect. A
+  store created with it **cannot be opened without it, not even with
+  `:allow-unsafe-config`**: read as a full-copy store it would silently lose every current
+  value from history. The other direction is harmless (the default layout is a superset),
+  and an older Datahike refuses such a store through the stored-version check.
+- **`d/metrics`** `:temporal-count` then counts superseded and retracted rows, not
+  history rows including live copies.
+- **Backends.** Tested on persistent-set and hitchhiker-tree.
 
 ## Commit-graph opt-out
 
