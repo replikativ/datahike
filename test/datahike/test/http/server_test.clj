@@ -406,3 +406,43 @@
                             (start-server {:port 23201 :host "127.0.0.1" :join? false :dev-mode false
                                            :token "securerandompassword"
                                            :create-database {:store {:backend :s3}}}))))))
+
+(deftest test-scalar-find-over-http
+  ;; A scalar find (`:find ?x .`) returns one bare value, not a collection.
+  ;; The server must encode it in the negotiated format like any other result.
+  ;; A String is itself a ring streamable body, so it used to go out raw and
+  ;; the client could not parse it.
+  (doseq [[port fmt] [[23193 :transit] [23194 :edn] [23195 :json] [23196 :cbor]]]
+    (testing (str "scalar find, " (name fmt) " binding")
+      (let [client-config {:backend :datahike-server
+                           :url     (str "http://localhost:" port)
+                           :token   "securerandompassword"
+                           :format  fmt}
+            server        (start-server {:port port :join? false :dev-mode false
+                                         :token "securerandompassword"})]
+        (try
+          (let [cfg  (api/create-database
+                      {:store              {:backend :memory
+                                            :id      (java.util.UUID/fromString
+                                                      (format "de110000-0000-0000-0000-0000000001%02d" (- port 23193)))}
+                       :schema-flexibility :read
+                       :remote-peer        client-config})
+                conn (api/connect cfg)]
+            (api/transact conn [{:name "Peter" :age 42}])
+            (let [db @conn]
+              (is (= "Peter" (api/q '[:find ?n . :where [?e :name ?n]] db))
+                  "scalar string")
+              (is (= 42 (api/q '[:find ?a . :where [?e :age ?a]] db))
+                  "scalar long")
+              (is (= 1 (api/q '[:find ?e . :where [?e :name "Peter"]] db))
+                  "scalar entity id")
+              (is (= ["Peter"] (api/q '[:find [?n ...] :where [?e :name ?n]] db))
+                  "collection of strings"))
+            (when-not (= fmt :json)
+              (api/transact conn [{:kind :person}])
+              (is (= :person (api/q '[:find ?k . :where [?e :kind ?k]] @conn))
+                  "scalar keyword"))
+            (api/release conn)
+            (api/delete-database cfg))
+          (finally
+            (stop-server server)))))))

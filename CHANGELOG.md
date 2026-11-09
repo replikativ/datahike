@@ -12,6 +12,12 @@ When something is added, it's typically marked *Experimental*. When the API cont
   connection already holds; with five `:proximum` indexes a trivial query took
   seconds. The head commit now resolves to the connection's database; any
   other commit is read from the store as before. Fixes [#1146].
+- **A scalar string result reaches the HTTP client intact ([#1143]).** A
+  `:find ?x .` query whose result is a string went out as raw text rather than
+  in the negotiated format, because ring treats a `String` as an already
+  encoded body. The client could not parse it: transit and json failed with a
+  `JsonParseException`, cbor with a truncated-input error, and edn read the
+  bare text. Fixes [#1142].
 - **Offline GC keeps what a buffered index needs ([#1123]).** With
   `:diff-buf-size`, `gc-storage!` marked the index nodes the connection held
   in memory, not the ones the stored head names. A buffered slot is rebuilt
@@ -936,6 +942,8 @@ Thanks to all the contributors and the community for helping on this release. Sp
 [#980]: https://github.com/replikativ/datahike/pull/980
 [#1092]: https://github.com/replikativ/datahike/pull/1092
 [#1090]: https://github.com/replikativ/datahike/pull/1090
+[#1143]: https://github.com/replikativ/datahike/pull/1143
+[#1142]: https://github.com/replikativ/datahike/issues/1142
 [#1147]: https://github.com/replikativ/datahike/pull/1147
 [#1146]: https://github.com/replikativ/datahike/issues/1146
 [#1123]: https://github.com/replikativ/datahike/pull/1123
