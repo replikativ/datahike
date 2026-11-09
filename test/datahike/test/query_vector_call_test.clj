@@ -100,12 +100,12 @@
                                           [[clojure.string/upper-case ?n] ?u]
                                           [[clojure.string/lower-case ?n] ?u])]
                       db)))
-          (is (= #{["Oleg"]}
+          (is (= #{["Ivan"] ["Petr"]}
                  (run planner? '[:find ?n :where [?e :name ?n]
-                                 (or [[?e :age 37] [[some? ?n]]]
-                                     [[?e :age 99]])]
+                                 (or (and [?e :age ?a] [[> ?a 38]])
+                                     (and [?e :age ?a] [[< ?a 16]]))]
                       db))
-              "a branch of several clauses is still a vector of clauses"))
+              "inside an and branch"))
         (testing "in a rule body"
           (is (= #{["OLEG"] ["PETR"]}
                  (run planner? '[:find ?u :in $ % :where (adult ?e) (shout ?e ?u)]
