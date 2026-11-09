@@ -6,6 +6,12 @@ When something is added, it's typically marked *Experimental*. When the API cont
 
 ## 0.8
 
+- **The HTTP client accepts `:headers-fn` in `:remote-peer` and `:writer` ([#1139]).**
+  A function of no arguments that returns extra request headers, run on every
+  request. It lets a client reach a server behind a gateway that wants its own
+  credential, for example an identity token for Cloud Run IAM sent in
+  `X-Serverless-Authorization`, while `authorization` still carries the
+  server's `:token`. The function is never sent to the server.
 - **A remote query on the head commit reuses the connection's database
   ([#1147]).** The server rebuilt a database argument from the store on every
   request, restoring every secondary index, even when it named the commit the
@@ -942,6 +948,7 @@ Thanks to all the contributors and the community for helping on this release. Sp
 [#980]: https://github.com/replikativ/datahike/pull/980
 [#1092]: https://github.com/replikativ/datahike/pull/1092
 [#1090]: https://github.com/replikativ/datahike/pull/1090
+[#1139]: https://github.com/replikativ/datahike/pull/1139
 [#1143]: https://github.com/replikativ/datahike/pull/1143
 [#1142]: https://github.com/replikativ/datahike/issues/1142
 [#1147]: https://github.com/replikativ/datahike/pull/1147
