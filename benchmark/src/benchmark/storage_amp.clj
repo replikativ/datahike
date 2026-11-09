@@ -95,13 +95,13 @@
     (.toString sb)))
 
 (defn- new-entity [^Random r id]
-  {:e/id id :e/name (rand-name r) :e/n (.nextInt r 1000000)
+  {:e/id id :e/name (rand-name r) :e/n (long (.nextInt r 1000000))
    :e/score (.nextDouble r) :e/tag (nth tags (.nextInt r (count tags)))})
 
 (defn- update-datom [^Random r n-entities]
   (let [id (.nextInt r (int n-entities))]
     (case (.nextInt r 3)
-      0 [:db/add [:e/id id] :e/n (.nextInt r 1000000)]
+      0 [:db/add [:e/id id] :e/n (long (.nextInt r 1000000))]
       1 [:db/add [:e/id id] :e/score (.nextDouble r)]
       2 [:db/add [:e/id id] :e/name (rand-name r)])))
 
@@ -176,7 +176,9 @@
 
 (defn- wchar []
   (try
-    (some->> (slurp "/proc/self/io") str/split-lines
+    ;; not `slurp`: /proc files report length 0 and its stream copy fails
+    (some->> (java.nio.file.Files/readAllLines
+              (java.nio.file.Paths/get "/proc/self/io" (into-array String [])))
              (some #(when (str/starts-with? % "wchar:") %))
              (re-find #"\d+") Long/parseLong)
     (catch Exception _ -1)))
@@ -441,6 +443,11 @@
         (run-one! (merge {:store-root store-root :out-dir out-dir} s))
         (catch Throwable e
           (println "RUN FAILED" (:label s) (.getMessage e))
-          (.printStackTrace e))))
+          (.printStackTrace e)
+          ;; never leave a failed run's store behind
+          (when-let [l (:label s)]
+            (let [dir (io/file store-root l)]
+              (when (.exists dir)
+                (doseq [f (reverse (file-seq dir))] (.delete ^File f))))))))
     (shutdown-agents)
     (System/exit 0)))
