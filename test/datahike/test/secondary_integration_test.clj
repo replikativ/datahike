@@ -1184,6 +1184,13 @@
               (is (= #{} (d/q retrieval-q @conn qvec)) "[[?e ?d]]")
               (is (= 3 (count (d/q bare-q @conn qvec)))
                   "an unfiltered knn still finds the documents")
+              (is (= #{["north"]}
+                     (d/q '[:find ?n :in $ ?q
+                            :where [?e :doc/name "north"]
+                            [(datahike.index.secondary.proximum/knn :idx/emb ?q 3) [?e ...]]
+                            [?e :doc/name ?n]]
+                          @conn qvec))
+                  "a non-empty filter admits only its entities")
               (finally (d/release conn) (d/delete-database cfg)))))
         (testing "a database with no entities"
           (let [{:keys [cfg conn]} (proximum-knn-db [])]
@@ -1199,6 +1206,7 @@
   (when proximum-available?
     (let [qspec {:vector (float-array [1.0 0.0 0.0 0.0]) :k 3}
           empty-bs (es/entity-bitset)
+          only-2 (es/entity-bitset-from-longs [2])
           idx (sec/create-index :proximum
                                 {:attrs #{:person/embedding}
                                  :dim 4 :distance :cosine
@@ -1209,15 +1217,25 @@
               (sec/-transact! tidx {:datom (datahike.datom/datom e :person/embedding
                                                                  (float-array v))
                                     :added? true}))]
+      (testing "the filter view handed to Proximum is never nil"
+        (is (some? (es/entity-bitset-iterable empty-bs)))
+        (is (= [] (vec (es/entity-bitset-iterable empty-bs))))
+        (let [view (es/entity-bitset-iterable only-2)]
+          (is (= [2] (vec view)))
+          (is (= [2] (vec view)) "a second pass sees the same ids")))
       (testing "transient index"
         (is (zero? (es/entity-bitset-cardinality (sec/-search tidx qspec empty-bs))))
-        (is (= [] (sec/-slice-ordered tidx qspec empty-bs nil :asc nil))))
+        (is (= [] (sec/-slice-ordered tidx qspec empty-bs nil :asc nil)))
+        (is (= [2] (vec (es/entity-bitset-seq (sec/-search tidx qspec only-2))))))
       (let [pidx (sec/-persistent! tidx)]
         (testing "persistent index"
           (is (zero? (es/entity-bitset-cardinality (sec/-search pidx qspec empty-bs))))
           (is (= [] (sec/-slice-ordered pidx qspec empty-bs nil :asc nil)))
           (is (= 2 (count (sec/-slice-ordered pidx qspec nil nil :asc nil)))
-              "the index holds both vectors"))
+              "the index holds both vectors")
+          (is (= [2] (vec (es/entity-bitset-seq (sec/-search pidx qspec only-2)))))
+          (is (= [2] (mapv :entity-id (sec/-slice-ordered pidx qspec only-2 nil :asc nil)))
+              "the nearest vector, entity 1, is filtered out"))
         (testing "candidate scan answers an exhausted empty page"
           (let [page (sec/-candidate-page pidx {:vector (:vector qspec)
                                                 :candidate-limit 3}
@@ -1225,7 +1243,13 @@
             (is (= 1 (count (sec/validate-candidate-scan [page]))))
             (is (= [] (:candidates page)))
             (is (true? (:exhausted? page)))
-            (is (nil? (:continuation page)))))))))
+            (is (nil? (:continuation page)))))
+        (testing "candidate scan applies a non-empty filter"
+          (let [page (sec/-candidate-page pidx {:vector (:vector qspec)
+                                                :candidate-limit 3}
+                                          only-2 {:limit 2})]
+            (is (= [2] (mapv :entity-id (:candidates page)))
+                "the nearest vector, entity 1, is filtered out")))))))
 
 ;; ---------------------------------------------------------------------------
 ;; Stratum Entity-Filter Aggregate Tests

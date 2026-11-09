@@ -59,9 +59,10 @@
         ;; Proximum translates this lazy Roaring64 ID view directly into its
         ;; native internal-id bitset. Do not materialize a second boxed HashSet;
         ;; sparse SQL filters then cost O(matches), while the native bitset is the
-        ;; one dense representation HNSW actually consumes.
+        ;; one dense representation HNSW actually consumes. The view is never
+        ;; nil: Proximum reads a nil filter as an error or as no filter.
         (prox/search-filtered prox-idx vector k
-                              (es/entity-bitset-seq entity-filter) opts)
+                              (es/entity-bitset-iterable entity-filter) opts)
         (prox/search prox-idx vector k opts)))))
 
 (defn- close-generation! [generation]
@@ -351,7 +352,7 @@
                         scan-mode (assoc :mode scan-mode)
                         entity-filter
                         (assoc :entity-filter
-                               (es/entity-bitset-seq entity-filter))
+                               (es/entity-bitset-iterable entity-filter))
                         (some? strict-order?) (assoc :strict-order? strict-order?)
                         ef (assoc :ef ef)
                         query-id (assoc :query-id query-id)
