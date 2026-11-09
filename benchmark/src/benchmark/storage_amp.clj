@@ -6,9 +6,14 @@
    fresh store, and writes one CSV time series per run plus one summary row per
    run to `<out-dir>/summary.csv` (appended).
 
-   Run (one EDN run spec, or a vector of them):
+   Run (one EDN run spec, a vector of them, or a batch keyword from
+   benchmark/storage_amp_matrix.edn — the matrix the report was made from):
+     AMP_STORE_ROOT=/real/disk/stores AMP_OUT_DIR=/some/out \\
+       clj -J-Xmx3g -M:bench -m benchmark.storage-amp :w1-a
      clj -J-Xmx3g -M:bench -m benchmark.storage-amp \\
        '{:workload :w1 :gc :g0 :config {} :label \"w1-default-g0\"}'
+   Store dirs default to /tmp/dh-storage-amp/stores: put AMP_STORE_ROOT on a
+   real disk (a tmpfs /tmp holds the stores in RAM, and G0 runs grow to GBs).
 
    Run spec keys
      :label     string, names the CSV and the store directory
@@ -64,13 +69,13 @@
 ;; workloads
 
 (def default-workloads
-  {;; small app: a ~25 MB-live database, then many 1-10 datom commits
-   :w1 {:seed-entities 100000 :seed-tx-entities 2000
-        :commits 20000 :sample-every 1000
+  {;; small app: ~22 MB live with history (~550 B/entity), then 1-10 datom commits
+   :w1 {:seed-entities 40000 :seed-tx-entities 2000
+        :commits 3000 :sample-every 250
         :insert-ratio 0.5 :min-datoms 1 :max-datoms 10}
    ;; steady medium: ~200 MB live, 100-1000 datom batches
-   :w2 {:seed-entities 800000 :seed-tx-entities 2000
-        :commits 2000 :sample-every 100
+   :w2 {:seed-entities 360000 :seed-tx-entities 2000
+        :commits 120 :sample-every 10
         :insert-ratio 0.3 :min-datoms 100 :max-datoms 1000}
    ;; bulk import: 3M datoms in 10k-datom commits
    :w3 {:seed-entities 0 :seed-tx-entities 2000
@@ -435,6 +440,11 @@
 
 (defn -main [& args]
   (let [spec (edn/read-string (first args))
+        ;; a keyword names a batch in benchmark/storage_amp_matrix.edn
+        spec (if (keyword? spec)
+               (or (get (edn/read-string (slurp "benchmark/storage_amp_matrix.edn")) spec)
+                   (throw (ex-info "unknown batch" {:batch spec})))
+               spec)
         specs (if (map? spec) [spec] spec)
         store-root (or (System/getenv "AMP_STORE_ROOT") "/tmp/dh-storage-amp/stores")
         out-dir (or (System/getenv "AMP_OUT_DIR") "/tmp/dh-storage-amp/out")]
