@@ -6,6 +6,14 @@ When something is added, it's typically marked *Experimental*. When the API cont
 
 ## 0.8
 
+- **The JVM HTTP client no longer sends a body with a GET ([#1141]).**
+  A read went out as a GET with its arguments in the body. Google's front end
+  (Cloud Run, load balancers) answers that with a 400 or closes the stream, and
+  a proxy or cache may drop the body, so no read could reach a server behind
+  one. Arguments that fit `url-args-limit` (2048 bytes) now go in the URL's
+  `args` parameter, as the ClojureScript client already sends them, and larger
+  ones go by POST. The server accepts both and is unchanged. A server older
+  than 0.8.1873 does not read `args`, so upgrade the server before the client.
 - **The HTTP client accepts `:headers-fn` in `:remote-peer` and `:writer` ([#1139]).**
   A function of no arguments that returns extra request headers, run on every
   request. It lets a client reach a server behind a gateway that wants its own
@@ -948,6 +956,7 @@ Thanks to all the contributors and the community for helping on this release. Sp
 [#980]: https://github.com/replikativ/datahike/pull/980
 [#1092]: https://github.com/replikativ/datahike/pull/1092
 [#1090]: https://github.com/replikativ/datahike/pull/1090
+[#1141]: https://github.com/replikativ/datahike/pull/1141
 [#1139]: https://github.com/replikativ/datahike/pull/1139
 [#1143]: https://github.com/replikativ/datahike/pull/1143
 [#1142]: https://github.com/replikativ/datahike/issues/1142
