@@ -14,6 +14,7 @@
      (:import [datahike.datom Datom]
               [datahike.impl.entity Entity]
               [com.fasterxml.jackson.core JsonGenerator]
+              [com.fasterxml.jackson.databind.module SimpleModule]
               [datahike.db HistoricalDB AsOfDB SinceDB])))
 
 (defn config->store-id [config]
@@ -57,14 +58,39 @@
    java.util.Date
    {:tag    "!date"
     :encode #(jt/encode-str (.getTime ^java.util.Date %1) %2)
-    :decode #(java.util.Date. (Long/parseLong %))}})
+    :decode #(java.util.Date. (Long/parseLong %))}
+
+   ;; JSON has no list type. Without a tag the call `(count ?v)` in a query
+   ;; arrived as the vector `[count ?v]`, which is not a call (#1145). The
+   ;; other list classes are registered by `tagged-module`.
+   clojure.lang.PersistentList
+   {:tag    "!list"
+    :encode jt/encode-collection
+    :decode #(apply list %)}})
+
+(def ^:private list-classes
+  "The other classes a query's list comes in, with the PersistentList handler's
+   \"!list\" tag. A quoted or `list`-built form is a PersistentList, `()` is
+   EmptyList, and `cons`, `list*` and syntax-quote give a Cons. Lazy seqs are
+   left untagged: they are what results are made of, and they keep the plain
+   array that existing JSON consumers read."
+  [clojure.lang.PersistentList$EmptyList
+   clojure.lang.Cons])
+
+(defn tagged-module
+  "`jt/module` for `handlers`, which also tags `list-classes` as \"!list\".
+   `jt/module` takes one handler per tag, so these are added to it directly."
+  ^SimpleModule [handlers]
+  (reduce (fn [^SimpleModule module ^Class c]
+            (.addSerializer module c (jt/serializer "!list" jt/encode-collection)))
+          (jt/module {:handlers handlers})
+          list-classes))
 
 (def mapper-opts
   {:encode-key-fn true
    :decode-key-fn true
-   :modules       [(jt/module
-                    {:handlers
-                     (merge
+   :modules       [(tagged-module
+                    (merge
                       json-base-handlers
                       {datahike.connector.Connection
                        {:tag    "!datahike/Connection"
@@ -118,7 +144,7 @@
                                    (assoc (into {} e)
                                           :db (.-db e)
                                           :eid (.-eid e))))
-                        :decode datahike.readers/entity-from-reader}})})]})
+                        :decode datahike.readers/entity-from-reader}}))]})
 
 (def mapper (j/object-mapper mapper-opts))
 

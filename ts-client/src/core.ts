@@ -206,6 +206,7 @@ function decodeValue(value: unknown, peer?: RemotePeer): any {
         case "!sym":
           return String(payload);
         case "!set":
+        case "!list":
           return Array.isArray(payload) ? payload.map((item) => decodeValue(item, peer)) : [];
         case "!uuid":
           return String(payload);

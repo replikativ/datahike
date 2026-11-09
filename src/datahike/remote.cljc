@@ -3,8 +3,7 @@
   dbs."
   (:require #?@(:clj [[cognitect.transit :as transit]
                       [jsonista.core :as j]
-                      [jsonista.tagged :as jt]
-                      [datahike.json :refer [json-base-handlers]]])
+                      [datahike.json :as json :refer [json-base-handlers]]])
             [datahike.datom :as dd])
   #?(:clj
      (:import [clojure.lang IDeref]
@@ -190,9 +189,8 @@
      (def json-mapper-opts
        {:encode-key-fn true
         :decode-key-fn true
-        :modules       [(jt/module
-                         {:handlers
-                          (merge
+        :modules       [(json/tagged-module
+                         (merge
                            json-base-handlers
                            {datahike.remote.RemoteConnection
                             {:tag    "!datahike/Connection"
@@ -234,6 +232,6 @@
                             datahike.remote.RemoteEntity
                             {:tag    "!datahike/Entity"
                              :encode (write-to-generator map-without-remote)
-                             :decode remote-entity}})})]})
+                             :decode remote-entity}}))]})
 
      (def json-mapper (j/object-mapper json-mapper-opts))))

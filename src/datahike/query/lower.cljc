@@ -193,10 +193,7 @@
   [db branches bound-vars rules]
   (mapv (fn [branch]
           (let [branch-clauses (if (and (sequential? branch)
-                                        (or (not (vector? (first branch)))
-                                            ;; [[= ?a 1]]: one predicate written
-                                            ;; as a vector call (#1145)
-                                            (analyze/vector-call-form? (first branch))))
+                                        (not (vector? (first branch))))
                                  [branch]
                                  (vec branch))]
             (plan-via-ir db branch-clauses bound-vars rules)))

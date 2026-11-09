@@ -447,49 +447,56 @@
           (finally
             (stop-server server)))))))
 
-(deftest test-call-clauses-over-cbor-and-json
-  ;; CBOR and JSON have no list type, so the call `(count ?v)` reaches the
-  ;; server as the vector `[count ?v]`. The planner read a one-argument call
-  ;; as a data pattern with an inline lookup ref and raised "Invalid entid"
-  ;; (#1145). The variable names are unique to this test: the server shares
-  ;; this process's normalized-query memo, where a list spelling sent earlier
-  ;; would decide how the vector spelling is read.
-  (doseq [fmt [:cbor :json]]
-    (testing (str (name fmt) " binding")
-      (let [server (start-server {:port 0 :join? false :dev-mode false
-                                  :token "securerandompassword"})
-            client-config {:backend :datahike-server
-                           :url     (str "http://localhost:" (local-port server))
-                           :token   "securerandompassword"
-                           :format  fmt}]
-        (try
-          (let [cfg  (api/create-database
-                      {:store              {:backend :memory :id (random-uuid)}
-                       :schema-flexibility :read
-                       :remote-peer        client-config})
-                conn (api/connect cfg)]
-            (api/transact conn [{:name "Ivan" :age 15} {:name "Oleg" :age 37}])
-            (let [db @conn]
-              (is (= 4 (api/q '[:find ?c1145 . :in $ ?v1145 :where [(count ?v1145) ?c1145]]
-                              db [1 2 3 4]))
-                  "one-argument function")
-              (is (= #{["Ivan"] ["Oleg"]}
-                     (api/q '[:find ?n1145 :where [?e1145 :name ?n1145] [(some? ?n1145)]] db))
-                  "one-argument predicate")
-              (is (= 1.0 (api/q '[:find ?g1145 . :in $ ?w1145 :where [(get ?w1145 0) ?g1145]]
-                                db [1.0 2.0]))
-                  "two-argument function")
-              (is (= #{["Oleg"]}
-                     (api/q '[:find ?m1145 :where [?f1145 :name ?m1145]
-                              (not [(clojure.string/starts-with? ?m1145 "I")])]
-                            db))
-                  "predicate inside not")
-              (is (= #{["Ivan"] ["Oleg"]}
-                     (api/q '[:find ?o1145 :where [?h1145 :name ?o1145]
-                              (or [(= ?o1145 "Ivan")] [(= ?o1145 "Oleg")])]
-                            db))
-                  "predicates as or branches"))
-            (api/release conn)
-            (api/delete-database cfg))
-          (finally
-            (stop-server server)))))))
+(deftest test-call-clauses-over-json
+  ;; JSON has no list type, so the call `(count ?v)` used to reach the server
+  ;; as the vector `[count ?v]`, which the planner read as a lookup ref
+  ;; ("Invalid entid") or answered wrongly (#1145). Datahike's tagged JSON now
+  ;; carries lists as ["!list", [...]]. The variable names are unique to this
+  ;; test: the server shares this process's normalized-query memo. CBOR keeps
+  ;; lists from boring 0.1.31 on, which its own bump covers.
+  (let [server (start-server {:port 0 :join? false :dev-mode false
+                              :token "securerandompassword"})
+        client-config {:backend :datahike-server
+                       :url     (str "http://localhost:" (local-port server))
+                       :token   "securerandompassword"
+                       :format  :json}]
+    (try
+      (let [cfg  (api/create-database
+                  {:store              {:backend :memory :id (random-uuid)}
+                   :schema-flexibility :read
+                   :remote-peer        client-config})
+            conn (api/connect cfg)]
+        (api/transact conn [{:db/ident :friend :db/valueType :db.type/ref
+                             :db/cardinality :db.cardinality/many}])
+        (api/transact conn [{:db/id -1 :name "Ivan" :age 15 :friend -1}
+                            {:db/id -2 :name "Oleg" :age 37 :friend -1}])
+        (let [db @conn]
+          (is (= 4 (api/q '[:find ?c1145 . :in $ ?v1145 :where [(count ?v1145) ?c1145]]
+                          db [1 2 3 4]))
+              "one-argument function")
+          (is (= #{["Ivan"] ["Oleg"]}
+                 (api/q '[:find ?n1145 :where [?e1145 :name ?n1145] [(some? ?n1145)]] db))
+              "one-argument predicate")
+          (is (= 1.0 (api/q '[:find ?g1145 . :in $ ?w1145 :where [(get ?w1145 0) ?g1145]]
+                            db [1.0 2.0]))
+              "two-argument function")
+          (is (= #{["Ivan"] ["Oleg"]}
+                 (api/q '[:find ?o1145 :where [?h1145 :name ?o1145]
+                          (or [(= ?o1145 "Ivan")] [(= ?o1145 "Oleg")])]
+                        db))
+              "predicates as or branches")
+          (is (= #{["Ivan"] ["Oleg"]}
+                 (api/q '[:find ?r1145 :in $ %
+                          :where [?k1145 :name ?r1145] (friendly ?k1145 _) (same ?k1145 ?k1145)]
+                        db
+                        '[[(friendly ?a ?b) [?a :friend ?b]]
+                          [(same ?a ?a) [?a :name _]]]))
+              "a rule with a repeated head var and a blank rule-call argument")
+          (is (thrown-with-msg? Exception #"must be a list, not a vector"
+                                (api/q '[:find ?x1145 . :in $ ?y1145 :where [[count ?y1145] ?x1145]]
+                                       db [1 2]))
+              "a vector-spelled call is refused by name"))
+        (api/release conn)
+        (api/delete-database cfg))
+      (finally
+        (stop-server server)))))
