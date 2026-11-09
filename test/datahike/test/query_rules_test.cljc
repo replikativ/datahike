@@ -961,9 +961,10 @@
       ;; The planner ordered the identity ahead of the rule call that binds ?e,
       ;; which is fine where the negation is seeded with the outer ?e but not on
       ;; the fused path, which runs it unseeded: "Cannot resolve any more clauses".
-      (on-both-engines #{2 3 4 5}
-                       '[:find [?e ...] :in $ % :where
-                         [?e :name] (not-join [?e] (selfie ?e ?f) [(identity ?e) ?f])]
+      ;; The pattern has to bind ?n for this query to take that path.
+      (on-both-engines #{["Oleg"] ["Petr"] ["Bob"] ["Carl"]}
+                       '[:find ?n :in $ % :where
+                         [?e :name ?n] (not-join [?e] (selfie ?e ?f) [(identity ?e) ?f])]
                        db rules))
     (testing "rules and calls spelled as vectors, as CBOR and JSON clients send them"
       (on-both-engines #{1} '[:find [?e ...] :in $ % :where [selfie ?e ?e]] db rules)
