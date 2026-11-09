@@ -82,3 +82,17 @@
           (is (= 401 (:status (ex-data error))))))
       (finally
         (stop-server server)))))
+
+(deftest headers-fn-does-not-name-a-peer
+  (let [peer (fn [] {:backend    :datahike-server
+                     :url        "http://localhost:1"
+                     :headers-fn (fn [] {"x-gateway-auth" "g"})})
+        a    (peer)
+        b    (peer)]
+    (testing "two configs differing only in their :headers-fn closure are one peer"
+      (is (not= a b))
+      (is (= a (api/get-remote [{:remote-peer a} {:remote-peer b}]))))
+    (testing "a different server is still a different peer"
+      (is (thrown-with-msg? clojure.lang.ExceptionInfo #"more than one remote-peer"
+                            (api/get-remote [{:remote-peer a}
+                                             {:remote-peer (assoc b :url "http://localhost:2")}]))))))
