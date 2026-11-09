@@ -2810,6 +2810,36 @@
   [sub-plan]
   (into #{} (mapcat op-bound-vars) (:ops sub-plan)))
 
+(defn- sub-plan-runs-unseeded?
+  "Can `sub-plan` execute in its PLANNED ORDER with no outer relations?
+
+   A negation's sub-plan is planned believing the outer join vars are bound —
+   true on the Relation path, where `execute-not-join` seeds it with them — so
+   a cheap op reading one may be ordered first. The fused path runs the same
+   ops unseeded, and there that op finds its input unbound: `(not-join [?e]
+   (r ?e ?f) [(identity ?e) ?f])` raised \"Cannot resolve any more clauses\"
+   where the identity was ordered ahead of the rule call that binds `?e`.
+   Join-var COVERAGE (checked by the caller) is not enough; the ORDER has to
+   bind each input before it is read.
+
+   Readiness follows `plan/op-cost`, except for a recursive rule, whose
+   required vars are an ordering hint only — it computes its own relation and
+   is correct as a pure producer."
+  [sub-plan consts]
+  (loop [ops (seq (:ops sub-plan))
+         bound (into #{} (keys consts))]
+    (if-let [op (first ops)]
+      (let [[required policy] (plan/op-required-vars op)
+            ready? (or (= :recursive-rule (:op op))
+                       (case policy
+                         :none true
+                         :all  (every? #(contains? bound %) required)
+                         :any  (some #(contains? bound %) required)
+                         false))]
+        (when ready?
+          (recur (next ops) (into bound (plan/branch-produced-vars {:ops [op]})))))
+      true)))
+
 (defn can-direct-fuse?
   "Check if a plan can use the direct-to-HashSet execution path.
    Public: query/explain mirrors the execution dispatch with it.
@@ -2862,10 +2892,11 @@
        (every? (fn [op]
                  (or (not= :not-join (:op op))
                      (let [inner (sub-plan-bound-vars (:sub-plan op))]
-                       (every? #(or (and consts (contains? consts %))
-                                    (and (contains? group-vars %)
-                                         (contains? inner %)))
-                               (:join-vars op)))))
+                       (and (every? #(or (and consts (contains? consts %))
+                                         (and (contains? group-vars %)
+                                              (contains? inner %)))
+                                    (:join-vars op))
+                            (sub-plan-runs-unseeded? (:sub-plan op) consts)))))
                ops))
          ;; A group that is BOTH a consumer and a producer is not executable on
          ;; this path. The multi-group loop below is a two-way `cond`: a group

@@ -284,13 +284,35 @@
          (or (analyze/quote-form? out)
              (and (not (symbol? out)) (not (sequential? out)))))))
 
-(defn- blank-rule-call?
+(defn- rule-call-args
+  "The arguments of a rule call, or nil when `clause` is not one.
+
+   A call is written `(r ?a ?b)`, or `[r ?a ?b]` — the spelling CBOR and JSON
+   clients send, since those formats have no list type — and may be prefixed
+   with a `$source`. A vector is a call only when a plain symbol heads it: a
+   data pattern starts with a variable, `_`, a `$source`, a constant or a
+   lookup ref, and a vector function clause `[[f ?x] ?y]` with a vector. This
+   runs on every clause of every query, so the common data pattern leaves at
+   the first test of its head."
   [clause]
-  (when (seq? clause)
-    (let [[head & args] (if (source-prefixed-clause? clause) (rest clause) clause)]
-      (and (symbol? head) (not (analyze/free-var? head))
-           (not (#{'not 'not-join 'and 'or 'or-join} head))
-           (some #{'_} args)))))
+  (when (sequential? clause)
+    (let [call (if (source-prefixed-clause? clause) (rest clause) clause)
+          head (first call)]
+      (when (and (symbol? head)
+                 (not (analyze/free-var? head))
+                 (not= '_ head)
+                 (not= \$ (first (name head)))
+                 (not (#{'not 'not-join 'and 'or 'or-join} head)))
+        (vec (rest call))))))
+
+(defn- blank-rule-call? [clause]
+  (boolean (some #{'_} (rule-call-args clause))))
+
+(defn- repeated-var-rule-call?
+  "Does a rule call pass the same variable in two argument positions?"
+  [clause]
+  (let [args (rule-call-args clause)]
+    (boolean (and (next args) (repeated-var-pattern? args)))))
 
 (defn- where-needs-normalization?
   "Cheap pre-scan for repeated pattern vars, constant outputs and blank rule calls."
@@ -300,6 +322,7 @@
            (cond
              (constant-output-clause? clause) true
              (blank-rule-call? clause) true
+             (repeated-var-rule-call? clause) true
              (source-prefixed-clause? clause) (repeated-var-pattern? (vec (rest clause)))
              (data-pattern-clause? clause)    (repeated-var-pattern? clause)
              (and (seq? clause) (#{'not 'and 'or} (first clause)))
@@ -348,6 +371,43 @@
   (into #{} (comp (filter symbol?) (filter analyze/free-var?))
         (tree-seq coll? seq form)))
 
+(defn- rewrite-rule-call
+  "Rewrite the arguments of a rule call. Returns the clauses that replace it.
+
+   Each blank argument is independent, but occurrences of its rule-head
+   parameter within the body must still share one existential variable. In
+   particular it must never become a constant `(identity _)` binding.
+
+   A variable passed in two positions, `(selfie ?e ?e)`, says the two
+   arguments are EQUAL. Both engines substitute the call's arguments for the
+   head parameters, so the body's DISTINCT variables became one — `[?a :friend
+   ?b]` turned into `[?e :friend ?e]`, a pattern that repeats a variable and
+   which neither engine unifies inside a rule body (the seam that rewrites such
+   patterns runs before rules are expanded). The planner answered with every
+   entity that has a friend; the base engine did the same whenever `?e` was
+   still unbound at the call. Every later occurrence becomes a fresh variable,
+   and the equality is stated as an obligation APPENDED after the call — a
+   binding clause rather than an `=` predicate, like `normalize-rule-head`'s,
+   so that it binds when the call leaves the fresh variable unbound and
+   filters when it does not."
+  [clause fresh!]
+  (let [nprefix (if (source-prefixed-clause? clause) 2 1)
+        prefix (take nprefix clause)
+        [args obligations]
+        (reduce (fn [[out obl seen] a]
+                  (cond
+                    (= '_ a) [(conj out (fresh! '?__rule_blank)) obl seen]
+                    (not (analyze/free-var? a)) [(conj out a) obl seen]
+                    (contains? seen a) (let [v (fresh! a)]
+                                         [(conj out v) (conj obl [(list 'identity a) v]) seen])
+                    :else [(conj out a) obl (conj seen a)]))
+                [[] [] #{}]
+                (drop nprefix clause))]
+    (cons (if (vector? clause)
+            (into (vec prefix) args)
+            (apply list (concat prefix args)))
+          obligations)))
+
 (declare normalize-where-clauses normalize-where-clause)
 
 (defn- normalize-branch
@@ -368,11 +428,8 @@
     (let [v (fresh! '?__fn_result)]
       [[(first clause) v] [(list '= v (second clause))]])
 
-    ;; Each blank argument is independent, but occurrences of its rule-head
-    ;; parameter within the body must still share one existential variable.
-    ;; In particular it must never become a constant `(identity _)` binding.
-    (blank-rule-call? clause)
-    [(apply list (map #(if (= '_ %) (fresh! '?__rule_blank) %) clause))]
+    (or (blank-rule-call? clause) (repeated-var-rule-call? clause))
+    (rewrite-rule-call clause fresh!)
 
     (source-prefixed-clause? clause)
     (let [pattern (vec (rest clause))]
@@ -434,9 +491,10 @@
   (and (symbol? x) (= \? (first (name x)))))
 
 (defn- head-repeats-var?
-  "True when a rule head names the same variable in two argument positions."
+  "True when a rule head names the same variable in two argument positions.
+   The head may be a list or, as CBOR and JSON clients send it, a vector."
   [head]
-  (and (seq? head)
+  (and (sequential? head)
        (let [vs (filter query-var? (rest head))]
          (not= (count vs) (count (distinct vs))))))
 
@@ -466,7 +524,7 @@
                     [(conj ps p) (conj seen p) extra]))
                 [[] #{} []]
                 (rest head))]
-    (into [(cons (first head) params)]
+    (into [(if (vector? head) (into [(first head)] params) (cons (first head) params))]
           (concat (rest rule) extra))))
 
 (defn- normalize-rule-bodies
@@ -537,8 +595,10 @@
 (defn normalize-repeated-vars
   "Rewrite every data pattern that mentions a variable twice into a pattern of
    distinct variables plus an explicit `=` join predicate. Also expands scalar
-   constant function outputs into equality constraints and
-   blank rule-call arguments into fresh existential variables. Returns `query`
+   constant function outputs into equality constraints,
+   blank rule-call arguments into fresh existential variables, and a variable
+   passed twice to a rule call into a fresh one plus an equality obligation
+   (see `rewrite-rule-call`). Returns `query`
    UNCHANGED (identical object) when no clause needs rewriting, so the plan
    and result caches are not perturbed for queries this does not affect."
   [query]
