@@ -4,6 +4,7 @@
   (:require
    [clojure.test :as t :refer [is deftest testing]]
    [datahike.http.client :as api]
+   [datahike.remote :as remote]
    [datahike.http.server :refer [start-server stop-server]]))
 
 (deftest request-headers-precedence
@@ -82,3 +83,20 @@
           (is (= 401 (:status (ex-data error))))))
       (finally
         (stop-server server)))))
+
+(deftest headers-fn-does-not-name-a-peer
+  ;; Arguments after the first name their peer through a remote handle, as a
+  ;; database does when a query joins two connections.
+  (let [peer   (fn [] {:backend    :datahike-server
+                       :url        "http://localhost:1"
+                       :headers-fn (fn [] {"x-gateway-auth" "g"})})
+        a      (peer)
+        b      (peer)
+        db-for (fn [p] (remote/map->RemoteDB {:store-id "s" :remote-peer p}))]
+    (testing "two configs differing only in their :headers-fn closure are one peer"
+      (is (not= a b))
+      (is (= a (api/get-remote [{:remote-peer a} (db-for b)]))))
+    (testing "a different server is still a different peer"
+      (is (thrown-with-msg? clojure.lang.ExceptionInfo #"more than one remote-peer"
+                            (api/get-remote [{:remote-peer a}
+                                             (db-for (assoc b :url "http://localhost:2"))]))))))

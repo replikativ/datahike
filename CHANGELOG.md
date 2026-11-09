@@ -12,13 +12,26 @@ When something is added, it's typically marked *Experimental*. When the API cont
   a proxy or cache may drop the body, so no read could reach a server behind
   one. Arguments that fit `url-args-limit` (2048 bytes) now go in the URL's
   `args` parameter, as the ClojureScript client already sends them, and larger
-  ones go by POST. The server accepts both and is unchanged.
+  ones go by POST. The server accepts both and is unchanged. A server older
+  than 0.8.1873 does not read `args`, so upgrade the server before the client.
 - **The HTTP client accepts `:headers-fn` in `:remote-peer` and `:writer` ([#1139]).**
   A function of no arguments that returns extra request headers, run on every
   request. It lets a client reach a server behind a gateway that wants its own
   credential, for example an identity token for Cloud Run IAM sent in
   `X-Serverless-Authorization`, while `authorization` still carries the
   server's `:token`. The function is never sent to the server.
+- **A remote query on the head commit reuses the connection's database
+  ([#1147]).** The server rebuilt a database argument from the store on every
+  request, restoring every secondary index, even when it named the commit the
+  connection already holds; with five `:proximum` indexes a trivial query took
+  seconds. The head commit now resolves to the connection's database; any
+  other commit is read from the store as before. Fixes [#1146].
+- **A scalar string result reaches the HTTP client intact ([#1143]).** A
+  `:find ?x .` query whose result is a string went out as raw text rather than
+  in the negotiated format, because ring treats a `String` as an already
+  encoded body. The client could not parse it: transit and json failed with a
+  `JsonParseException`, cbor with a truncated-input error, and edn read the
+  bare text. Fixes [#1142].
 - **Offline GC keeps what a buffered index needs ([#1123]).** With
   `:diff-buf-size`, `gc-storage!` marked the index nodes the connection held
   in memory, not the ones the stored head names. A buffered slot is rebuilt
@@ -945,6 +958,10 @@ Thanks to all the contributors and the community for helping on this release. Sp
 [#1090]: https://github.com/replikativ/datahike/pull/1090
 [#1141]: https://github.com/replikativ/datahike/pull/1141
 [#1139]: https://github.com/replikativ/datahike/pull/1139
+[#1143]: https://github.com/replikativ/datahike/pull/1143
+[#1142]: https://github.com/replikativ/datahike/issues/1142
+[#1147]: https://github.com/replikativ/datahike/pull/1147
+[#1146]: https://github.com/replikativ/datahike/issues/1146
 [#1123]: https://github.com/replikativ/datahike/pull/1123
 [#1112]: https://github.com/replikativ/datahike/issues/1112
 [#1105]: https://github.com/replikativ/datahike/issues/1105

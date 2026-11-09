@@ -327,18 +327,21 @@
         out))))
 
 (defn get-remote [args]
-  (let [remotes (disj
-                 (into
-                  ;; first arguments can be config maps, e.g. for
-                  ;; create-database; this code could be made explicit by
-                  ;; explicitly dispatching on when the first argument is a
-                  ;; config map
-                  #{(:remote-peer (first args))}
-                  ;; other arguments to API follow hygiene
-                  (map remote/remote-peer (rest args)))
-                 nil)]
-    (if (> (count remotes) 1)
-      (throw (ex-info "Arguments refer to more than one remote-peer." {:remotes remotes
+  (let [remotes (remove nil?
+                        (cons
+                         ;; first arguments can be config maps, e.g. for
+                         ;; create-database; this code could be made explicit by
+                         ;; explicitly dispatching on when the first argument is a
+                         ;; config map
+                         (:remote-peer (first args))
+                         ;; other arguments to API follow hygiene
+                         (map remote/remote-peer (rest args))))
+        ;; A `:headers-fn` compares by identity, so two configs naming the
+        ;; same server with the same `(fn [] ...)` literal would otherwise
+        ;; count as two peers. It adds headers; it does not name a peer.
+        peers   (set (map #(dissoc % :headers-fn) remotes))]
+    (if (> (count peers) 1)
+      (throw (ex-info "Arguments refer to more than one remote-peer." {:remotes peers
                                                                        :args args}))
       (first remotes))))
 
